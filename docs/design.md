@@ -696,16 +696,21 @@ which Ctrl+V reads the clipboard from.
   verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
 - **herdr panes** (`docs/herdr.md`): run inside the herdr multiplexer, the
   app reports its own state to herdr's local socket — `working` while a turn
-  or a subagent runs, `blocked` while a permission prompt or a question waits
-  on the user (with the prompt in one line), `idle` otherwise — so herdr's
-  sidebar and notifications track it with no setup, and herdr can resume the
-  session (`alter-zero --resume {id}`) after a restart. The state is derived
-  from the app at every loop bottom, after the turn end has dispatched what
-  comes next, so chained turns never flash a false "finished"; one detached
-  worker writes the newest report only, re-sends it on a backoff and a 30 s
-  keepalive, and hands the pane back on quit within a bounded wait. The
-  model's terminal sessions drop `HERDR_PANE_ID`, so an agent it runs cannot
-  claim the pane. `ALTER_ZERO_HERDR=0` turns it off.
+  or a subagent runs (a settled one with something queued for it included),
+  `blocked` while a permission prompt or a question waits on the user (with
+  the prompt in one line) and after a turn that failed, until the user moves
+  past it, `idle` otherwise — so herdr's sidebar and notifications track it
+  with no setup, and herdr can resume the session (`alter-zero --resume {id}`,
+  or a fresh `alter-zero` before the first message and after a `/clear`)
+  after a restart. The state is derived from the app at every loop bottom,
+  after the turn end has dispatched what comes next, so chained turns never
+  flash a false "finished"; the library's one worker writes the newest
+  report only, re-sends it on a backoff and a 30 s keepalive, and hands the
+  pane back last on quit — or on drop — within a bounded wait. Nothing the
+  session starts gets `HERDR_PANE_ID` (terminal sessions, `!` commands,
+  hooks, MCP servers), so a nested agent cannot take the pane over, while
+  `HERDR_ENV` stays for herdr's own CLI and skill. `ALTER_ZERO_HERDR=0` turns
+  it off.
 
 ## Architecture
 

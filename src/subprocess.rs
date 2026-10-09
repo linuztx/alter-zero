@@ -220,6 +220,11 @@ pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The herdr pane is the TUI's own: a nested agent's herdr hook would take
+    // it over, after which herdr drops every report the TUI sends
+    // (`docs/herdr.md`) — the terminal path drops it the same way
+    // (`pty::spawn::FOREIGN_TERMINAL_VARS`).
+    cmd.env_remove(crate::herdr::PANE_ID_ENV);
     cmd
 }
 
@@ -669,6 +674,28 @@ mod tests {
         let planted = |p: &Path| p == Path::new("relative/bash") || p == Path::new("bash");
         assert_eq!(find_on_path("bash", Some(&path), planted), None);
         assert_eq!(find_on_path("bash", None, |_| true), None);
+    }
+
+    #[test]
+    fn a_shell_child_never_inherits_the_herdr_pane() {
+        // The pane is the TUI's: a nested agent reporting into it would take
+        // it over, and herdr then drops every report alter-zero sends
+        // (`docs/herdr.md`). herdr's own marker and socket stay — the
+        // environment herdr gives its popups — so its CLI and agent skill
+        // still work.
+        for tier in tiers(Some(Path::new("/opt/bin/alter-zero"))) {
+            let command = command_in(&tier, Path::new("sh"), "true");
+            let envs: Vec<_> = command.get_envs().collect();
+            assert!(
+                envs.contains(&(OsStr::new(crate::herdr::PANE_ID_ENV), None)),
+                "{tier:?}: {envs:?}"
+            );
+            assert!(
+                !envs.iter().any(|(name, _)| *name == crate::herdr::HERDR_ENV
+                    || *name == crate::herdr::SOCKET_PATH_ENV),
+                "{tier:?}: {envs:?}"
+            );
+        }
     }
 
     #[test]

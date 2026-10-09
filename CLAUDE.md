@@ -2297,31 +2297,52 @@ in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
-pane (`HERDR_ENV=1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by the pure
-`herdr::pane`) the app is its own status authority — herdr has no screen
-rules for it and a third-party agent cannot ship any, so it self-reports over
-herdr's socket. The state is **derived, never tracked**: `herdr::status(&App)`
-at every loop bottom (after the recorder's sync, so the first message's report
-names the file it created, and after the turn end dispatched what follows, so
-chained turns never report a false idle — herdr's "finished" toast) —
-`blocked` while `App::modal_open` (the prompt in one line as the message),
-`working` while a turn is in flight **or any subagent runs** (deliberately
-unlike herdr's newest Grok/agy rule — a subagent always finishes and its
-result starts the next turn — while background shells never count), `idle`
-otherwise. One `pane.report_agent` line per change carries the state, the
-rollout id and `resume_argv` (`alter-zero --resume {id}`, offered only when
-`argv[0]`'s basename is on `PATH`, validated by `herdr::resume_argv` against
-herdr's own rules since an invalid command takes the state down with it);
-`seq` is microseconds stepping past the last (`herdr::next_seq`) because herdr
-drops anything not above a pane's high-water mark for the pane's lifetime.
-`tui::herdr`'s one detached worker drains a single-slot `herdr::Outbox`
-(newest report only, one request at a time, 500 ms bounds, a fresh `seq` per
-send, `herdr::resend_after`'s 1 s… backoff and 30 s keepalive — herdr never
-expires a self-reported state), and `shutdown` posts the release, waiting at
-most 400 ms. `HERDR_PANE_ID` is in `pty::spawn::FOREIGN_TERMINAL_VARS`, so a
-nested agent the model runs cannot claim the pane; `ALTER_ZERO_HERDR=0` turns
-it all off; `smoke.sh` Phase 132 drives it against a stub socket and the
-fixture unsets every `HERDR_*` variable.
+pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
+the pure `herdr::pane`) the app is its own status authority — herdr has no
+screen rules for it and a third-party agent cannot ship any, so it
+self-reports over herdr's socket. The state is **derived, never tracked**:
+`herdr::activity(&App)` at every loop bottom (after the recorder's sync, so the
+first message's report names the file it created, and after the turn end
+dispatched what follows, so chained turns never report a false idle —
+herdr's "finished" toast) feeds `herdr::Tracker`, which ranks it — `blocked`
+while `App::modal_open` (the prompt in one line, file paths by the path
+display rule, control characters folded, 80 characters), `working` while a
+turn is in flight, `blocked` on a **failed turn** (`Turn failed: {error}`,
+held via `Tracker::fail` from `tui::stream`'s `Error` arm until a turn starts
+or the history generation moves — idle there would be herdr's "finished" for
+work that died half done), `working` while **any subagent is busy**
+(`herdr::agent_busy`: running, or settled with a steered message or a Tab
+follow-up queued — deliberately unlike herdr's newest Grok/agy rule; a
+subagent always finishes and its result starts the next turn — while
+background shells never count), `idle` otherwise — and answers a report only
+when the state, its message or the session changed. Every
+`pane.report_agent` line carries the state and `resume_argv`: `alter-zero
+--resume {id}` once the conversation has a file, `alter-zero` alone before
+and after a `/clear` (nothing short of a release clears a command herdr
+holds, so the bare one is what keeps a herdr restart from reopening a cleared
+conversation), offered only when `argv[0]`'s basename is on `PATH` and
+validated by `herdr::resume_argv` against herdr's own rules, since an invalid
+command takes the state down with it; no `agent_session_id` (herdr keeps one
+only from its own integrations). `seq` is microseconds stepping past the last
+(`herdr::next_seq`) because herdr drops anything not above a pane's
+high-water mark for the pane's lifetime. The worker is the library's
+`herdr::Reporter` — one detached thread over a single slot (newest report
+only, one request at a time, 500 ms bounds, a fresh `seq` per send,
+`Timing::resend_after`'s 1 s… backoff and 30 s keepalive, since herdr never
+expires a self-reported state and its live upgrade drops a third-party one),
+`herdr::send` writing only to a socket this user owns (lstat, never through a
+symlink), the release last in `shutdown` with a 400 ms bound and on `Drop` —
+tested against real sockets; `tui::herdr` is the thin glue. **Nothing the
+session starts gets `HERDR_PANE_ID`** — the pty sessions
+(`pty::spawn::FOREIGN_TERMINAL_VARS`), every pipe-run child
+(`subprocess::command_in`: `!`, hooks, the `bash` pipe fallback) and MCP
+stdio servers — because a nested official integration's session report makes
+it the pane's owner and herdr then drops every alter-zero report for the
+pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
+(herdr's popups get the same environment). `ALTER_ZERO_HERDR=0` turns it all
+off; `smoke.sh` Phase 132 drives it against a stub socket (a failed turn
+through the real backend and a refusing stub provider) and the fixture unsets
+every `HERDR_*` variable.
 
 ### The runtime model and its invariants
 

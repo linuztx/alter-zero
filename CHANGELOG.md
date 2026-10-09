@@ -19,13 +19,17 @@ release heading when a version is cut.
   herdr. The sidebar shows it working while a turn or a subagent runs,
   blocked the moment a permission prompt or a question waits on you, and done
   when it finishes, and herdr's "needs attention" and "finished" notifications
-  fire at those moments. There is nothing to install or configure. herdr also
-  learns the command that resumes the conversation (`alter-zero --resume
-  {id}`), so a restarted herdr brings the session back. A background worker
+  fire at those moments. A turn that fails on an API error shows as needing
+  attention, with the error, until you retry or clear it, rather than as
+  finished. There is nothing to install or configure. herdr also learns the
+  command that resumes the conversation (`alter-zero --resume {id}`, or a
+  fresh `alter-zero` after `/clear`), so a restarted herdr brings the session
+  back, and only when `alter-zero` is on your `PATH`. A background worker
   sends the reports with short timeouts, retries any that get lost, and never
-  slows the app down. Commands the agent runs no longer see `HERDR_PANE_ID`,
-  so an agent it starts can't take over the pane. `ALTER_ZERO_HERDR=0` turns
-  it off (`docs/herdr.md`).
+  slows the app down. Nothing the agent starts sees `HERDR_PANE_ID` (its
+  commands, your `!` commands, hooks, MCP servers), so another agent run
+  inside it can't take over the pane, while herdr's own CLI keeps working
+  there. `ALTER_ZERO_HERDR=0` turns it off (`docs/herdr.md`).
 - **A built-in `yt-dlp` skill guides media downloads without bundling a downloader.**
   On first launch its editable `SKILL.md` is seeded beside the other built-ins;
   the agent can load it on demand for videos, playlists, captions and audio.

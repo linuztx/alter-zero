@@ -41,9 +41,11 @@ pub const TERMINAL_ENV: [(&str, &str); 5] = [
 /// runs in — which would steer a program toward features the session's
 /// emulator does not have (tmux passthrough, kitty's protocols), override
 /// the session's size with a stale one, or point it at the TUI's own pane:
-/// a nested agent reporting to herdr under `HERDR_PANE_ID` would claim the
-/// pane alter-zero reports for, and `herdr … --current` would type into the
-/// TUI (`docs/herdr.md`; herdr's socket stays reachable).
+/// a nested agent's herdr integration reporting under `HERDR_PANE_ID` would
+/// make itself the owner of the pane alter-zero reports for, and `herdr …
+/// --current` would type into the TUI (`docs/herdr.md`; `HERDR_ENV` and
+/// herdr's socket stay, so herdr's CLI and agent skill still work — the
+/// pipe path drops the pane id too, in `subprocess::command_in`).
 pub const FOREIGN_TERMINAL_VARS: [&str; 15] = [
     "TMUX",
     "TMUX_PANE",

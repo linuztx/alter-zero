@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 132 — herdr pane state: idle, working, blocked, the resume command, the release
+# Phase 132 — herdr pane state: idle, working, blocked, a failed turn's hold, the resume command, the release
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -7,10 +7,13 @@ smoke_begin
 # herdr support (docs/herdr.md). Run inside a herdr pane — HERDR_ENV=1, a
 # pane id, a socket path — the app tells herdr's socket what the agent is
 # doing: one `pane.report_agent` request per change, `idle` at launch,
-# `working` for a turn, `blocked` while a permission prompt waits on the user,
-# `idle` again when the turn ends, each carrying the recorded session's resume
-# command once the conversation has a file, and a `pane.release_agent` as the
-# last request of a quit. A Python stub stands in for herdr's socket: one
+# `working` for a turn, `blocked` while a permission prompt waits on the user
+# — and after a turn that failed, until the user moves past it — `idle`
+# again when the turn ends, each carrying the command that resumes the
+# session (`alter-zero` alone until the conversation has a file, and again
+# after a `/clear`), and a `pane.release_agent` as the last request of a
+# quit. A `!` command runs without the pane's id, so nothing the session
+# starts can claim the pane. A Python stub stands in for herdr's socket: one
 # request per connection, each line logged, answered `{"type":"ok"}` the way
 # herdr answers. The fixture unsets every HERDR_* variable, so only these
 # launches ever report.
@@ -62,7 +65,7 @@ hd_count() {
 	if [ -f "$HD_LOG" ]; then wc -l <"$HD_LOG" | tr -d ' '; else echo 0; fi
 }
 # The log's requests from line FROM (1-based) on, one per line, as
-# `{method} {state|-} {seq} {message|-} {session|-} {resume argv joined by +|-}`.
+# `{method} {state|-} {seq} {message|-} {resume argv joined by +|-}`.
 hd_rows() {
 	python3 - "$HD_LOG" "${1:-1}" <<'PY'
 import json, sys
@@ -79,7 +82,6 @@ for line in lines[start - 1:]:
         p.get("state", "-"),
         p.get("seq", "-"),
         (p.get("message") or "-").replace(" ", "_"),
-        p.get("agent_session_id", "-"),
         "+".join(p.get("resume_argv") or []) or "-",
     )
 PY
@@ -98,7 +100,8 @@ hd_last_is() { [ "$(hd_last_state)" = "$1" ]; }
 
 # (a) The launch claims the pane: one `idle` report, the pane id verbatim,
 # `alter-zero` as source and agent, a microsecond seq that is also the
-# request's id — and no resume command, since nothing is recorded yet.
+# request's id — and `alter-zero` alone as the resume command, since nothing
+# is recorded yet: a herdr restart brings back the fresh session it was.
 launch "$S132" 100 44 "$HD_APP"
 poll 10 hd_count_ge 1 || fail "no report reached the herdr socket after launch"
 note "the launch's report"
@@ -113,16 +116,17 @@ assert p["source"] == "alter-zero" and p["agent"] == "alter-zero", p
 assert p["state"] == "idle", p
 assert isinstance(p["seq"], int) and p["seq"] > 10**15, p  # microseconds
 assert r["id"] == "alter-zero:%d" % p["seq"], r
-for key in ("message", "resume_argv", "agent_session_id"):
+assert p["resume_argv"] == ["alter-zero"], p
+for key in ("message", "agent_session_id"):
     assert key not in p, (key, p)
 PY
-	fail "the launch's report is not idle for pane w1:p3 from alter-zero with a microsecond seq"
+	fail "the launch's report is not idle for pane w1:p3 from alter-zero with a microsecond seq and a bare resume command"
 fi
 
 # (b) A turn whose write waits on a permission prompt: `working`, then
 # `blocked` naming what the prompt asks, then — answered — `working`, and
-# `idle` when it ends. From the first message on, every report names the
-# recorded session and the command that resumes it.
+# `idle` when it ends. From the first message on, every report carries the
+# command that resumes the recorded session.
 submit "$S132" "permission demo please"
 poll 15 hd_has_state 1 blocked || fail "the permission prompt never reported blocked"
 hd_prompt="$(wait_pane 10 "$S132" -F "Do you want to create hello.py?")"
@@ -139,11 +143,21 @@ hd_blocked="$(hd_rows | awk '$2 == "blocked" { print $4; exit }')"
 expect_eq "$hd_blocked" "Create_file:_hello.py" "the blocked report's message (spaces shown as _)"
 HD_ID="$(find "$SMOKE_SESSIONS" -name 'rollout-*.jsonl' 2>/dev/null | head -1 | sed -E 's/.*rollout-[0-9-]{10}T[0-9-]{8}-(.*)\.jsonl/\1/')"
 [ -n "$HD_ID" ] || fail "the turn recorded no rollout file"
-hd_named="$(hd_rows 2 | awk -v id="$HD_ID" '$5 == id && $6 == "alter-zero+--resume+" id' | wc -l | tr -d ' ')"
-expect_eq "$hd_named" "$(($(hd_count) - 1))" "every report after the first message names session $HD_ID and resumes it with alter-zero --resume $HD_ID"
+hd_named="$(hd_rows 2 | awk -v id="$HD_ID" '$5 == "alter-zero+--resume+" id' | wc -l | tr -d ' ')"
+expect_eq "$hd_named" "$(($(hd_count) - 1))" "every report after the first message resumes session $HD_ID with alter-zero --resume $HD_ID"
 if ! hd_rows | awk '{ if (NR > 1 && $3 <= last) exit 1; last = $3 }'; then
 	fail "the seqs do not strictly increase — herdr drops a report that does not outrank the last"
 fi
+
+# A `!` command runs without the pane's id — a nested agent's herdr hook
+# would claim the pane, and herdr drops every report alter-zero sends after
+# that — while herdr's marker and socket stay, so its CLI still works.
+submit "$S132" '!printf "pane=%s env=%s sock=%s\n" "${HERDR_PANE_ID-unset}" "${HERDR_ENV-unset}" "${HERDR_SOCKET_PATH:+set}"'
+hd_env="$(wait_pane 10 "$S132" -F "pane=unset env=1 sock=set")" ||
+	fail "a ! command inherited the herdr pane id (or lost herdr's marker or socket)"
+note "a ! command's view of the herdr variables"
+printf '%s\n' "$hd_env" | grep -F "pane=" | tail -1
+poll 10 hd_last_is idle || fail "the ! command's end never reported idle"
 
 # (c) The quit hands the pane back: a release, last, outranking every report.
 HD_BEFORE_QUIT="$(hd_count)"
@@ -167,7 +181,7 @@ poll 10 hd_count_gt "$HD_BEFORE_RESUME" || fail "the resumed session reported no
 hd_first="$(hd_rows "$((HD_BEFORE_RESUME + 1))" | head -1)"
 note "the resumed launch's first report"
 printf '%s\n' "$hd_first"
-expect_eq "$(printf '%s' "$hd_first" | awk '{ print $2, $5, $6 }')" "idle $HD_ID alter-zero+--resume+$HD_ID" "the resumed launch's first report: idle, its session, its resume command"
+expect_eq "$(printf '%s' "$hd_first" | awk '{ print $2, $5 }')" "idle alter-zero+--resume+$HD_ID" "the resumed launch's first report: idle, with its resume command"
 if [ "$(printf '%s' "$hd_first" | awk '{ print $3 }')" -le "$HD_RELEASE_SEQ" ]; then
 	fail "the relaunch's seq does not outrank the previous process's release"
 fi
@@ -193,3 +207,69 @@ note "a turn against a dead herdr socket"
 printf '%s\n' "$hd_dead"
 submit "$S132" "/quit"
 wait_gone 3 "$S132" || fail "the quit hung on a dead herdr socket"
+
+# (g) A turn that fails on a backend error holds the pane blocked, naming the
+# failure — idle would have herdr announce the work finished — until the user
+# moves past it: a `/clear` replaces the conversation, and its report names a
+# fresh launch again rather than the session just cleared. The real backend,
+# against a stub provider that refuses every request with a 400 (never
+# retried).
+HD_PROVIDER_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+python3 - "$HD_PROVIDER_PORT" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Stub(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send(200, b'{"object":"list","data":[{"id":"stub-model"}]}')
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.send(400, b'{"error":{"message":"smoke132 refused"}}')
+
+    def send(self, status, data):
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_args):
+        pass
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), Stub).serve_forever()
+PY
+HD_PROVIDER=$!
+smoke_on_exit kill "$HD_PROVIDER"
+HD_PROVIDERS="$SMOKE_TMP/providers132.toml"
+printf '[providers.stub]\nname = "Stub"\n\n[providers.stub.kwargs]\napi_base = "http://127.0.0.1:%s/v1"\n' "$HD_PROVIDER_PORT" >"$HD_PROVIDERS"
+HD_BEFORE_FAIL="$(hd_count)"
+launch "$S132" 100 30 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST $HD_PANE ALTER_ZERO_PROVIDERS_FILE=$HD_PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in $BIN_ABS"
+poll 10 hd_count_gt "$HD_BEFORE_FAIL" || fail "the real-backend launch reported nothing"
+submit "$S132" "smoke132 fail"
+hd_failed="$(wait_pane 15 "$S132" -F "smoke132 refused")" || fail "the refused turn never showed its error"
+note "the failed turn"
+printf '%s\n' "$hd_failed"
+poll 10 hd_last_is blocked || fail "the failed turn did not report blocked"
+hd_rows "$((HD_BEFORE_FAIL + 1))"
+expect_eq "$(hd_states "$((HD_BEFORE_FAIL + 1))")" "idle working blocked" "the states a launch and one failed turn report"
+hd_failure="$(hd_rows "$((HD_BEFORE_FAIL + 1))" | awk '$2 == "blocked" { print $4; exit }')"
+case "$hd_failure" in
+Turn_failed:*smoke132*) ;;
+*) fail "the failed turn's blocked message does not name the failure (got '$hd_failure')" ;;
+esac
+# The hold outlives the turn: the loop keeps running, and nothing reports idle
+# behind the user's back.
+hd_held="$(hd_count)"
+wait_settled 5 "$S132" -F "smoke132 refused" >/dev/null || true
+expect_eq "$(hd_last_state "$((HD_BEFORE_FAIL + 1))")" "blocked" "the state once the failed turn settled"
+expect_eq "$(hd_count)" "$hd_held" "reports sent while the failure stood"
+submit "$S132" "/clear"
+poll 10 hd_last_is idle || fail "/clear never released the failed turn's hold"
+hd_cleared="$(hd_rows | tail -1)"
+note "the report after /clear"
+printf '%s\n' "$hd_cleared"
+expect_eq "$(printf '%s' "$hd_cleared" | awk '{ print $2, $5 }')" "idle alter-zero" "the report after /clear: idle, resuming as a fresh launch"
+submit "$S132" "/quit"
+wait_gone 5 "$S132" || fail "the real-backend app did not exit on /quit"
+poll 5 hd_last_is release || fail "the real-backend quit did not release the pane"

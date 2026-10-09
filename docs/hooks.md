@@ -367,7 +367,8 @@ The child is spawned through the same **tty-detach tier walk** every other
 shell child uses (`docs/tty-detach.md`), so a hook that tries to prompt on
 `/dev/tty` fails fast instead of hijacking the TUI. It inherits the session's
 cwd and gets `ALTER_ZERO_PROJECT_DIR` — plus `CLAUDE_PROJECT_DIR`, so scripts
-written for Claude Code find their project root unchanged.
+written for Claude Code find their project root unchanged — and, like every
+shell child, runs without the herdr pane id (`docs/herdr.md`).
 
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it

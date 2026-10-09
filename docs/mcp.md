@@ -210,7 +210,9 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
 
 - `transport` — the three transports behind one `request`/`notify` surface:
   - **stdio**: the configured command spawned with piped stdio (env merged
-    over the session's), a reader thread turning stdout lines into messages,
+    over the session's, minus the herdr pane id — a server can be an agent
+    whose herdr hook would take the TUI's pane over, `docs/herdr.md`), a
+    reader thread turning stdout lines into messages,
     stderr drained to a capped buffer (surfaced in a connect error), the
     child killed on drop. Requests are newline-delimited JSON, answers
     matched by id.

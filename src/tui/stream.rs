@@ -444,6 +444,9 @@ impl Session<'_> {
                 let failed = self.app.fail_stream(&message);
                 self.finish_turn_agent_settle(owed, width);
                 if let Some(failure) = failed {
+                    // The herdr pane shows the turn as needing attention, not
+                    // finished, until the user moves past it (docs/herdr.md).
+                    self.herdr_turn_failed(&failure.error);
                     // A live agent group died with the turn: its subagent threads
                     // keep running unless killed here (the backend thread that
                     // owned the wait loop is gone). Idempotent for agents the

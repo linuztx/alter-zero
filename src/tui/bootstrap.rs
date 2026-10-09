@@ -896,12 +896,6 @@ impl<'t> Session<'t> {
         // Code's closest reason for an interactive quit is
         // `prompt_input_exit`.
         self.models.fire_session_end("prompt_input_exit");
-        // Hand the herdr pane back (docs/herdr.md): the release replaces any
-        // report not yet written, and the wait for it is bounded, so a wedged
-        // socket costs the quit a fraction of a second at most.
-        if let Some(herdr) = self.herdr.as_mut() {
-            herdr.release();
-        }
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
         // …and the tip walk's position, for a quit that drew a tip on its way
@@ -944,6 +938,13 @@ impl<'t> Session<'t> {
         // auth flow, so quitting can't orphan a server process.
         if let Some(mcp) = &self.mcp {
             mcp.shutdown();
+        }
+        // Hand the herdr pane back (docs/herdr.md) — last, once nothing of
+        // the session is left running: the release replaces any report not
+        // yet written, and the wait for it is bounded, so a wedged socket
+        // costs the quit a fraction of a second at most.
+        if let Some(herdr) = self.herdr.as_mut() {
+            herdr.release();
         }
         // The exit hint's handle (docs/cli.md): the active rollout's id, only when
         // this session holds a conversation — an empty session has no file and no
