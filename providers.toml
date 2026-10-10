@@ -4,6 +4,9 @@
 #   - `name` is required — the human-readable label.
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
+#   - `models` is optional — a **static** model list the picker and the startup
+#     probe use instead of querying anything. For a provider whose models are
+#     not on its listing (ClinePass's `cline-pass/…` slugs, docs/cline.md).
 #   - Everything under `kwargs` is passed through to the client as-is, so nested
 #     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
 #     chat-completions endpoint; other keys are forwarded in the request body.
@@ -266,4 +269,36 @@ description = "Sign in with your Cline account — the same models the Cline ext
 api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
 
 [providers.cline_account.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+
+# ClinePass — Cline's **subscription** plan ($9.99/month, 2-5x the usage on a
+# curated set of open coding models), reached with the *same account sign-in*
+# the row above uses: one stored refresh token configures both. What differs
+# is the model ids: the plan's models are addressed by their `cline-pass/…`
+# slugs, which the public `/models` listing does not carry — the plan's
+# catalog lives in Cline's own clients — so it is named here instead of
+# fetched (`models`, providers.toml's static list). Usage-billed models stay
+# under `cline_account` above; free models (`cline-free/…`) are deliberately
+# not here: Cline's docs say free-model usage is not supported through the API.
+[providers.cline_pass]
+name = "ClinePass"
+auth = "cline_account"
+description = "Cline's $9.99/month subscription: 2-5x usage on curated open coding models, on the same Cline account sign-in"
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
+models = [
+    "cline-pass/glm-5.3",
+    "cline-pass/glm-5.3-flash",
+    "cline-pass/kimi-k3",
+    "cline-pass/deepseek-v4-pro",
+    "cline-pass/deepseek-v4.1-flash",
+    "cline-pass/mimo-v2.5",
+    "cline-pass/mimo-v2.5-pro",
+    "cline-pass/minimax-m3",
+    "cline-pass/muse-spark-1.3-contributor",
+    "cline-pass/qwen3.8-max",
+    "cline-pass/qwen3.7-max",
+    "cline-pass/qwen3.7-plus",
+]
+
+[providers.cline_pass.kwargs]
 api_base = "https://api.cline.bot/api/v1"

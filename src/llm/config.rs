@@ -162,6 +162,14 @@ pub struct Provider {
     /// [`Kwargs::api_base`] when unset.
     #[serde(default)]
     pub api_model_base: Option<String>,
+    /// A **static** model list — the catalog the picker and the capability
+    /// probe use *instead of* fetching one. For a provider whose models are
+    /// not on its listing: ClinePass's `cline-pass/…` slugs are the plan's
+    /// own catalog, which the public `/models` does not carry
+    /// (`docs/cline.md`), so the file names them and no endpoint is asked.
+    /// Empty (the default) means fetch, the ordinary way.
+    #[serde(default)]
+    pub models: Vec<String>,
     /// Environment variable the API key is read from. Defaults to
     /// `<ID_UPPERCASE>_API_KEY` (see [`Provider::key_env`]).
     #[serde(default)]
@@ -338,6 +346,7 @@ impl ProvidersFile {
             model: sel.model.clone(),
             api_base,
             api_model_base,
+            static_models: provider.models.clone(),
             api_key: sel.api_key.clone(),
             auth: provider.auth,
             wire_api: provider.wire_api,
@@ -407,6 +416,9 @@ pub struct ModelConfig {
     pub api_base: String,
     /// Models-listing base (`{api_model_base}/models`).
     pub api_model_base: String,
+    /// The file's **static** model list, when it names one
+    /// ([`Provider::models`]) — the catalog the picker uses with no fetch.
+    pub static_models: Vec<String>,
     pub api_key: Option<String>,
     /// How [`api_key`](Self::api_key) authenticates the request — a bearer as
     /// stored, or (Copilot/ChatGPT) an OAuth token to exchange for one first.
@@ -440,6 +452,7 @@ impl ModelConfig {
             model: "gpt-4o-mini".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),
             api_model_base: "https://api.openai.com/v1".to_string(),
+            static_models: Vec::new(),
             api_key: None,
             auth: AuthScheme::ApiKey,
             wire_api: WireApi::Chat,
@@ -825,7 +838,77 @@ api_base = "https://api.cline.bot/api/v1"
         assert!(account.auth.is_subscription());
     }
 
+    #[test]
+    fn a_provider_can_name_its_models_statically() {
+        // The picker's ordinary catalog is fetched; a provider whose models
+        // are not on its listing names them in the file instead
+        // (`docs/cline.md`'s ClinePass). The list rides the resolved config
+        // out to the picker and the probe, which then ask nothing.
+        let text = r#"
+[providers.cline_pass]
+name = "ClinePass"
+auth = "cline_account"
+models = ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]
+[providers.cline_pass.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let pass = file.get("cline_pass").unwrap();
+        assert_eq!(pass.models, ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]);
+        let cfg = file
+            .model_config(&Selection {
+                provider_id: "cline_pass".to_string(),
+                model: "cline-pass/glm-5.3".to_string(),
+                ..Selection::default()
+            })
+            .unwrap();
+        assert_eq!(cfg.static_models, pass.models);
+        // A provider that names none keeps the fetch path — the ordinary
+        // shape, pinned next door (`cline`, whose catalog is the endpoint's).
+        assert!(
+            ProvidersFile::builtin()
+                .get("cline")
+                .unwrap()
+                .models
+                .is_empty()
+        );
+    }
 
+    #[test]
+    fn the_builtin_file_ships_cline_pass_with_its_own_catalog() {
+        // ClinePass is the same account sign-in as `cline_account` with a
+        // different catalog: the plan's `cline-pass/…` slugs, which the
+        // public `/models` does not carry, so the file names them
+        // (`docs/cline.md`). One stored token configures both rows.
+        let file = ProvidersFile::builtin();
+        let pass = file.get("cline_pass").expect("shipped");
+        assert_eq!(pass.name, "ClinePass");
+        assert_eq!(pass.auth, AuthScheme::ClineAccount);
+        assert_eq!(pass.key_env("cline_pass"), "CLINE_ACCOUNT_REFRESH_TOKEN");
+        assert!(pass.description.is_some(), "a sign-in row needs one");
+        assert_eq!(pass.kwargs.api_base, "https://api.cline.bot/api/v1");
+        assert!(!pass.models.is_empty());
+        assert!(pass.models.iter().all(|m| m.starts_with("cline-pass/")));
+        // The docs' catalog at the time of writing, pinned by sample: a slug
+        // Cline retires is a line deleted here, and one it adds is a line
+        // added — the picker needs no code for either.
+        for slug in [
+            "cline-pass/glm-5.3",
+            "cline-pass/deepseek-v4.1-flash",
+            "cline-pass/kimi-k3",
+            "cline-pass/qwen3.7-max",
+        ] {
+            assert!(pass.models.iter().any(|m| m == slug), "{slug} missing");
+        }
+        // The usage-billed row next door stays as it was, and the two share
+        // the credential — that is the point of the pair.
+        let account = file.get("cline_account").expect("shipped");
+        assert_eq!(
+            account.key_env("cline_account"),
+            pass.key_env("cline_pass"),
+            "one sign-in configures both rows"
+        );
+    }
 
     #[test]
     fn every_shipped_key_provider_describes_itself_and_names_its_key_page() {
@@ -1106,14 +1189,29 @@ api_base = "http://127.0.0.1:11434"
         // to Ollama Cloud used to light the local Ollama row and send every
         // `/model` open to a server most users don't run. The collision is a
         // property of the shipped file, so it is pinned here.
+        //
+        // One pair is **deliberately** exempt: `cline_account` and
+        // `cline_pass` are one Cline account's two catalogs — usage-billed and
+        // the ClinePass subscription — reached through one sign-in, so one
+        // stored refresh token is exactly right and is what makes signing in
+        // once light both rows (`docs/cline.md`). Any pair *not* in this list
+        // sharing a variable would still let one provider's key configure
+        // another's.
+        const SHARED_BY_DESIGN: [&str; 2] = ["cline_account", "cline_pass"];
         let file = ProvidersFile::builtin();
         let mut owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
         for id in file.ids() {
             let var = file.get(&id).expect("listed").key_env(&id);
             if let Some(first) = owner.insert(var.clone(), id.clone()) {
-                panic!("{first} and {id} both read {var}");
+                let by_design = SHARED_BY_DESIGN.contains(&first.as_str())
+                    && SHARED_BY_DESIGN.contains(&id.as_str());
+                assert!(by_design, "{first} and {id} both read {var}");
             }
+        }
+        // And the exemption is not stale: both ids really ship.
+        for id in SHARED_BY_DESIGN {
+            assert!(file.get(id).is_some(), "{id} is exempt but not shipped");
         }
     }
 
