@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A command with a spinner no longer makes its cell jump.** Waiting on a
+  command that draws a loading animation, such as `npm install`'s `⠋`, the
+  running `Bash`/`BashWait` cell kept flipping between `Running… (41s · wait
+  2m)` and the spinner about once a second, shifting everything below it
+  each time. The cell dropped the spinner whenever it came back round to the
+  frame the agent had last been shown, and could also catch a frame half
+  drawn, between the spinner erasing its line and drawing the next one. The
+  spinner now stays in the cell for the whole wait, and the cell shows a
+  frame only once it is drawn in full (`docs/tool-streaming.md`).
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

@@ -762,9 +762,27 @@ once.
 For a session the split comes from the transcript (`Transcript::take_stream`):
 lines within the screen's height of the end (`ROWS`, 40) can still be
 redrawn — pacman moves up to redraw a bar — so they stream as `live`; a line
-that scrolled out of reach is final and streams once as `settled`. Only what
-the next look would report is streamed, so a cell never shows a line its
-report will not carry. The wait sends at most every `STREAM_INTERVAL` (50 ms),
+that scrolled out of reach is final and streams once as `settled`. What the
+next look would report is streamed — a line new or changed since the model's
+last look — and a line the stream has carried since that look **stays** in
+it, as it stands, until the next one (`Row::stream_text`, stamped with the
+look it was carried under, `Lines::looks`): npm's spinner comes back round to
+the glyph the previous report handed the model once every lap, and a stream
+that dropped it there flipped the cell back to `Running…` about once a second.
+So a cell never shows a line its report would not have carried at some
+moment of the wait; a look still compares against what the model was handed
+— only the stream keeps the line in view.
+
+The wait takes the stream at most every `STREAM_INTERVAL` (50 ms), and then
+only once the terminal has been quiet for `STREAM_SETTLE` (10 ms) — or after
+`STREAM_MAX_HOLD` (100 ms), for output that never pauses (`StreamPace`). A
+program draws one frame in several writes — npm erases its spinner's line
+(`ESC[1G`, `ESC[0K`) and only then writes the glyph — and the monitor can
+absorb them as separate chunks; the waiting call wakes on every chunk, so a
+stream taken right after one caught the frame half drawn, the line blank. A
+terminal emulator waits for the same pause before it paints, and the wait
+sleeps no longer than until the stream comes due (`StreamPace::next_due`), so
+a settled frame still reaches the cell within a few milliseconds. It sends
 only when something changed, `settled` capped at `STREAM_MAX_BYTES` (64 KB) a
 send, and once more as it settles, so the cell ends where the report begins.
 The cell's four-row window ends at the lowest live row **still moving**
@@ -783,7 +801,7 @@ vanishes. Unlike the transcript it is built for data the model may copy back:
 a tab stays a tab, trailing spaces stay, and a line is kept whole up to the
 output cap rather than a terminal's width. A plain `bash` call streams its
 ended lines as `settled` and the line still being drawn as `live`, paced like
-a session (`PipeOutput`, `PIPE_STREAM_INTERVAL`); its result is the folded
+a session (`PipeOutput`, the same `StreamPace`); its result is the folded
 text. A background shell's event stream — the ↓ manager's view and the
 completion note the model reads — is folded by its monitor, while its
 `.output` file keeps every byte as written; a Ctrl+B handoff replays what the

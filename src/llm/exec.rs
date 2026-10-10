@@ -447,7 +447,7 @@ fn run_piped(
             // Wait briefly for the next chunk (so we tail promptly) or wake to
             // re-poll the cancel/timeout above; `Disconnected` (both readers done
             // before the child is reaped) just paces the re-poll.
-            Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL) {
+            Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL.min(output.next_due())) {
                 Ok(chunk) => output.absorb(&chunk, on_output),
                 // A quiet moment still delivers what the pacing held back.
                 Err(mpsc::RecvTimeoutError::Timeout) => output.stream(on_output, false),
@@ -1070,21 +1070,19 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
     }
 }
 
-/// How often a plain command's running cell is sent its output while it
-/// flows — every line still arrives, batched; a burst of progress frames
-/// costs one redraw per interval, not one per frame.
-const PIPE_STREAM_INTERVAL: Duration = Duration::from_millis(50);
-
 /// A plain command's output as it arrives (`docs/interactive-shell.md`):
 /// folded the way a terminal would show it ([`Fold`] — a `\r`-redrawn
 /// progress bar is one line in its final state, colour escapes gone), each
 /// line kept once it ends — both ends of the output past the cap, the cut
 /// marked ([`HeadTail`], `docs/bash-tools.md`) — and streamed to the running
 /// cell as [`ToolProgress::Screen`]: the ended lines appended, the line still
-/// being drawn redrawn in place.
+/// being drawn redrawn in place, paced like a session's stream
+/// ([`StreamPace`] — every line still arrives, batched, and a frame is sent
+/// once it is whole).
 ///
 /// [`Fold`]: crate::pty::fold::Fold
 /// [`HeadTail`]: crate::pty::fold::HeadTail
+/// [`StreamPace`]: crate::pty::session::StreamPace
 struct PipeOutput {
     fold: crate::pty::fold::Fold,
     /// What the model reads: the ended lines, both ends kept.
@@ -1096,8 +1094,10 @@ struct PipeOutput {
     streamed: usize,
     /// The line in progress as the running cell last showed it.
     shown: String,
-    /// When the running cell was last sent anything.
-    sent: Option<Instant>,
+    /// When the running cell is sent what changed.
+    pace: crate::pty::session::StreamPace,
+    /// When output last arrived — what the pace waits to settle.
+    output_at: Option<Instant>,
     /// The bytes as they were read, within `cap` — what a Ctrl+B handoff
     /// replays, so the background shell folds the whole stream itself.
     raw: Vec<u8>,
@@ -1112,7 +1112,8 @@ impl PipeOutput {
             pending: String::new(),
             streamed: 0,
             shown: String::new(),
-            sent: None,
+            pace: crate::pty::session::StreamPace::new(Instant::now()),
+            output_at: None,
             raw: Vec::new(),
             cap,
         }
@@ -1125,6 +1126,7 @@ impl PipeOutput {
         self.fold.feed(chunk);
         let lines = self.fold.take_settled();
         self.keep(&lines);
+        self.output_at = Some(Instant::now());
         self.stream(on_output, false);
     }
 
@@ -1137,14 +1139,10 @@ impl PipeOutput {
         self.pending.push_str(&lines[..take]);
     }
 
-    /// Send the running cell what changed since the last send — unless one
-    /// went out within [`PIPE_STREAM_INTERVAL`] and this is not the `last`.
+    /// Send the running cell what changed since the last send — when the
+    /// pace says it is due, or this is the `last`.
     fn stream(&mut self, on_output: &mut dyn FnMut(ToolProgress<'_>), last: bool) {
-        if !last
-            && self
-                .sent
-                .is_some_and(|sent| sent.elapsed() < PIPE_STREAM_INTERVAL)
-        {
+        if !last && !self.pace.due(Instant::now(), self.output_at) {
             return;
         }
         let live = self.fold.current();
@@ -1158,7 +1156,12 @@ impl PipeOutput {
         self.streamed += self.pending.len();
         self.pending.clear();
         self.shown = live;
-        self.sent = Some(Instant::now());
+    }
+
+    /// How long until the running cell is due what changed, should no more
+    /// output arrive — the most the runner waits for the next chunk.
+    fn next_due(&self) -> Duration {
+        self.pace.next_due(Instant::now(), self.output_at)
     }
 
     /// What a Ctrl+B handoff replays: the output as it was read.
@@ -1470,6 +1473,36 @@ mod tests {
             "one row per bar: {:?}",
             cell.frames
         );
+    }
+
+    #[test]
+    fn a_plain_commands_frame_drawn_in_several_writes_streams_whole() {
+        // A plain command's running cell is paced like a session's
+        // (`pty::session::StreamPace`): a frame whose erase and glyph are
+        // read apart is never sent half drawn — the line blank, the cell
+        // back on `Running…` (docs/interactive-shell.md).
+        let mut output = PipeOutput::new(1 << 20);
+        let mut lives: Vec<String> = Vec::new();
+        let mut sink = |progress: ToolProgress<'_>| {
+            if let ToolProgress::Screen { live, .. } = progress {
+                lives.push(live.to_string());
+            }
+        };
+        // The runner's polls while the pipe is quiet (`BASH_POLL_INTERVAL`).
+        let quiet = |output: &mut PipeOutput, sink: &mut dyn FnMut(ToolProgress<'_>)| {
+            for _ in 0..6 {
+                std::thread::sleep(BASH_POLL_INTERVAL.min(output.next_due()));
+                output.stream(sink, false);
+            }
+        };
+        output.absorb("⠋".as_bytes(), &mut sink);
+        quiet(&mut output, &mut sink);
+        for frame in ["⠙", "⠹"] {
+            output.absorb(b"\x1b[1G\x1b[0K", &mut sink);
+            output.absorb(frame.as_bytes(), &mut sink);
+            quiet(&mut output, &mut sink);
+        }
+        assert_eq!(lives, ["⠋", "⠙", "⠹"]);
     }
 
     #[test]

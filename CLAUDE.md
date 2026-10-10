@@ -1476,8 +1476,16 @@ kernel-observed reads still count
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
-the screen's reach stay live, rows that scrolled out settle once), and a
-`bash` call on a pipe — and a background shell's event stream, and a `!`
+the screen's reach stay live, rows that scrolled out settle once, and a row
+the stream has carried since the model's last look stays in it until the
+next — a spinner coming back round to the glyph the last report showed must
+not drop out of the cell, `Row::stream_text`), taken at `StreamPace` — at
+most every 50 ms and only once the output has paused 10 ms (100 ms at most
+for output that never pauses), since npm draws a frame as an erase and then
+the glyph in separate writes and a stream taken between them showed the
+line blank, flipping the cell back to `Running…` (`docs/tool-streaming.md`
+*A spinner keeps the cell's shape*), and a `bash` call on a pipe — paced
+the same way — and a background shell's event stream, and a `!`
 command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
 overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
 file stays raw); a companion's header names the session's command from

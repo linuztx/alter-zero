@@ -87,7 +87,9 @@ command can't deadlock a full pipe); each reader sends raw byte chunks over an
 terminal shows it — `\r` and backspace overwrite, colour escapes vanish, tabs
 and trailing spaces stay — keeping each line once it ends, within the output
 cap. It streams the ended lines as `settled` and the line still being drawn as
-`live`, at most every `PIPE_STREAM_INTERVAL` (50 ms, and once more at the
+`live` at a session's pace (`pty::session::StreamPace`: at most every 50 ms,
+once the output has paused for 10 ms so a frame drawn in several writes is
+sent whole, at least every 100 ms while it never pauses, and once more at the
 end), so a burst of progress frames costs one redraw per interval. The parser
 carries a UTF-8 character or an escape split across chunks to the next one,
 so the tail never shows a stray replacement glyph. `read`/`write`/`edit`
@@ -337,6 +339,44 @@ subagent session view takes the same shape: `AgentRun` keeps its own
 `ToolStart` the same way (`docs/agent-view-streaming.md`), and the one
 `live_call_lines` renderer serves both strips, so a subagent's `pacman`
 reads like the main turn's.
+
+### A spinner keeps the cell's shape
+
+An `npm install` left running in a session flipped its cell between two
+shapes about once a second, moving everything below it each time — the
+reported "the `⠋` loading animation hides and comes back":
+
+```
+● BashWait(npm install)                   ● BashWait(npm install)
+  ⎿  Running… (41s · wait 2m)               ⎿  ⠋
+     (ctrl+b to stop waiting)                  (41s · wait 2m)
+                                               (ctrl+b to stop waiting)
+```
+
+The cell drew what it was streamed faithfully; the stream was wrong, two ways
+(both fixed at the source, `docs/interactive-shell.md` *Streaming the running
+cell*):
+
+- **A spinner's lap.** A session streams only what the model's next look
+  would carry, and a look skips a line that reads as it did at the model's
+  previous look. npm's spinner cycles ten glyphs, 80 ms each, so once every
+  800 ms it read exactly the glyph the previous call's report had handed the
+  model, dropped out of the stream, and — the only line printed since — left
+  the cell on `Running…`. A line the stream has carried since the look now
+  stays in it, as it stands, until the next look (`Row::stream_text`).
+- **A frame caught half drawn.** npm draws every frame in three writes —
+  `ESC[1G`, `ESC[0K`, then the glyph — that can reach the monitor as
+  separate chunks, and the waiting call woke on each chunk, so a stream taken
+  between the erase and the glyph showed the line blank. The stream is now
+  taken once the output has paused for 10 ms (`StreamPace`, shared with the
+  pipe path above), the pause a terminal emulator waits for before it paints.
+
+Measured against a copy of npm 10's spinner in a real terminal, a `bashwait`
+on it collapsed three times in three seconds before, and never after.
+`smoke.sh` Phase 135 drives the same spinner through the real binary — a
+`bash` launch, then a `bashwait` on its session — sampling the pane as fast as
+tmux answers, and fails on any frame of either cell that falls back to
+`Running…` once the spinner has shown.
 
 ### The `Exit code: N` frame, reframed for display
 

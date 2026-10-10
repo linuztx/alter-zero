@@ -42,10 +42,26 @@ const WAIT_POLL: Duration = Duration::from_millis(20);
 /// changes it again in a later one.
 const BURST_SPAN: Duration = Duration::from_millis(100);
 
-/// How often a waiting call streams the session to its running cell, at
-/// most — a redrawn progress bar reaches the screen at a steady pace instead
-/// of once per write (`docs/interactive-shell.md`).
+/// How often a running cell is sent its stream, at most — a waiting call's
+/// session and a plain command's pipe alike ([`StreamPace`]): a redrawn
+/// progress bar reaches the screen at a steady pace instead of once per
+/// write (`docs/interactive-shell.md`).
 const STREAM_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long the output must have been quiet before a running cell's stream
+/// is taken ([`StreamPace::due`]). A program draws one frame in several
+/// writes — npm's spinner moves to the line's start, erases it, and only
+/// then writes the glyph — which can arrive as separate chunks, and a
+/// stream taken between two of them shows the frame half drawn: the line
+/// blank, the running cell back on `Running…` for a frame. A terminal
+/// emulator waits for the same pause before it paints. Well under any
+/// spinner's frame (the quickest in common use are 17 ms apart).
+const STREAM_SETTLE: Duration = Duration::from_millis(10);
+
+/// The longest a running cell's stream is held for the output to settle
+/// ([`STREAM_SETTLE`]): output that never pauses that long — a flood of log
+/// lines — still reaches the cell at this pace.
+const STREAM_MAX_HOLD: Duration = Duration::from_millis(100);
 
 /// How long a terminal a call waits on must be quiet — no output, no input —
 /// before the monitor probes what its program is blocked in
@@ -749,12 +765,15 @@ impl SessionIo {
         handoff: &dyn Fn() -> bool,
         stream: &mut dyn FnMut(&str, &str),
     ) -> WaitEnd {
-        let mut streamer = Streamer::default();
+        let mut streamer = Streamer::new(Instant::now());
         loop {
             let (update, seen) = {
                 let mut state = self.lock();
                 let now = Instant::now();
-                let update = streamer.due(now).then(|| state.transcript.take_stream());
+                let update = streamer
+                    .pace
+                    .due(now, state.last_output)
+                    .then(|| state.transcript.take_stream());
                 let output = state.printed_since(kind, since);
                 let last = if output {
                     state.last_output.unwrap_or(since.at)
@@ -800,12 +819,14 @@ impl SessionIo {
                 return WaitEnd::Handoff;
             }
             // Sleep only when there is nothing to act on — no exit that
-            // landed after the observation above.
+            // landed after the observation above — and no longer than until
+            // the stream comes due, so a frame is shown once it is whole.
             let state = self.lock();
             if seen.exited || !state.finished {
+                let poll = WAIT_POLL.min(streamer.pace.next_due(Instant::now(), state.last_output));
                 let _ = self
                     .changed
-                    .wait_timeout(state, WAIT_POLL)
+                    .wait_timeout(state, poll)
                     .unwrap_or_else(PoisonError::into_inner);
             }
         }
@@ -887,12 +908,56 @@ impl SessionIo {
     }
 }
 
-/// A waiting call's stream to its running cell ([`SessionIo::wait`]): paced
-/// at [`STREAM_INTERVAL`], sent only when something changed, the settled
-/// text capped at [`STREAM_MAX_BYTES`].
-#[derive(Default)]
-struct Streamer {
+/// When a running cell is sent its stream — a waiting call's
+/// ([`SessionIo::wait`]) and a plain command's on a pipe (`llm::exec`) alike:
+/// never within [`STREAM_INTERVAL`] of the last time, and then once the
+/// output has been quiet for [`STREAM_SETTLE`], so a frame drawn in several
+/// writes is taken whole — or, for output that never pauses, once
+/// [`STREAM_MAX_HOLD`] has gone by. Pure: the clock is passed in.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamPace {
+    /// When the stream was last taken — `None` before the first time.
     last: Option<Instant>,
+    /// When the command's output began to be watched: what the first take's
+    /// hold counts from.
+    began: Instant,
+}
+
+impl StreamPace {
+    #[must_use]
+    pub(crate) const fn new(began: Instant) -> Self {
+        Self { last: None, began }
+    }
+
+    /// Is the stream due at `now`, the output having last arrived at
+    /// `output` (`None`: nothing yet)? Starts the next interval if so —
+    /// whether or not what is taken turns out to have changed.
+    pub(crate) fn due(&mut self, now: Instant, output: Option<Instant>) -> bool {
+        let due = self.next_due(now, output).is_zero();
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+
+    /// How long from `now` until [`due`](Self::due) says yes, should no
+    /// more output arrive — zero when it does now. What a waiting loop
+    /// sleeps at most, so a frame reaches the cell as soon as the output
+    /// settles rather than at the loop's next poll.
+    #[must_use]
+    pub(crate) fn next_due(&self, now: Instant, output: Option<Instant>) -> Duration {
+        let paced = self.last.map_or(now, |last| last + STREAM_INTERVAL);
+        let settled = output.map_or(now, |at| at + STREAM_SETTLE);
+        let held = self.last.unwrap_or(self.began) + STREAM_MAX_HOLD;
+        paced.max(settled.min(held)).saturating_duration_since(now)
+    }
+}
+
+/// A waiting call's stream to its running cell ([`SessionIo::wait`]): taken
+/// at the [`StreamPace`], sent only when something changed, the settled text
+/// capped at [`STREAM_MAX_BYTES`].
+struct Streamer {
+    pace: StreamPace,
     /// The live rows sent last.
     shown: String,
     /// Settled bytes sent so far.
@@ -900,15 +965,12 @@ struct Streamer {
 }
 
 impl Streamer {
-    /// Is a stream update due at `now`? Starts the next interval if so.
-    fn due(&mut self, now: Instant) -> bool {
-        let due = self
-            .last
-            .is_none_or(|last| now.saturating_duration_since(last) >= STREAM_INTERVAL);
-        if due {
-            self.last = Some(now);
+    fn new(began: Instant) -> Self {
+        Self {
+            pace: StreamPace::new(began),
+            shown: String::new(),
+            settled: 0,
         }
-        due
     }
 
     /// Hand `update` to `stream` — unless it changes nothing on screen.
@@ -1720,6 +1782,90 @@ mod tests {
             ),
             format!("Running (session s1, waiting for input)\n{view}")
         );
+    }
+
+    #[test]
+    fn the_stream_is_taken_once_the_terminal_settles() {
+        let t0 = Instant::now();
+        let mut pace = StreamPace::new(t0);
+        // Output this instant: the frame may be half drawn.
+        assert!(!pace.due(t0, Some(t0)));
+        assert_eq!(pace.next_due(t0, Some(t0)), STREAM_SETTLE);
+        // Quiet that long: whole.
+        assert!(pace.due(t0 + STREAM_SETTLE, Some(t0)));
+        // Paced: never sooner than the interval after the last, however
+        // quiet the terminal.
+        let soon = t0 + STREAM_SETTLE + STREAM_INTERVAL / 2;
+        assert!(!pace.due(soon, Some(t0)));
+        assert_eq!(pace.next_due(soon, Some(t0)), STREAM_INTERVAL / 2);
+        assert!(pace.due(t0 + STREAM_SETTLE + STREAM_INTERVAL, Some(t0)));
+        // Output that never pauses is still streamed, at the hold's pace.
+        let mut flood = StreamPace::new(t0);
+        let step = Duration::from_millis(2);
+        let mut now = t0;
+        while now + step < t0 + STREAM_MAX_HOLD {
+            assert!(!flood.due(now, Some(now)), "{:?} in", now - t0);
+            now += step;
+        }
+        assert_eq!(
+            flood.next_due(now, Some(now)),
+            t0 + STREAM_MAX_HOLD - now,
+            "the hold's end, sooner than the settle"
+        );
+        assert!(flood.due(t0 + STREAM_MAX_HOLD, Some(t0 + STREAM_MAX_HOLD)));
+        // A terminal that printed nothing has nothing to wait for.
+        assert!(StreamPace::new(t0).due(t0, None));
+    }
+
+    #[test]
+    fn a_frame_drawn_in_several_writes_streams_whole() {
+        // npm draws each spinner frame in three writes — `ESC[1G`, `ESC[0K`,
+        // then the glyph — which the monitor can absorb as separate chunks.
+        // A stream taken between the erase and the glyph showed the line
+        // blank, and the running cell fell back to `Running…` for that
+        // frame: the TUI's flicker (docs/interactive-shell.md *Streaming the
+        // running cell*).
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let feeder = {
+            let (io, done) = (Arc::clone(&io), Arc::clone(&done));
+            std::thread::spawn(move || {
+                // A real spinner's frames land with jitter, never in step
+                // with the waiting call's own polls.
+                let frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼";
+                let gaps = [53, 67, 71, 59, 61, 73, 57, 69, 63, 51, 77, 55, 65, 79, 58];
+                for (frame, gap) in frames.chars().zip(gaps) {
+                    std::thread::sleep(Duration::from_millis(gap));
+                    io.absorb(b"\x1b[1G\x1b[0K");
+                    std::thread::sleep(Duration::from_millis(1));
+                    io.absorb(frame.to_string().as_bytes());
+                }
+                // Long enough for the last frame to be streamed.
+                std::thread::sleep(Duration::from_millis(150));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let mut lives: Vec<String> = Vec::new();
+        let end = io.wait(
+            WaitKind::Wait,
+            since,
+            LONG,
+            &|| done.load(std::sync::atomic::Ordering::SeqCst),
+            &never,
+            &mut |_, live| lives.push(live.to_string()),
+        );
+        feeder.join().unwrap();
+        assert_eq!(end, WaitEnd::Cancelled);
+        let first = lives
+            .iter()
+            .position(|live| !live.is_empty())
+            .expect("the spinner reached the cell");
+        assert!(
+            lives[first..].iter().all(|live| !live.is_empty()),
+            "a half-drawn frame was streamed: {lives:?}"
+        );
+        assert_eq!(lives.last().map(String::as_str), Some("⠼"), "{lives:?}");
     }
 
     #[test]

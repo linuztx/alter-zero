@@ -132,6 +132,9 @@ impl Transcript {
         // changed — the session has shown the screen for that stretch.
         lines.addressed = false;
         lines.edited = false;
+        // And the stream starts over: what it carries next is news to this
+        // look, not to the previous one.
+        lines.looks += 1;
         if !lines.dirty && lines.omitted == 0 {
             return Update::default();
         }
@@ -207,16 +210,20 @@ impl Transcript {
     /// the module docs): the lines that look would carry, split at the
     /// screen's reach — `settled` the ones that scrolled out of it since the
     /// previous call, final and never streamed again, and `live` the ones
-    /// still in reach, as they stand now. Taking it changes nothing the look
-    /// will say.
+    /// still in reach, as they stand now. A line the stream has carried
+    /// since the look stays in it, as it stands, even drawn back to what
+    /// that look handed the model — a spinner's lap — so a line never drops
+    /// out of the running cell's view mid-wait. Taking it changes nothing
+    /// the look will say.
     pub fn take_stream(&mut self) -> Stream {
         let lines = &mut self.lines;
         let end = lines.first + lines.rows.len();
         let top = lines.reach_top();
+        let look = lines.looks;
         let mut settled = String::new();
         let from = lines.stream_from.max(lines.look).max(lines.first);
         for index in from..top {
-            let Some(text) = lines.rows[index - lines.first].pending_text() else {
+            let Some(text) = lines.rows[index - lines.first].stream_text(look) else {
                 continue;
             };
             if !lines.stream_started && text.is_empty() {
@@ -227,8 +234,11 @@ impl Transcript {
             settled.push('\n');
         }
         lines.stream_from = lines.stream_from.max(top);
-        let mut live: Vec<String> = (top.max(lines.first)..end)
-            .filter_map(|index| lines.rows[index - lines.first].pending_text())
+        let first = lines.first;
+        let mut live: Vec<String> = lines
+            .rows
+            .range_mut(top.max(first) - first..end - first)
+            .filter_map(|row| row.stream_text(look))
             .collect();
         if !lines.stream_started {
             let blank = live.iter().take_while(|text| text.is_empty()).count();
@@ -519,6 +529,10 @@ struct Row {
     /// The text the model was last handed for this line, hashed — `None`
     /// until a look delivers it.
     delivered: Option<u64>,
+    /// The look ([`Lines::looks`]) since which the stream has carried it —
+    /// a line in the running cell's view stays there until the next look
+    /// ([`Row::stream_text`]).
+    streamed: Option<u64>,
     /// The burst that last edited it, so its text from before that burst is
     /// kept once.
     edited_in: Option<u64>,
@@ -550,6 +564,21 @@ impl Row {
         }
         let text = self.text();
         (self.delivered != Some(hash_of(&text))).then_some(text)
+    }
+
+    /// Its text if the stream carries it ([`Transcript::take_stream`]): news
+    /// for the next look ([`pending_text`](Self::pending_text)), or a line
+    /// the stream has carried since look `look` whatever it reads now —
+    /// marking it carried. A spinner comes back round to the frame the
+    /// model was handed once a lap; dropped there, it left the running cell
+    /// on every lap and the cell's shape flipped with it
+    /// (`docs/interactive-shell.md` *Streaming the running cell*).
+    fn stream_text(&mut self, look: u64) -> Option<String> {
+        let text = self
+            .pending_text()
+            .or_else(|| (self.streamed == Some(look)).then(|| self.text()))?;
+        self.streamed = Some(look);
+        Some(text)
     }
 }
 
@@ -583,6 +612,10 @@ struct Lines {
     /// been handed — the cursor's row at the last look, or the first row
     /// touched since, if that is earlier.
     look: usize,
+    /// How many looks the model has taken — what a row the stream carried
+    /// is stamped with ([`Row::streamed`]), so a look forgets every stamp
+    /// at once.
+    looks: u64,
     /// The stream's cursor: the first row not yet taken.
     commit: usize,
     /// Did any content change since the model's last look?
@@ -1468,6 +1501,52 @@ mod tests {
             (String::new(), " extra     100%".to_string())
         );
         assert_eq!(t.take_update().text, " extra     100%");
+    }
+
+    #[test]
+    fn a_line_the_stream_showed_stays_live_when_drawn_back_to_what_the_look_saw() {
+        // npm's spinner (`ESC[1G ESC[0K` then the glyph, every 80 ms): the
+        // look handed the model one frame, and while the next call waits the
+        // glyph comes round to that frame once a lap. Dropping the line from
+        // the stream there — the look would not carry an unchanged line —
+        // flipped the running cell back to `Running…` once a lap.
+        let mut t = fed("\x1b[1G\x1b[0K⠋".as_bytes());
+        let _ = t.take_update();
+        for frame in ["⠙", "⠹", "⠋", "⠙", "⠋"] {
+            t.feed(format!("\x1b[1G\x1b[0K{frame}").as_bytes());
+            assert_eq!(
+                stream(&mut t),
+                (String::new(), frame.to_string()),
+                "frame {frame}"
+            );
+        }
+        // The model's look is unchanged by it: the line stands where it was
+        // last handed over, so it is no news.
+        assert_eq!(t.take_update().text, "");
+        // And a look starts the count again: a line is shown once it changes
+        // from what this look delivered, and kept from then on.
+        t.feed("\x1b[1G\x1b[0K⠋".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), String::new()));
+        t.feed("\x1b[1G\x1b[0K⠙".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), "⠙".to_string()));
+        t.feed("\x1b[1G\x1b[0K⠋".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), "⠋".to_string()));
+    }
+
+    #[test]
+    fn a_shown_line_scrolled_out_of_reach_settles_even_as_the_look_saw_it() {
+        // The cell never loses a row it showed: one drawn back to the text
+        // the look delivered and then pushed out of reach settles like any
+        // other, rather than vanishing from the cell.
+        let mut t = Transcript::with_reach(2);
+        t.feed("\x1b[1G\x1b[0K⠋".as_bytes());
+        let _ = t.take_update();
+        t.feed("\x1b[1G\x1b[0K⠙".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), "⠙".to_string()));
+        t.feed("\x1b[1G\x1b[0K⠋".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), "⠋".to_string()));
+        t.feed(b"\r\nb\r\nc");
+        assert_eq!(stream(&mut t), ("⠋\n".to_string(), "b\nc".to_string()));
     }
 
     #[test]
