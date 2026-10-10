@@ -301,9 +301,11 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
         AuthScheme::ChatGptCodex => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
         // A browser page with a link and a wait (`docs/claude.md`).
         AuthScheme::AnthropicConsole => vec![SigninKind::BrowserLink],
-        AuthScheme::GithubCopilot | AuthScheme::ApiKey | AuthScheme::OptionalKey => {
-            vec![SigninKind::DeviceCode]
-        }
+        // One flow each, a device code: GitHub's own for Copilot, and Cline's
+        // WorkOS one, which is also the way its extension and CLI sign in
+        // (`docs/cline.md`).
+        AuthScheme::GithubCopilot | AuthScheme::ClineAccount => vec![SigninKind::DeviceCode],
+        AuthScheme::ApiKey | AuthScheme::OptionalKey => vec![SigninKind::DeviceCode],
     }
 }
 
@@ -888,6 +890,29 @@ pub(crate) fn openai_issuer() -> Option<String> {
         .ok()
         .map(|url| url.trim().to_string())
         .filter(|url| !url.is_empty())
+}
+
+/// Where Cline's sign-in talks to WorkOS: `ALTER_ZERO_CLINE_AUTH_BASE` when
+/// set and non-empty (Phase 136's local stub, or a fork's own), else `None` —
+/// `https://api.workos.com` stands (`docs/cline.md`).
+pub(crate) fn cline_auth_base() -> Option<String> {
+    nonempty_env(alter_zero::llm::cline::AUTH_BASE_ENV)
+}
+
+/// Where Cline's register/refresh calls go: `ALTER_ZERO_CLINE_API_BASE` when
+/// set and non-empty (Phase 136's stub again), else `None` —
+/// `https://api.cline.bot` stands.
+pub(crate) fn cline_api_base() -> Option<String> {
+    nonempty_env(alter_zero::llm::cline::API_BASE_ENV)
+}
+
+/// A trimmed, non-empty environment value, or `None` — the shape every
+/// override reader in this module keeps.
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Where the daily ping goes: `ALTER_ZERO_TELEMETRY_URL` when set and

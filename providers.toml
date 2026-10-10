@@ -20,7 +20,8 @@
 #     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`), or `optional_key` for a server that needs none.
+#     `anthropic_console`, `cline_account`), or `optional_key` for a server
+#     that needs none.
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
 #     docs/ollama.md).
@@ -249,4 +250,20 @@ description = "The models behind the Cline extension and CLI — Anthropic, Open
 api_key_url = "https://app.cline.bot"
 
 [providers.cline.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+
+# The **same API** reached with a Cline **account sign-in** instead of a pasted
+# key — `/login` runs Cline's own device-code flow (WorkOS, the way its
+# extension and CLI sign in, docs/cline.md). What `api_key_env` stores is the
+# long-lived **Cline refresh token** the sign-in registers; every request
+# mints a short-lived access token from it, sent as `Bearer workos:<jwt>`, so
+# nothing here is sent verbatim. Two rows, two ways in — exactly how
+# `anthropic` and `anthropic_console` pair up.
+[providers.cline_account]
+name = "Cline Account"
+auth = "cline_account"
+description = "Sign in with your Cline account — the same models the Cline extension and CLI reach, behind one account"
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
+
+[providers.cline_account.kwargs]
 api_base = "https://api.cline.bot/api/v1"

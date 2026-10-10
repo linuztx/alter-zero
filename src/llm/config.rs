@@ -51,6 +51,20 @@ pub enum AuthScheme {
     /// [`Self::ApiKey`]: a sign-in provider that looks configured and asks
     /// for a pasted key instead.
     AnthropicConsole,
+    /// A **Cline account**: `/login` runs Cline's own device-code sign-in
+    /// (WorkOS, the flow its extension and CLI use) and stores the resulting
+    /// refresh token, which each request mints a short-lived access token
+    /// from — sent as `Bearer workos:<jwt>`. See `docs/cline.md`.
+    ///
+    /// A separate provider from the pasted-key `cline` next door
+    /// (providers.toml), exactly as `anthropic_console` is separate from
+    /// `anthropic`: one row per way in, and the credential in the store is a
+    /// different kind of value.
+    ///
+    /// `rename_all = "snake_case"` spells this `cline_account`, which is the
+    /// value the provider file uses. A test pins it for the same silent
+    /// degradation reason [`Self::AnthropicConsole`]'s does.
+    ClineAccount,
     /// A key that is **accepted but not required**: Ollama's local server
     /// takes no credential at all, while a hosted one (or a proxy in front
     /// of one) takes an ordinary bearer — so a stored key rides as
@@ -790,6 +804,28 @@ api_base = "https://api.anthropic.com/v1"
         assert_eq!(console.auth, AuthScheme::AnthropicConsole);
         assert!(console.auth.is_subscription());
     }
+
+    #[test]
+    fn a_provider_can_declare_the_cline_account_sign_in() {
+        // The fourth sign-in: the stored secret is a Cline refresh token, and
+        // every request mints the short-lived access token from it — spelled
+        // `workos:` when it leaves (`docs/cline.md`). The spelling is pinned
+        // because a mismatch degrades *silently* into a pasted-key row.
+        let text = r#"
+[providers.cline_account]
+name = "Cline Account"
+auth = "cline_account"
+description = "Sign in with your Cline account"
+[providers.cline_account.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let account = file.get("cline_account").unwrap();
+        assert_eq!(account.auth, AuthScheme::ClineAccount);
+        assert!(account.auth.is_subscription());
+    }
+
+
 
     #[test]
     fn every_shipped_key_provider_describes_itself_and_names_its_key_page() {

@@ -254,6 +254,16 @@ impl ModelSession {
         // Anthropic rotates its refresh token the same way, and the write-back
         // happens just as deep on a backend thread (`docs/claude.md`).
         llm::claude::set_store_path(env_file_path.clone());
+        // Cline's account sign-in rotates one too, and talks to two hosts —
+        // WorkOS and Cline's own API — each overridable for the smoke
+        // suite's local stand-in (`docs/cline.md`).
+        llm::cline::set_store_path(env_file_path.clone());
+        if let Some(base) = config::cline_auth_base() {
+            llm::cline::set_auth_base(base);
+        }
+        if let Some(base) = config::cline_api_base() {
+            llm::cline::set_api_base(base);
+        }
         // The persisted `/model` selection (`~/.alter-zero/config.json`), per
         // working directory (docs/per-directory-state.md): this directory's
         // own entry, or — launched in for the first time — the last selection

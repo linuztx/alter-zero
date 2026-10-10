@@ -119,6 +119,7 @@ impl Session<'_> {
         llm::copilot::forget(token);
         llm::chatgpt::forget(token);
         llm::claude::forget(token);
+        llm::cline::forget(token);
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();

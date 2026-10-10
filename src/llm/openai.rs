@@ -526,6 +526,9 @@ impl OpenAiClient {
             // several and need different answers — an expired sign-in, a
             // scope, a spend cap (`docs/claude.md`).
             super::AuthScheme::AnthropicConsole => super::claude::auth_advice(*status, body),
+            // Cline's API documents its 401/402/403 meanings, and each wants
+            // a different sentence (`docs/cline.md`).
+            super::AuthScheme::ClineAccount => super::cline::auth_advice(*status, body),
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
