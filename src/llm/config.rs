@@ -494,6 +494,20 @@ mod tests {
     }
 
     #[test]
+    fn cline_ships_the_public_openai_compatible_api() {
+        let file = ProvidersFile::builtin();
+        let cline = file.get("cline").expect("cline present");
+        assert_eq!(cline.name, "Cline");
+        assert_eq!(cline.kwargs.api_base, "https://api.cline.bot/api/v1");
+        // Its `/models` is public, so the picker lists the catalog straight off
+        // the chat base — no separate `api_model_base`.
+        assert_eq!(cline.models_base(), "https://api.cline.bot/api/v1");
+        assert_eq!(cline.key_env("cline"), "CLINE_API_KEY");
+        assert_eq!(cline.auth, AuthScheme::ApiKey);
+        assert_eq!(cline.wire_api, WireApi::Chat);
+    }
+
+    #[test]
     fn key_env_defaults_to_uppercased_id() {
         let file = ProvidersFile::builtin();
         let p = file.get("openrouter").unwrap();

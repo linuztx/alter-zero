@@ -12,6 +12,14 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Cline as a provider.** A key from your Cline account
+  ([app.cline.bot](https://app.cline.bot) → Settings → API Keys) reaches the
+  same models that power the Cline extension and CLI — Anthropic, OpenAI,
+  Google and more — through Cline's OpenAI-compatible endpoint, with the
+  catalog listed in `/model`.
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

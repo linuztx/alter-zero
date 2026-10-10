@@ -237,3 +237,16 @@ anthropic-version = "2023-06-01"
 
 [providers.anthropic_console.kwargs]
 api_base = "https://api.anthropic.com/v1"
+
+# Cline's own endpoint: one OpenAI-compatible Chat Completions API in front of
+# Anthropic, OpenAI, Google and the rest, reached with an API key made in your
+# Cline account (Settings > API Keys at app.cline.bot). Its `/models` is
+# public, so the picker lists the catalog off `kwargs.api_base` with no
+# separate `api_model_base`.
+[providers.cline]
+name = "Cline"
+description = "The models behind the Cline extension and CLI — Anthropic, OpenAI, Google and more — reached with a key from your Cline account."
+api_key_url = "https://app.cline.bot"
+
+[providers.cline.kwargs]
+api_base = "https://api.cline.bot/api/v1"
