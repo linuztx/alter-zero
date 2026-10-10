@@ -1,6 +1,6 @@
 {
   "name": "@linuztx/alter-zero",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Agent harness for coding, cybersecurity, and automation.",
   "keywords": [
     "agent",
@@ -41,10 +41,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@linuztx/alter-zero-darwin-arm64": "0.12.0",
-    "@linuztx/alter-zero-darwin-x64": "0.12.0",
-    "@linuztx/alter-zero-linux-arm64": "0.12.0",
-    "@linuztx/alter-zero-linux-x64": "0.12.0"
+    "@linuztx/alter-zero-darwin-arm64": "0.13.0",
+    "@linuztx/alter-zero-darwin-x64": "0.13.0",
+    "@linuztx/alter-zero-linux-arm64": "0.13.0",
+    "@linuztx/alter-zero-linux-x64": "0.13.0"
   },
   "publishConfig": {
     "access": "public"
