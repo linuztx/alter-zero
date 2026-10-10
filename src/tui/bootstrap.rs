@@ -354,7 +354,7 @@ impl<'t> Session<'t> {
         if let Ok(mut sources) = hook_handles.sources.lock() {
             sources.push("startup".to_string());
         }
-        let hook_transcript = hook_handles.transcript.clone();
+        let hook_conversation = hook_handles.conversation.clone();
         // Constructed even over an empty merge (docs/project-config.md): a
         // /trust approval mid-session swaps its file in place, and the live
         // handles must be THESE — a second set would split the transcript
@@ -371,6 +371,10 @@ impl<'t> Session<'t> {
             // `ALTER_ZERO_HOOKS` already merged over it for this run.
             enabled: settings.hooks,
             handles: hook_handles,
+            // Claude Code's `scratchpad_dir` (docs/hooks.md): how a hook
+            // finds this temp tree once `session_id` follows the
+            // conversation rather than the process.
+            scratchpad_dir: scratchpad_dir.clone(),
         });
 
         // The mid-turn message queue (docs/queue.md): what the user types
@@ -421,17 +425,20 @@ impl<'t> Session<'t> {
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
-        // sessions never touch disk. It publishes the rollout path into the
-        // hooks' transcript cell whenever the active file changes
-        // (docs/hooks.md).
+        // sessions never touch disk. The first conversation's file takes the
+        // session's startup id — the one the temp tree is named by — and the
+        // recorder publishes the conversation's id and rollout path into the
+        // hooks' cell whenever they change, so a payload's `session_id` is the
+        // handle `--resume` takes (docs/hooks.md).
         // …and it carries the session's own model selection, which the file's
         // `model` line records for a resume (docs/session-model.md).
         let recorder = SessionRecorder::new(
             &models.model_name(),
             models.session_selection().cloned(),
             &cwd,
+            session_id.clone(),
         )
-        .with_transcript(hook_transcript);
+        .with_conversation(hook_conversation);
         // The filesystem checkpoint store (docs/checkpoint.md): an isolated git
         // object store — never the user's real .git — that snapshots the whole cwd
         // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
@@ -572,6 +579,16 @@ impl<'t> Session<'t> {
         // the directory's entry, or a resumed conversation's own.
         session.spawn_pending_probe();
         session.paint_first_frame(picker)?;
+        // SessionStart (docs/hooks.md), in the background as the session
+        // opens — Claude Code's timing: the user can type at once, and the
+        // first turn (a [PROMPT]'s below included) waits for the hooks so
+        // their context lands. `startup`, or `resume` for a
+        // --continue/--resume boot; a bare --resume waits for its picker,
+        // whose pick is the conversation that begins (dismissed, the fresh
+        // one does — `Session::close_resume_picker`).
+        if !picker {
+            session.models.fire_session_start();
+        }
         // The day's anonymous usage ping (docs/telemetry.md), AFTER the first
         // frame is queued so it can never delay it: the install id is minted
         // if this is the first launch, the one-time notice is committed under
@@ -891,11 +908,6 @@ impl<'t> Session<'t> {
         // change.
         self.recorder
             .sync(&self.app.history, self.app.history_generation());
-        // SessionEnd (docs/hooks.md): fired before the teardown below, under
-        // the sink's own 2 s budget, so a quit never hangs on a hook. Claude
-        // Code's closest reason for an interactive quit is
-        // `prompt_input_exit`.
-        self.models.fire_session_end("prompt_input_exit");
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
         // …and the tip walk's position, for a quit that drew a tip on its way
@@ -933,6 +945,12 @@ impl<'t> Session<'t> {
         // in-flight requests promptly — docs/agent-tool.md).
         self.registry.kill_all();
         self.agent_registry.kill_all();
+        // SessionEnd (docs/hooks.md): after the turn and the agents were
+        // cancelled above, so none of their hooks can land after the
+        // session's end — and under the sink's own 2 s budget, so a quit
+        // never hangs on a hook. Claude Code's reason for an interactive
+        // quit is `prompt_input_exit`.
+        self.models.end_conversation("prompt_input_exit");
         // Tear down the MCP connections (docs/mcp.md): drops every transport
         // — killing the stdio children synchronously — and cancels a running
         // auth flow, so quitting can't orphan a server process.

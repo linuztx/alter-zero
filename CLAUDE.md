@@ -1229,7 +1229,9 @@ the same way; the footer gains a persistent roster — `● main` over
 `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` rows — that ↓ steps
 into **after** the shell indicator (`❯` selection, Enter views, hint lines in
 the footer slot; **`x` stops, then `x` clears** — the stop interrupts the
-agent and leaves its row in place wearing a red `◯` for the long
+agent (its open and queued permission prompts withdrawn with it,
+`App::withdraw_agent_permissions`, the lead's `agentkill` likewise, since
+an answer would reach nobody) and leaves its row in place wearing a red `◯` for the long
 `AGENT_STOPPED_LINGER` (30s, `AgentRun::linger` — a row that vanished under
 the keypress left no evidence of what was stopped) while the hint swaps to
 `x to clear`, and that second `x` takes it off at once; a naturally finished
@@ -1828,30 +1830,49 @@ waits on `llm::exec`'s 20 ms poll cadence, **re-checking the turn's
 skipped that would silently break Esc — the payload write included, on its
 own thread, since a pipe-buffer-filling `PostToolUse` payload fed to a
 handler that never reads stdin used to park an inline `write_all` past both
-Esc and the timeout. **All eleven events fire, every one on a backend
-thread** — verifying the references dissolved the old loop-path premise
-(Claude Code runs its stop hooks *inside the query loop*, and neither
-reference runs SessionStart at startup — both block only the next request):
+Esc and the timeout — and a hook's own exit ends the wait for its output
+pipes after `PIPE_DRAIN_GRACE` (1 s), since a process it left running
+(`server &`) holds them open and held the event, and the turn, for as long
+as it lived. **All fourteen events fire, none on the tokio loop** —
+verifying the references dissolved the old loop-path premise (Claude Code
+runs its stop hooks *inside the query loop*, and runs SessionStart in the
+background at launch, blocking only the first request):
 the tool-path five gate/annotate/rewrite calls (**`agent` launches
 included** — `Task` aliases to `agent`, and each tool name answers to its
 Claude Code spelling as a second exact name; `PostToolUse` fires only for a
-call that **succeeded**, both references' behaviour), `Stop`/`SubagentStop`
+call that **succeeded**, both references' behaviour, and its twin
+`PostToolUseFailure` for one that ran and failed, with the same answers),
+`Notification` (`permission_prompt`) the moment a permission prompt is on
+screen, on a thread of its own under the turn's token so it never holds the
+prompt up, `Stop`/`SubagentStop`
 fire in `run_agent`'s Complete arm where a block is a **same-turn
 continuation** (the reply-so-far becomes an assistant message, the feedback
 the next user message, `stop_hook_active` flips true and is the hook's own
 guard — the engine never refuses a re-block, the reference's posture, and an
 interrupt never fires Stop so Esc always breaks a chain; the turn-end
 checkpoint lands after every continuation, so a formatter hook's writes are
-inside the snapshot), `SessionStart` drains queued sources
-(`startup`/`resume`/`clear`) at the next spawn's top, `UserPromptSubmit` can
+inside the snapshot) and `StopFailure` where the turn ends on an error
+(`llm::hooks::stop_failure_kind` — Claude Code's error types, the matcher),
+`SessionStart` fires **in the background as a conversation opens** (the
+boundary's `ModelSession::begin_conversation`/`fire_session_start`:
+`startup` after the first frame, `clear`, `resume`) and the next spawn's
+top waits for its context (`SessionStartRun`, polling the cancel token; a
+later firing replaces and kills a run no turn read; a source fired while
+hooks were off or on the dummy stays queued for the first real turn),
+`UserPromptSubmit` can
 refuse the prompt — `StreamEvent::PromptBlocked`, the submission rolled back
 out of history *and* the rollout (the recorder's shrink-rewrite), the text
 returned to the composer under a red reason-only notice — or inject context,
 a loop-initiated background follow-up turn being marked synthetic and
-skipped; `PreCompact`/`PostCompact` ride the summarization spawn via the
+skipped (every user turn clears a mark nobody consumed);
+`PreCompact`/`PostCompact` ride the summarization spawn via the
 `CompactHooks` wrapper (PreCompact stdout/context = extra compact
 instructions, **no block — neither reference honours one**), and
-`SessionEnd` runs under a 2 s whole-event budget at `/clear`/quit. A block
+`SessionEnd` runs under a 2 s whole-event budget at `/clear`, `/resume`
+and quit (after the turn and agents are cancelled), naming the conversation
+that ends and **only for one whose start fired**
+(`ModelSession::end_conversation` — a still-queued source means it never
+started, so no end, the source dropped). A block
 *is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
 `ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
 `Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
@@ -1866,16 +1887,20 @@ inline, expanded in Ctrl+O, replayed verbatim by `context_messages`,
 rollout-round-tripped) and the terminal `PromptBlocked`. `PreToolUse` may
 also **rewrite** the call (`updatedInput` replaces the arguments for the
 gate, the executor and the cell), `PermissionRequest` sits exactly where the
-auto-mode classifier does, and payloads resolve `permission_mode` and
-`transcript_path` **live at dispatch** (the gate's current mode; the rollout
-path the recorder publishes into a shared cell). User-level config only — a
+auto-mode classifier does, and payloads resolve `permission_mode`,
+`session_id` and `transcript_path` **live at dispatch** (the gate's current
+mode; the **conversation's** id — the rollout file's, the handle `--resume`
+takes, chosen before the file exists and moved on by `/clear`/`/resume` —
+and its path, which the recorder publishes into a shared `ConversationCell`),
+beside Claude Code's `scratchpad_dir`. User-level config only — a
 project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved and **off until a directory turns it on**
 (`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
-`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
+`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73, and
+Phase 133 the session events through a refusing stub provider) in
 `docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
 no text entry, so the hardware cursor hides while its seat tracks the

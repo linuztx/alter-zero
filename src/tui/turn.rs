@@ -147,6 +147,16 @@ impl Session<'_> {
             self.app.listings.as_deref(),
             &self.app.history,
         );
+        // The rollout exists before the turn's thread does (codex's rule: the
+        // file exists before the hook runs), so the turn's first hook — its
+        // `UserPromptSubmit` — already names the transcript instead of racing
+        // the loop-bottom sync that would otherwise create it, which then has
+        // nothing left to write (docs/hooks.md).
+        self.recorder
+            .sync(&self.app.history, self.app.history_generation());
+        // A real prompt is the user's, whatever a loop-initiated turn left
+        // marked (docs/hooks.md).
+        self.models.clear_synthetic_turn();
         self.spawn_reply(prompt, paths, context);
     }
 

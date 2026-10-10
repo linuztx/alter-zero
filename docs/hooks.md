@@ -44,27 +44,35 @@ A handler receives its event payload as **JSON on stdin** and answers with
 references agree on the asymmetry, so we copy it exactly:
 
 - **stdin (the payload) is `snake_case`** — `session_id`, `transcript_path`,
-  `cwd`, `permission_mode`, `hook_event_name`, `tool_name`, `tool_input`,
-  `tool_use_id`, `agent_id`, `agent_type`. `session_id` is the session's *one*
-  id, shared with its temp tree (`docs/scratchpad.md`), so a handler can find
-  this session's scratchpad and task output from it — it used to be a second,
-  separately-minted (and therefore different) nanos-derived id.
+  `cwd`, `permission_mode`, `scratchpad_dir`, `hook_event_name`, `tool_name`,
+  `tool_input`, `tool_use_id`, `agent_id`, `agent_type`. `session_id` is the
+  **conversation's** id — the rollout file's, the handle `--resume` takes —
+  so a hook that logs it can hand it back to `alter-zero --resume`. It is
+  known before the file exists (a fresh conversation has its id from its
+  first event), moves on at a `/clear`, and becomes the resumed file's at a
+  `/resume`; `transcript_path` moves with it. The first conversation's file
+  is named by the session's startup id, so until a `/clear` the id is also
+  the temp tree's (`docs/scratchpad.md`) — but `scratchpad_dir` is how a
+  handler finds the session's scratchpad and task output *after* one, which
+  is Claude Code's field for it. (`session_id` used to be the process's id,
+  which a `/clear` never moved and `--resume` could not take.)
 - **stdout (the verdict) is `camelCase`** — `continue`, `stopReason`,
   `suppressOutput`, `systemMessage`, `decision`, `reason`,
   `hookSpecificOutput.{hookEventName,permissionDecision,
   permissionDecisionReason,updatedInput,additionalContext}`.
 
-Eleven events are modelled. What each may return:
+Fourteen events are modelled. What each may return:
 
 | event                           | the hook may return                                   |
 | ------------------------------- | ----------------------------------------------------- |
 | `PreToolUse`                    | allow / deny / ask · block + reason · `additionalContext` · `updatedInput` |
 | `PermissionRequest`             | `allow` / `deny` + message                             |
-| `PostToolUse`                   | block + reason · `additionalContext`                   |
+| `PostToolUse` / `PostToolUseFailure` | block + reason · `additionalContext`              |
 | `UserPromptSubmit`              | block + reason · `additionalContext`                   |
 | `Stop` / `SubagentStop`         | block + reason (make the agent keep going)             |
 | `SessionStart` / `SubagentStart`| `additionalContext`                                    |
 | `SessionEnd`                    | nothing — output ignored (both references)             |
+| `StopFailure` / `Notification`  | nothing — output ignored (Claude Code's rule)          |
 | `PreCompact`                    | `additionalContext` / stdout → extra compact instructions — **no block** (see below) |
 | `PostCompact`                   | nothing — envelope only                                |
 
@@ -78,6 +86,13 @@ silent allow.
 **Merging.** When several handlers match one event: **any** block wins, the
 **first** reason is kept, the contexts **concatenate** in handler order, and
 for `PreToolUse` a `deny` outranks an `ask`, which outranks an `allow`.
+
+The three events added after the first eleven carry Claude Code's own
+fields. `PostToolUseFailure` has `tool_name`, `tool_input`, `tool_use_id`, the
+failure's text as `error`, and `is_interrupt` (always `false` — an
+interrupted call fires no post-tool event here). `StopFailure` has `error`
+(the kind, below), `error_details` and `last_assistant_message`.
+`Notification` has `notification_type`, `title` and `message`.
 
 Two payload fields are **extensions**, since the contract has no slot for
 facts this app has: `tool_response` is `{"output": …, "success": …}` (our tools
@@ -126,22 +141,27 @@ and the other non-tool queries are never aliased.
 
 ## Where each event attaches
 
-| event               | site                                                            |
-| ------------------- | --------------------------------------------------------------- |
-| `PreToolUse`        | `llm/agent.rs` — before `approve`; **`agent` launches included** |
-| `PermissionRequest` | `llm/approval.rs` — after the standing rules                     |
-| `PostToolUse`       | `llm/agent.rs` — on `execute`'s return, **successes only**       |
-| `SubagentStart`     | `llm/backend.rs` — inside `spawn_subagent_run`                   |
-| `SubagentStop`      | `llm/agent.rs` — `run_agent`'s Complete arm, via the tagged sink |
-| `SessionStart`      | `llm/backend.rs` — the spawn top drains the queued sources       |
-| `SessionEnd`        | `tui` — `/clear` and `shutdown`, under a 2 s event budget        |
-| `UserPromptSubmit`  | `llm/backend.rs` — the spawn top, after the SessionStart drain   |
-| `Stop`              | `llm/agent.rs` — `run_agent`'s Complete arm                      |
-| `PreCompact`        | the compact spawn's top, via the `CompactHooks` wrapper          |
-| `PostCompact`       | the compact spawn's completion, via the same wrapper             |
+| event                | site                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| `PreToolUse`         | `llm/agent.rs` — before `approve`; **`agent` launches included** |
+| `PermissionRequest`  | `llm/approval.rs` — after the standing rules                     |
+| `Notification`       | `llm/approval.rs` — once the prompt is raised, on a thread of its own |
+| `PostToolUse`        | `llm/agent.rs` — on `execute`'s return, **successes only**       |
+| `PostToolUseFailure` | `llm/agent.rs` — on `execute`'s return, **failures only**        |
+| `SubagentStart`      | `llm/backend.rs` — inside `spawn_subagent_run`                   |
+| `SubagentStop`       | `llm/agent.rs` — `run_agent`'s Complete arm, via the tagged sink |
+| `SessionStart`       | `tui` — fired in the background as a conversation opens; the next spawn's top waits for it |
+| `SessionEnd`         | `tui` — `/clear`, `/resume` and quit, under a 2 s event budget   |
+| `UserPromptSubmit`   | `llm/backend.rs` — the spawn top, after the SessionStart wait    |
+| `Stop`               | `llm/agent.rs` — `run_agent`'s Complete arm                      |
+| `StopFailure`        | `llm/agent.rs` — a failed round, or the tool-call ceiling        |
+| `PreCompact`         | the compact spawn's top, via the `CompactHooks` wrapper          |
+| `PostCompact`        | the compact spawn's completion, via the same wrapper             |
 
-Every one of the eleven fires. All of them run on a **backend thread** —
-none on the tokio loop — which is the second half of the story below.
+Every one of the fourteen fires. None runs on the tokio loop: the tool,
+turn and compact events run on a **backend thread**, and the boundary's
+session events on threads of their own (`SessionStart`) or under a hard
+budget (`SessionEnd`) — which is the second half of the story below.
 
 `PermissionRequest` sits exactly where the auto-mode classifier does — after
 the standing allowlist, before the user — because it answers the same
@@ -163,12 +183,14 @@ that premise:
 - **Claude Code fires its stop hooks inside the query loop**, not at the
   REPL layer — a `Stop` block *is* the next iteration of that loop
   (`query.ts:1282-1305`), which is exactly `run_agent` here.
-- **Neither reference runs `SessionStart` at startup.** Claude Code kicks it
-  off without awaiting before render and blocks only the *first API call*
-  (`main.tsx:3761-3765`); codex queues a pending source and drains it at the
-  top of the next turn (`turn.rs:239-241`). Nothing ever blocks the first
-  paint — the checkpoint probe's lesson, honoured by both references before
-  we ever hit it.
+- **Neither reference blocks the first paint on `SessionStart`.** Claude
+  Code kicks it off without awaiting before render and blocks only the
+  *first API call* (`main.tsx:3761-3765`) — the hook does run at launch,
+  in the background; codex queues a pending source and drains it at the
+  top of the next turn (`turn.rs:239-241`). We follow Claude Code's
+  timing now (below), and the first paint stays free either way — the
+  checkpoint probe's lesson, honoured by both references before we ever
+  hit it.
 
 So every event lands on a **backend thread**, where blocking is already
 normal and correct — the permission gate parks there on a `Condvar`,
@@ -185,19 +207,43 @@ never existed:
   writes are inside the turn's snapshot and an Esc-Esc backtrack restores
   them. By construction it never fires for a `/compact` turn (that backend
   carries the wrapper below), a `!` shell (no agent loop), a backend error
-  (Claude Code fires `StopFailure` there, which we don't model), or an
+  (that is `StopFailure`'s, below), or an
   interrupt (Claude Code returns before stop hooks on an abort — Esc always
   breaks a continuation chain). The engine never refuses a re-block:
   `stop_hook_active` is the hook's own guard, the reference's exact posture.
   The tagged sink routes a subagent's completion to `SubagentStop`
   (matcher = agent type) with the same block-to-continue semantics on the
   agent's own loop; a killed or errored agent fires nothing.
-- **`SessionStart`** is a queued-source drain: bootstrap queues `startup`
-  (a `--continue`/`--resume` boot swaps it for `resume`), `/clear` queues
-  `clear`, a `/resume` load queues `resume`, and the next spawn's thread
-  drains the queue before round 1 (matcher = source). Context lands as
-  user messages after the prompt and is recorded (see `HookNote` below).
-- **`UserPromptSubmit`** fires right after that drain, before the first
+- **`StopFailure`** fires where the turn ends on an error instead of an
+  answer: a round that failed (after the bounded retry gave up), or the
+  **Max tool calls** ceiling. Its `error` — also the matcher — is Claude
+  Code's error type read off the failure (`llm::hooks::stop_failure_kind`):
+  `rate_limit` (429), `overloaded` (529), `authentication_failed`
+  (401/403), `billing_error` (402), `model_not_found` (404),
+  `invalid_request` (any other 4xx), `server_error` (5xx, a transport
+  failure, an unreachable host), and `unknown` for the rest — the ceiling
+  included. Output is ignored, as in the reference. An interrupt fires
+  none (Esc is not a failure), and neither does a subagent's failed round:
+  the event is the session's turn ending.
+- **`SessionStart`** fires **in the background as a conversation
+  opens** — Claude Code's timing: the user can type at once, and the first
+  turn waits for the hooks so their context still lands. The boundary
+  fires `startup` right after the first frame is queued (`resume` for a
+  `--continue`/`--resume` boot; a bare `--resume` waits for its picker,
+  whose pick is the conversation that begins — dismissed, the fresh one it
+  lands in begins then, as `startup`), `clear` after a `/clear`,
+  and `resume` after a `/resume` load — each once the recorder has moved
+  on, so the payload names the new conversation (matcher = source). The
+  run is held in `HookHandles::started`; the next spawn's top waits for it
+  — polling the turn's `CancelToken`, so Esc is prompt, and a cancelled
+  wait leaves the run held for the turn after — and takes its context,
+  which lands as user messages after the prompt and is recorded (see
+  `HookNote` below). One run is held at a time: a later firing replaces,
+  and kills, one no turn read, since its context belonged to the
+  conversation that ended. A source the boundary could not fire — hooks
+  off, or no real backend yet (the dummy runs no hooks) — stays queued
+  and runs at the first turn that has both, the old codex drain.
+- **`UserPromptSubmit`** fires right after that wait, before the first
   request. A **block** streams `StreamEvent::PromptBlocked` instead of
   anything else: the loop rolls the just-recorded submission back out of
   history (the recorder's shrink-rewrite erases it from the rollout — the
@@ -206,7 +252,14 @@ never existed:
   the echo away, and commits a red reason-only notice. `additionalContext`
   injects even on a block — both references' rule. A loop-initiated turn (a
   background completion's follow-up) is marked synthetic and skips the
-  event: its prompt is not the user's. The backend consults its retained
+  event: its prompt is not the user's. Only a sink running the turn's hooks
+  consumes the mark, so every **user** turn clears it before it spawns — a
+  mark set while hooks were off, or on the offline demo, used to outlive
+  its turn and silence the user's next real prompt. The rollout is synced
+  before the turn's thread exists, too (codex's rule: the file exists
+  before the hook runs), so a conversation's very first `UserPromptSubmit`
+  already names its `transcript_path` instead of racing the loop-bottom
+  sync that creates it. The backend consults its retained
   request prefix only past this check, so a block costs no prompt-cache
   prefix (`docs/prompt-caching.md`).
 - **`PreCompact`/`PostCompact`** ride the summarization spawn through the
@@ -218,15 +271,39 @@ never existed:
   wrapper never drains the session-source queue and never continues a
   summarization; its notes stay out of the conversation record (they are
   ephemeral, like the compact chunks themselves).
-- **`SessionEnd`** fires on `/clear` (`clear`) and at quit
-  (`prompt_input_exit`), under a **2 s whole-event budget** — Claude Code
-  caps this event at 1.5 s and codex clamps it to 3 s, because quitting must
-  never hang on a hook. Output is ignored, as in both references. It fires
-  **only when a real backend is active**, keeping the pair honest: a
-  dummy-only session drains no `SessionStart` (the queue drains at a real
-  spawn's top), so it fires no `SessionEnd` either — a session-logging hook
-  never sees an end without its start. A `/login` mid-session makes the
-  pair real: the next turn drains `startup`, and the end fires at quit.
+- **`SessionEnd`** fires as a conversation closes — `/clear` (`clear`),
+  a `/resume` switching away (`resume`), and a quit (`prompt_input_exit`),
+  Claude Code's reasons — **before** the recorder moves on, so it names the
+  conversation that ended, and under a **2 s whole-event budget**: Claude
+  Code caps this event at 1.5 s and codex clamps it to 3 s, because
+  quitting must never hang on a hook. A quit fires it **after** the turn
+  and every agent were cancelled, so no hook of theirs can land after the
+  session's end. Output is ignored, as in both references. Any
+  `SessionStart` context no turn read is discarded first (its hooks killed
+  if still running). It fires **only for a conversation whose start
+  fired**, keeping the pair honest: if a `SessionStart` source is still
+  queued — hooks off, no real backend (a dummy-only session, which runs no
+  hooks), a bare `--resume` boot still in its picker — the conversation
+  never started for the hooks, so no `SessionEnd` fires and the pending
+  source goes with it. A session-logging hook never sees an end without
+  its start. A `/login` mid-session makes the pair real: the next turn
+  runs the queued `startup`, and the end fires at quit.
+- **`PostToolUseFailure`** is `PostToolUse`'s twin for a call that ran and
+  **failed** (`ok: false` — a non-zero exit, an edit whose text was not
+  found), with the same answers: a block is feedback the model must read,
+  and `additionalContext` is appended to the result. A refused or blocked
+  call never ran, so it fires neither, and a call handed to the
+  background has not finished, so it fires neither yet.
+- **`Notification`** fires with `notification_type` `permission_prompt`
+  the moment the permission prompt is on screen — the moment a human is
+  actually being asked, which `PermissionRequest` (consulted before the
+  classifier) cannot say. Title `Permission needed`, message `Alter Zero
+  needs your permission to use {Tool}`, matcher = the type. It is
+  observation only and must not hold the prompt up, so it runs on a thread
+  of its own, under the turn's token: the gate waits at once, an answer
+  given while a slow notifier runs is acted on, and an Esc reaps a
+  notifier that hangs. Claude Code's other notification types (idle,
+  auth) are not modelled.
 
 **A blocking hook must poll the `CancelToken`.** The reason the existing
 `Condvar` park is safe is that `PermissionGate::wait` takes a cancellation
@@ -235,6 +312,15 @@ polls on the same 20 ms cadence — the payload write included, on its own
 thread, since a pipe-buffer-filling payload fed to a handler that never
 reads stdin used to park an inline write past both Esc and the timeout —
 and kills the process group on cancel, so Esc stays prompt.
+
+**A hook's own exit ends the wait for its output.** Its stdout and stderr
+are read on threads of their own, and once the hook's process has exited
+the runner gives them `PIPE_DRAIN_GRACE` (1 s) to deliver the last bytes —
+not as long as the pipes stay open. A hook that starts a background
+process (`server &`, a daemonising notifier) hands that process its
+pipes, and waiting for their end held the event — and the turn, or the
+tool call — for as long as the process lived. What arrived in the grace is
+the hook's output; a reader still running then is left to drain the rest.
 
 ## How a verdict reaches the screen
 
@@ -395,20 +481,23 @@ and merge rule is unit-testable from fixtures with no process anywhere — the
 same split `session`/`history` use for their JSONL formats. Only the spawn is
 boundary code.
 
-### The seam: one trait, not eleven closures
+### The seam: one trait, not fourteen closures
 
 `run_agent` already takes nine parameters under an
 `#[allow(clippy::too_many_arguments)]`. Adding a closure per hook event is how
-this feature rots into eleven hand-wired call sites and an unreviewable
+this feature rots into fourteen hand-wired call sites and an unreviewable
 signature. Instead there is one trait object with defaulted no-op methods:
 
 ```rust
 pub trait HookSink: Send + Sync + Debug {
     fn pre_tool_use(&self, …) -> PreToolVerdict { PreToolVerdict::default() }
     fn post_tool_use(&self, …) -> PostToolVerdict { PostToolVerdict::default() }
+    fn post_tool_use_failure(&self, …) -> PostToolVerdict { PostToolVerdict::default() }
     fn permission_request(&self, …) -> Option<HookPermissionVerdict> { None }
+    fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) {}
     fn subagent_start(&self, …) -> Vec<String> { Vec::new() }
     fn stop(&self, _active: bool, _last: &str, _cancel: &CancelToken) -> Option<String> { None }
+    fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) {}
     fn session_start(&self, _cancel: &CancelToken) -> Vec<String> { Vec::new() }
     fn user_prompt_submit(&self, _prompt: &str, _cancel: &CancelToken) -> PromptVerdict { … }
     fn session_end(&self, _reason: &str) {}
@@ -428,7 +517,9 @@ Every method defaults, so `NoHooks` costs nothing and every existing test
 compiles untouched. **Adding event number six is one defaulted method plus one
 call site** — not a wider signature and not a new subsystem. That property is
 the whole point of the design; if a later change breaks it, the change is
-wrong.
+wrong. It held for the three events added after the first eleven:
+`post_tool_use_failure`, `stop_failure` and `permission_prompt` are three
+defaulted methods, each with one call site.
 
 ## Deliberately not doing
 
@@ -474,14 +565,28 @@ feedback note stayed cell-less inline while the transcript recorded it.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
 prompt`) through the real loop arm: the blocked submission leaves scrollback
 (exactly the composer's restored copy of the text remains) under the red
-reason-only notice.
+reason-only notice. **Phase 133** drives the session events, which need a
+real backend, against a stub provider that refuses every request: a
+`SessionStart` hook that sleeps 2 s fires before any prompt without holding
+up the first frame, its context reaches the first request, the prompt's
+`session_id` is the conversation's and its `transcript_path` names the
+file, the refused turn fires `StopFailure` typed `invalid_request`, a
+`/clear` moves the id on (`SessionEnd` naming the old one, the turn sent
+during the new `SessionStart` waiting for it), a quit's `SessionEnd` comes
+last; a bare `--resume` fires nothing while its picker is up, then
+`SessionStart(startup)` when it is dismissed or `SessionStart(resume)`
+under the picked conversation's id — with no `SessionEnd` for the fresh
+conversation the boot held, which never began — and the offline demo fires
+neither end.
 
 Three layers cover the rest:
 
 - the **pure core** is unit-tested from fixtures with no process anywhere;
 - the **runner** has real-`sh` tests beside `llm::exec`'s — a hook reading the
   payload off stdin and blocking on what it finds, a timeout being reaped, a
-  cancelled turn reaping a running hook, a missing command failing open;
+  cancelled turn reaping a running hook, a missing command failing open, a
+  hook whose leftover process holds its pipes, a background `SessionStart`
+  waited for, cancelled, discarded and replaced;
 - the **wiring** has `run_agent` tests over a fake sink, and three
   `#[ignore]`d **live** tests in `tests/live_openrouter.rs` that put a real
   model through a real `hooks.json`: a `PreToolUse` block (the command never
@@ -527,10 +632,10 @@ Verified against both sources, and chosen — not accidental:
 
 - **`"async": true` runs synchronously**, with a warning. So does a
   `statusMessage`, which is parsed and not displayed.
-- **`PostToolUseFailure`, `StopFailure`, `Notification` and the rest of
-  Claude Code's twenty-seven events are unmodelled.** A failed tool call
-  fires nothing (PostToolUse fires only on success, both references'
-  behaviour); a config naming them loads fine and never fires.
+- **The rest of Claude Code's events are unmodelled** (`PermissionDenied`,
+  `TeammateIdle`, `FileChanged`, …), as are its `Notification` types other
+  than `permission_prompt`; a config naming them loads fine and never
+  fires.
 - **A PermissionRequest hook that abstains loses its warnings** — the
   fail-open posture has no channel to the user from that position; a
   deciding verdict carries them on its note.

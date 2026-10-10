@@ -48,6 +48,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// codex clamps it to 3 s, against the 600 s every other event gets.
 const SESSION_END_BUDGET: Duration = Duration::from_secs(2);
 
+/// How long a hook's output pipes may stay open once its process exited —
+/// time for the readers to take the last bytes, not for a process the hook
+/// left running holding them, which would hold the event (and the turn) for
+/// as long as it lives ([`PipeCapture::finish`]).
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
+
 /// The project-root variable a hook script reads. The `CLAUDE_PROJECT_DIR`
 /// alias is set beside it deliberately: the point of implementing Claude
 /// Code's contract is that a script written for it works here unchanged, and
@@ -112,6 +118,31 @@ pub enum HookPermissionVerdict {
     Deny { display: String, result: String },
 }
 
+/// `StopFailure`'s `error` — Claude Code's error types, read off what the
+/// backend reported (`docs/hooks.md`). Also the event's matcher, so a hook
+/// can select `rate_limit` alone. A failure this app classifies no further
+/// is `unknown`, the reference's own catch-all.
+#[must_use]
+pub fn stop_failure_kind(error: &super::LlmError) -> &'static str {
+    use super::LlmError;
+    match error {
+        LlmError::Api { status, .. } => match status {
+            429 => "rate_limit",
+            529 => "overloaded",
+            401 | 403 => "authentication_failed",
+            402 => "billing_error",
+            404 => "model_not_found",
+            400..=499 => "invalid_request",
+            _ => "server_error",
+        },
+        LlmError::Http(_) | LlmError::Unreachable { .. } => "server_error",
+        LlmError::Decode(_) | LlmError::Cancelled => "unknown",
+    }
+}
+
+/// The `Notification` title a permission prompt raises — Claude Code's.
+const PERMISSION_PROMPT_TITLE: &str = "Permission needed";
+
 /// The seam the agent loop and the approval gate consult.
 ///
 /// Every method defaults to "nothing happened", which is why [`NoHooks`] is a
@@ -134,6 +165,18 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         PostToolVerdict::default()
     }
 
+    /// After a call ran and **failed** — `PostToolUse`'s twin, with the same
+    /// answers (Claude Code's `PostToolUseFailure`; `PostToolUse` is fired
+    /// for successes only).
+    fn post_tool_use_failure(
+        &self,
+        _call: &ToolCallRequest,
+        _outcome: &ToolOutcome,
+        _cancel: &CancelToken,
+    ) -> PostToolVerdict {
+        PostToolVerdict::default()
+    }
+
     /// Instead of asking the user. `None` falls through to whatever would
     /// have happened anyway — the classifier, then the prompt.
     fn permission_request(
@@ -143,6 +186,14 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     ) -> Option<HookPermissionVerdict> {
         None
     }
+
+    /// The permission prompt for `call` is on screen — Claude Code's
+    /// `Notification` with `notification_type` `permission_prompt`, the
+    /// moment a human is actually being asked (which `PermissionRequest`,
+    /// consulted before the classifier, cannot say). Observation only, and
+    /// it must not hold the prompt up: the command sink runs it off the
+    /// gate's thread, under the turn's token.
+    fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) {}
 
     /// A subagent was launched; the returned strings are extra context for
     /// **that** agent's own conversation.
@@ -180,11 +231,21 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// A queued session boundary was crossed (`startup` / `resume` /
-    /// `clear`), drained codex-style at the **next turn's** top on the
-    /// backend thread — never at bootstrap, where seconds of silence read as
-    /// a hang (the checkpoint probe's lesson). Returns the hooks'
-    /// `additionalContext` strings; the matcher gates on the source.
+    /// The turn ended on an error instead of an answer — Claude Code's
+    /// `StopFailure`: `error` the [`stop_failure_kind`] (also the matcher),
+    /// `details` the text the conversation shows. Fired by `run_agent` just
+    /// before it reports the error; the session's turn only — a subagent's
+    /// failed round is not the session's turn ending. Observation only.
+    fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) {}
+
+    /// The `SessionStart` context for the turn about to run, at its top on
+    /// the backend thread. The boundary fires the event itself, in the
+    /// background as it crosses `startup` / `resume` / `clear`
+    /// ([`CommandHooks::fire_session_start`]) — never blocking the first
+    /// paint, the checkpoint probe's lesson — so this waits for those hooks
+    /// and takes what they returned, then runs any source still queued (one
+    /// crossed while hooks were off or no real backend existed). Returns the
+    /// hooks' `additionalContext` strings; the matcher gates on the source.
     fn session_start(&self, _cancel: &CancelToken) -> Vec<String> {
         Vec::new()
     }
@@ -207,8 +268,9 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// The session is closing (`reason`: `clear` — a `/clear` starting a
-    /// fresh conversation — or `prompt_input_exit`, a quit). Envelope-only,
+    /// The conversation is closing (`reason`: `clear` — a `/clear` starting
+    /// a fresh one — `resume`, a `/resume` switching to another, or
+    /// `prompt_input_exit`, a quit; Claude Code's values). Envelope-only,
     /// output ignored, and **bounded**: quitting must never hang on a hook,
     /// so the whole event runs under a hard budget (Claude Code caps it at
     /// 1.5 s, codex clamps to 3 s; ours is `SESSION_END_BUDGET`, 2 s). No
@@ -278,16 +340,98 @@ impl HookSink for CompactHooks {
     }
 }
 
-/// The rollout path the recorder publishes for hook payloads: `None` until
-/// anything was recorded (the file is created lazily on the first item), the
-/// path from then on. Shared because the sink outlives — and predates — the
-/// file (`docs/hooks.md` *Known gaps*, now closed).
-pub type TranscriptCell = Arc<std::sync::RwLock<Option<String>>>;
+/// The conversation the recorder is writing, as the payloads report it
+/// (`docs/hooks.md`): its **id** — the rollout file's, the handle `--resume`
+/// takes, held before the file exists so a fresh conversation has one from
+/// its first event — and its **file** once anything was recorded (deferred
+/// create). Both move together: a `/clear` starts a new id with no file, a
+/// `/resume` adopts the resumed file's pair.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Conversation {
+    /// `None` until the recorder publishes — the payload then keeps the
+    /// context's stored id.
+    pub id: Option<String>,
+    /// `None` while the conversation has no file yet.
+    pub transcript_path: Option<String>,
+}
+
+/// The [`Conversation`] the recorder publishes for hook payloads. Shared
+/// because the sink outlives — and predates — the file, and is rebuilt on
+/// every `/model` switch while the conversation goes on.
+pub type ConversationCell = Arc<std::sync::RwLock<Conversation>>;
 
 /// The pending `SessionStart` sources (`startup` / `resume` / `clear`),
-/// queued by the boundary and drained at the next turn's top — codex's
-/// pending-source model, so nothing ever blocks the first paint.
+/// queued by the boundary — fired in the background the moment the boundary
+/// can ([`CommandHooks::fire_session_start`]), and drained at the next
+/// turn's top for whatever it could not (a session with hooks off or no real
+/// backend yet). Nothing ever blocks the first paint.
 pub type SessionSources = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// The `SessionStart` hooks the boundary fired in the background as the
+/// session opened, and the context they return (`docs/hooks.md`) — Claude
+/// Code's timing: the user can type at once, and the first turn waits for
+/// them so their context still lands. At most one run is held: a later
+/// firing (a `/clear`, a `/resume`) replaces one no turn read, whose
+/// context belonged to the conversation that ended.
+#[derive(Debug, Clone, Default)]
+pub struct SessionStartRun {
+    slot: Arc<std::sync::Mutex<Option<StartRun>>>,
+}
+
+/// One background firing: its own token (a discard kills its hooks) and the
+/// thread that returns their context.
+#[derive(Debug)]
+struct StartRun {
+    cancel: CancelToken,
+    handle: std::thread::JoinHandle<Vec<String>>,
+}
+
+impl SessionStartRun {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<StartRun>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hold `run`, killing the hooks of any run no turn read.
+    fn hold(&self, run: StartRun) {
+        if let Some(stale) = self.lock().replace(run) {
+            stale.cancel.cancel();
+        }
+    }
+
+    /// Wait for the held run — while `cancel` is not — and take its context.
+    /// A cancelled wait leaves the run held: the next turn is still the
+    /// first response, and it waits too.
+    fn take(&self, cancel: &CancelToken) -> Vec<String> {
+        loop {
+            {
+                let mut slot = self.lock();
+                match slot.as_ref() {
+                    None => return Vec::new(),
+                    Some(run) if run.handle.is_finished() => {
+                        let run = slot.take().expect("held, just checked");
+                        drop(slot);
+                        return run.handle.join().unwrap_or_default();
+                    }
+                    Some(_) => {}
+                }
+            }
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Drop the held run, killing its hooks: nothing they return applies to
+    /// the session any more (a `/clear`, a switch, a quit).
+    fn discard(&self) {
+        if let Some(run) = self.lock().take() {
+            run.cancel.cancel();
+        }
+    }
+}
 
 /// The live handles a [`CommandHooks`] resolves per dispatch — shared with
 /// the boundary so the payloads report the session as it **is**, not as it
@@ -299,15 +443,28 @@ pub struct HookHandles {
     /// very next call. `None` (gate off, an embedder) keeps the context's
     /// own value.
     pub gate: Option<crate::permission::PermissionGate>,
-    /// The rollout path the recorder publishes.
-    pub transcript: TranscriptCell,
+    /// The conversation's id and rollout path, as the recorder publishes them.
+    pub conversation: ConversationCell,
     /// The queued `SessionStart` sources.
     pub sources: SessionSources,
+    /// The `SessionStart` hooks fired in the background, waiting for the
+    /// next turn to take their context.
+    pub started: SessionStartRun,
     /// Set by the boundary just before it dispatches a **loop-initiated**
     /// turn (a background completion's follow-up): the next
     /// `user_prompt_submit` is skipped — that prompt is synthesized, not the
     /// user's. Cleared by the skip.
     pub synthetic_turn: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl HookHandles {
+    /// Forget the background `SessionStart` no turn has read — the
+    /// conversation it was for is ending (`/clear`, `/resume`, a quit) —
+    /// killing its hooks if they still run. Claude Code's rule: what they
+    /// return no longer applies to the session.
+    pub fn discard_session_start(&self) {
+        self.started.discard();
+    }
 }
 
 /// The real sink: a loaded `hooks.json` plus everything a payload needs.
@@ -319,7 +476,7 @@ pub struct CommandHooks {
     detach_helper: Option<PathBuf>,
     /// Where handlers run, and what `*_PROJECT_DIR` is set to.
     cwd: PathBuf,
-    /// The live handles — gate, transcript path, pending session sources —
+    /// The live handles — gate, conversation, pending session sources —
     /// resolved at **dispatch** time, so a payload reports the session as it
     /// is when the hook fires.
     handles: HookHandles,
@@ -349,22 +506,21 @@ impl CommandHooks {
     }
 
     /// The context as of **now**: the stored session facts with the
-    /// permission mode and the transcript path resolved from their live
-    /// handles. Every payload builds from this, never from the frozen
-    /// snapshot.
+    /// permission mode, the conversation's id and its transcript path
+    /// resolved from their live handles. Every payload builds from this,
+    /// never from the frozen snapshot.
     fn live_context(&self) -> HookContext {
         let mut context = self.context.clone();
         if let Some(gate) = &self.handles.gate {
             context.permission_mode = Some(gate.mode().label().to_string());
         }
-        if let Some(path) = self
-            .handles
-            .transcript
-            .read()
-            .ok()
-            .and_then(|cell| cell.clone())
-        {
-            context.transcript_path = Some(path);
+        if let Ok(conversation) = self.handles.conversation.read() {
+            if let Some(id) = &conversation.id {
+                context.session_id.clone_from(id);
+            }
+            if let Some(path) = &conversation.transcript_path {
+                context.transcript_path = Some(path.clone());
+            }
         }
         context
     }
@@ -450,10 +606,8 @@ impl CommandHooks {
 
         // Drain both pipes on their own threads: a handler that prints more
         // than a pipe buffer would otherwise deadlock against our wait.
-        let out_pipe = child.stdout.take();
-        let out_reader = std::thread::spawn(move || read_pipe(out_pipe));
-        let err_pipe = child.stderr.take();
-        let err_reader = std::thread::spawn(move || read_pipe(err_pipe));
+        let out_reader = PipeCapture::spawn(child.stdout.take());
+        let err_reader = PipeCapture::spawn(child.stderr.take());
 
         let deadline = Duration::from_secs(handler.timeout_secs);
         let started = Instant::now();
@@ -462,10 +616,9 @@ impl CommandHooks {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {}
                 Err(err) => {
-                    // Reap before bailing: the readers (and the writer) hold
-                    // the pipes, and a child left running would park their
-                    // joins below — codex kills on a wait error for the same
-                    // reason.
+                    // Reap before bailing: a child left running would keep
+                    // its pipes open past the drain below — codex kills on a
+                    // wait error for the same reason.
                     subprocess::kill_process_group(&mut child);
                     run.error = Some(format!("failed to wait: {err}"));
                     break None;
@@ -487,12 +640,29 @@ impl CommandHooks {
             std::thread::sleep(POLL_INTERVAL);
         };
 
-        // The group kill above has reaped anything holding the pipes, so the
-        // joins terminate — the writer's pipe end is closed by the child's
-        // death too, so it can never outlive this point.
-        run.stdout = out_reader.join().unwrap_or_default();
-        run.stderr = err_reader.join().unwrap_or_default();
-        let write_error = stdin_writer.and_then(|writer| writer.join().unwrap_or_default());
+        // The hook is over when its own process is. The pipes normally close
+        // with it — or with the group kill above — but a process it left
+        // running holds them as long as it lives (`server &` without a
+        // redirect, or one that left the group): what it had printed is what
+        // was read within a short grace, and the readers are left to drain
+        // the rest into nothing. Waiting for their end instead held the
+        // event, and the turn behind it, for that process's whole life — and
+        // past Esc, since the cancel poll above had already ended.
+        let drained_by = Instant::now() + PIPE_DRAIN_GRACE;
+        run.stdout = out_reader.finish(drained_by, cancel);
+        run.stderr = err_reader.finish(drained_by, cancel);
+        // The writer ends when the child's stdin closes — the same holders
+        // can keep a big payload's write parked, so it gets the same grace.
+        let write_error = stdin_writer.and_then(|writer| {
+            while !writer.is_finished() && Instant::now() < drained_by && !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if writer.is_finished() {
+                writer.join().unwrap_or_default()
+            } else {
+                None
+            }
+        });
         if run.error.is_none() {
             run.error = write_error;
         }
@@ -503,6 +673,57 @@ impl CommandHooks {
             }
         }
         run
+    }
+
+    /// Drain the queued `SessionStart` sources into their payloads, built
+    /// against the conversation as it is **now** — the event names the
+    /// conversation that just began.
+    fn queued_session_starts(&self) -> Vec<(String, String)> {
+        let sources: Vec<String> = match self.handles.sources.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(_) => Vec::new(),
+        };
+        let context = self.live_context();
+        sources
+            .into_iter()
+            .map(|source| {
+                let payload = crate::hooks::session_start_payload(&context, &source);
+                (source, payload)
+            })
+            .collect()
+    }
+
+    /// Fire the queued `SessionStart` sources **now**, in the background —
+    /// Claude Code's timing (*the hooks run in the background, so you can
+    /// type right away; Claude's first response still waits for them*). The
+    /// context they return waits in [`HookHandles::started`] for the next
+    /// turn, whose [`session_start`](HookSink::session_start) waits for this
+    /// run first. Never blocks the caller.
+    pub fn fire_session_start(&self) {
+        let jobs = self.queued_session_starts();
+        if jobs.is_empty() {
+            return;
+        }
+        let hooks = self.clone();
+        let cancel = CancelToken::new();
+        let run_cancel = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            let mut contexts = Vec::new();
+            for (source, payload) in jobs {
+                if run_cancel.is_cancelled() {
+                    break;
+                }
+                let outcome = hooks.dispatch(
+                    HookEvent::SessionStart,
+                    Some(&source),
+                    &payload,
+                    &run_cancel,
+                );
+                contexts.extend(outcome.additional_context);
+            }
+            contexts
+        });
+        self.handles.started.hold(StartRun { cancel, handle });
     }
 
     /// `PreCompact` (`docs/hooks.md`): fired by the compact wrapper on the
@@ -534,29 +755,112 @@ impl CommandHooks {
     }
 }
 
-/// Read a pipe to a lossy `String`, **capped in memory as it is read**
-/// (`tui::shell::append_capped`'s rule — a hook that spews gigabytes must not
-/// spike RSS): the first [`HOOK_OUTPUT_MAX_BYTES`] are kept, the rest is
-/// drained and dropped so the child never blocks on a full pipe, and
-/// [`truncate_output`] stamps the marker. An absent pipe reads as empty.
-fn read_pipe<R: Read>(pipe: Option<R>) -> String {
-    let Some(mut pipe) = pipe else {
-        return String::new();
-    };
-    // One byte past the cap, so `truncate_output` can tell "exactly full"
-    // from "overflowed" and only mark the latter.
-    let mut kept: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match pipe.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let room = (HOOK_OUTPUT_MAX_BYTES + 1).saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..n.min(room)]);
+/// One of a handler's output pipes, read on a thread of its own into a
+/// buffer **capped in memory as it is read** (`tui::shell::append_capped`'s
+/// rule — a hook that spews gigabytes must not spike RSS): the first
+/// [`HOOK_OUTPUT_MAX_BYTES`] are kept, the rest drained and dropped so the
+/// writer never blocks on a full pipe, and [`truncate_output`] stamps the
+/// marker. Shared rather than handed back at the end, so the runner can stop
+/// waiting for an end that a process the hook left running may never let
+/// come ([`finish`](Self::finish)). An absent pipe reads as empty.
+struct PipeCapture {
+    shared: Arc<(std::sync::Mutex<PipeRead>, std::sync::Condvar)>,
+}
+
+#[derive(Default)]
+struct PipeRead {
+    kept: Vec<u8>,
+    /// The pipe reached its end (or was never there).
+    closed: bool,
+}
+
+impl PipeCapture {
+    fn spawn<R: Read + Send + 'static>(pipe: Option<R>) -> Self {
+        let shared = Arc::new((
+            std::sync::Mutex::new(PipeRead::default()),
+            std::sync::Condvar::new(),
+        ));
+        let reader = Arc::clone(&shared);
+        let close = |reader: &(std::sync::Mutex<PipeRead>, std::sync::Condvar)| {
+            reader
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .closed = true;
+            reader.1.notify_all();
+        };
+        match pipe {
+            None => close(&reader),
+            Some(mut pipe) => {
+                std::thread::spawn(move || {
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        match pipe.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                let mut read = reader
+                                    .0
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                // One byte past the cap, so `truncate_output`
+                                // can tell "exactly full" from "overflowed"
+                                // and only mark the latter.
+                                let room =
+                                    (HOOK_OUTPUT_MAX_BYTES + 1).saturating_sub(read.kept.len());
+                                read.kept.extend_from_slice(&chunk[..n.min(room)]);
+                            }
+                        }
+                    }
+                    close(&reader);
+                });
             }
         }
+        Self { shared }
     }
-    truncate_output(&String::from_utf8_lossy(&kept))
+
+    /// What was read once the pipe closed — or by `until`, or by a cancel,
+    /// whichever comes first — as a lossy `String` [`truncate_output`] has
+    /// marked. A reader still running then is left to drain the rest.
+    fn finish(&self, until: Instant, cancel: &CancelToken) -> String {
+        let (read, closed) = &*self.shared;
+        let mut read = read
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !read.closed && !cancel.is_cancelled() {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            read = closed
+                .wait_timeout(read, left.min(POLL_INTERVAL))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        truncate_output(&String::from_utf8_lossy(&read.kept))
+    }
+}
+
+/// What a `PostToolUse` / `PostToolUseFailure` hook said, folded for the
+/// loop. The call already ran, so a `block` here is not a refusal — it is
+/// feedback the model must read, folded in beside any context.
+fn post_verdict(hooked: HookOutcome) -> PostToolVerdict {
+    if hooked.is_quiet() {
+        return PostToolVerdict::default();
+    }
+    let mut context: Vec<String> = Vec::new();
+    if let Some(reason) = &hooked.block_reason {
+        context.push(format!("A lifecycle hook flagged this result: {reason}"));
+    }
+    context.extend(hooked.additional_context.iter().cloned());
+    let context = (!context.is_empty()).then(|| context.join("\n\n"));
+    let mut warnings = hooked.warnings.clone();
+    if let Some(reason) = hooked.block_reason {
+        warnings.insert(0, format!("Flagged by hook: {reason}"));
+    }
+    PostToolVerdict {
+        note: note_line(&warnings, context.as_ref(), &hooked.system_messages),
+        context,
+    }
 }
 
 /// The cell/model text pair for a hook refusal — the same two-text shape the
@@ -690,26 +994,66 @@ impl HookSink for CommandHooks {
             outcome.ok,
             &call.id,
         );
-        let hooked = self.dispatch(HookEvent::PostToolUse, Some(&call.name), &payload, cancel);
-        if hooked.is_quiet() {
-            return PostToolVerdict::default();
+        post_verdict(self.dispatch(HookEvent::PostToolUse, Some(&call.name), &payload, cancel))
+    }
+
+    fn post_tool_use_failure(
+        &self,
+        call: &ToolCallRequest,
+        outcome: &ToolOutcome,
+        cancel: &CancelToken,
+    ) -> PostToolVerdict {
+        let payload = crate::hooks::post_tool_use_failure_payload(
+            &self.live_context(),
+            &call.name,
+            &call.arguments,
+            &outcome.output,
+            &call.id,
+        );
+        post_verdict(self.dispatch(
+            HookEvent::PostToolUseFailure,
+            Some(&call.name),
+            &payload,
+            cancel,
+        ))
+    }
+
+    fn permission_prompt(&self, call: &ToolCallRequest, cancel: &CancelToken) {
+        // Every prompt passes through here, so nothing is built for a
+        // session with no notifier to hand it to.
+        if self
+            .file
+            .select(HookEvent::Notification, Some("permission_prompt"))
+            .handlers
+            .is_empty()
+        {
+            return;
         }
-        // The call already ran, so a `block` here is not a refusal — it is
-        // feedback the model must read. Fold it in beside any context.
-        let mut context: Vec<String> = Vec::new();
-        if let Some(reason) = &hooked.block_reason {
-            context.push(format!("A lifecycle hook flagged this result: {reason}"));
-        }
-        context.extend(hooked.additional_context.iter().cloned());
-        let context = (!context.is_empty()).then(|| context.join("\n\n"));
-        let mut warnings = hooked.warnings.clone();
-        if let Some(reason) = hooked.block_reason {
-            warnings.insert(0, format!("Flagged by hook: {reason}"));
-        }
-        PostToolVerdict {
-            note: note_line(&warnings, context.as_ref(), &hooked.system_messages),
-            context,
-        }
+        let message = format!(
+            "{} needs your permission to use {}",
+            crate::APP_NAME,
+            super::tools::display_name(&call.name)
+        );
+        let payload = crate::hooks::notification_payload(
+            &self.live_context(),
+            "permission_prompt",
+            PERMISSION_PROMPT_TITLE,
+            &message,
+        );
+        // Off the gate's thread: the gate waits at once, so an answer given
+        // while a slow notifier runs is acted on, not held behind it. Under
+        // the turn's token all the same, so an Esc reaps a notifier that
+        // hangs (`docs/hooks.md`).
+        let hooks = self.clone();
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let _ = hooks.dispatch(
+                HookEvent::Notification,
+                Some("permission_prompt"),
+                &payload,
+                &cancel,
+            );
+        });
     }
 
     fn permission_request(
@@ -807,14 +1151,26 @@ impl HookSink for CommandHooks {
         outcome.block_reason
     }
 
+    fn stop_failure(&self, error: &str, details: &str, cancel: &CancelToken) {
+        // The session's turn, not a subagent's round: a tagged sink is a
+        // subagent's (Claude Code fires its stop events the same way).
+        if self.context.agent_id.is_some() {
+            return;
+        }
+        let payload =
+            crate::hooks::stop_failure_payload(&self.live_context(), error, details, details);
+        // Observation only: the output is ignored, as in the reference.
+        let _ = self.dispatch(HookEvent::StopFailure, Some(error), &payload, cancel);
+    }
+
     fn session_start(&self, cancel: &CancelToken) -> Vec<String> {
-        let sources: Vec<String> = match self.handles.sources.lock() {
-            Ok(mut queue) => queue.drain(..).collect(),
-            Err(_) => Vec::new(),
-        };
-        let mut contexts = Vec::new();
-        for source in sources {
-            let payload = crate::hooks::session_start_payload(&self.live_context(), &source);
+        // What the boundary fired in the background as the session opened —
+        // waited for first (Claude Code's rule: the first response waits for
+        // its SessionStart hooks), so its context is this turn's.
+        let mut contexts = self.handles.started.take(cancel);
+        // …then whatever is still queued: a source the boundary could not
+        // fire (hooks off, no real backend yet) runs here, the codex drain.
+        for (source, payload) in self.queued_session_starts() {
             let outcome = self.dispatch(HookEvent::SessionStart, Some(&source), &payload, cancel);
             contexts.extend(outcome.additional_context);
         }
@@ -1081,6 +1437,46 @@ mod tests {
     }
 
     #[test]
+    fn a_process_a_hook_leaves_holding_its_output_never_holds_the_event_up() {
+        // `server &` with no redirect: the hook is done when its own process
+        // is, though what it started still holds the output pipes. Waiting
+        // for their end held the event — and the turn — for as long as that
+        // process lived, past the hook's timeout and past Esc (the cancel
+        // poll had already ended), and what it printed must still count.
+        let hooks = hooks_for(
+            r#"{"hooks":{"SessionStart":[{"hooks":[
+                {"type":"command","command":"sleep 6 & echo started"}]}]}}"#,
+        );
+        hooks
+            .handles
+            .sources
+            .lock()
+            .unwrap()
+            .push("startup".to_string());
+        let started = Instant::now();
+        let contexts = hooks.session_start(&CancelToken::new());
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "waited on the background process: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(contexts, ["started"], "what it printed still counts");
+    }
+
+    #[test]
+    fn a_tool_call_never_waits_on_a_process_its_hook_left_running() {
+        let hooks = hooks_for(&pre_hook("sleep 6 &"));
+        let started = Instant::now();
+        let verdict = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the call waited on what the hook left running: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(verdict.blocked, None);
+    }
+
+    #[test]
     fn a_missing_hook_command_fails_open_with_a_warning() {
         let hooks = hooks_for(&pre_hook("/definitely/not/a/real/binary"));
         let verdict = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
@@ -1112,6 +1508,172 @@ mod tests {
         let context = verdict.context.expect("the model is told");
         assert!(context.contains("tests are red"), "{context}");
         assert!(verdict.note.is_some_and(|n| n.contains("tests are red")));
+    }
+
+    #[test]
+    fn a_failed_call_fires_post_tool_use_failure_not_post_tool_use() {
+        // Claude Code's split (`docs/hooks.md`): PostToolUse is a success's,
+        // PostToolUseFailure a failure's — matched on the tool name, the
+        // error in the payload, and the same answers (context the model
+        // reads, a note on the cell).
+        let probe = std::env::temp_dir().join("alter-zero-hook-post-failure-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{
+              "PostToolUse":[{{"hooks":[{{"type":"command","command":"echo success-hook >&2; exit 2"}}]}}],
+              "PostToolUseFailure":[{{"matcher":"bash","hooks":[{{"type":"command","command":
+                "cat > {p}; printf '%s' '{{\"hookSpecificOutput\":{{\"hookEventName\":\"PostToolUseFailure\",\"additionalContext\":\"the build is known to be flaky\"}}}}'"}}]}}]}}}}"#,
+            p = probe.display()
+        ));
+        let failed = ToolOutcome::error("Exit code: 2\nboom");
+        let verdict = hooks.post_tool_use_failure(
+            &call("bash", r#"{"command":"make"}"#),
+            &failed,
+            &CancelToken::new(),
+        );
+        let context = verdict.context.expect("the model reads the hook's context");
+        assert!(
+            context.contains("the build is known to be flaky"),
+            "{context}"
+        );
+        let written = std::fs::read_to_string(&probe).expect("the failure hook ran");
+        let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(
+            value["hook_event_name"],
+            serde_json::json!("PostToolUseFailure")
+        );
+        assert_eq!(value["error"], serde_json::json!("Exit code: 2\nboom"));
+        assert_eq!(value["tool_input"]["command"], serde_json::json!("make"));
+        let _ = std::fs::remove_file(&probe);
+
+        // …and the matcher is the tool's: another tool's failure is not it.
+        let quiet = hooks.post_tool_use_failure(&call("read", "{}"), &failed, &CancelToken::new());
+        assert!(quiet.context.is_none() && quiet.note.is_none(), "{quiet:?}");
+    }
+
+    #[test]
+    fn stop_failure_matches_the_error_type_and_a_subagents_round_fires_none() {
+        // Claude Code's StopFailure: the matcher is the error type, and the
+        // event is the session's turn ending — a subagent's failed round is
+        // not it (the tagged sink stays quiet, as for its Stop).
+        let probe = std::env::temp_dir().join("alter-zero-hook-stop-failure-probe.jsonl");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"StopFailure":[{{"matcher":"rate_limit","hooks":[
+              {{"type":"command","command":"cat >> {p}; echo >> {p}"}}]}}]}}}}"#,
+            p = probe.display()
+        ));
+        hooks.stop_failure("server_error", "HTTP 500: oops", &CancelToken::new());
+        assert!(!probe.exists(), "another error type never fires it");
+        hooks.tagged("a1", "explore").stop_failure(
+            "rate_limit",
+            "HTTP 429: slow down",
+            &CancelToken::new(),
+        );
+        assert!(!probe.exists(), "a subagent's failed round fires nothing");
+        hooks.stop_failure("rate_limit", "HTTP 429: slow down", &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the hook ran");
+        let value: serde_json::Value =
+            serde_json::from_str(written.lines().next().unwrap()).expect("valid JSON");
+        assert_eq!(value["hook_event_name"], serde_json::json!("StopFailure"));
+        assert_eq!(value["error"], serde_json::json!("rate_limit"));
+        assert_eq!(
+            value["error_details"],
+            serde_json::json!("HTTP 429: slow down")
+        );
+        assert_eq!(
+            value["last_assistant_message"],
+            serde_json::json!("HTTP 429: slow down")
+        );
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_permission_prompt_notifies_without_holding_the_prompt_up() {
+        // Claude Code's Notification(permission_prompt): fired as the prompt
+        // opens, observation only — a slow notifier (a webhook, a desktop
+        // notification) must not delay the call once the user has answered.
+        let probe = std::env::temp_dir().join("alter-zero-hook-notification-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"Notification":[{{"matcher":"permission_prompt","hooks":[
+              {{"type":"command","command":"cat > {p}.tmp; mv {p}.tmp {p}; sleep 5"}}]}}]}}}}"#,
+            p = probe.display()
+        ));
+        let started = Instant::now();
+        hooks.permission_prompt(
+            &call("bash", r#"{"command":"make deploy"}"#),
+            &CancelToken::new(),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the notifier held the prompt up: {:?}",
+            started.elapsed()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !probe.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let written = std::fs::read_to_string(&probe).expect("the notifier ran");
+        let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(value["hook_event_name"], serde_json::json!("Notification"));
+        assert_eq!(
+            value["notification_type"],
+            serde_json::json!("permission_prompt")
+        );
+        assert_eq!(value["title"], serde_json::json!("Permission needed"));
+        assert_eq!(
+            value["message"],
+            serde_json::json!(format!(
+                "{} needs your permission to use Bash",
+                crate::APP_NAME
+            ))
+        );
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_cancelled_turn_reaps_a_running_notifier() {
+        // Fired off the gate's thread, the notifier still belongs to the
+        // turn: an Esc kills it rather than leaving it running.
+        let probe = std::env::temp_dir().join("alter-zero-hook-notifier-reaped-probe");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"Notification":[{{"hooks":[
+              {{"type":"command","command":"sleep 2; touch {p}","timeout":600}}]}}]}}}}"#,
+            p = probe.display()
+        ));
+        let cancel = CancelToken::new();
+        hooks.permission_prompt(&call("bash", "{}"), &cancel);
+        std::thread::sleep(Duration::from_millis(300));
+        cancel.cancel();
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!probe.exists(), "the notifier outlived its cancelled turn");
+    }
+
+    #[test]
+    fn stop_failure_kinds_are_claude_codes_error_types() {
+        use super::super::LlmError;
+        let api = |status| LlmError::Api {
+            status,
+            body: String::new(),
+        };
+        assert_eq!(stop_failure_kind(&api(429)), "rate_limit");
+        assert_eq!(stop_failure_kind(&api(529)), "overloaded");
+        assert_eq!(stop_failure_kind(&api(401)), "authentication_failed");
+        assert_eq!(stop_failure_kind(&api(403)), "authentication_failed");
+        assert_eq!(stop_failure_kind(&api(402)), "billing_error");
+        assert_eq!(stop_failure_kind(&api(404)), "model_not_found");
+        assert_eq!(stop_failure_kind(&api(400)), "invalid_request");
+        assert_eq!(stop_failure_kind(&api(500)), "server_error");
+        assert_eq!(
+            stop_failure_kind(&LlmError::Http("reset".into())),
+            "server_error"
+        );
+        assert_eq!(
+            stop_failure_kind(&LlmError::Decode("bad frame".into())),
+            "unknown"
+        );
     }
 
     #[test]
@@ -1272,17 +1834,20 @@ mod tests {
     }
 
     #[test]
-    fn payloads_report_the_live_permission_mode_and_transcript_path() {
+    fn payloads_report_the_live_permission_mode_and_conversation() {
         // The regression: the sink used to freeze `permission_mode: None`
         // ("disabled") at build time, so a Shift+Tab cycle never reached a
         // payload — and `transcript_path` stayed null forever because the
         // rollout file is created after the sink. Both now resolve at
-        // dispatch time from live handles.
+        // dispatch time from live handles — and so does `session_id`, the
+        // conversation's own id (the one `--resume` takes), which the
+        // recorder publishes before its file exists and moves on `/clear`
+        // and `/resume`.
         let probe = std::env::temp_dir().join("alter-zero-hook-live-ctx-probe.json");
         let _ = std::fs::remove_file(&probe);
         let gate = crate::permission::PermissionGate::new();
         gate.set_mode(crate::permission::PermissionMode::Edit);
-        let transcript: TranscriptCell = TranscriptCell::default();
+        let conversation = ConversationCell::default();
         let file = HooksFile::parse(&pre_hook(&format!("cat > {}", probe.display()))).unwrap();
         let hooks = CommandHooks::new(
             Arc::new(file),
@@ -1297,31 +1862,53 @@ mod tests {
             std::env::temp_dir(),
             HookHandles {
                 gate: Some(gate.clone()),
-                transcript: Arc::clone(&transcript),
+                conversation: Arc::clone(&conversation),
                 ..HookHandles::default()
             },
         )
         .expect("runnable");
+        let fire = || -> serde_json::Value {
+            let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+            serde_json::from_str(&std::fs::read_to_string(&probe).expect("hook ran")).unwrap()
+        };
 
-        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
-        let value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&probe).expect("hook ran")).unwrap();
+        let value = fire();
         assert_eq!(value["permission_mode"], serde_json::json!("edit"));
+        assert_eq!(value["transcript_path"], serde_json::Value::Null);
+        assert_eq!(
+            value["session_id"],
+            serde_json::json!("s"),
+            "nothing published yet"
+        );
+
+        // A fresh conversation has its id before its file.
+        *conversation.write().expect("not poisoned") = Conversation {
+            id: Some("conv-1".to_string()),
+            transcript_path: None,
+        };
+        let value = fire();
+        assert_eq!(value["session_id"], serde_json::json!("conv-1"));
         assert_eq!(value["transcript_path"], serde_json::Value::Null);
 
         gate.set_mode(crate::permission::PermissionMode::Master);
-        *transcript.write().expect("not poisoned") = Some("/r/sess.jsonl".to_string());
-        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
-        let value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&probe).expect("hook ran")).unwrap();
+        *conversation.write().expect("not poisoned") = Conversation {
+            id: Some("conv-2".to_string()),
+            transcript_path: Some("/r/conv-2.jsonl".to_string()),
+        };
+        let value = fire();
         assert_eq!(
             value["permission_mode"],
             serde_json::json!("master"),
             "a Shift+Tab cycle reaches the next payload"
         );
         assert_eq!(
+            value["session_id"],
+            serde_json::json!("conv-2"),
+            "the conversation the recorder moved to is the one the payload names"
+        );
+        assert_eq!(
             value["transcript_path"],
-            serde_json::json!("/r/sess.jsonl"),
+            serde_json::json!("/r/conv-2.jsonl"),
             "the recorder's published rollout path reaches the payload"
         );
         let _ = std::fs::remove_file(&probe);
@@ -1360,6 +1947,112 @@ mod tests {
             hooks.session_start(&CancelToken::new()),
             Vec::<String>::new(),
             "the queue drained"
+        );
+    }
+
+    /// A sink over one `SessionStart` handler running `command`, `startup`
+    /// queued — what bootstrap leaves for the boundary to fire.
+    fn session_start_hooks(command: &str) -> CommandHooks {
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"SessionStart":[{{"matcher":"startup","hooks":[
+              {{"type":"command","command":{command}}}]}}]}}}}"#,
+            command = serde_json::to_string(command).unwrap()
+        ));
+        hooks
+            .handles
+            .sources
+            .lock()
+            .unwrap()
+            .push("startup".to_string());
+        hooks
+    }
+
+    #[test]
+    fn a_session_start_fired_as_the_session_opens_runs_in_the_background() {
+        // Claude Code's timing (`docs/hooks.md`): SessionStart runs in the
+        // background as the session opens, so the user can type at once —
+        // and the first turn waits for it, so its context still lands.
+        let hooks = session_start_hooks("sleep 1; echo 'the build id is ZX-4417'");
+        let started = Instant::now();
+        hooks.fire_session_start();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "firing waited on the hook: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            ["the build id is ZX-4417"],
+            "the first turn waits for the hook and takes its context"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(900),
+            "the turn took the context before the hook had run: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            Vec::<String>::new(),
+            "the context is the first turn's alone"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_turn_leaves_the_session_start_for_the_next_one() {
+        // An Esc while the first turn waits stops the wait, not the hook:
+        // the next turn is the first response, and it still waits.
+        let hooks = session_start_hooks("sleep 1; echo ctx");
+        hooks.fire_session_start();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert_eq!(hooks.session_start(&cancel), Vec::<String>::new());
+        assert_eq!(hooks.session_start(&CancelToken::new()), ["ctx"]);
+    }
+
+    #[test]
+    fn a_discarded_session_start_applies_to_nothing_and_is_reaped() {
+        // A `/clear` or a switch while the hooks still run: nothing they
+        // return applies to the session (Claude Code's rule), and the
+        // handler is killed rather than left running.
+        let probe = std::env::temp_dir().join("alter-zero-hook-discarded-start-probe");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = session_start_hooks(&format!("sleep 1; touch {}; echo stale", probe.display()));
+        hooks.fire_session_start();
+        std::thread::sleep(Duration::from_millis(200));
+        hooks.handles.discard_session_start();
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            Vec::<String>::new()
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!probe.exists(), "the discarded hook ran on");
+    }
+
+    #[test]
+    fn a_later_session_start_replaces_one_no_turn_read() {
+        // `/clear` fires its own SessionStart: whatever the startup one
+        // returned belonged to the conversation that ended, so only the new
+        // one's context reaches the next turn.
+        let hooks = hooks_for(
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command",
+              "command":"grep -o 'source.:.[a-z]*'"}]}]}}"#,
+        );
+        let queue = |source: &str| {
+            hooks
+                .handles
+                .sources
+                .lock()
+                .unwrap()
+                .push(source.to_string());
+        };
+        queue("startup");
+        hooks.fire_session_start();
+        std::thread::sleep(Duration::from_millis(400));
+        queue("clear");
+        hooks.fire_session_start();
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            [r#"source":"clear"#]
         );
     }
 

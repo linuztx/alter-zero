@@ -166,8 +166,10 @@ reads it, exactly as shell notices are (`App::take_delivered_agent_notice` on
   row it lands on the shell indicator when a shell is running (a second ↑
   there returns to the composer), else exits directly — so ↑/↓ traverse
   composer ⇄ indicator ⇄ roster symmetrically. ↑/↓ move, `Enter` views
-  (main = leave the view / close), `x` **stops** the selected agent — and,
-  on a row that has already settled, **clears** it (below), Esc
+  (main = leave the view / close), `x` **stops** the selected agent — its
+  open and queued permission prompts leaving the screen with it, since an
+  answer would reach nobody (`docs/permissions.md`) — and, on a row that
+  has already settled, **clears** it (below), Esc
   dismisses, any other key falls through after clearing (the
   `background_focus` contract). The footer line swaps to the hint
   (`↑/↓ to select · Enter to view` on main, `Enter to view · x to stop` on a

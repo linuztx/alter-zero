@@ -174,11 +174,14 @@ pub const fn event_summary(event: HookEvent) -> &'static str {
     match event {
         HookEvent::PreToolUse => "Before tool execution",
         HookEvent::PostToolUse => "After tool execution",
+        HookEvent::PostToolUseFailure => "After a tool call fails",
         HookEvent::PermissionRequest => "When a tool call needs permission",
+        HookEvent::Notification => "When the app needs your attention",
         HookEvent::UserPromptSubmit => "When the user submits a prompt",
         HookEvent::SessionStart => "When a session starts",
         HookEvent::SessionEnd => "When the session ends",
         HookEvent::Stop => "When the model finishes its reply",
+        HookEvent::StopFailure => "When a turn ends on an error",
         HookEvent::SubagentStart => "When a subagent is launched",
         HookEvent::SubagentStop => "When a subagent finishes",
         HookEvent::PreCompact => "Before context compaction",
@@ -205,12 +208,24 @@ pub const fn event_description(event: HookEvent) -> &'static str {
              Exit code 2 - block; stderr is shown to the model\n\
              Other exit codes - non-blocking error"
         }
+        HookEvent::PostToolUseFailure => {
+            "Input to command is JSON with tool_name, tool_input, and error; \
+             runs only after a call that failed.\n\
+             Exit code 0 - stdout JSON may block or feed the model extra context\n\
+             Exit code 2 - block; stderr is shown to the model\n\
+             Other exit codes - non-blocking error"
+        }
         HookEvent::PermissionRequest => {
             "Runs where the permission prompt or auto-mode classifier would ask.\n\
              Exit code 0 - stdout JSON may allow or deny in the user's stead \
              (\"ask\" falls back to the prompt)\n\
              Exit code 2 - deny with stderr as the reason\n\
              Other exit codes - non-blocking error; the normal prompt asks"
+        }
+        HookEvent::Notification => {
+            "Runs when a permission prompt opens, without holding it up; the \
+             matcher selects the type (permission_prompt).\n\
+             Fire-and-forget - output and exit codes are ignored"
         }
         HookEvent::UserPromptSubmit => {
             "Input to command is JSON with the submitted prompt text.\n\
@@ -219,15 +234,15 @@ pub const fn event_description(event: HookEvent) -> &'static str {
              Other exit codes - non-blocking error; the prompt goes through"
         }
         HookEvent::SessionStart => {
-            "Runs at the first turn after startup, /resume, or /clear; the matcher \
-             selects the source.\n\
+            "Runs in the background as the session opens (launch, /resume, /clear) \
+             and the first turn waits for it; the matcher selects the source.\n\
              Exit code 0 - stdout becomes context for the model\n\
              Blocking is ignored\n\
              Other exit codes - non-blocking error"
         }
         HookEvent::SessionEnd => {
-            "Runs as the session closes (/clear, quit); the matcher selects the \
-             reason.\n\
+            "Runs as the conversation closes (/clear, /resume, quit); the matcher \
+             selects the reason.\n\
              Fire-and-forget under a 2s budget - output and exit codes are ignored"
         }
         HookEvent::Stop => {
@@ -236,6 +251,11 @@ pub const fn event_description(event: HookEvent) -> &'static str {
              (the reason becomes the next user message)\n\
              Exit code 2 - continue the turn with stderr as the feedback\n\
              Other exit codes - non-blocking error; the turn ends"
+        }
+        HookEvent::StopFailure => {
+            "Runs when a turn ends on an error instead of an answer; the matcher \
+             selects the error type (rate_limit, server_error, ...).\n\
+             Fire-and-forget - output and exit codes are ignored"
         }
         HookEvent::SubagentStart => {
             "Runs when an Agent-tool subagent launches; the matcher selects the \

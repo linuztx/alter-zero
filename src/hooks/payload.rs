@@ -19,7 +19,11 @@ use super::event::HookEvent;
 /// into each event.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HookContext {
-    /// The `/resume` rollout's session id.
+    /// The conversation's id — its rollout file's, the handle `--resume`
+    /// takes (Claude Code's meaning: a `/clear` starts a new one, a
+    /// `/resume` adopts the resumed file's). The boundary publishes it live
+    /// as the recorder moves (`docs/hooks.md`); this is the fall-back before
+    /// it has.
     pub session_id: String,
     /// The rollout file this conversation is recorded to, when one is being
     /// written — a hook that wants the transcript reads it from here.
@@ -34,6 +38,11 @@ pub struct HookContext {
     /// `agent_id`'s presence.
     pub agent_id: Option<String>,
     pub agent_type: Option<String>,
+    /// The session's scratchpad (`docs/scratchpad.md`), Claude Code's common
+    /// `scratchpad_dir` — how a hook finds the session's temp tree now that
+    /// `session_id` follows the conversation rather than the process.
+    /// Omitted when the session has none.
+    pub scratchpad_dir: Option<String>,
 }
 
 impl HookContext {
@@ -58,6 +67,9 @@ impl HookContext {
         }
         if let Some(kind) = &self.agent_type {
             map.insert("agent_type".into(), json!(kind));
+        }
+        if let Some(dir) = &self.scratchpad_dir {
+            map.insert("scratchpad_dir".into(), json!(dir));
         }
         map
     }
@@ -130,6 +142,64 @@ pub fn post_tool_use_payload(
         json!({ "output": output, "success": ok }),
     );
     map.insert("tool_use_id".into(), json!(tool_use_id));
+    finish(map)
+}
+
+/// `PostToolUseFailure` — the call ran and **failed** (Claude Code's split:
+/// `PostToolUse` is for successes). `error` is what the call returned — our
+/// tools report a failure as text, the same text its cell shows — and
+/// `is_interrupt` is always `false`: a cancelled call is reaped before any
+/// hook could run, the reference's own rule ("cancelling a running tool
+/// does not fire this hook").
+#[must_use]
+pub fn post_tool_use_failure_payload(
+    ctx: &HookContext,
+    tool_name: &str,
+    arguments: &str,
+    error: &str,
+    tool_use_id: &str,
+) -> String {
+    let mut map = ctx.base(HookEvent::PostToolUseFailure);
+    map.insert("tool_name".into(), json!(tool_name));
+    map.insert("tool_input".into(), tool_input(arguments));
+    map.insert("tool_use_id".into(), json!(tool_use_id));
+    map.insert("error".into(), json!(error));
+    map.insert("is_interrupt".into(), json!(false));
+    finish(map)
+}
+
+/// `StopFailure` — the turn ended on an error instead of an answer (Claude
+/// Code's fields): `error` the classified type (`rate_limit`,
+/// `server_error`, … `unknown`) — also the matcher — `error_details` the
+/// provider's own account, and `last_assistant_message` the error text the
+/// conversation shows, which for this event is the error itself.
+#[must_use]
+pub fn stop_failure_payload(
+    ctx: &HookContext,
+    error: &str,
+    error_details: &str,
+    last_message: &str,
+) -> String {
+    let mut map = ctx.base(HookEvent::StopFailure);
+    map.insert("error".into(), json!(error));
+    map.insert("error_details".into(), json!(error_details));
+    map.insert("last_assistant_message".into(), json!(last_message));
+    finish(map)
+}
+
+/// `Notification` — Claude Code's `{notification_type, title, message}`;
+/// `permission_prompt` is the one type this app raises.
+#[must_use]
+pub fn notification_payload(
+    ctx: &HookContext,
+    notification_type: &str,
+    title: &str,
+    message: &str,
+) -> String {
+    let mut map = ctx.base(HookEvent::Notification);
+    map.insert("notification_type".into(), json!(notification_type));
+    map.insert("title".into(), json!(title));
+    map.insert("message".into(), json!(message));
     finish(map)
 }
 
@@ -230,6 +300,7 @@ mod tests {
             permission_mode: Some("manual".into()),
             agent_id: None,
             agent_type: None,
+            scratchpad_dir: None,
         }
     }
 
@@ -270,6 +341,25 @@ mod tests {
         let v = parse(&pre_tool_use_payload(&c, "bash", "{}", "c"));
         assert_eq!(v["agent_id"], json!("agent-7"));
         assert_eq!(v["agent_type"], json!("general-purpose"));
+    }
+
+    #[test]
+    fn the_scratchpad_rides_the_base_only_when_the_session_has_one() {
+        // Claude Code's common `scratchpad_dir`: how a hook finds the
+        // session's temp tree now that `session_id` follows the conversation
+        // (a `/clear` or a `/resume` moves it; the tree stays).
+        let v = parse(&stop_payload(&ctx(), false, ""));
+        assert!(
+            !v.as_object().unwrap().contains_key("scratchpad_dir"),
+            "no scratchpad, no field"
+        );
+        let mut c = ctx();
+        c.scratchpad_dir = Some("/tmp/alter-zero-1000/s1/scratchpad".into());
+        let v = parse(&stop_payload(&c, false, ""));
+        assert_eq!(
+            v["scratchpad_dir"],
+            json!("/tmp/alter-zero-1000/s1/scratchpad")
+        );
     }
 
     #[test]
@@ -405,6 +495,63 @@ mod tests {
         let v = parse(&subagent_start_payload(&ctx(), "a2", "explore"));
         assert_eq!(v["agent_id"], json!("a2"));
         assert_eq!(v["agent_type"], json!("explore"));
+    }
+
+    #[test]
+    fn a_failed_call_reports_its_error_where_a_success_reports_its_response() {
+        // Claude Code's PostToolUseFailure: `error` instead of
+        // `tool_response`, and `is_interrupt` — always false here, since a
+        // cancelled call is reaped before any hook runs (the reference's own
+        // rule: cancelling a running tool does not fire this hook).
+        let v = parse(&post_tool_use_failure_payload(
+            &ctx(),
+            "bash",
+            r#"{"command":"make"}"#,
+            "Exit code: 2\nmake: *** [all] Error 1",
+            "call-3",
+        ));
+        assert_eq!(v["hook_event_name"], json!("PostToolUseFailure"));
+        assert_eq!(v["tool_name"], json!("bash"));
+        assert_eq!(v["tool_input"], json!({"command": "make"}));
+        assert_eq!(v["tool_use_id"], json!("call-3"));
+        assert_eq!(v["error"], json!("Exit code: 2\nmake: *** [all] Error 1"));
+        assert_eq!(v["is_interrupt"], json!(false));
+        assert!(!v.as_object().unwrap().contains_key("tool_response"));
+    }
+
+    #[test]
+    fn a_stop_failure_names_the_error_type_its_details_and_the_shown_text() {
+        // Claude Code's StopFailure: `error` is the type (and the matcher),
+        // `error_details` the provider's account, and `last_assistant_message`
+        // the error text the conversation shows — for this event the error
+        // itself, not a reply.
+        let v = parse(&stop_failure_payload(
+            &ctx(),
+            "rate_limit",
+            "HTTP 429: slow down",
+            "HTTP 429: slow down",
+        ));
+        assert_eq!(v["hook_event_name"], json!("StopFailure"));
+        assert_eq!(v["error"], json!("rate_limit"));
+        assert_eq!(v["error_details"], json!("HTTP 429: slow down"));
+        assert_eq!(v["last_assistant_message"], json!("HTTP 429: slow down"));
+    }
+
+    #[test]
+    fn a_notification_carries_claude_codes_type_title_and_message() {
+        let v = parse(&notification_payload(
+            &ctx(),
+            "permission_prompt",
+            "Permission needed",
+            "Alter Zero needs your permission to use Bash",
+        ));
+        assert_eq!(v["hook_event_name"], json!("Notification"));
+        assert_eq!(v["notification_type"], json!("permission_prompt"));
+        assert_eq!(v["title"], json!("Permission needed"));
+        assert_eq!(
+            v["message"],
+            json!("Alter Zero needs your permission to use Bash")
+        );
     }
 
     #[test]

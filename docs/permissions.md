@@ -77,6 +77,17 @@ turn each frame into an unbounded build).
 A request raised by a **subagent** (`docs/agent-tool.md`) says so in the title:
 `Create file · from the general-purpose agent`.
 
+**A stopped agent's requests leave with it.** Stopping an agent — the
+roster's `x`, the lead's `agentkill` — cancels its thread, which gives up its
+wait on the gate; what it asked to do can never run. Its requests used to
+stay on screen anyway, a prompt whose answer reached nobody (and, in a
+herdr pane, a `blocked` state for a question no longer being asked). Now
+`App::withdraw_agent_permissions` takes them off: its queued requests are
+dropped, its open prompt closes with the next queued one opening in its
+place, and every id is released on the gate like any abandoned request.
+Another asker's requests — the lead's, a sibling agent's — stay where they
+were.
+
 ## What stays on screen
 
 A prompt is a question *about something*, so the modal never hides what raised

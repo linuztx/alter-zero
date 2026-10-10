@@ -147,6 +147,34 @@ impl App {
         }
     }
 
+    /// The agent `id` was stopped (the roster's `x`, the lead's `agentkill`):
+    /// what it asked to do can never run, so its requests leave the screen —
+    /// queued ones dropped, the open one closed with the next queued modal
+    /// opening in its place — and are released like any abandoned request
+    /// (the stopped thread has given up its wait already; the release keeps
+    /// the gate's board honest). Another asker's requests stay where they
+    /// were.
+    pub(super) fn withdraw_agent_permissions(&mut self, id: &str) {
+        let asked_by_it = |request: &PermissionRequest| request.agent_id.as_deref() == Some(id);
+        let (gone, kept): (VecDeque<PermissionRequest>, VecDeque<PermissionRequest>) =
+            std::mem::take(&mut self.pending_permissions)
+                .into_iter()
+                .partition(asked_by_it);
+        self.pending_permissions = kept;
+        self.abandoned_permissions
+            .extend(gone.into_iter().map(|request| request.id));
+        let open = self
+            .permission
+            .as_ref()
+            .filter(|prompt| asked_by_it(&prompt.request))
+            .map(|prompt| prompt.request.id.clone());
+        if let Some(open) = open {
+            self.abandoned_permissions.push(open);
+            self.close_permission();
+            self.open_next_pending();
+        }
+    }
+
     /// Release every open/queued request a **standing approval now covers**,
     /// returning their ids for the loop to approve on the gate.
     ///

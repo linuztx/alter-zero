@@ -99,7 +99,11 @@ overlay machinery.
   dir). `{id}` is nanos-since-epoch + pid in hex — unique enough without
   a uuid dependency, and never parsed back (we resume by *path*). The path
   derivation is the pure `session::rollout_rel_path(date, time, id)`; the
-  clock/pid stay at the boundary.
+  clock/pid stay at the boundary. The id is chosen **before** the file
+  exists — the first conversation's is the session's startup id (the temp
+  tree's, `docs/scratchpad.md`), and a `/clear` mints the next one — because
+  a hook payload names the conversation from its first event, ahead of the
+  deferred create (`docs/hooks.md`).
 - Lines are codex's shape: `{"timestamp": <UTC millis Z>, "type": …,
   "payload": …}`. Line 1 is `session_meta`
   (`{id, timestamp, cwd, model, originator: "alter-zero", version}`); then one

@@ -250,7 +250,14 @@ pub fn run_agent(
             }
             RoundOutcome::Cancelled => return,
             RoundOutcome::Failed(err) => {
-                let _ = tx.send(StreamEvent::Error(err.to_string()));
+                // `StopFailure` (docs/hooks.md): the turn ends on an error.
+                // Fired BEFORE the Error goes out, as Stop is before
+                // StreamDone — the boundary may start the next queued turn
+                // the moment it hears, and that turn's hooks must not
+                // overtake this one.
+                let details = err.to_string();
+                hooks.stop_failure(super::hooks::stop_failure_kind(&err), &details, cancel);
+                let _ = tx.send(StreamEvent::Error(details));
                 return;
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
@@ -268,7 +275,12 @@ pub fn run_agent(
                 // part-way with its work half-done. The user's Esc is the
                 // stop button; the cap is for those who want a hard ceiling.
                 if max_tool_calls > 0 && used_calls >= max_tool_calls {
-                    let _ = tx.send(StreamEvent::Error(limit_error(max_tool_calls)));
+                    let message = limit_error(max_tool_calls);
+                    // The ceiling ends the turn like an error does: `unknown`
+                    // is the reference's catch-all — a local limit is no API
+                    // error type.
+                    hooks.stop_failure("unknown", &message, cancel);
+                    let _ = tx.send(StreamEvent::Error(message));
                     return;
                 }
                 messages.push(assistant);
@@ -559,11 +571,13 @@ pub fn run_agent(
                     // payload at all), so a format-after-write hook written
                     // for either never runs here after a failed write. A
                     // backgrounded call has produced no output yet, so it too
-                    // is left alone.
-                    let post = if outcome.background.is_none() && outcome.ok {
-                        hooks.post_tool_use(call, &outcome, cancel)
-                    } else {
-                        super::hooks::PostToolVerdict::default()
+                    // is left alone. A call that ran and failed takes the
+                    // reference's separate `PostToolUseFailure`, with the
+                    // same answers.
+                    let post = match (&outcome.background, outcome.ok) {
+                        (Some(_), _) => super::hooks::PostToolVerdict::default(),
+                        (None, true) => hooks.post_tool_use(call, &outcome, cancel),
+                        (None, false) => hooks.post_tool_use_failure(call, &outcome, cancel),
                     };
                     if let Some(note) = post.note {
                         let _ = tx.send(StreamEvent::ToolNote(note));
@@ -676,7 +690,9 @@ pub fn run_agent(
                 // every call is answered, so end the turn here rather than
                 // asking for a round whose budget is already spent.
                 if !refused.is_empty() {
-                    let _ = tx.send(StreamEvent::Error(limit_error(max_tool_calls)));
+                    let message = limit_error(max_tool_calls);
+                    hooks.stop_failure("unknown", &message, cancel);
+                    let _ = tx.send(StreamEvent::Error(message));
                     return;
                 }
             }
@@ -954,9 +970,23 @@ mod tests {
         /// Every `stop` dispatch: the loop-guard flag and the last message it
         /// was shown.
         stop_seen: std::sync::Mutex<Vec<(bool, String)>>,
+        /// The scripted `PostToolUseFailure` answer.
+        failure: PostToolVerdict,
+        /// Every `PostToolUseFailure` dispatch, with the outcome's `ok`.
+        failures: std::sync::Mutex<Vec<(String, bool)>>,
+        /// Every `StopFailure` dispatch: the error type and its details.
+        stop_failures: std::sync::Mutex<Vec<(String, String)>>,
     }
 
     impl FakeHooks {
+        fn failures(&self) -> Vec<(String, bool)> {
+            self.failures.lock().expect("not poisoned").clone()
+        }
+
+        fn stop_failures(&self) -> Vec<(String, String)> {
+            self.stop_failures.lock().expect("not poisoned").clone()
+        }
+
         fn seen(&self) -> Vec<(String, String)> {
             self.seen.lock().expect("not poisoned").clone()
         }
@@ -990,6 +1020,26 @@ mod tests {
                 .expect("not poisoned")
                 .push((call.name.clone(), outcome.ok));
             self.post.clone()
+        }
+
+        fn post_tool_use_failure(
+            &self,
+            call: &ToolCallRequest,
+            outcome: &ToolOutcome,
+            _cancel: &CancelToken,
+        ) -> PostToolVerdict {
+            self.failures
+                .lock()
+                .expect("not poisoned")
+                .push((call.name.clone(), outcome.ok));
+            self.failure.clone()
+        }
+
+        fn stop_failure(&self, error: &str, details: &str, _cancel: &CancelToken) {
+            self.stop_failures
+                .lock()
+                .expect("not poisoned")
+                .push((error.to_string(), details.to_string()));
         }
 
         fn stop(
@@ -1267,8 +1317,8 @@ mod tests {
     #[test]
     fn a_cancelled_or_failed_round_never_fires_stop() {
         // Claude Code returns before its stop hooks on an abort, and fires
-        // StopFailure (unmodelled here) on an API error — either way, Stop
-        // never sees a turn that didn't finish answering.
+        // StopFailure instead on an API error — either way, Stop never sees
+        // a turn that didn't finish answering.
         for outcome in [
             RoundOutcome::Cancelled,
             RoundOutcome::Failed(crate::llm::LlmError::Http("boom".to_string())),
@@ -1323,6 +1373,119 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, .. })),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn a_failed_call_fires_post_tool_use_failure_and_its_context_reaches_the_model() {
+        // Claude Code's split: a failure is its own event, with the same
+        // answers PostToolUse has — so a failed write or a red `bash` is
+        // observable at all (`docs/hooks.md`).
+        let hooks = FakeHooks {
+            failure: PostToolVerdict {
+                context: Some("the build is known to be flaky".to_string()),
+                note: Some("Context added by hook".to_string()),
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with(&hooks, ToolOutcome::error("boom"), Approval::Allow);
+        assert_eq!(hooks.failures(), vec![("bash".to_string(), false)]);
+        assert_eq!(hooks.posts(), Vec::<(String, bool)>::new());
+        assert!(
+            result.contains("boom") && result.contains("the build is known to be flaky"),
+            "the model reads the failure and the hook's context: {result}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolNote(n) if n == "Context added by hook")),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_successful_call_never_fires_post_tool_use_failure() {
+        let hooks = FakeHooks::default();
+        let _ = round_with(&hooks, ToolOutcome::ok("fine"), Approval::Allow);
+        assert_eq!(hooks.failures(), Vec::<(String, bool)>::new());
+    }
+
+    #[test]
+    fn a_failed_round_fires_stop_failure_with_the_classified_error() {
+        // Claude Code's StopFailure: the turn ended on a backend error, and
+        // the hook hears what kind before the error is reported.
+        let (tx, mut rx) = unbounded_channel();
+        let hooks = FakeHooks::default();
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| {
+                RoundOutcome::Failed(LlmError::Api {
+                    status: 429,
+                    body: "slow down".to_string(),
+                })
+            },
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+            &no_sessions,
+        );
+        assert_eq!(
+            hooks.stop_failures(),
+            vec![("rate_limit".to_string(), "HTTP 429: slow down".to_string())]
+        );
+        assert!(
+            matches!(drain(&mut rx).last(), Some(StreamEvent::Error(m)) if m == "HTTP 429: slow down")
+        );
+    }
+
+    #[test]
+    fn the_tool_call_ceiling_ends_the_turn_through_stop_failure_too() {
+        let (tx, _rx) = unbounded_channel();
+        let hooks = FakeHooks::default();
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            1,
+            &mut vec![ChatMessage::user("loop")],
+            |_msgs| RoundOutcome::ToolCalls {
+                assistant: assistant_with(&calls),
+                calls: calls.clone(),
+            },
+            |_c, _sink| ToolOutcome::ok("ran"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+            &no_sessions,
+        );
+        let failures = hooks.stop_failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].0, "unknown", "a local ceiling is no API error");
+    }
+
+    #[test]
+    fn a_cancelled_round_fires_no_stop_failure() {
+        let (tx, _rx) = unbounded_channel();
+        let hooks = FakeHooks::default();
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| RoundOutcome::Cancelled,
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+            &no_sessions,
+        );
+        assert_eq!(hooks.stop_failures(), Vec::<(String, String)>::new());
     }
 
     #[test]

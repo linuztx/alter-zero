@@ -781,9 +781,11 @@ impl ModelSession {
         }
     }
 
-    /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) for the
-    /// next turn's drain (`docs/hooks.md`). A no-op without hooks.
-    pub(crate) fn queue_session_source(&self, source: &str) {
+    /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) — fired
+    /// by the next [`fire_session_start`](Self::fire_session_start), or the
+    /// next turn's drain when the session had no hooks or real backend to
+    /// fire it on (`docs/hooks.md`). A no-op without hooks.
+    fn queue_session_source(&self, source: &str) {
         if let Some(setup) = &self.hooks
             && let Ok(mut sources) = setup.handles.sources.lock()
         {
@@ -791,18 +793,68 @@ impl ModelSession {
         }
     }
 
-    /// Fire the `SessionEnd` hooks (`docs/hooks.md`) — a `/clear`'s `clear`,
-    /// a quit's `prompt_input_exit`. Bounded inside the sink (2 s for the
-    /// whole event), so neither path can hang on a hook. A no-op without
-    /// hooks.
-    pub(crate) fn fire_session_end(&self, reason: &str) {
-        if let Some(sink) = self
-            .hooks
-            .as_ref()
-            .and_then(|setup| setup.sink(&self.model_name()))
-        {
-            sink.session_end(reason);
+    /// The sink the **boundary's** events fire on (`docs/hooks.md`): `None`
+    /// without a real backend — the offline demo runs no hooks, so it fires
+    /// no boundary events either — or without hooks to run.
+    fn boundary_hooks(&self) -> Option<alter_zero::llm::hooks::CommandHooks> {
+        if !self.real_backend {
+            return None;
         }
+        self.hooks
+            .as_ref()
+            .and_then(|setup| setup.command_hooks(&self.model_name()))
+    }
+
+    /// Fire the queued `SessionStart` sources now, in the background —
+    /// Claude Code's timing: the user can type at once, and the first turn
+    /// waits for the hooks so their context still lands (`docs/hooks.md`).
+    /// Without hooks or a real backend the sources stay queued for the first
+    /// turn that has both.
+    pub(crate) fn fire_session_start(&self) {
+        if let Some(hooks) = self.boundary_hooks() {
+            hooks.fire_session_start();
+        }
+    }
+
+    /// The conversation is ending — `reason` `clear` (a `/clear`), `resume`
+    /// (a `/resume` switching away) or `prompt_input_exit` (a quit):
+    /// `SessionEnd`, naming the conversation that ends, so call it **before**
+    /// the recorder moves on. Any `SessionStart` context no turn read is
+    /// forgotten first. A conversation whose `SessionStart` never fired —
+    /// still queued: hooks off, no real backend yet, a bare `--resume` boot
+    /// still in its picker — never started for the hooks, so its end is not
+    /// announced either, and its pending source goes with it. Bounded inside
+    /// the sink (2 s for the whole event), so no path can hang on a hook.
+    pub(crate) fn end_conversation(&self, reason: &str) {
+        use alter_zero::llm::hooks::HookSink;
+        let Some(setup) = &self.hooks else {
+            return;
+        };
+        setup.handles.discard_session_start();
+        let never_started = setup
+            .handles
+            .sources
+            .lock()
+            .map(|mut queue| {
+                let pending = !queue.is_empty();
+                queue.clear();
+                pending
+            })
+            .unwrap_or(false);
+        if never_started {
+            return;
+        }
+        if let Some(hooks) = self.boundary_hooks() {
+            hooks.session_end(reason);
+        }
+    }
+
+    /// The conversation that replaced it began: `SessionStart` with `source`,
+    /// in the background — call it **after** the recorder moved on, so the
+    /// event names the new conversation.
+    pub(crate) fn begin_conversation(&self, source: &str) {
+        self.queue_session_source(source);
+        self.fire_session_start();
     }
 
     /// Replace every pending source with `source` — the boot path's variant:
@@ -821,11 +873,24 @@ impl ModelSession {
     /// completion's follow-up): its prompt is synthesized, so the
     /// `UserPromptSubmit` hook must not fire for it (`docs/hooks.md`).
     pub(crate) fn mark_synthetic_turn(&self) {
+        self.set_synthetic_turn(true);
+    }
+
+    /// Drop a synthetic-turn mark nobody consumed — called before every
+    /// **user** turn. Only a sink running the turn's hooks consumes the mark,
+    /// so one set while hooks were off (or on the offline demo, which runs
+    /// none) used to outlive its turn and silence the user's next real
+    /// prompt's `UserPromptSubmit` (`docs/hooks.md`).
+    pub(crate) fn clear_synthetic_turn(&self) {
+        self.set_synthetic_turn(false);
+    }
+
+    fn set_synthetic_turn(&self, synthetic: bool) {
         if let Some(setup) = &self.hooks {
             setup
                 .handles
                 .synthetic_turn
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+                .store(synthetic, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -966,6 +1031,10 @@ impl ModelSession {
         // …and this session's own, which its rollout records
         // (docs/session-model.md).
         self.session_selection = Some(selection);
+        // A session that ran the offline demo until now — a `/login`, then a
+        // pick — has its `startup` still queued: it fires now, on the backend
+        // that makes it real (docs/hooks.md). A no-op for one already real.
+        self.fire_session_start();
         true
     }
 
@@ -1257,27 +1326,14 @@ impl ModelSession {
                 // the summary — via the wrapper, so the ordinary session
                 // events (UserPromptSubmit, Stop, the source drain) can never
                 // fire for a summarization turn.
-                if let Some(setup) = self.hooks.as_ref().filter(|setup| setup.enabled) {
-                    let context = alter_zero::hooks::HookContext {
-                        session_id: setup.session_id.clone(),
-                        transcript_path: None,
-                        cwd: setup.cwd.display().to_string(),
-                        model,
-                        permission_mode: None,
-                        agent_id: None,
-                        agent_type: None,
-                    };
-                    if let Some(inner) = alter_zero::llm::hooks::CommandHooks::new(
-                        std::sync::Arc::clone(&setup.file),
-                        context,
-                        setup.detach_helper.clone(),
-                        setup.cwd.clone(),
-                        setup.handles.clone(),
-                    ) {
-                        backend = backend.with_hooks(std::sync::Arc::new(
-                            alter_zero::llm::hooks::CompactHooks::new(inner, auto),
-                        ));
-                    }
+                if let Some(inner) = self
+                    .hooks
+                    .as_ref()
+                    .and_then(|setup| setup.command_hooks(&model))
+                {
+                    backend = backend.with_hooks(std::sync::Arc::new(
+                        alter_zero::llm::hooks::CompactHooks::new(inner, auto),
+                    ));
                 }
                 backend
             })
@@ -1392,7 +1448,9 @@ pub(crate) struct ModelRestore {
 pub(crate) struct HookSetup {
     /// The parsed `hooks.json`.
     pub(crate) file: std::sync::Arc<alter_zero::hooks::HooksFile>,
-    /// This run's id, the payload's `session_id`.
+    /// The session's startup id — the payload's `session_id` until the
+    /// recorder publishes the conversation's (which is this same id for a
+    /// fresh session's first conversation, `docs/hooks.md`).
     pub(crate) session_id: String,
     /// Where handlers run, and what `*_PROJECT_DIR` points at.
     pub(crate) cwd: std::path::PathBuf,
@@ -1403,16 +1461,32 @@ pub(crate) struct HookSetup {
     /// off mid-session genuinely stops running them.
     pub(crate) enabled: bool,
     /// The live handles — the gate (a Ctrl+T cycle reaches the very next
-    /// payload), the rollout path the recorder publishes, the queued
-    /// SessionStart sources, and the synthetic-turn mark — shared into every
-    /// sink built, surviving each rebuild (`docs/hooks.md`).
+    /// payload), the conversation the recorder publishes, the queued and the
+    /// background SessionStart, and the synthetic-turn mark — shared into
+    /// every sink built, surviving each rebuild (`docs/hooks.md`).
     pub(crate) handles: alter_zero::llm::hooks::HookHandles,
+    /// The session's scratchpad, for the payloads' `scratchpad_dir` — `None`
+    /// when the session has none (`docs/scratchpad.md`).
+    pub(crate) scratchpad_dir: Option<std::path::PathBuf>,
 }
 
 impl HookSetup {
     /// The sink for a backend answering as `model`, or `None` when hooks are
     /// switched off (or the file had nothing runnable).
     fn sink(&self, model: &str) -> Option<std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>> {
+        self.command_hooks(model).map(|hooks| {
+            std::sync::Arc::new(hooks) as std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>
+        })
+    }
+
+    /// The concrete sink [`sink`](Self::sink) wraps — what the compact turn
+    /// wraps in its own `CompactHooks` instead and the boundary fires its
+    /// session events on (`docs/hooks.md`) — so they can never build
+    /// different payloads.
+    pub(crate) fn command_hooks(
+        &self,
+        model: &str,
+    ) -> Option<alter_zero::llm::hooks::CommandHooks> {
         if !self.enabled {
             return None;
         }
@@ -1426,6 +1500,10 @@ impl HookSetup {
             permission_mode: None,
             agent_id: None,
             agent_type: None,
+            scratchpad_dir: self
+                .scratchpad_dir
+                .as_ref()
+                .map(|dir| dir.display().to_string()),
         };
         alter_zero::llm::hooks::CommandHooks::new(
             std::sync::Arc::clone(&self.file),
@@ -1434,9 +1512,6 @@ impl HookSetup {
             self.cwd.clone(),
             self.handles.clone(),
         )
-        .map(|hooks| {
-            std::sync::Arc::new(hooks) as std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>
-        })
     }
 }
 

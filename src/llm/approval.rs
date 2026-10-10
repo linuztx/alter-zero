@@ -317,6 +317,11 @@ pub fn approve_call(
     }
     request.id = gate.next_id();
     let _ = tx.send(StreamEvent::Permission(request.clone()));
+    // The prompt is on screen: `Notification(permission_prompt)`, the moment
+    // a human is actually being asked — which `PermissionRequest`, consulted
+    // before the classifier, cannot say. The command sink runs it off this
+    // thread, so the wait below begins at once (`docs/hooks.md`).
+    hooks.permission_prompt(call, cancel);
     match gate.wait(&request.id, &|| cancel.is_cancelled()) {
         Some(PermissionDecision::Approve) => Approval::Allow,
         Some(PermissionDecision::ApproveAlways) => {
@@ -675,6 +680,110 @@ mod tests {
             ),
             Approval::Allow
         );
+    }
+
+    /// A sink that logs the permission events in the order they fire, and
+    /// answers `PermissionRequest` from a fixture.
+    #[derive(Debug, Default)]
+    struct PromptHooks {
+        request: Option<HookPermissionVerdict>,
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl PromptHooks {
+        fn log(&self) -> Vec<String> {
+            self.log.lock().expect("not poisoned").clone()
+        }
+    }
+
+    impl HookSink for PromptHooks {
+        fn permission_request(
+            &self,
+            call: &ToolCallRequest,
+            _cancel: &CancelToken,
+        ) -> Option<HookPermissionVerdict> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("request {}", call.id));
+            self.request.clone()
+        }
+
+        fn permission_prompt(&self, call: &ToolCallRequest, _cancel: &CancelToken) {
+            self.log.lock().unwrap().push(format!("prompt {}", call.id));
+        }
+    }
+
+    /// Put `call` to `gate` with `hooks`, approving the prompt when one is
+    /// raised, and hand back the approval and whether a prompt was raised.
+    fn approve_with_hooks(
+        gate: &PermissionGate,
+        hooks: &PromptHooks,
+        call: &ToolCallRequest,
+    ) -> (Approval, bool) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                approve_call(
+                    Some(gate),
+                    None,
+                    None,
+                    hooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    call,
+                    None,
+                )
+            });
+            let started = std::time::Instant::now();
+            let mut prompted = false;
+            while !waiter.is_finished() {
+                if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                    prompted = true;
+                    gate.resolve(&request.id, PermissionDecision::Approve);
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(5),
+                    "the approval never settled"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            (waiter.join().unwrap(), prompted)
+        })
+    }
+
+    #[test]
+    fn a_raised_prompt_notifies_and_a_decided_call_does_not() {
+        // Claude Code's Notification(permission_prompt) means a human is
+        // being asked: it fires once the prompt is raised — after
+        // PermissionRequest had its say — and never for a call a hook or the
+        // allowlist decided, where nobody is asked (`docs/hooks.md`).
+        let call = call("bash", r#"{"command":"make deploy"}"#);
+        let asked = PromptHooks::default();
+        let (approval, prompted) = approve_with_hooks(&PermissionGate::new(), &asked, &call);
+        assert_eq!(approval, Approval::Allow);
+        assert!(prompted);
+        assert_eq!(asked.log(), ["request c", "prompt c"]);
+
+        let decided = PromptHooks {
+            request: Some(HookPermissionVerdict::Allow {
+                note: "Allowed by hook".to_string(),
+            }),
+            ..PromptHooks::default()
+        };
+        let (_, prompted) = approve_with_hooks(&PermissionGate::new(), &decided, &call);
+        assert!(!prompted);
+        assert_eq!(decided.log(), ["request c"], "nobody was asked");
+
+        let gate = PermissionGate::new();
+        gate.remember(&permission_request(&call, None, None).unwrap());
+        let covered = PromptHooks::default();
+        let (_, prompted) = approve_with_hooks(&gate, &covered, &call);
+        assert!(!prompted);
+        assert!(covered.log().is_empty(), "{:?}", covered.log());
     }
 
     #[test]
