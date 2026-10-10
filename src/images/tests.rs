@@ -296,15 +296,157 @@ fn the_cell_size_override_parses_wxh() {
 
 #[test]
 fn a_multiplexer_is_recognised_from_either_side() {
-    assert!(under_multiplexer(Some("tmux-256color"), None));
-    assert!(under_multiplexer(Some("screen"), None));
+    assert!(under_multiplexer(Some("tmux-256color"), &[]));
+    assert!(under_multiplexer(Some("screen"), &[]));
     assert!(under_multiplexer(
         Some("xterm-256color"),
-        Some("/tmp/tmux-1000/default,7,0")
+        &[Some("/tmp/tmux-1000/default,7,0")]
     ));
-    assert!(!under_multiplexer(Some("xterm-256color"), None));
-    assert!(!under_multiplexer(Some("xterm-256color"), Some("")));
-    assert!(!under_multiplexer(None, None));
+    // A config that pins an xterm `TERM` leaves the session variable as
+    // the only tell: GNU screen's `STY`, and zellij's `ZELLIJ` — which
+    // zellij sets to `0`, so a value is a session however it reads.
+    assert!(under_multiplexer(
+        Some("xterm-256color"),
+        &[None, Some("4242.pts-0.host"), None]
+    ));
+    assert!(under_multiplexer(
+        Some("xterm-256color"),
+        &[None, None, Some("0")]
+    ));
+    assert!(!under_multiplexer(
+        Some("xterm-256color"),
+        &[None, None, None]
+    ));
+    assert!(!under_multiplexer(
+        Some("xterm-256color"),
+        &[Some(""), None, None]
+    ));
+    assert!(!under_multiplexer(None, &[]));
+}
+
+#[test]
+fn the_terminal_is_asked_only_where_its_answer_could_change_the_protocol() {
+    let ask = |guessed, forced, multiplexed, term| {
+        graphics_query_wanted(guessed, forced, multiplexed, term)
+    };
+    // The case it exists for: the environment named nothing (herdr's panes
+    // say `xterm-256color` and `TERM_PROGRAM=herdr`), so the protocol sits
+    // at the half-block fallback.
+    assert!(ask(
+        ProtocolType::Halfblocks,
+        false,
+        false,
+        Some("xterm-256color")
+    ));
+    assert!(ask(ProtocolType::Halfblocks, false, false, None));
+    // An answer the environment already gave stands — no question at all.
+    assert!(!ask(ProtocolType::Kitty, false, false, Some("xterm-kitty")));
+    assert!(!ask(
+        ProtocolType::Iterm2,
+        false,
+        false,
+        Some("xterm-256color")
+    ));
+    // ALTER_ZERO_IMAGE_PROTOCOL pins it, `halfblocks` included.
+    assert!(!ask(ProtocolType::Halfblocks, true, false, Some("xterm")));
+    // A multiplexer answers nothing itself, and tmux files an unknown APC
+    // string as the pane's title.
+    assert!(!ask(ProtocolType::Halfblocks, false, true, Some("xterm")));
+    // Consoles that print an escape string they do not know.
+    assert!(!ask(ProtocolType::Halfblocks, false, false, Some("linux")));
+    assert!(!ask(
+        ProtocolType::Halfblocks,
+        false,
+        false,
+        Some("linux-16color")
+    ));
+    assert!(!ask(ProtocolType::Halfblocks, false, false, Some("dumb")));
+}
+
+fn reply(kitty: Option<bool>, version: Option<&str>) -> GraphicsReply {
+    GraphicsReply {
+        kitty,
+        version: version.map(str::to_string),
+    }
+}
+
+#[test]
+fn a_kitty_ok_upgrades_the_half_block_fallback_and_nothing_else() {
+    let after = |guessed, reply: &GraphicsReply| protocol_after_reply(guessed, reply, false);
+    assert_eq!(
+        after(
+            ProtocolType::Halfblocks,
+            &reply(Some(true), Some("libghostty"))
+        ),
+        ProtocolType::Kitty,
+        "herdr's pane emulator answers OK and names itself"
+    );
+    assert_eq!(
+        after(ProtocolType::Halfblocks, &reply(Some(true), None)),
+        ProtocolType::Kitty,
+        "a terminal that does not answer XTVERSION is still believed"
+    );
+    assert_eq!(
+        after(
+            ProtocolType::Halfblocks,
+            &reply(Some(false), Some("libghostty"))
+        ),
+        ProtocolType::Halfblocks,
+        "an error answer is a no"
+    );
+    assert_eq!(
+        after(ProtocolType::Halfblocks, &reply(None, Some("XTerm(390)"))),
+        ProtocolType::Halfblocks,
+        "silence is a no"
+    );
+    assert_eq!(
+        after(ProtocolType::Iterm2, &reply(Some(true), None)),
+        ProtocolType::Iterm2,
+        "an answer the environment gave is never overridden"
+    );
+    assert_eq!(
+        after(ProtocolType::Halfblocks, &GraphicsReply::default()),
+        ProtocolType::Halfblocks,
+        "a terminal that was not asked keeps the fallback"
+    );
+}
+
+#[test]
+fn the_answering_terminals_own_name_decides_the_placeholder_blacklist() {
+    // WezTerm and Konsole answer the query OK but draw no unicode
+    // placeholders, which is all this crate's kitty encoding is — the
+    // blacklist `ratatui_image`'s own query keeps.
+    for name in [
+        "WezTerm 20240203-110809-5046fc22",
+        "Konsole 24.02.1",
+        "konsole",
+    ] {
+        assert_eq!(
+            protocol_after_reply(
+                ProtocolType::Halfblocks,
+                &reply(Some(true), Some(name)),
+                false
+            ),
+            ProtocolType::Halfblocks,
+            "{name}"
+        );
+    }
+    // The environment says WezTerm or Konsole (`WEZTERM_EXECUTABLE`,
+    // `KONSOLE_VERSION`) — but herdr keeps both in its panes while its own
+    // emulator answers, so the name the terminal gives itself wins.
+    assert_eq!(
+        protocol_after_reply(
+            ProtocolType::Halfblocks,
+            &reply(Some(true), Some("libghostty")),
+            true
+        ),
+        ProtocolType::Kitty
+    );
+    // With no name to go on, the environment's word stands.
+    assert_eq!(
+        protocol_after_reply(ProtocolType::Halfblocks, &reply(Some(true), None), true),
+        ProtocolType::Halfblocks
+    );
 }
 
 #[test]

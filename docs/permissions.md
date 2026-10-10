@@ -77,6 +77,28 @@ turn each frame into an unbounded build).
 A request raised by a **subagent** (`docs/agent-tool.md`) says so in the title:
 `Create file · from the general-purpose agent`.
 
+**A stopped agent's requests leave with it.** Stopping an agent — the
+roster's `x`, the lead's `agentkill` — cancels its thread, which gives up its
+wait on the gate; what it asked to do can never run. Its requests used to
+stay on screen anyway, a prompt whose answer reached nobody (and, in a
+herdr pane, a `blocked` state for a question no longer being asked). Now
+`App::withdraw_agent_permissions` takes them off: its queued requests are
+dropped, its open prompt closes with the next queued one opening in its
+place, and every id is released on the gate like any abandoned request.
+Another asker's requests — the lead's, a sibling agent's — stay where they
+were.
+
+**The gate also learns when a prompt reaches the screen.** A request is
+*raised* when its thread sends it, but it is *shown* only when the loop opens
+it, and a request queued behind another can be settled before it ever opens
+(a rule it now falls under, its agent stopped, an Esc). The thread registers
+what should happen once its prompt is shown (`PermissionGate::on_shown`, before
+the request is sent), the loop bottom marks the open prompt shown once
+(`PermissionStore::mark_shown`, which runs it), and the thread drops it when
+its request ends (`forget_shown`). Today that is the `Notification` hook's
+moment (`docs/hooks.md`); the job runs on the loop's thread, so it only hands
+work elsewhere.
+
 ## What stays on screen
 
 A prompt is a question *about something*, so the modal never hides what raised

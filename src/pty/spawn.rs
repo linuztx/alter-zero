@@ -39,11 +39,17 @@ pub const TERMINAL_ENV: [(&str, &str); 5] = [
 
 /// Variables describing a **different** terminal — the one the TUI itself
 /// runs in — which would steer a program toward features the session's
-/// emulator does not have (tmux passthrough, kitty's protocols), or override
-/// the session's size with a stale one.
-pub const FOREIGN_TERMINAL_VARS: [&str; 14] = [
+/// emulator does not have (tmux passthrough, kitty's protocols), override
+/// the session's size with a stale one, or point it at the TUI's own pane:
+/// a nested agent's herdr integration reporting under `HERDR_PANE_ID` would
+/// make itself the owner of the pane alter-zero reports for, and `herdr …
+/// --current` would type into the TUI (`docs/herdr.md`; `HERDR_ENV` and
+/// herdr's socket stay, so herdr's CLI and agent skill still work — the
+/// pipe path drops the pane id too, in `subprocess::command_in`).
+pub const FOREIGN_TERMINAL_VARS: [&str; 15] = [
     "TMUX",
     "TMUX_PANE",
+    "HERDR_PANE_ID",
     "STY",
     "TERM_PROGRAM",
     "TERM_PROGRAM_VERSION",
@@ -674,6 +680,8 @@ mod tests {
         let mut command = Command::new("sh");
         command.env("TMUX", "/tmp/tmux-0/default,1,0");
         command.env("COLUMNS", "80");
+        command.env("HERDR_PANE_ID", "w1:p3");
+        command.env("HERDR_SOCKET_PATH", "/run/herdr.sock");
         apply_terminal_env(&mut command);
         let envs: Vec<(String, Option<String>)> = command
             .get_envs()
@@ -690,6 +698,15 @@ mod tests {
         assert_eq!(value("GIT_PAGER"), Some(Some("cat".to_string())));
         assert_eq!(value("TMUX"), Some(None), "removed, not inherited");
         assert_eq!(value("COLUMNS"), Some(None), "a stale size is removed");
+        // The herdr pane is the TUI's, not the session's: a nested agent
+        // must not claim it, nor `herdr … --current` type into the TUI
+        // (docs/herdr.md). herdr itself stays reachable.
+        assert_eq!(value("HERDR_PANE_ID"), Some(None), "the pane is the TUI's");
+        assert_eq!(
+            value("HERDR_SOCKET_PATH"),
+            Some(Some("/run/herdr.sock".to_string())),
+            "herdr stays reachable"
+        );
     }
 
     /// An environment of `pairs` for [`utf8_locale`].

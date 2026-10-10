@@ -148,18 +148,18 @@ image sizes and budgets.
 
 ## Detecting the terminal
 
-`ImageStore::detect` runs once in `InlineViewport::init` and **never reads
-stdin**.
+`images::Detection` decides once, in `InlineViewport::init`, from the
+environment first and the terminal second — and it never adds a stdin reader.
 
 `ratatui_image` ships a `Picker::from_query_stdio` that asks the terminal
-directly, and it is the more accurate answer — but it cannot be used here. It
-spawns a reader thread on stdin behind a two-second timeout and *never joins
-it*, so on a terminal that does not answer, that thread outlives the query and
-eats the user's keystrokes. Observed under tmux while building this: a
-two-second startup stall, and then every key swallowed. That is CLAUDE.md
-invariant 1 — one stdin reader — and it is not negotiable.
+directly, but it cannot be used here. It spawns a reader thread on stdin
+behind a two-second timeout and *never joins it*, so on a terminal that does
+not answer, that thread outlives the query and eats the user's keystrokes.
+Observed under tmux while building this: a two-second startup stall, and then
+every key swallowed. That is CLAUDE.md invariant 1 — one stdin reader — and it
+is not negotiable.
 
-So, like the reference harness:
+So, like the reference harness, the environment decides first:
 
 * **cell size** from the tty's own `ws_xpixel`/`ws_ypixel` (`TIOCGWINSZ` via
   `rustix`), which is an ioctl and not a round trip. Zeroes mean "unknown" and
@@ -168,21 +168,90 @@ So, like the reference harness:
 * **protocol** from `ratatui_image`'s own env sniff (the iTerm2 family, plus a
   multiplexer's outer terminal) plus kitty/ghostty, which announce themselves
   in `TERM` / `TERM_PROGRAM` / `KITTY_WINDOW_ID` — and *not* under a
-  multiplexer, where exactly that answer goes stale;
-* anything undetected falls to **half-blocks**.
+  multiplexer (`TMUX`, `STY`, `ZELLIJ`, or a `tmux`/`screen` `TERM`), where
+  exactly that answer goes stale.
 
+### Asking the terminal
+
+Where the environment names no protocol, it has nothing to go on — and that is
+not only an unknown terminal. **herdr** gives each pane `TERM=xterm-256color`
+and `TERM_PROGRAM=herdr`, and strips the outer terminal's variables
+(`KITTY_WINDOW_ID` among them), while its own emulator — libghostty — speaks
+the kitty graphics protocol, unicode placeholders included. Detection by
+environment alone drew every picture there in half-blocks.
+
+So in exactly that case the terminal is asked, inside a read that already
+exists: `init` queries the cursor position over stdin once, synchronously,
+before the loop's `EventStream` exists. That read is where any other question
+has to go (`term::query`), and two more ride in the same write, **ahead of**
+the cursor query:
+
+```
+ESC[22;0t  ESC_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA ESC\  ESC[23;0t  ESC[>q  ESC[6n
+push title  the kitty graphics support query        pop title  XTVERSION  cursor
+```
+
+A terminal answers in order, so the cursor report is always the last answer
+and the read stops on its last byte. A terminal that does not know a question
+says nothing, which is its answer and costs no wait. herdr 0.9.3, recorded
+from a real pane, answers `ESC_Gi=31;OK ESC\`, then `ESCP>|libghostty ESC\`,
+then the cursor report.
+
+* **When it asks** (`images::graphics_query_wanted`): only when the
+  environment left the half-block fallback and nothing pinned the protocol —
+  never when it named one, never with `ALTER_ZERO_IMAGE_PROTOCOL` set
+  (`halfblocks` included, which is the way to turn the question off), never
+  with `ALTER_ZERO_IMAGES=0`, never under a multiplexer (which answers nothing
+  itself), and never on a `linux` or `dumb` console, which would print an
+  escape string it does not know.
+* **The title push/pop** is for tmux. It files an APC string it does not know
+  as the pane's title, so a session that *hides* tmux from the environment
+  (`docker exec` without `-e TERM`, `ssh` from a tmux whose
+  `default-terminal` is `xterm-256color`) would wear `Gi=31,s=1,…` as its
+  title for good. The title stack puts it back; a terminal without one
+  ignores both.
+* **What an answer means** (`images::protocol_after_reply`): a kitty `OK`
+  upgrades the half-block fallback to kitty and touches nothing else. An
+  error answer, or silence, leaves half-blocks.
+* **Who answered** is the one judgement call. By `ratatui_image`'s account,
+  WezTerm and Konsole answer the query `OK` but do not implement the unicode
+  placeholders — the only kitty placement this crate emits — so its own query
+  blacklists both by their `WEZTERM_EXECUTABLE` / `KONSOLE_VERSION`
+  variables. But herdr keeps both variables in its panes while its *own*
+  emulator is the one answering, so here the blacklist reads the
+  **answering** terminal's name from XTVERSION (`WezTerm 20240203-…`,
+  `libghostty`) and falls back to the variables only when the terminal gave
+  no name.
+
+The read takes in whatever arrived before the cursor report, which includes
+keys typed while it waited — type-ahead sent before the TUI was up. Those are
+kept aside byte for byte and replayed through the ordinary key handler before
+the loop's first `select!` (`term::query::typed_events`, crossterm's legacy
+mapping: text, control keys, Esc and Alt; an escape *sequence* such as an
+arrow is dropped rather than replayed as stray characters). Nothing after the
+cursor report is read there at all, so everything typed later reaches the
+`EventStream` whole. The read gives each `read()` a tenth of a second (VMIN 0,
+VTIME 1 — POSIX's own read timeout, which holds on a macOS tty where `poll`
+does not) and gives up after two seconds, crossterm's old budget, with the
+same "cursor position could not be read" error.
+
+Anything still undetected falls to **half-blocks**.
 `ALTER_ZERO_IMAGE_PROTOCOL` (`kitty` / `iterm2` / `sixel` / `halfblocks`) and
 `ALTER_ZERO_IMAGE_CELL_SIZE` (`9x18`) override both;
-`ALTER_ZERO_IMAGES=0` turns the whole feature off.
+`ALTER_ZERO_IMAGES=0` turns the whole feature off. `smoke.sh` Phase 107e plays
+the terminal itself — a pty answering the way herdr, a silent terminal or
+WezTerm would — since tmux can answer none of it.
 
 ### In a container
 
 Detection from the environment has one consequence worth writing down: **the
 environment has to be the terminal's.** A process started with `docker exec`
-sees the image's generic `TERM=xterm-256color` and none of the rest, so every
-picture falls to half-blocks on a terminal that could have drawn it. The
-headless Kali container's documented command forwards the variables this
-section reads, per session:
+sees the image's generic `TERM=xterm-256color` and none of the rest. A
+terminal that answers the kitty query is found anyway — the question and its
+answer cross `docker exec -it`'s pty like any other bytes — but an
+iTerm2-family terminal is named only by `TERM_PROGRAM`, and the multiplexer
+rule needs `TMUX` (or the `TERM` tmux sets). The headless Kali container's
+documented command forwards the variables this section reads, per session:
 
 ```sh
 docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
@@ -191,10 +260,13 @@ docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX 
 
 A bare `-e NAME` takes the value from the caller's own environment. `TMUX` is
 on the list deliberately: it is what keeps the multiplexer rule above honest
-inside the container too. Measured on the raw byte stream, resuming a rollout
-that holds an image read (`docs/docker.md` *Terminal identity*): no flags, 0
-kitty escapes and 35 half-block cells; the flags from a kitty terminal, 8
-escapes carrying 37 KB of picture; the flags inside tmux, half-blocks again.
+inside the container too, so a container under tmux asks nothing at all.
+Measured on the raw byte stream before the terminal was asked, resuming a
+rollout that holds an image read (`docs/docker.md` *Terminal identity*): no
+flags, 0 kitty escapes and 35 half-block cells; the flags from a kitty
+terminal, 8 escapes carrying 37 KB of picture; the flags inside tmux,
+half-blocks again. The first of those now holds only for a terminal that does
+not answer the kitty query.
 
 ## Painting
 
@@ -330,9 +402,9 @@ genuinely does not have the picture the first time you open it.
 `ALTER_ZERO_IMAGE_RETRANSMIT=1` takes the conservative path — re-upload on
 every switch — for a terminal that speaks the protocol but not that part of
 it. Without it such a terminal would show the picture on the first Ctrl+O and
-blank rows on the second. We cannot ask it which kind it is: the reply would
-have to be read off stdin, and this crate has exactly one stdin reader
-(invariant 1).
+blank rows on the second. We cannot ask it which kind it is: the protocol has
+no query for it, and the startup read (*Asking the terminal*) can only carry
+questions a terminal can answer.
 
 Only kitty pays any of this. Sixel, iTerm2 and half-blocks keep nothing per
 screen (they carry their whole payload in every render), so they share the
@@ -442,9 +514,15 @@ was a bad idea.
 
 ## Known limits
 
-* Under **tmux/screen** the protocol guess is deliberately conservative:
-  half-blocks unless the outer terminal is a known iTerm2-family one.
-  `ALTER_ZERO_IMAGE_PROTOCOL` overrides it for a passthrough-enabled setup.
+* Under **tmux/screen/zellij** the protocol guess is deliberately
+  conservative: half-blocks unless the outer terminal is a known iTerm2-family
+  one, and the terminal is never asked. `ALTER_ZERO_IMAGE_PROTOCOL` overrides
+  it for a passthrough-enabled setup.
+* A terminal that answers the kitty query `OK` but draws no unicode
+  placeholders, reached where neither its name (XTVERSION) nor its
+  environment says which it is, gets kitty graphics it cannot show — WezTerm
+  and Konsole are caught by name, an unknown one is not.
+  `ALTER_ZERO_IMAGE_PROTOCOL=halfblocks` answers it.
 * The live **streaming preview** doesn't draw a picture: a `read` has no image
   until it resolves, and the committed cell is one frame away.
 

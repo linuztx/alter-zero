@@ -199,18 +199,7 @@ impl StdioTransport {
         env: &BTreeMap<String, String>,
         cwd: Option<&std::path::Path>,
     ) -> Result<Self, TransportError> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, value) in env {
-            cmd.env(key, value);
-        }
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
-        let mut child = cmd
+        let mut child = stdio_command(command, args, env, cwd)
             .spawn()
             .map_err(|e| TransportError::Failed(format!("could not start `{command}`: {e}")))?;
         let stdin = child
@@ -960,6 +949,32 @@ fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError
         .map_err(|e| TransportError::Failed(format!("bad endpoint URI: {e}")))
 }
 
+/// The command a stdio server runs as: piped stdio, the session
+/// environment with the config's `env` overlaid, in `cwd` — minus the herdr
+/// pane, which is the TUI's own: a server that is an agent of its own
+/// (`codex mcp-server`) would take it over with its herdr hook
+/// (`docs/herdr.md`). What the config itself sets still wins.
+fn stdio_command(
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    cwd: Option<&std::path::Path>,
+) -> Command {
+    let mut cmd = Command::new(command);
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd.env_remove(crate::herdr::PANE_ID_ENV);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
 /// Flatten a body to one bounded line for an error message.
 fn one_line(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -975,6 +990,29 @@ fn one_line(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_stdio_server_never_inherits_the_herdr_pane() {
+        // A server can be an agent of its own (`codex mcp-server`), whose
+        // herdr hook would take the TUI's pane over (`docs/herdr.md`).
+        let pane = std::ffi::OsStr::new(crate::herdr::PANE_ID_ENV);
+        let command = stdio_command("codex", &["mcp-server".to_string()], &BTreeMap::new(), None);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == pane && value.is_none()),
+            "{:?}",
+            command.get_envs().collect::<Vec<_>>()
+        );
+        // What the server's own config sets is still what it gets.
+        let env = BTreeMap::from([(crate::herdr::PANE_ID_ENV.to_string(), "w1:p9".to_string())]);
+        let command = stdio_command("codex", &[], &env, None);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == pane && value == Some(std::ffi::OsStr::new("w1:p9")))
+        );
+    }
 
     /// A scripted stdio server: a `sh` process that ignores its stdin and
     /// prints canned responses for ids 1 and 2 (our ids are deterministic).

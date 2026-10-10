@@ -44,6 +44,11 @@
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
+//! - [`herdr`]       — herdr support: the state this session reports to the
+//!   herdr multiplexer pane it runs in — derived from the app, never tracked
+//!   — the failed-turn hold, the socket requests, their sequence and the
+//!   resume command (pure), plus the worker that writes them over herdr's
+//!   socket (see `docs/herdr.md`).
 //! - [`hooks`]       — lifecycle hooks: the `hooks.json` format, which
 //!   handlers an event selects, the JSON payload each writes to a handler's
 //!   stdin and the verdict its stdout is parsed back into (pure; the spawn is
@@ -143,6 +148,7 @@ pub mod file_search;
 pub mod frame;
 pub mod frontmatter;
 pub mod git_diff;
+pub mod herdr;
 pub mod highlight;
 pub mod history;
 pub mod hooks;

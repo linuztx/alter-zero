@@ -289,6 +289,12 @@ impl Session<'_> {
     /// Esc/Ctrl+C dismissed the picker: the view is already back on the
     /// conversation — leave the overlay and catch up, the Ctrl+O return.
     pub(crate) fn close_resume_picker(&mut self) -> std::io::Result<()> {
+        // A bare `--resume` boot held its `SessionStart` for the pick; with
+        // none made, the fresh conversation it lands in is the one that
+        // begins, so its `startup` fires now, in the background
+        // (docs/hooks.md). A no-op when nothing is queued — a picker opened
+        // mid-session closes on a conversation that already began.
+        self.models.fire_session_start();
         self.term.exit_overlay()?;
         self.overlay_return_repaint()
     }
@@ -340,6 +346,10 @@ impl Session<'_> {
         // no checkpoints leave the code untouched.
         let session_checkpoints = session::parse_checkpoints(&text);
         let recorded_model = session::parse_model(&text);
+        // The conversation being replaced ends for the hooks — SessionEnd
+        // (resume), Claude Code's reason for a switch — before anything of it
+        // is swapped out, so the event names it (docs/hooks.md).
+        self.models.end_conversation("resume");
         let restored = self.restore_final_checkpoint(&session_checkpoints);
         self.app.load_session(items);
         self.remember_loaded_image_sizes();
@@ -368,9 +378,9 @@ impl Session<'_> {
             model.honoured,
         );
         self.record_session_model(false);
-        // The session boundary for the hooks: SessionStart(resume) fires at
-        // the next turn's top (docs/hooks.md).
-        self.models.queue_session_source("resume");
+        // …and the resumed one begins: SessionStart(resume), in the background
+        // now that the recorder names its id (docs/hooks.md).
+        self.models.begin_conversation("resume");
         self.term.exit_overlay()?;
         // A resumed session REPLACES the whole conversation: purge-rebuild
         // (like /clear) so the loaded history fills scrollback — a plain

@@ -87,6 +87,11 @@ smoke_sanitize_env() {
 	# a developer's own host would make the /model phases fetch from a server
 	# the suite doesn't run.
 	unset OLLAMA_HOST
+	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
+	# report its turns to the developer's real herdr — the pane the suite was
+	# started from flickering through a hundred agents' states. The herdr
+	# phase (132) points its own launches at a stub socket.
+	unset HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH
 	# Colour is the medium a dozen assertions read; NO_COLOR disables it
 	# wholesale (crossterm memoizes it and emits no SGR at all).
 	unset NO_COLOR

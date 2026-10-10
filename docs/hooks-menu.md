@@ -45,7 +45,7 @@ A tiny stack machine (`app::HooksLevel`), Esc popping one frame at a time:
 
 1. **Events** — `Hooks` over `{N} hook(s) configured`, the read-only info
    line (`ℹ This menu is read-only. To add or modify hooks, edit hooks.json
-   directly or ask alter-zero. See docs/hooks.md`), and the **eleven**
+   directly or ask alter-zero. See docs/hooks.md`), and the **fourteen**
    [`HookEvent`]s as numbered rows — `{n}.  {Event} ({count})` with the
    count in the selection accent (dropped at zero, Claude Code's shape) and
    the event's one-line summary in an aligned description column. When the
@@ -99,7 +99,8 @@ An event shows the matcher level exactly when our dispatch passes a match
 query for it (`hooks::event_has_matchers`, mirroring `llm/hooks.rs`): the
 tool events match the **tool name**, `SubagentStart`/`SubagentStop` the
 **agent type**, `SessionStart` the **source**, `SessionEnd` the **reason**,
-`PreCompact`/`PostCompact` the **trigger**. `Stop` and `UserPromptSubmit`
+`PreCompact`/`PostCompact` the **trigger**, `StopFailure` the **error
+type**, `Notification` the **notification type**. `Stop` and `UserPromptSubmit`
 match on nothing — their groups run matcher-or-not — so Enter on them skips
 straight to level 3 (every handler of the event, flattened), and their
 detail page shows no `Matcher:` row: a matcher the engine ignores must not
@@ -110,13 +111,13 @@ The per-event summary/description strings (`hooks::event_summary` /
 blocks with stderr as the reason, exit `0` + stdout JSON is a verdict, other
 exits are non-blocking, blocks ignored where the engine ignores them
 (`SessionStart`, `SubagentStart`), fire-and-forget where the outcome is
-discarded (`PostCompact`, `SessionEnd`) — not the reference's, whose exit
-codes mean different things.
+discarded (`PostCompact`, `SessionEnd`, `StopFailure`, `Notification`) — not
+the reference's, whose exit codes mean different things.
 
 ## The pure/boundary split
 
 - **`hooks::overview`** (pure): `HooksOverview::from_file` digests a parsed
-  [`HooksFile`] into the display tree — all eleven events in registry order,
+  [`HooksFile`] into the display tree — all fourteen events in registry order,
   each with its matcher groups merged by matcher string (config order kept)
   and every handler (any `type`, the skipped kinds included: they are
   *configured*, which is what a browser reports) resolved to

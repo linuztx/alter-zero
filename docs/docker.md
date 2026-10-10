@@ -368,10 +368,15 @@ existing container.
 
 ## Terminal identity
 
-The app picks its image protocol once, at startup, from the environment
-(`docs/images.md` — it may never query the terminal, invariant 1). Inside a
-container that environment is the image's `TERM=xterm-256color`, so pictures
-fall to half-blocks. The documented command forwards the user's own:
+The app picks its image protocol once, at startup, from the environment —
+and, where that names nothing, by asking the terminal whether it speaks the
+kitty graphics protocol, inside the cursor query's one startup read
+(`docs/images.md` *Asking the terminal*). Inside a container that environment
+is the image's `TERM=xterm-256color`: a kitty-protocol terminal is still found
+by the question, which crosses `docker exec -it`'s pty like any other bytes,
+but an iTerm2-family terminal is named only by its variables, and a container
+under tmux needs `TMUX` to know not to ask. The documented command forwards
+the user's own:
 
 ```sh
 docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX \
@@ -379,9 +384,9 @@ docker exec -it -e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX 
 ```
 
 The list is what the detector reads, checked against the source rather than
-assumed: `ImageStore::detect` reads `TERM`, `TERM_PROGRAM`, `KITTY_WINDOW_ID`
-and `TMUX`, and `ratatui_image`'s env sniff reads `TERM_PROGRAM` for the
-iTerm2 family. (`LC_TERMINAL`, `ITERM_SESSION_ID` and `WEZTERM_EXECUTABLE`
+assumed: `images::Detection::from_env` reads `TERM`, `TERM_PROGRAM`,
+`KITTY_WINDOW_ID` and the multiplexers' `TMUX`/`STY`/`ZELLIJ`, and
+`ratatui_image`'s env sniff reads `TERM_PROGRAM` for the iTerm2 family. (`LC_TERMINAL`, `ITERM_SESSION_ID` and `WEZTERM_EXECUTABLE`
 matter only for iTerm2/WezTerm *under tmux*, so they are a README footnote.)
 
 Verified on the raw byte stream (`tmux pipe-pane`), resuming a rollout that
@@ -395,7 +400,9 @@ container:
 | the flags, inside tmux (`TMUX` forwarded) | 0 | 35 |
 
 The third row is the app's multiplexer rule doing its job, not a defect;
-`-e ALTER_ZERO_IMAGE_PROTOCOL=kitty` overrides it.
+`-e ALTER_ZERO_IMAGE_PROTOCOL=kitty` overrides it. The table predates the
+startup question: today the first row draws kitty graphics too on a terminal
+that answers it, and stays at half-blocks on one that does not.
 
 ### tmux passthrough is a host concern
 

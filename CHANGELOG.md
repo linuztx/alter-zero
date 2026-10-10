@@ -14,6 +14,22 @@ release heading when a version is cut.
 
 ### Added
 
+- **herdr shows what alter-zero is doing.** Run inside a
+  [herdr](https://herdr.dev) pane, the app now reports its own state to
+  herdr. The sidebar shows it working while a turn or a subagent runs,
+  blocked the moment a permission prompt or a question waits on you, and done
+  when it finishes, and herdr's "needs attention" and "finished" notifications
+  fire at those moments. A turn that fails on an API error shows as needing
+  attention, with the error, until you retry or clear it, rather than as
+  finished. There is nothing to install or configure. herdr also learns the
+  command that resumes the conversation (`alter-zero --resume {id}`, or a
+  fresh `alter-zero` after `/clear`), so a restarted herdr brings the session
+  back, and only when `alter-zero` is on your `PATH`. A background worker
+  sends the reports with short timeouts, retries any that get lost, and never
+  slows the app down. Nothing the agent starts sees `HERDR_PANE_ID` (its
+  commands, your `!` commands, hooks, MCP servers), so another agent run
+  inside it can't take over the pane, while herdr's own CLI keeps working
+  there. `ALTER_ZERO_HERDR=0` turns it off (`docs/herdr.md`).
 - **A built-in `yt-dlp` skill guides media downloads without bundling a downloader.**
   On first launch its editable `SKILL.md` is seeded beside the other built-ins;
   the agent can load it on demand for videos, playlists, captions and audio.
@@ -30,9 +46,79 @@ release heading when a version is cut.
   `npm install -g @linuztx/alter-zero@latest` (or pnpm's, Bun's or Yarn's
   command), and `alter-zero update` points there instead of replacing files
   npm manages (`docs/npm.md`).
+- **Hooks gain three of Claude Code's events: `PostToolUseFailure`,
+  `StopFailure` and `Notification`.** A tool call that runs and fails now
+  fires `PostToolUseFailure`, with the error, and the hook can add context
+  or feedback for the model just as `PostToolUse` does for a success. A turn
+  that ends on an error fires `StopFailure`, typed with Claude Code's error
+  kinds (`rate_limit`, `authentication_failed`, `invalid_request`,
+  `server_error`, …), so a hook can match on the kind. A permission prompt
+  reaching the screen fires `Notification` with `permission_prompt`, the
+  moment you are actually being asked: a prompt waiting behind another fires
+  when it opens, and one settled before it opens never fires. It never
+  holds the prompt up, and it never lands out of order: notifications run
+  one at a time in the order their prompts showed, and the call's next hook
+  waits for its notification. Hook scripts written for Claude Code that use
+  these events now work here unchanged (`docs/hooks.md`).
+
+### Changed
+
+- **A hook's `session_id` is the conversation you can resume.** It used to
+  be the id of the running process, which neither `/clear` nor `/resume`
+  changed and which `--resume` could not take. It is now the conversation's
+  own id, the one `alter-zero --resume` takes, so a hook that logs it can
+  bring the conversation back. `/clear` moves it on, `/resume` adopts the
+  resumed conversation's id, and `transcript_path` follows. Payloads also
+  carry Claude Code's `scratchpad_dir`, which is how a hook finds the
+  session's scratchpad and task output (`docs/hooks.md`).
+- **`SessionStart` hooks run as the session opens, in the background.** They
+  used to wait for your first message. As in Claude Code, they now start at
+  launch, after `/clear` and after `/resume`: you can type at once, and the
+  first turn waits for them so their context still reaches the model. Hooks
+  still running when their conversation ends are stopped and their output
+  dropped. `SessionEnd` now fires when `/resume` switches conversations
+  too (reason `resume`), and at quit it fires after the running turn and
+  agents have stopped, so none of their hooks run after it
+  (`docs/hooks.md`).
 
 ### Fixed
 
+- **A hook that leaves a background process running no longer stalls the
+  agent.** The process inherited the hook's output pipes, and the app
+  waited for them to close, holding up the tool call, the turn or the
+  `/clear` for as long as that process lived. Once a hook exits, its output
+  is now read for at most one more second (`docs/hooks.md`).
+- **Stopping a subagent takes its permission prompt off the screen.** A
+  prompt the stopped agent was waiting on stayed up with nobody left to act
+  on the answer. Its prompts are now withdrawn, and the next one waiting,
+  if any, opens in its place (`docs/permissions.md`).
+- **`SessionEnd` no longer fires for a conversation that never started.**
+  The offline demo runs no hooks and so never fired `SessionStart`, yet it
+  fired `SessionEnd` on `/clear` and at quit, so a session-logging hook saw
+  an end with no start. A conversation's end now fires only if its start
+  did (`docs/hooks.md`).
+- **`UserPromptSubmit` no longer skips your prompt after a background
+  follow-up.** A follow-up turn started while hooks were off, or on the
+  offline demo, left behind the mark that tells the hook to skip a prompt
+  the app wrote itself, and the hook then skipped your next real prompt.
+  Your own turns now clear that mark (`docs/hooks.md`).
+- **A conversation's first `UserPromptSubmit` names its transcript.** Its
+  payload reported `transcript_path` as null, because the conversation's
+  file was created only after the hook ran. The file now exists before the
+  turn starts (`docs/hooks.md`).
+- **Pictures in a herdr pane are drawn as real images.** herdr's panes say
+  `xterm-256color` and nothing about graphics, so every picture there fell
+  back to coarse half-block characters, though herdr's terminal draws kitty
+  graphics. Where the environment names no graphics protocol, Alter Zero now
+  asks the terminal at startup, in the same read that already finds the
+  cursor, and uses the kitty protocol when the terminal says yes. A terminal
+  that says nothing keeps half-blocks, and WezTerm and Konsole, which say
+  yes but cannot show these pictures, are recognised by the name they give.
+  Nothing is asked under tmux, screen or zellij, or when
+  `ALTER_ZERO_IMAGE_PROTOCOL` is set, and anything typed while Alter Zero
+  starts still reaches the prompt. GNU screen and zellij are now recognised
+  as multiplexers the way tmux is, so an outer terminal's variables no
+  longer choose the protocol inside them (`docs/images.md`).
 - **A background notice now sits where the model actually read it.** A
   background command that finished while the model was writing its next tool
   call reached the model only after that call's result, but the transcript

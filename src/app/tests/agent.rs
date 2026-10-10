@@ -1271,6 +1271,47 @@ fn the_leads_stop_settles_the_row_without_claiming_the_user_stopped_it() {
 }
 
 #[test]
+fn a_stopped_agents_prompts_leave_the_screen_and_the_rest_stay() {
+    // A stopped agent will never run what it asked to (`docs/permissions.md`):
+    // its open prompt closes — the next queued one opening in its place — and
+    // its queued ones drop, all released like any abandoned request. Another
+    // agent's stay put.
+    let asked_by = |id: &str, agent: &str| crate::permission::PermissionRequest {
+        id: id.into(),
+        kind: crate::permission::PermissionKind::Bash,
+        target: "ls".into(),
+        body: String::new(),
+        detail: None,
+        agent: Some("general-purpose".into()),
+        agent_id: Some(agent.into()),
+    };
+    let mut app = launched_background_agents();
+    app.open_permission(asked_by("p1", "a1"));
+    app.open_permission(asked_by("p2", "a2"));
+    app.open_permission(asked_by("p3", "a1"));
+    assert!(app.stop_agent_by_lead("a1"));
+    assert_eq!(
+        app.permission().map(|prompt| prompt.request.id.as_str()),
+        Some("p2"),
+        "the other agent's prompt opens in its place"
+    );
+    assert!(
+        app.pending_permissions().is_empty(),
+        "a1's queued one dropped"
+    );
+    let mut released = app.take_abandoned_permissions();
+    released.sort();
+    assert_eq!(released, ["p1", "p3"]);
+    // The user's `x` withdraws them the same way.
+    assert!(matches!(
+        app.stop_agent("a2"),
+        Some(crate::app::AgentStop::Stopped(_))
+    ));
+    assert!(app.permission().is_none());
+    assert_eq!(app.take_abandoned_permissions(), ["p2"]);
+}
+
+#[test]
 fn a_resumed_agent_reopens_its_row_and_owes_the_lead_its_answer() {
     // A *foreground* agent's settle is carried by its group, not a notice —
     // but once its group has resolved, a follow-up's answer can only reach

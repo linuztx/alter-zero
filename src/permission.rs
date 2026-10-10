@@ -950,6 +950,26 @@ struct GateInner {
     /// ("don't ask again for this session") — ids, in memory only: a session
     /// ends with the process, and its id means nothing to the next one.
     sessions: HashSet<String>,
+    /// What each raised request's thread asked to run once its prompt is on
+    /// screen ([`PermissionGate::on_shown`]), keyed by request id.
+    on_shown: ShownJobs,
+}
+
+/// What runs once a raised prompt is actually on screen — registered by the
+/// thread that raised it ([`PermissionGate::on_shown`]), run by the loop that
+/// opens it ([`PermissionGate::mark_shown`]). The loop's own thread runs it,
+/// so it must hand any real work elsewhere and return at once.
+pub type OnShown = Box<dyn FnOnce() + Send>;
+
+/// [`OnShown`] jobs by request id — a newtype so [`GateInner`] keeps its
+/// `Debug`, which a boxed closure has no way to provide.
+#[derive(Default)]
+struct ShownJobs(HashMap<String, OnShown>);
+
+impl std::fmt::Debug for ShownJobs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 /// The permission handshake: the tool thread asks, blocks, and is woken by the
@@ -1073,6 +1093,34 @@ impl PermissionGate {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard = next;
         }
+    }
+
+    /// Run `job` once the prompt for `id` is on screen ([`mark_shown`]) —
+    /// and never, if the request ends first ([`forget_shown`]): a prompt
+    /// queued behind another and then covered by a new rule, withdrawn with
+    /// its agent or cancelled was never put to anyone. Register **before**
+    /// the request is sent, so the loop cannot open it unseen.
+    ///
+    /// [`mark_shown`]: Self::mark_shown
+    /// [`forget_shown`]: Self::forget_shown
+    pub fn on_shown(&self, id: &str, job: OnShown) {
+        self.lock().on_shown.0.insert(id.to_string(), job);
+    }
+
+    /// The loop opened the prompt for `id` on screen: run what its thread
+    /// registered, once — outside the gate's lock, since the job is the
+    /// registrant's code.
+    pub fn mark_shown(&self, id: &str) {
+        let job = self.lock().on_shown.0.remove(id);
+        if let Some(job) = job {
+            job();
+        }
+    }
+
+    /// The request for `id` is over: drop a job its prompt never ran.
+    pub fn forget_shown(&self, id: &str) {
+        let job = self.lock().on_shown.0.remove(id);
+        drop(job);
     }
 
     /// Drop every posted-but-unclaimed decision (`/clear`, an interrupt): the
@@ -1688,6 +1736,61 @@ mod tests {
         gate.resolve(&id, PermissionDecision::Approve);
         gate.clear();
         assert_eq!(gate.wait(&id, &|| true), None);
+    }
+
+    /// A job for [`PermissionGate::on_shown`] that counts its runs.
+    fn counting_job(runs: &Arc<std::sync::atomic::AtomicUsize>) -> OnShown {
+        let runs = Arc::clone(runs);
+        Box::new(move || {
+            runs.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    #[test]
+    fn a_prompt_runs_what_its_thread_registered_once_it_is_shown() {
+        // The loop marks a prompt shown when it opens it on screen — the
+        // moment a `Notification` hook means (docs/hooks.md) — and what the
+        // asking thread registered runs then, once.
+        let gate = PermissionGate::new();
+        let id = gate.next_id();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        gate.on_shown(&id, counting_job(&runs));
+        assert_eq!(runs.load(Ordering::SeqCst), 0, "raised is not shown");
+        gate.mark_shown(&id);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        gate.mark_shown(&id);
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "a prompt is shown once");
+    }
+
+    #[test]
+    fn a_prompt_decided_before_it_shows_never_runs_its_job() {
+        // Queued behind another prompt and then covered by a new rule,
+        // withdrawn with its agent, or cancelled: nobody was asked, so what
+        // waited for the screen never runs — not even if a stale mark lands.
+        let gate = PermissionGate::new();
+        let id = gate.next_id();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        gate.on_shown(&id, counting_job(&runs));
+        gate.forget_shown(&id);
+        gate.mark_shown(&id);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn marking_a_prompt_nobody_waits_on_is_harmless() {
+        let gate = PermissionGate::new();
+        let other = gate.next_id();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        gate.on_shown(&other, counting_job(&runs));
+        gate.mark_shown("perm_unknown");
+        gate.forget_shown("perm_unknown");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "another prompt's job stays put"
+        );
+        gate.mark_shown(&other);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
     }
 
     #[test]

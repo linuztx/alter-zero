@@ -467,17 +467,18 @@ impl Session<'_> {
         // shared registry follows so the model's next `tasklist` agrees
         // (docs/task-tools.md).
         self.sync_task_registry();
+        // The session boundary for the hooks (docs/hooks.md), Claude Code's
+        // pair for its /clear: SessionEnd(clear) now — before the recorder
+        // moves on, so it names the conversation that ended, and bounded, so
+        // /clear cannot hang — and SessionStart(clear) in the background once
+        // the new conversation has its id.
+        self.models.end_conversation("clear");
         // A cleared conversation starts a fresh session file (codex's /new); the
         // old one keeps what it had (docs/resume.md). Re-seed the checkpoint chain
         // with a pristine snapshot of the current tree so a backtrack in the new
         // session can restore its starting point (docs/checkpoint.md).
         self.recorder.start_new();
-        // The session boundary for the hooks: SessionEnd(clear) fires now —
-        // bounded, so /clear cannot hang — and SessionStart(clear) at the
-        // next turn's top, the codex drain (docs/hooks.md). Claude Code
-        // fires the same pair for its /clear.
-        self.models.fire_session_end("clear");
-        self.models.queue_session_source("clear");
+        self.models.begin_conversation("clear");
         if let Some(commit) = self.checkpoints.snapshot("session start") {
             self.recorder
                 .record_checkpoint(checkpoint::Checkpoint { after: 0, commit });

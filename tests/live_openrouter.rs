@@ -3072,6 +3072,7 @@ fn backend_with_hooks(hooks_json: &str, dir: &std::path::Path) -> LlmBackend {
         permission_mode: Some("master".to_string()),
         agent_id: None,
         agent_type: None,
+        scratchpad_dir: None,
     };
     let sink = alter_zero::llm::hooks::CommandHooks::new(
         std::sync::Arc::new(file),

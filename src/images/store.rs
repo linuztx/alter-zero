@@ -4,7 +4,8 @@
 //! Everything that *acts* here is I/O — a `Picker` built from the environment
 //! and an ioctl, a file decoded off disk, an escape sequence stamped into a
 //! `Buffer` cell — so it is exercised by `scripts/smoke.sh` (Phase 107), not
-//! by unit tests; the detection's own predicates are pure and are, and the
+//! by unit tests; the detection's own predicates are pure and are (what the
+//! terminal's answer to the startup read means included), and the
 //! cache's file-state rule is proved by a half-block store drawing into a
 //! `Buffer` with no terminal. The pure half it serves (which cells are
 //! reserved, and how many) lives beside it in [`super::geometry`]. See
@@ -92,15 +93,90 @@ pub fn parse_cell_size(value: &str) -> Option<FontSize> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// The environment variables a terminal multiplexer sets for its sessions —
+/// tmux's `TMUX`, GNU screen's `STY`, zellij's `ZELLIJ` — read beside `TERM`
+/// by [`under_multiplexer`], in this order.
+pub const MULTIPLEXER_SESSION_VARS: [&str; 3] = ["TMUX", "STY", "ZELLIJ"];
+
 /// Whether this session runs under a terminal multiplexer — where a protocol
 /// guessed from the environment is least trustworthy, because the inner
 /// `TERM` says `tmux`/`screen` while `KITTY_WINDOW_ID` may still name an
-/// outer terminal that is no longer attached. Pure over the two values the
-/// boundary reads.
+/// outer terminal that is no longer attached. `sessions` are the values of
+/// [`MULTIPLEXER_SESSION_VARS`]: any one set says so, whatever `TERM` a
+/// config pinned (zellij's `ZELLIJ` is `0`, so a value is a session however
+/// it reads). Pure over the values the boundary reads.
 #[must_use]
-pub fn under_multiplexer(term: Option<&str>, tmux: Option<&str>) -> bool {
-    tmux.is_some_and(|v| !v.is_empty())
+pub fn under_multiplexer(term: Option<&str>, sessions: &[Option<&str>]) -> bool {
+    sessions.iter().any(|v| v.is_some_and(|v| !v.is_empty()))
         || term.is_some_and(|t| t.starts_with("tmux") || t.starts_with("screen"))
+}
+
+/// What the terminal said when the startup read asked it about graphics —
+/// [`crate::term::query`] sorts it out of the bytes that read took in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphicsReply {
+    /// The kitty graphics query's answer: `Some(true)` for `OK`,
+    /// `Some(false)` for an error, `None` when the terminal said nothing —
+    /// which is how a terminal without the protocol answers.
+    pub kitty: Option<bool>,
+    /// The name the terminal gives itself (`XTVERSION`): `libghostty`,
+    /// `WezTerm 20240203-…`, `XTerm(390)`. `None` when it gave none.
+    pub version: Option<String>,
+}
+
+/// Whether the startup read should ask the terminal about graphics: only
+/// when the environment left the protocol at the half-block fallback
+/// (`guessed`) and nothing pinned it (`forced` — `ALTER_ZERO_IMAGE_PROTOCOL`,
+/// `halfblocks` included), so the answer could change something.
+///
+/// Never under a multiplexer, which answers nothing itself and — tmux —
+/// files an APC string it does not know as the pane's title; never on a
+/// console that prints an escape string it does not know (`linux`, `dumb`).
+/// Pure.
+#[must_use]
+pub fn graphics_query_wanted(
+    guessed: ProtocolType,
+    forced: bool,
+    multiplexed: bool,
+    term: Option<&str>,
+) -> bool {
+    let console = term.is_some_and(|t| t.starts_with("linux") || t == "dumb");
+    guessed == ProtocolType::Halfblocks && !forced && !multiplexed && !console
+}
+
+/// Whether a terminal that calls itself `name` draws no unicode placeholders
+/// — the only kitty placement this crate emits — though it answers the
+/// support query `OK`: WezTerm and Konsole, the pair `ratatui_image`'s own
+/// query blacklists for exactly that.
+fn draws_no_placeholders(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("wezterm") || name.contains("konsole")
+}
+
+/// The protocol the startup read's answer leaves this session with.
+///
+/// A kitty `OK` upgrades the half-block fallback to kitty and touches
+/// nothing else — an answer the environment gave stands. The WezTerm/Konsole
+/// blacklist is decided by the **answering** terminal's own name when it
+/// gave one, and only without one by the environment (`blacklisted_env`:
+/// `WEZTERM_EXECUTABLE` or `KONSOLE_VERSION` set) — herdr keeps both
+/// variables in its panes while its own emulator is the one answering, and
+/// it draws placeholders. Pure.
+#[must_use]
+pub fn protocol_after_reply(
+    guessed: ProtocolType,
+    reply: &GraphicsReply,
+    blacklisted_env: bool,
+) -> ProtocolType {
+    let trusted = match reply.version.as_deref() {
+        Some(name) => !draws_no_placeholders(name),
+        None => !blacklisted_env,
+    };
+    if guessed == ProtocolType::Halfblocks && reply.kitty == Some(true) && trusted {
+        ProtocolType::Kitty
+    } else {
+        guessed
+    }
 }
 
 /// Whether the environment names a kitty-protocol terminal (kitty itself, or
@@ -191,6 +267,118 @@ type Screen = bool;
 /// alternate screen (the Ctrl+O / Ctrl+D / `/resume` overlay) is its inverse.
 const PRIMARY: Screen = false;
 
+/// What this terminal can draw, as far as the environment says — the half of
+/// the detection made before [`InlineViewport::init`]'s startup read, so that
+/// read knows whether it has a question for the terminal at all.
+///
+/// `ratatui_image` ships a `Picker::from_query_stdio` that asks the terminal
+/// directly, and it cannot be used here: it spawns a reader thread on stdin
+/// behind a two-second timeout and **never joins it**, so on any terminal
+/// that does not answer, that thread outlives the query and eats the user's
+/// first keystrokes (observed under tmux: every key swallowed, and a
+/// two-second startup stall to boot). That is invariant 1 — one stdin reader
+/// — so the environment decides first:
+///
+/// - the **cell size** comes from the tty's own `ws_xpixel`/`ws_ypixel`
+///   (an ioctl, never a round trip), falling back to a 1:2 cell — only the
+///   *ratio* matters, since it is what decides a picture's row count;
+/// - the **protocol** is `ratatui_image`'s own env sniff (the iTerm2 family,
+///   and a multiplexer's outer terminal) plus kitty/ghostty, which announce
+///   themselves in `TERM`/`TERM_PROGRAM`/`KITTY_WINDOW_ID` — and *not* under
+///   a multiplexer, where exactly that answer goes stale.
+///
+/// Where that leaves the half-block fallback, the terminal is asked — inside
+/// the cursor query's own read, the one stdin reader there is before the
+/// loop's `EventStream` ([`crate::term::query`]) — whether it speaks the
+/// kitty protocol, which is how a terminal the environment cannot name gets
+/// real pictures: herdr's panes say `xterm-256color` and `TERM_PROGRAM=herdr`
+/// while its emulator answers `OK`. Anything still undetected stays on
+/// unicode half-blocks, which are ordinary coloured cells and so work in
+/// every terminal, scrollback, resize and copy included.
+///
+/// [`IMAGE_PROTOCOL_ENV`] and [`IMAGE_CELL_SIZE_ENV`] override both, and a
+/// pinned protocol — `halfblocks` included — is never asked about.
+///
+/// [`InlineViewport::init`]: crate::term::InlineViewport::init
+pub struct Detection {
+    picker: Picker,
+    /// Whether the startup read should ask the terminal
+    /// ([`graphics_query_wanted`]).
+    ask: bool,
+    /// `WEZTERM_EXECUTABLE` or `KONSOLE_VERSION` is set — the blacklist's
+    /// fallback when the answering terminal gives no name
+    /// ([`protocol_after_reply`]).
+    blacklisted_env: bool,
+    /// [`IMAGE_RETRANSMIT_ENV`].
+    retransmit: bool,
+}
+
+impl Detection {
+    /// Read the environment and the tty's cell size. No round trip.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let env = |name: &str| std::env::var(name).ok();
+        let font = env(IMAGE_CELL_SIZE_ENV)
+            .as_deref()
+            .and_then(parse_cell_size)
+            .or_else(cell_size_from_tty)
+            .unwrap_or(super::geometry::DEFAULT_FONT_SIZE);
+        // `from_fontsize` is deprecated in favour of the stdin query this
+        // crate cannot call (above). It is also the only constructor that
+        // takes a cell size, and it still runs the env-based tmux + iTerm2
+        // detection we want.
+        #[allow(deprecated)]
+        let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(font.0, font.1));
+        let term = env("TERM");
+        let sessions = MULTIPLEXER_SESSION_VARS.map(env);
+        let multiplexed =
+            under_multiplexer(term.as_deref(), &sessions.each_ref().map(Option::as_deref));
+        if !multiplexed
+            && kitty_from_env(
+                term.as_deref(),
+                env("TERM_PROGRAM").as_deref(),
+                env("KITTY_WINDOW_ID").is_some(),
+            )
+        {
+            picker.set_protocol_type(ProtocolType::Kitty);
+        }
+        let forced = env(IMAGE_PROTOCOL_ENV)
+            .as_deref()
+            .and_then(protocol_from_name);
+        if let Some(forced) = forced {
+            picker.set_protocol_type(forced);
+        }
+        let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
+        Self {
+            ask: graphics_query_wanted(
+                picker.protocol_type(),
+                forced.is_some(),
+                multiplexed,
+                term.as_deref(),
+            ),
+            picker,
+            blacklisted_env: set("WEZTERM_EXECUTABLE") || set("KONSOLE_VERSION"),
+            retransmit: retransmit_forced(env(IMAGE_RETRANSMIT_ENV).as_deref()),
+        }
+    }
+
+    /// Whether the startup read should ask the terminal about graphics.
+    #[must_use]
+    pub const fn wants_query(&self) -> bool {
+        self.ask
+    }
+
+    /// The store, once the terminal's answer is in (an empty
+    /// [`GraphicsReply`] when it was not asked).
+    #[must_use]
+    pub fn into_store(mut self, reply: &GraphicsReply) -> ImageStore {
+        let protocol =
+            protocol_after_reply(self.picker.protocol_type(), reply, self.blacklisted_env);
+        self.picker.set_protocol_type(protocol);
+        ImageStore::from_picker(self.picker, self.retransmit)
+    }
+}
+
 /// The terminal's graphics capability and the pictures encoded for it.
 pub struct ImageStore {
     picker: Option<Picker>,
@@ -223,72 +411,10 @@ impl ImageStore {
         }
     }
 
-    /// Work out what this terminal can draw and how big a cell is —
-    /// **without reading stdin**.
-    ///
-    /// `ratatui_image` ships a `Picker::from_query_stdio` that asks the
-    /// terminal directly, and it is the more accurate answer, but it cannot
-    /// be used here: it spawns a reader thread on stdin behind a two-second
-    /// timeout and **never joins it**, so on any terminal that does not
-    /// answer, that thread outlives the query and eats the user's first
-    /// keystrokes (observed under tmux: every key swallowed, and a two-second
-    /// startup stall to boot). That is invariant 1 — one stdin reader — and it
-    /// is not negotiable, so the detection is environment plus `TIOCGWINSZ`,
-    /// which is what the reference harness does too:
-    ///
-    /// - the **cell size** comes from the tty's own `ws_xpixel`/`ws_ypixel`
-    ///   (an ioctl, never a round trip), falling back to a 1:2 cell — only
-    ///   the *ratio* matters, since it is what decides a picture's row count;
-    /// - the **protocol** is `ratatui_image`'s own env sniff (the iTerm2
-    ///   family, and a multiplexer's outer terminal) plus kitty/ghostty,
-    ///   which announce themselves in `TERM`/`TERM_PROGRAM`/
-    ///   `KITTY_WINDOW_ID` — and *not* under a multiplexer, where exactly
-    ///   that answer goes stale;
-    /// - anything undetected falls to unicode half-blocks, which are ordinary
-    ///   coloured cells and so work in every terminal, scrollback, resize and
-    ///   copy included.
-    ///
-    /// [`IMAGE_PROTOCOL_ENV`] and [`IMAGE_CELL_SIZE_ENV`] override both.
-    #[must_use]
-    pub fn detect() -> Self {
-        let env = |name: &str| std::env::var(name).ok();
-        let font = env(IMAGE_CELL_SIZE_ENV)
-            .as_deref()
-            .and_then(parse_cell_size)
-            .or_else(cell_size_from_tty)
-            .unwrap_or(super::geometry::DEFAULT_FONT_SIZE);
-        // `from_fontsize` is deprecated in favour of the stdin query above,
-        // which this crate cannot call. It is also the only constructor that
-        // takes a cell size, and it still runs the env-based tmux + iTerm2
-        // detection we want.
-        #[allow(deprecated)]
-        let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(font.0, font.1));
-        let multiplexed = under_multiplexer(env("TERM").as_deref(), env("TMUX").as_deref());
-        if !multiplexed
-            && kitty_from_env(
-                env("TERM").as_deref(),
-                env("TERM_PROGRAM").as_deref(),
-                env("KITTY_WINDOW_ID").is_some(),
-            )
-        {
-            picker.set_protocol_type(ProtocolType::Kitty);
-        }
-        if let Some(forced) = env(IMAGE_PROTOCOL_ENV)
-            .as_deref()
-            .and_then(protocol_from_name)
-        {
-            picker.set_protocol_type(forced);
-        }
-        Self::from_picker(
-            picker,
-            retransmit_forced(env(IMAGE_RETRANSMIT_ENV).as_deref()),
-        )
-    }
-
     /// A store that draws with `protocol` at a `font` cell size, trusting
-    /// the terminal to keep its screens' pictures — what
-    /// [`detect`](Self::detect) builds once it has decided both, and what a
-    /// unit test builds directly: a half-block store draws real coloured
+    /// the terminal to keep its screens' pictures — what a [`Detection`]
+    /// builds once it has decided both, and what a unit test builds
+    /// directly: a half-block store draws real coloured
     /// cells into a `Buffer` with no terminal anywhere, which is how the
     /// cache's own rules are proved.
     #[must_use]
@@ -384,9 +510,9 @@ impl ImageStore {
     /// [`IMAGE_RETRANSMIT_ENV`] takes the conservative path for a terminal
     /// that speaks the protocol but not that part of it — without it, such a
     /// terminal would show the picture on the first Ctrl+O and blank rows on
-    /// the second. We cannot ask it: the reply would have to be read off
-    /// stdin, and this crate has exactly one stdin reader (CLAUDE.md
-    /// invariant 1).
+    /// the second. We cannot ask it: the protocol has no query for this, and
+    /// the startup read ([`crate::term::query`]) can only carry questions a
+    /// terminal answers.
     ///
     /// The other three protocols keep nothing per screen — sixel, iTerm2 and
     /// half-blocks carry their whole payload in every render — so they share

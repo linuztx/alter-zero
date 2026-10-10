@@ -555,6 +555,7 @@ impl App {
             user_messages: agent.user_messages.clone(),
         });
         self.agents_generation += 1;
+        self.withdraw_agent_permissions(id);
         Some(AgentStop::Stopped(notice))
     }
 
@@ -705,6 +706,7 @@ impl App {
         };
         self.agents_generation += 1;
         self.settle_agent_completion(&notice);
+        self.withdraw_agent_permissions(id);
         true
     }
 

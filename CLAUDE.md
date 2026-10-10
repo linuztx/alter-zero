@@ -123,8 +123,11 @@ omitting the add would retain Docker's default grant. Resolve both HOME and
 the workspace physically before the SELinux home-directory guard. Two things there are easy
 to get wrong. **The `exec` command forwards the terminal's identity** —
 `-e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX`, the
-variables `ImageStore::detect` actually reads — without which pictures fall to
-half-blocks; it is the documentation, printed by `run.sh`, not a wrapper. And
+variables `images::Detection::from_env` actually reads — without which an
+iTerm2-family terminal falls to half-blocks (a kitty-protocol one is still
+found by the startup question, `docs/images.md` *Asking the terminal*) and a
+container under tmux cannot know not to ask; it is the documentation, printed
+by `run.sh`, not a wrapper. And
 **`--clipboard` forwards the display server, since `exec -it` carries only
 keystrokes**: the Wayland socket alone (never the runtime dir) **and** X11
 with a cookie rewritten to the wildcard family (the server files it under a
@@ -230,12 +233,12 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -292,7 +295,9 @@ unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md` — or its `visible_cells` cell emitter, which skips the
 cells shadowed by a wide emoji/CJK glyph so painted rows never drift — see
-`docs/table-streaming.md` *Wide glyphs*); `frame`'s async scheduler **task** is smoke-covered too
+`docs/table-streaming.md` *Wide glyphs* — or the startup read's `term::query`,
+the scanner that sorts the terminal's answers from the keys typed meanwhile
+and the replay of those keys — see `docs/images.md` *Asking the terminal*); `frame`'s async scheduler **task** is smoke-covered too
 (its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
 the geometry *policy* `term.rs` acts on — live-region height, the box's re-pin,
 the cursor seat — comes from pure `ui` helpers it calls (`ui::live_height`,
@@ -891,14 +896,27 @@ picture; a differential test pins the two together against the real
 (`images::read_image_size` — the only record that survives a `/resume`,
 since the rollout keeps the cell's text and not the file's header) or, for a
 paste, from the header the boundary read when the paste landed. Terminal
-detection **never reads stdin**: `ratatui_image`'s `Picker::from_query_stdio`
-spawns a reader thread behind a 2 s timeout and never joins it, so on a
-terminal that doesn't answer that thread eats the user's keystrokes
-(observed under tmux — a 2 s stall and then every key swallowed), which is
-invariant 1, so the cell size comes from `TIOCGWINSZ` and the protocol from
-the environment, falling to half-blocks;
+detection **adds no stdin reader**: `ratatui_image`'s
+`Picker::from_query_stdio` spawns a reader thread behind a 2 s timeout and
+never joins it, so on a terminal that doesn't answer that thread eats the
+user's keystrokes (observed under tmux — a 2 s stall and then every key
+swallowed), which is invariant 1, so the cell size comes from `TIOCGWINSZ`
+and the protocol from the environment (`images::Detection`) — and where the
+environment names none, from the terminal itself, asked **inside the init
+cursor query's own read** (`term::query`): the kitty graphics query and
+XTVERSION ride ahead of the DSR in one write, bracketed by a title push/pop
+because tmux files an unknown APC string as the pane's title, a terminal
+answers in order so the cursor report still ends the read, and a kitty `OK`
+upgrades the half-block fallback unless the answering terminal names itself
+WezTerm or Konsole (no unicode placeholders; the variables saying so are only
+the fallback, since herdr keeps them in panes its own libghostty answers for).
+That is what draws real pictures in a **herdr** pane, whose environment says
+`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. Never asked under a
+multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a `linux`/`dumb` console, or with the
+protocol pinned; falling to half-blocks;
 `ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
-`ALTER_ZERO_IMAGES` gates it. The encoded pictures are bounded in **bytes**
+`ALTER_ZERO_IMAGES` gates it (`smoke.sh` Phase 107e plays the answering
+terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**
 (a kitty placement is the whole picture as base64 RGBA), estimated from the
 placement's own geometry, since this process idles in a terminal all day
 (`docs/memory.md`) — and a PNG is **decoded at its fitted size**:
@@ -1256,7 +1274,9 @@ the same way; the footer gains a persistent roster — `● main` over
 `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` rows — that ↓ steps
 into **after** the shell indicator (`❯` selection, Enter views, hint lines in
 the footer slot; **`x` stops, then `x` clears** — the stop interrupts the
-agent and leaves its row in place wearing a red `◯` for the long
+agent (its open and queued permission prompts withdrawn with it,
+`App::withdraw_agent_permissions`, the lead's `agentkill` likewise, since
+an answer would reach nobody) and leaves its row in place wearing a red `◯` for the long
 `AGENT_STOPPED_LINGER` (30s, `AgentRun::linger` — a row that vanished under
 the keypress left no evidence of what was stopped) while the hint swaps to
 `x to clear`, and that second `x` takes it off at once; a naturally finished
@@ -1855,30 +1875,57 @@ waits on `llm::exec`'s 20 ms poll cadence, **re-checking the turn's
 skipped that would silently break Esc — the payload write included, on its
 own thread, since a pipe-buffer-filling `PostToolUse` payload fed to a
 handler that never reads stdin used to park an inline `write_all` past both
-Esc and the timeout. **All eleven events fire, every one on a backend
-thread** — verifying the references dissolved the old loop-path premise
-(Claude Code runs its stop hooks *inside the query loop*, and neither
-reference runs SessionStart at startup — both block only the next request):
+Esc and the timeout — and a hook's own exit ends the wait for its output
+pipes after `PIPE_DRAIN_GRACE` (1 s), since a process it left running
+(`server &`) holds them open and held the event, and the turn, for as long
+as it lived. **All fourteen events fire, none on the tokio loop** —
+verifying the references dissolved the old loop-path premise (Claude Code
+runs its stop hooks *inside the query loop*, and runs SessionStart in the
+background at launch, blocking only the first request):
 the tool-path five gate/annotate/rewrite calls (**`agent` launches
 included** — `Task` aliases to `agent`, and each tool name answers to its
 Claude Code spelling as a second exact name; `PostToolUse` fires only for a
-call that **succeeded**, both references' behaviour), `Stop`/`SubagentStop`
+call that **succeeded**, both references' behaviour, and its twin
+`PostToolUseFailure` for one that ran and failed, with the same answers),
+`Notification` (`permission_prompt`) the moment a permission prompt
+reaches the **screen** — not when it is raised: the asking thread registers
+it on the gate (`PermissionGate::on_shown`, before the request is sent), the
+loop bottom marks the open prompt shown (`PermissionStore::mark_shown` →
+`mark_shown`), and a request settled while it queued drops it
+(`forget_shown`) — run on the session's `NotificationLane` (on
+`HookHandles`: one worker, one notification at a time in shown order, a job
+whose turn ended while it queued skipped), every other dispatch with
+handlers waiting for the notifications already shown (`SessionEnd` within
+its budget), so it never holds the prompt up yet never lands out of order,
+`Stop`/`SubagentStop`
 fire in `run_agent`'s Complete arm where a block is a **same-turn
 continuation** (the reply-so-far becomes an assistant message, the feedback
 the next user message, `stop_hook_active` flips true and is the hook's own
 guard — the engine never refuses a re-block, the reference's posture, and an
 interrupt never fires Stop so Esc always breaks a chain; the turn-end
 checkpoint lands after every continuation, so a formatter hook's writes are
-inside the snapshot), `SessionStart` drains queued sources
-(`startup`/`resume`/`clear`) at the next spawn's top, `UserPromptSubmit` can
+inside the snapshot) and `StopFailure` where the turn ends on an error
+(`llm::hooks::stop_failure_kind` — Claude Code's error types, the matcher),
+`SessionStart` fires **in the background as a conversation opens** (the
+boundary's `ModelSession::begin_conversation`/`fire_session_start`:
+`startup` after the first frame, `clear`, `resume`) and the next spawn's
+top waits for its context (`SessionStartRun`, polling the cancel token; a
+later firing replaces and kills a run no turn read; a source fired while
+hooks were off or on the dummy stays queued for the first real turn),
+`UserPromptSubmit` can
 refuse the prompt — `StreamEvent::PromptBlocked`, the submission rolled back
 out of history *and* the rollout (the recorder's shrink-rewrite), the text
 returned to the composer under a red reason-only notice — or inject context,
 a loop-initiated background follow-up turn being marked synthetic and
-skipped; `PreCompact`/`PostCompact` ride the summarization spawn via the
+skipped (every user turn clears a mark nobody consumed);
+`PreCompact`/`PostCompact` ride the summarization spawn via the
 `CompactHooks` wrapper (PreCompact stdout/context = extra compact
 instructions, **no block — neither reference honours one**), and
-`SessionEnd` runs under a 2 s whole-event budget at `/clear`/quit. A block
+`SessionEnd` runs under a 2 s whole-event budget at `/clear`, `/resume`
+and quit (after the turn and agents are cancelled), naming the conversation
+that ends and **only for one whose start fired**
+(`ModelSession::end_conversation` — a still-queued source means it never
+started, so no end, the source dropped). A block
 *is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
 `ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
 `Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
@@ -1893,16 +1940,21 @@ inline, expanded in Ctrl+O, replayed verbatim by `context_messages`,
 rollout-round-tripped) and the terminal `PromptBlocked`. `PreToolUse` may
 also **rewrite** the call (`updatedInput` replaces the arguments for the
 gate, the executor and the cell), `PermissionRequest` sits exactly where the
-auto-mode classifier does, and payloads resolve `permission_mode` and
-`transcript_path` **live at dispatch** (the gate's current mode; the rollout
-path the recorder publishes into a shared cell). User-level config only — a
+auto-mode classifier does, and payloads resolve `permission_mode`,
+`session_id` and `transcript_path` **live at dispatch** (the gate's current
+mode; the **conversation's** id — the rollout file's, the handle `--resume`
+takes, chosen before the file exists and moved on by `/clear`/`/resume` —
+and its path, which the recorder publishes into a shared `ConversationCell`),
+beside Claude Code's `scratchpad_dir`. User-level config only — a
 project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved and **off until a directory turns it on**
 (`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
-`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
+`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
+Phase 133 the session events through a refusing stub provider, and Phase
+134 a real prompt's `Notification` against a stub asking for one call) in
 `docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
 no text entry, so the hardware cursor hides while its seat tracks the
@@ -2344,6 +2396,58 @@ directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
 
+**herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
+pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
+the pure `herdr::pane`) the app is its own status authority — herdr has no
+screen rules for it and a third-party agent cannot ship any, so it
+self-reports over herdr's socket. The state is **derived, never tracked**:
+`herdr::activity(&App)` at every loop bottom (after the recorder's sync, so the
+first message's report names the file it created, and after the turn end
+dispatched what follows, so chained turns never report a false idle —
+herdr's "finished" toast) feeds `herdr::Tracker`, which ranks it — `blocked`
+while `App::modal_open` (the prompt in one line, file paths by the path
+display rule, control characters folded, 80 characters), `working` while a
+turn is in flight, `blocked` on a **failed turn** (`Turn failed: {error}`,
+held via `Tracker::fail` from `tui::stream`'s `Error` arm until a turn starts
+or the history generation moves — idle there would be herdr's "finished" for
+work that died half done), `working` while **any subagent is busy**
+(`herdr::agent_busy`: running, or settled with a steered message or a Tab
+follow-up queued — deliberately unlike herdr's newest Grok/agy rule; a
+subagent always finishes and its result starts the next turn — while
+background shells never count), `idle` otherwise — and answers a report only
+when the state, its message or the session changed. Every
+`pane.report_agent` line carries the state and `resume_argv`: `alter-zero
+--resume {id}` once the conversation has a file, `alter-zero` alone before
+and after a `/clear` (nothing short of a release clears a command herdr
+holds, so the bare one is what keeps a herdr restart from reopening a cleared
+conversation), offered only when `argv[0]`'s basename is on `PATH` and
+validated by `herdr::resume_argv` against herdr's own rules, since an invalid
+command takes the state down with it; no `agent_session_id` (herdr keeps one
+only from its own integrations). `seq` is microseconds stepping past the last
+(`herdr::next_seq`) because herdr drops anything not above a pane's
+high-water mark for the pane's lifetime. The worker is the library's
+`herdr::Reporter` — one detached thread over a single slot (newest report
+only, one request at a time, 500 ms bounds, a fresh `seq` per send,
+`Timing::resend_after`'s 1 s… backoff and 30 s keepalive, since herdr never
+expires a self-reported state and its live upgrade drops a third-party one),
+`herdr::send` writing only to a socket this user owns (lstat, never through a
+symlink), the release last in `shutdown` with a 400 ms bound and on `Drop` —
+tested against real sockets; `tui::herdr` is the thin glue. **Nothing the
+session starts gets `HERDR_PANE_ID`** — the pty sessions
+(`pty::spawn::FOREIGN_TERMINAL_VARS`), every pipe-run child
+(`subprocess::command_in`: `!`, hooks, the `bash` pipe fallback) and MCP
+stdio servers — because a nested official integration's session report makes
+it the pane's owner and herdr then drops every alter-zero report for the
+pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
+(herdr's popups get the same environment). A pane's **pictures** owe nothing
+to the reports: herdr's environment names no graphics protocol, so the
+startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
+terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
+a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
+turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
+socket (a failed turn through the real backend and a refusing stub provider)
+and the fixture unsets every `HERDR_*` variable.
+
 ### The runtime model and its invariants
 
 This is an **inline** TUI: finished messages *and tool calls* flow into the
@@ -2606,7 +2710,13 @@ of bug:
    exists*; a second stdin reader would steal that reply and cause "cursor position
    could not be read". So: create the `EventStream` only after init, and never add
    another thread or task that reads stdin (`insert_before` tracks the viewport row
-   itself and never queries the cursor). **Relatedly, the detached-exec hook
+   itself and never queries the cursor). **Any other question for the terminal
+   rides in that same read** (`term::query` — today the kitty graphics query and
+   XTVERSION, `docs/images.md` *Asking the terminal*): written ahead of the DSR,
+   answered in order, the read stopping on the cursor report's last byte so
+   everything typed after it reaches the `EventStream` whole, and the keys typed
+   *before* it — which the read took in — replayed through the ordinary key
+   handler ahead of the loop's first `select!` (`InlineViewport::take_typeahead`). **Relatedly, the detached-exec hook
    (`subprocess::run_detached_exec_if_requested`) must stay the *first statement*
    of `main()`** — before the tokio runtime and any terminal I/O: in a helper
    re-exec (`{exe} __alter-zero-detached-exec {cmd}`) the process must `setsid`

@@ -547,10 +547,14 @@ which Ctrl+V reads the clipboard from.
   blank row apart — in the terminal's real scrollback, in the live region, and
   in the Ctrl+O transcript. Real pixels where the terminal speaks a graphics
   protocol (kitty / iTerm2 / sixel, via `ratatui-image`), unicode half-blocks
-  everywhere else. Pure `ui` reserves the rows (a block is `rows` `Line`s of
-  `cols` marked spaces, so a picture rides every path a `Vec<Line>` already
-  rides) and the boundary's `ImageStore::stamp` draws into them in the four
-  paint paths. Three `/settings` rows drive it: **Show images**, **Image
+  everywhere else. The protocol comes from the environment, and where that
+  names none — a herdr pane says `xterm-256color` while its emulator speaks
+  kitty's — from the terminal itself, asked inside the startup cursor query's
+  one read (`docs/images.md` *Asking the terminal*). Pure `ui` reserves the
+  rows (a block is `rows` `Line`s of `cols` marked spaces, so a picture rides
+  every path a `Vec<Line>` already rides) and the boundary's
+  `ImageStore::stamp` draws into them in the four paint paths. Three
+  `/settings` rows drive it: **Show images**, **Image
   width** (a cap in columns), and **Auto-resize images** — the last one about
   the *request* rather than the screen, downscaling a large picture before it
   is uploaded.
@@ -675,25 +679,54 @@ which Ctrl+V reads the clipboard from.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
-  stdout (or exit `2` with a reason on stderr). **All eleven modelled events
-  fire**, every one on a backend thread (the references' own placement — no
-  loop-thread blocking anywhere): the tool-path five gate/annotate/rewrite
-  calls (`agent` launches included), `Stop`/`SubagentStop` fire inside
-  `run_agent` where a block is a same-turn continuation
-  (`stop_hook_active` the hook's own guard, Esc the stop button),
-  `SessionStart` drains a queued source (`startup`/`resume`/`clear`) at the
-  next spawn's top, `UserPromptSubmit` can refuse the prompt (the submission
-  rolls back out of history, rollout included, the text returned to the
-  composer under a red reason-only notice) or inject context,
-  `PreCompact`/`PostCompact` ride the summarization spawn via the
-  `CompactHooks` wrapper (PreCompact context = extra compact instructions;
-  no block, matching both references' real behaviour), and `SessionEnd`
-  runs under a 2 s budget at `/clear`/quit. The pure half is `hooks/`; the
+  stdout (or exit `2` with a reason on stderr). **All fourteen modelled
+  events fire**, none on the tokio loop (the references' own placement):
+  the tool-path five gate/annotate/rewrite calls (`agent` launches
+  included), `PostToolUseFailure` their twin for a call that failed,
+  `Notification` (`permission_prompt`) once a prompt reaches the screen —
+  the asking thread registers it on the permission gate and the loop runs
+  it as it opens the prompt, so one settled while it queued never fires —
+  on a lane that runs notifications one at a time in shown order, ahead of
+  any later hook event, without ever holding the prompt up,
+  `Stop`/`SubagentStop` fire inside `run_agent` where a block
+  is a same-turn continuation (`stop_hook_active` the hook's own guard,
+  Esc the stop button) and `StopFailure` where a turn ends on an error
+  (typed by Claude Code's error kinds), `SessionStart` runs in the
+  background as a conversation opens (`startup`/`resume`/`clear`) with
+  the first turn waiting for its context, `UserPromptSubmit` can refuse
+  the prompt (the submission rolls back out of history, rollout included,
+  the text returned to the composer under a red reason-only notice) or
+  inject context, `PreCompact`/`PostCompact` ride the summarization spawn
+  via the `CompactHooks` wrapper (PreCompact context = extra compact
+  instructions; no block, matching both references' real behaviour), and
+  `SessionEnd` runs under a 2 s budget at `/clear`, `/resume` and quit,
+  only for a conversation whose start fired. Payloads carry the
+  conversation's own id as `session_id` — the handle `--resume` takes —
+  and `scratchpad_dir`, and a hook's exit ends the wait for its output
+  (a background process it left holding the pipes holds nothing). The
+  pure half is `hooks/`; the
   runner is `llm/hooks.rs`, behind the one-trait-object `HookSink` seam.
   Verdicts reuse the permission gate's rendering and recording wholesale;
   the two conversation-level additions are `StreamEvent::HookNote` → the
   cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
   verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
+- **herdr panes** (`docs/herdr.md`): run inside the herdr multiplexer, the
+  app reports its own state to herdr's local socket — `working` while a turn
+  or a subagent runs (a settled one with something queued for it included),
+  `blocked` while a permission prompt or a question waits on the user (with
+  the prompt in one line) and after a turn that failed, until the user moves
+  past it, `idle` otherwise — so herdr's sidebar and notifications track it
+  with no setup, and herdr can resume the session (`alter-zero --resume {id}`,
+  or a fresh `alter-zero` before the first message and after a `/clear`)
+  after a restart. The state is derived from the app at every loop bottom,
+  after the turn end has dispatched what comes next, so chained turns never
+  flash a false "finished"; the library's one worker writes the newest
+  report only, re-sends it on a backoff and a 30 s keepalive, and hands the
+  pane back last on quit — or on drop — within a bounded wait. Nothing the
+  session starts gets `HERDR_PANE_ID` (terminal sessions, `!` commands,
+  hooks, MCP servers), so a nested agent cannot take the pane over, while
+  `HERDR_ENV` stays for herdr's own CLI and skill. `ALTER_ZERO_HERDR=0` turns
+  it off.
 
 ## Architecture
 
@@ -705,7 +738,7 @@ logic is unit-testable without a real terminal.
 |-------------|----------------|---------|
 | `stream/`   | The backend seam, split one module per area (`docs/module-layout.md`): `event` — the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`) and its payload types; `source` — the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer); `cancel` — the `CancelToken`; `stall` — the wedged-backend double; and `dummy/` — the built-in `DummyAi` (a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`) with the pure `dummy_response`/`chunks`/`turn_events`, the **scenario registry** that picks which canned demo a prompt plays, and the demo replies themselves — each narrating the cells it draws and closing on the `/login` → `/model` hand-off, with every scripted call resolving through the real executor's renderers so the offline cells are the live ones (`docs/dummy-backend.md`). | Pure parts, token & dummy: yes |
 | `llm/`      | The **real OpenAI-compatible backend** (`docs/llm.md`): `config` (the `providers.toml` parse + `ModelConfig`/`Selection` resolution), `thinking` (`ThinkingSplitter` — peels `<think>`/native `reasoning` deltas out of the stream), `service_tier` (`ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each a palette command of its own (`/fast`, `/ultrafast`) that toggles it, `docs/fast-mode.md`), `openai` (`OpenAiClient` — pure endpoint/payload/SSE-parse + the blocking SSE `stream_chat`), `models` (`parse_models` + the `/v1/models` `fetch_models`, the `ModelEntry` picker row), `keystore` (`EnvFile` — the pure `.env` parser plus the shared atomic credential updater), `classifier` (the auto mode classifier — the silent bash-safety check auto mode runs in the user's stead, `docs/permissions.md`), `auth` (`request_auth` — the one seam every outbound call resolves through: what a request authenticates with, where it goes, and which header the credential rides), the three **sign-in** modules `copilot`/`chatgpt`/`claude` (a device flow and two browser PKCE flows, each storing a long-lived token the request exchanges for a short-lived one — `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`), the three extra **wire formats** `responses`, `anthropic` and `ollama` (pure translators between OpenAI's Responses / Anthropic's Messages / Ollama's native chat API and the Chat Completions currency the rest of the crate uses, so nothing above `OpenAiClient` learns they exist — `docs/ollama.md` also being the one whose request *sets* the context window, `options.num_ctx`), `agent_tools` (`agent`'s four companions — `agentsend`/`agentoutput`/`agentkill`/`agentlist` — over the shared `AgentRegistry`, a settled agent's continuation spawned through an injected launcher, `docs/agent-tools.md`), and `backend` (`LlmBackend: ReplySource` — bridges the split deltas to `StreamEvent`s). The dummy is the default/fallback; the real backend activates only when a provider+model+key resolve and `ALTER_ZERO_DUMMY` isn't set. | Pure cores: yes (HTTP: manual) |
-| `hooks/`    | **Lifecycle hooks**, the pure half (`docs/hooks.md`): `config` (the `hooks.json` format + `select` — matcher groups → runnable handlers, deduped, with warnings instead of failures for a handler type or event name we don't model), `matcher` (both references' non-regex fast path, then a real regex), `event` (the eleven `HookEvent`s and their wire names), `payload` (the per-event stdin JSON), `verdict` (one handler's exit code + stdout read into a `ParsedHook`, and several merged). Takes stdout **as a string**, so every rule is testable with no process anywhere; the spawn is `llm/hooks.rs`. | Yes |
+| `hooks/`    | **Lifecycle hooks**, the pure half (`docs/hooks.md`): `config` (the `hooks.json` format + `select` — matcher groups → runnable handlers, deduped, with warnings instead of failures for a handler type or event name we don't model), `matcher` (both references' non-regex fast path, then a real regex), `event` (the fourteen `HookEvent`s and their wire names), `payload` (the per-event stdin JSON), `verdict` (one handler's exit code + stdout read into a `ParsedHook`, and several merged). Takes stdout **as a string**, so every rule is testable with no process anywhere; the spawn is `llm/hooks.rs`. | Yes |
 | `pty/`      | **Terminal sessions** (`docs/interactive-shell.md`, `docs/bash-tools.md`) — what every `bash` call and its companions (`bashsend`/`bashwait`/`bashkill`/`bashlist`) run on: `keys` (the `<Enter>`/`<C-c>`/`<Up>` input notation, encoded to terminal bytes, and the double-escape undo), `transcript` (the output as lines — `vte`, carriage returns and erases applied), `screen` (the output as a screen — `vt100`, plus the terminal-query replies), `fold` (the output folded one line at a time as a pipe would carry it — `\r` progress bars once, escapes gone, tabs and trailing spaces kept — and `HeadTail`, the head and tail a long output keeps), `probe` (what the session's processes are blocked in, from Linux's `/proc` — a read on the terminal, a wait that may be on it, an epoll wait whose interest list holds nothing on it, or a tree all at work), `settle` (when a waiting call returns: exit, a read the probe saw or a password prompt, prompt, silence the probe cannot account for — or a password's check — the wait), `report` (the `Running`/`Stopped` frames the model reads — `waiting for input`, or `waiting for a password` — the data view of a finished command, the `bashlist` listing, and the model-only notes), `session` (`SessionIo` — the two views, the wait, the look, the exit handshake, the unseen-prompt check), and the boundary `spawn` (the pseudo-terminal, the controlling-terminal tiers, the line mode). The sessions themselves live in the background registry. | Pure cores: yes (`spawn`: real processes) |
 | `app/`      | State + pure update logic, split one module per area (`docs/module-layout.md`; the `App` struct stays in `mod.rs` so every submodule keeps its private-field access): `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, plus `seed`/`take_unpersisted` for the boundary's cross-session persistence, `docs/input-history.md` + `docs/history-persistence.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`), **the `/resume` picker** (`ResumePicker` state + `open_resume_picker`/`close_resume_picker`/`on_key_resume_picker`/`load_session` — the sessions arrive from the boundary's scan; `docs/resume.md`), **the inline `/model` picker** (`ModelPicker`/`ModelLoad`/`ModelFetchError` state + `open_model_picker`/`close_model_picker`/`begin_model_load`/`add_models`/`add_model_error`/`on_key_model_picker` — the per-provider model lists arrive in parallel from the boundary's fetches and merge; `docs/llm.md`), **the inline `/login` onboarding** (`KeyOnboarding`/`KeyStep`/`ProviderChoice` state + `open_key_onboarding`/`close_key_onboarding`/`on_key_key_onboarding`/`paste_into_key_onboarding` — the provider choices arrive from the boundary; `docs/llm.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`ResumePicker`/`ModelPicker`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
@@ -748,7 +781,10 @@ input and draws can't starve each other (codex's explicit round-robin fairness,
 for free). The async-rewrite design lives in `docs/async-rewrite.md`.
 
 The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
-has queried the cursor position over stdin once, synchronously. The reply backend
+has queried the cursor position over stdin once, synchronously — and any other
+question for the terminal rides in that read (today the kitty graphics query and
+XTVERSION, written ahead of the cursor query; the keys typed while it waited are
+replayed before the loop's first `select!` — `docs/images.md`). The reply backend
 runs on a background thread that only *sends* on its channel — it never reads stdin.
 A second stdin reader would steal the cursor-position (DSR) reply — the cause of the
 "cursor position could not be read" error. (`insert_before` tracks the viewport row
@@ -1294,8 +1330,11 @@ two places that have to agree (both now applied by every phase for itself, so
 a phase run on its own is as hermetic as one run by the suite):
 
 - **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
-  knob, `OLLAMA_HOST`, `NO_COLOR`, and `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`
-  before its first launch, then spells out per launch the ones it wants —
+  knob, `OLLAMA_HOST`, `NO_COLOR`, `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, and
+  herdr's four `HERDR_*` pane variables (run from a herdr pane, every phase
+  would report its turns to the developer's real multiplexer —
+  `docs/herdr.md`) before its first launch, then spells out per launch the ones
+  it wants —
   exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
   `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three

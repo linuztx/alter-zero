@@ -215,7 +215,7 @@ fn the_hooks_level_lists_handlers_with_the_source_header() {
 #[test]
 fn a_matcherless_event_titles_bare_and_descends_straight_to_its_hooks() {
     let mut app = hooks_app();
-    press(&mut app, KeyCode::Char('7')); // Stop
+    press(&mut app, KeyCode::Char('9')); // Stop
     let texts = texts(&app, 90);
     assert_eq!(texts[2], "  Stop", "no `- Matcher:` suffix");
     assert!(texts.iter().any(|l| l.contains("[command] ./done.sh")));
@@ -291,7 +291,7 @@ fn the_detail_page_shows_fields_the_boxed_command_and_the_note() {
 #[test]
 fn a_matcherless_detail_omits_the_matcher_row() {
     let mut app = hooks_app();
-    press(&mut app, KeyCode::Char('7')); // Stop → hooks
+    press(&mut app, KeyCode::Char('9')); // Stop → hooks
     press(&mut app, KeyCode::Enter); // its one hook's details
     let texts = texts(&app, 78);
     assert_eq!(texts[4], "  Event:    Stop");

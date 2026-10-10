@@ -44,7 +44,7 @@ fn level(app: &App) -> HooksLevel {
 }
 
 /// The index of Stop in the events list — a matcher-less event with a hook.
-const STOP: usize = 6;
+const STOP: usize = 8;
 
 #[test]
 fn stop_is_where_this_suite_thinks_it_is() {
@@ -169,7 +169,7 @@ fn enter_descends_events_matchers_hooks_detail_and_esc_walks_back() {
 fn a_matcherless_event_skips_the_matcher_level_both_ways() {
     let mut app = hooks_app();
     // Digit keys jump-activate their absolute row (the ask modal's rule).
-    app.on_key(key(KeyCode::Char('7')));
+    app.on_key(key(KeyCode::Char('9')));
     assert_eq!(
         level(&app),
         HooksLevel::Hooks {
@@ -223,7 +223,7 @@ fn an_event_with_nothing_configured_still_descends_to_its_empty_state() {
 #[test]
 fn a_digit_past_the_rows_is_ignored() {
     let mut app = hooks_app();
-    app.on_key(key(KeyCode::Char('7'))); // Stop → its one-hook list.
+    app.on_key(key(KeyCode::Char('9'))); // Stop → its one-hook list.
     app.on_key(key(KeyCode::Char('5')));
     assert_eq!(
         level(&app),

@@ -50,11 +50,15 @@ The shape is the pure `scratchpad` module (`session_root` / `scratchpad_dir` /
 `tasks_dir`); the boundary injects the temp dir, uid and session id (the
 `set_session_info` pattern) in `tui::bootstrap`.
 
-**One session id.** `bootstrap` mints it once now and shares it: the temp tree
-*and* the lifecycle hooks' payloads (`docs/hooks.md`). It used to call
-`host::session_id()` twice — and since the id is nanos-derived, the two
-answers differed, so a hook could not find the session's own files from the id
-it was handed.
+**One session id.** `bootstrap` mints it once and shares it: the temp tree
+*and* the first conversation's rollout file, which is named by it
+(`docs/resume.md`). It used to be minted twice — and since the id is
+nanos-derived, the two answers differed. A hook's `session_id` is the
+**conversation's** id now (the handle `--resume` takes, `docs/hooks.md`),
+which a `/clear` or a `/resume` moves on while the temp tree stays the
+process's, so the payloads also carry `scratchpad_dir` — Claude Code's field
+for it — and that is how a hook finds the session's scratchpad and task
+output.
 
 ## The prompt block
 

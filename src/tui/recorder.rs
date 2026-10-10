@@ -82,11 +82,18 @@ pub(crate) struct SessionRecorder {
     /// the conversation was on. Cleared by a `/model` pick
     /// ([`pick_model`](Self::pick_model)) and by `/clear`'s fresh file.
     keep_record: bool,
-    /// The hooks' view of the rollout path (`docs/hooks.md`): published on
-    /// every `active` transition, so a payload's `transcript_path` names the
-    /// file this conversation is actually recorded to — `None` while no file
-    /// exists (deferred create), exactly the contract's nullable field.
-    transcript: alter_zero::llm::hooks::TranscriptCell,
+    /// The id the next file is created with — the conversation's own, held
+    /// from the moment the conversation begins rather than minted at the
+    /// create, so a hook fired before the first item already names the id
+    /// `--resume` will take (`docs/hooks.md`). The startup id for the first
+    /// conversation, a fresh one after each `/clear`.
+    next_id: String,
+    /// The hooks' view of the conversation (`docs/hooks.md`): its id and the
+    /// rollout path, published on every `active` transition, so a payload's
+    /// `session_id` is the `--resume` handle and its `transcript_path` names
+    /// the file this conversation is actually recorded to — `None` while no
+    /// file exists (deferred create), exactly the contract's nullable field.
+    conversation: alter_zero::llm::hooks::ConversationCell,
     /// The `App::history_generation` this recorder last mirrored. The length
     /// watermark alone cannot see a **replacement** — a blocked prompt's
     /// rollback removes the submission *and* records the notice, so
@@ -98,7 +105,15 @@ pub(crate) struct SessionRecorder {
 }
 
 impl SessionRecorder {
-    pub(crate) fn new(model: &str, selection: Option<ModelSelection>, cwd: &Path) -> Self {
+    /// `id` is the first conversation's — the session's startup id, so a
+    /// fresh session's rollout file, temp tree and hook payloads all share
+    /// it until a `/clear` or a `/resume` moves the conversation on.
+    pub(crate) fn new(
+        model: &str,
+        selection: Option<ModelSelection>,
+        cwd: &Path,
+        id: String,
+    ) -> Self {
         Self {
             root: sessions_root(),
             active: None,
@@ -111,7 +126,8 @@ impl SessionRecorder {
             selection,
             written: None,
             keep_record: false,
-            transcript: alter_zero::llm::hooks::TranscriptCell::default(),
+            next_id: id,
+            conversation: alter_zero::llm::hooks::ConversationCell::default(),
             generation: 0,
         }
     }
@@ -151,22 +167,32 @@ impl SessionRecorder {
         target.is_some() && target != self.written.as_ref()
     }
 
-    /// Share the rollout path with the hook sink (`docs/hooks.md`): the cell
+    /// Share the conversation with the hook sink (`docs/hooks.md`): the cell
     /// is re-published on every `active` transition — the lazy create, a
     /// `/clear`'s reset, a `/resume`'s adopt.
-    pub(crate) fn with_transcript(mut self, cell: alter_zero::llm::hooks::TranscriptCell) -> Self {
-        self.transcript = cell;
-        self.publish_transcript();
+    pub(crate) fn with_conversation(
+        mut self,
+        cell: alter_zero::llm::hooks::ConversationCell,
+    ) -> Self {
+        self.conversation = cell;
+        self.publish_conversation();
         self
     }
 
-    /// Mirror the active path into the shared cell.
-    fn publish_transcript(&self) {
-        if let Ok(mut cell) = self.transcript.write() {
-            *cell = self
-                .active
-                .as_ref()
-                .map(|(path, _)| path.display().to_string());
+    /// Mirror the conversation into the shared cell: the active file's id and
+    /// path, or — before the file exists — the id it will be created with.
+    fn publish_conversation(&self) {
+        if let Ok(mut cell) = self.conversation.write() {
+            *cell = match &self.active {
+                Some((path, meta)) => alter_zero::llm::hooks::Conversation {
+                    id: Some(meta.id.clone()),
+                    transcript_path: Some(path.display().to_string()),
+                },
+                None => alter_zero::llm::hooks::Conversation {
+                    id: Some(self.next_id.clone()),
+                    transcript_path: None,
+                },
+            };
         }
     }
 
@@ -268,7 +294,11 @@ impl SessionRecorder {
         // records that at creation, a kept record belonging to the old file.
         self.written = None;
         self.keep_record = false;
-        self.publish_transcript();
+        // …and has an id of its own from this moment, so the
+        // `SessionStart(clear)` that announces it already names the id its
+        // file will carry (docs/hooks.md).
+        self.next_id = session_id();
+        self.publish_conversation();
     }
 
     /// Adopt a resumed session's file: further items append there (codex's
@@ -305,7 +335,7 @@ impl SessionRecorder {
         // it here keeps the next sync on the append path instead of
         // pointlessly rewriting the file that was just read.
         self.generation = generation;
-        self.publish_transcript();
+        self.publish_conversation();
     }
 
     /// Append `items` as rollout lines, materializing the file (date dirs +
@@ -314,7 +344,7 @@ impl SessionRecorder {
         use std::io::Write;
         if self.active.is_none() {
             self.active = self.create_session();
-            self.publish_transcript();
+            self.publish_conversation();
             // The create wrote the meta line and the model line together.
             if self.active.is_some() {
                 self.written = self.recorded_selection().cloned();
@@ -363,7 +393,7 @@ impl SessionRecorder {
         use chrono::{Datelike, Timelike};
         let root = self.root.as_ref()?;
         let now = chrono::Local::now();
-        let id = session_id();
+        let id = self.next_id.clone();
         let rel = session::rollout_rel_path(
             (now.year(), now.month(), now.day()),
             (now.hour(), now.minute(), now.second()),
