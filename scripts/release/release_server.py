@@ -11,7 +11,8 @@ the app's update check both read the tag off that redirect), answers
 install.sh — serves it at /install.sh, where `alter-zero update` fetches it
 from a non-GitHub base (docs/update.md). Binds an ephemeral port on
 127.0.0.1 and prints it on the first line of stdout; the selftest and the
-smoke suite point ALTER_ZERO_INSTALL_BASE_URL / ALTER_ZERO_UPDATE_URL at it.
+smoke suite point ALTER_ZERO_INSTALL_BASE_URL / ALTER_ZERO_UPDATE_URL at it,
+and `scripts/release.sh download --from`.
 """
 import http.server
 import os

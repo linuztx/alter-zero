@@ -6,7 +6,8 @@
 #
 # Rewrites, in place: Cargo.toml's [package] version, Cargo.lock's entry for
 # the crate (exactly what `cargo update --workspace` would write), the
-# README's version badge (URL label and alt text), and CHANGELOG.md — the
+# README's version badge (URL label and alt text), npm/package.json's version
+# and its platform packages' pins (docs/npm.md), and CHANGELOG.md — the
 # `## [Unreleased]` heading stays, empty, over a new `## [X.Y.Z] - <today>`
 # heading that takes its body, and the link block gains the version's
 # compare link (or the tag link, for a first release) with [Unreleased]
@@ -39,6 +40,7 @@ if git -C "$RELEASE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -
 	die "prepare: the tag $tag already exists"
 fi
 grep -q '^## \[Unreleased\]$' "$(changelog_path)" || die "prepare: CHANGELOG.md has no '## [Unreleased]' section to roll"
+[ -f "$(npm_manifest_path)" ] || die "prepare: no npm/package.json — the npm launcher package (docs/npm.md)"
 [ -n "$(changelog_section Unreleased)" ] || die "prepare: CHANGELOG.md's [Unreleased] section is empty — write the release's entries first"
 
 # Rewrite FILE through a filter, atomically (no `sed -i`: GNU and BSD differ).
@@ -67,6 +69,16 @@ rewrite "$RELEASE_ROOT/Cargo.lock" awk -v name="$name" -v v="$version" '
 rewrite "$RELEASE_ROOT/README.md" sed \
 	-e "s|img\.shields\.io/badge/Version-$(badge_escape "$current")-|img.shields.io/badge/Version-$(badge_escape "$version")-|" \
 	-e "s|alt=\"Version: $current\"|alt=\"Version: $version\"|"
+# npm/package.json: the launcher's own version and each platform package's
+# pin — the optional dependencies named after the launcher — and nothing
+# else (engines, keywords). Braces in bracket expressions for every awk.
+rewrite "$(npm_manifest_path)" awk -v v="$version" -v prefix="\"$(npm_name)-" '
+	/^  "version": "/ && !done { sub(/"version": "[^"]*"/, "\"version\": \"" v "\""); done = 1 }
+	/^  "optionalDependencies": [{]/ { pins = 1; print; next }
+	pins && /^  [}]/ { pins = 0 }
+	pins && index($0, prefix) { sub(/: "[^"]*"/, ": \"" v "\"") }
+	{ print }
+'
 # CHANGELOG.md: roll [Unreleased] into the release's section and re-point
 # the links.
 prev="$(changelog_versions | sed -n '1p')"
@@ -82,12 +94,12 @@ rewrite "$(changelog_path)" awk -v v="$version" -v d="$date" -v repo="$repo" -v 
 	{ print }
 '
 
-ok "$name $current → $version ($date) in Cargo.toml, Cargo.lock, README.md and CHANGELOG.md"
+ok "$name $current → $version ($date) in Cargo.toml, Cargo.lock, README.md, npm/package.json and CHANGELOG.md"
 bash "$RELEASE_LIB_DIR/check.sh"
 cat >&2 <<EOF
 
 Next, from $RELEASE_ROOT:
-  git add Cargo.toml Cargo.lock README.md CHANGELOG.md
+  git add Cargo.toml Cargo.lock README.md CHANGELOG.md npm/package.json
   git commit -m "Release $tag"
   git tag -a $tag -m "$name $tag"
   git push origin HEAD $tag          # the tag push runs .github/workflows/release.yml

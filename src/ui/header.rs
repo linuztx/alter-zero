@@ -136,17 +136,19 @@ pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
 
 /// The update notice as the same card (`docs/update.md`): [`notice_card_lines`]
 /// over `update::notice()` — a newer release `latest` is out, this is
-/// `current`, and `repo` is where the release page and the installer live.
+/// `current`, `repo` is where the release page and the installer live, and
+/// `command` updates this install (`update::update_command`).
 #[must_use]
 pub fn update_notice_lines(
     width: u16,
     current: &str,
     latest: &str,
     repo: &str,
+    command: &str,
 ) -> Vec<Line<'static>> {
     notice_card_lines(
         UPDATE_CARD_TITLE,
-        &crate::update::notice(current, latest, repo),
+        &crate::update::notice(current, latest, repo, command),
         width,
     )
 }

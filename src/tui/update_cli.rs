@@ -29,7 +29,9 @@ use super::config;
 /// is already the newest release or the installer finished, `1` when the
 /// check, the fetch or the install could not be done — or when this binary
 /// is a `cargo` build directory's, which is a checkout to `git pull`, not an
-/// install to overwrite. The installer's own output is the progress report.
+/// install to overwrite, or a package manager's under `node_modules`, which
+/// that manager updates (`docs/npm.md`). The installer's own output is the
+/// progress report.
 pub(crate) fn run() -> i32 {
     let bin = env!("CARGO_PKG_NAME");
     let current = env!("CARGO_PKG_VERSION");
@@ -44,6 +46,15 @@ pub(crate) fn run() -> i32 {
         eprintln!(
             "{bin} update: {} is a cargo build directory, not an install — update the checkout instead:\n  git pull && cargo build --release",
             exe.display()
+        );
+        return 1;
+    }
+    if let Some(manager) = update::package_manager(&exe) {
+        let name = manager.name();
+        eprintln!(
+            "{bin} update: {name} installed {} — update it with {name} instead:\n  {}",
+            exe.display(),
+            update::update_command(Some(manager))
         );
         return 1;
     }

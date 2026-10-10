@@ -19,6 +19,10 @@
 #   6. With a TAG: it is `vX.Y.Z` for that version, and the `[Unreleased]`
 #      section is empty — an entry left there was written for this release
 #      and never rolled into it.
+#   7. npm/package.json, the npm launcher package (docs/npm.md), names the
+#      same version and pins exactly one platform package per release
+#      target at it — the launcher installs whichever of them npm picks, so
+#      a stale pin is a binary from another release.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
@@ -73,6 +77,34 @@ else
 		fail "CHANGELOG.md: no '[Unreleased]: <url>' link reference"
 	else
 		ok "CHANGELOG.md: [Unreleased] section and link present"
+	fi
+fi
+
+if [ ! -f "$(npm_manifest_path)" ]; then
+	fail "npm/package.json is missing — the npm launcher package (docs/npm.md)"
+else
+	before="$FAILS"
+	npm_v="$(npm_version)"
+	[ "$npm_v" = "$version" ] || fail "npm/package.json says ${npm_v:-<no version>}, Cargo.toml says $version — run scripts/release.sh prepare"
+	pins="$(npm_pins)"
+	expected=" "
+	platforms=0
+	for target in $NPM_TARGETS; do
+		pkg="$(npm_package_of "$target")"
+		expected="$expected$pkg "
+		platforms=$((platforms + 1))
+		pin="$(printf '%s\n' "$pins" | awk -v p="$pkg" '$1 == p { print $2; exit }')"
+		[ "$pin" = "$version" ] || fail "npm/package.json pins $pkg at ${pin:-nothing}, Cargo.toml says $version"
+	done
+	while read -r pkg _; do
+		[ -n "$pkg" ] || continue
+		case "$expected" in
+		*" $pkg "*) ;;
+		*) fail "npm/package.json pins $pkg, a platform package no release target builds" ;;
+		esac
+	done <<<"$pins"
+	if [ "$FAILS" -eq "$before" ]; then
+		ok "npm/package.json: $(npm_name) $version, its $platforms platform packages pinned at it"
 	fi
 fi
 

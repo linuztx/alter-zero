@@ -338,9 +338,70 @@ package_dist() {
 # just the per-asset ones `package_dist` writes. It lives here because it
 # was three copies of one line in `publish`, the selftest's fixtures and
 # the smoke suite's stand-in release, and the copy that did not exist is
-# what broke the installer.
+# what broke the installer. A dist with no per-asset files — a release's
+# archives and SHA256SUMS alone, as published — has nothing to gather, and
+# is refused rather than handed an empty SHA256SUMS (or, with no file to
+# name, `cat`'s stdin); `download` writes the per-asset files back.
 write_sha256sums() {
-	local dist="$1"
-	( shopt -s nullglob; cat "$dist"/*.tar.gz.sha256 ) | sort -k 2 >"$dist/SHA256SUMS"
+	local dist="$1" sums
+	# Unmatched, the glob is either itself (the default) or nothing at all
+	# (under `publish`'s nullglob); neither names a file.
+	sums=("$dist"/*.tar.gz.sha256)
+	if [ "${#sums[@]}" -eq 0 ] || [ ! -e "${sums[0]}" ]; then
+		die "no per-asset .sha256 files in $dist to gather into SHA256SUMS — scripts/release.sh build writes one beside each archive"
+	fi
+	cat "${sums[@]}" | sort -k 2 >"$dist/SHA256SUMS"
 	printf '%s\n' "$dist/SHA256SUMS"
+}
+
+# ---------------------------------------------------------------------------
+# npm (docs/npm.md). npm/package.json is the launcher package; each release
+# target becomes a platform package named after Node's own words for its
+# OS and CPU (`process.platform-process.arch`) — what its `os`/`cpu` fields
+# say, and what the launcher (npm/bin/alter-zero.js) looks it up by. The
+# readers are line-oriented over the file's own two-space layout, which
+# `prepare` rewrites in place; the selftest derives its fixture from the
+# real file, so a reformatted package.json fails there first.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2034 # read by the steps that source this file
+NPM_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin"
+npm_manifest_path() { printf '%s/npm/package.json\n' "$RELEASE_ROOT"; }
+npm_platform() {
+	case "$1" in
+	x86_64-unknown-linux-gnu) printf 'linux-x64\n' ;;
+	aarch64-unknown-linux-gnu) printf 'linux-arm64\n' ;;
+	x86_64-apple-darwin) printf 'darwin-x64\n' ;;
+	aarch64-apple-darwin) printf 'darwin-arm64\n' ;;
+	*) return 1 ;;
+	esac
+}
+# A top-level `"key": "value"` of npm/package.json — two-space indented,
+# so never a nested object's own `"name"` or `"version"`.
+npm_field() {
+	sed -n "s/^  \"$1\": \"\([^\"]*\)\",\{0,1\}$/\1/p" "$(npm_manifest_path)" | sed -n 1p
+}
+npm_name() { npm_field name; }
+npm_version() { npm_field version; }
+npm_package_of() { printf '%s-%s\n' "$(npm_name)" "$(npm_platform "$1")"; }
+# The optional dependencies npm/package.json pins, one `name version` per line.
+npm_pins() {
+	# Braces in bracket expressions: gawk, mawk and BWK awk agree on those.
+	awk '
+		/^  "optionalDependencies": [{]/ { inside = 1; next }
+		inside && /^  [}]/ { exit }
+		inside {
+			name = $0
+			sub(/^[ \t]*"/, "", name)
+			sub(/".*$/, "", name)
+			version = $0
+			sub(/^[^:]*:[ \t]*"/, "", version)
+			sub(/".*$/, "", version)
+			print name, version
+		}
+	' "$(npm_manifest_path)"
+}
+# The dist-tag a version is published under: a pre-release goes to `next`,
+# so `npm install -g` keeps resolving the latest stable release.
+npm_dist_tag() {
+	if is_prerelease "$1"; then printf 'next\n'; else printf 'latest\n'; fi
 }
