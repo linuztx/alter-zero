@@ -459,6 +459,16 @@ EOF
 		expect_fail "publish refuses a dist that fails verify" bash "$STEPS/publish.sh" 0.4.2 "$T/dist-badsum" --dry-run
 
 		section "install.sh"
+		# install.sh must run under whatever `sh` is, and bash 3.2 — the one
+		# macOS has — reads the byte after a bare `$name` as part of the name
+		# in a UTF-8 locale: `$dim` followed by `·` asked for a variable named
+		# `dim` plus the first byte of `·`, and `set -u` aborted the install
+		# before the download. Braced, the name ends at the brace on every
+		# shell and in every locale, so no bare expansion may touch a
+		# non-ASCII byte. Byte semantics on purpose: in a UTF-8 locale the
+		# multibyte character is `print` and this pattern would find nothing.
+		expect_eq "no bare \$name runs into a non-ASCII byte (bash 3.2 reads it as part of the name)" "" \
+			"$(LC_ALL=C grep -nE '[$]([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-?@*#!$])[^[:print:][:space:]]' "$CHECKOUT/install.sh" || true)"
 		if command -v python3 >/dev/null 2>&1; then
 			base="http://127.0.0.1:$(serve_release "$T/dist" v0.4.2)"
 			expect_ok "install.sh installs the latest release from the stand-in server" env ALTER_ZERO_INSTALL_BASE_URL="$base" ALTER_ZERO_INSTALL_DIR="$T/home/bin" sh "$CHECKOUT/install.sh"

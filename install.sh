@@ -248,7 +248,7 @@ main() {
 		how="latest"
 	fi
 	version="${tag#v}"
-	step "Release" "$tag $dim· $how$reset"
+	step "Release" "$tag ${dim}· $how$reset"
 
 	asset="$BIN-$tag-$target"
 	tmp=$(mktemp -d 2>/dev/null || mktemp -d -t alter-zero)
@@ -306,9 +306,9 @@ main() {
 	*) note "the binary reports '$reported', expected '$BIN $version'" ;;
 	esac
 	if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
-		done_ "Installed" "$(pretty "$dir/$BIN") $dim· upgraded from $previous$reset"
+		done_ "Installed" "$(pretty "$dir/$BIN") ${dim}· upgraded from $previous$reset"
 	else
-		done_ "Installed" "$(pretty "$dir/$BIN") $dim· $reported$reset"
+		done_ "Installed" "$(pretty "$dir/$BIN") ${dim}· $reported$reset"
 	fi
 
 	printf '\n'

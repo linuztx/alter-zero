@@ -162,11 +162,12 @@ next — the PATH line for the user's own shell when the directory is not on
 it, and how to uninstall. It never prompts: under `curl | sh` its stdin
 *is* the script.
 
-It is POSIX `sh`, not bash — no arrays, no `local`, no `[[` — because the
-pipe target is whatever `sh` is (bash 3.2 in POSIX mode on macOS, dash on
-Debian, busybox on a container), and the whole file is functions with a
-single `main "$@"` on the last line, so a connection that drops mid-download
-hands `sh` an incomplete file that defines nothing and runs nothing. The
+It is POSIX `sh`, not bash — no arrays, no `local`, no `[[`, and no bare
+`$name` touching a multibyte character — because the pipe target is
+whatever `sh` is (bash 3.2 in POSIX mode on macOS, dash on Debian, busybox
+on a container), and the whole file is functions with a single `main "$@"`
+on the last line, so a connection that drops mid-download hands `sh` an
+incomplete file that defines nothing and runs nothing. The
 output wears the app's own look: the `crest` mascot in the banner gradient
 (truecolor when `COLORTERM` says so, the terminal's cyan otherwise), the
 `→`/`✔`/`✘` step glyphs, and none of it — no colour, ASCII glyphs — in a
@@ -182,7 +183,10 @@ that the selftest points `ALTER_ZERO_INSTALL_BASE_URL` at, so every path
 through the installer runs against real archives with no network: the
 latest and a pinned release, a re-install over itself, a release with no
 asset for the machine, a tampered checksum (nothing installed, and the
-output says so), `--help`, and an unknown flag.
+output says so), `--help`, an unknown flag, and a byte-level scan for the
+one shape bash 3.2 misreads — a bare `$name` touching a non-ASCII byte:
+`$dim` against `·` asked macOS's `/bin/sh` for a variable named `dim` plus
+the first byte of `·`, and `set -u` aborted the install there.
 
 The app drives the same script from inside: `alter-zero update`
 (`docs/update.md`) reads the latest tag off the same redirect and, when it is

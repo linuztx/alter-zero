@@ -80,6 +80,15 @@ release heading when a version is cut.
   colours themselves are unchanged, and so is the rest of the line. This
   applies to the inline cell, the Ctrl+O transcript and the permission
   prompt's preview alike (`docs/inline-diff.md`).
+- **The one-line installer runs on macOS under a UTF-8 locale.** `curl … |
+  sh` hands the script to `/bin/sh`, which on macOS is bash 3.2 — and in a
+  UTF-8 locale that bash reads the byte after a bare `$name` as part of the
+  name: `"$dim·"` asked for a variable named `dim` plus the first byte of
+  `·`, so with `set -u` the install aborted at the `Release` step, before
+  anything was downloaded (a C locale, and dash, bash 4 and up and busybox,
+  read it as written). The three expansions now end at a brace, and the
+  release tooling's selftest fails if a bare `$name` ever touches a
+  non-ASCII byte again (`docs/release.md`).
 
 ## [0.12.0] - 2026-10-05
 
