@@ -762,15 +762,41 @@ once.
 For a session the split comes from the transcript (`Transcript::take_stream`):
 lines within the screen's height of the end (`ROWS`, 40) can still be
 redrawn — pacman moves up to redraw a bar — so they stream as `live`; a line
-that scrolled out of reach is final and streams once as `settled`. Only what
-the next look would report is streamed, so a cell never shows a line its
-report will not carry. The wait sends at most every `STREAM_INTERVAL` (50 ms),
-only when something changed, `settled` capped at `STREAM_MAX_BYTES` (64 KB) a
-send, and once more as it settles, so the cell ends where the report begins.
-The cell's four-row window ends at the lowest live row **still moving**
+that scrolled out of reach is final and streams once as `settled`. What
+streams is every line the program has **drawn since the model's last look**,
+as it stands — what it is drawing now, never the lines the model was already
+handed and the program has left alone. That is not quite what the next look
+carries: a look reports what *changed*, so a line drawn back to the text it
+was handed is left out of it. The stream used to follow the look exactly, and
+npm's spinner is what that broke. A `bashwait` on an `npm install` whose
+launch had handed the model the frame `⠏` dropped the spinner's row each time
+the cycle (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, a frame every 80 ms) came back round to `⠏`, so
+once every 800 ms the cell emptied, fell back to `⎿ Running…` for a frame and
+moved the box a row each way. The wait sends at most every `STREAM_INTERVAL`
+(50 ms), only when something changed, `settled` capped at `STREAM_MAX_BYTES`
+(64 KB) a send, and once more as it settles, so the cell ends where the report
+begins. The cell's four-row window ends at the lowest live row **still moving**
 rather than at the output's end — pacman's finished bars sit below the
 ones still downloading, all in reach — `docs/tool-streaming.md` *The
 window follows what is still moving*.
+
+**An update is sampled between two frames, never inside one** (`pty::pace`).
+A program redraws a line in pieces — npm's spinner writes a column move
+(`ESC [1G`), an erase (`ESC [0K`) and the glyph as three writes — and the
+reader can take them apart. An update sampled after the erase showed the line
+blank, and the sampler *locked onto* that moment: the read that woke it was
+the first piece of a frame, so frame after frame the update fell due exactly
+there and the spinner barely reached the screen (fed fourteen frames whose
+pieces landed a millisecond apart, the cell was sent the blank line and a
+single glyph). A due
+update now waits until the output has been still for `FRAME_SETTLE` (10 ms)
+— a frame's pieces land microseconds apart, its frames tens of milliseconds
+— the waiting call sleeping no longer than that pause has left
+(`Pace::hold_left`), so the sample lands in it rather than at the next poll;
+output that never pauses is sampled anyway once an update has waited
+`MAX_HOLD` (100 ms). A plain command on a pipe is paced by the same rule
+(`PipeOutput`), where the sample used to land on the erase's chunk the same
+way.
 
 **Plain commands fold the same way** (`pty::fold`). Plenty of programs draw on
 a pipe as if it were a terminal — curl's meter, tqdm, ffmpeg and rsync
@@ -1349,6 +1375,11 @@ Three of this design's choices were kept over it:
   ones that may be on the terminal and the screen decides, as before. A
   session opens its terminal blocking, so this takes a program earlier in the
   same session that left it non-blocking.
+- **A redraw in output that never pauses** — the running cell is sampled in
+  a 10 ms pause between frames (`pty::pace`); output that never leaves one,
+  frames drawn faster than that or a log flooding past a spinner, is sampled
+  once an update has waited 100 ms for one, and can show a frame half drawn
+  for a moment.
 - **Typeahead** — several answers in one input are delivered at once, as a
   terminal would; a program that flushes pending input before a prompt loses
   them. The description steers models to one answer per call instead of

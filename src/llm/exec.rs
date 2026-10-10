@@ -445,9 +445,10 @@ fn run_piped(
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             // Wait briefly for the next chunk (so we tail promptly) or wake to
-            // re-poll the cancel/timeout above; `Disconnected` (both readers done
-            // before the child is reaped) just paces the re-poll.
-            Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL) {
+            // re-poll the cancel/timeout above — or to send an update held for
+            // the output to pause; `Disconnected` (both readers done before
+            // the child is reaped) just paces the re-poll.
+            Ok(None) => match chunk_rx.recv_timeout(output.poll_interval()) {
                 Ok(chunk) => output.absorb(&chunk, on_output),
                 // A quiet moment still delivers what the pacing held back.
                 Err(mpsc::RecvTimeoutError::Timeout) => output.stream(on_output, false),
@@ -1072,7 +1073,8 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
 
 /// How often a plain command's running cell is sent its output while it
 /// flows — every line still arrives, batched; a burst of progress frames
-/// costs one redraw per interval, not one per frame.
+/// costs one redraw per interval, not one per frame, each sampled between
+/// two frames ([`crate::pty::pace`]).
 const PIPE_STREAM_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A plain command's output as it arrives (`docs/interactive-shell.md`):
@@ -1096,8 +1098,11 @@ struct PipeOutput {
     streamed: usize,
     /// The line in progress as the running cell last showed it.
     shown: String,
-    /// When the running cell was last sent anything.
-    sent: Option<Instant>,
+    /// When the running cell is sent its next update — between two of the
+    /// output's frames, never inside one.
+    pace: crate::pty::pace::Pace,
+    /// When output last arrived: what tells the pace a frame is whole.
+    output_at: Option<Instant>,
     /// The bytes as they were read, within `cap` — what a Ctrl+B handoff
     /// replays, so the background shell folds the whole stream itself.
     raw: Vec<u8>,
@@ -1112,7 +1117,8 @@ impl PipeOutput {
             pending: String::new(),
             streamed: 0,
             shown: String::new(),
-            sent: None,
+            pace: crate::pty::pace::Pace::new(PIPE_STREAM_INTERVAL),
+            output_at: None,
             raw: Vec::new(),
             cap,
         }
@@ -1125,7 +1131,19 @@ impl PipeOutput {
         self.fold.feed(chunk);
         let lines = self.fold.take_settled();
         self.keep(&lines);
+        self.output_at = Some(Instant::now());
         self.stream(on_output, false);
+    }
+
+    /// How long the poll loop may wait for the next chunk: no longer than
+    /// an update held for the output to pause has left, so the update goes
+    /// out in that pause.
+    fn poll_interval(&self) -> Duration {
+        self.pace
+            .hold_left(Instant::now(), self.output_at)
+            .map_or(BASH_POLL_INTERVAL, |left| {
+                left.clamp(Duration::from_millis(1), BASH_POLL_INTERVAL)
+            })
     }
 
     /// Keep ended lines: for the model, both ends; for the running cell,
@@ -1137,14 +1155,11 @@ impl PipeOutput {
         self.pending.push_str(&lines[..take]);
     }
 
-    /// Send the running cell what changed since the last send — unless one
-    /// went out within [`PIPE_STREAM_INTERVAL`] and this is not the `last`.
+    /// Send the running cell what changed since the last send — when the
+    /// pace says an update is due ([`PIPE_STREAM_INTERVAL`], at a pause in
+    /// the output), or always for the `last`.
     fn stream(&mut self, on_output: &mut dyn FnMut(ToolProgress<'_>), last: bool) {
-        if !last
-            && self
-                .sent
-                .is_some_and(|sent| sent.elapsed() < PIPE_STREAM_INTERVAL)
-        {
+        if !last && !self.pace.due(Instant::now(), self.output_at) {
             return;
         }
         let live = self.fold.current();
@@ -1158,7 +1173,6 @@ impl PipeOutput {
         self.streamed += self.pending.len();
         self.pending.clear();
         self.shown = live;
-        self.sent = Some(Instant::now());
     }
 
     /// What a Ctrl+B handoff replays: the output as it was read.
@@ -1468,6 +1482,58 @@ mod tests {
                 .iter()
                 .all(|frame| frame.matches('%').count() <= 1),
             "one row per bar: {:?}",
+            cell.frames
+        );
+    }
+
+    #[test]
+    fn a_plain_commands_redraw_written_in_pieces_never_reaches_the_cell_half_drawn() {
+        // A spinner on a pipe, npm's way: each frame a column move and an
+        // erase, then the glyph, written apart. Sampled as the erase landed
+        // — the read that made the update due — the cell showed the blanked
+        // line instead of the spinner, frame after frame; it is sampled in
+        // the pause between frames instead (`pty::pace`).
+        let python = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
+        });
+        if !python {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let command = r#"python3 -c 'import os, time
+os.write(1, b"installing\n")
+for glyph in "abcdefghijkl":
+    os.write(1, b"\x1b[1G\x1b[0K")
+    time.sleep(0.001)
+    os.write(1, glyph.encode())
+    time.sleep(0.06)
+os.write(1, b"\n")'"#;
+        let mut cell = LiveCell::default();
+        let out = RealToolExecutor::new().execute(
+            &call(
+                "bash",
+                &serde_json::json!({ "command": command }).to_string(),
+            ),
+            &CancelToken::new(),
+            &mut |progress| cell.take(progress),
+        );
+        assert_eq!(out.output, "Exit code: 0\ninstalling\nl\n");
+        // Every view but the settled last one: the spinner's line turning.
+        let turning: Vec<&String> = cell
+            .frames
+            .iter()
+            .filter(|frame| frame.as_str() != "installing\nl\n")
+            .collect();
+        assert!(
+            turning.len() >= 5,
+            "it streamed as the spinner turned: {:?}",
+            cell.frames
+        );
+        assert!(
+            turning.iter().all(|frame| frame
+                .strip_prefix("installing\n")
+                .is_some_and(|glyph| glyph.chars().count() == 1)),
+            "a frame reached the cell half drawn: {:?}",
             cell.frames
         );
     }

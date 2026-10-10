@@ -19,6 +19,8 @@
 //!   input, a tree that is all at work is busy whatever its screen shows,
 //!   and an event loop whose epoll instances watch no terminal asks nothing.
 //! - [`settle`] — when a call waiting on a session returns.
+//! - [`pace`] — when its running cell is sent the next update: at a frame
+//!   boundary, never between the pieces of a redraw.
 //! - [`report`] — what a session call tells the model: the frame line over
 //!   the new output or the screen.
 //! - [`session`] — what a session's threads share: both views, the waiting
@@ -31,6 +33,7 @@
 pub mod charset;
 pub mod fold;
 pub mod keys;
+pub mod pace;
 pub mod probe;
 pub mod report;
 pub mod screen;

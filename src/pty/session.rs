@@ -25,6 +25,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::fold::{Fold, HeadTail};
+use super::pace::Pace;
 use super::probe::Probe;
 use super::report::{self, Status, View};
 use super::screen::Screen;
@@ -44,7 +45,8 @@ const BURST_SPAN: Duration = Duration::from_millis(100);
 
 /// How often a waiting call streams the session to its running cell, at
 /// most — a redrawn progress bar reaches the screen at a steady pace instead
-/// of once per write (`docs/interactive-shell.md`).
+/// of once per write, each update sampled between two of its frames
+/// ([`super::pace`], `docs/interactive-shell.md`).
 const STREAM_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How long a terminal a call waits on must be quiet — no output, no input —
@@ -754,7 +756,10 @@ impl SessionIo {
             let (update, seen) = {
                 let mut state = self.lock();
                 let now = Instant::now();
-                let update = streamer.due(now).then(|| state.transcript.take_stream());
+                let update = streamer
+                    .pace
+                    .due(now, state.last_output)
+                    .then(|| state.transcript.take_stream());
                 let output = state.printed_since(kind, since);
                 let last = if output {
                     state.last_output.unwrap_or(since.at)
@@ -800,12 +805,20 @@ impl SessionIo {
                 return WaitEnd::Handoff;
             }
             // Sleep only when there is nothing to act on — no exit that
-            // landed after the observation above.
+            // landed after the observation above — and no longer than an
+            // update held for the output to pause has left to wait, so it is
+            // sampled in that pause.
             let state = self.lock();
             if seen.exited || !state.finished {
+                let poll = streamer
+                    .pace
+                    .hold_left(Instant::now(), state.last_output)
+                    .map_or(WAIT_POLL, |left| {
+                        left.clamp(Duration::from_millis(1), WAIT_POLL)
+                    });
                 let _ = self
                     .changed
-                    .wait_timeout(state, WAIT_POLL)
+                    .wait_timeout(state, poll)
                     .unwrap_or_else(PoisonError::into_inner);
             }
         }
@@ -888,29 +901,29 @@ impl SessionIo {
 }
 
 /// A waiting call's stream to its running cell ([`SessionIo::wait`]): paced
-/// at [`STREAM_INTERVAL`], sent only when something changed, the settled
-/// text capped at [`STREAM_MAX_BYTES`].
-#[derive(Default)]
+/// at [`STREAM_INTERVAL`] and sampled at a frame boundary ([`Pace`]), sent
+/// only when something changed, the settled text capped at
+/// [`STREAM_MAX_BYTES`].
 struct Streamer {
-    last: Option<Instant>,
+    /// When the next update is sampled.
+    pace: Pace,
     /// The live rows sent last.
     shown: String,
     /// Settled bytes sent so far.
     settled: usize,
 }
 
-impl Streamer {
-    /// Is a stream update due at `now`? Starts the next interval if so.
-    fn due(&mut self, now: Instant) -> bool {
-        let due = self
-            .last
-            .is_none_or(|last| now.saturating_duration_since(last) >= STREAM_INTERVAL);
-        if due {
-            self.last = Some(now);
+impl Default for Streamer {
+    fn default() -> Self {
+        Self {
+            pace: Pace::new(STREAM_INTERVAL),
+            shown: String::new(),
+            settled: 0,
         }
-        due
     }
+}
 
+impl Streamer {
     /// Hand `update` to `stream` — unless it changes nothing on screen.
     fn send(&mut self, update: super::transcript::Stream, stream: &mut dyn FnMut(&str, &str)) {
         let settled = if self.settled < STREAM_MAX_BYTES {
@@ -1719,6 +1732,62 @@ mod tests {
                 }
             ),
             format!("Running (session s1, waiting for input)\n{view}")
+        );
+    }
+
+    #[test]
+    fn a_redraw_written_in_pieces_never_reaches_the_cell_half_drawn() {
+        // npm's spinner writes each frame as a column move, an erase and the
+        // glyph — separate writes the monitor can read apart. Sampled between
+        // them, the cell showed the line the erase had just blanked: it
+        // emptied, fell back to `Running…` and moved the box, frame after
+        // frame. A due update waits for the output to pause, which the
+        // pieces of one frame never do (`pty::pace`).
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let io = Arc::new(SessionIo::new(true));
+        let since = io.begin_wait();
+        let done = Arc::new(AtomicBool::new(false));
+        {
+            let io = Arc::clone(&io);
+            let done = Arc::clone(&done);
+            std::thread::spawn(move || {
+                io.absorb("installing\r\n⠋".as_bytes());
+                for glyph in "⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼".chars() {
+                    std::thread::sleep(Duration::from_millis(60));
+                    io.absorb(b"\x1b[1G\x1b[0K");
+                    std::thread::sleep(Duration::from_millis(1));
+                    io.absorb(glyph.to_string().as_bytes());
+                }
+                std::thread::sleep(Duration::from_millis(60));
+                done.store(true, Ordering::SeqCst);
+            });
+        }
+        let mut view = String::new();
+        let mut live_len = 0;
+        let mut frames = Vec::new();
+        let end = io.wait(
+            WaitKind::Launch,
+            since,
+            LONG,
+            &|| done.load(Ordering::SeqCst),
+            &never,
+            &mut |settled, live| {
+                live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
+                frames.push(view.clone());
+            },
+        );
+        assert_eq!(end, WaitEnd::Cancelled);
+        assert!(
+            frames.len() >= 5,
+            "it streamed as the spinner turned: {frames:?}"
+        );
+        assert!(
+            frames.iter().all(|frame| {
+                frame
+                    .strip_prefix("installing\n")
+                    .is_some_and(|glyph| glyph.chars().count() == 1)
+            }),
+            "a frame reached the cell half drawn: {frames:?}"
         );
     }
 

@@ -292,6 +292,7 @@ cores carry no process and are unit-tested alone; `spawn` is the I/O.
 | `transcript.rs` | The output as lines of text (`vte::Perform`): what an ordinary program reports. |
 | `screen.rs` | The output as a screen (`vt100`): what a full-screen program reports, and the terminal-query replies. |
 | `settle.rs` | When a waiting call returns — exit, prompt, line quiet, timeout. |
+| `pace.rs` | When the running cell is sent its next update — every interval, in a pause between two frames of the output. |
 | `report.rs` | What the model reads: the `Running`/`Stopped` frames over the output or the screen, and the model-only notes. |
 | `session.rs` | `SessionIo` — the two views, the wait, the look, and the exit handshake the monitor and the calls share. |
 | `spawn.rs` | The boundary: the pseudo-terminal, the controlling-terminal tiers, the session environment, the line mode. |

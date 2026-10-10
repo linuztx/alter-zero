@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A spinner no longer makes a running command's cell flicker.** While a
+  `Bash(…)` or `BashWait(…)` call waited on an `npm` command, or anything
+  else drawing npm's `⠋⠙⠹…` spinner, its live cell kept jumping between the
+  spinner and `⎿ Running…`, moving the input box up and down a row each
+  time. The cell dropped the spinner whenever it came back round to the frame
+  the model had last been shown, and could catch a frame half drawn, after
+  the spinner had erased its line but before it drew the next glyph. The
+  cell now keeps every line the program is still drawing, and reads the
+  output only in the pause between two frames (`docs/interactive-shell.md`).
+
 ## [0.13.0] - 2026-10-10
 
 ### Added
