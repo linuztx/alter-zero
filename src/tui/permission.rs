@@ -19,6 +19,11 @@
 //!   the loop bottom denies them explicitly
 //!   ([`PermissionStore::release_abandoned`]).
 //!
+//! And the gate learns when a prompt reaches the **screen**
+//! ([`PermissionStore::mark_shown`]): a request can queue behind another and
+//! be settled there unseen, so the moment someone is actually asked — what a
+//! `Notification` hook announces (`docs/hooks.md`) — is the loop's to say.
+//!
 //! `ALTER_ZERO_PERMISSIONS=0` starts the session with **no gate**: nothing
 //! asks, every tool runs unasked, and the footer shows no mode (a mode with
 //! nothing asking would be a lie).
@@ -45,6 +50,9 @@ pub(crate) struct PermissionStore {
     /// This working directory — the file's key, so a rule granted in one
     /// project never leaks into another.
     project: String,
+    /// The request whose prompt was last marked shown — so each prompt is
+    /// marked once, as it opens.
+    shown: Option<String>,
 }
 
 impl PermissionStore {
@@ -57,6 +65,7 @@ impl PermissionStore {
             gate: config::permissions_enabled().then(PermissionGate::new),
             path: config::permissions_file_path(),
             project: cwd.display().to_string(),
+            shown: None,
         };
         if let Some(gate) = store.gate.as_ref() {
             let saved = config::load_permissions(store.path.as_deref());
@@ -129,6 +138,23 @@ impl PermissionStore {
             for id in app.take_abandoned_permissions() {
                 gate.resolve(&id, PermissionDecision::Deny(None));
             }
+        }
+    }
+
+    /// Tell the gate the open prompt is on screen — once per prompt, as it
+    /// opens — which runs what its thread left waiting for that, the
+    /// `Notification` hook (`docs/hooks.md`). The prompt open at the loop
+    /// bottom is the one the next frame paints; one opened and settled within
+    /// an iteration never reached the screen, and one settled while it queued
+    /// never opens at all.
+    pub(crate) fn mark_shown(&mut self, app: &App) {
+        let open = app.permission().map(|prompt| prompt.request.id.as_str());
+        if open == self.shown.as_deref() {
+            return;
+        }
+        self.shown = open.map(str::to_string);
+        if let (Some(gate), Some(id)) = (self.gate.as_ref(), open) {
+            gate.mark_shown(id);
         }
     }
 

@@ -88,6 +88,17 @@ place, and every id is released on the gate like any abandoned request.
 Another asker's requests — the lead's, a sibling agent's — stay where they
 were.
 
+**The gate also learns when a prompt reaches the screen.** A request is
+*raised* when its thread sends it, but it is *shown* only when the loop opens
+it, and a request queued behind another can be settled before it ever opens
+(a rule it now falls under, its agent stopped, an Esc). The thread registers
+what should happen once its prompt is shown (`PermissionGate::on_shown`, before
+the request is sent), the loop bottom marks the open prompt shown once
+(`PermissionStore::mark_shown`, which runs it), and the thread drops it when
+its request ends (`forget_shown`). Today that is the `Notification` hook's
+moment (`docs/hooks.md`); the job runs on the loop's thread, so it only hands
+work elsewhere.
+
 ## What stays on screen
 
 A prompt is a question *about something*, so the modal never hides what raised

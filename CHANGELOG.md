@@ -53,10 +53,13 @@ release heading when a version is cut.
   that ends on an error fires `StopFailure`, typed with Claude Code's error
   kinds (`rate_limit`, `authentication_failed`, `invalid_request`,
   `server_error`, …), so a hook can match on the kind. A permission prompt
-  coming up fires `Notification` with `permission_prompt`, the moment you
-  are actually being asked, without holding the prompt up. Hook scripts
-  written for Claude Code that use these events now work here unchanged
-  (`docs/hooks.md`).
+  reaching the screen fires `Notification` with `permission_prompt`, the
+  moment you are actually being asked: a prompt waiting behind another fires
+  when it opens, and one settled before it opens never fires. It never
+  holds the prompt up, and it never lands out of order: notifications run
+  one at a time in the order their prompts showed, and the call's next hook
+  waits for its notification. Hook scripts written for Claude Code that use
+  these events now work here unchanged (`docs/hooks.md`).
 
 ### Changed
 

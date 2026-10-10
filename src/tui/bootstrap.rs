@@ -1001,6 +1001,10 @@ impl<'t> Session<'t> {
         // decision that is never coming — a cancelled turn's reaps itself, but a
         // background agent's has nothing to cancel it (docs/permissions.md).
         self.permissions.release_abandoned(&mut self.app);
+        // …and mark the prompt now open as on screen, which is when its
+        // `Notification` hook fires — never for one settled while it queued
+        // behind another (docs/hooks.md).
+        self.permissions.mark_shown(&self.app);
         // …and any ask request dropped the same way, resolved as a decline so
         // the blocked thread wakes with the stop-and-wait result rather than
         // parking forever (docs/ask.md).

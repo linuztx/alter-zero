@@ -683,8 +683,12 @@ which Ctrl+V reads the clipboard from.
   events fire**, none on the tokio loop (the references' own placement):
   the tool-path five gate/annotate/rewrite calls (`agent` launches
   included), `PostToolUseFailure` their twin for a call that failed,
-  `Notification` (`permission_prompt`) off-thread the moment a prompt is
-  on screen, `Stop`/`SubagentStop` fire inside `run_agent` where a block
+  `Notification` (`permission_prompt`) once a prompt reaches the screen —
+  the asking thread registers it on the permission gate and the loop runs
+  it as it opens the prompt, so one settled while it queued never fires —
+  on a lane that runs notifications one at a time in shown order, ahead of
+  any later hook event, without ever holding the prompt up,
+  `Stop`/`SubagentStop` fire inside `run_agent` where a block
   is a same-turn continuation (`stop_hook_active` the hook's own guard,
   Esc the stop button) and `StopFailure` where a turn ends on an error
   (typed by Claude Code's error kinds), `SessionStart` runs in the

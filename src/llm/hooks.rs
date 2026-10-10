@@ -187,13 +187,24 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// The permission prompt for `call` is on screen — Claude Code's
-    /// `Notification` with `notification_type` `permission_prompt`, the
-    /// moment a human is actually being asked (which `PermissionRequest`,
-    /// consulted before the classifier, cannot say). Observation only, and
-    /// it must not hold the prompt up: the command sink runs it off the
-    /// gate's thread, under the turn's token.
-    fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) {}
+    /// A permission prompt for `call` is being raised: what to run once it
+    /// is **on screen** — Claude Code's `Notification` with
+    /// `notification_type` `permission_prompt`, the moment a human is
+    /// actually being asked (which `PermissionRequest`, consulted before the
+    /// classifier, cannot say). The gate runs the job when the loop opens
+    /// the prompt ([`PermissionGate::on_shown`]), and never for one settled
+    /// while it queued behind another. Observation only, and it must not
+    /// hold the prompt up: the job runs on the loop's thread, so the command
+    /// sink hands the hook to its notification lane and returns at once.
+    ///
+    /// [`PermissionGate::on_shown`]: crate::permission::PermissionGate::on_shown
+    fn permission_prompt(
+        &self,
+        _call: &ToolCallRequest,
+        _cancel: &CancelToken,
+    ) -> Option<crate::permission::OnShown> {
+        None
+    }
 
     /// A subagent was launched; the returned strings are extra context for
     /// **that** agent's own conversation.
@@ -433,6 +444,115 @@ impl SessionStartRun {
     }
 }
 
+/// The session's `Notification` hooks, run **one at a time, in the order
+/// their prompts were shown**, and ahead of any hook event fired after them
+/// (`docs/hooks.md`). A notifier must never hold its prompt up, so it cannot
+/// run on the thread that asked; run anywhere else without an order, a slow
+/// one landed after the `PostToolUse` of the call it announced — or after the
+/// next prompt's — and a hook keeping a status would end on the wrong one.
+/// One worker thread drains the queue while it has jobs; a dispatch that has
+/// handlers to run first waits for every notification handed over before it.
+#[derive(Debug, Clone, Default)]
+pub struct NotificationLane {
+    shared: Arc<(std::sync::Mutex<LaneState>, std::sync::Condvar)>,
+}
+
+/// What the lane holds: its queue, and the two counts a waiting dispatch
+/// compares — `finished` catching up with the `enqueued` it saw.
+#[derive(Default)]
+struct LaneState {
+    queue: std::collections::VecDeque<LaneJob>,
+    enqueued: u64,
+    finished: u64,
+    /// A worker thread is draining the queue.
+    draining: bool,
+}
+
+impl std::fmt::Debug for LaneState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaneState")
+            .field("queued", &self.queue.len())
+            .field("enqueued", &self.enqueued)
+            .field("finished", &self.finished)
+            .finish()
+    }
+}
+
+/// One notification: its turn's token — a job whose turn ended while it
+/// queued runs nothing — and the dispatch.
+struct LaneJob {
+    cancel: CancelToken,
+    run: Box<dyn FnOnce(&CancelToken) + Send>,
+}
+
+impl NotificationLane {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LaneState> {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Queue `run` behind the notifications already handed over, starting a
+    /// worker if none is draining. Never blocks: the loop's thread calls it.
+    fn push(&self, cancel: CancelToken, run: Box<dyn FnOnce(&CancelToken) + Send>) {
+        let start = {
+            let mut state = self.lock();
+            state.queue.push_back(LaneJob { cancel, run });
+            state.enqueued += 1;
+            !std::mem::replace(&mut state.draining, true)
+        };
+        if start {
+            let lane = self.clone();
+            std::thread::spawn(move || lane.drain());
+        }
+    }
+
+    /// The worker: run the queue in order until it is empty.
+    fn drain(&self) {
+        loop {
+            let job = {
+                let mut state = self.lock();
+                let Some(job) = state.queue.pop_front() else {
+                    state.draining = false;
+                    return;
+                };
+                job
+            };
+            if !job.cancel.is_cancelled() {
+                let LaneJob { cancel, run } = job;
+                // A dispatch that panicked must not strand every later one.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&cancel)));
+            }
+            self.lock().finished += 1;
+            self.shared.1.notify_all();
+        }
+    }
+
+    /// Wait for every notification handed to the lane before this call —
+    /// giving up on `cancel`, or at `until`.
+    fn wait_for_earlier(&self, cancel: &CancelToken, until: Option<Instant>) {
+        let mut state = self.lock();
+        let target = state.enqueued;
+        while state.finished < target && !cancel.is_cancelled() {
+            let mut step = POLL_INTERVAL;
+            if let Some(until) = until {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                step = step.min(left);
+            }
+            state = self
+                .shared
+                .1
+                .wait_timeout(state, step)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
 /// The live handles a [`CommandHooks`] resolves per dispatch — shared with
 /// the boundary so the payloads report the session as it **is**, not as it
 /// was when the sink was built (a `/model` switch rebuilds sinks; these
@@ -450,6 +570,8 @@ pub struct HookHandles {
     /// The `SessionStart` hooks fired in the background, waiting for the
     /// next turn to take their context.
     pub started: SessionStartRun,
+    /// The session's `Notification` hooks, in the order their prompts showed.
+    pub notifications: NotificationLane,
     /// Set by the boundary just before it dispatches a **loop-initiated**
     /// turn (a background completion's follow-up): the next
     /// `user_prompt_submit` is skipped — that prompt is synthesized, not the
@@ -536,6 +658,12 @@ impl CommandHooks {
         cancel: &CancelToken,
     ) -> HookOutcome {
         let selection = self.file.select(event, query);
+        // A notification already shown runs first, so the event's hooks see
+        // the session in the order things happened (`docs/hooks.md`) — unless
+        // there is nothing here to run, or this is that lane's own dispatch.
+        if event != HookEvent::Notification && !selection.handlers.is_empty() {
+            self.handles.notifications.wait_for_earlier(cancel, None);
+        }
         let mut parsed: Vec<ParsedHook> = selection
             .warnings
             .into_iter()
@@ -724,6 +852,24 @@ impl CommandHooks {
             contexts
         });
         self.handles.started.hold(StartRun { cancel, handle });
+    }
+
+    /// `Notification(permission_prompt)`, dispatched: the payload is built
+    /// now, as the prompt shows, so it reports the session as it is then.
+    fn notify_permission_prompt(&self, tool: &str, cancel: &CancelToken) {
+        let message = format!("{} needs your permission to use {tool}", crate::APP_NAME);
+        let payload = crate::hooks::notification_payload(
+            &self.live_context(),
+            "permission_prompt",
+            PERMISSION_PROMPT_TITLE,
+            &message,
+        );
+        let _ = self.dispatch(
+            HookEvent::Notification,
+            Some("permission_prompt"),
+            &payload,
+            cancel,
+        );
     }
 
     /// `PreCompact` (`docs/hooks.md`): fired by the compact wrapper on the
@@ -1018,7 +1164,11 @@ impl HookSink for CommandHooks {
         ))
     }
 
-    fn permission_prompt(&self, call: &ToolCallRequest, cancel: &CancelToken) {
+    fn permission_prompt(
+        &self,
+        call: &ToolCallRequest,
+        cancel: &CancelToken,
+    ) -> Option<crate::permission::OnShown> {
         // Every prompt passes through here, so nothing is built for a
         // session with no notifier to hand it to.
         if self
@@ -1027,33 +1177,23 @@ impl HookSink for CommandHooks {
             .handlers
             .is_empty()
         {
-            return;
+            return None;
         }
-        let message = format!(
-            "{} needs your permission to use {}",
-            crate::APP_NAME,
-            super::tools::display_name(&call.name)
-        );
-        let payload = crate::hooks::notification_payload(
-            &self.live_context(),
-            "permission_prompt",
-            PERMISSION_PROMPT_TITLE,
-            &message,
-        );
-        // Off the gate's thread: the gate waits at once, so an answer given
-        // while a slow notifier runs is acted on, not held behind it. Under
-        // the turn's token all the same, so an Esc reaps a notifier that
-        // hangs (`docs/hooks.md`).
+        let tool = super::tools::display_name(&call.name);
         let hooks = self.clone();
         let cancel = cancel.clone();
-        std::thread::spawn(move || {
-            let _ = hooks.dispatch(
-                HookEvent::Notification,
-                Some("permission_prompt"),
-                &payload,
-                &cancel,
+        // Run on the loop's thread as the prompt opens, so the hook itself
+        // goes to the lane: the gate's wait is already under way, and an
+        // answer given while a slow notifier runs is acted on, not held behind
+        // it. Under the turn's token all the same, so an Esc reaps a notifier
+        // that hangs, or drops one still queued (`docs/hooks.md`).
+        let lane = self.handles.notifications.clone();
+        Some(Box::new(move || {
+            lane.push(
+                cancel,
+                Box::new(move |cancel| hooks.notify_permission_prompt(&tool, cancel)),
             );
-        });
+        }))
     }
 
     fn permission_request(
@@ -1209,6 +1349,13 @@ impl HookSink for CommandHooks {
         let selection = self.file.select(HookEvent::SessionEnd, Some(reason));
         let started = Instant::now();
         let cancel = CancelToken::new();
+        // Last, after any notification already shown — within the event's
+        // own budget, so a notifier that hangs cannot hang the quit.
+        if !selection.handlers.is_empty() {
+            self.handles
+                .notifications
+                .wait_for_earlier(&cancel, Some(started + SESSION_END_BUDGET));
+        }
         for handler in &selection.handlers {
             let remaining = SESSION_END_BUDGET.saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -1600,11 +1747,14 @@ mod tests {
               {{"type":"command","command":"cat > {p}.tmp; mv {p}.tmp {p}; sleep 5"}}]}}]}}}}"#,
             p = probe.display()
         ));
+        let shown = hooks
+            .permission_prompt(
+                &call("bash", r#"{"command":"make deploy"}"#),
+                &CancelToken::new(),
+            )
+            .expect("a notifier is configured");
         let started = Instant::now();
-        hooks.permission_prompt(
-            &call("bash", r#"{"command":"make deploy"}"#),
-            &CancelToken::new(),
-        );
+        shown();
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "the notifier held the prompt up: {:?}",
@@ -1644,11 +1794,223 @@ mod tests {
             p = probe.display()
         ));
         let cancel = CancelToken::new();
-        hooks.permission_prompt(&call("bash", "{}"), &cancel);
+        let shown = hooks
+            .permission_prompt(&call("bash", "{}"), &cancel)
+            .expect("a notifier is configured");
+        shown();
         std::thread::sleep(Duration::from_millis(300));
         cancel.cancel();
         std::thread::sleep(Duration::from_secs(3));
         assert!(!probe.exists(), "the notifier outlived its cancelled turn");
+    }
+
+    /// A `hooks.json` recording each listed event's payload, one JSON line
+    /// apiece, to `log` — `Notification` after `notify_delay` (a shell
+    /// fragment run first, so a slow notifier can be told apart).
+    fn recording_hooks(log: &Path, notify_delay: &str, events: &[&str]) -> CommandHooks {
+        let record = format!(
+            "p=$(cat); {notify_delay}printf '%s\\n' \"$p\" >> {}",
+            log.display()
+        );
+        let plain = format!("p=$(cat); printf '%s\\n' \"$p\" >> {}", log.display());
+        let groups: Vec<String> = events
+            .iter()
+            .map(|event| {
+                let command = if *event == "Notification" {
+                    &record
+                } else {
+                    &plain
+                };
+                format!(
+                    r#""{event}":[{{"hooks":[{{"type":"command","command":{},"timeout":30}}]}}]"#,
+                    serde_json::to_string(command).unwrap()
+                )
+            })
+            .collect();
+        hooks_for(&format!(r#"{{"hooks":{{{}}}}}"#, groups.join(",")))
+    }
+
+    /// The log's payloads once it holds `count` of them (or the deadline
+    /// passed), as `(event, message-or-reason)` pairs.
+    fn recorded(log: &Path, count: usize) -> Vec<(String, String)> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let rows: Vec<serde_json::Value> = std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            if rows.len() >= count || Instant::now() > deadline {
+                return rows
+                    .iter()
+                    .map(|row| {
+                        let name = row["hook_event_name"].as_str().unwrap_or("").to_string();
+                        let detail = row["message"]
+                            .as_str()
+                            .or_else(|| row["reason"].as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (name, detail)
+                    })
+                    .collect();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn notifications_run_one_at_a_time_in_the_order_their_prompts_showed() {
+        // A slow notifier for the first prompt, a quick one for the second:
+        // run side by side the second would land first, so a status hook
+        // would end on the wrong prompt (`docs/hooks.md`).
+        let log = std::env::temp_dir().join("alter-zero-hook-notify-order.log");
+        let _ = std::fs::remove_file(&log);
+        let hooks = recording_hooks(
+            &log,
+            r#"case "$p" in *Bash*) sleep 1;; esac; "#,
+            &["Notification"],
+        );
+        let cancel = CancelToken::new();
+        let first = hooks
+            .permission_prompt(&call("bash", "{}"), &cancel)
+            .unwrap();
+        let second = hooks
+            .permission_prompt(&call("write", "{}"), &cancel)
+            .unwrap();
+        first();
+        second();
+        let rows = recorded(&log, 2);
+        let messages: Vec<&str> = rows.iter().map(|(_, m)| m.as_str()).collect();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(messages[0].ends_with("use Bash"), "{messages:?}");
+        assert!(messages[1].ends_with("use Write"), "{messages:?}");
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_notifier_that_panics_never_strands_the_ones_after_it() {
+        // One worker drains the lane; a job that died with it would leave
+        // every later notification queued and every later hook waiting.
+        let lane = NotificationLane::default();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        lane.push(
+            CancelToken::new(),
+            Box::new(|_| panic!("a notifier that panics")),
+        );
+        let flag = Arc::clone(&ran);
+        lane.push(
+            CancelToken::new(),
+            Box::new(move |_| flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
+        lane.wait_for_earlier(
+            &CancelToken::new(),
+            Some(Instant::now() + Duration::from_secs(5)),
+        );
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the notification after a panic never ran"
+        );
+    }
+
+    #[test]
+    fn a_later_hook_event_waits_for_a_notification_already_shown() {
+        // The prompt is answered at once and the call runs — the prompt is
+        // never held up — but its PostToolUse does not overtake the
+        // notification the prompt fired: hook events keep the order they
+        // fired in (`docs/hooks.md`).
+        let log = std::env::temp_dir().join("alter-zero-hook-notify-before-post.log");
+        let _ = std::fs::remove_file(&log);
+        let hooks = recording_hooks(&log, "sleep 1; ", &["Notification", "PostToolUse"]);
+        let cancel = CancelToken::new();
+        let bash = call("bash", r#"{"command":"ls"}"#);
+        let shown = hooks.permission_prompt(&bash, &cancel).unwrap();
+        shown();
+        let _ = hooks.post_tool_use(&bash, &ToolOutcome::ok("listed"), &cancel);
+        let events: Vec<String> = recorded(&log, 2).into_iter().map(|(e, _)| e).collect();
+        assert_eq!(events, ["Notification", "PostToolUse"]);
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn an_event_with_no_hook_of_its_own_never_waits_on_a_notifier() {
+        // Ordering is about what hooks see; a call whose event runs nothing
+        // has nothing to order, so a slow notifier costs it nothing.
+        let log = std::env::temp_dir().join("alter-zero-hook-notify-no-wait.log");
+        let _ = std::fs::remove_file(&log);
+        let hooks = recording_hooks(&log, "sleep 2; ", &["Notification"]);
+        let cancel = CancelToken::new();
+        let bash = call("bash", r#"{"command":"ls"}"#);
+        hooks.permission_prompt(&bash, &cancel).unwrap()();
+        let started = Instant::now();
+        let _ = hooks.post_tool_use(&bash, &ToolOutcome::ok("listed"), &cancel);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "waited {:?} with no PostToolUse hook to order",
+            started.elapsed()
+        );
+        cancel.cancel();
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_notification_whose_turn_ended_while_it_queued_never_runs() {
+        // Behind a slow notifier, a second prompt's notification waits its
+        // turn; if that prompt's turn is cancelled meanwhile, nothing of it
+        // runs — and the lane moves on.
+        let log = std::env::temp_dir().join("alter-zero-hook-notify-cancelled.log");
+        let _ = std::fs::remove_file(&log);
+        let hooks = recording_hooks(
+            &log,
+            r#"case "$p" in *Bash*) sleep 1;; esac; "#,
+            &["Notification"],
+        );
+        let kept = CancelToken::new();
+        let ended = CancelToken::new();
+        let first = hooks.permission_prompt(&call("bash", "{}"), &kept).unwrap();
+        let second = hooks
+            .permission_prompt(&call("write", "{}"), &ended)
+            .unwrap();
+        first();
+        second();
+        ended.cancel();
+        let rows = recorded(&log, 1);
+        std::thread::sleep(Duration::from_millis(500));
+        let rows_after = recorded(&log, 1);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].1.ends_with("use Bash"), "{rows:?}");
+        assert_eq!(rows_after, rows, "the cancelled notification ran late");
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_quit_ends_after_a_notification_already_shown_and_within_its_budget() {
+        // SessionEnd is last — after a notification shown before the quit —
+        // and still bounded: a notifier that hangs costs the quit no more
+        // than SessionEnd's own budget.
+        let log = std::env::temp_dir().join("alter-zero-hook-notify-before-end.log");
+        let _ = std::fs::remove_file(&log);
+        let hooks = recording_hooks(&log, "sleep 0.5; ", &["Notification", "SessionEnd"]);
+        hooks
+            .permission_prompt(&call("bash", "{}"), &CancelToken::new())
+            .unwrap()();
+        hooks.session_end("prompt_input_exit");
+        let events: Vec<String> = recorded(&log, 2).into_iter().map(|(e, _)| e).collect();
+        assert_eq!(events, ["Notification", "SessionEnd"]);
+
+        let stuck = recording_hooks(&log, "sleep 30; ", &["Notification", "SessionEnd"]);
+        let cancel = CancelToken::new();
+        stuck
+            .permission_prompt(&call("bash", "{}"), &cancel)
+            .unwrap()();
+        let started = Instant::now();
+        stuck.session_end("prompt_input_exit");
+        assert!(
+            started.elapsed() < SESSION_END_BUDGET + Duration::from_millis(500),
+            "the quit hung on a notifier: {:?}",
+            started.elapsed()
+        );
+        cancel.cancel();
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]

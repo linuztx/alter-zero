@@ -1887,9 +1887,17 @@ included** — `Task` aliases to `agent`, and each tool name answers to its
 Claude Code spelling as a second exact name; `PostToolUse` fires only for a
 call that **succeeded**, both references' behaviour, and its twin
 `PostToolUseFailure` for one that ran and failed, with the same answers),
-`Notification` (`permission_prompt`) the moment a permission prompt is on
-screen, on a thread of its own under the turn's token so it never holds the
-prompt up, `Stop`/`SubagentStop`
+`Notification` (`permission_prompt`) the moment a permission prompt
+reaches the **screen** — not when it is raised: the asking thread registers
+it on the gate (`PermissionGate::on_shown`, before the request is sent), the
+loop bottom marks the open prompt shown (`PermissionStore::mark_shown` →
+`mark_shown`), and a request settled while it queued drops it
+(`forget_shown`) — run on the session's `NotificationLane` (on
+`HookHandles`: one worker, one notification at a time in shown order, a job
+whose turn ended while it queued skipped), every other dispatch with
+handlers waiting for the notifications already shown (`SessionEnd` within
+its budget), so it never holds the prompt up yet never lands out of order,
+`Stop`/`SubagentStop`
 fire in `run_agent`'s Complete arm where a block is a **same-turn
 continuation** (the reply-so-far becomes an assistant message, the feedback
 the next user message, `stop_hook_active` flips true and is the hook's own
@@ -1944,8 +1952,9 @@ toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved and **off until a directory turns it on**
 (`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
-`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73, and
-Phase 133 the session events through a refusing stub provider) in
+`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
+Phase 133 the session events through a refusing stub provider, and Phase
+134 a real prompt's `Notification` against a stub asking for one call) in
 `docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
 no text entry, so the hardware cursor hides while its seat tracks the

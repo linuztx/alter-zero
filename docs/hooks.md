@@ -145,7 +145,7 @@ and the other non-tool queries are never aliased.
 | -------------------- | --------------------------------------------------------------- |
 | `PreToolUse`         | `llm/agent.rs` — before `approve`; **`agent` launches included** |
 | `PermissionRequest`  | `llm/approval.rs` — after the standing rules                     |
-| `Notification`       | `llm/approval.rs` — once the prompt is raised, on a thread of its own |
+| `Notification`       | `llm/approval.rs` registers it; it runs when the loop opens the prompt, on the notification lane |
 | `PostToolUse`        | `llm/agent.rs` — on `execute`'s return, **successes only**       |
 | `PostToolUseFailure` | `llm/agent.rs` — on `execute`'s return, **failures only**        |
 | `SubagentStart`      | `llm/backend.rs` — inside `spawn_subagent_run`                   |
@@ -159,9 +159,10 @@ and the other non-tool queries are never aliased.
 | `PostCompact`        | the compact spawn's completion, via the same wrapper             |
 
 Every one of the fourteen fires. None runs on the tokio loop: the tool,
-turn and compact events run on a **backend thread**, and the boundary's
-session events on threads of their own (`SessionStart`) or under a hard
-budget (`SessionEnd`) — which is the second half of the story below.
+turn and compact events run on a **backend thread**, `Notification` on the
+notification lane's worker (the loop only hands it over), and the
+boundary's session events on threads of their own (`SessionStart`) or under
+a hard budget (`SessionEnd`) — which is the second half of the story below.
 
 `PermissionRequest` sits exactly where the auto-mode classifier does — after
 the standing allowlist, before the user — because it answers the same
@@ -295,15 +296,38 @@ never existed:
   call never ran, so it fires neither, and a call handed to the
   background has not finished, so it fires neither yet.
 - **`Notification`** fires with `notification_type` `permission_prompt`
-  the moment the permission prompt is on screen — the moment a human is
-  actually being asked, which `PermissionRequest` (consulted before the
+  the moment the permission prompt is **on screen** — the moment a human
+  is actually being asked, which `PermissionRequest` (consulted before the
   classifier) cannot say. Title `Permission needed`, message `Alter Zero
-  needs your permission to use {Tool}`, matcher = the type. It is
-  observation only and must not hold the prompt up, so it runs on a thread
-  of its own, under the turn's token: the gate waits at once, an answer
-  given while a slow notifier runs is acted on, and an Esc reaps a
-  notifier that hangs. Claude Code's other notification types (idle,
-  auth) are not modelled.
+  needs your permission to use {Tool}`, matcher = the type. Claude Code's
+  other notification types (idle, auth) are not modelled.
+
+  *On screen* is not *raised*. A request can arrive while another prompt
+  holds the screen and queue behind it, and it can be settled there unseen:
+  a "don't ask again" covering it, its agent stopped, an Esc. So the
+  thread that raises a prompt only **registers** the notification on the
+  permission gate (`PermissionGate::on_shown`, before the request is
+  sent, so the loop cannot open it unseen), the loop marks the prompt
+  shown at the bottom of the iteration that opens it (`mark_shown` — the
+  prompt open then is the one the next frame paints), and that is what
+  runs it. A request that ends first drops what it registered
+  (`forget_shown`): a prompt nobody saw notifies nobody.
+
+  It is observation only and must not hold the prompt up, so it cannot
+  run on the asking thread — and run anywhere else with no order, a slow
+  notifier landed after the `PostToolUse` of the call it announced, or
+  after the next prompt's notification, and a hook keeping a status (a
+  multiplexer's "waiting on you" mark, say) ended on the wrong one. So
+  notifications run on the session's **notification lane**
+  (`NotificationLane`, on `HookHandles` so every sink and tagged subagent
+  sink shares it): one worker thread, one notification at a time, in the
+  order their prompts were shown; a job whose turn ended while it queued
+  runs nothing, and an Esc reaps one that hangs. Every other dispatch that
+  has handlers to run first waits for the notifications already shown —
+  polling its own `CancelToken` — and `SessionEnd` does so inside its own
+  2 s budget. The prompt itself never waits: the gate's wait is under way
+  before the notification runs, and an answer given while a slow notifier
+  runs is acted on at once — only the call's next hook event waits.
 
 **A blocking hook must poll the `CancelToken`.** The reason the existing
 `Condvar` park is safe is that `PermissionGate::wait` takes a cancellation
@@ -494,7 +518,7 @@ pub trait HookSink: Send + Sync + Debug {
     fn post_tool_use(&self, …) -> PostToolVerdict { PostToolVerdict::default() }
     fn post_tool_use_failure(&self, …) -> PostToolVerdict { PostToolVerdict::default() }
     fn permission_request(&self, …) -> Option<HookPermissionVerdict> { None }
-    fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) {}
+    fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) -> Option<OnShown> { None }
     fn subagent_start(&self, …) -> Vec<String> { Vec::new() }
     fn stop(&self, _active: bool, _last: &str, _cancel: &CancelToken) -> Option<String> { None }
     fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) {}
@@ -577,7 +601,11 @@ last; a bare `--resume` fires nothing while its picker is up, then
 `SessionStart(startup)` when it is dismissed or `SessionStart(resume)`
 under the picked conversation's id — with no `SessionEnd` for the fresh
 conversation the boot held, which never began — and the offline demo fires
-neither end.
+neither end. **Phase 134** raises a real permission prompt (the stub asks
+for one `bash` call) under a `Notification` hook that sleeps 4 s: answered
+at once, the command runs at once, and the hooks still record
+`PreToolUse`, `Notification`, `PostToolUse` in that order — on the
+previous build the notifier landed last.
 
 Three layers cover the rest:
 
@@ -607,6 +635,11 @@ Verified against both sources, and chosen — not accidental:
   the output as plain text. Loud beats silent for a guard.
 - **Exit 2 with empty stderr still blocks** (with a stand-in reason) — the
   Claude Code behaviour (`'No stderr output'`); codex fails open there.
+- **`Notification` keeps its place in the event order.** Claude Code fires
+  its notification hooks without awaiting them, so a slow one can land
+  after the events that followed it; here it runs on the notification
+  lane and the next event with hooks waits for it (above), since a status
+  kept by hooks must end on the last thing that happened.
 - **Handlers run sequentially**, not in parallel (both references
   parallelize one event's handlers). Deterministic order is what keeps the
   merge's "first reason wins" meaningful — Claude Code's parallel version

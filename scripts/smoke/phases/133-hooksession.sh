@@ -97,6 +97,9 @@ print("null" if value is None else value)
 PY
 }
 hs_has() { hs_events | grep -q "^$1"; }
+# hs_at_least EVENT N — N or more EVENTs logged; a function, so a poll counts
+# afresh each try (an inline "$(…)" would be expanded once, before it).
+hs_at_least() { [ "$(hs_events | grep -c "^$1")" -ge "$2" ]; }
 
 S133="${S}_hooksession"
 hs_launch_started="$(date +%s%N)"
@@ -133,7 +136,7 @@ submit "$S133" "/clear"
 sleep 0.3
 submit "$S133" "smoke133 again"
 wait_pane 20 "$S133" -F "smoke133 refused" >/dev/null || fail "the second refused turn never showed its error"
-poll 10 test "$(hs_events | grep -c '^StopFailure')" -ge 2 || fail "the second failed turn fired no StopFailure"
+poll 10 hs_at_least StopFailure 2 || fail "the second failed turn fired no StopFailure"
 note "events after /clear and a second turn"
 hs_events
 expect_eq "$(hs_events | sed -n 4p)" "SessionEnd:clear:$hs_first_id" "/clear's SessionEnd names the conversation that ended"

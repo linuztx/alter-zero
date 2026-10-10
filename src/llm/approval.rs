@@ -316,13 +316,20 @@ pub fn approve_call(
         }
     }
     request.id = gate.next_id();
+    // `Notification(permission_prompt)` waits for the screen (`docs/hooks.md`):
+    // the moment a human is actually being asked — which `PermissionRequest`,
+    // consulted before the classifier, cannot say — is when the loop opens
+    // the prompt, not now: a request can queue behind another and be settled
+    // there unseen. Registered before the request is sent, so the loop cannot
+    // open it first.
+    if let Some(notify) = hooks.permission_prompt(call, cancel) {
+        gate.on_shown(&request.id, notify);
+    }
     let _ = tx.send(StreamEvent::Permission(request.clone()));
-    // The prompt is on screen: `Notification(permission_prompt)`, the moment
-    // a human is actually being asked — which `PermissionRequest`, consulted
-    // before the classifier, cannot say. The command sink runs it off this
-    // thread, so the wait below begins at once (`docs/hooks.md`).
-    hooks.permission_prompt(call, cancel);
-    match gate.wait(&request.id, &|| cancel.is_cancelled()) {
+    let decision = gate.wait(&request.id, &|| cancel.is_cancelled());
+    // Whatever the prompt never showed for is dropped with it.
+    gate.forget_shown(&request.id);
+    match decision {
         Some(PermissionDecision::Approve) => Approval::Allow,
         Some(PermissionDecision::ApproveAlways) => {
             gate.remember(&request);
@@ -351,6 +358,8 @@ pub fn approve_call(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::super::hooks::NoHooks;
     use super::*;
 
@@ -683,11 +692,12 @@ mod tests {
     }
 
     /// A sink that logs the permission events in the order they fire, and
-    /// answers `PermissionRequest` from a fixture.
+    /// answers `PermissionRequest` from a fixture. Its notifier logs when it
+    /// runs — once the prompt is shown — not when it is handed over.
     #[derive(Debug, Default)]
     struct PromptHooks {
         request: Option<HookPermissionVerdict>,
-        log: std::sync::Mutex<Vec<String>>,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl PromptHooks {
@@ -709,17 +719,26 @@ mod tests {
             self.request.clone()
         }
 
-        fn permission_prompt(&self, call: &ToolCallRequest, _cancel: &CancelToken) {
-            self.log.lock().unwrap().push(format!("prompt {}", call.id));
+        fn permission_prompt(
+            &self,
+            call: &ToolCallRequest,
+            _cancel: &CancelToken,
+        ) -> Option<crate::permission::OnShown> {
+            let log = Arc::clone(&self.log);
+            let line = format!("prompt {}", call.id);
+            Some(Box::new(move || log.lock().unwrap().push(line)))
         }
     }
 
     /// Put `call` to `gate` with `hooks`, approving the prompt when one is
-    /// raised, and hand back the approval and whether a prompt was raised.
+    /// raised — first marking it shown, as the loop does when it opens one,
+    /// when `show` — and hand back the approval and whether a prompt was
+    /// raised.
     fn approve_with_hooks(
         gate: &PermissionGate,
         hooks: &PromptHooks,
         call: &ToolCallRequest,
+        show: bool,
     ) -> (Approval, bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let cancel = CancelToken::new();
@@ -743,6 +762,9 @@ mod tests {
             while !waiter.is_finished() {
                 if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
                     prompted = true;
+                    if show {
+                        gate.mark_shown(&request.id);
+                    }
                     gate.resolve(&request.id, PermissionDecision::Approve);
                 }
                 assert!(
@@ -756,14 +778,14 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_prompt_notifies_and_a_decided_call_does_not() {
+    fn a_shown_prompt_notifies_and_a_decided_call_does_not() {
         // Claude Code's Notification(permission_prompt) means a human is
-        // being asked: it fires once the prompt is raised — after
+        // being asked: it fires once the prompt is on screen — after
         // PermissionRequest had its say — and never for a call a hook or the
         // allowlist decided, where nobody is asked (`docs/hooks.md`).
         let call = call("bash", r#"{"command":"make deploy"}"#);
         let asked = PromptHooks::default();
-        let (approval, prompted) = approve_with_hooks(&PermissionGate::new(), &asked, &call);
+        let (approval, prompted) = approve_with_hooks(&PermissionGate::new(), &asked, &call, true);
         assert_eq!(approval, Approval::Allow);
         assert!(prompted);
         assert_eq!(asked.log(), ["request c", "prompt c"]);
@@ -774,16 +796,33 @@ mod tests {
             }),
             ..PromptHooks::default()
         };
-        let (_, prompted) = approve_with_hooks(&PermissionGate::new(), &decided, &call);
+        let (_, prompted) = approve_with_hooks(&PermissionGate::new(), &decided, &call, true);
         assert!(!prompted);
         assert_eq!(decided.log(), ["request c"], "nobody was asked");
 
         let gate = PermissionGate::new();
         gate.remember(&permission_request(&call, None, None).unwrap());
         let covered = PromptHooks::default();
-        let (_, prompted) = approve_with_hooks(&gate, &covered, &call);
+        let (_, prompted) = approve_with_hooks(&gate, &covered, &call, true);
         assert!(!prompted);
         assert!(covered.log().is_empty(), "{:?}", covered.log());
+    }
+
+    #[test]
+    fn a_prompt_answered_before_it_shows_never_notifies() {
+        // Raised while another prompt held the screen, then settled from the
+        // queue — a new rule covering it, its agent stopped, an Esc — the
+        // prompt never reached the screen, so nobody was asked
+        // (`docs/hooks.md`); and the gate keeps nothing for it afterwards.
+        let call = call("bash", r#"{"command":"make deploy"}"#);
+        let queued = PromptHooks::default();
+        let gate = PermissionGate::new();
+        let (approval, prompted) = approve_with_hooks(&gate, &queued, &call, false);
+        assert_eq!(approval, Approval::Allow);
+        assert!(prompted, "the request was raised");
+        assert_eq!(queued.log(), ["request c"]);
+        gate.mark_shown("perm_0");
+        assert_eq!(queued.log(), ["request c"], "nothing was left to fire late");
     }
 
     #[test]
