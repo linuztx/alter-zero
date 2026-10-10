@@ -81,6 +81,7 @@ pub(crate) fn spawn_signin(
         (CHATGPT_PROVIDER, SigninKind::DeviceCode) => spawn_chatgpt_device_login(cancel, tx),
         (CHATGPT_PROVIDER, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
         (CLAUDE_PROVIDER, _) => spawn_claude_login(cancel, tx),
+        (CLINE_PROVIDER, _) => spawn_cline_login(cancel, tx),
         _ => spawn_device_login(cancel, tx),
     }
 }
@@ -131,6 +132,46 @@ fn spawn_chatgpt_device_login(
 /// arm above does: the *page* already knows its kind, and this only has to
 /// agree with it.
 const CLAUDE_PROVIDER: &str = "anthropic_console";
+
+/// The provider id whose sign-in is Cline's WorkOS device flow — the flow the
+/// Cline extension and CLI run (`docs/cline.md`). Same reasoning as
+/// [`CLAUDE_PROVIDER`].
+const CLINE_PROVIDER: &str = "cline_account";
+
+/// Run Cline's device-code sign-in: ask WorkOS for a code, publish it with
+/// the page to confirm it at, then poll until the user confirms it there —
+/// and, once they have, register the WorkOS pair with Cline's own API for
+/// the refresh token the key store takes. See `docs/cline.md`.
+fn spawn_cline_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+    std::thread::spawn(move || {
+        let device = match llm::cline::request_device_code() {
+            Ok(device) => device,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: device.verification_uri().to_string(),
+                user_code: device.user_code().to_string(),
+                expires_at: std::time::Instant::now() + device.lifetime(),
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::cline::await_approval(&device, &cancel)
+            // The account rides back with the token, as the plan does for the
+            // other two sign-ins: *whose* account this is is what the
+            // confirmation leaves open.
+            .map(|signed_in| (signed_in.refresh_token, signed_in.email))
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
 
 /// Run Anthropic's Console PKCE flow: bind the callback port, publish the URL
 /// to open, then block until the browser comes back. See `docs/claude.md`.

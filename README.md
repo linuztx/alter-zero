@@ -168,6 +168,8 @@ Connect to a supported subscription service, API provider, or local model server
 | **GitHub Copilot** | Subscription, using a one-time device code. | Model capabilities, including context window, vision, and reasoning levels, come from Copilot. |
 | **ChatGPT Codex** | Subscription, with a ChatGPT Plus or Pro account: a browser sign-in, or a one-time device code on a headless machine. | Uses the account sign-in flow; no API key to paste. |
 | **Anthropic** | API key or account sign-in through the Anthropic Console. | Usage is billed to your API organisation with either method. |
+| **Cline** | API key, or the Cline account sign-in. | The models behind the Cline extension and CLI, through [Cline's OpenAI-compatible API](https://app.cline.bot) — Anthropic, OpenAI, Google and more behind one account. |
+| **ClinePass** | Subscription on a Cline account ($9.99/month). | 2-5x usage on Cline's curated open coding models, on the same sign-in as **Cline** — the plan's `cline-pass/…` models appear in `/model`. |
 | **OpenRouter** | API key. | Access models from multiple providers through one account. |
 | **Ollama** | Point Alter Zero at your local server; no key required. | Run inference on your own machine with locally hosted models. |
 | **Ollama Cloud** | API key. | Use open models hosted by Ollama. |

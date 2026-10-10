@@ -678,14 +678,21 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
 /// the endpoint's own maximum and comfortably one page.
 const ANTHROPIC_PAGE_SIZE: u32 = 1000;
 
-/// GET the provider's model list (boundary — real HTTP). Polls `cancel` so a
-/// closed picker doesn't leave the worker running.
+/// GET the provider's model list (boundary — real HTTP), or hand back the
+/// file's **static** list when it names one — no request at all. Polls
+/// `cancel` so a closed picker doesn't leave the worker running.
 ///
 /// # Errors
 /// HTTP/decoding failures and non-2xx responses become an [`LlmError`].
 pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<ModelEntry>> {
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
+    }
+    // A provider whose file names its models never asks the endpoint: the
+    // list *is* the catalog (ClinePass's `cline-pass/…` slugs are the plan's
+    // own — the public listing does not carry them, `docs/cline.md`).
+    if !cfg.static_models.is_empty() {
+        return Ok(static_entries(cfg));
     }
     // A one-shot GET on the session's **shared** HTTP client — the chat
     // stream's own per-operation stall deadline, on purpose: `http_client`
@@ -737,6 +744,29 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// The picker's entries for a provider whose file names its models
+/// ([`ModelConfig::static_models`]): the slug is its own label, blank rows are
+/// dropped, and no capability is claimed — there is no record to read one
+/// from, so the model reads as unknown exactly as a bare listing's would.
+#[must_use]
+fn static_entries(cfg: &ModelConfig) -> Vec<ModelEntry> {
+    cfg.static_models
+        .iter()
+        .filter_map(|id| {
+            let id = id.trim();
+            (!id.is_empty()).then(|| ModelEntry {
+                id: id.to_string(),
+                provider: cfg.provider_id.clone(),
+                display_name: id.to_string(),
+                reasoning: None,
+                vision: None,
+                context: None,
+                service_tiers: Vec::new(),
+            })
+        })
+        .collect()
 }
 
 /// The Ollama catalog (boundary — real HTTP): the `/api/tags` body already
@@ -1742,6 +1772,35 @@ mod tests {
         let mut cfg = ModelConfig::fallback();
         cfg.api_model_base = "https://x/v1/".to_string();
         assert_eq!(models_endpoint(&cfg), "https://x/v1/models");
+    }
+
+    // --- a provider's own catalog: the static list (docs/cline.md) ---
+
+    #[test]
+    fn a_static_model_list_is_the_whole_catalog_with_no_fetch() {
+        // A provider whose file names its models never asks an endpoint — the
+        // base below points at a port nothing listens on, and the call still
+        // answers because the list *is* the catalog. Blank rows are dropped,
+        // and the slug is its own label.
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "cline_pass".to_string();
+        cfg.api_model_base = "http://127.0.0.1:1".to_string();
+        cfg.static_models = vec![
+            "cline-pass/glm-5.3".to_string(),
+            "   ".to_string(),
+            " cline-pass/kimi-k3 ".to_string(),
+            String::new(),
+        ];
+        let entries = fetch_models(&cfg, &CancelToken::new()).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]);
+        assert!(entries.iter().all(|e| e.provider == "cline_pass"));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.context.is_none() && e.vision.is_none()),
+            "a static entry claims no capability — there is no record to read one from"
+        );
     }
 
     // --- lenient fields: one odd field must not cost the whole record ---

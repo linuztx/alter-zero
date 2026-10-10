@@ -105,6 +105,7 @@ fn backend_with_deepwiki(manager: McpManager) -> LlmBackend {
         model: live_model(),
         api_base: "https://openrouter.ai/api/v1".to_string(),
         api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        static_models: Vec::new(),
         api_key: Some(key),
         auth: alter_zero::llm::AuthScheme::ApiKey,
         wire_api: alter_zero::llm::WireApi::Chat,

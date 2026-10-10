@@ -12,6 +12,26 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Cline as a provider.** A key from your Cline account
+  ([app.cline.bot](https://app.cline.bot) → Settings → API Keys) reaches the
+  same models that power the Cline extension and CLI — Anthropic, OpenAI,
+  Google and more — through Cline's OpenAI-compatible endpoint, with the
+  catalog listed in `/model`.
+- **Cline account sign-in.** `/login` → *Use a subscription* → *Cline
+  Account* runs Cline's own sign-in — the device-code flow its extension and
+  CLI use — so the models behind Cline need no pasted key: the refresh token
+  lands in the key store and every request mints a short-lived access token
+  from it (`docs/cline.md`).
+- **ClinePass.** Cline's $9.99/month subscription is a row of its own: one
+  sign-in configures it, and the `/model` picker lists the plan's
+  `cline-pass/…` models — Cline's curated open coding set — beside the
+  usage-billed catalog, so a subscription spends the plan's quota instead of
+  credits. A provider file can now name a **static model list**
+  (`providers.toml`'s `models`), which is what puts those slugs in the picker
+  with no endpoint to ask.
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

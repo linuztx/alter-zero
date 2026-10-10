@@ -4,6 +4,9 @@
 #   - `name` is required — the human-readable label.
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
+#   - `models` is optional — a **static** model list the picker and the startup
+#     probe use instead of querying anything. For a provider whose models are
+#     not on its listing (ClinePass's `cline-pass/…` slugs, docs/cline.md).
 #   - Everything under `kwargs` is passed through to the client as-is, so nested
 #     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
 #     chat-completions endpoint; other keys are forwarded in the request body.
@@ -20,7 +23,8 @@
 #     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`), or `optional_key` for a server that needs none.
+#     `anthropic_console`, `cline_account`), or `optional_key` for a server
+#     that needs none.
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
 #     docs/ollama.md).
@@ -237,3 +241,64 @@ anthropic-version = "2023-06-01"
 
 [providers.anthropic_console.kwargs]
 api_base = "https://api.anthropic.com/v1"
+
+# Cline's own endpoint: one OpenAI-compatible Chat Completions API in front of
+# Anthropic, OpenAI, Google and the rest, reached with an API key made in your
+# Cline account (Settings > API Keys at app.cline.bot). Its `/models` is
+# public, so the picker lists the catalog off `kwargs.api_base` with no
+# separate `api_model_base`.
+[providers.cline]
+name = "Cline"
+description = "The models behind the Cline extension and CLI — Anthropic, OpenAI, Google and more — reached with a key from your Cline account."
+api_key_url = "https://app.cline.bot"
+
+[providers.cline.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+
+# The **same API** reached with a Cline **account sign-in** instead of a pasted
+# key — `/login` runs Cline's own device-code flow (WorkOS, the way its
+# extension and CLI sign in, docs/cline.md). What `api_key_env` stores is the
+# long-lived **Cline refresh token** the sign-in registers; every request
+# mints a short-lived access token from it, sent as `Bearer workos:<jwt>`, so
+# nothing here is sent verbatim. Two rows, two ways in — exactly how
+# `anthropic` and `anthropic_console` pair up.
+[providers.cline_account]
+name = "Cline Account"
+auth = "cline_account"
+description = "Sign in with your Cline account — the same models the Cline extension and CLI reach, behind one account"
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
+
+[providers.cline_account.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+
+# ClinePass — Cline's **subscription** plan ($9.99/month, 2-5x the usage on a
+# curated set of open coding models), reached with the *same account sign-in*
+# the row above uses: one stored refresh token configures both. What differs
+# is the model ids: the plan's models are addressed by their `cline-pass/…`
+# slugs, which the public `/models` listing does not carry — the plan's
+# catalog lives in Cline's own clients — so it is named here instead of
+# fetched (`models`, providers.toml's static list). Usage-billed models stay
+# under `cline_account` above; free models (`cline-free/…`) are deliberately
+# not here: Cline's docs say free-model usage is not supported through the API.
+[providers.cline_pass]
+name = "ClinePass"
+auth = "cline_account"
+description = "Cline's $9.99/month subscription: 2-5x usage on curated open coding models, on the same Cline account sign-in"
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
+models = [
+    "cline-pass/glm-5.3",
+    "cline-pass/glm-5.3-flash",
+    "cline-pass/kimi-k3",
+    "cline-pass/deepseek-v4-pro",
+    "cline-pass/deepseek-v4.1-flash",
+    "cline-pass/mimo-v2.5",
+    "cline-pass/mimo-v2.5-pro",
+    "cline-pass/minimax-m3",
+    "cline-pass/muse-spark-1.3-contributor",
+    "cline-pass/qwen3.8-max",
+    "cline-pass/qwen3.7-max",
+    "cline-pass/qwen3.7-plus",
+]
+
+[providers.cline_pass.kwargs]
+api_base = "https://api.cline.bot/api/v1"
