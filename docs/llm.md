@@ -28,6 +28,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/cache.rs` | prompt-cache request shaping — which models need explicit `cache_control` breakpoints, and the wire-JSON rewrite that places them (`docs/prompt-caching.md`) | **pure** |
 | `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
 | `llm/copilot.rs` | GitHub Copilot: the device flow's wire shapes and poll verdict, the OAuth→bearer exchange every request resolves through, and the request identity its API insists on (`docs/copilot.md`) | split |
+| `llm/cline.rs` | Cline's account sign-in: the WorkOS device flow's shapes and verdicts, the register/refresh envelope, the `workos:` bearer spelling, the freshness rule (pure); the flow's HTTP calls, the access-token cache and the rotation write-back (`docs/cline.md`) | split |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
 | `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs, **per working directory** (`docs/per-directory-state.md`) | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
@@ -35,7 +36,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/service_tier.rs` | `ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each one a palette command of its own (`/fast`, `/ultrafast`) that toggles it, riding the request as `service_tier` (`docs/fast-mode.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
-| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too) | split |
+| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does the short-circuit that makes a provider file's static `models` list the catalog with no request — `docs/cline.md`) | split |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
@@ -142,12 +143,15 @@ Chat Completions, Responses, Messages or native-Ollama shape
 (`docs/chatgpt.md`, `docs/claude.md`, `docs/ollama.md`). They are
 deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
-environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+environment variable that replaces the base (Ollama's `OLLAMA_HOST`), and a
+provider can name its models **statically** (`models = [...]`), which takes
+the place of the `/models` fetch where a listing does not carry them
+(ClinePass's `cline-pass/…` slugs, `docs/cline.md`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
 Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;
-`chatgpt_codex`; `anthropic` and `anthropic_console`; `ollama` and
-`ollama_cloud`).
+`chatgpt_codex`; `anthropic` and `anthropic_console`; `cline`, `cline_account`
+and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`).
 
 The active backend is chosen at startup — from env, then the **persisted
 selection** (`~/.alter-zero/config.json`, written by `/model` — **this working
@@ -168,6 +172,7 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
 | `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server ChatGPT Codex's browser and device-code sign-ins talk to — a fork's own, or the smoke suite's local stub (`docs/chatgpt.md`) | `https://auth.openai.com` |
+| `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
 | `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
@@ -463,18 +468,19 @@ in place; unlike it, it is a **two-step** flow.
 - **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`,
   with `KeyStep::SigninMethod` between them for a row that offers two ways
   in) is a provider sign-in rather than a secret to paste — GitHub Copilot's
-  device code (`docs/copilot.md`), ChatGPT Codex's browser PKCE **or** its
-  device code for a headless machine (`docs/chatgpt.md` — Enter on that row
-  opens a titled two-row choice, `Browser login (default)` / `Device code
-  login (headless)`, before any page), or Anthropic's Console PKCE
-  (`docs/claude.md`), the row's `SubscriptionChoice::kinds` (the first the
-  default) naming which `SigninKind` pages it can open. All of them end in
-  the same `.env` store, under the provider's own `api_key_env`, which is
-  what makes the fork cheap: `/model`, the ✓ marks, the capability probe and
-  the next launch need no second mechanism. The two browser flows are the
-  *same page* — a link and a wait — so they share `SigninKind::BrowserLink`
-  and differ only in their constants; and ChatGPT's device code lands on the
-  very page Copilot's does.
+  device code (`docs/copilot.md`), Cline's WorkOS device code
+  (`docs/cline.md`), ChatGPT Codex's browser PKCE **or** its device code for
+  a headless machine (`docs/chatgpt.md` — Enter on that row opens a titled
+  two-row choice, `Browser login (default)` / `Device code login (headless)`,
+  before any page), or Anthropic's Console PKCE (`docs/claude.md`), the row's
+  `SubscriptionChoice::kinds` (the first the default) naming which
+  `SigninKind` pages it can open. All of them end in the same `.env` store,
+  under the provider's own `api_key_env`, which is what makes the fork cheap:
+  `/model`, the ✓ marks, the capability probe and the next launch need no
+  second mechanism. The two browser flows are the *same page* — a link and a
+  wait — so they share `SigninKind::BrowserLink` and differ only in their
+  constants; and ChatGPT's device code lands on the very page Copilot's and
+  Cline's do.
 - **Key step**, or a **host field** for a provider that needs no key (Ollama:
   the title asks for the host, the value shows as typed, and an empty Enter
   saves the default — `docs/ollama.md`): printable keys and Backspace edit the key, a **bracketed paste**
