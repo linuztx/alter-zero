@@ -45,6 +45,10 @@ impl Session<'_> {
                 // clock starts over (docs/ask.md).
                 self.note_user_activity();
                 let action = self.app.on_key(key);
+                // A send that masked a typed secret's value says so — first,
+                // so the action's own toast (a refusal) is the one left
+                // showing (docs/secrets.md).
+                self.toast_masked_secrets();
                 let flow = self.on_action(action)?;
                 if flow == Flow::Quit {
                     return Ok(Flow::Quit);

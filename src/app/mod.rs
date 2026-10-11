@@ -531,6 +531,16 @@ pub struct App {
     /// never a value — injected by the boundary at startup and after every
     /// change ([`App::set_secret_metas`]). See `docs/secrets.md`.
     secret_metas: Vec<crate::secrets::SecretMeta>,
+    /// The redacting half of the session's secrets, handed over by the
+    /// boundary at startup ([`App::set_secret_redactor`]): a stored value the
+    /// user types is replaced by its placeholder before anything keeps the
+    /// text ([`App::redact_typed`]). It can take a value out and do nothing
+    /// else, so the pure core still holds none. The default redacts nothing.
+    /// See `docs/secrets.md` *What the user types*.
+    secret_redactor: crate::secrets::SecretRedactor,
+    /// The secrets whose values the user's sends masked since the boundary
+    /// last looked — what its toast names ([`App::take_masked_secrets`]).
+    masked_secrets: Vec<String>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

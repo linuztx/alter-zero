@@ -8,11 +8,19 @@
 //! [`SecretValue`], whose `Debug` says `<redacted>`. What the page lists is
 //! [`SecretMeta`]s injected by the boundary, so the pure core never holds a
 //! stored value at all: editing a secret starts its value field empty.
+//!
+//! The other half is what the user types anywhere else: a stored value in a
+//! message, a `!` command or an answer reaches the conversation as its
+//! placeholder ([`App::redact_typed`]), through the [`SecretRedactor`] the
+//! boundary hands over — which can take a value out of text and nothing
+//! more (`docs/secrets.md` *What the user types*).
+
+use std::borrow::Cow;
 
 use super::*;
 use crate::secrets::{
-    MAX_SECRET_CONTEXT_CHARS, MAX_SECRET_NAME_LEN, SecretDraft, SecretMeta, SecretValue,
-    normalize_name, normalize_name_char, validate_draft,
+    MAX_SECRET_CONTEXT_CHARS, MAX_SECRET_NAME_LEN, RedactedMessage, SecretDraft, SecretMeta,
+    SecretRedactor, SecretValue, normalize_name, normalize_name_char, validate_draft,
 };
 use crate::textarea::TextArea;
 
@@ -204,6 +212,68 @@ impl App {
                 page.confirm_delete = None;
             }
         }
+    }
+
+    /// Hand over the redacting half of the session's secrets (the boundary,
+    /// once at startup): from then on a stored value the user types reaches
+    /// the conversation as its placeholder. It shares the store, so a later
+    /// save or delete needs no second call. See `docs/secrets.md` *What the
+    /// user types*.
+    pub fn set_secret_redactor(&mut self, redactor: SecretRedactor) {
+        self.secret_redactor = redactor;
+    }
+
+    /// `text` — something the user is **sending** — as the conversation may
+    /// keep it: every stored secret's value replaced by its placeholder, the
+    /// placeholders the user wrote kept as written
+    /// ([`SecretStore::redact_message`]), and the secrets it masked noted for
+    /// the boundary's toast ([`take_masked_secrets`]). The draft's choke
+    /// point applies it (`take_input`), and so does every text the user
+    /// sends from outside the composer: a refused call's feedback, the
+    /// command line's `[PROMPT]`.
+    ///
+    /// [`SecretStore::redact_message`]: crate::secrets::SecretStore::redact_message
+    /// [`take_masked_secrets`]: App::take_masked_secrets
+    #[must_use]
+    pub fn redact_typed(&mut self, text: String) -> String {
+        let (text, masked) = self.mask_typed(text);
+        self.note_masked(&masked);
+        text
+    }
+
+    /// The masking alone: `text` redacted and the secrets it masked, nothing
+    /// noted — for typed text that may never be sent (a cleared draft, an
+    /// answer not yet submitted), which [`redact_typed`](App::redact_typed)
+    /// would announce too early.
+    pub(super) fn mask_typed(&self, text: String) -> (String, Vec<String>) {
+        let RedactedMessage {
+            text: redacted,
+            masked,
+        } = self.secret_redactor.redact_message(&text);
+        let redacted = match redacted {
+            Cow::Owned(redacted) => Some(redacted),
+            Cow::Borrowed(_) => None,
+        };
+        (redacted.unwrap_or(text), masked)
+    }
+
+    /// Note `names` as masked in what was just sent, each once.
+    pub(super) fn note_masked(&mut self, names: &[String]) {
+        for name in names {
+            if !self.masked_secrets.contains(name) {
+                self.masked_secrets.push(name.clone());
+            }
+        }
+    }
+
+    /// Drain the secrets masked in what the user sent since the last call —
+    /// what the boundary's toast names ([`masked_notice`]), so each send is
+    /// told once. Only a send notes: a cleared draft, an answer kept with
+    /// Esc or a question that timed out is masked without a word.
+    ///
+    /// [`masked_notice`]: crate::secrets::masked_notice
+    pub fn take_masked_secrets(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.masked_secrets)
     }
 
     /// Open the `/secrets` page on its first row — the first secret, or the

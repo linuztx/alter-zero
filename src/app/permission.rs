@@ -361,9 +361,11 @@ impl App {
                 Action::None
             }
             KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                let feedback = self.input.text().trim().to_string();
                 // Read, don't `take_input`: the stashed draft's paste
                 // placeholders are still live and must not be spliced here.
+                // The feedback goes to the model, so a stored secret's value
+                // in it is redacted all the same (docs/secrets.md).
+                let feedback = self.redact_typed(self.input.text().trim().to_string());
                 self.input.clear();
                 let feedback = (!feedback.is_empty()).then_some(feedback);
                 self.resolve_permission(PermissionDecision::Deny(feedback))

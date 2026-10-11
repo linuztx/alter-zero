@@ -78,9 +78,13 @@ fn take_input(&mut self) -> String {
     let text = self.input.take();
     let expanded = paste::expand_pastes(&text, &self.pasted);
     self.pasted.clear();            // the composer is now empty
-    expanded
+    self.redact_typed(expanded)     // a stored secret's value → its placeholder
 }
 ```
+
+The redaction runs after the splice, so a secret's value inside a large paste
+reaches the conversation as its placeholder like a typed one
+(`docs/secrets.md` *What the user types*).
 
 `expand_pastes(text, pastes)` (pure) finds each placeholder's position in the
 *original* text, then rebuilds the string once, substituting each placeholder
