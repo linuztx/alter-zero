@@ -66,10 +66,11 @@ pub struct Update {
 /// `live` rows that replace the ones it streamed last.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stream {
-    /// Lines that scrolled out of the cursor's reach since the last take,
-    /// each ending in `\n`.
+    /// Lines drawn since the model's last look that scrolled out of the
+    /// cursor's reach since the last take, each ending in `\n`.
     pub settled: String,
-    /// The lines still in reach, as they stand — no trailing newline.
+    /// The lines drawn since that look still in reach, as they stand — no
+    /// trailing newline.
     pub live: String,
 }
 
@@ -204,11 +205,15 @@ impl Transcript {
     }
 
     /// The stream a waiting call shows while the next look builds up (see
-    /// the module docs): the lines that look would carry, split at the
-    /// screen's reach — `settled` the ones that scrolled out of it since the
-    /// previous call, final and never streamed again, and `live` the ones
-    /// still in reach, as they stand now. Taking it changes nothing the look
-    /// will say.
+    /// the module docs): the lines the program has drawn since the model's
+    /// previous look, split at the screen's reach — `settled` the ones that
+    /// scrolled out of it since the previous call, final and never streamed
+    /// again, and `live` the ones still in reach, as they stand now. A line
+    /// drawn back to the text that look was handed streams too: the look
+    /// leaves it out, having nothing new to say about it, but the program is
+    /// still drawing it — npm's spinner coming round to the frame the model
+    /// saw — and a cell that dropped it emptied once a cycle. Taking it
+    /// changes nothing the look will say.
     pub fn take_stream(&mut self) -> Stream {
         let lines = &mut self.lines;
         let end = lines.first + lines.rows.len();
@@ -216,7 +221,7 @@ impl Transcript {
         let mut settled = String::new();
         let from = lines.stream_from.max(lines.look).max(lines.first);
         for index in from..top {
-            let Some(text) = lines.rows[index - lines.first].pending_text() else {
+            let Some(text) = lines.rows[index - lines.first].drawn_text() else {
                 continue;
             };
             if !lines.stream_started && text.is_empty() {
@@ -228,7 +233,7 @@ impl Transcript {
         }
         lines.stream_from = lines.stream_from.max(top);
         let mut live: Vec<String> = (top.max(lines.first)..end)
-            .filter_map(|index| lines.rows[index - lines.first].pending_text())
+            .filter_map(|index| lines.rows[index - lines.first].drawn_text())
             .collect();
         if !lines.stream_started {
             let blank = live.iter().take_while(|text| text.is_empty()).count();
@@ -542,14 +547,14 @@ impl Row {
         text.trim_end().to_string()
     }
 
-    /// Its text if the next look would carry it — new, or changed since the
-    /// model was last handed it.
-    fn pending_text(&self) -> Option<String> {
-        if !self.touched {
-            return None;
-        }
-        let text = self.text();
-        (self.delivered != Some(hash_of(&text))).then_some(text)
+    /// Its text if the program has drawn on it since the model's last look
+    /// — what the running cell streams ([`Transcript::take_stream`]): the
+    /// line as it stands, even when it reads as it did at that look. A
+    /// spinner cycling back to the frame the model was handed is a line
+    /// still being drawn, and the next look leaving it out (it carries only
+    /// what changed) is no reason to blank it on screen.
+    fn drawn_text(&self) -> Option<String> {
+        self.touched.then(|| self.text())
     }
 }
 
@@ -1451,9 +1456,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_carries_only_what_the_next_look_would() {
+    fn a_stream_carries_only_what_was_drawn_since_the_look() {
         // pacman's bars: the look handed the model all three; afterwards the
-        // stream shows the one that moved, never the unchanged ones.
+        // stream shows the one pacman redraws, never the ones it left alone.
         let mut t = fed(b" core     100%\r\n extra      10%\r\n multilib 100%\r\n");
         let _ = t.take_update();
         assert_eq!(stream(&mut t), (String::new(), String::new()));
@@ -1468,6 +1473,30 @@ mod tests {
             (String::new(), " extra     100%".to_string())
         );
         assert_eq!(t.take_update().text, " extra     100%");
+    }
+
+    #[test]
+    fn a_line_drawn_back_to_what_the_look_saw_stays_live() {
+        // npm's spinner — `⠋⠙⠹…`, a frame every 80 ms, each one a return,
+        // an erase and the glyph — cycles back to the frame the model's look
+        // was handed. The program is still drawing that line: dropping it as
+        // old news emptied the running cell once a cycle, flashing it back to
+        // `Running…` and moving the box a row each way.
+        let mut t = fed("installing\r\n⠙".as_bytes());
+        let _ = t.take_update();
+        t.feed("\x1b[1G\x1b[0K⠹".as_bytes());
+        assert_eq!(stream(&mut t), (String::new(), "⠹".to_string()));
+        t.feed("\x1b[1G\x1b[0K⠙".as_bytes());
+        assert_eq!(
+            stream(&mut t),
+            (String::new(), "⠙".to_string()),
+            "the frame the look saw is still the line being drawn"
+        );
+        assert_eq!(
+            t.take_update().text,
+            "",
+            "the model is still not told twice: its look carries what changed"
+        );
     }
 
     #[test]

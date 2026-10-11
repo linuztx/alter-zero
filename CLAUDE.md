@@ -1476,7 +1476,11 @@ kernel-observed reads still count
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
-the screen's reach stay live, rows that scrolled out settle once), and a
+the screen's reach stay live, rows that scrolled out settle once — every row
+drawn since the model's look, one drawn back to the text that look was handed
+included, or npm's spinner dropped out of the cell once a cycle; each update
+sampled in a pause between two frames, `pty::pace`, never between a redraw's
+erase and its text, which the pipe path's `PipeOutput` shares), and a
 `bash` call on a pipe — and a background shell's event stream, and a `!`
 command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
 overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
