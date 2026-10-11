@@ -8,11 +8,17 @@
 //! [`SecretValue`], whose `Debug` says `<redacted>`. What the page lists is
 //! [`SecretMeta`]s injected by the boundary, so the pure core never holds a
 //! stored value at all: editing a secret starts its value field empty.
+//!
+//! The other half is what the user types anywhere else: a stored value in a
+//! message, a `!` command or an answer reaches the conversation as its
+//! placeholder ([`App::redact_typed`]), through the [`SecretRedactor`] the
+//! boundary hands over — which can take a value out of text and nothing
+//! more (`docs/secrets.md` *What the user types*).
 
 use super::*;
 use crate::secrets::{
-    MAX_SECRET_CONTEXT_CHARS, MAX_SECRET_NAME_LEN, SecretDraft, SecretMeta, SecretValue,
-    normalize_name, normalize_name_char, validate_draft,
+    MAX_SECRET_CONTEXT_CHARS, MAX_SECRET_NAME_LEN, SecretDraft, SecretMeta, SecretRedactor,
+    SecretValue, normalize_name, normalize_name_char, validate_draft,
 };
 use crate::textarea::TextArea;
 
@@ -204,6 +210,33 @@ impl App {
                 page.confirm_delete = None;
             }
         }
+    }
+
+    /// Hand over the redacting half of the session's secrets (the boundary,
+    /// once at startup): from then on a stored value the user types reaches
+    /// the conversation as its placeholder. It shares the store, so a later
+    /// save or delete needs no second call. See `docs/secrets.md` *What the
+    /// user types*.
+    pub fn set_secret_redactor(&mut self, redactor: SecretRedactor) {
+        self.secret_redactor = redactor;
+    }
+
+    /// `text` — something the user typed — as the conversation may keep it:
+    /// every stored secret's value replaced by its placeholder, the
+    /// placeholders the user wrote kept as written
+    /// ([`SecretStore::redact_message`]). The draft's choke point applies it
+    /// (`take_input`), and so does every text the user writes outside the
+    /// composer: an ask entry, a refused call's feedback, the command line's
+    /// `[PROMPT]`.
+    ///
+    /// [`SecretStore::redact_message`]: crate::secrets::SecretStore::redact_message
+    #[must_use]
+    pub fn redact_typed(&self, text: String) -> String {
+        let redacted = match self.secret_redactor.redact_message(&text) {
+            std::borrow::Cow::Borrowed(_) => None,
+            std::borrow::Cow::Owned(redacted) => Some(redacted),
+        };
+        redacted.unwrap_or(text)
     }
 
     /// Open the `/secrets` page on its first row — the first secret, or the

@@ -1,8 +1,11 @@
-//! The `/secrets` page: the list, the add/edit form and its key grammar
-//! (`docs/secrets.md`).
+//! The `/secrets` page: the list, the add/edit form and its key grammar —
+//! and what the user types, which reaches the conversation with every stored
+//! value replaced by its placeholder (`docs/secrets.md`).
 
 use super::*;
-use crate::secrets::{SecretDraft, SecretMeta, SecretValue};
+use crate::ask::{AskDecision, AskOption, AskQuestion, AskRequest};
+use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+use crate::secrets::{SecretDraft, SecretMeta, SecretRegistry, SecretStore, SecretValue};
 
 fn meta(name: &str, context: &str) -> SecretMeta {
     SecretMeta {
@@ -392,4 +395,260 @@ fn closing_the_page_forgets_the_draft() {
     app.on_key(key(KeyCode::Esc));
     app.open_secrets_page();
     assert!(page(&app).form.is_none());
+}
+
+// ===== what the user types (docs/secrets.md *What the user types*) =====
+
+/// `ROOT_PASSWORD`'s value — what the user types where they mean the secret.
+const VALUE: &str = "hunter2-staging";
+
+/// What the conversation keeps in its place.
+const MASKED: &str = "<secret:ROOT_PASSWORD>";
+
+/// An app the way the boundary leaves it: `secrets` stored, their redacting
+/// half handed to `App` (`tui::bootstrap`'s `seed_app`).
+fn masking_app(secrets: &[(&str, &str)]) -> App {
+    let mut store = SecretStore::new();
+    for (name, value) in secrets {
+        store
+            .apply(&SecretDraft {
+                original: None,
+                name: (*name).to_string(),
+                value: Some(SecretValue::new(*value)),
+                context: String::new(),
+            })
+            .expect("a valid secret");
+    }
+    let mut app = App::new();
+    app.set_secret_redactor(SecretRegistry::new(store).redactor());
+    app
+}
+
+/// [`masking_app`] storing `ROOT_PASSWORD` = [`VALUE`].
+fn root_app() -> App {
+    masking_app(&[("ROOT_PASSWORD", VALUE)])
+}
+
+#[test]
+fn enter_sends_a_typed_value_as_its_placeholder() {
+    let mut app = root_app();
+    type_str(
+        &mut app,
+        &format!("log in as root, the password is {VALUE}"),
+    );
+    let sent = format!("log in as root, the password is {MASKED}");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit(sent.clone())
+    );
+    // What history.jsonl keeps, and what ↑ brings back, is what was sent.
+    assert_eq!(app.take_unpersisted_inputs(), std::slice::from_ref(&sent));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), sent);
+}
+
+#[test]
+fn a_placeholder_the_user_typed_goes_out_as_typed() {
+    // `secret` is a common password, and a piece of every placeholder: the
+    // one the user pasted from the page must survive it.
+    let mut app = masking_app(&[("ROOT_PASSWORD", VALUE), ("DB_PASSWORD", "secret")]);
+    let text = format!("use {MASKED} for root");
+    type_str(&mut app, &text);
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Submit(text));
+}
+
+#[test]
+fn enter_mid_turn_steers_the_placeholder_into_the_running_turn() {
+    let mut app = root_app();
+    app.begin_stream();
+    type_str(&mut app, &format!("sudo wants {VALUE}"));
+    let sent = format!("sudo wants {MASKED}");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Steer(sent.clone()));
+    assert_eq!(app.steered, [sent], "the row above the box shows it too");
+}
+
+#[test]
+fn tab_queues_the_placeholder_as_a_follow_up_turn() {
+    let mut app = root_app();
+    app.begin_stream();
+    type_str(&mut app, &format!("then rotate {VALUE}"));
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    let queued = format!("then rotate {MASKED}");
+    assert_eq!(app.queued.back(), Some(&batch(&[queued.as_str()])));
+}
+
+#[test]
+fn a_shell_command_is_recorded_with_the_placeholder() {
+    // Its runner expands the placeholder back before the shell sees it
+    // (`tui::shell`), so the command still runs as typed.
+    let mut app = root_app();
+    type_str(&mut app, &format!("!mysql -u root -p{VALUE}"));
+    assert!(app.shell_mode);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunShell(format!("mysql -u root -p{MASKED}"))
+    );
+    assert_eq!(
+        app.take_unpersisted_inputs(),
+        [format!("!mysql -u root -p{MASKED}")]
+    );
+    // …and one queued behind a running `!` command the same way.
+    app.begin_shell("sleep 5");
+    type_str(&mut app, &format!("!echo {VALUE}"));
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(
+        app.queued.back(),
+        Some(&QueuedTurn::Shell(format!("echo {MASKED}")))
+    );
+}
+
+#[test]
+fn a_subagents_chat_and_follow_up_carry_the_placeholder() {
+    let mut app = root_app();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.open_agent_view("a1");
+    type_str(&mut app, &format!("the key is {VALUE}"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::AgentChat {
+            id: "a1".to_string(),
+            text: format!("the key is {MASKED}"),
+        }
+    );
+    type_str(&mut app, &format!("then test {VALUE}"));
+    assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+    assert_eq!(
+        app.agent("a1").expect("the row").followups,
+        [format!("then test {MASKED}")]
+    );
+}
+
+#[test]
+fn a_large_paste_is_spliced_back_before_it_is_redacted() {
+    let mut app = root_app();
+    let filler = "x".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD);
+    app.on_paste(&format!("{filler}\nroot: {VALUE}"));
+    assert!(
+        app.input.text().starts_with("[Pasted Content"),
+        "{}",
+        app.input.text()
+    );
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit(format!("{filler}\nroot: {MASKED}"))
+    );
+}
+
+#[test]
+fn a_cleared_draft_is_recalled_with_the_placeholder() {
+    let mut app = root_app();
+    type_str(&mut app, &format!("oops {VALUE}"));
+    assert_eq!(app.on_key(ctrl('c')), Action::None);
+    assert!(app.input.is_empty(), "the first Ctrl+C clears the draft");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), format!("oops {MASKED}"));
+}
+
+/// One single-select question; with `previews` its options carry the
+/// preview that opens its notes field.
+fn ask_request(previews: bool) -> AskRequest {
+    let option = |label: &str| AskOption {
+        label: label.to_string(),
+        description: format!("{label} described"),
+        preview: previews.then(|| format!("{label} preview")),
+    };
+    AskRequest {
+        id: "ask_0".to_string(),
+        questions: vec![AskQuestion {
+            question: "Which login should I use?".to_string(),
+            header: "Login".to_string(),
+            options: vec![option("Key"), option("Agent"), option("None")],
+            multi_select: false,
+        }],
+    }
+}
+
+/// The answers a resolving key hands the boundary.
+fn submitted(action: Action) -> Vec<crate::ask::AskAnswer> {
+    let Action::ResolveAsk { decision, .. } = action else {
+        panic!("expected the submission, got {action:?}");
+    };
+    let AskDecision::Submitted(answers) = decision else {
+        panic!("expected answers");
+    };
+    answers
+}
+
+#[test]
+fn an_answer_typed_into_a_question_carries_the_placeholder() {
+    let mut app = root_app();
+    app.open_ask(ask_request(false));
+    app.on_key(key(KeyCode::Char('4'))); // the `Type something.` row
+    assert!(app.ask().unwrap().editing());
+    type_str(&mut app, &format!("use {VALUE}"));
+    let answers = submitted(app.on_key(key(KeyCode::Enter)));
+    assert_eq!(answers[0].labels, [format!("use {MASKED}")]);
+}
+
+#[test]
+fn a_note_typed_onto_a_question_carries_the_placeholder() {
+    let mut app = root_app();
+    app.open_ask(ask_request(true));
+    app.on_key(key(KeyCode::Char('n')));
+    type_str(&mut app, &format!("its passphrase is {VALUE}"));
+    app.on_key(key(KeyCode::Esc));
+    let note = format!("its passphrase is {MASKED}");
+    assert_eq!(
+        app.ask().unwrap().answers[0].notes,
+        note,
+        "kept, and shown again, redacted"
+    );
+    let answers = submitted(app.on_key(key(KeyCode::Char('1'))));
+    assert_eq!(answers[0].notes.as_deref(), Some(note.as_str()));
+}
+
+#[test]
+fn feedback_on_a_refused_call_carries_the_placeholder() {
+    let mut app = root_app();
+    let request = PermissionRequest {
+        id: "p1".to_string(),
+        kind: PermissionKind::Bash,
+        target: "mysql -u root".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: None,
+        agent_id: None,
+    };
+    app.open_permission(request.clone());
+    app.on_key(key(KeyCode::Tab));
+    type_str(&mut app, &format!("pass -p{VALUE}"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::ResolvePermission {
+            request,
+            decision: PermissionDecision::Deny(Some(format!("pass -p{MASKED}"))),
+        }
+    );
+}
+
+#[test]
+fn text_from_outside_the_composer_is_redacted_the_same_way() {
+    // The `[PROMPT]` given on the command line (`tui::turn`).
+    let app = root_app();
+    assert_eq!(
+        app.redact_typed(format!("fix the login, it is {VALUE}")),
+        format!("fix the login, it is {MASKED}")
+    );
+}
+
+#[test]
+fn with_no_secrets_handed_over_what_the_user_types_is_untouched() {
+    // The unit-test default, and a session that never stored a secret.
+    let mut app = App::new();
+    type_str(&mut app, &format!("the password is {VALUE}"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit(format!("the password is {VALUE}"))
+    );
 }

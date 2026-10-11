@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A secret's value you type reaches the agent as its placeholder.** With
+  `ROOT_PASSWORD` stored, a message saying "the password is password123"
+  used to send the password itself to the model; it now says "the password
+  is `<secret:ROOT_PASSWORD>`", and so do the message on screen, the
+  transcript, the saved session and ↑ recall. The same goes for a value
+  typed into a `!` command (which still runs with the real value), a
+  message to a subagent, a queued follow-up, an answer to the agent's
+  question, the feedback on a refused tool call and a prompt given on the
+  command line. A placeholder you type yourself is sent as written
+  (`docs/secrets.md`).
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

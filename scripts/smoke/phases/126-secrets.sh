@@ -13,10 +13,12 @@ smoke_begin
 # the list row with its fixed mask, `secrets.json` owner-only; a relaunch
 # that lists it again; a `!` command whose placeholder EXPANDS for the shell
 # (proved by the value's hash, which only the real value produces) and whose
-# echoed value comes back REDACTED; the placeholder in the Ctrl+D reminder;
-# the edit form keeping the value unloaded; and a two-step delete. Through
-# all of it the value itself must never appear on screen, scrollback
-# included.
+# echoed value comes back REDACTED; the value itself TYPED where the
+# placeholder would go — a `!` command that still runs with it, a message
+# that reaches the bubble, the rollout and ↑ recall as the placeholder; the
+# placeholder in the Ctrl+D reminder; the edit form keeping the value
+# unloaded; and a two-step delete. Through all of it the value itself must
+# never appear on screen once typed, scrollback included.
 S126="${S}_secrets"
 VALUE="s3cr3t-demo-value-42"
 VALUE_SHA="$(printf '%s' "$VALUE" | sha256sum | cut -c1-16)"
@@ -113,6 +115,41 @@ if printf '%s\n' "$refused" | grep -qF "ran-<secret:DEMO_TOKN>"; then
 	fail "the refused command ran"
 fi
 
+# What the user types (docs/secrets.md *What the user types*): the VALUE
+# itself, where the placeholder would go. A `!` command typed with it still
+# runs with it — only the real value hashes to TYPED_SHA, a slice of the hash
+# no earlier step printed — while its header shows the placeholder.
+TYPED_SHA="$(printf '%s' "$VALUE" | sha256sum | cut -c17-28)"
+submit "$S126" "!printf '%s' '$VALUE' | sha256sum | cut -c17-28"
+typed_cmd="$(wait_pane 10 "$S126" -F "$TYPED_SHA")" ||
+	fail "a ! command typed with the value did not run with it"
+dump "a ! command typed with the value" "$typed_cmd"
+expect_has "$typed_cmd" -F "! printf '%s' '<secret:DEMO_TOKEN>' | sha256sum | cut -c17-28" \
+	"the ! command typed with the value is not shown with the placeholder"
+never_shows_value "a ! command typed with the value"
+# A message typed with it reaches the conversation as the placeholder: the
+# bubble, the rollout, and ↑ recall, which brings back what was sent.
+submit "$S126" "keep this one safe: $VALUE"
+sent="$(wait_summaries 30 "$S126" 1 -S -400)" || fail "the turn after a message typed with the value never settled"
+dump "a message typed with the value" "$sent"
+expect_has "$sent" -F "❯ keep this one safe: <secret:DEMO_TOKEN>" \
+	"a message typed with the value did not reach the bubble as its placeholder"
+never_shows_value "a message typed with the value"
+grep -rqF "keep this one safe: <secret:DEMO_TOKEN>" "$SMOKE_SESSIONS" 2>/dev/null ||
+	fail "the rollout does not record the typed message with its placeholder"
+if grep -rqF "$VALUE" "$SMOKE_SESSIONS" 2>/dev/null; then
+	fail "the rollout recorded a typed value"
+fi
+composer_recalls_the_message() { # the composer is the last `❯` row on screen
+	[ "$(pane "$S126" | grep '^❯' | tail -1)" = "❯ keep this one safe: <secret:DEMO_TOKEN>" ]
+}
+keys "$S126" Up
+poll 5 composer_recalls_the_message || fail "↑ did not recall the message with its placeholder"
+dump "↑ recalling the message" "$(pane "$S126")"
+never_shows_value "↑ recall"
+keys "$S126" C-c
+wait_for 5 "$S126" -E '^❯[[:space:]]*$' || fail "Ctrl+C did not clear the recalled message"
+
 # The reminder names the placeholder and its context — never the value.
 keys "$S126" C-d
 sleep 0.8
@@ -132,7 +169,9 @@ wait_for 5 "$S126" -E '^❯' || fail "the context view did not close"
 # A second launch on the same config home drives the REAL backend and the
 # real executor, so the boundary's wiring is what is under test: the secret
 # loaded from secrets.json at startup, the reminder leading the first request,
-# the store attached to the backend a session builds. The stub's model calls
+# the store attached to the backend a session builds, the redactor handed to
+# the composer — the first message is typed with the value, and the request
+# carries the placeholder. The stub's model calls
 # `bash` with the placeholder: the permission prompt shows the placeholder,
 # the command writes the VALUE into a file, the cell shows its output masked
 # back, and the stub's log proves no request carried the value. Then a call
@@ -212,11 +251,14 @@ EOF
 # NO_PROXY keeps a developer's HTTP proxy out of the loopback requests.
 REAL_APP="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST ALTER_ZERO_PROVIDERS_FILE=$PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in $BIN_ABS"
 launch -c "$WORK" "$S126B" 100 40 "$REAL_APP"
-submit "$S126B" "use the demo token"
+# Typed with the value itself: the provider must read the placeholder.
+submit "$S126B" "use the demo token, it is $VALUE"
 prompt="$(wait_pane 15 "$S126B" -F "Bash command")" || fail "the stub's call raised no permission prompt"
 dump "the permission prompt" "$prompt"
 expect_has "$prompt" -F "<secret:DEMO_TOKEN>" "the prompt does not show the placeholder"
 expect_lacks "$prompt" -F "$VALUE" "the prompt showed the value"
+head -1 "$STUB_LOG" | grep -qF 'use the demo token, it is <secret:DEMO_TOKEN>' ||
+	fail "the first request does not carry the typed message with its placeholder"
 keys "$S126B" Enter
 done_pane="$(wait_settled 20 "$S126B" -F "Done.")" || fail "the stub's turn never settled"
 dump "the turn settled" "$done_pane"

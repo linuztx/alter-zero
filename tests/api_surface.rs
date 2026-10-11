@@ -260,6 +260,7 @@ use alter_zero::secrets::{
     SecretDraft,
     SecretError,
     SecretMeta,
+    SecretRedactor,
     SecretRegistry,
     SecretStore,
     SecretValue,

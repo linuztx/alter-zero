@@ -548,10 +548,13 @@ impl App {
     /// Take the entry field's text on exit, splicing every large-paste
     /// placeholder back to its real content and **consuming** exactly the
     /// pairs that matched — the stashed composer draft's pairs must survive
-    /// the modal for the draft's own eventual send (`docs/paste.md`).
+    /// the modal for the draft's own eventual send (`docs/paste.md`) — with
+    /// every stored secret's value replaced by its placeholder, since the
+    /// answer goes to the model (`docs/secrets.md` *What the user types*).
     fn take_entry_text(&mut self) -> String {
         let text = self.input.take();
-        crate::paste::expand_pastes_consuming(&text, &mut self.pasted)
+        let text = crate::paste::expand_pastes_consuming(&text, &mut self.pasted);
+        self.redact_typed(text)
     }
 
     /// Keys in the Other/notes entry: the composer edits normally

@@ -162,13 +162,15 @@ impl Session<'_> {
 
     /// The `[PROMPT]` CLI shortcut (`docs/cli.md`): the message given on the
     /// command line, submitted as the session's first turn the way the
-    /// `Submit` key arm submits a draft — recorded into the ↑ input history
-    /// (it *was* submitted), then [`Session::start_turn`] on a batch of one
-    /// with no attachments. Called once by `bootstrap`, after the session
-    /// directive is applied and the first frame is scheduled, so a
+    /// `Submit` key arm submits a draft — a stored secret's value redacted to
+    /// its placeholder as a draft's is (`docs/secrets.md`), recorded into the
+    /// ↑ input history (it *was* submitted), then [`Session::start_turn`] on a
+    /// batch of one with no attachments. Called once by `bootstrap`, after the
+    /// session directive is applied and the first frame is scheduled, so a
     /// `--continue`/`--resume` load's transcript sits above the new bubble
     /// and the turn appends to the adopted rollout file.
     pub(crate) fn submit_startup_prompt(&mut self, prompt: String) {
+        let prompt = self.app.redact_typed(prompt);
         self.app.input_history.record(&prompt);
         self.start_turn(TurnInput {
             texts: vec![prompt],

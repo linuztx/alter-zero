@@ -632,6 +632,12 @@ impl<'t> Session<'t> {
         // names and context — before the reminder below names them
         // (docs/secrets.md).
         self.app.set_secret_metas(self.secrets.metas());
+        // …and their redacting half, before anything the user types can be
+        // sent — a [PROMPT] included: a stored value the user types reaches
+        // the conversation as its placeholder. It shares the store, so a
+        // save or delete on the page needs nothing more (docs/secrets.md
+        // *What the user types*).
+        self.app.set_secret_redactor(self.secrets.redactor());
         // Publish the image policy before the first line is built: the row
         // reservation is pure and reads it, so a picture drawn on the very
         // first frame (a `/resume`d conversation's image read) is already the
