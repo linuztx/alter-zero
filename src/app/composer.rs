@@ -151,12 +151,23 @@ impl App {
     /// …and never a stored secret's value: the spliced text comes back with
     /// every value replaced by its placeholder ([`redact_typed`]), so what the
     /// user types is what the conversation keeps — the bubble, ↑ recall, the
-    /// rollout and every request read the placeholder (`docs/secrets.md`
-    /// *What the user types*).
+    /// rollout and every request read the placeholder — and the secrets it
+    /// masked are noted for the toast that says so (`docs/secrets.md` *What
+    /// the user types*).
     ///
     /// [`pasted`]: App::pasted
     /// [`redact_typed`]: App::redact_typed
     pub(super) fn take_input(&mut self) -> String {
+        let (text, masked) = self.take_draft();
+        self.note_masked(&masked);
+        text
+    }
+
+    /// [`take_input`](App::take_input) without the announcement: the draft
+    /// spliced and masked all the same — no take of the composer ever holds
+    /// a value — with the secrets it masked handed back rather than noted.
+    /// For Ctrl+C's clear, a draft that is never sent.
+    pub(super) fn take_draft(&mut self) -> (String, Vec<String>) {
         let text = self.input.take();
         // Taking the draft consumes its attachments too (the idle submit and
         // queue paths stage image paths out first); whatever is still attached
@@ -172,7 +183,7 @@ impl App {
             self.pasted.clear();
             expanded
         };
-        self.redact_typed(text)
+        self.mask_typed(text)
     }
 
     /// If the cursor is on an atomic placeholder — a large-paste

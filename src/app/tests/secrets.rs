@@ -441,6 +441,9 @@ fn enter_sends_a_typed_value_as_its_placeholder() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit(sent.clone())
     );
+    // The boundary's toast names what the send hid — once.
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
+    assert!(app.take_masked_secrets().is_empty());
     // What history.jsonl keeps, and what ↑ brings back, is what was sent.
     assert_eq!(app.take_unpersisted_inputs(), std::slice::from_ref(&sent));
     app.on_key(key(KeyCode::Up));
@@ -455,6 +458,7 @@ fn a_placeholder_the_user_typed_goes_out_as_typed() {
     let text = format!("use {MASKED} for root");
     type_str(&mut app, &text);
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Submit(text));
+    assert!(app.take_masked_secrets().is_empty(), "nothing was hidden");
 }
 
 #[test]
@@ -465,6 +469,7 @@ fn enter_mid_turn_steers_the_placeholder_into_the_running_turn() {
     let sent = format!("sudo wants {MASKED}");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Steer(sent.clone()));
     assert_eq!(app.steered, [sent], "the row above the box shows it too");
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -475,6 +480,7 @@ fn tab_queues_the_placeholder_as_a_follow_up_turn() {
     assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
     let queued = format!("then rotate {MASKED}");
     assert_eq!(app.queued.back(), Some(&batch(&[queued.as_str()])));
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -492,6 +498,7 @@ fn a_shell_command_is_recorded_with_the_placeholder() {
         app.take_unpersisted_inputs(),
         [format!("!mysql -u root -p{MASKED}")]
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
     // …and one queued behind a running `!` command the same way.
     app.begin_shell("sleep 5");
     type_str(&mut app, &format!("!echo {VALUE}"));
@@ -500,6 +507,7 @@ fn a_shell_command_is_recorded_with_the_placeholder() {
         app.queued.back(),
         Some(&QueuedTurn::Shell(format!("echo {MASKED}")))
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -516,12 +524,14 @@ fn a_subagents_chat_and_follow_up_carry_the_placeholder() {
             text: format!("the key is {MASKED}"),
         }
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
     type_str(&mut app, &format!("then test {VALUE}"));
     assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
     assert_eq!(
         app.agent("a1").expect("the row").followups,
         [format!("then test {MASKED}")]
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -538,6 +548,7 @@ fn a_large_paste_is_spliced_back_before_it_is_redacted() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit(format!("{filler}\nroot: {MASKED}"))
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -546,6 +557,10 @@ fn a_cleared_draft_is_recalled_with_the_placeholder() {
     type_str(&mut app, &format!("oops {VALUE}"));
     assert_eq!(app.on_key(ctrl('c')), Action::None);
     assert!(app.input.is_empty(), "the first Ctrl+C clears the draft");
+    assert!(
+        app.take_masked_secrets().is_empty(),
+        "a cleared draft was never sent, so no toast says it was hidden"
+    );
     app.on_key(key(KeyCode::Up));
     assert_eq!(app.input.text(), format!("oops {MASKED}"));
 }
@@ -589,6 +604,7 @@ fn an_answer_typed_into_a_question_carries_the_placeholder() {
     type_str(&mut app, &format!("use {VALUE}"));
     let answers = submitted(app.on_key(key(KeyCode::Enter)));
     assert_eq!(answers[0].labels, [format!("use {MASKED}")]);
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -604,8 +620,13 @@ fn a_note_typed_onto_a_question_carries_the_placeholder() {
         note,
         "kept, and shown again, redacted"
     );
+    assert!(
+        app.take_masked_secrets().is_empty(),
+        "nothing is sent until the answer is"
+    );
     let answers = submitted(app.on_key(key(KeyCode::Char('1'))));
     assert_eq!(answers[0].notes.as_deref(), Some(note.as_str()));
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -630,16 +651,18 @@ fn feedback_on_a_refused_call_carries_the_placeholder() {
             decision: PermissionDecision::Deny(Some(format!("pass -p{MASKED}"))),
         }
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
 fn text_from_outside_the_composer_is_redacted_the_same_way() {
     // The `[PROMPT]` given on the command line (`tui::turn`).
-    let app = root_app();
+    let mut app = root_app();
     assert_eq!(
         app.redact_typed(format!("fix the login, it is {VALUE}")),
         format!("fix the login, it is {MASKED}")
     );
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
 }
 
 #[test]
@@ -651,4 +674,77 @@ fn with_no_secrets_handed_over_what_the_user_types_is_untouched() {
         app.on_key(key(KeyCode::Enter)),
         Action::Submit(format!("the password is {VALUE}"))
     );
+    assert!(app.take_masked_secrets().is_empty());
+}
+
+#[test]
+fn an_answer_kept_with_esc_is_announced_only_once_submitted() {
+    // Esc keeps the typed answer without choosing it — nothing is sent, so
+    // nothing is announced — yet the field already holds the placeholder,
+    // the preview of what the agent will read.
+    let mut app = root_app();
+    app.open_ask(ask_request(false));
+    app.on_key(key(KeyCode::Char('4')));
+    type_str(&mut app, &format!("use {VALUE}"));
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.ask().unwrap().answers[0].other, format!("use {MASKED}"));
+    assert!(app.take_masked_secrets().is_empty());
+    // Re-opened and accepted, the lone question resolves: now it is sent.
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.input.text(), format!("use {MASKED}"));
+    let answers = submitted(app.on_key(key(KeyCode::Enter)));
+    assert_eq!(answers[0].labels, [format!("use {MASKED}")]);
+    assert_eq!(app.take_masked_secrets(), ["ROOT_PASSWORD"]);
+}
+
+#[test]
+fn an_answer_edited_away_from_its_placeholder_announces_nothing() {
+    let mut app = root_app();
+    app.open_ask(ask_request(false));
+    app.on_key(key(KeyCode::Char('4')));
+    type_str(&mut app, &format!("use {VALUE}"));
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Char('4')));
+    app.on_key(ctrl('u'));
+    type_str(&mut app, "use the agent");
+    let answers = submitted(app.on_key(key(KeyCode::Enter)));
+    assert_eq!(answers[0].labels, ["use the agent"]);
+    assert!(
+        app.take_masked_secrets().is_empty(),
+        "nothing it sends was hidden"
+    );
+}
+
+#[test]
+fn a_declined_question_announces_nothing() {
+    let mut app = root_app();
+    app.open_ask(ask_request(false));
+    app.on_key(key(KeyCode::Char('4')));
+    type_str(&mut app, &format!("use {VALUE}"));
+    app.on_key(key(KeyCode::Esc));
+    let action = app.on_key(key(KeyCode::Esc));
+    assert!(
+        matches!(
+            action,
+            Action::ResolveAsk {
+                decision: AskDecision::Declined,
+                ..
+            }
+        ),
+        "{action:?}"
+    );
+    assert!(app.take_masked_secrets().is_empty());
+}
+
+#[test]
+fn a_question_that_times_out_announces_nothing() {
+    // The user is away: an entry left open is no answer, and nobody is
+    // there to read a toast.
+    let mut app = root_app();
+    app.open_ask(ask_request(false));
+    app.on_key(key(KeyCode::Char('4')));
+    type_str(&mut app, &format!("use {VALUE}"));
+    let expired = app.expire_asks(std::time::Duration::from_secs(600));
+    assert_eq!(expired.len(), 1);
+    assert!(app.take_masked_secrets().is_empty());
 }

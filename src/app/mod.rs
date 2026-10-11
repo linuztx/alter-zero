@@ -538,6 +538,9 @@ pub struct App {
     /// else, so the pure core still holds none. The default redacts nothing.
     /// See `docs/secrets.md` *What the user types*.
     secret_redactor: crate::secrets::SecretRedactor,
+    /// The secrets whose values the user's sends masked since the boundary
+    /// last looked — what its toast names ([`App::take_masked_secrets`]).
+    masked_secrets: Vec<String>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

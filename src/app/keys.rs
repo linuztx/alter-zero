@@ -139,8 +139,11 @@ impl App {
                 // its `!` so the recall re-enters the mode. Recorded
                 // *ephemerally*: a cleared, abandoned draft recalls this session
                 // but is not persisted (codex keeps cleared drafts in
-                // local_history only — docs/history-persistence.md).
-                let mut text = self.take_input();
+                // local_history only — docs/history-persistence.md). A stored
+                // secret's value in it is masked like a sent draft's, but the
+                // draft is never sent, so no toast says it was hidden
+                // (docs/secrets.md).
+                let (mut text, _never_sent) = self.take_draft();
                 if self.shell_mode {
                     self.shell_mode = false;
                     text = format!("!{text}");

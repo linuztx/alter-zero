@@ -171,6 +171,7 @@ impl Session<'_> {
     /// and the turn appends to the adopted rollout file.
     pub(crate) fn submit_startup_prompt(&mut self, prompt: String) {
         let prompt = self.app.redact_typed(prompt);
+        self.toast_masked_secrets();
         self.app.input_history.record(&prompt);
         self.start_turn(TurnInput {
             texts: vec![prompt],

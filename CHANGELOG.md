@@ -18,7 +18,8 @@ release heading when a version is cut.
   `ROOT_PASSWORD` stored, a message saying "the password is password123"
   used to send the password itself to the model; it now says "the password
   is `<secret:ROOT_PASSWORD>`", and so do the message on screen, the
-  transcript, the saved session and ↑ recall. The same goes for a value
+  transcript, the saved session and ↑ recall, while a toast says the value
+  was hidden from the agent. The same goes for a value
   typed into a `!` command (which still runs with the real value), a
   message to a subagent, a queued follow-up, an answer to the agent's
   question, the feedback on a refused tool call and a prompt given on the

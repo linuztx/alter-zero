@@ -398,6 +398,19 @@ struct Scanned<'t> {
     pending: Option<String>,
 }
 
+/// What [`SecretStore::redact_message`] made of a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactedMessage<'t> {
+    /// The message, every stored value replaced by its placeholder —
+    /// borrowed when it held none.
+    pub text: Cow<'t, str>,
+    /// The secrets whose values were replaced, each once, in the order their
+    /// values first appear — what a send's toast names ([`masked_notice`]).
+    /// A placeholder the user typed is no value replaced, so it is never
+    /// listed.
+    pub masked: Vec<String>,
+}
+
 /// The secrets, in the order they were added.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecretStore {
@@ -630,31 +643,45 @@ impl SecretStore {
     /// secret, so a redacted message redacts to itself; text holding no
     /// value comes back borrowed.
     #[must_use]
-    pub fn redact_message<'a>(&self, text: &'a str) -> Cow<'a, str> {
+    pub fn redact_message<'a>(&self, text: &'a str) -> RedactedMessage<'a> {
+        let mut masked = Vec::new();
         if self.secrets.is_empty() {
-            return Cow::Borrowed(text);
+            return RedactedMessage {
+                text: Cow::Borrowed(text),
+                masked,
+            };
         }
         let mut out = String::with_capacity(text.len());
-        let mut changed = false;
         let mut copied = 0;
         for found in placeholders(text).filter(|found| self.lookup(found.name).is_some()) {
-            changed |= self.push_redacted(&mut out, &text[copied..found.start]);
+            self.push_redacted(&mut out, &text[copied..found.start], &mut masked);
             out.push_str(&text[found.start..found.end]);
             copied = found.end;
         }
-        changed |= self.push_redacted(&mut out, &text[copied..]);
-        if changed {
-            Cow::Owned(out)
-        } else {
+        self.push_redacted(&mut out, &text[copied..], &mut masked);
+        let text = if masked.is_empty() {
             Cow::Borrowed(text)
-        }
+        } else {
+            Cow::Owned(out)
+        };
+        RedactedMessage { text, masked }
     }
 
-    /// Append `text`, redacted, to `out`; whether a value was replaced.
-    fn push_redacted(&self, out: &mut String, text: &str) -> bool {
+    /// Append `text`, redacted, to `out`, noting in `masked` each secret
+    /// whose value it replaced. A stretch lies between the stored
+    /// placeholders the message already held, so every placeholder naming a
+    /// stored secret in its redaction is one the redaction emitted — one
+    /// naming nothing stored was typed and is skipped.
+    fn push_redacted(&self, out: &mut String, text: &str, masked: &mut Vec<String>) {
         let redacted = self.redact(text);
+        if let Cow::Owned(redacted) = &redacted {
+            for found in placeholders(redacted) {
+                if self.lookup(found.name).is_some() && !masked.iter().any(|n| n == found.name) {
+                    masked.push(found.name.to_string());
+                }
+            }
+        }
         out.push_str(&redacted);
-        matches!(redacted, Cow::Owned(_))
     }
 
     /// [`redact`](Self::redact) for text whose **end was cut** — a
@@ -1124,9 +1151,26 @@ impl fmt::Debug for SecretRedactor {
 impl SecretRedactor {
     /// [`SecretStore::redact_message`] over the shared store.
     #[must_use]
-    pub fn redact_message<'a>(&self, text: &'a str) -> Cow<'a, str> {
+    pub fn redact_message<'a>(&self, text: &'a str) -> RedactedMessage<'a> {
         self.registry.with(|store| store.redact_message(text))
     }
+}
+
+/// The toast for a send that masked the values of `names`
+/// ([`RedactedMessage::masked`]) — `None` when it masked none. The bubble no
+/// longer shows what was typed, so this says why.
+#[must_use]
+pub fn masked_notice(names: &[String]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let listed = names
+        .iter()
+        .map(|name| placeholder(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = if names.len() == 1 { "value" } else { "values" };
+    Some(format!("Hid the {values} of {listed} from the agent"))
 }
 
 #[cfg(test)]
@@ -1474,74 +1518,85 @@ mod tests {
     #[test]
     fn a_value_the_user_types_becomes_its_placeholder() {
         // The user pastes the password itself into the chat: the model is
-        // told the placeholder, never the value.
+        // told the placeholder, never the value — and the send is told which
+        // secrets it masked, for the toast that says so.
         let secrets = store(&[("ROOT_PASSWORD", "password123")]);
+        let sent = secrets.redact_message("log in as root, the password is password123");
         assert_eq!(
-            secrets.redact_message("log in as root, the password is password123"),
+            sent.text,
             "log in as root, the password is <secret:ROOT_PASSWORD>"
         );
+        assert_eq!(sent.masked, ["ROOT_PASSWORD"]);
         // `redact`'s rules: every occurrence, the longer value first, inside
-        // a longer word too, a long value across one line break.
+        // a longer word too, a long value across one line break — each name
+        // once, in the order its value first appears.
         let secrets = store(&[
             ("SHORT", "abcd"),
             ("LONG", "abcdefgh"),
             ("JWT", "eyJhbGciOiJIUzI1NiJ9.payload"),
         ]);
+        let sent =
+            secrets.redact_message("abcdefgh, xabcdx and eyJhbGciOiJI\nUzI1NiJ9.payload abcd");
         assert_eq!(
-            secrets.redact_message("abcdefgh, xabcdx and eyJhbGciOiJI\nUzI1NiJ9.payload"),
-            "<secret:LONG>, x<secret:SHORT>x and <secret:JWT>"
+            sent.text,
+            "<secret:LONG>, x<secret:SHORT>x and <secret:JWT> <secret:SHORT>"
         );
-        // Nothing to replace comes back borrowed.
-        assert!(matches!(
-            secrets.redact_message("nothing to hide"),
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(
-            SecretStore::new().redact_message("abcdefgh"),
-            Cow::Borrowed(_)
-        ));
+        assert_eq!(sent.masked, ["LONG", "SHORT", "JWT"]);
+        // Nothing to replace comes back borrowed, masking nothing.
+        let sent = secrets.redact_message("nothing to hide");
+        assert!(matches!(sent.text, Cow::Borrowed(_)));
+        assert!(sent.masked.is_empty());
+        let sent = SecretStore::new().redact_message("abcdefgh");
+        assert!(matches!(sent.text, Cow::Borrowed(_)));
+        assert!(sent.masked.is_empty());
     }
 
     #[test]
     fn a_placeholder_the_user_wrote_is_kept_as_written() {
         // `secret` is a common development password, and a piece of every
         // placeholder: `redact` alone would rewrite the user's reference
-        // into `<<secret:DB_PASSWORD>:DB_PASSWORD>`.
+        // into `<<secret:DB_PASSWORD>:DB_PASSWORD>`. Kept, it masks nothing.
         let secrets = store(&[("DB_PASSWORD", "secret"), ("ROOT_PASSWORD", "hunter22")]);
         for text in [
             "connect with <secret:DB_PASSWORD>",
             "su with <secret:root_password>",
             "<secret:DB_PASSWORD><secret:ROOT_PASSWORD>",
         ] {
-            assert_eq!(secrets.redact_message(text), text, "{text}");
-            assert!(
-                matches!(secrets.redact_message(text), Cow::Borrowed(_)),
-                "{text}"
-            );
+            let sent = secrets.redact_message(text);
+            assert!(matches!(sent.text, Cow::Borrowed(t) if t == text), "{text}");
+            assert!(sent.masked.is_empty(), "{text}");
         }
-        // …while a value beside one is still replaced.
+        // …while a value beside one is still replaced, and only it reported.
+        let sent = secrets.redact_message("<secret:ROOT_PASSWORD> is not secret");
         assert_eq!(
-            secrets.redact_message("<secret:DB_PASSWORD> is secret, root's is hunter22"),
-            "<secret:DB_PASSWORD> is <secret:DB_PASSWORD>, root's is <secret:ROOT_PASSWORD>"
+            sent.text,
+            "<secret:ROOT_PASSWORD> is not <secret:DB_PASSWORD>"
         );
+        assert_eq!(sent.masked, ["DB_PASSWORD"]);
     }
 
     #[test]
     fn a_placeholder_naming_nothing_stored_is_ordinary_text() {
         let secrets = store(&[("ROOT_PASSWORD", "hunter22")]);
         // So a value typed as a name is still hidden…
+        let sent = secrets.redact_message("use <secret:hunter22> for root");
+        assert_eq!(sent.text, "use <secret:<secret:ROOT_PASSWORD>> for root");
+        assert_eq!(sent.masked, ["ROOT_PASSWORD"]);
+        // …and one holding no value comes through as written, never reported
+        // as a secret it masked.
+        let text = "add <secret:NEW_KEY> to the store first, root is hunter22";
+        let sent = secrets.redact_message(text);
         assert_eq!(
-            secrets.redact_message("use <secret:hunter22> for root"),
-            "use <secret:<secret:ROOT_PASSWORD>> for root"
+            sent.text,
+            "add <secret:NEW_KEY> to the store first, root is <secret:ROOT_PASSWORD>"
         );
-        // …and one holding no value comes through as written.
-        let text = "add <secret:NEW_KEY> to the store first";
-        assert!(matches!(secrets.redact_message(text), Cow::Borrowed(t) if t == text));
+        assert_eq!(sent.masked, ["ROOT_PASSWORD"]);
     }
 
     #[test]
     fn a_redacted_message_redacts_to_itself() {
-        // A recalled, backtracked or undone message is sent again.
+        // A recalled, backtracked or undone message is sent again — and
+        // masks nothing the second time.
         let secrets = store(&[
             ("DB_PASSWORD", "secret"),
             ("ROOT_PASSWORD", "hunter22"),
@@ -1552,9 +1607,11 @@ mod tests {
             "<secret:DB_PASSWORD>, secret, <secret:NEW_KEY> and <secret:hunter22>",
             "token: eyJhbGciOiJI\nUzI1NiJ9.payload",
         ] {
-            let once = secrets.redact_message(text).into_owned();
+            let once = secrets.redact_message(text).text.into_owned();
             assert_ne!(once, text, "{text}");
-            assert_eq!(secrets.redact_message(&once), once, "{text}");
+            let twice = secrets.redact_message(&once);
+            assert_eq!(twice.text, once, "{text}");
+            assert!(twice.masked.is_empty(), "{text}");
         }
     }
 
@@ -1564,7 +1621,7 @@ mod tests {
         // it runs as the user typed it.
         let secrets = store(&[("ROOT_PASSWORD", "hunter22"), ("TOKEN", "tok-9876")]);
         let typed = "mysql -u root -phunter22 && curl -H 'Authorization: Bearer tok-9876' x.test";
-        let redacted = secrets.redact_message(typed);
+        let redacted = secrets.redact_message(typed).text;
         assert_eq!(
             redacted,
             "mysql -u root -p<secret:ROOT_PASSWORD> && \
@@ -1577,21 +1634,37 @@ mod tests {
     fn the_redactor_shares_the_registrys_store() {
         let registry = SecretRegistry::default();
         let redactor = registry.redactor();
-        assert_eq!(redactor.redact_message("it is hunter22"), "it is hunter22");
+        assert_eq!(
+            redactor.redact_message("it is hunter22").text,
+            "it is hunter22"
+        );
         // A secret saved after the redactor was handed out masks at once.
         registry.replace(store(&[("ROOT_PASSWORD", "hunter22")]));
+        let sent = redactor.redact_message("it is hunter22");
+        assert_eq!(sent.text, "it is <secret:ROOT_PASSWORD>");
+        assert_eq!(sent.masked, ["ROOT_PASSWORD"]);
         assert_eq!(
-            redactor.redact_message("it is hunter22"),
-            "it is <secret:ROOT_PASSWORD>"
-        );
-        assert_eq!(
-            redactor.clone().redact_message("hunter22"),
+            redactor.clone().redact_message("hunter22").text,
             "<secret:ROOT_PASSWORD>"
         );
+        let unattached = SecretRedactor::default().redact_message("hunter22");
         assert_eq!(
-            SecretRedactor::default().redact_message("hunter22"),
-            "hunter22",
+            unattached.text, "hunter22",
             "a redactor over no registry redacts nothing"
+        );
+        assert!(unattached.masked.is_empty());
+    }
+
+    #[test]
+    fn the_masked_notice_names_what_a_send_hid() {
+        assert_eq!(masked_notice(&[]), None);
+        assert_eq!(
+            masked_notice(&["ROOT_PASSWORD".to_string()]).as_deref(),
+            Some("Hid the value of <secret:ROOT_PASSWORD> from the agent")
+        );
+        assert_eq!(
+            masked_notice(&["A".to_string(), "B".to_string()]).as_deref(),
+            Some("Hid the values of <secret:A>, <secret:B> from the agent")
         );
     }
 

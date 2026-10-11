@@ -16,7 +16,7 @@
 use alter_zero::app::ToastKind;
 use alter_zero::clipboard;
 use alter_zero::llm::keystore::{load_secrets_file, update_secrets_file};
-use alter_zero::secrets::{SecretDraft, SecretStore, placeholder};
+use alter_zero::secrets::{SecretDraft, SecretStore, masked_notice, placeholder};
 
 use super::{Session, config};
 
@@ -30,6 +30,17 @@ impl Session<'_> {
                 format!("{error} — no secrets this session"),
                 ToastKind::Error,
             );
+        }
+    }
+
+    /// A send that masked a stored value the user typed says so
+    /// (`App::take_masked_secrets`): the bubble no longer shows what was
+    /// typed, and this says why. Raised before the send's own action runs,
+    /// so a refusal that action answers with (a subagent declining a chat)
+    /// is the toast left showing (docs/secrets.md *What the user types*).
+    pub(crate) fn toast_masked_secrets(&mut self) {
+        if let Some(notice) = masked_notice(&self.app.take_masked_secrets()) {
+            self.toast(notice, ToastKind::Info);
         }
     }
 
