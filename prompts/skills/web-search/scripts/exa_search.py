@@ -45,7 +45,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp_http import (  # noqa: E402
     SearchError,
-    log,
     post_json,
     run,
     tool_call_body,
@@ -107,7 +106,6 @@ def rest_search(query, num_results, key):
     }
     headers = {"x-api-key": key} if key else {}
     status, _, body = post_json(REST_SEARCH, payload, headers)
-    log(f"HTTP {status} · {len(body)} bytes")
     if status == 402:
         price = x402_price_usd(json.loads(body))
         price = f"${price:.3f}" if price is not None else "an unnamed price"
@@ -132,17 +130,14 @@ def main(argv=None):
     if not args.list and not args.words:
         parser.error("a query (or URLs with --fetch) is required")
     key = os.environ.get("EXA_API_KEY") or None
-    mode = "EXA_API_KEY" if key else "keyless"
 
     if args.rest:
-        log(f"{REST_SEARCH} · {mode}")
         try:
             print(rest_search(" ".join(args.words), args.n, key))
             return 0
         except (SearchError, OSError, json.JSONDecodeError) as e:
             print(e, file=sys.stderr)
             return 1
-    log(f"{MCP_ENDPOINT} · {mode}")
     if args.list:
         payload = tools_list_body()
     elif args.fetch:

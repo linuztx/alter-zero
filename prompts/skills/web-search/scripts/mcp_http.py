@@ -16,7 +16,6 @@ skill).
 
 import json
 import sys
-import time
 import urllib.error
 import urllib.request
 
@@ -224,17 +223,9 @@ def post_json(url, payload, headers):
 
 def call(url, payload, headers):
     """One MCP round trip: the decoded JSON-RPC message, plus status and
-    `retry-after`, logging the exchange to stderr."""
-    started = time.monotonic()
+    `retry-after`."""
     status, resp_headers, body = post_json(url, payload, {"Accept": ACCEPT, **headers})
     content_type = resp_headers.get("content-type", "")
-    limit = resp_headers.get("x-ratelimit-limit")
-    remaining = resp_headers.get("x-ratelimit-remaining")
-    quota = f" · quota {remaining}/{limit} left" if limit and remaining else ""
-    log(
-        f"HTTP {status} · {content_type or 'no body type'} · {len(body)} bytes"
-        f" · {time.monotonic() - started:.2f}s{quota}"
-    )
     msg = decode(status, content_type, body, resp_headers.get("www-authenticate"))
     return msg, status, retry_after_secs(resp_headers.get("retry-after"))
 
@@ -254,7 +245,3 @@ def run(url, payload, headers, render=None):
     except (SearchError, OSError) as e:
         print(e, file=sys.stderr)
         return 1
-
-
-def log(line):
-    print(f"· {line}", file=sys.stderr)

@@ -4,12 +4,16 @@ response shapes of the hosted search servers. No network.
     python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'
 """
 
+import importlib
+import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,6 +25,7 @@ from mcp_http import (  # noqa: E402
     decode,
     retry_after_secs,
     rpc_message,
+    run,
     tool_call_body,
     tool_lines,
     tool_text,
@@ -253,6 +258,53 @@ class Helpers(unittest.TestCase):
         msg = {"result": {"_meta": {"vendor.example/rateLimited": True}, "content": []}}
         with self.assertRaises(RateLimited):
             tool_text(msg, 200)
+
+
+# A search's answer, trimmed: one SSE event carrying the tool text.
+SSE_RESULT = (
+    "event: message\n"
+    'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Title: A"}]}}\n\n'
+)
+
+
+def answered(body):
+    """The server stood in for: every request is answered with `body`."""
+    return mock.patch(
+        "mcp_http.post_json", return_value=(200, {"content-type": "text/event-stream"}, body)
+    )
+
+
+def captured(fn, *args):
+    """`fn(*args)`'s exit code, stdout and stderr."""
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = fn(*args)
+    return code, out.getvalue(), err.getvalue()
+
+
+class Quiet(unittest.TestCase):
+    # A search prints its results and nothing else: a line per request on
+    # stderr costs the agent tokens on every call and fills the collapsed
+    # tool cell's few rows with an endpoint and a byte count.
+
+    def test_a_successful_call_prints_its_text_and_nothing_on_stderr(self):
+        with answered(SSE_RESULT):
+            result = captured(run, "https://mcp.example/", tool_call_body(1, "t", {}), {})
+        self.assertEqual(result, (0, "Title: A\n", ""))
+
+    def test_a_failed_call_prints_only_its_error(self):
+        message = rpc_message("text/event-stream", EXA_LIMITED_SSE)["result"]["content"][0]["text"]
+        with answered(EXA_LIMITED_SSE):
+            result = captured(run, "https://mcp.example/", tool_call_body(1, "t", {}), {})
+        self.assertEqual(result, (1, "", f"rate limited: {message}\n"))
+
+    def test_each_script_prints_its_results_and_nothing_on_stderr(self):
+        for name in ("exa_search", "parallel_search", "tavily_search"):
+            with self.subTest(script=name):
+                with answered(SSE_RESULT):
+                    code, out, err = captured(importlib.import_module(name).main, ["a query"])
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn("Title: A", out)
 
 
 class SiblingImport(unittest.TestCase):

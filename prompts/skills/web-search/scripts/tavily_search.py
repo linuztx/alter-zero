@@ -50,7 +50,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_http import (  # noqa: E402
     RateLimited,
     SearchError,
-    log,
     retry_after_secs,
     run,
     tool_call_body,
@@ -141,7 +140,6 @@ def main(argv=None):
     if not args.list and not args.words:
         parser.error("a query (or URLs with --extract) is required")
     key = os.environ.get("TAVILY_API_KEY") or None
-    log(f"{MCP_ENDPOINT} · {'TAVILY_API_KEY' if key else 'keyless'}")
 
     if args.list:
         payload = tools_list_body()

@@ -42,7 +42,7 @@ import uuid
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mcp_http import log, run, tool_call_body, tools_list_body  # noqa: E402
+from mcp_http import run, tool_call_body, tools_list_body  # noqa: E402
 
 MCP_ENDPOINT = "https://search.parallel.ai/mcp"
 
@@ -121,7 +121,6 @@ def main(argv=None):
     if not args.list and not args.words:
         parser.error("an objective (or URLs with --fetch) is required")
     key = os.environ.get("PARALLEL_API_KEY") or None
-    log(f"{MCP_ENDPOINT} · {'PARALLEL_API_KEY' if key else 'keyless'}")
 
     session_id = os.environ.get("PARALLEL_SESSION_ID") or uuid.uuid4().hex
     if args.list:

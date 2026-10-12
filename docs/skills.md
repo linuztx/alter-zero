@@ -226,8 +226,10 @@ it is a rate limit (Parallel answers its free-tier limit with HTTP 200), Exa's
 `_meta["ai.exa/rateLimited"]` flag or Tavily's cap document is **rate
 limited**, printed as `rate limited (retry in 15m):` over the server's own
 message, word for word; a 401 **needs a key**, and anything else is an error
-carrying the server's text. Each script adds only its provider's request
-shape and result rendering. What the live services taught them, recorded as
+carrying the server's text. Those errors are all that goes to stderr: a line
+per request (endpoint, status, size, time) cost the agent tokens on every
+search and filled the collapsed tool cell's few rows. Each script adds only
+its provider's request shape and result rendering. What the live services taught them, recorded as
 tests against the live response shapes:
 
 - **Cloudflare in front of `mcp.exa.ai` refuses urllib's default

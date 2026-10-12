@@ -2072,9 +2072,9 @@ too and is deliberately not searched); Exa first,
 then Parallel, Tavily and Jina when a free tier refuses, each optional key
 sent only to its own provider, a spent quota's payment, sign-up and survey
 offers never taken though the provider's limit message reaches the agent
-word for word, every result and page printed whole, no `__pycache__`
-written into the skill's folder, and the scripts' unit tests left unseeded
-beside them),
+word for word, every result and page printed whole, nothing on stderr but
+errors, no `__pycache__` written into the skill's folder, and the scripts'
+unit tests left unseeded beside them),
 `yt-dlp` (authorized media downloads using the separately installed CLI, no
 native tool or download on load), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a

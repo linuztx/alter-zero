@@ -86,7 +86,7 @@ The three MCP scripts also take `--list`, which prints the provider's current to
 - `parallel_search.py` and `tavily_search.py`: `Title:` and `URL:` (Parallel adds `Published:`) over the excerpts or snippet, results separated by `---`. Tavily leads with `Answer:` when it has one, and a page read lists the URLs it could not read last, as `Failed:` lines.
 - `jina_web_search.py`: up to four lines per result (the title, the URL, `Date: ...` when the engine dates it, and `details — snippet`), a blank line between results, under `## engine (N results)` when several engines run.
 
-Errors and warnings go to stderr, where the three MCP scripts also report each request in a line starting with `·` (endpoint, HTTP status, size, remaining quota). Exit status 0 means the search answered, even with no results (for `jina_web_search.py`, that at least one engine did); 1 means it failed and 2 a usage error.
+Errors and warnings go to stderr, and nothing else does. Exit status 0 means the search answered, even with no results (for `jina_web_search.py`, that at least one engine did); 1 means it failed and 2 a usage error.
 
 ## Limits and keys
 
