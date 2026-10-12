@@ -69,11 +69,16 @@ for seeded in exa_search.py parallel_search.py tavily_search.py mcp_http.py jina
 	fi
 done
 if command -v python3 >/dev/null 2>&1; then
+	# Run the way an agent would, bytecode writes allowed: importing
+	# mcp_http.py must not leave a __pycache__ folder in the user's skill.
 	for script in exa_search.py parallel_search.py tavily_search.py jina_web_search.py; do
-		sk_help="$(python3 -B "$SK_WEB/scripts/$script" --help 2>&1)" ||
+		sk_help="$(env -u PYTHONDONTWRITEBYTECODE -u PYTHONPYCACHEPREFIX python3 "$SK_WEB/scripts/$script" --help 2>&1)" ||
 			fail "the seeded web-search/scripts/$script --help failed: $sk_help"
 		expect_has "$sk_help" -F "usage:" "the seeded web-search/scripts/$script --help printed no usage"
 	done
+	if [ -e "$SK_WEB/scripts/__pycache__" ]; then
+		fail "running the seeded web-search scripts left a __pycache__ folder in the skill"
+	fi
 fi
 # Edit one file, delete the other, relaunch: the edit survives and the deletion
 # is repaired — a seed that overwrote would discard the user's own copy on

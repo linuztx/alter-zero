@@ -25,6 +25,8 @@ What it shows (checked against the live service, 2026-10):
   mints its own.
 - Responses name Parallel's terms and privacy policy in `x-parallel-terms`
   and `x-parallel-privacy`.
+- A URL `web_fetch` could not read comes back in the document's `errors`,
+  not among its results.
 """
 
 import argparse
@@ -35,7 +37,9 @@ import uuid
 
 # mcp_http.py sits beside this script. Python puts the script's directory on
 # the import path by itself, but not in isolated mode (-I) or under
-# PYTHONSAFEPATH, so put it there explicitly.
+# PYTHONSAFEPATH, so put it there explicitly; and importing it must not leave
+# a __pycache__ folder in the skill's directory.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp_http import log, run, tool_call_body, tools_list_body  # noqa: E402
@@ -69,7 +73,8 @@ def fetch_arguments(urls, objective, session_id):
 
 def format_results(text):
     """Parallel's tool text — a JSON document of results with excerpts — as
-    readable `Title:`/`URL:` blocks. Text of any other shape passes through."""
+    readable `Title:`/`URL:` blocks, the URLs a fetch could not read listed
+    last. Text of any other shape passes through."""
     try:
         doc = json.loads(text)
     except json.JSONDecodeError:
@@ -87,7 +92,19 @@ def format_results(text):
         if excerpts:
             block += "\n" + "\n...\n".join(excerpts)
         blocks.append(block)
-    return "\n\n---\n\n".join(blocks)
+    out = "\n\n---\n\n".join(blocks)
+    failures = [failure_line(e) for e in doc.get("errors") or [] if isinstance(e, dict)]
+    if failures:
+        out = "\n\n".join(filter(None, [out, "\n".join(failures)]))
+    return out
+
+
+def failure_line(error):
+    """One entry of a fetch's `errors`: the URL and why it was not read."""
+    reason = error.get("error_type") or "not read"
+    if error.get("http_status_code"):
+        reason += f", HTTP {error['http_status_code']}"
+    return f"Failed: {error.get('url')} ({reason})"
 
 
 def main(argv=None):

@@ -5,8 +5,10 @@ response shapes of the hosted search servers. No network.
 """
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,6 +42,16 @@ PARALLEL_LIMITED = (
     '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":'
     '"You\'ve hit the free-tier rate limit for Parallel Search MCP. To continue'
     ' with higher limits, add your own API key."}}'
+)
+# Exa's other refusal, live and verbatim: HTTP 200, one SSE event, the limit
+# flagged in `_meta` and its text telling an MCP client how to reconfigure.
+EXA_LIMITED_SSE = (
+    "event: message\n"
+    'data: {"result":{"_meta":{"ai.exa/rateLimited":true},"content":[{"type":"text",'
+    '"text":"You\'ve hit Exa\'s free MCP rate limit. To continue using without limits,'
+    " create your own Exa API key.\\n\\nFix: Create API key at"
+    " https://dashboard.exa.ai/api-keys , and then update Exa MCP URL to this"
+    ' https://mcp.exa.ai/mcp?exaApiKey=YOUR_EXA_API_KEY"}]},"jsonrpc":"2.0","id":1}\n\n'
 )
 
 
@@ -123,16 +135,36 @@ class ToolText(unittest.TestCase):
         with self.assertRaises(RateLimited) as caught:
             tool_text(msg, 429, 48073)
         self.assertEqual(caught.exception.retry_after, 48073)
-        self.assertEqual(caught.exception.message, "You've hit Exa's free MCP rate limit.")
-        self.assertIn("retry in 13h 21m", str(caught.exception))
+        self.assertEqual(
+            str(caught.exception),
+            "rate limited (retry in 13h 21m): You've hit Exa's free MCP rate limit.",
+        )
 
     def test_a_rate_limit_error_on_a_200_is_rate_limited(self):
         # Parallel answers its free-tier limit with HTTP 200, not 429.
         msg = rpc_message("application/json", PARALLEL_LIMITED)
         with self.assertRaises(RateLimited) as caught:
             tool_text(msg, 200)
-        self.assertIn("free-tier rate limit", caught.exception.message)
+        self.assertTrue(
+            str(caught.exception).startswith(
+                "rate limited: You've hit the free-tier rate limit for Parallel Search MCP."
+            )
+        )
         self.assertIsNone(caught.exception.retry_after)
+
+    def test_a_rate_limit_passes_the_providers_message_on_word_for_word(self):
+        # The agent reads the limit as the provider states it, line breaks
+        # and all, rather than a summary of it.
+        msg = rpc_message("text/event-stream", EXA_LIMITED_SSE)
+        with self.assertRaises(RateLimited) as caught:
+            tool_text(msg, 200)
+        self.assertEqual(
+            str(caught.exception),
+            "rate limited: You've hit Exa's free MCP rate limit. To continue using without"
+            " limits, create your own Exa API key.\n\nFix: Create API key at"
+            " https://dashboard.exa.ai/api-keys , and then update Exa MCP URL to this"
+            " https://mcp.exa.ai/mcp?exaApiKey=YOUR_EXA_API_KEY",
+        )
 
     def test_a_server_error_on_another_status_is_an_rpc_error(self):
         # -32000 is JSON-RPC's generic server-error code; on its own it is no
@@ -152,7 +184,7 @@ class ToolText(unittest.TestCase):
         }
         with self.assertRaises(RateLimited) as caught:
             tool_text(msg, 200)
-        self.assertEqual(caught.exception.message, "free MCP rate limit")
+        self.assertEqual(str(caught.exception), "rate limited: free MCP rate limit")
         self.assertIsNone(caught.exception.retry_after)
 
     def test_result_text_parts_join(self):
@@ -181,6 +213,19 @@ class Helpers(unittest.TestCase):
             tools_list_body(),
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         )
+
+    def test_a_retry_time_names_only_the_units_that_matter(self):
+        cases = {
+            48073: "rate limited (retry in 13h 21m): Limit reached.",
+            3600: "rate limited (retry in 1h 0m): Limit reached.",
+            948: "rate limited (retry in 15m): Limit reached.",
+            45: "rate limited (retry in 45s): Limit reached.",
+            2 * 86400 + 3 * 3600 + 5: "rate limited (retry in 2d 3h): Limit reached.",
+            None: "rate limited: Limit reached.",
+        }
+        for secs, text in cases.items():
+            with self.subTest(secs=secs):
+                self.assertEqual(str(RateLimited("Limit reached.", secs)), text)
 
     def test_retry_after_reads_whole_seconds_only(self):
         self.assertEqual(retry_after_secs("48073"), 48073)
@@ -226,6 +271,29 @@ class SiblingImport(unittest.TestCase):
                 )
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertIn("usage:", done.stdout)
+
+    def test_running_a_script_leaves_no_pycache_beside_it(self):
+        # The scripts are seeded into the user's skills folder, where
+        # importing this module would leave a __pycache__ folder behind.
+        here = os.path.dirname(os.path.abspath(__file__))
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")
+        }
+        for script in ("exa_search.py", "parallel_search.py", "tavily_search.py"):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                for name in (script, "mcp_http.py"):
+                    shutil.copy(os.path.join(here, name), tmp)
+                done = subprocess.run(
+                    [sys.executable, os.path.join(tmp, script), "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=env,
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(sorted(os.listdir(tmp)), sorted([script, "mcp_http.py"]))
 
 
 if __name__ == "__main__":

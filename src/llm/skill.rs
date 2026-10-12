@@ -1311,6 +1311,49 @@ mod tests {
     }
 
     #[test]
+    fn every_authored_built_in_file_is_embedded() {
+        // A file authored under `prompts/skills/` ships only when it is
+        // listed in `BUILTIN_SKILL_FILES`: one added there and forgotten here
+        // passes every other test and is missing from every install. The
+        // scripts' unit tests (`test_*`) stay in the repository on purpose,
+        // and a bytecode cache is a local leftover of running them.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/skills");
+        let mut authored = Vec::new();
+        let mut dirs = vec![root.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("read prompts/skills")
+                .flatten()
+            {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.')
+                    || name.starts_with("test_")
+                    || name == "__pycache__"
+                    || name.ends_with(".pyc")
+                {
+                    continue;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let relative = path.strip_prefix(&root).expect("under the root");
+                    authored.push(relative.to_string_lossy().into_owned());
+                }
+            }
+        }
+        assert!(!authored.is_empty(), "the walk found the authored skills");
+        for relative in authored {
+            assert!(
+                BUILTIN_SKILL_FILES
+                    .iter()
+                    .any(|(path, _)| *path == relative),
+                "prompts/skills/{relative} is authored but not in BUILTIN_SKILL_FILES"
+            );
+        }
+    }
+
+    #[test]
     fn every_extra_built_in_file_is_one_its_skill_points_at() {
         // A skill is a directory, so a built-in may seed reference files
         // beside its SKILL.md — but only the body can send the model to one.

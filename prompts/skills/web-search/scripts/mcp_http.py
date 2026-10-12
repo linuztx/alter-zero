@@ -35,7 +35,10 @@ class SearchError(Exception):
 
 
 class RateLimited(SearchError):
-    """The free quota is spent; `retry_after` is the server's own countdown."""
+    """The free quota is spent; `retry_after` is the server's own countdown.
+
+    `message` is the server's own text, passed on word for word, so the agent
+    reads the limit as the provider states it."""
 
     def __init__(self, message, retry_after=None):
         super().__init__(message)
@@ -45,9 +48,22 @@ class RateLimited(SearchError):
     def __str__(self):
         when = ""
         if self.retry_after is not None:
-            secs = self.retry_after
-            when = f" (retry in {secs // 3600}h {secs % 3600 // 60}m)"
+            when = f" (retry in {duration(self.retry_after)})"
         return f"rate limited{when}: {self.message}"
+
+
+def duration(secs):
+    """`secs` read at a glance: `2d 3h`, `13h 21m`, `15m`, `45s`."""
+    days, rest = divmod(secs, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{seconds}s"
 
 
 class RpcError(SearchError):

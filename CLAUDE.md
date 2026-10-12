@@ -2071,7 +2071,10 @@ arXiv and Hacker News results pages through Jina Reader (YouTube's answered
 too and is deliberately not searched); Exa first,
 then Parallel, Tavily and Jina when a free tier refuses, each optional key
 sent only to its own provider, a spent quota's payment, sign-up and survey
-offers never taken, and the scripts' unit tests left unseeded beside them),
+offers never taken though the provider's limit message reaches the agent
+word for word, every result and page printed whole, no `__pycache__`
+written into the skill's folder, and the scripts' unit tests left unseeded
+beside them),
 `yt-dlp` (authorized media downloads using the separately installed CLI, no
 native tool or download on load), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
@@ -2080,7 +2083,9 @@ the format is *ours*: a model asked for "a skill" without it writes a lone
 `my-skill.md` at a root, or an `allowed-tools:` line it expects honoured, and
 every such near-miss fails **silently**, the walk reading only
 `<root>/<name>/SKILL.md`. Authored in `prompts/skills/<name>/` beside
-every other `include_str!`'d markdown and seeded into `{config_home}/skills`
+every other `include_str!`'d markdown (a file there missing from
+`BUILTIN_SKILL_FILES` fails `every_authored_built_in_file_is_embedded`, a
+script's `test_*` files excepted) and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
 use it) the way the agent definitions are — editable, never clobbered, a
 deleted file back next launch, the off-switch being `/skills`, which persists,

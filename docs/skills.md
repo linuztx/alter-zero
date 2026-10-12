@@ -130,7 +130,11 @@ other markdown this crate carries, then **written into `{config_home}/skills`
 at startup when the file is absent** — the agent definitions' rule
 (`docs/subagents.md`), for the agent definitions' reasons: a default that is a
 real file on disk can be read, edited and diffed, and a release that improves
-it ships the improvement. The seed runs *before* the walk, so the session that
+it ships the improvement. `every_authored_built_in_file_is_embedded` keeps the
+directory and the embedded list in step: a file authored under
+`prompts/skills/` but left out of `BUILTIN_SKILL_FILES` fails the test suite
+instead of quietly missing from every install (a script's `test_*` unit tests
+stay out on purpose). The seed runs *before* the walk, so the session that
 installed the app can already use it. An edited copy is never overwritten; a
 deleted file comes back next launch, so the off-switch is `/skills` (which
 persists) rather than `rm -rf`.
@@ -220,10 +224,11 @@ answer decoded whether it arrives as one SSE event (Exa, Tavily) or as plain
 JSON (Parallel), and a failure classified: a 429, a JSON-RPC error that says
 it is a rate limit (Parallel answers its free-tier limit with HTTP 200), Exa's
 `_meta["ai.exa/rateLimited"]` flag or Tavily's cap document is **rate
-limited** with the server's own countdown, a 401 **needs a key**, and
-anything else is an error carrying the server's text. Each script adds only
-its provider's request shape and result rendering. What the live services
-taught them, recorded as tests against the live response shapes:
+limited**, printed as `rate limited (retry in 15m):` over the server's own
+message, word for word; a 401 **needs a key**, and anything else is an error
+carrying the server's text. Each script adds only its provider's request
+shape and result rendering. What the live services taught them, recorded as
+tests against the live response shapes:
 
 - **Cloudflare in front of `mcp.exa.ai` refuses urllib's default
   `Python-urllib/…` user agent** (error 1010), so every request names itself,
@@ -236,9 +241,18 @@ taught them, recorded as tests against the live response shapes:
   retry_after_seconds, next_actions}`. Both are failures, never results.
 - **A spent quota offers ways around itself**: x402 pay-per-call, signing up,
   bonus credits for answering survey questions. The scripts take none of
-  them, and the body tells the agent never to either. Exa's REST API is the
-  same story without MCP (`--rest`: HTTP 402 under x402, $0.007 a search),
-  which is why the body never mentions that flag.
+  them, and the body tells the agent never to either. The message naming
+  them still reaches the agent unchanged, so it reads the limit as the
+  provider states it. Exa's REST API is the same story without MCP
+  (`--rest`: HTTP 402 under x402, $0.007 a search), which is why the body
+  never mentions that flag.
+- **Everything a provider returns is printed, uncut.** Parallel answers a
+  search with ten results, about 16 KB of excerpts, and its `web_fetch` with
+  no objective sent python.org's downloads page back as one 70,105-character
+  excerpt; all of it reaches the agent, so it sees the whole context the
+  provider returned. A URL Parallel could not read comes back in the
+  document's `errors` rather than its results, and is listed last as a
+  `Failed:` line, as Tavily's are.
 
 **The Jina script searches the engines that survived testing.** More than
 thirty engines and variants were fetched through Jina Reader without a key,
@@ -295,7 +309,9 @@ the path from the `Base directory` header since a built-in body cannot use
 the `${…SKILL_DIR}` placeholder. Three of them import `mcp_http.py` from
 their own directory, so each puts that directory on `sys.path` itself:
 Python does it by default, but not in isolated mode (`-I`) or under
-`PYTHONSAFEPATH`, and an agent may well run a script with `-I`. Their unit
+`PYTHONSAFEPATH`, and an agent may well run a script with `-I`. They also set
+`sys.dont_write_bytecode`, since that import would otherwise leave a
+`__pycache__` folder in the user's skill directory. Their unit
 tests stay in the repository beside them and are not seeded: recorded
 response shapes, trimmed copies of each engine's pages, a fake fetcher, no
 network (`python3 -m unittest discover -s prompts/skills/web-search/scripts

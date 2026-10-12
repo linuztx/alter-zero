@@ -38,7 +38,9 @@ import sys
 
 # mcp_http.py sits beside this script. Python puts the script's directory on
 # the import path by itself, but not in isolated mode (-I) or under
-# PYTHONSAFEPATH, so put it there explicitly.
+# PYTHONSAFEPATH, so put it there explicitly; and importing it must not leave
+# a __pycache__ folder in the skill's directory.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp_http import (  # noqa: E402
