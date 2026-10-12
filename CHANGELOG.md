@@ -12,6 +12,21 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A built-in `web-search` skill searches the web.** Mention `$web-search`,
+  or ask the agent to search, and it runs one of the skill's own scripts:
+  Exa, Parallel or Tavily through their free hosted search servers, or
+  DuckDuckGo, Yahoo, Wikipedia, GitHub, arXiv or Hacker News through Jina
+  Reader. The agent starts with Exa for most searches, uses Jina for a
+  quick list of links or one of those sites, moves on to the next provider
+  when a free tier runs out, and can read a page it found. No key is needed;
+  an existing `EXA_API_KEY`, `PARALLEL_API_KEY`, `TAVILY_API_KEY` or
+  `JINA_API_KEY` lifts that provider's limit and is sent only to it. The
+  scripts need only Python 3, nothing to install, and are installed on first
+  launch beside the skill, editable and switched off through `/skills` like
+  the other built-ins (`docs/skills.md`).
+
 ### Fixed
 
 - **A spinner no longer makes a running command's cell flicker.** While a

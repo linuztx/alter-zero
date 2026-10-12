@@ -20,15 +20,16 @@ use crate::skills::{
 /// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
 ///
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
-/// teaches public webpage and PDF retrieval; `yt-dlp` teaches media downloads
-/// through the external CLI (`docs/skills.md`). A skill is a *directory*, so
-/// extra files are seeded too.
+/// teaches public webpage and PDF retrieval; `web-search` searches the web
+/// with its own scripts; `yt-dlp` teaches media downloads through the
+/// external CLI (`docs/skills.md`). A skill is a *directory*, so extra files
+/// are seeded too.
 ///
 /// [`seed_builtin_skills`] writes exactly these, so what a session discovers
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
 /// once it is there.
-const BUILTIN_SKILL_FILES: [(&str, &str); 4] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 10] = [
     (
         "jina-reader/SKILL.md",
         include_str!("../../prompts/skills/jina-reader/SKILL.md"),
@@ -42,6 +43,34 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 4] = [
     (
         "skill-creator/reference.md",
         include_str!("../../prompts/skills/skill-creator/reference.md"),
+    ),
+    (
+        "web-search/SKILL.md",
+        include_str!("../../prompts/skills/web-search/SKILL.md"),
+    ),
+    // The scripts its body runs. Seeded without the executable bit (a plain
+    // write), so the body runs each through `python3`. The three MCP clients
+    // import `mcp_http.py` from their own directory, and the unit tests stay
+    // beside them in the repository, unseeded.
+    (
+        "web-search/scripts/exa_search.py",
+        include_str!("../../prompts/skills/web-search/scripts/exa_search.py"),
+    ),
+    (
+        "web-search/scripts/parallel_search.py",
+        include_str!("../../prompts/skills/web-search/scripts/parallel_search.py"),
+    ),
+    (
+        "web-search/scripts/tavily_search.py",
+        include_str!("../../prompts/skills/web-search/scripts/tavily_search.py"),
+    ),
+    (
+        "web-search/scripts/mcp_http.py",
+        include_str!("../../prompts/skills/web-search/scripts/mcp_http.py"),
+    ),
+    (
+        "web-search/scripts/jina_web_search.py",
+        include_str!("../../prompts/skills/web-search/scripts/jina_web_search.py"),
     ),
     (
         "yt-dlp/SKILL.md",
@@ -1124,6 +1153,131 @@ mod tests {
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "yt-dlp"));
+    }
+
+    /// `web-search`'s scripts as `scripts/<file>` → the bytes the repository
+    /// holds, which are the bytes the seed has to write.
+    const WEB_SEARCH_SCRIPTS: [(&str, &str); 5] = [
+        (
+            "scripts/exa_search.py",
+            include_str!("../../prompts/skills/web-search/scripts/exa_search.py"),
+        ),
+        (
+            "scripts/parallel_search.py",
+            include_str!("../../prompts/skills/web-search/scripts/parallel_search.py"),
+        ),
+        (
+            "scripts/tavily_search.py",
+            include_str!("../../prompts/skills/web-search/scripts/tavily_search.py"),
+        ),
+        (
+            "scripts/mcp_http.py",
+            include_str!("../../prompts/skills/web-search/scripts/mcp_http.py"),
+        ),
+        (
+            "scripts/jina_web_search.py",
+            include_str!("../../prompts/skills/web-search/scripts/jina_web_search.py"),
+        ),
+    ];
+
+    #[test]
+    fn seeded_web_search_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("- web-search: "), "{listing}");
+        assert!(
+            !listing.contains("PARALLEL_SESSION_ID"),
+            "body stays on demand"
+        );
+
+        let call = ToolCallRequest {
+            id: "search".into(),
+            name: "skill".into(),
+            arguments: serde_json::json!({"skill": "web-search"}).to_string(),
+        };
+        let outcome = run_skill_tool(&registry, &mut LoadedSkills::default(), &call);
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        // The body runs each seeded script by the path the `Base directory`
+        // header names, and carries what a search needs: the optional keys,
+        // the untrusted-data rule, and the refusal to pay past a free tier.
+        assert!(body.starts_with("Base directory for this skill: "));
+        for (script, _) in WEB_SEARCH_SCRIPTS {
+            assert!(body.contains(script), "the body names {script}");
+        }
+        for key in [
+            "EXA_API_KEY",
+            "PARALLEL_API_KEY",
+            "TAVILY_API_KEY",
+            "JINA_API_KEY",
+        ] {
+            assert!(body.contains(key), "the body names {key}");
+        }
+        assert!(body.contains("untrusted data"));
+        assert!(body.contains("never pay"));
+    }
+
+    #[test]
+    fn web_search_seeds_its_scripts_beside_the_skill() {
+        // The scripts are what the body runs, and three of them import
+        // `mcp_http.py` from their own directory, so a seed that skipped any
+        // one would ship a skill whose commands fail.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let dir = root.join("web-search");
+        for (script, embedded) in WEB_SEARCH_SCRIPTS {
+            let seeded = std::fs::read_to_string(dir.join(script))
+                .unwrap_or_else(|err| panic!("{script} is seeded: {err}"));
+            assert_eq!(seeded, embedded, "{script} is seeded byte for byte");
+        }
+        // Only what runs is seeded: the scripts' unit tests stay in the
+        // repository beside them.
+        let names: Vec<String> = std::fs::read_dir(dir.join("scripts"))
+            .expect("the scripts directory")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), WEB_SEARCH_SCRIPTS.len(), "{names:?}");
+        assert!(names.iter().all(|name| !name.starts_with("test_")));
+    }
+
+    #[test]
+    fn web_search_seed_preserves_edits_and_restores_deleted_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        write_skill(&root, "web-search", &skill_md("Mine.", "custom search"));
+        let script = root
+            .join("web-search")
+            .join("scripts")
+            .join("exa_search.py");
+        std::fs::create_dir_all(script.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&script, "print('my own search')\n").expect("write");
+
+        assert!(seed_builtin_skills(&root).is_empty());
+        let path = root.join("web-search").join(SKILL_FILE_NAME);
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("custom search")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&script).expect("read"),
+            "print('my own search')\n",
+            "an edited script survives the next launch"
+        );
+
+        std::fs::remove_file(&script).expect("delete");
+        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(script.is_file(), "a deleted script comes back");
+        let (skills, errors) = discover_skills(&[root]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(skills.iter().any(|skill| skill.name == "web-search"));
     }
 
     #[test]
