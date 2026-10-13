@@ -194,8 +194,8 @@ with whatever came back.
 | --- | --- |
 | `CLINE_ACCOUNT_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
 | `CLINE_API_KEY` | the *pasted-key* provider's variable — a different credential for a different row |
-| `ALTER_ZERO_CLINE_AUTH_BASE` | the WorkOS host the sign-in talks to — a fork's own, or `smoke.sh` Phase 136's local stub; `https://api.workos.com` by default |
-| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to — Phase 136's stub; `https://api.cline.bot` by default |
+| `ALTER_ZERO_CLINE_AUTH_BASE` | the WorkOS host the sign-in talks to — a fork's own, or `smoke.sh` Phase 137's local stub; `https://api.workos.com` by default |
+| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to — Phase 137's stub; `https://api.cline.bot` by default |
 
 ## Files
 
@@ -209,4 +209,4 @@ with whatever came back.
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |
 | `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request |
 | `providers.toml` | all three rows, and the `models` static list ClinePass's catalog rides in |
-| `scripts/smoke/phases/136-clineaccount.sh` | the row, the page, and the whole wire against a local stub |
+| `scripts/smoke/phases/137-clineaccount.sh` | the row, the page, and the whole wire against a local stub |

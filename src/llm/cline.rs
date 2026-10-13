@@ -71,13 +71,13 @@ const DEFAULT_AUTH_BASE: &str = "https://api.workos.com";
 const DEFAULT_API_BASE: &str = "https://api.cline.bot";
 
 /// The environment variable that points the sign-in at another WorkOS host —
-/// the smoke suite's local stand-in (Phase 136), or a fork's own. Read at
+/// the smoke suite's local stand-in (Phase 137), or a fork's own. Read at
 /// the boundary and handed in once through [`set_auth_base`], the
 /// `set_issuer` pattern: the pure builders never read the environment.
 pub const AUTH_BASE_ENV: &str = "ALTER_ZERO_CLINE_AUTH_BASE";
 
 /// The environment variable that points register/refresh at another Cline
-/// API host — Phase 136's stub again, or a fork's own.
+/// API host — Phase 137's stub again, or a fork's own.
 pub const API_BASE_ENV: &str = "ALTER_ZERO_CLINE_API_BASE";
 
 /// The paths the four calls live on.

@@ -893,14 +893,14 @@ pub(crate) fn openai_issuer() -> Option<String> {
 }
 
 /// Where Cline's sign-in talks to WorkOS: `ALTER_ZERO_CLINE_AUTH_BASE` when
-/// set and non-empty (Phase 136's local stub, or a fork's own), else `None` —
+/// set and non-empty (Phase 137's local stub, or a fork's own), else `None` —
 /// `https://api.workos.com` stands (`docs/cline.md`).
 pub(crate) fn cline_auth_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::AUTH_BASE_ENV)
 }
 
 /// Where Cline's register/refresh calls go: `ALTER_ZERO_CLINE_API_BASE` when
-/// set and non-empty (Phase 136's stub again), else `None` —
+/// set and non-empty (Phase 137's stub again), else `None` —
 /// `https://api.cline.bot` stands.
 pub(crate) fn cline_api_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::API_BASE_ENV)
