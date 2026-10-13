@@ -170,19 +170,31 @@ their advertised life; an already-expired deadline caches nothing.
 ## When it doesn't work
 
 `openai::explain` rewrites the refusals Cline's API documents
-(`docs.cline.bot/api/errors`), each of which wants a different sentence:
+(`docs.cline.bot/api/errors`), each of which wants a different sentence. The
+refusals about the ClinePass **plan** are messages rather than statuses, matched
+on the server's own words in the order Cline's client matches them
+(`handleClineResponseError` in `sdk/packages/llms/src/providers/builtins.ts`),
+and they outrank the status that carried them — a Pass window running out must
+not read as "add credits":
 
 | what you see | what it means |
 | --- | --- |
-| `your Cline sign-in is no longer valid — run /login and sign in again.` | a `401`: the refresh token was rejected (revoked, or the account signed out) |
+| `your Cline sign-in is no longer valid — run /login and sign in again.` | a `401` on a request, or the refresh endpoint refusing the stored token. The live server answers a dead refresh token with a **`400`** — `{"data":"","error":"failed to refresh token: invalid_grant","success":false}` — so a refused refresh is read by Cline's own rule (`isLikelyInvalidGrant`, ported as `cline::is_likely_invalid_grant`): an error code naming `invalid_grant`, `invalid_token` or `unauthorized` on any status, or a `400`/`401`/`403` whose message says `invalid`, `expired`, `revoked` or `unauthorized` |
 | `this Cline account is out of credits — add credits at app.cline.bot/dashboard, or switch provider with /model.` | a `402`: the account's balance, not the request |
 | `this Cline account isn't allowed to make that request — …` | a `403`: the credential's reach |
-| `this account's ClinePass usage limit is reached for its current window — …` | Cline's own *ClinePass limit reached*: the subscription's rolling window (5-hour / weekly / monthly) is used up — wait for the reset, or switch to a usage-billed model |
-| `this Cline account has no ClinePass subscription — subscribe at …` | a `cline-pass/…` model asked for without the plan (Cline's *"No access to ClinePass subscription models yet"*) |
+| `ClinePass is for personal Cline accounts, and this is an organization account — …` | the server's *organization accounts cannot use individual model inference subscriptions*: the sign-in is an organization account, and ClinePass is a personal plan |
+| `this account's ClinePass 5-hour limit is reached — …` | the server's *You have reached your 5-hour Clinepass limit. Please try again later.*: the subscription's rolling window (5-hour, weekly or monthly — the sentence names which, and so does the advice) is used up — wait for the reset, or switch to a usage-billed model |
+| `this Cline account has no ClinePass subscription — subscribe at …` | a `cline-pass/…` model asked for without the plan: the server's *the user is not subscribed to required model plan* (a `403`), or the sentence Cline's client shows in its place, *"No access to ClinePass subscription models yet"* |
+| `Cline rejected this API key — check it at app.cline.bot (Settings → API Keys), then run /login and enter it again.` | a `401` on the **pasted-key** row. The live API answers a bad key with the same 401 a dead sign-in earns — *"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."*, words written for Cline's own client — so a provider whose base is `api.cline.bot` gets `cline::key_advice`, which is the sign-in's advice with this one sentence changed |
 | the **browser** shows *Access blocked, please contact support.* (「访问被阻止，请联系支持。」) | Cline's identity provider (WorkOS) refused the sign-in before any token was minted — usually a block on the account, the network/IP, or the sign-up itself. Nothing in this client can lift it: the same message appears signing in to app.cline.bot, the extension or the CLI. Cline's own resolution is emailing **support@cline.bot** with the account's address (cline/cline#11405); a different sign-in method, account or network may also get past it |
 
+Any other refused register or refresh call keeps the server's own words, lifted
+out of the JSON envelope they came in — `Cline answered 500: database
+unavailable`, never the `{"data":"",…}` around it.
+
 On the sign-in page itself, a failure stays *on* the page in red:
-`expired_token`/`invalid_grant` read as *"the device code expired — press Esc
+`expired_token` reads as *"the device code expired — press Esc and sign in
+again"* and `invalid_grant` as *"the device code is no longer valid — press Esc
 and sign in again"*, a denied confirmation as *"the sign-in was denied in the
 browser — press Esc and try again"* (or the server's own sentence when it
 wrote one), and a code request WorkOS refused as `WorkOS answered {status}`
@@ -201,7 +213,7 @@ with whatever came back.
 
 | file | what's in it |
 | --- | --- |
-| `src/llm/cline.rs` | the client id and the four endpoints, the device-code/poll/register/refresh shapes and verdicts, the expiry and cache-lifetime rules, the `workos:` spelling and the advice (pure); the code request, the cancel-aware poll, the registration, the cache, the rotation write-back and the two base overrides (boundary) |
+| `src/llm/cline.rs` | the client id and the four endpoints, the device-code/poll/register/refresh shapes and verdicts, the expiry and cache-lifetime rules, the `workos:` spelling, the advice for a sign-in and for a pasted key, and the dead-token rule (pure); the code request, the cancel-aware poll, the registration, the cache, the rotation write-back and the two base overrides (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/config.rs` | `AuthScheme::ClineAccount` |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |

@@ -588,37 +588,44 @@ pub fn bearer_for(access_token: &str) -> String {
     }
 }
 
+/// The host of Cline's API — what tells a **pasted** key's provider apart
+/// ([`is_api_base`]).
+const API_HOST: &str = "api.cline.bot";
+
+/// A sign-in the server no longer honours: the refresh token was rejected,
+/// revoked, or has expired. The one thing to do is sign in again.
+const SIGN_IN_AGAIN: &str = "your Cline sign-in is no longer valid — run /login and sign in again.";
+
+/// The words Cline's API refuses a `cline-pass/…` model with when the account
+/// has no ClinePass subscription (`sdk/packages/llms/src/providers/errors.ts`,
+/// `CLINE_NOT_SUBSCRIBED_RESPONSE_MESSAGE`).
+const NOT_SUBSCRIBED_REFUSAL: &str = "the user is not subscribed to required model plan";
+
+/// The sentence Cline's own client shows in that refusal's place — matched
+/// too, as Cline's `isClineNotSubscribedMessage` does, should something
+/// between here and the server pass it on.
+const NOT_SUBSCRIBED_SHOWN: &str = "no access to clinepass subscription models";
+
+/// The words Cline's API refuses an organization account's ClinePass request
+/// with (`CLINE_ORG_INDIVIDUAL_INFERENCE_SUBSCRIPTION_RESPONSE_MESSAGE`).
+const ORG_SUBSCRIPTION_REFUSAL: &str =
+    "organization accounts cannot use individual model inference subscriptions";
+
+/// What every ClinePass limit refusal says — *"You have reached your 5-hour
+/// Clinepass limit. Please try again later."* — whichever window ran out.
+const CLINEPASS_LIMIT: &str = "clinepass limit";
+
 /// Explain a refused request in terms the user can act on. The three statuses
 /// are Cline's own documented meanings (`docs.cline.bot/api/errors`): a 401
 /// is the sign-in itself (the refresh token was rejected), a 402 is the
-/// account's balance, and a 403 is the credential's reach. Two of Cline's
-/// refusals are **messages rather than statuses** — its own clients detect
-/// them the same way (`errors.ts`): the ClinePass window running out
-/// (*"… your ClinePass limit …"*) and a `cline-pass/…` model asked for
-/// without the subscription — and each wants a sentence the bare status
-/// advice would get wrong. Anything else is left to the transport.
+/// account's balance, and a 403 is the credential's reach. The refusals about
+/// the ClinePass **plan** are messages rather than statuses (`plan_advice`)
+/// and outrank the status that carried them. Anything else is left to the
+/// transport.
 #[must_use]
 pub fn auth_advice(status: u16, body: &str) -> Option<String> {
-    let lower = body.to_ascii_lowercase();
-    if lower.contains("clinepass limit") {
-        return Some(
-            "this account's ClinePass usage limit is reached for its current window — \
-             wait for it to reset, or switch to a usage-billed model (/model → a Cline \
-             Account model, with credits) or another provider."
-                .to_string(),
-        );
-    }
-    if lower.contains("no access to clinepass subscription models") {
-        return Some(
-            "this Cline account has no ClinePass subscription — subscribe at \
-             app.cline.bot/dashboard/subscription, or pick a usage-billed model with /model."
-                .to_string(),
-        );
-    }
-    match status {
-        401 => Some(
-            "your Cline sign-in is no longer valid — run /login and sign in again.".to_string(),
-        ),
+    plan_advice(body).or_else(|| match status {
+        401 => Some(SIGN_IN_AGAIN.to_string()),
         402 => Some(
             "this Cline account is out of credits — add credits at app.cline.bot/dashboard, \
              or switch provider with /model."
@@ -630,7 +637,204 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
                 .to_string(),
         ),
         _ => None,
+    })
+}
+
+/// [`auth_advice`] for a **pasted** Cline key (`providers.toml`'s `cline`).
+/// The live API answers a bad key with the very 401 a dead sign-in earns —
+/// *"Unauthorized: Please make sure you're using the latest version of Cline
+/// and re-authenticate your Cline account."*, words written for Cline's own
+/// client — so here that 401 is about the key. Every other refusal reads as
+/// it does for the sign-in: a key spends the same credits and reaches the
+/// same plan.
+#[must_use]
+pub fn key_advice(status: u16, body: &str) -> Option<String> {
+    match status {
+        401 if plan_advice(body).is_none() => Some(
+            "Cline rejected this API key — check it at app.cline.bot (Settings → API Keys), \
+             then run /login and enter it again."
+                .to_string(),
+        ),
+        _ => auth_advice(status, body),
     }
+}
+
+/// Is `base` Cline's own API? What sends a pasted key's refusals to
+/// [`key_advice`] (`openai::explain`) — told by the host, the way
+/// `ollama::is_cloud_host` tells Ollama's cloud.
+#[must_use]
+pub fn is_api_base(base: &str) -> bool {
+    url::Url::parse(base.trim())
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case(API_HOST))
+        })
+        .unwrap_or(false)
+}
+
+/// The sentence for a refusal about Cline's **plan** rather than the
+/// credential. These are messages, not statuses, and Cline's own client
+/// matches them the same way and in the same order
+/// (`handleClineResponseError`): an organization account asking for a
+/// personal subscription, a ClinePass window run out (naming the window when
+/// the server did), and a `cline-pass/…` model asked for without the plan —
+/// in the server's own words, which the advice once missed by matching only
+/// the sentence Cline's client shows in their place.
+fn plan_advice(body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    if lower.contains(ORG_SUBSCRIPTION_REFUSAL) {
+        return Some(
+            "ClinePass is for personal Cline accounts, and this is an organization account — \
+             switch to your personal account at app.cline.bot, or pick a usage-billed model \
+             with /model."
+                .to_string(),
+        );
+    }
+    if lower.contains(CLINEPASS_LIMIT) {
+        let what = clinepass_window(body).map_or_else(
+            || "usage limit is reached for its current window".to_string(),
+            |window| format!("{window} limit is reached"),
+        );
+        return Some(format!(
+            "this account's ClinePass {what} — wait for it to reset, or switch to a \
+             usage-billed model (/model → a Cline Account model, with credits) or another \
+             provider."
+        ));
+    }
+    if lower.contains(NOT_SUBSCRIBED_REFUSAL) || lower.contains(NOT_SUBSCRIBED_SHOWN) {
+        return Some(
+            "this Cline account has no ClinePass subscription — subscribe at \
+             app.cline.bot/dashboard/subscription, or pick a usage-billed model with /model."
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Which ClinePass window a limit refusal names — `5-hour`, `weekly`,
+/// `monthly` — read out of the server's own sentence (*"You have reached
+/// your 5-hour Clinepass limit. Please try again later."*). `None` when the
+/// sentence is not in that shape.
+fn clinepass_window(body: &str) -> Option<&str> {
+    const LEAD: &str = "you have reached your ";
+    // ASCII lowercasing keeps every byte where it was, so the offsets found
+    // in the copy slice the original on the same (ASCII) boundaries.
+    let lower = body.to_ascii_lowercase();
+    let start = lower.find(LEAD)? + LEAD.len();
+    let end = start + lower[start..].find(&format!(" {CLINEPASS_LIMIT}"))?;
+    let window = body[start..end].trim();
+    (!window.is_empty() && window.len() <= 24 && !window.contains(['.', '"', '\n']))
+        .then_some(window)
+}
+
+/// A JSON string, or anything else — which reads as absent, the leniency
+/// Cline's `parseOAuthError` extends with its `typeof … === "string"` checks.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Text {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl Text {
+    fn text(self) -> Option<String> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// An error body's `error` field: a code string, or an object naming its
+/// `type` and `message`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ErrorField {
+    Code(String),
+    Object {
+        #[serde(rename = "type", default)]
+        kind: Option<Text>,
+        #[serde(default)]
+        message: Option<Text>,
+    },
+    Other(serde::de::IgnoredAny),
+}
+
+/// The fields of an OAuth-shaped error body this module reads.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawOAuthError {
+    error: Option<ErrorField>,
+    error_description: Option<Text>,
+    message: Option<Text>,
+}
+
+/// An error body's **code** and **message**, read the way Cline's own client
+/// reads them (`parseOAuthError`): the code is `error` when that is a string,
+/// else `error.type`; the message is `error_description`, else `message`,
+/// else `error.message`. A body that is not a JSON object has neither.
+fn oauth_error(body: &str) -> (Option<String>, Option<String>) {
+    let Ok(raw) = serde_json::from_str::<RawOAuthError>(body) else {
+        return (None, None);
+    };
+    let (code, nested) = match raw.error {
+        Some(ErrorField::Code(code)) => (Some(code), None),
+        Some(ErrorField::Object { kind, message }) => {
+            (kind.and_then(Text::text), message.and_then(Text::text))
+        }
+        Some(ErrorField::Other(_)) | None => (None, None),
+    };
+    let message = raw
+        .error_description
+        .and_then(Text::text)
+        .or_else(|| raw.message.and_then(Text::text))
+        .or(nested);
+    (code, message)
+}
+
+/// Cline's own test for a refresh token the server has stopped honouring
+/// (`isLikelyInvalidGrant`, `sdk/packages/core/src/auth/cline.ts`): the error
+/// **code** names a dead grant — `invalid_grant`, `invalid_token` or
+/// `unauthorized` — on any status, or a 400/401/403 says so in its
+/// **message** (`invalid`, `expired`, `revoked`, `unauthorized`). The live
+/// refresh endpoint answers a dead token with a **400** whose code is the
+/// sentence `failed to refresh token: invalid_grant`, which is why the 401
+/// the status advice reads was not enough.
+#[must_use]
+pub fn is_likely_invalid_grant(status: u16, body: &str) -> bool {
+    let says = |text: &str, words: &[&str]| {
+        let lower = text.to_ascii_lowercase();
+        words.iter().any(|word| lower.contains(word))
+    };
+    let (code, message) = oauth_error(body);
+    if code
+        .as_deref()
+        .is_some_and(|code| says(code, &["invalid_grant", "invalid_token", "unauthorized"]))
+    {
+        return true;
+    }
+    matches!(status, 400 | 401 | 403)
+        && message.as_deref().is_some_and(|message| {
+            says(message, &["invalid", "expired", "revoked", "unauthorized"])
+        })
+}
+
+/// What a refusal says, for a person: an OAuth-shaped body's message, else
+/// its code when that is all it wrote (Cline's own envelope puts its sentence
+/// there), else the body as it came when it is not JSON at all — but never a
+/// JSON envelope's braces when there are words to lift out of it.
+fn refusal_text(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (code, message) = oauth_error(trimmed);
+    message
+        .or(code)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .or_else(|| Some(trimmed.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -816,16 +1020,20 @@ fn read_body(resp: reqwest::blocking::Response) -> String {
     body
 }
 
-/// Turn a non-2xx token response into the error the page shows.
+/// Turn a non-2xx token response into the error the sign-in page — or, for a
+/// refresh, the turn — shows. A token the server has stopped honouring is a
+/// sign-in to redo, whatever status carried it ([`is_likely_invalid_grant`]);
+/// a refusal [`auth_advice`] knows gets its sentence; anything else keeps the
+/// server's own words, lifted out of the JSON envelope they came in.
 fn token_failure(status: u16, body: &str) -> LlmError {
-    let explained = auth_advice(status, body).unwrap_or_else(|| {
-        let trimmed = body.trim();
-        if trimmed.is_empty() {
-            format!("Cline answered {status}")
-        } else {
-            format!("Cline answered {status}: {trimmed}")
-        }
-    });
+    let explained = if is_likely_invalid_grant(status, body) {
+        SIGN_IN_AGAIN.to_string()
+    } else {
+        auth_advice(status, body).unwrap_or_else(|| match refusal_text(body) {
+            Some(text) => format!("Cline answered {status}: {text}"),
+            None => format!("Cline answered {status}"),
+        })
+    };
     LlmError::Api {
         status,
         body: explained,
@@ -1385,6 +1593,175 @@ mod tests {
             unsubscribed.contains("no ClinePass subscription"),
             "{unsubscribed}"
         );
+    }
+
+    /// What Cline's refresh endpoint answers a dead refresh token with, read
+    /// off the live server: a **400**, not the 401 the status advice reads,
+    /// the code a sentence in `error`, inside the `{success, data}` envelope.
+    const DEAD_REFRESH: &str =
+        r#"{"data":"","error":"failed to refresh token: invalid_grant","success":false}"#;
+
+    /// The 403 a `cline-pass/…` model earns without the plan, in the server's
+    /// own words — Cline's client shows its own sentence in their place.
+    const NOT_SUBSCRIBED: &str = r#"{"error":"the user is not subscribed to required model plan"}"#;
+
+    /// The 401 the live API answers a bad credential with — a dead sign-in
+    /// and a bad pasted key alike — worded for Cline's own client.
+    const UNAUTHORIZED: &str = r#"{"error":"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."}"#;
+
+    #[test]
+    fn a_dead_refresh_token_is_told_by_cline_s_own_rule() {
+        // `isLikelyInvalidGrant` in Cline's client: the error code first —
+        // invalid_grant, invalid_token or unauthorized, on any status…
+        assert!(is_likely_invalid_grant(400, DEAD_REFRESH));
+        assert!(is_likely_invalid_grant(500, r#"{"error":"invalid_token"}"#));
+        assert!(is_likely_invalid_grant(
+            400,
+            r#"{"error":{"type":"invalid_grant","message":"gone"}}"#
+        ));
+        // …then a 400/401/403 whose message says the token is dead.
+        assert!(is_likely_invalid_grant(
+            401,
+            r#"{"error":"x","error_description":"Refresh token expired"}"#
+        ));
+        assert!(is_likely_invalid_grant(
+            403,
+            r#"{"message":"This session was revoked"}"#
+        ));
+        // A message alone settles nothing on another status, nor does a
+        // refusing status that says nothing about the token.
+        assert!(!is_likely_invalid_grant(
+            500,
+            r#"{"message":"token expired"}"#
+        ));
+        assert!(!is_likely_invalid_grant(
+            400,
+            r#"{"error":"bad_request","message":"missing grantType"}"#
+        ));
+        assert!(!is_likely_invalid_grant(400, "upstream hiccup"));
+        assert!(!is_likely_invalid_grant(502, ""));
+    }
+
+    #[test]
+    fn a_refresh_refused_for_a_dead_token_says_sign_in_again() {
+        // This used to reach the user as `HTTP 400: Cline answered 400:
+        // {"data":"",…}` — the raw envelope, and nothing to do about it.
+        let shown = token_failure(400, DEAD_REFRESH).to_string();
+        assert!(shown.contains("sign in again"), "{shown}");
+        assert!(shown.contains("/login"), "{shown}");
+        assert!(!shown.contains("success"), "the envelope leaked: {shown}");
+    }
+
+    #[test]
+    fn any_other_refused_token_call_keeps_the_server_s_sentence_without_its_envelope() {
+        let shown = token_failure(
+            500,
+            r#"{"data":"","error":"database unavailable","success":false}"#,
+        )
+        .to_string();
+        assert!(shown.contains("database unavailable"), "{shown}");
+        assert!(!shown.contains("success"), "{shown}");
+        let described = token_failure(
+            400,
+            r#"{"error":"bad_request","error_description":"missing grantType"}"#,
+        )
+        .to_string();
+        assert!(described.contains("missing grantType"), "{described}");
+        // Not JSON at all (an intercepting proxy's page): kept as it came,
+        // the display bounds it.
+        let raw = token_failure(502, "Bad Gateway").to_string();
+        assert!(raw.contains("Bad Gateway"), "{raw}");
+        assert_eq!(
+            token_failure(503, "  ").to_string(),
+            "HTTP 503: Cline answered 503"
+        );
+    }
+
+    #[test]
+    fn the_server_s_own_words_for_a_missing_plan_are_explained() {
+        // The advice matched only the sentence Cline's client *displays*;
+        // the server sends this one, and Cline's `errors.ts` matches both.
+        let advice = auth_advice(403, NOT_SUBSCRIBED).unwrap();
+        assert!(advice.contains("no ClinePass subscription"), "{advice}");
+        let displayed = auth_advice(
+            403,
+            "No access to ClinePass subscription models yet. Subscribe to ClinePass, …",
+        )
+        .unwrap();
+        assert_eq!(displayed, advice);
+    }
+
+    #[test]
+    fn an_organization_account_is_told_clinepass_is_for_personal_accounts() {
+        let advice = auth_advice(
+            403,
+            r#"{"error":"organization accounts cannot use individual model inference subscriptions"}"#,
+        )
+        .unwrap();
+        assert!(advice.contains("organization"), "{advice}");
+        assert!(advice.contains("personal"), "{advice}");
+        assert_ne!(
+            Some(advice),
+            auth_advice(403, ""),
+            "not the bare 403 sentence"
+        );
+    }
+
+    #[test]
+    fn a_clinepass_limit_names_the_window_the_server_named() {
+        // The live message names which window ran out — the one thing in it
+        // worth keeping.
+        let advice = auth_advice(
+            429,
+            r#"{"error":"You have reached your 5-hour Clinepass limit. Please try again later."}"#,
+        )
+        .unwrap();
+        assert!(advice.contains("5-hour"), "{advice}");
+        assert!(advice.contains("/model"), "{advice}");
+        let weekly = auth_advice(
+            429,
+            "You have reached your weekly ClinePass limit. Please try again later.",
+        )
+        .unwrap();
+        assert!(weekly.contains("weekly"), "{weekly}");
+        // A limit sentence in another shape still reads as the limit.
+        let bare = auth_advice(429, "ClinePass limit reached").unwrap();
+        assert!(bare.contains("ClinePass usage limit"), "{bare}");
+    }
+
+    #[test]
+    fn a_pasted_key_s_refusal_points_at_the_key_and_not_a_sign_in() {
+        // The live API answers a bad key with the very 401 a dead sign-in
+        // earns, worded for Cline's own client.
+        let key = key_advice(401, UNAUTHORIZED).unwrap();
+        assert!(key.contains("API key"), "{key}");
+        assert!(!key.contains("sign in again"), "{key}");
+        assert!(
+            auth_advice(401, UNAUTHORIZED)
+                .unwrap()
+                .contains("sign in again")
+        );
+        // Everything else reads the same either way: a key spends the same
+        // credits and reaches the same plan.
+        let limit = "You have reached your 5-hour Clinepass limit. Please try again later.";
+        for (status, body) in [(403, NOT_SUBSCRIBED), (402, ""), (403, ""), (429, limit)] {
+            assert_eq!(
+                key_advice(status, body),
+                auth_advice(status, body),
+                "{status} {body}"
+            );
+        }
+        assert_eq!(key_advice(429, "slow down"), None);
+    }
+
+    #[test]
+    fn cline_s_api_is_told_by_its_host() {
+        assert!(is_api_base("https://api.cline.bot/api/v1"));
+        assert!(is_api_base("https://API.Cline.bot/api/v1/"));
+        assert!(!is_api_base("https://openrouter.ai/api/v1"));
+        assert!(!is_api_base("https://api.cline.bot.example.com/v1"));
+        assert!(!is_api_base("https://example.com/api.cline.bot"));
+        assert!(!is_api_base("not a url"));
     }
 
     #[test]
