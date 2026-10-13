@@ -30,7 +30,9 @@ release heading when a version is cut.
   ([app.cline.bot](https://app.cline.bot) → Settings → API Keys) reaches the
   same models that power the Cline extension and CLI — Anthropic, OpenAI,
   Google and more — through Cline's OpenAI-compatible endpoint, with the
-  catalog listed in `/model`.
+  catalog listed in `/model`. Each model's context window, image input and
+  thinking levels come from Cline's own catalog, so the footer gauges the
+  context, auto-compaction knows when to run and Ctrl+T cycles the levels.
 - **ClinePass.** Cline's $9.99/month subscription: `/login` → *Use a
   subscription* → *ClinePass* runs Cline's own sign-in — the device-code flow
   its extension and CLI use — so the plan needs no pasted key. The refresh
@@ -40,7 +42,9 @@ release heading when a version is cut.
   instead of credits (`docs/cline.md`). The list is the one Cline publishes
   for its own clients, so a model the plan adds shows up without an update;
   the copy shipped in `providers.toml` is used when that list can't be
-  fetched. A provider file can now name a **static model list** (`models`),
+  fetched. Each plan model takes its context window, image input and
+  thinking levels from Cline's catalog, matched by name the way Cline's own
+  client does. A provider file can now name a **static model list** (`models`),
   and a published one to read instead (`catalog`).
 
 ### Fixed

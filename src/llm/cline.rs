@@ -91,6 +91,12 @@ const REFRESH_PATH: &str = "/api/v1/auth/refresh";
 /// no credential, on the same host register/refresh talk to.
 const RECOMMENDED_MODELS_PATH: &str = "/api/v1/ai/cline/recommended-models";
 
+/// Cline's own catalog of the usage-billed models (`loadCloudModels` reads it
+/// too): public, and OpenRouter-shaped — every record names its window, its
+/// input modalities and its reasoning parameters, which the chat base's own
+/// `/models` (ids and nothing else) does not.
+const CATALOG_PATH: &str = "/api/v1/ai/cline/models";
+
 /// RFC 8628's device-code grant type.
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -1107,6 +1113,14 @@ fn register_url() -> String {
 
 fn refresh_url() -> String {
     format!("{}{REFRESH_PATH}", api_base())
+}
+
+/// Where Cline's own catalog is read from, on the API host in force
+/// ([`set_api_base`]) — the records a ClinePass model borrows its facts from
+/// (`llm::models`, `docs/cline.md`).
+#[must_use]
+pub fn catalog_url() -> String {
+    format!("{}{CATALOG_PATH}", api_base())
 }
 
 /// GET the ClinePass list Cline publishes (boundary — real HTTP), from the API

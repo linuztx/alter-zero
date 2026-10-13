@@ -560,9 +560,12 @@ mod tests {
         let cline = file.get("cline").expect("cline present");
         assert_eq!(cline.name, "Cline");
         assert_eq!(cline.kwargs.api_base, "https://api.cline.bot/api/v1");
-        // Its `/models` is public, so the picker lists the catalog straight off
-        // the chat base — no separate `api_model_base`.
-        assert_eq!(cline.models_base(), "https://api.cline.bot/api/v1");
+        // The chat base's own `/models` names the models and nothing else, so
+        // the picker lists the catalog Cline's clients read instead —
+        // `{base}/models` is `/api/v1/ai/cline/models`, whose OpenRouter-shaped
+        // records carry each model's window, image input and reasoning
+        // (docs/cline.md).
+        assert_eq!(cline.models_base(), "https://api.cline.bot/api/v1/ai/cline");
         assert_eq!(cline.key_env("cline"), "CLINE_API_KEY");
         assert_eq!(cline.auth, AuthScheme::ApiKey);
         assert_eq!(cline.wire_api, WireApi::Chat);

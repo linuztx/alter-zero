@@ -23,7 +23,10 @@ smoke_begin
 #   every poll presents the issued device code, and one registration carries
 #   the WorkOS pair;
 # - /model lists the plan's models from the list Cline publishes (the stub's
-#   carries one the shipped fallback cannot), read with no credential;
+#   carries one the shipped fallback cannot), read with no credential, each
+#   borrowing its facts — window, image input, reasoning — from Cline's
+#   catalog by the model's name without its lab; picked, the footer carries
+#   the thinking level and the context gauge those facts give it;
 # - a turn on a ClinePass model whose refresh token the server no longer
 #   honours — the stub refuses it as the live server does, a 400
 #   `invalid_grant` — reads as a sign-in to redo, never as the JSON envelope.
@@ -54,6 +57,15 @@ class Stub(BaseHTTPRequestHandler):
                                            {"id": "cline-pass/glm-5.3", "name": "cline-pass/glm-5.3",
                                             "description": "", "tags": []}],
                              "clineCloud": []})
+        elif self.path == "/api/v1/ai/cline/models":
+            # The catalog the plan's models borrow their facts from — by bare
+            # name, so `acme/smoke-137` is `cline-pass/smoke-137`'s record.
+            self.reply(200, {"data": [{"id": "acme/smoke-137", "name": "Acme: Smoke 137",
+                                       "context_length": 200000,
+                                       "architecture": {"input_modalities": ["text", "image"],
+                                                        "output_modalities": ["text"]},
+                                       "supported_parameters": ["reasoning", "reasoning_effort",
+                                                                "tools"]}]})
         else:
             self.reply(404, {})
 
@@ -110,7 +122,10 @@ for _ in $(seq 1 30); do # wait for the stub to listen
 done
 # NO_PROXY keeps a developer's HTTP proxy out of the loopback requests.
 CC_BASE="http://127.0.0.1:$CC_PORT"
-launch "$S137" 100 32 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_CLINE_AUTH_BASE=$CC_BASE ALTER_ZERO_CLINE_API_BASE=$CC_BASE $APP"
+# A short cwd (`~/work`): the footer lays the cwd out ahead of the context
+# gauge this phase reads, and truncates from the right.
+CC_WORK="$(work_dir)"
+launch -c "$CC_WORK" "$S137" 100 32 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_CLINE_AUTH_BASE=$CC_BASE ALTER_ZERO_CLINE_API_BASE=$CC_BASE $APP_ABS"
 
 # Into the subscription half: Cline is ONE row there, ClinePass.
 submit "$S137" "/login"
@@ -184,21 +199,33 @@ keys "$S137" Escape # and out
 wait_for 3 "$S137" -E '^❯' || fail "/login did not close"
 
 # /model: the plan's models are the list the stub publishes, read with no
-# credential.
+# credential, and each borrows its facts from the catalog by bare name.
 submit "$S137" "/model"
 picker="$(wait_pane 10 "$S137" -F "cline-pass/smoke-137")"
 dump "the /model picker" "$picker"
 expect_has "$picker" -F "cline-pass/smoke-137 [cline_pass]" "ClinePass did not list the plan's published models"
 cc_log="$(cat "$CC_LOG" 2>/dev/null)"
 expect_has "$cc_log" -E '^GET /api/v1/ai/cline/recommended-models auth=no$' "the ClinePass list was not fetched, or was sent a credential"
+expect_has "$cc_log" -E '^GET /api/v1/ai/cline/models auth=no$' "Cline's catalog was not read for the plan's facts, or was sent a credential"
 
-# Pick one and send a message: the turn mints an access token first, the
-# stub refuses the refresh as the live server refuses a dead token, and the
-# failure says what to do about it.
+# Pick one: its name, its thinking level and its window are the catalog
+# record's — the footer shows the level beside the model and gauges the
+# context against the window.
 type_text "$S137" "smoke-137"
 sleep 0.3
+named="$(wait_pane 5 "$S137" -F "Model Name:")"
+dump "the picked row" "$named"
+expect_has "$named" -F "Model Name: Acme: Smoke 137" "the plan's model did not borrow the catalog's name"
 keys "$S137" Enter
 wait_for 5 "$S137" -F "Switched model to cline-pass/smoke-137" || fail "the ClinePass model was not selected"
+footer="$(wait_pane 5 "$S137" -F "0/200k")"
+dump "the footer on the plan's model" "$footer"
+expect_has "$footer" -F "cline-pass/smoke-137 medium" "the footer did not carry the borrowed thinking level"
+expect_has "$footer" -F "0/200k (0.0%)" "the footer did not gauge against the borrowed window"
+
+# Send a message: the turn mints an access token first, the stub refuses the
+# refresh as the live server refuses a dead token, and the failure says what
+# to do about it.
 submit "$S137" "$USER_MSG"
 failed="$(wait_pane 15 "$S137" -F "sign in again")"
 dump "a turn on a dead sign-in" "$failed"
