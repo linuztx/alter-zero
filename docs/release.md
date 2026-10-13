@@ -342,9 +342,11 @@ the reviewer who reads the commit.
 `.github/workflows/ci.yml` runs on every push to `main` and every pull
 request: **gate** (the four commands), **smoke** (the tmux suite over the
 real binary), **release tooling** (`shellcheck` over the scripts and
-`install.sh`, `selftest`, `check`, and the npm launcher's `node --test`), and
-**telemetry** (the collector's `node --test`). The smoke job runs one
-worker per core rather than the suite's default of twice that: a `-j 8`
+`install.sh`, `selftest`, `check`, and the npm launcher's `node --test`),
+**telemetry** (the collector's `node --test`), and **built-in skill scripts**
+(the offline `unittest`s of the scripts the `web-search` skill seeds). The
+smoke job runs one worker per core rather than the suite's default of twice
+that: a `-j 8`
 run on a four-core box here failed phases 58 and 61 — the permission
 prompt "never showed" inside its wait — and both passed alone. So the job
 re-runs whatever failed in the parallel pass serially, once, before it is

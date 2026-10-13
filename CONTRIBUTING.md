@@ -169,6 +169,7 @@ the code they cover) plus the integration tests in `tests/` that are not
 | Release tooling | `scripts/release.sh selftest` and `scripts/release.sh check` | you changed `scripts/release/`, `install.sh` or `npm/` |
 | npm launcher | `(cd npm && node --test)` | you changed `npm/` |
 | Container | `python3 -m unittest discover -s docker/tests -p 'test_*.py'` | you changed `docker/` |
+| Built-in skill scripts | `python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'` | you changed `prompts/skills/web-search/scripts/` |
 
 ### The smoke suite
 
