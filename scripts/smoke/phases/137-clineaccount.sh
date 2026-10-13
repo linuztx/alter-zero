@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Phase 137 — Cline's ACCOUNT sign-in: the subscription row, the device page, and
-# the WorkOS/register wire against a local stub
+# Phase 137 — Cline's ACCOUNT sign-in from both its rows, against a local WorkOS/Cline stub
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -18,41 +17,61 @@ smoke_begin
 # completing into the account-naming toast with the composer back, the
 # **Cline** refresh token landing in the key store (not the WorkOS one), and
 # — off the stub's log — the code request naming Cline's client id, every
-# poll presenting the issued device code, and exactly one registration
-# carrying the WorkOS pair.
+# poll presenting the issued device code, and one registration per sign-in
+# carrying that sign-in's WorkOS pair.
+#
+# Then the same again from the **ClinePass** row, which shares the sign-in
+# and the stored token: the sign-in is chosen by the row's auth scheme, so
+# this row must reach the very same stub — it once fell through to GitHub
+# Copilot's device flow, whose token would have been stored as a Cline
+# refresh token and sent to Cline's API.
 S137="${S}_clineaccount"
 CC_LOG="$SMOKE_TMP/cline.log"
 CC_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 python3 - "$CC_PORT" "$CC_LOG" <<'PY' &
 import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs
 
 port, log = int(sys.argv[1]), sys.argv[2]
-polls = 0
 base = f"http://127.0.0.1:{port}"
+# One sign-in per row, in the order the phase drives them: each code request
+# issues the next code, every code is approved on its second poll, and each
+# registration hands back the refresh token named after the WorkOS pair it
+# was given — so the key store says which sign-in wrote it.
+codes = [("device-137", "SMOK-C137", "137"), ("device-p137", "SMOK-P137", "p137")]
+issued = 0
+polls = {}
 
 class Stub(BaseHTTPRequestHandler):
     def do_POST(self):
-        global polls
+        global issued
         body = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
         with open(log, "a") as f:
             f.write(f"{self.path} {body}\n")
         if self.path == "/user_management/authorize/device":
-            self.reply(200, {"device_code": "device-137", "user_code": "SMOK-C137",
+            device, user, _ = codes[min(issued, len(codes) - 1)]
+            issued += 1
+            self.reply(200, {"device_code": device, "user_code": user,
                              "verification_uri": f"{base}/device",
-                             "verification_uri_complete": f"{base}/device?user_code=SMOK-C137",
+                             "verification_uri_complete": f"{base}/device?user_code={user}",
                              "expires_in": 300, "interval": 1})
         elif self.path == "/user_management/authenticate":
-            polls += 1
-            if polls == 1:
+            device = parse_qs(body).get("device_code", [""])[0]
+            tag = next((t for d, _, t in codes if d == device), None)
+            polls[device] = polls.get(device, 0) + 1
+            if tag is None:
+                self.reply(400, {"error": "invalid_grant"})
+            elif polls[device] == 1:
                 self.reply(400, {"error": "authorization_pending"})
             else:
-                self.reply(200, {"access_token": "workos-access-137",
-                                 "refresh_token": "workos-refresh-137",
+                self.reply(200, {"access_token": f"workos-access-{tag}",
+                                 "refresh_token": f"workos-refresh-{tag}",
                                  "token_type": "Bearer", "authentication_method": "GoogleOAuth"})
         elif self.path == "/api/v1/auth/register":
+            tag = json.loads(body or "{}").get("accessToken", "").removeprefix("workos-access-")
             self.reply(200, {"success": True, "data": {
-                "accessToken": "workos-access-137", "refreshToken": "cline-refresh-137",
+                "accessToken": f"workos-access-{tag}", "refreshToken": f"cline-refresh-{tag}",
                 "tokenType": "Bearer", "expiresAt": "2999-01-01T00:00:00.000Z",
                 "userInfo": {"subject": "u-137", "email": "dev@example.com",
                              "name": "Dev", "clineUserId": "u-137", "accounts": None}}})
@@ -90,7 +109,7 @@ submit "$S137" "/login"
 sleep 0.5
 keys "$S137" Enter # Use a subscription
 sleep 0.4
-type_text "$S137" "cline"
+type_text "$S137" "cline account"
 sleep 0.3
 keys "$S137" Enter
 sleep 0.5
@@ -137,8 +156,9 @@ for want in '"accessToken":"workos-access-137"' '"refreshToken":"workos-refresh-
 	expect_has "$cc_register" -F "$want" "the registration is missing $want"
 done
 
-# The row now reads configured — the ✓ a second /login shows for a stored
-# credential, which is also what the next launch's key resolution finds.
+# Both rows now read configured — one stored token lights the pair — the ✓
+# a second /login shows for a stored credential, which is also what the next
+# launch's key resolution finds.
 submit "$S137" "/login"
 sleep 0.5
 keys "$S137" Enter
@@ -146,10 +166,43 @@ sleep 0.4
 type_text "$S137" "cline"
 sleep 0.3
 again="$(tmux capture-pane -t "$S137" -p)"
-dump "the row after signing in" "$again"
+dump "the rows after signing in" "$again"
 expect_has "$again" -E 'Cline Account · ✔ configured' "the Cline Account row does not read configured after the sign-in"
+expect_has "$again" -E 'ClinePass · ✔ configured' "the ClinePass row does not read configured after the sign-in"
+
+# Now the ClinePass row itself (Esc clears the filter first). Its sign-in is
+# Cline's, chosen by the row's auth scheme rather than by its id: the page
+# must show the stub's SECOND code, never a GitHub one, and complete into a
+# toast naming ClinePass.
+keys "$S137" Escape
+sleep 0.3
+type_text "$S137" "clinepass"
+sleep 0.3
+keys "$S137" Enter
+pass_device="$(wait_pane 8 "$S137" -F "SMOK-P137")"
+dump "the ClinePass device page" "$pass_device"
+for want in "Sign in to ClinePass" "Visit $CC_BASE/device" "Waiting for approval" "c copy code"; do
+	expect_has "$pass_device" -F "$want" "the ClinePass device page did not show \"$want\""
+done
+expect_lacks "$pass_device" -F "github.com" "the ClinePass row ran GitHub Copilot's sign-in"
+pass_done="$(wait_pane 15 "$S137" -F "Signed in to ClinePass")"
+dump "the ClinePass sign-in completes" "$pass_done"
+expect_has "$pass_done" -F "Signed in to ClinePass (dev@example.com) — run /model to use it" "the ClinePass sign-in did not complete into the account-naming toast"
+
+# The second sign-in replaced the first under the one shared variable.
+cc_env="$(cat "$SMOKE_CFG/.env" 2>/dev/null)"
+dump "the key store after the ClinePass sign-in" "$cc_env"
+expect_has "$cc_env" -F "CLINE_ACCOUNT_REFRESH_TOKEN=cline-refresh-p137" "the ClinePass sign-in did not store its Cline refresh token"
+expect_lacks "$cc_env" -F "CLINE_ACCOUNT_REFRESH_TOKEN=cline-refresh-137" "the first sign-in's token survived the second"
+expect_lacks "$cc_env" -E 'gho_|ghu_|GITHUB' "a GitHub token reached the key store"
+cc_log="$(cat "$CC_LOG" 2>/dev/null)"
+dump "the stub's log after both sign-ins" "$cc_log"
+cc_codes="$(printf '%s\n' "$cc_log" | grep -c '^/user_management/authorize/device ' || true)"
+expect_eq "${cc_codes:-0}" "2" "the two rows did not each ask the stub for a code"
+cc_pass_register="$(printf '%s\n' "$cc_log" | grep '^/api/v1/auth/register ' | grep -F '"accessToken":"workos-access-p137"' || true)"
+expect_has "$cc_pass_register" -F '"refreshToken":"workos-refresh-p137"' "the ClinePass sign-in did not register its own WorkOS pair"
 
 kill "$CC_SERVER" 2>/dev/null
 wait "$CC_SERVER" 2>/dev/null
 tmux kill-session -t "$S137" 2>/dev/null
-echo "==== Phase 137: the Cline account sign-in opens, completes against the stub, and stores the Cline refresh token ===="
+echo "==== Phase 137: both Cline rows sign in against the stub and store the Cline refresh token ===="

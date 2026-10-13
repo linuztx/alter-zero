@@ -14,7 +14,8 @@
 //! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
 //!   picker and the startup capability probe (`docs/llm.md`).
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
-//!   `docs/chatgpt.md`), the one worker that runs for **minutes** rather than
+//!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
+//!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
@@ -31,7 +32,7 @@ use std::thread::JoinHandle;
 use alter_zero::app::{App, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files};
-use alter_zero::llm::{self, ModelConfig, ModelEntry};
+use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
 
 use super::Session;
@@ -65,24 +66,42 @@ pub(crate) enum DeviceEvent {
 /// approves, the prompt expires, or `cancel` trips (Esc on the page, or the
 /// flow being closed out from under it).
 ///
-/// Which flow runs is the **provider's** and the **row's**, not a guess:
+/// Which flow runs is the row's **auth scheme** and its `kind`, not a guess:
 /// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
-/// device code (`docs/chatgpt.md` — the one provider offering two, so its
-/// `kind` is what the user picked on the method choice), or Anthropic's
-/// browser PKCE (`docs/claude.md`). All report on the same two messages,
-/// because every page is the same page — something to show, then a wait.
+/// device code (`docs/chatgpt.md` — the one scheme offering two, so its
+/// `kind` is what the user picked on the method choice), Anthropic's browser
+/// PKCE (`docs/claude.md`), or Cline's WorkOS device code (`docs/cline.md`).
+/// All report on the same two messages, because every page is the same page
+/// — something to show, then a wait.
+///
+/// The scheme, never the provider id: two rows can share one sign-in
+/// (`cline_account` and `cline_pass`), and a user's own `providers.toml` can
+/// name a row anything. The match is exhaustive on purpose — matching ids
+/// with a catch-all sent the ClinePass row to GitHub Copilot's flow, and a
+/// finished sign-in would have stored GitHub's token as a Cline refresh
+/// token.
 pub(crate) fn spawn_signin(
-    provider: String,
+    auth: AuthScheme,
     kind: SigninKind,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
 ) {
-    match (provider.as_str(), kind) {
-        (CHATGPT_PROVIDER, SigninKind::DeviceCode) => spawn_chatgpt_device_login(cancel, tx),
-        (CHATGPT_PROVIDER, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
-        (CLAUDE_PROVIDER, _) => spawn_claude_login(cancel, tx),
-        (CLINE_PROVIDER, _) => spawn_cline_login(cancel, tx),
-        _ => spawn_device_login(cancel, tx),
+    match (auth, kind) {
+        (AuthScheme::ChatGptCodex, SigninKind::DeviceCode) => {
+            spawn_chatgpt_device_login(cancel, tx)
+        }
+        (AuthScheme::ChatGptCodex, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
+        (AuthScheme::AnthropicConsole, _) => spawn_claude_login(cancel, tx),
+        (AuthScheme::ClineAccount, _) => spawn_cline_login(cancel, tx),
+        (AuthScheme::GithubCopilot, _) => spawn_copilot_login(cancel, tx),
+        // A pasted key has nothing to sign in to. `start_device_login`
+        // refuses such a row before it gets here; this arm only keeps the
+        // match honest.
+        (AuthScheme::ApiKey | AuthScheme::OptionalKey, _) => {
+            let _ = tx.send(DeviceEvent::Done(Err(
+                "this provider has no sign-in — paste its key under Use an API key".to_string(),
+            )));
+        }
     }
 }
 
@@ -126,17 +145,6 @@ fn spawn_chatgpt_device_login(
         }
     });
 }
-
-/// The provider id whose sign-in is Anthropic's browser flow. Matching on the
-/// id keeps `workers` from needing the provider file, exactly as the ChatGPT
-/// arm above does: the *page* already knows its kind, and this only has to
-/// agree with it.
-const CLAUDE_PROVIDER: &str = "anthropic_console";
-
-/// The provider id whose sign-in is Cline's WorkOS device flow — the flow the
-/// Cline extension and CLI run (`docs/cline.md`). Same reasoning as
-/// [`CLAUDE_PROVIDER`].
-const CLINE_PROVIDER: &str = "cline_account";
 
 /// Run Cline's device-code sign-in: ask WorkOS for a code, publish it with
 /// the page to confirm it at, then poll until the user confirms it there —
@@ -217,11 +225,6 @@ fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
     });
 }
 
-/// The provider id whose sign-in is OpenAI's browser flow. Matching on the id
-/// keeps `workers` from needing the provider file: the *page* already knows
-/// its kind, and this only has to agree with it.
-const CHATGPT_PROVIDER: &str = llm::chatgpt::PROVIDER_ID;
-
 /// Run OpenAI's PKCE loopback flow: bind the callback port, publish the URL
 /// to open, then block until the browser comes back. See `docs/chatgpt.md`.
 fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
@@ -265,7 +268,7 @@ fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSend
 
 /// Run GitHub's device flow on a worker thread, reporting the code and then
 /// the verdict. See `docs/copilot.md`.
-fn spawn_device_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+fn spawn_copilot_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let device = match llm::copilot::request_device_code() {
             Ok(device) => device,

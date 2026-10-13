@@ -387,7 +387,7 @@ with an HTML page would otherwise push the model list off the frame.
 
 ## The flow at the boundary
 
-`spawn_device_login` (`src/tui/workers.rs`) is the loop's fourth worker and the
+`spawn_copilot_login` (`src/tui/workers.rs`) is the loop's fourth worker and the
 only one that runs for **minutes** rather than milliseconds: it polls until the
 user approves, the code expires, or its `CancelToken` trips. It reports two
 messages on its own `select!` branch — the code, then the verdict — and

@@ -205,7 +205,7 @@ with whatever came back.
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/config.rs` | `AuthScheme::ClineAccount` |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |
-| `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs |
+| `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it for **either** row, by the row's auth scheme rather than its id |
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |
 | `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request |
 | `providers.toml` | all three rows, and the `models` static list ClinePass's catalog rides in |

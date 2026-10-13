@@ -43,7 +43,7 @@ use alter_zero::agents::AgentRegistry;
 use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
-    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
+    self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
     ReasoningSupport, STANDARD_LABEL, ServiceTier, SpeedSettings, SpeedState, ThinkingMode,
 };
 use alter_zero::permission::PermissionGate;
@@ -607,12 +607,19 @@ impl ModelSession {
         config::subscription_choices(&self.providers, &self.env_file)
     }
 
-    /// Is this provider signed in to rather than keyed? What decides whether
-    /// a `/login` row starts a device flow.
-    pub(crate) fn is_subscription(&self, provider: &str) -> bool {
+    /// The sign-in behind a `/login` subscription row: the provider's auth
+    /// scheme, or `None` for one that is keyed rather than signed in to. What
+    /// decides whether a row starts a sign-in at all, and which one.
+    pub(crate) fn subscription_auth(&self, provider: &str) -> Option<AuthScheme> {
         self.providers
             .get(provider)
-            .is_some_and(|p| p.auth.is_subscription())
+            .map(|p| p.auth)
+            .filter(|auth| auth.is_subscription())
+    }
+
+    /// Is this provider signed in to rather than keyed?
+    pub(crate) fn is_subscription(&self, provider: &str) -> bool {
+        self.subscription_auth(provider).is_some()
     }
 
     /// The active provider id, for the `/model` picker's "switch within this

@@ -595,5 +595,5 @@ rather than left to a default.
 | `src/app/login.rs` | `SigninKind` and its method rows, `SubscriptionChoice::kinds`, the `KeyStep::SigninMethod` choice and its keys, `DeviceLogin::copy_target` |
 | `src/ui/login_view.rs` | the choice's page and the browser page's wording |
 | `src/tui/config.rs` | `signin_kinds` — which pages a scheme offers; `openai_issuer` — the override |
-| `src/tui/workers.rs` | `spawn_signin` — which flow a provider and a pick run |
+| `src/tui/workers.rs` | `spawn_signin` — which flow a row's auth scheme and a pick run |
 | `scripts/smoke/phases/119-chatgptdevice.sh` | the choice and the device flow, driven against a local stub of the auth server |
