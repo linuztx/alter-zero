@@ -1,7 +1,8 @@
 # Cline as a provider
 
 Reach the models behind the Cline extension and CLI — `/login` → **Use an API
-key** → **Cline**, or `/login` → **Use a subscription** → **Cline Account**.
+key** → **Cline**, or `/login` → **Use a subscription** → **Cline Account** (or
+**ClinePass**, the same sign-in: either row signs in both).
 
 Three providers ship — one API, two ways in, and a second catalog for the
 subscription:
@@ -45,9 +46,10 @@ name = "ClinePass"
 auth = "cline_account"                       # ← the same sign-in
 description = "Cline's $9.99/month subscription: …"
 api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"  # ← and the same stored token
-models = [                                   # ← the plan's static catalog
-    "cline-pass/glm-5.3",
+catalog = "cline_pass"                       # ← the plan's list, as Cline publishes it
+models = [                                   # ← the copy shown when it can't be fetched
     "cline-pass/deepseek-v4.1-flash",
+    "cline-pass/mimo-v2.6-flash",
     # …
 ]
 
@@ -112,21 +114,38 @@ an empty credit balance earns exactly the 402 this page's advice explains.
 
 The two rows therefore share one **sign-in**, one stored refresh token, and
 one base — what differs is the model ids. And because those ids are the
-plan's own catalog, the public `/models` listing does **not** carry them, so
-the file names them instead of pointing at an endpoint: `models` is a
-**static** list (`providers.toml`), and `llm::models::fetch_models` hands it
-straight to the `/model` picker and the startup probe with **no request at
-all**. `cline_account` keeps the fetched 458-model usage-billing catalog; the
-picker shows both rows and both are selectable once signed in.
+plan's own catalog, the public `/models` listing does **not** carry them.
+Cline publishes the plan's list for its own clients instead —
+`GET https://api.cline.bot/api/v1/ai/cline/recommended-models`, public, a page
+of four lists (`recommended`, `free`, `clinePass`, `clineCloud`) of which the
+`clinePass` array is the plan's (`sdk/packages/core/src/cloud/models.ts`,
+`loadCloudModels`) — and `catalog = "cline_pass"` reads it from there:
+`llm::cline::fetch_clinepass_models` GETs it with **no credential**, the way
+Cline's clients do, `parse_clinepass_models` keeps the list in Cline's own
+order (a record with no usable id skipped, a repeated id kept once, a
+`data`-wrapped page read through), and `llm::models::fetch_models` hands the
+rows to the `/model` picker and the startup probe. `cline_account` keeps the
+fetched usage-billing catalog; the picker shows both rows and both are
+selectable once signed in.
 
-The slugs are Cline's to change (it has already retired some), so the list is
-the one shipped `providers.toml` carries — a slug added or removed is a line
-edited there, never a code change. Quota is measured against rolling 5-hour,
-weekly and monthly windows; the dashboard is
-[app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true),
-and when a window runs out the refusal reads *ClinePass limit reached* with
-the advice to fall back to the usage-billed row (`/model` → a
-`cline_account` model, or the official clients' own wording).
+The slugs are Cline's to change: it has already retired some, and the list
+shipped with this provider went two models stale before it merged
+(`cline-pass/mimo-v2.6-flash` and `-pro`). So the published list is the
+catalog, and a model the plan adds is in the picker the day it is listed. The
+file's static `models` is only the **fallback**: what the picker shows when the
+published list can't be had — offline, refused, a page this parse no longer
+reads, or one listing nothing — since none of those is a fact about the plan,
+and an empty row would read as one. With no static list either, the failure is
+the row's own note in the picker. `catalog` is a closed value like `auth` and
+`wire_api`, and one this build doesn't know degrades to the ordinary listing
+(and so to the static list) rather than failing the file.
+
+Quota is measured against rolling 5-hour, weekly and monthly windows; the
+dashboard is
+[app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true).
+When a window runs out the server says which (*You have reached your 5-hour
+Clinepass limit. Please try again later.*), and the advice names that window
+and falls back to the usage-billed row (`/model` → a `cline_account` model).
 
 **Free models are deliberately not listed here.** Cline runs rotating
 `cline-free/…` promotions, but its docs are explicit that free-model usage is
@@ -207,7 +226,7 @@ with whatever came back.
 | `CLINE_ACCOUNT_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
 | `CLINE_API_KEY` | the *pasted-key* provider's variable — a different credential for a different row |
 | `ALTER_ZERO_CLINE_AUTH_BASE` | the WorkOS host the sign-in talks to — a fork's own, or `smoke.sh` Phase 137's local stub; `https://api.workos.com` by default |
-| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to — Phase 137's stub; `https://api.cline.bot` by default |
+| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to, and the ClinePass list is read from — Phase 137's stub; `https://api.cline.bot` by default |
 
 ## Files
 
@@ -215,10 +234,10 @@ with whatever came back.
 | --- | --- |
 | `src/llm/cline.rs` | the client id and the four endpoints, the device-code/poll/register/refresh shapes and verdicts, the expiry and cache-lifetime rules, the `workos:` spelling, the advice for a sign-in and for a pasted key, and the dead-token rule (pure); the code request, the cancel-aware poll, the registration, the cache, the rotation write-back and the two base overrides (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
-| `src/llm/config.rs` | `AuthScheme::ClineAccount` |
+| `src/llm/config.rs` | `AuthScheme::ClineAccount`, and `Catalog::ClinePass` — the `catalog` key |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |
 | `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it for **either** row, by the row's auth scheme rather than its id |
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |
-| `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request |
-| `providers.toml` | all three rows, and the `models` static list ClinePass's catalog rides in |
-| `scripts/smoke/phases/137-clineaccount.sh` | the row, the page, and the whole wire against a local stub |
+| `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request — and its `catalog = "cline_pass"` arm, the published list with the static one as its fallback (`clinepass_entries`) |
+| `providers.toml` | all three rows, ClinePass's `catalog`, and the `models` static list its fallback rides in |
+| `scripts/smoke/phases/137-clineaccount.sh` | both rows, the page, and the whole wire against a local stub — then the `/model` picker: the published ClinePass list, and a dead refresh token reading as a sign-in to redo |

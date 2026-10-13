@@ -679,7 +679,8 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
 const ANTHROPIC_PAGE_SIZE: u32 = 1000;
 
 /// GET the provider's model list (boundary — real HTTP), or hand back the
-/// file's **static** list when it names one — no request at all. Polls
+/// file's **static** list when it names one — no request at all — or, for a
+/// published catalog, that list with the file's as its fallback. Polls
 /// `cancel` so a closed picker doesn't leave the worker running.
 ///
 /// # Errors
@@ -688,9 +689,21 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
+    match cfg.catalog {
+        // ClinePass's models are a list Cline publishes and changes: read
+        // it, and keep the file's copy for when it can't be had
+        // (`docs/cline.md`).
+        super::Catalog::ClinePass => {
+            let live = super::cline::fetch_clinepass_models();
+            if cancel.is_cancelled() {
+                return Err(LlmError::Cancelled);
+            }
+            return clinepass_entries(cfg, live);
+        }
+        super::Catalog::Listing => {}
+    }
     // A provider whose file names its models never asks the endpoint: the
-    // list *is* the catalog (ClinePass's `cline-pass/…` slugs are the plan's
-    // own — the public listing does not carry them, `docs/cline.md`).
+    // list *is* the catalog.
     if !cfg.static_models.is_empty() {
         return Ok(static_entries(cfg));
     }
@@ -744,6 +757,35 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// ClinePass's catalog from what the fetch of Cline's published list brought
+/// back: that list when it named any model, else the file's static list —
+/// unreachable, refused, unreadable or empty alike, since none of those is a
+/// fact about the plan, and an empty picker row would read as one. With no
+/// static list to fall back on, the failure is the provider's own note in the
+/// picker. No capability is claimed: the published list says nothing about
+/// a model's window, vision or reasoning.
+fn clinepass_entries(
+    cfg: &ModelConfig,
+    live: Result<Vec<super::cline::PlanModel>>,
+) -> Result<Vec<ModelEntry>> {
+    match live {
+        Ok(models) if !models.is_empty() => Ok(models
+            .into_iter()
+            .map(|model| ModelEntry {
+                id: model.id,
+                provider: cfg.provider_id.clone(),
+                display_name: model.name,
+                reasoning: None,
+                vision: None,
+                context: None,
+                service_tiers: Vec::new(),
+            })
+            .collect()),
+        _ if !cfg.static_models.is_empty() => Ok(static_entries(cfg)),
+        live => live.map(|_| Vec::new()),
+    }
 }
 
 /// The picker's entries for a provider whose file names its models
@@ -1801,6 +1843,40 @@ mod tests {
                 .all(|e| e.context.is_none() && e.vision.is_none()),
             "a static entry claims no capability — there is no record to read one from"
         );
+    }
+
+    #[test]
+    fn clinepass_s_published_list_is_its_catalog_and_the_file_s_only_the_fallback() {
+        use crate::llm::cline::PlanModel;
+        let ids = |entries: &[ModelEntry]| -> Vec<String> {
+            entries.iter().map(|e| e.id.clone()).collect()
+        };
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "cline_pass".to_string();
+        cfg.catalog = crate::llm::Catalog::ClinePass;
+        cfg.static_models = vec!["cline-pass/glm-5.3".to_string()];
+        // The published list wins: a model Cline adds is in the picker the
+        // day it is listed, under the name the list gives it.
+        let live = vec![PlanModel {
+            id: "cline-pass/mimo-v2.6-pro".to_string(),
+            name: "MiMo V2.6 Pro".to_string(),
+        }];
+        let entries = clinepass_entries(&cfg, Ok(live)).unwrap();
+        assert_eq!(ids(&entries), ["cline-pass/mimo-v2.6-pro"]);
+        assert_eq!(entries[0].display_name, "MiMo V2.6 Pro");
+        assert_eq!(entries[0].provider, "cline_pass");
+        assert!(entries[0].context.is_none() && entries[0].vision.is_none());
+        // Unreachable, refused, or listing nothing: the file's list, never a
+        // picker row that is empty for a reason the plan has no part in.
+        for failed in [Err(LlmError::Http("offline".to_string())), Ok(Vec::new())] {
+            assert_eq!(
+                ids(&clinepass_entries(&cfg, failed).unwrap()),
+                ["cline-pass/glm-5.3"]
+            );
+        }
+        // With no fallback, a failure is the provider's own note.
+        cfg.static_models.clear();
+        assert!(clinepass_entries(&cfg, Err(LlmError::Http("offline".to_string()))).is_err());
     }
 
     // --- lenient fields: one odd field must not cost the whole record ---

@@ -145,8 +145,10 @@ deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
 environment variable that replaces the base (Ollama's `OLLAMA_HOST`), and a
 provider can name its models **statically** (`models = [...]`), which takes
-the place of the `/models` fetch where a listing does not carry them
-(ClinePass's `cline-pass/…` slugs, `docs/cline.md`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+the place of the `/models` fetch where a listing does not carry them — or,
+beside a `catalog` naming a list the provider publishes elsewhere, is that
+list's fallback (ClinePass's `cline-pass/…` slugs, `catalog = "cline_pass"`,
+`docs/cline.md`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
 Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;

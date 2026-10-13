@@ -25,6 +25,13 @@ smoke_begin
 # this row must reach the very same stub — it once fell through to GitHub
 # Copilot's device flow, whose token would have been stored as a Cline
 # refresh token and sent to Cline's API.
+#
+# And last the /model picker, which needs no network either: ClinePass lists
+# the plan's models Cline publishes (the stub's list carries one the shipped
+# fallback cannot), read with no credential, while the Cline Account row's
+# listing needs an access token, and the stub refuses the refresh exactly as
+# the live server refuses a dead token — a 400 `invalid_grant` that must read
+# as a sign-in to redo, never as the JSON envelope it came in.
 S137="${S}_clineaccount"
 CC_LOG="$SMOKE_TMP/cline.log"
 CC_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -44,6 +51,22 @@ issued = 0
 polls = {}
 
 class Stub(BaseHTTPRequestHandler):
+    def do_GET(self):
+        auth = "yes" if self.headers.get("authorization") else "no"
+        with open(log, "a") as f:
+            f.write(f"GET {self.path} auth={auth}\n")
+        if self.path == "/api/v1/ai/cline/recommended-models":
+            # The live page's shape: four lists, ClinePass's among them.
+            self.reply(200, {"recommended": [{"id": "anthropic/claude-sonnet-5", "name": "anthropic/claude-sonnet-5"}],
+                             "free": [],
+                             "clinePass": [{"id": "cline-pass/smoke-137", "name": "cline-pass/smoke-137",
+                                            "description": "", "tags": []},
+                                           {"id": "cline-pass/glm-5.3", "name": "cline-pass/glm-5.3",
+                                            "description": "", "tags": []}],
+                             "clineCloud": []})
+        else:
+            self.reply(404, {})
+
     def do_POST(self):
         global issued
         body = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
@@ -68,6 +91,10 @@ class Stub(BaseHTTPRequestHandler):
                 self.reply(200, {"access_token": f"workos-access-{tag}",
                                  "refresh_token": f"workos-refresh-{tag}",
                                  "token_type": "Bearer", "authentication_method": "GoogleOAuth"})
+        elif self.path == "/api/v1/auth/refresh":
+            # What the live server answers a dead refresh token with.
+            self.reply(400, {"data": "", "error": "failed to refresh token: invalid_grant",
+                             "success": False})
         elif self.path == "/api/v1/auth/register":
             tag = json.loads(body or "{}").get("accessToken", "").removeprefix("workos-access-")
             self.reply(200, {"success": True, "data": {
@@ -202,7 +229,25 @@ expect_eq "${cc_codes:-0}" "2" "the two rows did not each ask the stub for a cod
 cc_pass_register="$(printf '%s\n' "$cc_log" | grep '^/api/v1/auth/register ' | grep -F '"accessToken":"workos-access-p137"' || true)"
 expect_has "$cc_pass_register" -F '"refreshToken":"workos-refresh-p137"' "the ClinePass sign-in did not register its own WorkOS pair"
 
+# The /model picker: ClinePass's rows are the stub's published list, and the
+# Cline Account row's dead token reads as a sign-in to redo.
+submit "$S137" "/model"
+picker="$(wait_pane 10 "$S137" -F "cline-pass/smoke-137")"
+dump "the /model picker" "$picker"
+expect_has "$picker" -F "cline-pass/smoke-137" "ClinePass did not list the plan's published models"
+picker="$(wait_pane 10 "$S137" -F "sign in again")"
+dump "the /model picker, both fetches settled" "$picker"
+expect_has "$picker" -F "Cline Account unavailable" "the Cline Account fetch did not fail on the dead token"
+expect_has "$picker" -F "your Cline sign-in is no longer valid" "a dead refresh token did not read as a sign-in to redo"
+expect_lacks "$picker" -F '"success"' "the refresh refusal's JSON envelope reached the picker"
+cc_log="$(cat "$CC_LOG" 2>/dev/null)"
+dump "the stub's log after /model" "$cc_log"
+expect_has "$cc_log" -E '^GET /api/v1/ai/cline/recommended-models auth=no$' "the ClinePass list was not fetched, or was sent a credential"
+cc_refresh="$(printf '%s\n' "$cc_log" | grep '^/api/v1/auth/refresh ' || true)"
+expect_has "$cc_refresh" -F '"refreshToken":"cline-refresh-p137"' "the refresh did not present the stored Cline refresh token"
+keys "$S137" Escape
+
 kill "$CC_SERVER" 2>/dev/null
 wait "$CC_SERVER" 2>/dev/null
 tmux kill-session -t "$S137" 2>/dev/null
-echo "==== Phase 137: both Cline rows sign in against the stub and store the Cline refresh token ===="
+echo "==== Phase 137: both Cline rows sign in against the stub, store the Cline refresh token, and list the published ClinePass catalog ===="

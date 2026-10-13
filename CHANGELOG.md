@@ -40,9 +40,11 @@ release heading when a version is cut.
   sign-in configures it, and the `/model` picker lists the plan's
   `cline-pass/…` models — Cline's curated open coding set — beside the
   usage-billed catalog, so a subscription spends the plan's quota instead of
-  credits. A provider file can now name a **static model list**
-  (`providers.toml`'s `models`), which is what puts those slugs in the picker
-  with no endpoint to ask.
+  credits. The list is the one Cline publishes for its own clients, so a
+  model the plan adds shows up without an update; the copy shipped in
+  `providers.toml` is used when that list can't be fetched. A provider file
+  can now name a **static model list** (`models`), and a published one to
+  read instead (`catalog`).
 
 ### Fixed
 

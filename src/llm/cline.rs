@@ -86,6 +86,11 @@ const AUTHENTICATE_PATH: &str = "/user_management/authenticate";
 const REGISTER_PATH: &str = "/api/v1/auth/register";
 const REFRESH_PATH: &str = "/api/v1/auth/refresh";
 
+/// Where Cline publishes the lists its own clients offer — ClinePass's among
+/// them (`sdk/packages/core/src/cloud/models.ts`, `loadCloudModels`). Public:
+/// no credential, on the same host register/refresh talk to.
+const RECOMMENDED_MODELS_PATH: &str = "/api/v1/ai/cline/recommended-models";
+
 /// RFC 8628's device-code grant type.
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -838,6 +843,96 @@ fn refusal_text(body: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// The ClinePass catalog (pure)
+// ---------------------------------------------------------------------------
+
+/// One model the ClinePass plan lists: the id the API takes and the name to
+/// show for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanModel {
+    /// The slug a request names (`cline-pass/glm-5.3`).
+    pub id: String,
+    /// The display name the list gives it, else the id.
+    pub name: String,
+}
+
+/// The `recommended-models` page, as far as the plan's list goes: the
+/// `clinePass` array — at the top, or inside a `data` object (Cline's reader
+/// takes either). Each record stays an unparsed slice of the body until it is
+/// read on its own ([`plan_model`]), so one bad record costs only itself.
+#[derive(Debug, Default, Deserialize)]
+struct RawRecommended<'a> {
+    #[serde(default, borrow, rename = "clinePass")]
+    cline_pass: Option<Vec<&'a serde_json::value::RawValue>>,
+    #[serde(default, borrow)]
+    data: Option<&'a serde_json::value::RawValue>,
+}
+
+/// Parse the ClinePass list off Cline's `recommended-models` page, in the
+/// order Cline lists it — the order its own clients offer the plan's models
+/// in. A record with no usable string id is skipped and a repeated id kept
+/// once; the page's other lists (`recommended`, `free`, `clineCloud`) are
+/// not the plan's and are never read.
+///
+/// # Errors
+/// A body that is not that page, or a page with no ClinePass list at all —
+/// a shape this parse no longer reads, which is not the same thing as a plan
+/// with no models, so the caller can fall back rather than show nothing.
+pub fn parse_clinepass_models(body: &str) -> Result<Vec<PlanModel>> {
+    let decode = |e: serde_json::Error| LlmError::Decode(e.to_string());
+    let page: RawRecommended = serde_json::from_str(body).map_err(decode)?;
+    // `data` when it is an object, the page itself otherwise — the error
+    // envelope's `"data": ""` included.
+    let lists = match page
+        .data
+        .filter(|data| data.get().trim_start().starts_with('{'))
+    {
+        Some(data) => serde_json::from_str::<RawRecommended>(data.get()).map_err(decode)?,
+        None => page,
+    };
+    let Some(records) = lists.cline_pass else {
+        return Err(LlmError::Decode(
+            "Cline's recommended models named no ClinePass list".to_string(),
+        ));
+    };
+    let mut seen = std::collections::HashSet::new();
+    Ok(records
+        .iter()
+        .filter_map(|record| plan_model(record.get()))
+        .filter(|model| seen.insert(model.id.clone()))
+        .collect())
+}
+
+/// One ClinePass record: its id, and the first of `display_name`,
+/// `displayName` and `name` that says something — the id when none does.
+fn plan_model(record: &str) -> Option<PlanModel> {
+    #[derive(Deserialize)]
+    struct Raw {
+        #[serde(default)]
+        id: Option<Text>,
+        #[serde(default)]
+        display_name: Option<Text>,
+        #[serde(default, rename = "displayName")]
+        display_name_camel: Option<Text>,
+        #[serde(default)]
+        name: Option<Text>,
+    }
+    let raw: Raw = serde_json::from_str(record).ok()?;
+    let id = raw.id.and_then(Text::text)?.trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let name = [raw.display_name, raw.display_name_camel, raw.name]
+        .into_iter()
+        .flatten()
+        .filter_map(Text::text)
+        .map(|name| name.trim().to_string())
+        .find(|name| !name.is_empty())
+        .unwrap_or_else(|| id.clone());
+    Some(PlanModel { id, name })
+}
+
+// ---------------------------------------------------------------------------
 // The access-token cache (boundary state)
 // ---------------------------------------------------------------------------
 
@@ -1011,6 +1106,44 @@ fn register_url() -> String {
 
 fn refresh_url() -> String {
     format!("{}{REFRESH_PATH}", api_base())
+}
+
+/// GET the ClinePass list Cline publishes (boundary — real HTTP), from the API
+/// host in force ([`set_api_base`]). See [`fetch_clinepass_models_from`].
+///
+/// # Errors
+/// As [`fetch_clinepass_models_from`].
+pub fn fetch_clinepass_models() -> Result<Vec<PlanModel>> {
+    fetch_clinepass_models_from(&api_base())
+}
+
+/// GET the ClinePass list from the Cline API at `base` (boundary — real
+/// HTTP): unauthenticated, the way Cline's own clients read it, and bounded
+/// like every other response here.
+///
+/// # Errors
+/// A transport failure, a refusal (in the server's own words), or a page
+/// [`parse_clinepass_models`] can't read.
+pub fn fetch_clinepass_models_from(base: &str) -> Result<Vec<PlanModel>> {
+    let client = super::http_client(OP_TIMEOUT)?;
+    let url = format!(
+        "{}{RECOMMENDED_MODELS_PATH}",
+        base.trim().trim_end_matches('/')
+    );
+    let resp = client
+        .get(url)
+        .header("accept", "application/json")
+        .send()
+        .map_err(|e| LlmError::transport(&e))?;
+    let status = resp.status().as_u16();
+    let text = read_body(resp);
+    if !(200..300).contains(&status) {
+        return Err(LlmError::Api {
+            status,
+            body: refusal_text(&text).unwrap_or_default(),
+        });
+    }
+    parse_clinepass_models(&text)
 }
 
 /// Read a response body, bounded, and trim it to something showable.
@@ -1752,6 +1885,121 @@ mod tests {
             );
         }
         assert_eq!(key_advice(429, "slow down"), None);
+    }
+
+    /// The `recommended-models` page as the live endpoint answers it — its
+    /// ClinePass list trimmed to three of its fourteen records, every field
+    /// and the neighbouring lists kept.
+    const RECOMMENDED: &str = r#"{"recommended":[{"id":"anthropic/claude-sonnet-5","name":"anthropic/claude-sonnet-5","description":"","tags":[]}],
+        "free":[],
+        "clinePass":[
+          {"id":"cline-pass/deepseek-v4.1-flash","name":"cline-pass/deepseek-v4.1-flash","description":"Smarter and more efficient, with 1M context window","tags":[]},
+          {"id":"cline-pass/mimo-v2.6-flash","name":"cline-pass/mimo-v2.6-flash","description":"","tags":[]},
+          {"id":"cline-pass/glm-5.3","name":"cline-pass/glm-5.3","description":"Z-AI's new top open-weights model","tags":[]}],
+        "clineCloud":[{"id":"cline-cloud/x","name":"x"}]}"#;
+
+    #[test]
+    fn the_published_clinepass_list_is_read_in_its_own_order() {
+        let models = parse_clinepass_models(RECOMMENDED).unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "cline-pass/deepseek-v4.1-flash",
+                "cline-pass/mimo-v2.6-flash",
+                "cline-pass/glm-5.3"
+            ]
+        );
+        // The page's other lists are not the plan's.
+        assert_eq!(models[0].name, "cline-pass/deepseek-v4.1-flash");
+    }
+
+    #[test]
+    fn the_clinepass_list_reads_through_a_data_envelope_and_past_bad_records() {
+        // Cline's reader takes `data` when it is an object (the `{success,
+        // data}` shape its other endpoints answer with), prefers a display
+        // name, skips a record with no usable id, and keeps each id once.
+        let body = r#"{"success":true,"data":{"clinePass":[
+            {"id":"cline-pass/kimi-k3","display_name":"Kimi K3"},
+            {"id":""}, {"name":"no id"}, 7, {"id":42},
+            {"id":" cline-pass/glm-5.3 ","displayName":"GLM 5.3"},
+            {"id":"cline-pass/kimi-k3","name":"again"}]}}"#;
+        assert_eq!(
+            parse_clinepass_models(body).unwrap(),
+            [
+                PlanModel {
+                    id: "cline-pass/kimi-k3".to_string(),
+                    name: "Kimi K3".to_string(),
+                },
+                PlanModel {
+                    id: "cline-pass/glm-5.3".to_string(),
+                    name: "GLM 5.3".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_page_naming_no_clinepass_list_is_a_decode_error() {
+        // Not an empty plan: a page that doesn't carry the list at all is one
+        // this parse no longer reads, and the picker falls back on the file.
+        assert!(parse_clinepass_models(r#"{"recommended":[]}"#).is_err());
+        assert!(parse_clinepass_models("<html>blocked</html>").is_err());
+        assert!(parse_clinepass_models(r#"{"data":"","error":"x","success":false}"#).is_err());
+    }
+
+    /// A one-request stand-in for Cline's API: answers `status` and `body`,
+    /// and hands back the request it was sent.
+    fn serve_once(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..n]);
+            }
+            let reply = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn the_published_list_is_fetched_without_a_credential() {
+        // Public, the way Cline's clients read it: a GET on their path, with
+        // no Authorization header.
+        let (base, server) = serve_once(200, RECOMMENDED);
+        let models = fetch_clinepass_models_from(&base).unwrap();
+        assert_eq!(models.len(), 3);
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("GET /api/v1/ai/cline/recommended-models "),
+            "{request}"
+        );
+        assert!(
+            !request.to_ascii_lowercase().contains("authorization:"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn a_refused_list_is_an_error_naming_the_server_s_words() {
+        let (base, server) = serve_once(503, r#"{"error":"maintenance"}"#);
+        let error = fetch_clinepass_models_from(&base).unwrap_err().to_string();
+        assert!(error.contains("503"), "{error}");
+        assert!(error.contains("maintenance"), "{error}");
+        server.join().unwrap();
     }
 
     #[test]
