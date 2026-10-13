@@ -7,7 +7,7 @@ Two providers ship — one API, two ways in, each with the catalog it pays for:
 
 | provider id | how you authenticate | what is stored | what `/model` lists |
 | --- | --- | --- | --- |
-| `cline` | a key made in the Cline dashboard | the key, verbatim | the usage-billed catalog, paid from the account's **credits** |
+| `cline` | a key made at [app.cline.bot/dashboard/account](https://app.cline.bot/dashboard/account) | the key, verbatim | the usage-billed catalog, paid from the account's **credits** |
 | `cline_pass` | the Cline account sign-in (a WorkOS device code) | a **refresh** token | the ClinePass plan's `cline-pass/…` models, paid from the **subscription** |
 
 Both speak **Chat Completions** against `https://api.cline.bot/api/v1`, and both
@@ -30,7 +30,7 @@ below).
 name = "Cline"
 api_model_base = "https://api.cline.bot/api/v1/ai/cline"   # ← the catalog with each model's facts
 description = "The models behind the Cline extension and CLI — …"
-api_key_url = "https://app.cline.bot"
+api_key_url = "https://app.cline.bot/dashboard/account"   # ← where `/login` says keys are made
 
 [providers.cline.kwargs]
 api_base = "https://api.cline.bot/api/v1"
@@ -251,7 +251,7 @@ not read as "add credits":
 | `ClinePass is for personal Cline accounts, and this is an organization account — …` | the server's *organization accounts cannot use individual model inference subscriptions*: the sign-in is an organization account, and ClinePass is a personal plan |
 | `this account's ClinePass 5-hour limit is reached — …` | the server's *You have reached your 5-hour Clinepass limit. Please try again later.*: the subscription's rolling window (5-hour, weekly or monthly — the sentence names which, and so does the advice) is used up — wait for the reset, or switch to a usage-billed model on the key row |
 | `this Cline account has no ClinePass subscription — subscribe at …` | a `cline-pass/…` model asked for without the plan: the server's *the user is not subscribed to required model plan* (a `403`), or the sentence Cline's client shows in its place, *"No access to ClinePass subscription models yet"* |
-| `Cline rejected this API key — check it at app.cline.bot (Settings → API Keys), then run /login and enter it again.` | a `401` on the **pasted-key** row. The live API answers a bad key with the same 401 a dead sign-in earns — *"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."*, words written for Cline's own client — so a provider whose base is `api.cline.bot` gets `cline::key_advice`, which is the sign-in's advice with this one sentence changed |
+| `Cline rejected this API key — check it at app.cline.bot/dashboard/account, then run /login and enter it again.` | a `401` on the **pasted-key** row. The live API answers a bad key with the same 401 a dead sign-in earns — *"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."*, words written for Cline's own client — so a provider whose base is `api.cline.bot` gets `cline::key_advice`, which is the sign-in's advice with this one sentence changed |
 | the **browser** shows *Access blocked, please contact support.* (「访问被阻止，请联系支持。」) | Cline's identity provider (WorkOS) refused the sign-in before any token was minted — usually a block on the account, the network/IP, or the sign-up itself. Nothing in this client can lift it: the same message appears signing in to app.cline.bot, the extension or the CLI. Cline's own resolution is emailing **support@cline.bot** with the account's address (cline/cline#11405); a different sign-in method, account or network may also get past it |
 
 Any other refused register or refresh call keeps the server's own words, lifted

@@ -35,7 +35,7 @@ sleep 0.4
 login_key_step="$(tmux capture-pane -t "$S136" -p)"
 echo "==== Phase 136: the key step introduces Cline ===="
 printf '%s\n' "$login_key_step"
-for want in "Enter your Cline API key" "Cline extension" "Create a key at" "app.cline.bot"; do
+for want in "Enter your Cline API key" "Cline extension" "Create a key at" "app.cline.bot/dashboard/account"; do
 	expect_has "$login_key_step" -F "$want" "the key step did not show \"$want\""
 done
 

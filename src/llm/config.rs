@@ -569,6 +569,11 @@ mod tests {
         assert_eq!(cline.key_env("cline"), "CLINE_API_KEY");
         assert_eq!(cline.auth, AuthScheme::ApiKey);
         assert_eq!(cline.wire_api, WireApi::Chat);
+        // `/login`'s key step links the page the key is made on.
+        assert_eq!(
+            cline.api_key_url.as_deref(),
+            Some("https://app.cline.bot/dashboard/account")
+        );
     }
 
     #[test]

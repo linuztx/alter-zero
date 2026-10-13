@@ -662,8 +662,8 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
 pub fn key_advice(status: u16, body: &str) -> Option<String> {
     match status {
         401 if plan_advice(body).is_none() => Some(
-            "Cline rejected this API key — check it at app.cline.bot (Settings → API Keys), \
-             then run /login and enter it again."
+            "Cline rejected this API key — check it at app.cline.bot/dashboard/account, then \
+             run /login and enter it again."
                 .to_string(),
         ),
         _ => auth_advice(status, body),
@@ -1883,6 +1883,7 @@ mod tests {
         // earns, worded for Cline's own client.
         let key = key_advice(401, UNAUTHORIZED).unwrap();
         assert!(key.contains("API key"), "{key}");
+        assert!(key.contains("app.cline.bot/dashboard/account"), "{key}");
         assert!(!key.contains("sign in again"), "{key}");
         assert!(
             auth_advice(401, UNAUTHORIZED)

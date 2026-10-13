@@ -26,13 +26,14 @@ release heading when a version is cut.
   scripts need only Python 3, nothing to install, and are installed on first
   launch beside the skill, editable and switched off through `/skills` like
   the other built-ins (`docs/skills.md`).
-- **Cline as a provider.** A key from your Cline account
-  ([app.cline.bot](https://app.cline.bot) → Settings → API Keys) reaches the
-  same models that power the Cline extension and CLI — Anthropic, OpenAI,
-  Google and more — through Cline's OpenAI-compatible endpoint, with the
-  catalog listed in `/model`. Each model's context window, image input and
-  thinking levels come from Cline's own catalog, so the footer gauges the
-  context, auto-compaction knows when to run and Ctrl+T cycles the levels.
+- **Cline as a provider.** A key from your Cline account, made at
+  [app.cline.bot/dashboard/account](https://app.cline.bot/dashboard/account),
+  reaches the same models that power the Cline extension and CLI —
+  Anthropic, OpenAI, Google and more — through Cline's OpenAI-compatible
+  endpoint, with the catalog listed in `/model`. Each model's context window,
+  image input and thinking levels come from Cline's own catalog, so the
+  footer gauges the context, auto-compaction knows when to run and Ctrl+T
+  cycles the levels.
 - **ClinePass.** Cline's $9.99/month subscription: `/login` → *Use a
   subscription* → *ClinePass* runs Cline's own sign-in — the device-code flow
   its extension and CLI use — so the plan needs no pasted key. The refresh
