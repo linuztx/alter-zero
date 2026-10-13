@@ -883,8 +883,8 @@ struct RawRecommended<'a> {
 ///
 /// # Errors
 /// A body that is not that page, or a page with no ClinePass list at all —
-/// a shape this parse no longer reads, which is not the same thing as a plan
-/// with no models, so the caller can fall back rather than show nothing.
+/// a shape this parse no longer reads, which the picker says rather than
+/// showing a ClinePass with no models.
 pub fn parse_clinepass_models(body: &str) -> Result<Vec<PlanModel>> {
     let decode = |e: serde_json::Error| LlmError::Decode(e.to_string());
     let page: RawRecommended = serde_json::from_str(body).map_err(decode)?;

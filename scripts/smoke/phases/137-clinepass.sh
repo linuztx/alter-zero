@@ -22,11 +22,13 @@ smoke_begin
 #   WorkOS one; off the stub's log, the code request names Cline's client id,
 #   every poll presents the issued device code, and one registration carries
 #   the WorkOS pair;
-# - /model lists the plan's models from the list Cline publishes (the stub's
-#   carries one the shipped fallback cannot), read with no credential, each
-#   borrowing its facts — window, image input, reasoning — from Cline's
-#   catalog by the model's name without its lab; picked, the footer carries
-#   the thinking level and the context gauge those facts give it;
+# - /model lists the plan's models from the list Cline publishes, read with
+#   no credential — and from nothing else: the stub refuses the first
+#   request, and that open shows the refusal as the provider's own row, no
+#   model listed; the next lists the plan, each model borrowing its facts —
+#   window, image input, reasoning — from Cline's catalog by the model's name
+#   without its lab; picked, the footer carries the thinking level and the
+#   context gauge those facts give it;
 # - a turn on a ClinePass model whose refresh token the server no longer
 #   honours — the stub refuses it as the live server does, a 400
 #   `invalid_grant` — reads as a sign-in to redo, never as the JSON envelope.
@@ -42,13 +44,22 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 port, log = int(sys.argv[1]), sys.argv[2]
 base = f"http://127.0.0.1:{port}"
 polls = 0
+listings = 0
 
 class Stub(BaseHTTPRequestHandler):
     def do_GET(self):
+        global listings
         auth = "yes" if self.headers.get("authorization") else "no"
         with open(log, "a") as f:
             f.write(f"GET {self.path} auth={auth}\n")
         if self.path == "/api/v1/ai/cline/recommended-models":
+            listings += 1
+            if listings == 1:
+                # Refused once, in Cline's envelope: the picker has no other
+                # source to show instead.
+                self.reply(503, {"data": "", "error": "recommended models are unavailable",
+                                 "success": False})
+                return
             # The live page's shape: four lists, ClinePass's among them.
             self.reply(200, {"recommended": [{"id": "anthropic/claude-sonnet-5", "name": "anthropic/claude-sonnet-5"}],
                              "free": [],
@@ -198,8 +209,18 @@ sleep 0.3
 keys "$S137" Escape # and out
 wait_for 3 "$S137" -E '^❯' || fail "/login did not close"
 
-# /model: the plan's models are the list the stub publishes, read with no
-# credential, and each borrows its facts from the catalog by bare name.
+# /model, the first time: the stub refuses the list, and with no other
+# source the row says so in the server's words — no copy stands in for it.
+submit "$S137" "/model"
+refused="$(wait_pane 10 "$S137" -F "ClinePass: HTTP 503")"
+dump "the /model picker on a refused list" "$refused"
+expect_has "$refused" -F "ClinePass: HTTP 503: recommended models are unavailable" "a refused ClinePass list did not read as the provider's own failure"
+expect_lacks "$refused" -F "cline-pass/" "a ClinePass model was listed while Cline's list was refused"
+keys "$S137" Escape
+wait_for 3 "$S137" -E '^❯' || fail "/model did not close"
+
+# /model again: the plan's models are the list the stub publishes, read with
+# no credential, and each borrows its facts from the catalog by bare name.
 submit "$S137" "/model"
 picker="$(wait_pane 10 "$S137" -F "cline-pass/smoke-137")"
 dump "the /model picker" "$picker"

@@ -131,30 +131,6 @@ pub enum WireApi {
     Chat,
 }
 
-/// Where a provider's `/model` catalog comes from, when not its endpoint's
-/// own `/models` listing — the third question beside [`AuthScheme`] and
-/// [`WireApi`], because the API a provider calls need not be where its models
-/// are listed: ClinePass's are a list Cline publishes for its own clients,
-/// which the API's public `/models` does not carry (`docs/cline.md`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Catalog {
-    /// **ClinePass**'s plan models: the list Cline publishes for its own
-    /// clients (`GET {api}/api/v1/ai/cline/recommended-models`, its
-    /// `clinePass` array — `llm::cline::fetch_clinepass_models`), so a model
-    /// the plan adds is in the picker the day it is listed. The file's
-    /// static [`Provider::models`] is what the picker shows when that list
-    /// can't be had.
-    ClinePass,
-    /// `{api_model_base}/models`, the way every other provider lists — or,
-    /// when the file names a static [`Provider::models`] list, that list and
-    /// no request at all. The default, and the **fallback** for an
-    /// unrecognised value, as [`WireApi`]'s is.
-    #[default]
-    #[serde(other)]
-    Listing,
-}
-
 /// One `[providers.<id>]` block. Unknown keys are ignored so the file can carry
 /// provider-specific extras without breaking the parse.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -186,19 +162,6 @@ pub struct Provider {
     /// [`Kwargs::api_base`] when unset.
     #[serde(default)]
     pub api_model_base: Option<String>,
-    /// A **static** model list — the catalog the picker and the capability
-    /// probe use *instead of* fetching one, for a provider whose models are
-    /// not on its listing. Empty (the default) means fetch, the ordinary way.
-    /// With a published [`Self::catalog`] it is that list's **fallback**
-    /// instead: ClinePass's `cline-pass/…` slugs are the plan's own, which
-    /// the public `/models` does not carry, and the file keeps a copy for
-    /// when Cline's published list can't be had (`docs/cline.md`).
-    #[serde(default)]
-    pub models: Vec<String>,
-    /// Where the catalog comes from when it is not the listing
-    /// ([`Catalog`]) — `catalog = "cline_pass"`.
-    #[serde(default)]
-    pub catalog: Catalog,
     /// Environment variable the API key is read from. Defaults to
     /// `<ID_UPPERCASE>_API_KEY` (see [`Provider::key_env`]).
     #[serde(default)]
@@ -375,8 +338,6 @@ impl ProvidersFile {
             model: sel.model.clone(),
             api_base,
             api_model_base,
-            static_models: provider.models.clone(),
-            catalog: provider.catalog,
             api_key: sel.api_key.clone(),
             auth: provider.auth,
             wire_api: provider.wire_api,
@@ -446,12 +407,6 @@ pub struct ModelConfig {
     pub api_base: String,
     /// Models-listing base (`{api_model_base}/models`).
     pub api_model_base: String,
-    /// The file's **static** model list, when it names one
-    /// ([`Provider::models`]) — the catalog the picker uses with no fetch,
-    /// or the fallback of a published [`Self::catalog`].
-    pub static_models: Vec<String>,
-    /// Where the picker's catalog comes from ([`Provider::catalog`]).
-    pub catalog: Catalog,
     pub api_key: Option<String>,
     /// How [`api_key`](Self::api_key) authenticates the request — a bearer as
     /// stored, or (Copilot/ChatGPT) an OAuth token to exchange for one first.
@@ -485,8 +440,6 @@ impl ModelConfig {
             model: "gpt-4o-mini".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),
             api_model_base: "https://api.openai.com/v1".to_string(),
-            static_models: Vec::new(),
-            catalog: Catalog::Listing,
             api_key: None,
             auth: AuthScheme::ApiKey,
             wire_api: WireApi::Chat,
@@ -881,89 +834,42 @@ api_base = "https://api.cline.bot/api/v1"
     }
 
     #[test]
-    fn a_provider_can_name_its_models_statically() {
-        // The picker's ordinary catalog is fetched; a provider whose models
-        // are not on its listing names them in the file instead
-        // (`docs/cline.md`'s ClinePass). The list rides the resolved config
-        // out to the picker and the probe, which then ask nothing.
-        let text = r#"
-[providers.cline_pass]
-name = "ClinePass"
-auth = "cline_account"
-models = ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]
-[providers.cline_pass.kwargs]
-api_base = "https://api.cline.bot/api/v1"
-"#;
-        let file = ProvidersFile::parse(text).unwrap();
-        let pass = file.get("cline_pass").unwrap();
-        assert_eq!(pass.models, ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]);
-        let cfg = file
-            .model_config(&Selection {
-                provider_id: "cline_pass".to_string(),
-                model: "cline-pass/glm-5.3".to_string(),
-                ..Selection::default()
-            })
-            .unwrap();
-        assert_eq!(cfg.static_models, pass.models);
-        // A provider that names none keeps the fetch path — the ordinary
-        // shape, pinned next door (`cline`, whose catalog is the endpoint's).
-        assert!(
-            ProvidersFile::builtin()
-                .get("cline")
-                .unwrap()
-                .models
-                .is_empty()
-        );
+    fn every_key_the_shipped_file_sets_is_one_the_parse_reads() {
+        // Unknown keys are ignored, so a file written for a newer build still
+        // parses — which also means a key the shipped file sets and nothing
+        // reads does nothing, silently: a misspelt `api_key_ev`, or a key a
+        // refactor retired, reads as configuration while changing nothing.
+        const READ: &[&str] = &[
+            "name",
+            "auth",
+            "wire_api",
+            "description",
+            "api_key_url",
+            "api_model_base",
+            "api_key_env",
+            "api_base_env",
+            "extra_headers",
+            "kwargs",
+        ];
+        let file: toml::Table = toml::from_str(DEFAULT_PROVIDERS_TOML).unwrap();
+        let providers = file["providers"].as_table().expect("a providers table");
+        assert!(!providers.is_empty());
+        for (id, block) in providers {
+            for key in block.as_table().expect("a provider block").keys() {
+                assert!(
+                    READ.contains(&key.as_str()),
+                    "providers.{id}.{key} is set in the shipped file but never read"
+                );
+            }
+        }
     }
 
     #[test]
-    fn a_provider_can_name_a_published_catalog_with_its_list_as_the_fallback() {
-        // ClinePass's models are a list Cline publishes and changes; the
-        // file names where they come from, and its static `models` become
-        // what the picker shows when that list can't be had (docs/cline.md).
-        let text = r#"
-[providers.cline_pass]
-name = "ClinePass"
-auth = "cline_account"
-catalog = "cline_pass"
-models = ["cline-pass/glm-5.3"]
-[providers.cline_pass.kwargs]
-api_base = "https://api.cline.bot/api/v1"
-"#;
-        let file = ProvidersFile::parse(text).unwrap();
-        let pass = file.get("cline_pass").unwrap();
-        assert_eq!(pass.catalog, Catalog::ClinePass);
-        let cfg = file
-            .model_config(&Selection {
-                provider_id: "cline_pass".to_string(),
-                model: "cline-pass/glm-5.3".to_string(),
-                ..Selection::default()
-            })
-            .unwrap();
-        assert_eq!(cfg.catalog, Catalog::ClinePass);
-        assert_eq!(cfg.static_models, ["cline-pass/glm-5.3"]);
-        // Saying nothing is the ordinary listing, and the fallback config too.
-        assert_eq!(
-            ProvidersFile::builtin().get("cline").unwrap().catalog,
-            Catalog::Listing
-        );
-        assert_eq!(ModelConfig::fallback().catalog, Catalog::Listing);
-        // A value this build doesn't know degrades to the listing — with a
-        // static list, that list — rather than failing the whole file, the
-        // way an unknown `auth` or `wire_api` does.
-        let newer = ProvidersFile::parse(&text.replace(
-            "catalog = \"cline_pass\"",
-            "catalog = \"some_newer_catalog\"",
-        ))
-        .unwrap();
-        assert_eq!(newer.get("cline_pass").unwrap().catalog, Catalog::Listing);
-    }
-
-    #[test]
-    fn the_builtin_file_ships_cline_pass_with_its_own_catalog() {
-        // ClinePass is the Cline account sign-in: a subscription, listing the
-        // plan's `cline-pass/…` slugs, which the public `/models` does not
-        // carry (`docs/cline.md`).
+    fn the_builtin_file_ships_cline_pass_as_the_one_cline_sign_in() {
+        // ClinePass is the Cline account sign-in: a subscription, whose
+        // scheme is also what lists the plan's `cline-pass/…` models from
+        // the list Cline publishes, since the public `/models` does not
+        // carry them (`docs/cline.md`).
         let file = ProvidersFile::builtin();
         let pass = file.get("cline_pass").expect("shipped");
         assert_eq!(pass.name, "ClinePass");
@@ -971,29 +877,11 @@ api_base = "https://api.cline.bot/api/v1"
         assert_eq!(pass.key_env("cline_pass"), "CLINE_ACCOUNT_REFRESH_TOKEN");
         assert!(pass.description.is_some(), "a sign-in row needs one");
         assert_eq!(pass.kwargs.api_base, "https://api.cline.bot/api/v1");
-        // The plan's own list is the one Cline publishes, fetched — a copy
-        // shipped in this file went two models stale before it merged — and
-        // the file's list is only the fallback.
-        assert_eq!(pass.catalog, Catalog::ClinePass);
-        assert!(!pass.models.is_empty());
-        assert!(pass.models.iter().all(|m| m.starts_with("cline-pass/")));
-        // The published list at the time of writing, pinned by sample: a
-        // slug Cline retires is a line deleted here, and one it adds is a
-        // line added — the picker needs no code for either.
-        for slug in [
-            "cline-pass/glm-5.3",
-            "cline-pass/deepseek-v4.1-flash",
-            "cline-pass/kimi-k3",
-            "cline-pass/qwen3.7-max",
-            "cline-pass/mimo-v2.6-flash",
-            "cline-pass/mimo-v2.6-pro",
-        ] {
-            assert!(pass.models.iter().any(|m| m == slug), "{slug} missing");
-        }
         // And it is the only Cline sign-in. A second row running the same
         // flow for the usage-billed catalog was the same sign-in twice under
         // "Use a subscription", for models that bill credits rather than a
-        // plan — those are the pasted key's (`cline`).
+        // plan — those are the pasted key's (`cline`), and a row with this
+        // scheme lists the plan's.
         let cline_sign_ins: Vec<String> = file
             .ids()
             .into_iter()

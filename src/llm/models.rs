@@ -678,10 +678,8 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
 /// the endpoint's own maximum and comfortably one page.
 const ANTHROPIC_PAGE_SIZE: u32 = 1000;
 
-/// GET the provider's model list (boundary — real HTTP), or hand back the
-/// file's **static** list when it names one — no request at all — or, for a
-/// published catalog, that list with the file's as its fallback. Polls
-/// `cancel` so a closed picker doesn't leave the worker running.
+/// GET the provider's model list (boundary — real HTTP). Polls `cancel` so a
+/// closed picker doesn't leave the worker running.
 ///
 /// # Errors
 /// HTTP/decoding failures and non-2xx responses become an [`LlmError`].
@@ -689,27 +687,19 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
-    match cfg.catalog {
-        // ClinePass's models are a list Cline publishes and changes: read
-        // it, and keep the file's copy for when it can't be had
-        // (`docs/cline.md`).
-        super::Catalog::ClinePass => {
-            let live = super::cline::fetch_clinepass_models();
-            // What each plan model borrows its facts from. Not having it
-            // costs only the facts — Cline's own defaults stand in — never a
-            // row.
-            let catalog = fetch_cline_catalog(cfg).unwrap_or_default();
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
-            return clinepass_entries(cfg, live, &catalog);
+    // A Cline account sign-in reaches the ClinePass plan, whose models are
+    // not on any `/models`: Cline publishes the plan's list for its own
+    // clients instead (`docs/cline.md`). The listing is the credential's
+    // backend's to decide, as the ChatGPT one's `client_version` is.
+    if cfg.auth == super::AuthScheme::ClineAccount {
+        let plan = super::cline::fetch_clinepass_models()?;
+        // What each plan model borrows its facts from. Not having it costs
+        // only the facts — Cline's own defaults stand in — never a row.
+        let catalog = fetch_cline_catalog(cfg).unwrap_or_default();
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
         }
-        super::Catalog::Listing => {}
-    }
-    // A provider whose file names its models never asks the endpoint: the
-    // list *is* the catalog.
-    if !cfg.static_models.is_empty() {
-        return Ok(static_entries(cfg));
+        return clinepass_entries(cfg, plan, &catalog);
     }
     // A one-shot GET on the session's **shared** HTTP client — the chat
     // stream's own per-operation stall deadline, on purpose: `http_client`
@@ -771,11 +761,11 @@ const CLINEPASS_DEFAULT_CONTEXT: u64 = 128_000;
 
 /// ClinePass's catalog from what the two fetches brought back.
 ///
-/// The **rows** are Cline's published list when it named any model, else the
-/// file's static list — unreachable, refused, unreadable or empty alike, since
-/// none of those is a fact about the plan, and an empty picker row would read
-/// as one. With no static list to fall back on, the failure is the provider's
-/// own note in the picker.
+/// The **rows** are Cline's published list, in its order. A list naming no
+/// model is a failure — the provider's own note in the picker — rather than
+/// a provider with no rows, which would read as though the fetch never
+/// happened: an empty list says nothing about the plan
+/// ([`catalog_or_error`]'s rule for a signed-in ChatGPT account).
 ///
 /// The **facts** come from Cline's catalog (`catalog`, the records the key
 /// row lists), found the way Cline's own client finds them: by the model's
@@ -785,22 +775,20 @@ const CLINEPASS_DEFAULT_CONTEXT: u64 = 128_000;
 /// ladder Ctrl+T cycles. A model the catalog doesn't name — or a name two
 /// labs share, which is not guessed at — gets the facts Cline's client
 /// assumes for one: [`CLINEPASS_DEFAULT_CONTEXT`], reasoning, no images.
+///
+/// # Errors
+/// A published list that named no model.
 fn clinepass_entries(
     cfg: &ModelConfig,
-    live: Result<Vec<super::cline::PlanModel>>,
+    plan: Vec<super::cline::PlanModel>,
     catalog: &[ModelEntry],
 ) -> Result<Vec<ModelEntry>> {
-    let named: Vec<(String, String)> = match live {
-        Ok(models) if !models.is_empty() => models
-            .into_iter()
-            .map(|model| (model.id, model.name))
-            .collect(),
-        _ if !cfg.static_models.is_empty() => static_entries(cfg)
-            .into_iter()
-            .map(|entry| (entry.id, entry.display_name))
-            .collect(),
-        live => return live.map(|_| Vec::new()),
-    };
+    if plan.is_empty() {
+        return Err(LlmError::Api {
+            status: 200,
+            body: "Cline's published ClinePass list named no models".to_string(),
+        });
+    }
     let bare = |id: &str| id.rsplit('/').next().unwrap_or(id).to_string();
     let mut by_name: std::collections::HashMap<String, Option<&ModelEntry>> =
         std::collections::HashMap::new();
@@ -810,11 +798,11 @@ fn clinepass_entries(
             .and_modify(|seen| *seen = None)
             .or_insert(Some(entry));
     }
-    Ok(named
+    Ok(plan
         .into_iter()
-        .map(|(id, name)| {
-            let known = by_name.get(&bare(&id)).copied().flatten();
-            clinepass_entry(cfg, id, name, known)
+        .map(|model| {
+            let known = by_name.get(&bare(&model.id)).copied().flatten();
+            clinepass_entry(cfg, model.id, model.name, known)
         })
         .collect())
 }
@@ -880,29 +868,6 @@ fn fetch_cline_catalog(cfg: &ModelConfig) -> Result<Vec<ModelEntry>> {
         .read_to_string(&mut body)
         .map_err(|e| LlmError::Http(e.to_string()))?;
     parse_models(&body, &cfg.provider_id)
-}
-
-/// The picker's entries for a provider whose file names its models
-/// ([`ModelConfig::static_models`]): the slug is its own label, blank rows are
-/// dropped, and no capability is claimed — there is no record to read one
-/// from, so the model reads as unknown exactly as a bare listing's would.
-#[must_use]
-fn static_entries(cfg: &ModelConfig) -> Vec<ModelEntry> {
-    cfg.static_models
-        .iter()
-        .filter_map(|id| {
-            let id = id.trim();
-            (!id.is_empty()).then(|| ModelEntry {
-                id: id.to_string(),
-                provider: cfg.provider_id.clone(),
-                display_name: id.to_string(),
-                reasoning: None,
-                vision: None,
-                context: None,
-                service_tiers: Vec::new(),
-            })
-        })
-        .collect()
 }
 
 /// The Ollama catalog (boundary — real HTTP): the `/api/tags` body already
@@ -1910,34 +1875,7 @@ mod tests {
         assert_eq!(models_endpoint(&cfg), "https://x/v1/models");
     }
 
-    // --- a provider's own catalog: the static list (docs/cline.md) ---
-
-    #[test]
-    fn a_static_model_list_is_the_whole_catalog_with_no_fetch() {
-        // A provider whose file names its models never asks an endpoint — the
-        // base below points at a port nothing listens on, and the call still
-        // answers because the list *is* the catalog. Blank rows are dropped,
-        // and the slug is its own label.
-        let mut cfg = ModelConfig::fallback();
-        cfg.provider_id = "cline_pass".to_string();
-        cfg.api_model_base = "http://127.0.0.1:1".to_string();
-        cfg.static_models = vec![
-            "cline-pass/glm-5.3".to_string(),
-            "   ".to_string(),
-            " cline-pass/kimi-k3 ".to_string(),
-            String::new(),
-        ];
-        let entries = fetch_models(&cfg, &CancelToken::new()).unwrap();
-        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["cline-pass/glm-5.3", "cline-pass/kimi-k3"]);
-        assert!(entries.iter().all(|e| e.provider == "cline_pass"));
-        assert!(
-            entries
-                .iter()
-                .all(|e| e.context.is_none() && e.vision.is_none()),
-            "a static entry claims no capability — there is no record to read one from"
-        );
-    }
+    // --- ClinePass's catalog (docs/cline.md) ---
 
     /// Three records as Cline's `/api/v1/ai/cline/models` sends them (the
     /// fields read, and a few beside them): a reasoner that reads images, a
@@ -1968,7 +1906,7 @@ mod tests {
     fn clinepass_config() -> ModelConfig {
         let mut cfg = ModelConfig::fallback();
         cfg.provider_id = "cline_pass".to_string();
-        cfg.catalog = crate::llm::Catalog::ClinePass;
+        cfg.auth = crate::llm::AuthScheme::ClineAccount;
         cfg
     }
 
@@ -2026,7 +1964,7 @@ mod tests {
             plan("cline-pass/mimo-v2.5-pro"),
             plan("cline-pass/qwen3.8-max"),
         ];
-        let entries = clinepass_entries(&clinepass_config(), Ok(live), &catalog).unwrap();
+        let entries = clinepass_entries(&clinepass_config(), live, &catalog).unwrap();
         let glm = &entries[0];
         assert_eq!(glm.id, "cline-pass/glm-5.3-flash");
         assert_eq!(glm.provider, "cline_pass");
@@ -2057,48 +1995,49 @@ mod tests {
             "cline_pass",
         )
         .unwrap();
-        let entries = clinepass_entries(
-            &clinepass_config(),
-            Ok(vec![plan("cline-pass/twin")]),
-            &catalog,
-        )
-        .unwrap();
+        let entries =
+            clinepass_entries(&clinepass_config(), vec![plan("cline-pass/twin")], &catalog)
+                .unwrap();
         assert_eq!(entries[0].context, Some(CLINEPASS_DEFAULT_CONTEXT));
     }
 
     #[test]
-    fn clinepass_s_published_list_is_its_catalog_and_the_file_s_only_the_fallback() {
-        let ids = |entries: &[ModelEntry]| -> Vec<String> {
-            entries.iter().map(|e| e.id.clone()).collect()
-        };
-        let mut cfg = clinepass_config();
-        cfg.static_models = vec!["cline-pass/glm-5.3-flash".to_string()];
-        // The published list wins: a model Cline adds is in the picker the
-        // day it is listed, under the name the list gives it.
-        let live = vec![crate::llm::cline::PlanModel {
-            id: "cline-pass/mimo-v2.6-pro".to_string(),
-            name: "MiMo V2.6 Pro".to_string(),
-        }];
-        let entries = clinepass_entries(&cfg, Ok(live), &[]).unwrap();
-        assert_eq!(ids(&entries), ["cline-pass/mimo-v2.6-pro"]);
+    fn an_empty_published_clinepass_list_is_the_provider_s_failure() {
+        // A list naming nothing says nothing about the plan, and a picker
+        // that silently shows ClinePass with no rows reads as though the
+        // fetch never happened — the ChatGPT listing's rule
+        // (`catalog_or_error`).
+        let error = clinepass_entries(&clinepass_config(), Vec::new(), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("named no models"), "{error}");
+    }
+
+    #[test]
+    fn clinepass_s_published_list_is_its_catalog() {
+        // A model Cline adds is in the picker the day it is listed, under the
+        // name the list gives it, in the list's own order.
+        let live = vec![
+            crate::llm::cline::PlanModel {
+                id: "cline-pass/mimo-v2.6-pro".to_string(),
+                name: "MiMo V2.6 Pro".to_string(),
+            },
+            plan("cline-pass/glm-5.3-flash"),
+        ];
+        let entries = clinepass_entries(&clinepass_config(), live, &[]).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["cline-pass/mimo-v2.6-pro", "cline-pass/glm-5.3-flash"]
+        );
         assert_eq!(entries[0].display_name, "MiMo V2.6 Pro");
-        assert_eq!(entries[0].provider, "cline_pass");
-        // No catalog to borrow from: Cline's own defaults stand in.
-        assert_eq!(entries[0].context, Some(CLINEPASS_DEFAULT_CONTEXT));
-        // Unreachable, refused, or listing nothing: the file's list, never a
-        // picker row that is empty for a reason the plan has no part in — and
-        // it borrows its facts the same way.
-        let catalog = parse_models(CLINE_CATALOG, "cline_pass").unwrap();
-        for failed in [Err(LlmError::Http("offline".to_string())), Ok(Vec::new())] {
-            let fallback = clinepass_entries(&cfg, failed, &catalog).unwrap();
-            assert_eq!(ids(&fallback), ["cline-pass/glm-5.3-flash"]);
-            assert_eq!(fallback[0].context, Some(1_048_576));
-            assert_eq!(fallback[0].vision, Some(true));
-        }
-        // With no fallback, a failure is the provider's own note.
-        cfg.static_models.clear();
+        assert!(entries.iter().all(|e| e.provider == "cline_pass"));
+        // No catalog to borrow from: Cline's own defaults stand in for every
+        // row, and no row is lost for it.
         assert!(
-            clinepass_entries(&cfg, Err(LlmError::Http("offline".to_string())), &catalog).is_err()
+            entries
+                .iter()
+                .all(|e| e.context == Some(CLINEPASS_DEFAULT_CONTEXT) && e.vision == Some(false))
         );
     }
 

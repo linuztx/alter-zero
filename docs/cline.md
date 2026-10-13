@@ -40,23 +40,19 @@ name = "ClinePass"
 auth = "cline_account"                       # ← a Cline account sign-in, not a pasted key
 description = "Cline's $9.99/month subscription: …"
 api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"  # ← the account's refresh token
-catalog = "cline_pass"                       # ← the plan's list, as Cline publishes it
-models = [                                   # ← the copy shown when it can't be fetched
-    "cline-pass/deepseek-v4.1-flash",
-    "cline-pass/mimo-v2.6-flash",
-    # …
-]
 
 [providers.cline_pass.kwargs]
 api_base = "https://api.cline.bot/api/v1"
 ```
 
-`auth = "cline_account"` is what puts the row in the **subscription** list and
-sends Enter to the device page; a mismatch in the spelling degrades *silently*
-into a pasted-key row, which is why `llm::config` pins it with a test — the
-same posture `anthropic_console` gets (`docs/claude.md`). The scheme keeps its
-name: what it describes is the sign-in, a Cline *account*, whichever catalog a
-row lists with it.
+`auth = "cline_account"` is what puts the row in the **subscription** list,
+sends Enter to the device page, and lists the plan's models (*ClinePass*,
+below); a mismatch in the spelling degrades *silently* into a pasted-key row,
+which is why `llm::config` pins it with a test — the same posture
+`anthropic_console` gets (`docs/claude.md`). The scheme keeps its name: what
+it describes is the credential, a Cline *account* — the one sign-in, which is
+ClinePass. Nothing in the block names the plan's models: the list is Cline's
+to publish, not this file's to copy.
 
 ### Which flow runs
 
@@ -124,24 +120,33 @@ Cline publishes the plan's list for its own clients instead —
 `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`, public, a page
 of four lists (`recommended`, `free`, `clinePass`, `clineCloud`) of which the
 `clinePass` array is the plan's (`sdk/packages/core/src/cloud/models.ts`,
-`loadCloudModels`) — and `catalog = "cline_pass"` reads it from there:
+`loadCloudModels`) — and a `cline_account` sign-in reads it from there:
 `llm::cline::fetch_clinepass_models` GETs it with **no credential**, the way
 Cline's clients do, `parse_clinepass_models` keeps the list in Cline's own
 order (a record with no usable id skipped, a repeated id kept once, a
 `data`-wrapped page read through), and `llm::models::fetch_models` hands the
 rows to the `/model` picker and the startup probe, tagged `[cline_pass]`.
 
-The slugs are Cline's to change: it has already retired some, and the list
-shipped with this provider went two models stale before it merged
-(`cline-pass/mimo-v2.6-flash` and `-pro`). So the published list is the
-catalog, and a model the plan adds is in the picker the day it is listed. The
-file's static `models` is only the **fallback**: what the picker shows when the
-published list can't be had — offline, refused, a page this parse no longer
-reads, or one listing nothing — since none of those is a fact about the plan,
-and an empty row would read as one. With no static list either, the failure is
-the row's own note in the picker. `catalog` is a closed value like `auth` and
-`wire_api`, and one this build doesn't know degrades to the ordinary listing
-(and so to the static list) rather than failing the file.
+The slugs are Cline's to change: it has already retired some, a copy of the
+list shipped with this provider went two models stale before it merged
+(`cline-pass/mimo-v2.6-flash` and `-pro`), and the live list has reordered
+since. So the published list is the **only** source, as every other
+provider's listing is its only source: a model the plan adds is in the picker
+the day it is listed, and one it retires leaves with it. A list that can't be
+had — offline, refused, a page this parse no longer reads, or one naming no
+model — is the provider's own note in the picker (`⚠ ClinePass unavailable`
+beside the other providers' models, or the reason itself in red when it is
+the only one): never a shipped copy that looks current and isn't, and never a
+provider with no rows, which would read as though the fetch never happened
+(the signed-in ChatGPT listing's rule).
+
+The listing is chosen by the row's **auth scheme**, as the ChatGPT one's
+required `client_version` is — it belongs to the credential's backend — and
+not by a key of its own, a provider id, or a model name. The id (`cline_pass`)
+is whatever a user's own `providers.toml` calls the row, so keying on it is
+the routing bug *Which flow runs* describes: a renamed or copied block would
+quietly list from the wrong place. And a model-name prefix (`cline-pass/…`)
+can't choose the list it would be read off, which has not arrived yet.
 
 Quota is measured against rolling 5-hour, weekly and monthly windows; the
 dashboard is
@@ -281,10 +286,10 @@ with whatever came back.
 | --- | --- |
 | `src/llm/cline.rs` | the client id and the four endpoints, the device-code/poll/register/refresh shapes and verdicts, the expiry and cache-lifetime rules, the `workos:` spelling, the advice for a sign-in and for a pasted key, the dead-token rule, and the ClinePass list's parse (pure); the code request, the cancel-aware poll, the registration, the cache, the rotation write-back, the two base overrides, and where the published list and the catalog are read from (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
-| `src/llm/config.rs` | `AuthScheme::ClineAccount`, and `Catalog::ClinePass` — the `catalog` key |
+| `src/llm/config.rs` | `AuthScheme::ClineAccount` — the scheme that puts the row under *Use a subscription*, runs the device page and lists the plan's models |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |
 | `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it by the row's auth scheme rather than its id |
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |
-| `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request — and its `catalog = "cline_pass"` arm: the published list with the static one as its fallback, each model's facts borrowed from Cline's catalog by bare name (`clinepass_entries`, `fetch_cline_catalog`) |
-| `providers.toml` | both rows — the key row's `api_model_base` naming Cline's catalog — ClinePass's `catalog`, and the `models` static list its fallback rides in |
-| `scripts/smoke/phases/137-clinepass.sh` | the one sign-in row, the page, and the whole wire against a local stub — then `/model`'s published ClinePass list with the facts it borrows (the footer's thinking level and gauge), and a turn on a dead refresh token reading as a sign-in to redo |
+| `src/llm/models.rs` | `fetch_models`'s `cline_account` arm: the published list, each model's facts borrowed from Cline's catalog by bare name (`clinepass_entries`, `fetch_cline_catalog`) |
+| `providers.toml` | both rows — the key row's `api_model_base` naming Cline's catalog, and ClinePass's `cline_account` scheme |
+| `scripts/smoke/phases/137-clinepass.sh` | the one sign-in row, the page, and the whole wire against a local stub — then `/model`'s ClinePass list — refused once, reading as the provider's own failure with no model listed, then published — with the facts it borrows (the footer's thinking level and gauge), and a turn on a dead refresh token reading as a sign-in to redo |

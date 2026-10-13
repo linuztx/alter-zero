@@ -36,7 +36,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/service_tier.rs` | `ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each one a palette command of its own (`/fast`, `/ultrafast`) that toggles it, riding the request as `service_tier` (`docs/fast-mode.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
-| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does the short-circuit that makes a provider file's static `models` list the catalog with no request — `docs/cline.md`) | split |
+| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does a Cline sign-in's: the ClinePass plan's published list, each model's facts borrowed from Cline's catalog — `docs/cline.md`) | split |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
@@ -143,12 +143,7 @@ Chat Completions, Responses, Messages or native-Ollama shape
 (`docs/chatgpt.md`, `docs/claude.md`, `docs/ollama.md`). They are
 deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
-environment variable that replaces the base (Ollama's `OLLAMA_HOST`), and a
-provider can name its models **statically** (`models = [...]`), which takes
-the place of the `/models` fetch where a listing does not carry them — or,
-beside a `catalog` naming a list the provider publishes elsewhere, is that
-list's fallback (ClinePass's `cline-pass/…` slugs, `catalog = "cline_pass"`,
-`docs/cline.md`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
 Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;

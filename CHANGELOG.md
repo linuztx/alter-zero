@@ -41,12 +41,9 @@ release heading when a version is cut.
   token from it, and the `/model` picker lists the plan's `cline-pass/…`
   models, Cline's curated open coding set, so they spend the plan's quota
   instead of credits (`docs/cline.md`). The list is the one Cline publishes
-  for its own clients, so a model the plan adds shows up without an update;
-  the copy shipped in `providers.toml` is used when that list can't be
-  fetched. Each plan model takes its context window, image input and
-  thinking levels from Cline's catalog, matched by name the way Cline's own
-  client does. A provider file can now name a **static model list** (`models`),
-  and a published one to read instead (`catalog`).
+  for its own clients, so a model the plan adds shows up without an update.
+  Each plan model takes its context window, image input and thinking levels
+  from Cline's catalog, matched by name the way Cline's own client does.
 
 ### Fixed
 
