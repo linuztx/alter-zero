@@ -31,20 +31,17 @@ release heading when a version is cut.
   same models that power the Cline extension and CLI — Anthropic, OpenAI,
   Google and more — through Cline's OpenAI-compatible endpoint, with the
   catalog listed in `/model`.
-- **Cline account sign-in.** `/login` → *Use a subscription* → *Cline
-  Account* runs Cline's own sign-in — the device-code flow its extension and
-  CLI use — so the models behind Cline need no pasted key: the refresh token
-  lands in the key store and every request mints a short-lived access token
-  from it (`docs/cline.md`).
-- **ClinePass.** Cline's $9.99/month subscription is a row of its own: one
-  sign-in configures it, and the `/model` picker lists the plan's
-  `cline-pass/…` models — Cline's curated open coding set — beside the
-  usage-billed catalog, so a subscription spends the plan's quota instead of
-  credits. The list is the one Cline publishes for its own clients, so a
-  model the plan adds shows up without an update; the copy shipped in
-  `providers.toml` is used when that list can't be fetched. A provider file
-  can now name a **static model list** (`models`), and a published one to
-  read instead (`catalog`).
+- **ClinePass.** Cline's $9.99/month subscription: `/login` → *Use a
+  subscription* → *ClinePass* runs Cline's own sign-in — the device-code flow
+  its extension and CLI use — so the plan needs no pasted key. The refresh
+  token lands in the key store, every request mints a short-lived access
+  token from it, and the `/model` picker lists the plan's `cline-pass/…`
+  models, Cline's curated open coding set, so they spend the plan's quota
+  instead of credits (`docs/cline.md`). The list is the one Cline publishes
+  for its own clients, so a model the plan adds shows up without an update;
+  the copy shipped in `providers.toml` is used when that list can't be
+  fetched. A provider file can now name a **static model list** (`models`),
+  and a published one to read instead (`catalog`).
 
 ### Fixed
 

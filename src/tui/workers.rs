@@ -74,12 +74,11 @@ pub(crate) enum DeviceEvent {
 /// All report on the same two messages, because every page is the same page
 /// — something to show, then a wait.
 ///
-/// The scheme, never the provider id: two rows can share one sign-in
-/// (`cline_account` and `cline_pass`), and a user's own `providers.toml` can
-/// name a row anything. The match is exhaustive on purpose — matching ids
-/// with a catch-all sent the ClinePass row to GitHub Copilot's flow, and a
-/// finished sign-in would have stored GitHub's token as a Cline refresh
-/// token.
+/// The scheme, never the provider id: a user's own `providers.toml` can name
+/// a row anything, and give two rows one sign-in. The match is exhaustive on
+/// purpose — matching ids with a catch-all sent the ClinePass row to GitHub
+/// Copilot's flow, and a finished sign-in would have stored GitHub's token as
+/// a Cline refresh token.
 pub(crate) fn spawn_signin(
     auth: AuthScheme,
     kind: SigninKind,

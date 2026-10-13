@@ -152,8 +152,8 @@ list's fallback (ClinePass's `cline-pass/…` slugs, `catalog = "cline_pass"`,
 → `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
 Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;
-`chatgpt_codex`; `anthropic` and `anthropic_console`; `cline`, `cline_account`
-and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`).
+`chatgpt_codex`; `anthropic` and `anthropic_console`; `cline` and `cline_pass`
+(`docs/cline.md`); `ollama` and `ollama_cloud`).
 
 The active backend is chosen at startup — from env, then the **persisted
 selection** (`~/.alter-zero/config.json`, written by `/model` — **this working

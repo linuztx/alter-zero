@@ -691,8 +691,8 @@ fn plan_advice(body: &str) -> Option<String> {
     if lower.contains(ORG_SUBSCRIPTION_REFUSAL) {
         return Some(
             "ClinePass is for personal Cline accounts, and this is an organization account — \
-             switch to your personal account at app.cline.bot, or pick a usage-billed model \
-             with /model."
+             switch to your personal account at app.cline.bot, or use Cline's usage-billed \
+             models through an API key (/login → Use an API key → Cline)."
                 .to_string(),
         );
     }
@@ -702,15 +702,16 @@ fn plan_advice(body: &str) -> Option<String> {
             |window| format!("{window} limit is reached"),
         );
         return Some(format!(
-            "this account's ClinePass {what} — wait for it to reset, or switch to a \
-             usage-billed model (/model → a Cline Account model, with credits) or another \
+            "this account's ClinePass {what} — wait for it to reset, or switch with /model to \
+             a usage-billed model (the Cline row, on an API key and credits) or another \
              provider."
         ));
     }
     if lower.contains(NOT_SUBSCRIBED_REFUSAL) || lower.contains(NOT_SUBSCRIBED_SHOWN) {
         return Some(
             "this Cline account has no ClinePass subscription — subscribe at \
-             app.cline.bot/dashboard/subscription, or pick a usage-billed model with /model."
+             app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
+             an API key (/login → Use an API key → Cline)."
                 .to_string(),
         );
     }
@@ -2018,9 +2019,9 @@ mod tests {
         // is pinned here — and pinned *to* the file, since a mismatch would
         // silently write rotations someplace key resolution never reads.
         let file = ProvidersFile::builtin();
-        let account = file.get("cline_account").expect("shipped");
-        assert_eq!(account.key_env("cline_account"), REFRESH_ENV_VAR);
-        assert_eq!(account.auth, crate::llm::AuthScheme::ClineAccount);
+        let pass = file.get("cline_pass").expect("shipped");
+        assert_eq!(pass.key_env("cline_pass"), REFRESH_ENV_VAR);
+        assert_eq!(pass.auth, crate::llm::AuthScheme::ClineAccount);
         // The pasted-key provider next door stays a key: two rows, two ways
         // in, exactly as the Anthropic pair works.
         let keyed = file.get("cline").expect("shipped");

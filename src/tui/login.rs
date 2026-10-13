@@ -35,9 +35,9 @@ impl Session<'_> {
     /// the row could only come from a provider file we misread.
     pub(crate) fn start_device_login(&mut self, provider: &str, kind: SigninKind) {
         self.cancel_device_login();
-        // The row's auth scheme decides which sign-in runs — two rows can
-        // share one (docs/cline.md), and a row's id is whatever the provider
-        // file named it.
+        // The row's auth scheme decides which sign-in runs: a row's id is
+        // whatever the provider file named it, and two rows can share one
+        // sign-in.
         let Some(auth) = self.models.subscription_auth(provider) else {
             self.app
                 .fail_device_login(format!("{provider} has no subscription sign-in."));

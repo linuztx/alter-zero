@@ -133,8 +133,9 @@ pub enum WireApi {
 
 /// Where a provider's `/model` catalog comes from, when not its endpoint's
 /// own `/models` listing — the third question beside [`AuthScheme`] and
-/// [`WireApi`], because two rows can share both and still list different
-/// models (`cline_account` and `cline_pass`, `docs/cline.md`).
+/// [`WireApi`], because the API a provider calls need not be where its models
+/// are listed: ClinePass's are a list Cline publishes for its own clients,
+/// which the API's public `/models` does not carry (`docs/cline.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Catalog {
@@ -952,10 +953,9 @@ api_base = "https://api.cline.bot/api/v1"
 
     #[test]
     fn the_builtin_file_ships_cline_pass_with_its_own_catalog() {
-        // ClinePass is the same account sign-in as `cline_account` with a
-        // different catalog: the plan's `cline-pass/…` slugs, which the
-        // public `/models` does not carry, so the file names them
-        // (`docs/cline.md`). One stored token configures both rows.
+        // ClinePass is the Cline account sign-in: a subscription, listing the
+        // plan's `cline-pass/…` slugs, which the public `/models` does not
+        // carry (`docs/cline.md`).
         let file = ProvidersFile::builtin();
         let pass = file.get("cline_pass").expect("shipped");
         assert_eq!(pass.name, "ClinePass");
@@ -982,14 +982,17 @@ api_base = "https://api.cline.bot/api/v1"
         ] {
             assert!(pass.models.iter().any(|m| m == slug), "{slug} missing");
         }
-        // The usage-billed row next door stays as it was, and the two share
-        // the credential — that is the point of the pair.
-        let account = file.get("cline_account").expect("shipped");
-        assert_eq!(
-            account.key_env("cline_account"),
-            pass.key_env("cline_pass"),
-            "one sign-in configures both rows"
-        );
+        // And it is the only Cline sign-in. A second row running the same
+        // flow for the usage-billed catalog was the same sign-in twice under
+        // "Use a subscription", for models that bill credits rather than a
+        // plan — those are the pasted key's (`cline`).
+        let cline_sign_ins: Vec<String> = file
+            .ids()
+            .into_iter()
+            .filter(|id| file.get(id).unwrap().auth == AuthScheme::ClineAccount)
+            .collect();
+        assert_eq!(cline_sign_ins, ["cline_pass"]);
+        assert_eq!(file.get("cline").unwrap().auth, AuthScheme::ApiKey);
     }
 
     #[test]
@@ -1271,29 +1274,14 @@ api_base = "http://127.0.0.1:11434"
         // to Ollama Cloud used to light the local Ollama row and send every
         // `/model` open to a server most users don't run. The collision is a
         // property of the shipped file, so it is pinned here.
-        //
-        // One pair is **deliberately** exempt: `cline_account` and
-        // `cline_pass` are one Cline account's two catalogs — usage-billed and
-        // the ClinePass subscription — reached through one sign-in, so one
-        // stored refresh token is exactly right and is what makes signing in
-        // once light both rows (`docs/cline.md`). Any pair *not* in this list
-        // sharing a variable would still let one provider's key configure
-        // another's.
-        const SHARED_BY_DESIGN: [&str; 2] = ["cline_account", "cline_pass"];
         let file = ProvidersFile::builtin();
         let mut owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
         for id in file.ids() {
             let var = file.get(&id).expect("listed").key_env(&id);
             if let Some(first) = owner.insert(var.clone(), id.clone()) {
-                let by_design = SHARED_BY_DESIGN.contains(&first.as_str())
-                    && SHARED_BY_DESIGN.contains(&id.as_str());
-                assert!(by_design, "{first} and {id} both read {var}");
+                panic!("{first} and {id} both read {var}");
             }
-        }
-        // And the exemption is not stale: both ids really ship.
-        for id in SHARED_BY_DESIGN {
-            assert!(file.get(id).is_some(), "{id} is exempt but not shipped");
         }
     }
 

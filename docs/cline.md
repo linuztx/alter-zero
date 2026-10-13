@@ -1,25 +1,27 @@
 # Cline as a provider
 
-Reach the models behind the Cline extension and CLI — `/login` → **Use an API
-key** → **Cline**, or `/login` → **Use a subscription** → **Cline Account** (or
-**ClinePass**, the same sign-in: either row signs in both).
+Reach the models behind the Cline extension and CLI two ways: `/login` → **Use
+an API key** → **Cline**, or `/login` → **Use a subscription** → **ClinePass**.
 
-Three providers ship — one API, two ways in, and a second catalog for the
-subscription:
+Two providers ship — one API, two ways in, each with the catalog it pays for:
 
-| provider id | how you authenticate | what is stored |
-| --- | --- | --- |
-| `cline` | a key made in the Cline dashboard | the key, verbatim |
-| `cline_account` | the Cline account sign-in (a WorkOS device code) | a **refresh** token |
-| `cline_pass` | the *same* sign-in, for the ClinePass subscription's models | the same refresh token |
+| provider id | how you authenticate | what is stored | what `/model` lists |
+| --- | --- | --- | --- |
+| `cline` | a key made in the Cline dashboard | the key, verbatim | the usage-billed catalog, paid from the account's **credits** |
+| `cline_pass` | the Cline account sign-in (a WorkOS device code) | a **refresh** token | the ClinePass plan's `cline-pass/…` models, paid from the **subscription** |
 
-`cline` and `cline_account` are the same API reached two ways;
-`cline_pass` is that same **sign-in** again with a different **catalog**
-(see *ClinePass* below).
+Both speak **Chat Completions** against `https://api.cline.bot/api/v1`. The
+key's catalog is that API's public `/models`, listed off `kwargs.api_base` with
+no separate `api_model_base`; the plan's is a list Cline publishes for its own
+clients (see *ClinePass* below).
 
-Both speak **Chat Completions** against `https://api.cline.bot/api/v1`, whose
-`/models` is public — so the picker lists the catalog off `kwargs.api_base`
-with no separate `api_model_base`, keyed or signed in.
+The sign-in is offered **once**, as ClinePass. It used to be offered twice, a
+`cline_account` row beside it running the very same flow and storing the very
+same token for the usage-billed catalog. But under *Use a subscription* the
+one subscription is ClinePass: usage-billed models bill credits, not a plan,
+and a key reaches them already. Two rows for one sign-in invited signing in
+twice, and the second row is where a routing bug hid (*Which flow runs*,
+below).
 
 ## What a provider file says
 
@@ -32,20 +34,11 @@ api_key_url = "https://app.cline.bot"
 [providers.cline.kwargs]
 api_base = "https://api.cline.bot/api/v1"
 
-[providers.cline_account]
-name = "Cline Account"
-auth = "cline_account"                       # ← a sign-in, not a pasted key
-description = "Sign in with your Cline account — …"
-api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
-
-[providers.cline_account.kwargs]
-api_base = "https://api.cline.bot/api/v1"
-
 [providers.cline_pass]
 name = "ClinePass"
-auth = "cline_account"                       # ← the same sign-in
+auth = "cline_account"                       # ← a Cline account sign-in, not a pasted key
 description = "Cline's $9.99/month subscription: …"
-api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"  # ← and the same stored token
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"  # ← the account's refresh token
 catalog = "cline_pass"                       # ← the plan's list, as Cline publishes it
 models = [                                   # ← the copy shown when it can't be fetched
     "cline-pass/deepseek-v4.1-flash",
@@ -60,7 +53,19 @@ api_base = "https://api.cline.bot/api/v1"
 `auth = "cline_account"` is what puts the row in the **subscription** list and
 sends Enter to the device page; a mismatch in the spelling degrades *silently*
 into a pasted-key row, which is why `llm::config` pins it with a test — the
-same posture `anthropic_console` gets (`docs/claude.md`).
+same posture `anthropic_console` gets (`docs/claude.md`). The scheme keeps its
+name: what it describes is the sign-in, a Cline *account*, whichever catalog a
+row lists with it.
+
+### Which flow runs
+
+`tui::workers::spawn_signin` picks the sign-in by the row's **auth scheme**, in
+an exhaustive match — never by its provider id. When it matched ids, with a
+catch-all for everything else, the ClinePass row fell through to GitHub
+Copilot's device flow, and a finished sign-in would have stored GitHub's token
+as a Cline refresh token and sent it to Cline's refresh endpoint. A user's own
+`providers.toml` can name a row anything, and give two rows one sign-in; the
+scheme is what decides.
 
 ## The sign-in
 
@@ -91,8 +96,8 @@ countdown from the code's own life, no browser launched.
 3. **The registration** — the WorkOS pair is *not* what the API takes. It is
    exchanged **once**, at `POST {api}/api/v1/auth/register`, for Cline's own
    tokens: `data.refreshToken` is what the key store keeps and
-   `data.userInfo.email` is what the confirmation names — `Signed in to Cline
-   Account (you@example.com) — run /model to use it`. Nothing WorkOS-shaped
+   `data.userInfo.email` is what the confirmation names — `Signed in to
+   ClinePass (you@example.com) — run /model to use it`. Nothing WorkOS-shaped
    is stored: after the sign-in, the WorkOS pair is never spoken to again.
 
 A sign-in that registers without a refresh token is refused **at the
@@ -103,18 +108,17 @@ expiry with no way back but another sign-in — exactly as
 ## ClinePass
 
 ClinePass is Cline's **subscription** — $9.99/month for 2–5× the usage on a
-curated set of open coding models. It is a *separate provider on the same
-account*: Cline's own clients make you point at **ClinePass** instead of
-**Cline** after subscribing, and the API takes the plan's models by their
-**`cline-pass/…` slugs** — `cline-pass/glm-5.3`, `cline-pass/deepseek-v4.1-flash`,
-`cline-pass/kimi-k3`, `cline-pass/qwen3.7-max` and the rest of the documented
-catalog — while the usage-billed ids (`deepseek/deepseek-v4.1-flash` …) keep
-billing the account's **credits**. Pick the wrong one and a Pass account with
-an empty credit balance earns exactly the 402 this page's advice explains.
+curated set of open coding models. Cline's own clients make you point at
+**ClinePass** instead of **Cline** after subscribing, and the API takes the
+plan's models by their **`cline-pass/…` slugs** — `cline-pass/glm-5.3`,
+`cline-pass/deepseek-v4.1-flash`, `cline-pass/kimi-k3`, `cline-pass/qwen3.7-max`
+and the rest of the plan's list — while the usage-billed ids
+(`deepseek/deepseek-v4.1-flash` …) bill the account's **credits** instead.
+That split is the split between the two rows: the sign-in lists the plan's
+models, and the key lists the usage-billed ones.
 
-The two rows therefore share one **sign-in**, one stored refresh token, and
-one base — what differs is the model ids. And because those ids are the
-plan's own catalog, the public `/models` listing does **not** carry them.
+Because those ids are the plan's own catalog, the public `/models` listing
+does **not** carry them.
 Cline publishes the plan's list for its own clients instead —
 `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`, public, a page
 of four lists (`recommended`, `free`, `clinePass`, `clineCloud`) of which the
@@ -124,9 +128,7 @@ of four lists (`recommended`, `free`, `clinePass`, `clineCloud`) of which the
 Cline's clients do, `parse_clinepass_models` keeps the list in Cline's own
 order (a record with no usable id skipped, a repeated id kept once, a
 `data`-wrapped page read through), and `llm::models::fetch_models` hands the
-rows to the `/model` picker and the startup probe. `cline_account` keeps the
-fetched usage-billing catalog; the picker shows both rows and both are
-selectable once signed in.
+rows to the `/model` picker and the startup probe, tagged `[cline_pass]`.
 
 The slugs are Cline's to change: it has already retired some, and the list
 shipped with this provider went two models stale before it merged
@@ -145,7 +147,8 @@ dashboard is
 [app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true).
 When a window runs out the server says which (*You have reached your 5-hour
 Clinepass limit. Please try again later.*), and the advice names that window
-and falls back to the usage-billed row (`/model` → a `cline_account` model).
+and points at the usage-billed models, which the key row reaches (`/login` →
+Use an API key → Cline).
 
 **Free models are deliberately not listed here.** Cline runs rotating
 `cline-free/…` promotions, but its docs are explicit that free-model usage is
@@ -202,7 +205,7 @@ not read as "add credits":
 | `this Cline account is out of credits — add credits at app.cline.bot/dashboard, or switch provider with /model.` | a `402`: the account's balance, not the request |
 | `this Cline account isn't allowed to make that request — …` | a `403`: the credential's reach |
 | `ClinePass is for personal Cline accounts, and this is an organization account — …` | the server's *organization accounts cannot use individual model inference subscriptions*: the sign-in is an organization account, and ClinePass is a personal plan |
-| `this account's ClinePass 5-hour limit is reached — …` | the server's *You have reached your 5-hour Clinepass limit. Please try again later.*: the subscription's rolling window (5-hour, weekly or monthly — the sentence names which, and so does the advice) is used up — wait for the reset, or switch to a usage-billed model |
+| `this account's ClinePass 5-hour limit is reached — …` | the server's *You have reached your 5-hour Clinepass limit. Please try again later.*: the subscription's rolling window (5-hour, weekly or monthly — the sentence names which, and so does the advice) is used up — wait for the reset, or switch to a usage-billed model on the key row |
 | `this Cline account has no ClinePass subscription — subscribe at …` | a `cline-pass/…` model asked for without the plan: the server's *the user is not subscribed to required model plan* (a `403`), or the sentence Cline's client shows in its place, *"No access to ClinePass subscription models yet"* |
 | `Cline rejected this API key — check it at app.cline.bot (Settings → API Keys), then run /login and enter it again.` | a `401` on the **pasted-key** row. The live API answers a bad key with the same 401 a dead sign-in earns — *"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."*, words written for Cline's own client — so a provider whose base is `api.cline.bot` gets `cline::key_advice`, which is the sign-in's advice with this one sentence changed |
 | the **browser** shows *Access blocked, please contact support.* (「访问被阻止，请联系支持。」) | Cline's identity provider (WorkOS) refused the sign-in before any token was minted — usually a block on the account, the network/IP, or the sign-up itself. Nothing in this client can lift it: the same message appears signing in to app.cline.bot, the extension or the CLI. Cline's own resolution is emailing **support@cline.bot** with the account's address (cline/cline#11405); a different sign-in method, account or network may also get past it |
@@ -236,8 +239,8 @@ with whatever came back.
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/config.rs` | `AuthScheme::ClineAccount`, and `Catalog::ClinePass` — the `catalog` key |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |
-| `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it for **either** row, by the row's auth scheme rather than its id |
+| `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it by the row's auth scheme rather than its id |
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |
 | `src/llm/models.rs` | `fetch_models`'s static short-circuit — a provider that names its models is its own catalog, with no request — and its `catalog = "cline_pass"` arm, the published list with the static one as its fallback (`clinepass_entries`) |
-| `providers.toml` | all three rows, ClinePass's `catalog`, and the `models` static list its fallback rides in |
-| `scripts/smoke/phases/137-clineaccount.sh` | both rows, the page, and the whole wire against a local stub — then the `/model` picker: the published ClinePass list, and a dead refresh token reading as a sign-in to redo |
+| `providers.toml` | both rows, ClinePass's `catalog`, and the `models` static list its fallback rides in |
+| `scripts/smoke/phases/137-clinepass.sh` | the one sign-in row, the page, and the whole wire against a local stub — then `/model`'s published ClinePass list, and a turn on a dead refresh token reading as a sign-in to redo |
