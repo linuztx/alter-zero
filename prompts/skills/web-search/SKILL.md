@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: Search the web with this skill's scripts through Exa, Parallel or Tavily, or through Jina Reader on DuckDuckGo, Yahoo, GitHub, Wikipedia, arXiv and Hacker News. Use when asked to search the web, look up current information, or find sources.
+description: Search the web with this skill's scripts through Exa, Parallel Search, Tavily or Jina Reader. Use when asked to search the web, look up current information, or find sources.
 ---
 
 # Web search
