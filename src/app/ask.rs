@@ -119,6 +119,10 @@ pub struct AskPrompt {
     saved_input: String,
     saved_cursor: usize,
     saved_shell_mode: bool,
+    /// The secrets whose values the entry fields masked so far — announced
+    /// when a submission carries them, never while an answer is only kept
+    /// (`docs/secrets.md` *What the user types*).
+    masked: Vec<String>,
 }
 
 impl AskPrompt {
@@ -220,6 +224,7 @@ impl App {
             saved_input,
             saved_cursor,
             saved_shell_mode,
+            masked: Vec::new(),
         });
     }
 
@@ -322,6 +327,19 @@ impl App {
             return Action::None;
         };
         let id = prompt.request.id.clone();
+        // A value masked in an entry is announced once the answers carrying
+        // it are sent — only the secrets the submission still names, since
+        // an answer edited after its Esc may no longer hold one.
+        let sent: Vec<String> = match &decision {
+            AskDecision::Submitted(answers) => prompt
+                .masked
+                .iter()
+                .filter(|name| answers_carry(answers, name))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.note_masked(&sent);
         self.close_ask();
         self.open_next_pending();
         Action::ResolveAsk { id, decision }
@@ -548,10 +566,24 @@ impl App {
     /// Take the entry field's text on exit, splicing every large-paste
     /// placeholder back to its real content and **consuming** exactly the
     /// pairs that matched — the stashed composer draft's pairs must survive
-    /// the modal for the draft's own eventual send (`docs/paste.md`).
+    /// the modal for the draft's own eventual send (`docs/paste.md`) — with
+    /// every stored secret's value replaced by its placeholder, since the
+    /// answer goes to the model, so the field and the review page already
+    /// show what the agent will read. The secrets it masked wait on the
+    /// prompt until a submission sends them (`docs/secrets.md` *What the user
+    /// types*).
     fn take_entry_text(&mut self) -> String {
         let text = self.input.take();
-        crate::paste::expand_pastes_consuming(&text, &mut self.pasted)
+        let text = crate::paste::expand_pastes_consuming(&text, &mut self.pasted);
+        let (text, masked) = self.mask_typed(text);
+        if let Some(prompt) = self.ask.as_mut() {
+            for name in masked {
+                if !prompt.masked.contains(&name) {
+                    prompt.masked.push(name);
+                }
+            }
+        }
+        text
     }
 
     /// Keys in the Other/notes entry: the composer edits normally
@@ -612,6 +644,21 @@ impl App {
             }
         }
     }
+}
+
+/// Whether `answers` carry `name`'s placeholder, in a label or a note.
+fn answers_carry(answers: &[AskAnswer], name: &str) -> bool {
+    let placeholder = crate::secrets::placeholder(name);
+    answers.iter().any(|answer| {
+        answer
+            .labels
+            .iter()
+            .any(|label| label.contains(&placeholder))
+            || answer
+                .notes
+                .as_deref()
+                .is_some_and(|notes| notes.contains(&placeholder))
+    })
 }
 
 /// One question's finished [`AskAnswer`]: the chosen labels in option order

@@ -33,6 +33,8 @@ DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste rea
 docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the latest release; DIR also creates the container on it (docs/docker.md)
 docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /workspace, ports 8080/8888, --clipboard
 python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
+python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # the web-search skill's scripts, offline (docs/skills.md)
+JINA_WEB_SEARCH_LIVE=1 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # plus one real search per Jina engine
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
 (cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/aur.md)
 (cd aur/alter-zero-bin && makepkg -Cf && namcap PKGBUILD alter-zero-bin-*.pkg.tar.zst)   # the AUR binary package: the release's own Linux archive, repackaged
@@ -51,8 +53,9 @@ the fix is to qualify the path if the target is still public
 
 CI runs that gate on every push to `main` and every pull request
 (`.github/workflows/ci.yml`: the gate, the smoke suite under tmux, the release
-tooling's `selftest` + `check` + the npm launcher's `node --test`, and the
-telemetry collector's `node --test`),
+tooling's `selftest` + `check` + the npm launcher's `node --test`, the
+telemetry collector's `node --test`, and the `web-search` skill scripts'
+offline `unittest`s),
 and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
 then one release build per platform (Linux x86_64 and arm64, macOS Intel and
 Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
@@ -1476,7 +1479,11 @@ kernel-observed reads still count
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
-the screen's reach stay live, rows that scrolled out settle once), and a
+the screen's reach stay live, rows that scrolled out settle once — every row
+drawn since the model's look, one drawn back to the text that look was handed
+included, or npm's spinner dropped out of the cell once a cycle; each update
+sampled in a pause between two frames, `pty::pace`, never between a redraw's
+erase and its text, which the pipe path's `PipeOutput` shares), and a
 `bash` call on a pipe — and a background shell's event stream, and a `!`
 command's output — is **folded** the same way (`pty::fold`: `\r`/backspace
 overwrite, escapes vanish, tabs and trailing spaces stay; the `.output` tee
@@ -2050,8 +2057,24 @@ unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
 `skills`, and `~/.claude/skills`, first root winning a name
 (`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). **Three skills ship in the binary** — `jina-reader` (public webpages and PDFs
+naming it, never silence). **Four skills ship in the binary** — `jina-reader` (public webpages and PDFs
 through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),
+`web-search` (four standard-library Python scripts seeded beside its
+`SKILL.md` under `scripts/` and run with `python3` — written without the
+executable bit, their path built from the `Base directory` header since a
+built-in body cannot use `${…SKILL_DIR}`: `exa_search.py`,
+`parallel_search.py` and `tavily_search.py` call each provider's keyless
+hosted MCP server through the shared `mcp_http.py`, which each imports from
+its own directory and puts on `sys.path` itself so `python3 -I` still finds
+it, and `jina_web_search.py` reads DuckDuckGo, Yahoo, Wikipedia, GitHub,
+arXiv and Hacker News results pages through Jina Reader (YouTube's answered
+too and is deliberately not searched); Exa first,
+then Parallel, Tavily and Jina when a free tier refuses, each optional key
+sent only to its own provider, a spent quota's payment, sign-up and survey
+offers never taken though the provider's limit message reaches the agent
+word for word, every result and page printed whole, nothing on stderr but
+errors, no `__pycache__` written into the skill's folder, and the scripts'
+unit tests left unseeded beside them),
 `yt-dlp` (authorized media downloads using the separately installed CLI, no
 native tool or download on load), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
@@ -2060,7 +2083,9 @@ the format is *ours*: a model asked for "a skill" without it writes a lone
 `my-skill.md` at a root, or an `allowed-tools:` line it expects honoured, and
 every such near-miss fails **silently**, the walk reading only
 `<root>/<name>/SKILL.md`. Authored in `prompts/skills/<name>/` beside
-every other `include_str!`'d markdown and seeded into `{config_home}/skills`
+every other `include_str!`'d markdown (a file there missing from
+`BUILTIN_SKILL_FILES` fails `every_authored_built_in_file_is_embedded`, a
+script's `test_*` files excepted) and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
 use it) the way the agent definitions are — editable, never clobbered, a
 deleted file back next launch, the off-switch being `/skills`, which persists,

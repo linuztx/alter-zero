@@ -88,7 +88,10 @@ terminal shows it — `\r` and backspace overwrite, colour escapes vanish, tabs
 and trailing spaces stay — keeping each line once it ends, within the output
 cap. It streams the ended lines as `settled` and the line still being drawn as
 `live`, at most every `PIPE_STREAM_INTERVAL` (50 ms, and once more at the
-end), so a burst of progress frames costs one redraw per interval. The parser
+end), so a burst of progress frames costs one redraw per interval — each
+sampled in a pause between two frames (`pty::pace`), so a redraw written in
+pieces, an erase and then its text, never reaches the cell half drawn
+(`docs/interactive-shell.md` *Streaming the running cell*). The parser
 carries a UTF-8 character or an escape split across chunks to the next one,
 so the tail never shows a stray replacement glyph. `read`/`write`/`edit`
 ignore the sink (nothing to stream).

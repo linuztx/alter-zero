@@ -107,8 +107,9 @@ there is nothing here that executes on discovery.
 
 ### Built-in skills
 
-Three skills ship with the binary: **`skill-creator`**, **`jina-reader`**, and
-**`yt-dlp`**. All use the same seed and discovery path described below.
+Four skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
+**`web-search`** and **`yt-dlp`**. All use the same seed and discovery path
+described below.
 
 #### `skill-creator`
 
@@ -129,7 +130,11 @@ other markdown this crate carries, then **written into `{config_home}/skills`
 at startup when the file is absent** — the agent definitions' rule
 (`docs/subagents.md`), for the agent definitions' reasons: a default that is a
 real file on disk can be read, edited and diffed, and a release that improves
-it ships the improvement. The seed runs *before* the walk, so the session that
+it ships the improvement. `every_authored_built_in_file_is_embedded` keeps the
+directory and the embedded list in step: a file authored under
+`prompts/skills/` but left out of `BUILTIN_SKILL_FILES` fails the test suite
+instead of quietly missing from every install (a script's `test_*` unit tests
+stay out on purpose). The seed runs *before* the walk, so the session that
 installed the app can already use it. An edited copy is never overwritten; a
 deleted file comes back next launch, so the off-switch is `/skills` (which
 persists) rather than `rm -rf`.
@@ -191,6 +196,139 @@ be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
 receives no built-ins. Offline regression tests exercise the actual
 seed → discovery → listing → tool-load path and verify that local edits
 survive reseeding and deleted files are restored.
+
+#### `web-search`
+
+**`web-search`** gives the agent web search without a native search tool:
+four standard-library Python scripts in its `scripts/` directory, each
+reaching one provider's free tier, so no key is needed and nothing is
+installed. Mention `$web-search`, or ask to search the web and let the
+description select it. Where `jina-reader` reads a URL you already have, this
+one finds the URLs (and can read them too).
+
+| Script | Reaches | Free tier | Optional key |
+| --- | --- | --- | --- |
+| `exa_search.py` | Exa's hosted MCP server, `https://mcp.exa.ai/mcp`: `web_search_exa`, `web_fetch_exa` | a daily quota per address; a shared cloud address may get none | `EXA_API_KEY` |
+| `parallel_search.py` | Parallel's Search MCP, `https://search.parallel.ai/mcp`: `web_search`, `web_fetch` | rate limited per `session_id` | `PARALLEL_API_KEY` |
+| `tavily_search.py` | Tavily's hosted MCP, `https://mcp.tavily.com/mcp/`: `tavily_search`, `tavily_extract` | a monthly quota per address | `TAVILY_API_KEY` |
+| `jina_web_search.py` | Jina Reader (`r.jina.ai`) fetching a search engine's own results page | about 20 requests a minute | `JINA_API_KEY` |
+
+A key is read from its environment variable and sent only to its own
+provider, as a bearer token (`x-api-key` for Exa's REST API); the body asks
+for a `/secrets` placeholder in front of the command and forbids passing a
+key as an argument, printing it, or tracing with `set -x`.
+
+**The three MCP clients share `mcp_http.py`**: one bare, stateless JSON-RPC
+`tools/call` POST over streamable HTTP (no `initialize`, no session), the
+answer decoded whether it arrives as one SSE event (Exa, Tavily) or as plain
+JSON (Parallel), and a failure classified: a 429, a JSON-RPC error that says
+it is a rate limit (Parallel answers its free-tier limit with HTTP 200), Exa's
+`_meta["ai.exa/rateLimited"]` flag or Tavily's cap document is **rate
+limited**, printed as `rate limited (retry in 15m):` over the server's own
+message, word for word; a 401 **needs a key**, and anything else is an error
+carrying the server's text. Those errors are all that goes to stderr: a line
+per request (endpoint, status, size, time) cost the agent tokens on every
+search and filled the collapsed tool cell's few rows. Each script adds only
+its provider's request shape and result rendering. What the live services taught them, recorded as
+tests against the live response shapes:
+
+- **Cloudflare in front of `mcp.exa.ai` refuses urllib's default
+  `Python-urllib/…` user agent** (error 1010), so every request names itself,
+  and a JSON body that is not a JSON-RPC response (that refusal) is an error
+  instead of empty output and exit 0.
+- **Tavily answers a keyless client with a 401 OAuth challenge** unless the
+  request carries its documented `X-Tavily-Access-Mode: keyless` header, and
+  it reports failures inside HTTP 200, `isError: false` results: a bad key as
+  an `error` document, the keyless cap as `{code, message, window,
+  retry_after_seconds, next_actions}`. Both are failures, never results.
+- **A spent quota offers ways around itself**: x402 pay-per-call, signing up,
+  bonus credits for answering survey questions. The scripts take none of
+  them, and the body tells the agent never to either. The message naming
+  them still reaches the agent unchanged, so it reads the limit as the
+  provider states it. Exa's REST API is the same story without MCP
+  (`--rest`: HTTP 402 under x402, $0.007 a search), which is why the body
+  never mentions that flag.
+- **Everything a provider returns is printed, uncut.** Parallel answers a
+  search with ten results, about 16 KB of excerpts, and its `web_fetch` with
+  no objective sent python.org's downloads page back as one 70,105-character
+  excerpt; all of it reaches the agent, so it sees the whole context the
+  provider returned. A URL Parallel could not read comes back in the
+  document's `errors` rather than its results, and is listed last as a
+  `Failed:` line, as Tavily's are.
+
+**The Jina script searches the engines that survived testing.** More than
+thirty engines and variants were fetched through Jina Reader without a key,
+from a datacenter address, and each survivor was then run against many
+distinct queries:
+
+| Engine | How it is read | Pages |
+| --- | --- | --- |
+| `duckduckgo` (default) | `html.duckduckgo.com` result markup | its "Next" form, replayed as a GET with its `vqd` token |
+| `yahoo` | `div.algo` blocks, the `/RU=` redirect unwrapped | its `a.next` link |
+| `wikipedia` | the MediaWiki search API's JSON | `sroffset` |
+| `github` | the repository search page's embedded JSON | `p` |
+| `arxiv` | `li.arxiv-result` markup, relevance order | `start` |
+| `hackernews` | the Algolia search API's JSON | `page` |
+
+Google, Bing, Brave, Startpage, Mojeek, Ecosia, Yandex, Qwant, AOL, Ask and
+others were left out: they answer with bot checks or script-only pages, or
+Jina refuses them anonymously. YouTube's results page answered too, but the
+script deliberately does not search it. `--time` maps to each engine's own
+filter (DuckDuckGo's `df`, Yahoo's `btf`, GitHub's `pushed:>`, Hacker News's
+`created_at_i`); Wikipedia and arXiv say they ignore it. Three findings shape its request: the **whole target URL is quoted into
+Jina's path**, since Jina reads its own query string as its options (Hacker
+News's `page=0` came back as Jina's "page must be >= 1") and percent-decodes
+the path once; **no `X-Engine` header**, since Jina's `curl` engine decoded
+entities inside Wikipedia's JSON; and **Yahoo needs `fr=fp-tts`**, without
+which it mostly answered with its temporary-problems page. A cached bot-check
+page is retried once past Jina's cache, a 429 waits for its `Retry-After`
+once (giving up past 20 seconds), Jina's intermittent anonymous refusal and
+network failures retry once, and nothing retries twice. A page an engine no
+longer lays out as expected is an error ("does not recognise"), never an empty
+result.
+
+**Which script to use was measured, not assumed.** For one ordinary question
+("latest stable rust release version") Exa returned the newest release with
+its date in under 2 KB, Parallel's top hit was a release behind in 13.5 KB of
+excerpts (a documentation search ran to 39 KB of them), and Jina's DuckDuckGo
+page was 3 KB of one-line snippets. So the body sends most searches to Exa,
+research questions worth several phrasings to Parallel, link lists and
+Wikipedia, GitHub, arXiv or Hacker News to Jina, and names a fallback order
+(Exa, Parallel, Tavily, Jina) for when a free tier refuses: each quota is
+independent, and a shared address can spend one, as the development
+container's did Tavily's monthly cap.
+
+**Parallel asks for one `session_id` per conversation** ("Do NOT change it
+between turns"), because its free tier rate-limits on it. Nothing hands the
+agent's shell a session identifier, so the script mints one per run unless
+`PARALLEL_SESSION_ID` is set, and the body asks the agent to pick one value
+and reuse it for the conversation rather than sidestep the limit.
+
+The scripts are seeded beside the `SKILL.md` as
+`{config_home}/skills/web-search/scripts/` — written like every seeded file,
+without the executable bit, so the body runs each with `python3`, building
+the path from the `Base directory` header since a built-in body cannot use
+the `${…SKILL_DIR}` placeholder. Three of them import `mcp_http.py` from
+their own directory, so each puts that directory on `sys.path` itself:
+Python does it by default, but not in isolated mode (`-I`) or under
+`PYTHONSAFEPATH`, and an agent may well run a script with `-I`. They also set
+`sys.dont_write_bytecode`, since that import would otherwise leave a
+`__pycache__` folder in the user's skill directory. Their unit
+tests stay in the repository beside them and are not seeded: recorded
+response shapes, trimmed copies of each engine's pages, a fake fetcher, no
+network (`python3 -m unittest discover -s prompts/skills/web-search/scripts
+-p 'test_*.py'`, run by CI). `JINA_WEB_SEARCH_LIVE=1` adds one real search
+per Jina engine, and `--list` on an MCP script prints the provider's current
+tool schema: the ways to re-verify a provider when it starts failing.
+
+Loading the skill makes no request; each search is an ordinary shell call
+through the permission gate, and the body keeps searches small and forbids
+searching for secrets, private data or internal host names, since every query
+reaches a third party. Like the other built-ins its seeded copy is editable,
+a deleted file comes back, project skills shadow it, `/skills` disables it,
+and an `ALTER_ZERO_SKILLS_DIR` override is never seeded. Smoke Phase 102
+checks that the first launch seeds every file, that each seeded script
+starts, and that a deleted script is restored.
 
 #### `yt-dlp`
 
@@ -627,7 +765,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | Where | What |
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
-| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` (`SKILL.md` + `reference.md`), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
+| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` (`SKILL.md` + `reference.md`), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
 | `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |

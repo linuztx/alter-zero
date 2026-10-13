@@ -14,6 +14,18 @@ release heading when a version is cut.
 
 ### Added
 
+- **A built-in `web-search` skill searches the web.** Mention `$web-search`,
+  or ask the agent to search, and it runs one of the skill's own scripts:
+  Exa, Parallel or Tavily through their free hosted search servers, or
+  DuckDuckGo, Yahoo, Wikipedia, GitHub, arXiv or Hacker News through Jina
+  Reader. The agent starts with Exa for most searches, uses Jina for a
+  quick list of links or one of those sites, moves on to the next provider
+  when a free tier runs out, and can read a page it found. No key is needed;
+  an existing `EXA_API_KEY`, `PARALLEL_API_KEY`, `TAVILY_API_KEY` or
+  `JINA_API_KEY` lifts that provider's limit and is sent only to it. The
+  scripts need only Python 3, nothing to install, and are installed on first
+  launch beside the skill, editable and switched off through `/skills` like
+  the other built-ins (`docs/skills.md`).
 - **Cline as a provider.** A key from your Cline account
   ([app.cline.bot](https://app.cline.bot) → Settings → API Keys) reaches the
   same models that power the Cline extension and CLI — Anthropic, OpenAI,
@@ -31,6 +43,29 @@ release heading when a version is cut.
   credits. A provider file can now name a **static model list**
   (`providers.toml`'s `models`), which is what puts those slugs in the picker
   with no endpoint to ask.
+
+### Fixed
+
+- **A spinner no longer makes a running command's cell flicker.** While a
+  `Bash(…)` or `BashWait(…)` call waited on an `npm` command, or anything
+  else drawing npm's `⠋⠙⠹…` spinner, its live cell kept jumping between the
+  spinner and `⎿ Running…`, moving the input box up and down a row each
+  time. The cell dropped the spinner whenever it came back round to the frame
+  the model had last been shown, and could catch a frame half drawn, after
+  the spinner had erased its line but before it drew the next glyph. The
+  cell now keeps every line the program is still drawing, and reads the
+  output only in the pause between two frames (`docs/interactive-shell.md`).
+- **A secret's value you type reaches the agent as its placeholder.** With
+  `ROOT_PASSWORD` stored, a message saying "the password is password123"
+  used to send the password itself to the model; it now says "the password
+  is `<secret:ROOT_PASSWORD>`", and so do the message on screen, the
+  transcript, the saved session and ↑ recall, while a toast says the value
+  was hidden from the agent. The same goes for a value
+  typed into a `!` command (which still runs with the real value), a
+  message to a subagent, a queued follow-up, an answer to the agent's
+  question, the feedback on a refused tool call and a prompt given on the
+  command line. A placeholder you type yourself is sent as written
+  (`docs/secrets.md`).
 
 ## [0.13.0] - 2026-10-10
 

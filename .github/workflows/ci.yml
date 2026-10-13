@@ -3,8 +3,9 @@
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
 # --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
 # real binary in tmux, the release tooling's own fixture tests plus the
-# version/changelog agreement and the npm launcher's tests, and the telemetry
-# collector's pure-half tests.
+# version/changelog agreement and the npm launcher's tests, the telemetry
+# collector's pure-half tests, and the scripts the built-in web-search skill
+# seeds.
 # The release workflow re-runs the gate and the tooling tests before it builds
 # anything, and the headless Kali container has its own workflow
 # (container.yml).
@@ -103,6 +104,17 @@ jobs:
       - uses: actions/checkout@v7
       - run: node --test
         working-directory: telemetry
+
+  skill-scripts:
+    # The scripts a built-in skill seeds beside its SKILL.md (docs/skills.md).
+    # Offline: the providers' recorded response shapes, trimmed copies of each
+    # engine's pages and a fake fetcher, so no request leaves the runner.
+    name: built-in skill scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: web-search's scripts
+        run: python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py' -v
 
   # The headless Kali container has its own workflow, container.yml: building
   # it reaches Docker Hub, a Kali mirror and github.com's release redirect, and

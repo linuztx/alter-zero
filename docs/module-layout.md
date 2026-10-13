@@ -58,7 +58,7 @@ widened for the split.
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
-| `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar (`docs/secrets.md`). |
+| `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
@@ -292,6 +292,7 @@ cores carry no process and are unit-tested alone; `spawn` is the I/O.
 | `transcript.rs` | The output as lines of text (`vte::Perform`): what an ordinary program reports. |
 | `screen.rs` | The output as a screen (`vt100`): what a full-screen program reports, and the terminal-query replies. |
 | `settle.rs` | When a waiting call returns — exit, prompt, line quiet, timeout. |
+| `pace.rs` | When the running cell is sent its next update — every interval, in a pause between two frames of the output. |
 | `report.rs` | What the model reads: the `Running`/`Stopped` frames over the output or the screen, and the model-only notes. |
 | `session.rs` | `SessionIo` — the two views, the wait, the look, and the exit handshake the monitor and the calls share. |
 | `spawn.rs` | The boundary: the pseudo-terminal, the controlling-terminal tiers, the session environment, the line mode. |

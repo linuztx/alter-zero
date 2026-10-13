@@ -9,6 +9,11 @@ again in everything the tool reports. So the model can log in, call an API or
 write a config file with a credential it has never seen, and a screen
 recording of the session shows placeholders where the values would be.
 
+The same holds from the user's side: a value the user **types** — into a
+message, a `!` command, an answer — reaches the conversation as its
+placeholder. A password pasted into the chat is `<secret:ROOT_PASSWORD>` to
+the model, in the bubble and in the record (*What the user types*).
+
 ## Where a value may exist
 
 A value lives in exactly three places:
@@ -30,11 +35,13 @@ tool, a log comes out redacted like any other output. Those logs are created
 owner-only (`0600`), since a temp directory's default mode would let every
 user on the machine read them.
 
-It is never in a message, a tool cell, the Ctrl+O transcript, the Ctrl+D
-context, the rollout, a request body, the classifier's context, a hook's
-`tool_input`, or a `Debug` print: `SecretValue`'s `Debug` says
-`<redacted>`, it has no `Display`, and `expose()` is called by the expansion
-and the file writer alone.
+It is never in a message — the user's own included — a tool cell, the
+Ctrl+O transcript, the Ctrl+D context, the rollout, a request body, the
+classifier's context, a hook's `tool_input`, or a `Debug` print:
+`SecretValue`'s `Debug` says `<redacted>`, it has no `Display`, and
+`expose()` is called by the expansion and the file writer alone. The one
+screen a value can reach is the composer, while the user types it: the
+keystrokes show until Enter, and Enter replaces them.
 
 ## The placeholder
 
@@ -147,6 +154,74 @@ middle cut, keeps whole lines and needs nothing.
 base64-encoded, reversed, split by something other than a line break — comes
 out as the transformation. That is the contract the feature makes: *exact*
 text is hidden.
+
+## What the user types
+
+A value can come from the other side too: the user pastes the password into
+the chat. Everything the user sends is redacted before anything keeps it, so
+the model reads `<secret:ROOT_PASSWORD>` where the user wrote the value — and
+so does everything built from the conversation: the bubble, the Ctrl+O
+transcript, the Ctrl+D context, the rollout, the request body, the
+`UserPromptSubmit` payload, ↑ recall and `history.jsonl`.
+
+A draft is redacted where it leaves the composer, `App::take_input` — right
+after a large paste is spliced back in, so a value inside a
+`[Pasted Content N chars]` is caught too. Every way out passes through it:
+Enter (a new turn, a message steered into the running one, a subagent chat),
+Tab (a follow-up turn, the main session's or an agent's), a `!` command, and
+Ctrl+C's clear, whose ↑ recall copy is redacted like a sent one. Three more
+texts reach the model without the composer and are redacted where they are
+taken: an `AskUserQuestion` answer or note typed into its entry field
+(`take_entry_text`), the feedback Tab adds to a refused permission prompt,
+and the `[PROMPT]` given on the command line.
+
+The pure core never holds a stored value, so it redacts through a
+**`SecretRedactor`** — the registry's redacting half, handed to `App` once at
+startup (`App::set_secret_redactor`): it can take a value out of text and do
+nothing else, with no expansion, no listing and no value to read. It shares
+the registry's store, so a secret saved mid-session masks the very next
+message.
+
+`SecretStore::redact_message` is `redact` with one difference: a
+placeholder the user **wrote** for a stored secret is kept as written, in
+whatever case it was typed — the page's `c` copies one for exactly this —
+even where a value is a piece of it (`secret` is a common development
+password, and `<secret:DB_PASSWORD>` contains it). One naming nothing stored
+is ordinary text, so a value typed as a name — `<secret:hunter22>` — is
+still hidden. Every placeholder a pass emits names a stored secret, so the
+next pass keeps it: a recalled, backtracked or undone message redacts to
+itself.
+
+A `!` command round-trips: `!mysql -p hunter22` is recorded and shown as
+`! mysql -p <secret:ROOT_PASSWORD>`, and the runner expands it back
+(`tui::shell`) before the shell sees it, so the command runs as typed.
+
+A send that masked something says so in a dim toast — `Hid the value of
+<secret:ROOT_PASSWORD> from the agent` (`secrets::masked_notice`) — since
+the bubble no longer shows what was typed. `RedactedMessage::masked` names
+the secrets a pass replaced (a placeholder the user typed is no value
+replaced, so it is never named), `App` notes them for each send, and the
+boundary drains them (`App::take_masked_secrets`) right after the key that
+sent, before the send's own action runs, so a refusal that action answers
+with — a subagent declining a chat — is the toast left showing. Only a send
+announces: Ctrl+C's clear masks its recall copy without a word, and an ask
+answer kept with Esc already shows the placeholder but is announced only
+when a submission carries it, so a declined or timed-out question says
+nothing.
+
+The rules are output redaction's: exact text, longest value first, a long
+value caught across one line break. A value typed inside a longer word is
+replaced there too — the price of a short value, which the four-character
+minimum only limits — and a value typed transformed (spaced out, reversed,
+encoded) reaches the model as typed. A stored value cannot be shown to the
+model on purpose: a value the model may read is one the user does not store.
+
+Redaction happens as the text is sent, with the secrets stored at that
+moment. A message sent before its value was stored — earlier in the session,
+or in a rollout `/resume` loads — keeps the value in the record and in the
+context it rides: the conversation is never rewritten after the fact, which
+would leave Ctrl+D showing something other than what was sent and move the
+cached prefix of every request after it.
 
 ## The permission prompt
 
@@ -288,16 +363,20 @@ under four characters or a duplicate name is skipped on load.
 
 - `secrets` (pure): `SecretStore` (`apply`, `remove`, `expand`,
   `expand_checked`, `unknown_placeholders`, `unknown_refusal`, `redact`,
-  `redact_cut_tail`, `listing`), `SecretRegistry`, `SecretDraft`,
+  `redact_cut_tail`, `redact_message`, `listing`), `RedactedMessage`,
+  `SecretRegistry` (`redactor`), `SecretRedactor`, `SecretDraft`,
   `SecretMeta`, `SecretValue`, `StreamRedactor`, `expand_arguments`,
   `check_arguments`, `expands_placeholders`, `secret_section`,
-  `parse_secrets_file`, `format_secrets_file`, `normalize_name`,
-  `validate_draft`.
+  `masked_notice`, `parse_secrets_file`, `format_secrets_file`,
+  `normalize_name`, `validate_draft`.
 - `llm::secret_exec` — `run_with_secrets`, the executor seam, and
   `expand_call` for the permission preview (both refusing an unknown
   placeholder).
-- `app::secrets` — the page's state and keys; `ui::secrets_view` — its lines.
-- `tui::secrets` — load, save, delete, copy.
+- `app::secrets` — the page's state and keys, and what the user types
+  (`App::set_secret_redactor`, `App::redact_typed`,
+  `App::take_masked_secrets`); `ui::secrets_view` — the page's lines.
+- `tui::secrets` — load, save, delete, copy, the masked-value toast; the
+  redactor is handed to `App` in `tui::bootstrap`'s `seed_app`.
 
 ## Tests
 
@@ -308,15 +387,26 @@ seam: arguments expanded, every output channel redacted, an unknown
 placeholder refused unrun, a non-acting tool untouched. The approval tests
 pin the placeholder `edit` still asking with its preview redacted, and a
 refused call raising no prompt. The page's app and ui tests assert the value
-never reaches a rendered line or the composer.
+never reaches a rendered line or the composer. `redact_message` is pinned
+beside `redact`: the user's own placeholders kept even when a value is a
+piece of one, a value typed as a placeholder's name still hidden, and a
+second pass changing nothing, and each pass naming the secrets it masked; the
+app tests type the value down every way a draft leaves the composer — Enter
+idle and mid-turn, Tab, a `!` command, a subagent's chat and follow-up, a
+large paste, Ctrl+C's recall — and into the ask modal's entries and a
+permission prompt's feedback, and find only the placeholder in what each one
+hands on, each send announced for the toast and the paths that send nothing
+— the clear, an answer kept with Esc, a declined or timed-out question —
+announcing nothing.
 
 `tests/secrets_wire.rs` runs real `LlmBackend` turns with the real executor
 against a provider stand-in on the loopback, and reads every request body
 back: a command acting on the value, a `write` → `read` → `edit` round trip
 through the placeholder, a password typed into a real terminal session, a
-background shell named by its placeholder, and an unknown placeholder refused
-with and without the permission gate — the value in no event, no shell report
-and no request, the first request's reminder listing the secret.
+background shell named by its placeholder, an unknown placeholder refused
+with and without the permission gate, and the value typed into an `App`'s
+composer reaching the request as its placeholder — the value in no event, no
+shell report and no request, the first request's reminder listing the secret.
 `tests/live_secrets.rs` (`#[ignore]`d, `A0_VENICE_API_KEY`) asks real models
 to use a secret they are told of only by the reminder: write it to a file,
 quote a file holding it, log in through a password prompt, survive a
@@ -325,9 +415,15 @@ test runs on.
 
 `scripts/smoke/phases/126-secrets.sh` drives the page in tmux — add, mask,
 edit, delete, persistence — and `!` commands that expand a placeholder, have
-their output redacted and refuse an unknown one; then a second launch drives
-the real backend against a stub provider: the secret loaded from the file at
-startup, the reminder in the first request, the permission prompt showing the
-placeholder, the command writing the value, the cell masking it, an unknown
-placeholder refused without a prompt, and the value absent from the pane, the
-Ctrl+O transcript, the rollout and every request the stub logged.
+their output redacted and refuse an unknown one, a `!` command typed with the
+value itself running with it and shown with the placeholder, a message
+typed with the value reaching the bubble, the rollout and ↑ recall as the
+placeholder, and a `[PROMPT]` launch given the value opening on the
+placeholder — each under the toast saying the value was hidden; then a second
+launch drives the real backend against a stub provider: the secret loaded
+from the file at startup, the reminder in the first request, a first message
+typed with the value reaching the provider and a real `history.jsonl` as the
+placeholder, the permission prompt showing the placeholder, the
+command writing the value, the cell masking it, an unknown placeholder
+refused without a prompt, and the value absent from the pane, the Ctrl+O
+transcript, the rollout and every request the stub logged.

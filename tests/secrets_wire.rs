@@ -3,20 +3,22 @@
 //! stand-in's model writes placeholders into its tool calls; what is checked
 //! is the whole promise — the tool acted on the **value**, while not one event
 //! the screen draws from, not one background-shell report and not one byte of
-//! any request carries it.
+//! any request carries it. The other direction too: a value the user types
+//! into the composer reaches the request as its placeholder.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alter_zero::app::App;
+use alter_zero::app::{Action, App};
 use alter_zero::background::{BackgroundRegistry, BgEvent};
 use alter_zero::context::context_messages_full;
 use alter_zero::llm::{LlmBackend, ModelConfig, WireApi};
 use alter_zero::permission::PermissionGate;
 use alter_zero::secrets::{SecretDraft, SecretRegistry, SecretStore, SecretValue, secret_section};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The value the stand-in's model never learns.
 const VALUE: &str = "s3cr3t-demo-value-9";
@@ -492,6 +494,41 @@ fn a_refused_placeholder_never_asks_for_permission() {
     assert!(
         refusal.starts_with("Not run: <secret:DEMO_TOKN> is not a stored secret."),
         "{refusal}"
+    );
+}
+
+#[test]
+fn a_value_the_user_types_reaches_the_model_as_its_placeholder() {
+    // The other direction (docs/secrets.md *What the user types*): the user
+    // types the value into a message. The composer masks it before anything
+    // records it, so the turn the boundary starts on that message — and
+    // every request — carries the placeholder alone.
+    let secrets = secrets();
+    let mut app = App::new();
+    app.set_secret_redactor(secrets.redactor());
+    for c in format!("my token is {VALUE}, check it").chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let action = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let Action::Submit(sent) = action else {
+        panic!("Enter submits, got {action:?}");
+    };
+    assert_eq!(sent, "my token is <secret:DEMO_TOKEN>, check it");
+    assert_eq!(app.take_masked_secrets(), ["DEMO_TOKEN"]);
+
+    let (base, requests) = stand_in(vec![fixed(text_round("noted"))]);
+    let events = turn(&backend(&base, &secrets), &secrets, &sent);
+    assert!(
+        !format!("{events:?}").contains(VALUE),
+        "an event carried the value"
+    );
+    assert_no_request_carries_the_value(&requests);
+    let requests = requests.lock().expect("the request log");
+    assert_eq!(requests.len(), 1, "a plain answer");
+    assert!(
+        requests[0].contains("my token is <secret:DEMO_TOKEN>, check it"),
+        "the message reached the model as its placeholder: {}",
+        requests[0]
     );
 }
 
