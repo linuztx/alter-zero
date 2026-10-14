@@ -668,17 +668,16 @@ fn a_finished_peek_wraps_the_sudo_error_at_word_boundaries() {
 }
 
 #[test]
-fn the_full_view_surfaces_the_exit_code_on_failure_too() {
+fn the_full_view_hides_the_exit_code_on_failure_too() {
+    // Ctrl+O shows the whole body of a failed command, and like the inline
+    // cell it leaves the `Exit code: N` frame to the model.
     let lines = tool_full_lines(
         &tool("Bash", "false", ToolStatus::Failed, "Exit code: 2\nnope"),
         80,
         &PathDisplay::VERBATIM,
     );
-    let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
-    assert!(
-        all.contains("Error: Exit code 2") && all.contains("nope"),
-        "got {all:?}"
-    );
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(rows, ["● Bash(false)", "  ⎿  nope"]);
 }
 
 #[test]
@@ -760,6 +759,64 @@ fn tool_lines_strips_the_leading_exit_code_frame_from_a_bash_cell() {
         all.contains("hello") && all.contains("world"),
         "the body shows: {all:?}"
     );
+}
+
+#[test]
+fn a_failed_bash_cell_shows_its_output_never_its_exit_code() {
+    // A failure drops the frame exactly as a success does: the cell reads
+    // like the command's own output, and the red bullet is what says it
+    // failed. `false` printing nothing is `● Bash(false)` over
+    // `⎿ (no output)`, never an `Error: Exit code 1` row.
+    for (output, shown) in [
+        ("Exit code: 1\n(no output)", "(no output)"),
+        ("Exit code: 3\nboom", "boom"),
+        // A bare frame (no body line at all) reads as no output too.
+        ("Exit code: 3", "(no output)"),
+        // A signal death is the same frame with a word for its code.
+        ("Exit code: killed by signal\n(no output)", "(no output)"),
+        ("Exit code: killed by signal\npartial", "partial"),
+    ] {
+        let lines = tool_lines(
+            &tool("Bash", "false", ToolStatus::Failed, output),
+            80,
+            &PathDisplay::VERBATIM,
+        );
+        let rows: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            rows,
+            ["● Bash(false)".to_string(), format!("  ⎿  {shown}")],
+            "{output:?}"
+        );
+        assert_eq!(
+            lines[0].spans[0].style.fg,
+            Some(tool_fail_color()),
+            "the bullet still says it failed: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn the_exit_code_a_failed_cell_hides_is_still_what_the_model_reads() {
+    // Display only: the record keeps the frame, and the agent's context
+    // window replays it verbatim as the call's result (what Ctrl+D shows),
+    // so the model knows the command failed and with which code.
+    let output = "Exit code: 1\n(no output)";
+    let cell = tool("Bash", "false", ToolStatus::Failed, output);
+    let screen: Vec<String> = tool_lines(&cell, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .chain(&tool_full_lines(&cell, 80, &PathDisplay::VERBATIM))
+        .map(plain)
+        .collect();
+    assert!(
+        !screen.iter().any(|row| row.contains("Exit code")),
+        "no exit code on screen, inline or in Ctrl+O: {screen:?}"
+    );
+    let context = crate::context::context_messages(&[HistoryItem::Tool(cell)]);
+    let result = context
+        .iter()
+        .find(|message| message.role == crate::context::ContextRole::Tool)
+        .expect("the call's result");
+    assert_eq!(result.text, output, "the model reads the frame");
 }
 
 #[test]

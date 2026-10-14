@@ -55,8 +55,8 @@ to read from standard input or configure an askpass helper
 ```
 
 Exit 1, in milliseconds, output captured like any other command — never
-touching the real terminal. (The cell then leads with the display's
-`Error: Exit code 1` reframe and word-wraps the message —
+touching the real terminal. (The cell then shows the message word-wrapped
+under a red bullet, while the `Exit code: 1` frame goes to the model alone —
 `docs/tool-streaming.md`.)
 
 ## Why not `pre_exec(setsid)` — and the tier chain that replaces it

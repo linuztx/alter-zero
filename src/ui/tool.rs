@@ -432,44 +432,26 @@ fn split_display_lines(text: &str) -> Vec<String> {
     out
 }
 
-/// `output` reframed for **display**: on **success** the `Exit code: 0` line
-/// is dropped so the cell reads like the real command output (the mock,
-/// `docs/tool-streaming.md`); on **failure** it is rewritten to an
-/// `Error: Exit code N` (or `Error: killed by signal`) line kept above the
-/// body, so a red cell says *why* it failed even when the body is empty. The
-/// raw frame stays in `tool.output` for the model / context replay
-/// (`context::context_messages`) — this is display-only. Only fires when the
-/// frame is present, so non-`bash` tools and old rollouts are untouched.
-fn command_display_output(output: &str) -> std::borrow::Cow<'_, str> {
+/// `output` as the cell **displays** it: the `Exit code: N` frame line is
+/// dropped whatever its code — `0`, a failure, `killed by signal` — so the
+/// cell reads like the real command output (the mock,
+/// `docs/tool-streaming.md`). The exit code is the model's: the raw frame
+/// stays in `tool.output` for the context replay (`context::context_messages`,
+/// what Ctrl+D shows), and the bullet is what says a call failed. Only fires
+/// when the frame is present, so non-`bash` tools and old rollouts are
+/// untouched.
+fn command_display_output(output: &str) -> &str {
     // A session still alive (`docs/interactive-shell.md`): its frame line is
     // the model's; the cell shows the body, and says where the session stands
     // on its own dim row ([`session_state_row`]).
     if let Some((_, body)) = session_frame(output) {
-        return std::borrow::Cow::Borrowed(body);
+        return body;
     }
-    let Some(rest) = output.strip_prefix("Exit code: ") else {
-        return std::borrow::Cow::Borrowed(output);
-    };
     // The frame is `Exit code: {code}\n{body}` (the body may be absent).
-    let (code, body) = match rest.find('\n') {
-        Some(nl) => (&rest[..nl], &rest[nl + 1..]),
-        None => (rest, ""),
-    };
-    if code == "0" {
-        // Success: the frame is noise — show just the body.
-        return std::borrow::Cow::Borrowed(body);
+    match output.strip_prefix("Exit code: ") {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
+        None => output,
     }
-    // Failure: surface the exit code as an `Error: …` header above the body.
-    let head = if code == "killed by signal" {
-        "Error: killed by signal".to_string()
-    } else {
-        format!("Error: Exit code {code}")
-    };
-    std::borrow::Cow::Owned(if body.is_empty() {
-        head
-    } else {
-        format!("{head}\n{body}")
-    })
 }
 
 /// The session frame opening a command cell's output — `Running (session
@@ -510,16 +492,16 @@ fn session_state_row(tool: &ToolCall) -> Option<Line<'static>> {
 }
 
 /// A command-style tool's output as display lines — [`tool_output_lines`] with
-/// the `Exit code: N` frame reframed for display ([`command_display_output`]).
+/// the `Exit code: N` frame dropped ([`command_display_output`]).
 pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
-    split_display_lines(&command_display_output(&tool.output))
+    split_display_lines(command_display_output(&tool.output))
 }
 
 /// The lines a **settled** exec cell shows of its output — the `bash` tool
 /// and the `!` shell command, one cell shape (`docs/shell-command.md`) — on
 /// the inline peek and in the Ctrl+O expansion alike, so the peek's `+N
 /// lines` hint counts exactly the rows the expansion adds. Display only, the
-/// record byte-exact: the `Exit code: N` frame reframed
+/// record byte-exact: the `Exit code: N` frame dropped
 /// ([`command_display_output`]; a shell command's output is never framed),
 /// each line that is a JSON document reshaped with two-space indentation
 /// ([`prettify_json_lines`] — Claude Code's tool result does the same, which
@@ -531,12 +513,12 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 /// Claude Code). The running tail ([`running_command_lines`]) deliberately
 /// does not: what is still streaming is shown as it was printed.
 pub(super) fn exec_display_lines(tool: &ToolCall) -> Vec<String> {
-    let body: std::borrow::Cow<'_, str> = if tool.shell {
-        std::borrow::Cow::Borrowed(tool.output.as_str())
+    let body = if tool.shell {
+        tool.output.as_str()
     } else {
         command_display_output(&tool.output)
     };
-    let mut lines = split_display_lines(&prettify_json_lines(&body));
+    let mut lines = split_display_lines(&prettify_json_lines(body));
     while lines.last().is_some_and(|line| is_blank_row(line)) {
         lines.pop();
     }
