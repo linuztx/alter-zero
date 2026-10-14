@@ -508,7 +508,14 @@ fn split_cells(body: &str) -> Vec<String> {
     let mut esc = false;
     for ch in body.chars() {
         if esc {
-            cur.push(ch); // the escaped char, backslash dropped
+            // Only the pipe escape is the table's own (GFM): it keeps a pipe
+            // inside its cell. Every other escape belongs to the inline parser
+            // the cell meets next, so the pair passes through untouched —
+            // `\*x\*` stays literal `*x*`, never italic.
+            if ch != '|' {
+                cur.push('\\');
+            }
+            cur.push(ch);
             esc = false;
         } else if ch == '\\' {
             esc = true;
@@ -518,6 +525,9 @@ fn split_cells(body: &str) -> Vec<String> {
         } else {
             cur.push(ch);
         }
+    }
+    if esc {
+        cur.push('\\'); // a lone trailing backslash is literal
     }
     // Push the final cell unless it is the empty remainder left by a trailing
     // pipe (the optional closing delimiter). A pipe-free single cell still counts.
@@ -562,21 +572,25 @@ pub fn table_delimiter(line: &str) -> Option<Vec<Alignment>> {
     Some(aligns)
 }
 
-// --- Inline markdown (`docs/markdown.md`). A prose line's `**bold**`,
-// `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` / `![alt](url)` runs
-// parse into a tree of styled spans; [`crate::ui`] maps each node to a `Style`
-// (the `highlight::Kind` → colour pattern). Emphasis is **line-local** — an
-// unclosed marker stays literal — so a *complete* source line's styling is final
-// (its frozen rows never restyle). A *trailing partial* line with an unclosed
-// delimiter is withheld from scrollback ([`has_open_inline`], wired into
+// --- Inline markdown (`docs/markdown.md`). A prose line's emphasis (`*`/`_`,
+// `**`/`__`, and both at once), `~~strike~~`, `` `code` ``, `[text](url)` /
+// `![alt](url)`, `<url>` autolinks, backslash escapes and HTML entities parse
+// into a tree of styled spans; [`crate::ui`] maps each node to a `Style`.
+// Emphasis follows CommonMark's **delimiter-run algorithm** — the flanking
+// rules, the rule of three, a closing `***` split between the two openers it
+// closes — the parse codex's pulldown-cmark pass makes, with one relaxation
+// for CJK text ([`DelimRun::new`]). It is **line-local**: an unclosed marker
+// stays literal, so a *complete* source line's styling is final (its frozen
+// rows never restyle). A *trailing partial* line with an unsettled construct
+// is withheld from scrollback ([`has_open_inline`], wired into
 // [`crate::ui::StreamRender::commit`]) until it settles. ---
 
 /// One inline node of a prose line. `Bold`/`Italic`/`Strike`/`Link` nest (their
 /// content is itself parsed), so `**bold _and italic_**` is a `Bold` holding an
-/// `Italic`; `Code` and `Image` alt text are literal.
+/// `Italic`; `Code`, `Image` alt text and `Url` text are literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inline {
-    /// Literal text.
+    /// Literal text (escapes and entities already resolved).
     Text(String),
     /// `**bold**` / `__bold__`.
     Bold(Vec<Inline>),
@@ -598,194 +612,453 @@ pub enum Inline {
         /// The image's alt text.
         alt: String,
     },
+    /// An autolink — `<https://…>` or `<me@example.com>` — shown as its bare
+    /// text, the angle brackets dropped, and linked to `target` (the address
+    /// gains `mailto:`).
+    Url {
+        /// What the reader sees: the URL or address as written.
+        text: String,
+        /// What a click opens.
+        target: String,
+    },
 }
 
 /// Parse a prose `line` into inline nodes (`docs/markdown.md`). Left-to-right,
 /// line-local: an unclosed or non-flanking marker stays literal, so the result
-/// of a **complete** line is final (prefix-stable once the line ends). Nesting is
-/// handled by recursing on each span's content.
+/// of a **complete** line is final (prefix-stable once the line ends).
 #[must_use]
 pub fn parse_inline(text: &str) -> Vec<Inline> {
-    let mut out: Vec<Inline> = Vec::new();
-    let mut plain = String::new();
-    let mut i = 0;
-    while i < text.len() {
-        if let Some((node, next)) = element_at(text, i) {
-            if !plain.is_empty() {
-                out.push(Inline::Text(std::mem::take(&mut plain)));
-            }
-            out.push(node);
-            i = next;
-        } else {
-            let ch = text[i..]
-                .chars()
-                .next()
-                .expect("i is a char boundary < len");
-            plain.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    if !plain.is_empty() {
-        out.push(Inline::Text(plain));
-    }
-    out
+    InlineScan::scan(text).into_inlines()
 }
 
-/// Whether `text` (a still-growing trailing line) holds an **unclosed** inline
-/// delimiter — an emphasis/strike run, a code span, or a link — that a later
-/// character could still close and thereby restyle already-emitted text. The
-/// streaming committer withholds such a line whole (like an in-code line) until
-/// it settles, keeping scrollback immutable. A non-flanking `*` (`2 * 3`), an
-/// intraword `_` (`foo_bar`), or a settled literal `[a]` is **not** open.
+/// Whether `text` (a still-growing trailing line) holds an **unsettled** inline
+/// construct a later character could still resolve — and so restyle text
+/// already emitted: an emphasis/strike opener with no closer yet, a code span
+/// with no closing run, a link or image whose brackets or parens are open, an
+/// autolink or entity still forming. The streaming committer withholds such a
+/// line whole (like an in-code line) until it settles, keeping scrollback
+/// immutable. A non-flanking `*` (`2 * 3`), an intraword `_` (`foo_bar`), an
+/// escaped marker or a settled literal `[a]` is **not** open.
 #[must_use]
 pub fn has_open_inline(text: &str) -> bool {
     // A marker at the very END of the growing line is *undecided*, not
     // settled: an emphasis run's flanking — whether it opens at all — is
     // determined by the character that hasn't streamed in yet ("~~" + "s"
     // hides the tildes and strikes what follows; "~~" + " " keeps them
-    // literal); a `!` becomes an image opener if a `[` lands next; and a
-    // trailing backtick may be a closing run the next char EXTENDS
-    // (`` `x` `` + `` ` `` → `` `x`` `` — the exact-run match breaks and the
-    // settled-looking span reverts to literal). Either way the
-    // already-wrapped text would restyle, so the committer must withhold the
-    // line. A complete line settles these on its own (end-of-line means no
-    // follower, so the marker stays literal / the run is final), which is
-    // why the check lives here and not in [`parse_inline`].
+    // literal); a `!` becomes an image opener if a `[` lands next; a trailing
+    // backtick may be a closing run the next char EXTENDS (`` `x` `` + `` ` ``
+    // → `` `x`` `` — the exact-run match breaks and the settled-looking span
+    // reverts to literal); a `\` escapes the next character, a `<` may open an
+    // autolink and an `&` an entity. Either way the already-wrapped text would
+    // restyle, so the committer must withhold the line. A complete line
+    // settles these on its own (end-of-line means no follower), which is why
+    // the check lives here and not in [`parse_inline`].
     if text
         .chars()
         .next_back()
-        .is_some_and(|c| matches!(c, '*' | '_' | '~' | '!' | '`'))
+        .is_some_and(|c| matches!(c, '*' | '_' | '~' | '!' | '`' | '\\' | '<' | '&'))
     {
         return true;
     }
-    let mut i = 0;
-    while i < text.len() {
-        if let Some((_, next)) = element_at(text, i) {
-            i = next; // a complete (closed) element — settled
-        } else if opener_at(text, i) {
-            return true; // a valid opener with no closer yet — unsettled
+    InlineScan::scan(text).open
+}
+
+/// One delimiter run (`*`, `_`, or a `~~` pair) and what CommonMark's flanking
+/// rules let it do.
+#[derive(Debug, Clone, Copy)]
+struct DelimRun {
+    /// The marker character.
+    ch: char,
+    /// Markers not yet consumed by a match.
+    len: usize,
+    /// The run's original length (the rule of three reads it).
+    orig: usize,
+    /// Whether the run may open emphasis.
+    can_open: bool,
+    /// Whether the run may close emphasis.
+    can_close: bool,
+}
+
+impl DelimRun {
+    /// The run of `ch` spanning `text[start..end]`, its abilities read off the
+    /// characters around it (CommonMark's left/right-flanking rules; the line's
+    /// ends count as whitespace). `_` additionally refuses to open or close
+    /// inside a word, so `snake_case` stays literal.
+    ///
+    /// One relaxation: CJK text puts no spaces between words, so a run whose
+    /// outer neighbour is a CJK character is not held to the punctuation clause
+    /// on that side — `**标题：**内容` (a closer after fullwidth punctuation,
+    /// before a CJK letter) and `这是**“引用”**` both still emphasize, where
+    /// strict CommonMark leaves the markers showing.
+    fn new(text: &str, start: usize, end: usize, ch: char) -> Self {
+        let prev = text[..start].chars().next_back();
+        let next = text[end..].chars().next();
+        let prev_ws = prev.is_none_or(char::is_whitespace);
+        let next_ws = next.is_none_or(char::is_whitespace);
+        let prev_punct = prev.is_some_and(is_inline_punct);
+        let next_punct = next.is_some_and(is_inline_punct);
+        let prev_cjk = prev.is_some_and(is_cjk);
+        let next_cjk = next.is_some_and(is_cjk);
+        let left = !next_ws && (!next_punct || prev_ws || prev_punct || prev_cjk);
+        let right = !prev_ws && (!prev_punct || next_ws || next_punct || next_cjk);
+        let (can_open, can_close) = if ch == '_' {
+            (
+                left && (!right || prev_punct),
+                right && (!left || next_punct),
+            )
         } else {
-            let ch = text[i..].chars().next().expect("char boundary");
-            i += ch.len_utf8();
+            (left, right)
+        };
+        let len = end - start; // the markers are ASCII: bytes == chars
+        Self {
+            ch,
+            len,
+            orig: len,
+            can_open,
+            can_close,
         }
     }
-    false
 }
 
-/// If a **complete** inline element starts at byte `i`, return it and the byte
-/// index just past it. `None` for a plain char or an unclosed/invalid marker
-/// (which [`parse_inline`] then treats as literal text).
-fn element_at(text: &str, i: usize) -> Option<(Inline, usize)> {
-    let rest = &text[i..];
-    if rest.starts_with('`') {
-        return code_at(text, i);
-    }
-    if rest.starts_with("![") {
-        return image_at(text, i);
-    }
-    if rest.starts_with('[') {
-        return link_at(text, i);
-    }
-    for (marker, wrap) in EMPHASIS {
-        if rest.starts_with(marker) {
-            if let Some((inner, next)) = emphasis_at(text, i, marker) {
-                return Some((wrap(parse_inline(inner)), next));
+/// CommonMark's punctuation class for flanking: ASCII punctuation, or any other
+/// character that is neither alphanumeric nor whitespace (Unicode punctuation
+/// and symbols — `“`, `：`, an emoji).
+fn is_inline_punct(c: char) -> bool {
+    c.is_ascii_punctuation() || (!c.is_ascii() && !c.is_alphanumeric() && !c.is_whitespace())
+}
+
+/// Whether `c` is a CJK character — ideographs, kana, hangul, and the CJK and
+/// fullwidth punctuation blocks — for [`DelimRun::new`]'s relaxation.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x11FF
+            | 0x2E80..=0x2FDF
+            | 0x2FF0..=0x31FF
+            | 0x3200..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xA960..=0xA97F
+            | 0xAC00..=0xD7FF
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFFEF
+            | 0x20000..=0x2FA1F
+            | 0x30000..=0x3134F)
+}
+
+/// One piece of a line being parsed: text, a finished node, a delimiter run
+/// still waiting for its match, or a slot emptied by one.
+#[derive(Debug)]
+enum Piece {
+    Text(String),
+    Node(Inline),
+    Delim(DelimRun),
+    Gone,
+}
+
+/// The inline parse of one line: its pieces as a linked list over an arena
+/// (so wrapping a matched span never shifts indices), the delimiter stack of
+/// CommonMark's algorithm, and whether anything is still unsettled.
+struct InlineScan {
+    pieces: Vec<Piece>,
+    prev: Vec<Option<usize>>,
+    next: Vec<Option<usize>>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    /// Arena ids of delimiter pieces in line order; `None` once removed.
+    stack: Vec<Option<usize>>,
+    /// An unsettled construct was seen (see [`has_open_inline`]).
+    open: bool,
+}
+
+impl InlineScan {
+    /// Tokenize `text` and resolve its emphasis.
+    fn scan(text: &str) -> Self {
+        let mut scan = Self {
+            pieces: Vec::new(),
+            prev: Vec::new(),
+            next: Vec::new(),
+            head: None,
+            tail: None,
+            stack: Vec::new(),
+            open: false,
+        };
+        let mut plain = String::new();
+        let mut i = 0;
+        while i < text.len() {
+            let rest = &text[i..];
+            let c = rest.chars().next().expect("i is a char boundary < len");
+            match c {
+                '\\' => {
+                    // A backslash escapes ASCII punctuation: the char is literal
+                    // and never a delimiter. Anything else keeps the backslash.
+                    match rest[1..].chars().next() {
+                        Some(n) if n.is_ascii_punctuation() => {
+                            plain.push(n);
+                            i += 1 + n.len_utf8();
+                        }
+                        _ => {
+                            plain.push('\\');
+                            i += 1;
+                        }
+                    }
+                }
+                '`' => {
+                    if let Some((node, next)) = code_at(text, i) {
+                        scan.push_text(&mut plain);
+                        scan.push(Piece::Node(node));
+                        i = next;
+                    } else {
+                        // No closing run of the same length: the run is literal
+                        // for now, but one could still arrive.
+                        let run = rest.bytes().take_while(|&b| b == b'`').count();
+                        plain.push_str(&rest[..run]);
+                        scan.open = true;
+                        i += run;
+                    }
+                }
+                '!' if rest.starts_with("![") => {
+                    if let Some((node, next)) = image_at(text, i) {
+                        scan.push_text(&mut plain);
+                        scan.push(Piece::Node(node));
+                        i = next;
+                    } else {
+                        scan.open |= link_openable(text, i);
+                        plain.push('!');
+                        i += 1;
+                    }
+                }
+                '[' => {
+                    if let Some((node, next)) = link_at(text, i) {
+                        scan.push_text(&mut plain);
+                        scan.push(Piece::Node(node));
+                        i = next;
+                    } else {
+                        scan.open |= link_openable(text, i);
+                        plain.push('[');
+                        i += 1;
+                    }
+                }
+                '<' => {
+                    if let Some((node, next)) = autolink_at(text, i) {
+                        scan.push_text(&mut plain);
+                        scan.push(Piece::Node(node));
+                        i = next;
+                    } else {
+                        scan.open |= autolink_forming(&rest[1..]);
+                        plain.push('<');
+                        i += 1;
+                    }
+                }
+                '&' => {
+                    if let Some((decoded, len)) = entity_at(rest) {
+                        plain.push_str(&decoded);
+                        i += len;
+                    } else {
+                        scan.open |= entity_forming(&rest[1..]);
+                        plain.push('&');
+                        i += 1;
+                    }
+                }
+                '*' | '_' | '~' => {
+                    let run = rest.bytes().take_while(|&b| b == c as u8).count();
+                    // Strikethrough is a `~~` pair; any other tilde run is text.
+                    let delim = (c != '~' || run == 2)
+                        .then(|| DelimRun::new(text, i, i + run, c))
+                        .filter(|d| d.can_open || d.can_close);
+                    match delim {
+                        Some(d) => {
+                            scan.push_text(&mut plain);
+                            let id = scan.push(Piece::Delim(d));
+                            scan.stack.push(Some(id));
+                        }
+                        None => plain.push_str(&rest[..run]),
+                    }
+                    i += run;
+                }
+                _ => {
+                    plain.push(c);
+                    i += c.len_utf8();
+                }
             }
-            // A valid opener with no closer, or a non-flanking marker: fall
-            // through so the marker char is taken as literal text.
-            return None;
+        }
+        scan.push_text(&mut plain);
+        scan.process_emphasis();
+        // A run that can still open, unmatched, waits on a closer that may
+        // stream in later.
+        scan.open |= scan
+            .stack
+            .iter()
+            .flatten()
+            .any(|&id| matches!(scan.pieces[id], Piece::Delim(d) if d.can_open && d.len > 0));
+        scan
+    }
+
+    /// Append a piece at the end of the list, returning its arena id.
+    fn push(&mut self, piece: Piece) -> usize {
+        let id = self.pieces.len();
+        self.pieces.push(piece);
+        self.prev.push(self.tail);
+        self.next.push(None);
+        match self.tail {
+            Some(t) => self.next[t] = Some(id),
+            None => self.head = Some(id),
+        }
+        self.tail = Some(id);
+        id
+    }
+
+    /// Flush the accumulated plain text as a piece (nothing when empty).
+    fn push_text(&mut self, plain: &mut String) {
+        if !plain.is_empty() {
+            self.push(Piece::Text(std::mem::take(plain)));
         }
     }
-    None
-}
 
-/// Constructor for an emphasis span's parsed content (`Bold`/`Italic`/`Strike`).
-type EmphasisCtor = fn(Vec<Inline>) -> Inline;
-
-/// The emphasis/strike markers in precedence order (longest first, so `**` beats
-/// `*`), each paired with the [`Inline`] constructor for its parsed content.
-const EMPHASIS: &[(&str, EmphasisCtor)] = &[
-    ("~~", Inline::Strike),
-    ("**", Inline::Bold),
-    ("__", Inline::Bold),
-    ("*", Inline::Italic),
-    ("_", Inline::Italic),
-];
-
-/// Whether a delimiter that could still *open* an element starts at byte `i` — a
-/// backtick, a link `[`/`![`, or a flanking emphasis marker. Used by
-/// [`has_open_inline`] to tell an unsettled opener from a settled literal.
-fn opener_at(text: &str, i: usize) -> bool {
-    let rest = &text[i..];
-    if rest.starts_with('`') {
-        return true; // a backtick run could always close later
-    }
-    if rest.starts_with("![") || rest.starts_with('[') {
-        return link_openable(text, i);
-    }
-    EMPHASIS
-        .iter()
-        .any(|(marker, _)| rest.starts_with(marker) && emphasis_opener_ok(text, i, marker))
-}
-
-/// If a flanking emphasis run of `marker` at byte `i` has a matching closer,
-/// return its inner text and the byte index past the closing marker.
-fn emphasis_at<'a>(text: &'a str, i: usize, marker: &str) -> Option<(&'a str, usize)> {
-    if !emphasis_opener_ok(text, i, marker) {
-        return None;
-    }
-    let open_end = i + marker.len();
-    let mut search = open_end;
-    while let Some(rel) = text[search..].find(marker) {
-        let close = search + rel;
-        if close > open_end && emphasis_closer_ok(text, close, marker) {
-            return Some((&text[open_end..close], close + marker.len()));
+    /// The delimiter run behind arena id `id`.
+    fn delim(&self, id: usize) -> DelimRun {
+        match self.pieces[id] {
+            Piece::Delim(d) => d,
+            _ => unreachable!("the stack holds only delimiter pieces"),
         }
-        search = close + marker.len();
     }
-    None
+
+    /// CommonMark's `process_emphasis` over the whole delimiter stack: each
+    /// closer, left to right, takes the nearest compatible opener; the pieces
+    /// between them become one `Bold`/`Italic`/`Strike` node. `openers_bottom`
+    /// remembers, per kind of closer, how far back a search already came up
+    /// empty, which keeps a line full of unmatched markers linear.
+    fn process_emphasis(&mut self) {
+        let mut openers_bottom: Vec<((char, bool, usize), usize)> = Vec::new();
+        let mut pos = 0;
+        while pos < self.stack.len() {
+            let Some(cid) = self.stack[pos] else {
+                pos += 1;
+                continue;
+            };
+            let closer = self.delim(cid);
+            if !closer.can_close || closer.len == 0 {
+                pos += 1;
+                continue;
+            }
+            let key = (closer.ch, closer.can_open, closer.orig % 3);
+            let bottom = openers_bottom
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map_or(0, |&(_, b)| b);
+            let found = (bottom..pos).rev().find(|&p| {
+                self.stack[p].is_some_and(|oid| {
+                    let opener = self.delim(oid);
+                    opener.ch == closer.ch
+                        && opener.can_open
+                        && opener.len > 0
+                        && !((opener.can_close || closer.can_open)
+                            && (opener.orig + closer.orig).is_multiple_of(3)
+                            && !(opener.orig.is_multiple_of(3) && closer.orig.is_multiple_of(3)))
+                })
+            });
+            let Some(op) = found else {
+                match openers_bottom.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, b)) => *b = pos,
+                    None => openers_bottom.push((key, pos)),
+                }
+                if !closer.can_open {
+                    self.stack[pos] = None;
+                }
+                pos += 1;
+                continue;
+            };
+            let oid = self.stack[op].expect("found on the stack");
+            let opener = self.delim(oid);
+            let used = if closer.ch == '~' || (opener.len >= 2 && closer.len >= 2) {
+                2
+            } else {
+                1
+            };
+            let children = self.take_between(oid, cid);
+            let node = match (closer.ch, used) {
+                ('~', _) => Inline::Strike(children),
+                (_, 2) => Inline::Bold(children),
+                _ => Inline::Italic(children),
+            };
+            self.insert_between(oid, cid, Piece::Node(node));
+            for slot in &mut self.stack[op + 1..pos] {
+                *slot = None;
+            }
+            if let Piece::Delim(d) = &mut self.pieces[oid] {
+                d.len -= used;
+                if d.len == 0 {
+                    self.stack[op] = None;
+                }
+            }
+            if let Piece::Delim(d) = &mut self.pieces[cid] {
+                d.len -= used;
+                if d.len == 0 {
+                    self.stack[pos] = None;
+                    pos += 1;
+                }
+            }
+        }
+    }
+
+    /// Detach every piece strictly between arena ids `from` and `to`,
+    /// returning them as inline nodes (an unmatched run between them is
+    /// literal text now).
+    fn take_between(&mut self, from: usize, to: usize) -> Vec<Inline> {
+        let mut out = Vec::new();
+        let mut cur = self.next[from];
+        while let Some(id) = cur {
+            if id == to {
+                break;
+            }
+            cur = self.next[id];
+            let piece = std::mem::replace(&mut self.pieces[id], Piece::Gone);
+            push_piece_inline(&mut out, piece);
+        }
+        self.next[from] = Some(to);
+        self.prev[to] = Some(from);
+        out
+    }
+
+    /// Link a new piece between adjacent arena ids `from` and `to`.
+    fn insert_between(&mut self, from: usize, to: usize, piece: Piece) {
+        let id = self.pieces.len();
+        self.pieces.push(piece);
+        self.prev.push(Some(from));
+        self.next.push(Some(to));
+        self.next[from] = Some(id);
+        self.prev[to] = Some(id);
+    }
+
+    /// The finished nodes in line order, adjacent text merged.
+    fn into_inlines(mut self) -> Vec<Inline> {
+        let mut out = Vec::new();
+        let mut cur = self.head;
+        while let Some(id) = cur {
+            cur = self.next[id];
+            let piece = std::mem::replace(&mut self.pieces[id], Piece::Gone);
+            push_piece_inline(&mut out, piece);
+        }
+        out
+    }
 }
 
-/// Whether an emphasis run of `marker` at byte `i` can **open**: the char right
-/// after the run is non-whitespace (left-flanking), and — for `_`/`__` — the char
-/// before is not alphanumeric (no intraword underscore emphasis).
-fn emphasis_opener_ok(text: &str, i: usize, marker: &str) -> bool {
-    let open_end = i + marker.len();
-    match text[open_end..].chars().next() {
-        Some(c) if !c.is_whitespace() => {}
-        _ => return false,
+/// Append `piece` to `out` as inline nodes, merging text into a preceding text
+/// node: a delimiter run's unconsumed markers are literal text by now.
+fn push_piece_inline(out: &mut Vec<Inline>, piece: Piece) {
+    let text = match piece {
+        Piece::Text(t) => t,
+        Piece::Delim(d) if d.len > 0 => d.ch.to_string().repeat(d.len),
+        Piece::Delim(_) | Piece::Gone => return,
+        Piece::Node(node) => {
+            out.push(node);
+            return;
+        }
+    };
+    if let Some(Inline::Text(last)) = out.last_mut() {
+        last.push_str(&text);
+    } else {
+        out.push(Inline::Text(text));
     }
-    if marker.starts_with('_')
-        && text[..i]
-            .chars()
-            .next_back()
-            .is_some_and(char::is_alphanumeric)
-    {
-        return false;
-    }
-    true
-}
-
-/// Whether a `marker` run ending a span at byte `close` can **close**: the char
-/// before it is non-whitespace (right-flanking), and — for `_`/`__` — the char
-/// after is not alphanumeric.
-fn emphasis_closer_ok(text: &str, close: usize, marker: &str) -> bool {
-    if text[..close]
-        .chars()
-        .next_back()
-        .is_none_or(char::is_whitespace)
-    {
-        return false;
-    }
-    if marker.starts_with('_')
-        && text[close + marker.len()..]
-            .chars()
-            .next()
-            .is_some_and(char::is_alphanumeric)
-    {
-        return false;
-    }
-    true
 }
 
 /// Parse a `` ` ``-delimited code span at byte `i`: a run of N backticks closed by
@@ -831,7 +1104,7 @@ fn link_at(text: &str, i: usize) -> Option<(Inline, usize)> {
     Some((
         Inline::Link {
             text: parse_inline(label),
-            url: url.to_string(),
+            url: link_destination(url),
         },
         next,
     ))
@@ -843,10 +1116,41 @@ fn image_at(text: &str, i: usize) -> Option<(Inline, usize)> {
     let (_url, next) = paren_content(text, after_alt)?;
     Some((
         Inline::Image {
-            alt: alt.to_string(),
+            alt: unescape_punct(alt),
         },
         next,
     ))
+}
+
+/// The destination inside a link's parens: a `<…>`-bracketed target, else
+/// everything up to the first space — an optional `"title"` after it is
+/// dropped, as codex's parser drops it — with escapes resolved.
+fn link_destination(paren: &str) -> String {
+    let paren = paren.trim();
+    let dest = match paren.strip_prefix('<').and_then(|p| p.split_once('>')) {
+        Some((inner, _)) => inner,
+        None => paren.split_whitespace().next().unwrap_or(""),
+    };
+    unescape_punct(dest)
+}
+
+/// `s` with each backslash-escaped ASCII punctuation character unescaped — a
+/// link target or alt text keeps none of the escapes its source needed.
+fn unescape_punct(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&n) = chars.peek()
+            && n.is_ascii_punctuation()
+        {
+            out.push(n);
+            chars.next();
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Whether a `[`/`![` at byte `i` could still grow into a link — its bracket is
@@ -904,6 +1208,218 @@ fn delimited(text: &str, i: usize, open: u8, close: u8) -> Option<(&str, usize)>
         j += 1;
     }
     None
+}
+
+/// Parse an autolink at byte `i` (`text[i] == '<'`): a URL — a 2–32 character
+/// scheme, a `:`, then no space, `<` or `>` — or an email address, closed by
+/// `>`. Anything else (`<div>`, `a < b`) is not one.
+fn autolink_at(text: &str, i: usize) -> Option<(Inline, usize)> {
+    let rest = &text[i + 1..];
+    // The body ends at the first character an autolink cannot hold, which
+    // must be the closing `>` — a scan bounded by one word.
+    let end = rest.find(|c: char| c == '>' || c == '<' || c.is_whitespace() || c.is_control())?;
+    let body = &rest[..end];
+    if !rest[end..].starts_with('>') || body.is_empty() {
+        return None;
+    }
+    let node = if is_uri_autolink(body) {
+        Inline::Url {
+            text: body.to_string(),
+            target: body.to_string(),
+        }
+    } else if is_email_autolink(body) {
+        Inline::Url {
+            text: body.to_string(),
+            target: format!("mailto:{body}"),
+        }
+    } else {
+        return None;
+    };
+    Some((node, i + 1 + end + 1))
+}
+
+/// Whether `body` is a CommonMark absolute URI: a scheme of 2–32 characters
+/// (a letter, then letters, digits, `+`, `.` or `-`), a `:`, then the rest.
+fn is_uri_autolink(body: &str) -> bool {
+    let Some(colon) = body.find(':') else {
+        return false;
+    };
+    let scheme = &body[..colon];
+    (2..=32).contains(&scheme.len())
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+}
+
+/// Whether `c` may appear in an email autolink's local part.
+fn is_email_local_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c)
+}
+
+/// Whether `body` is a CommonMark email autolink: a local part, `@`, then
+/// dot-separated labels of letters, digits and inner hyphens.
+fn is_email_autolink(body: &str) -> bool {
+    let Some((local, domain)) = body.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && local.chars().all(is_email_local_char)
+        && !domain.is_empty()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+/// Whether `rest` — everything after a `<` up to the line's end — could still
+/// grow into an autolink: no `>` yet, nothing an autolink can't hold, and
+/// still on the way to a scheme or an address.
+fn autolink_forming(rest: &str) -> bool {
+    if rest
+        .chars()
+        .any(|c| c == '>' || c == '<' || c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+    let scheme_prefix = match rest.find(':') {
+        Some(colon) => {
+            let scheme = &rest[..colon];
+            (2..=32).contains(&scheme.len())
+                && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        }
+        None => {
+            rest.len() <= 32
+                && rest.chars().next().is_none_or(|c| c.is_ascii_alphabetic())
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        }
+    };
+    let email_prefix = match rest.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && local.chars().all(is_email_local_char)
+                && domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+        }
+        None => rest.chars().all(is_email_local_char),
+    };
+    scheme_prefix || email_prefix
+}
+
+/// The named HTML entities decoded in prose — the ones a model actually emits.
+/// Anything else stays literal, as an unknown `&name;` does in CommonMark.
+const ENTITIES: &[(&str, &str)] = &[
+    ("amp", "&"),
+    ("lt", "<"),
+    ("gt", ">"),
+    ("quot", "\""),
+    ("apos", "'"),
+    ("nbsp", "\u{a0}"),
+    ("copy", "©"),
+    ("reg", "®"),
+    ("trade", "™"),
+    ("hellip", "…"),
+    ("mdash", "—"),
+    ("ndash", "–"),
+    ("lsquo", "‘"),
+    ("rsquo", "’"),
+    ("ldquo", "“"),
+    ("rdquo", "”"),
+    ("laquo", "«"),
+    ("raquo", "»"),
+    ("bull", "•"),
+    ("middot", "·"),
+    ("times", "×"),
+    ("divide", "÷"),
+    ("plusmn", "±"),
+    ("minus", "−"),
+    ("deg", "°"),
+    ("micro", "µ"),
+    ("para", "¶"),
+    ("sect", "§"),
+    ("cent", "¢"),
+    ("pound", "£"),
+    ("euro", "€"),
+    ("yen", "¥"),
+    ("larr", "←"),
+    ("rarr", "→"),
+    ("uarr", "↑"),
+    ("darr", "↓"),
+    ("harr", "↔"),
+    ("lArr", "⇐"),
+    ("rArr", "⇒"),
+    ("hArr", "⇔"),
+    ("le", "≤"),
+    ("ge", "≥"),
+    ("ne", "≠"),
+    ("asymp", "≈"),
+    ("infin", "∞"),
+    ("check", "✓"),
+    ("cross", "✗"),
+    ("star", "☆"),
+    ("hearts", "♥"),
+    ("zwj", "\u{200d}"),
+    ("zwnj", "\u{200c}"),
+    ("ensp", "\u{2002}"),
+    ("emsp", "\u{2003}"),
+    ("thinsp", "\u{2009}"),
+];
+
+/// Decode an entity at the start of `rest` (`rest` starts with `&`): a named
+/// one from [`ENTITIES`], or a decimal (`&#169;`) / hex (`&#x2014;`) character
+/// reference — an invalid or zero code point becomes U+FFFD, as CommonMark
+/// says. Returns the text and the entity's byte length.
+fn entity_at(rest: &str) -> Option<(String, usize)> {
+    // An entity name or number is short and ASCII: bound the look-ahead so a
+    // line of `&`s stays linear.
+    let body_len = rest[1..]
+        .bytes()
+        .take(33)
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'#')
+        .count();
+    if rest.as_bytes().get(1 + body_len) != Some(&b';') {
+        return None;
+    }
+    let body = &rest[1..1 + body_len];
+    let decoded = if let Some(num) = body.strip_prefix('#') {
+        let (digits, radix) = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => (hex, 16),
+            None => (num, 10),
+        };
+        let max = if radix == 16 { 6 } else { 7 };
+        if digits.is_empty() || digits.len() > max || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        let code = u32::from_str_radix(digits, radix).ok()?;
+        let c = char::from_u32(code)
+            .filter(|&c| c != '\0')
+            .unwrap_or('\u{fffd}');
+        c.to_string()
+    } else {
+        ENTITIES
+            .iter()
+            .find(|(name, _)| *name == body)
+            .map(|(_, value)| (*value).to_string())?
+    };
+    Some((decoded, body_len + 2))
+}
+
+/// Whether `rest` — everything after an `&` up to the line's end — could still
+/// become an entity once its `;` arrives.
+fn entity_forming(rest: &str) -> bool {
+    let body = rest
+        .strip_prefix('#')
+        .map_or(rest, |n| n.strip_prefix(['x', 'X']).unwrap_or(n));
+    rest.len() <= 32 && body.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 // --- List items and blockquotes (`docs/markdown.md`). Both are **line-local**
@@ -1208,6 +1724,199 @@ mod tests {
     }
 
     #[test]
+    fn parse_inline_resolves_triple_and_nested_runs_like_commonmark() {
+        use Inline::{Bold, Italic, Text};
+        // `***x***` is emphasis wrapping strong (CommonMark / pulldown-cmark),
+        // where the old longest-marker-first matcher showed `*x*` in bold.
+        let bold_italic = vec![Italic(vec![Bold(vec![Text("x".into())])])];
+        assert_eq!(parse_inline("***x***"), bold_italic);
+        assert_eq!(parse_inline("___x___"), bold_italic);
+        // A closing `***` run splits between the two openers it closes.
+        assert_eq!(
+            parse_inline("**x *y***"),
+            vec![Bold(vec![
+                Text("x ".into()),
+                Italic(vec![Text("y".into())])
+            ])]
+        );
+        assert_eq!(
+            parse_inline("*x **y***"),
+            vec![Italic(vec![
+                Text("x ".into()),
+                Bold(vec![Text("y".into())])
+            ])]
+        );
+        // A leftover marker of a longer run stays literal.
+        assert_eq!(
+            parse_inline("**x*"),
+            vec![Text("*".into()), Italic(vec![Text("x".into())])]
+        );
+    }
+
+    #[test]
+    fn parse_inline_follows_commonmark_flanking() {
+        use Inline::{Bold, Text};
+        assert_eq!(
+            parse_inline("**Status:** Most popular"),
+            vec![
+                Bold(vec![Text("Status:".into())]),
+                Text(" Most popular".into())
+            ]
+        );
+        assert_eq!(
+            parse_inline("a**b**c"),
+            vec![
+                Text("a".into()),
+                Bold(vec![Text("b".into())]),
+                Text("c".into())
+            ],
+            "intraword `*` emphasis"
+        );
+        assert_eq!(
+            parse_inline("snake_case_name_"),
+            vec![Text("snake_case_name_".into())],
+            "intraword `_` is never emphasis"
+        );
+        assert_eq!(
+            parse_inline("**foo:**bar"),
+            vec![Text("**foo:**bar".into())],
+            "a closer after punctuation needs a space or punctuation after it"
+        );
+        // CJK text has no spaces between words, so a closer after fullwidth
+        // punctuation (or an opener before it) next to a CJK letter still
+        // counts — the common `**标题：**内容` shape.
+        assert_eq!(
+            parse_inline("**注意：**这是"),
+            vec![Bold(vec![Text("注意：".into())]), Text("这是".into())]
+        );
+        assert_eq!(
+            parse_inline("这是**“引用”**吧"),
+            vec![
+                Text("这是".into()),
+                Bold(vec![Text("“引用”".into())]),
+                Text("吧".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_inline_backslash_escapes_drop_the_backslash() {
+        use Inline::{Code, Text};
+        assert_eq!(
+            parse_inline(r"\*not italic\*"),
+            vec![Text("*not italic*".into())]
+        );
+        assert_eq!(parse_inline(r"1\. item"), vec![Text("1. item".into())]);
+        assert_eq!(parse_inline(r"a\_b\_c"), vec![Text("a_b_c".into())]);
+        assert_eq!(parse_inline(r"\\"), vec![Text(r"\".into())]);
+        assert_eq!(
+            parse_inline(r"C:\path\to"),
+            vec![Text(r"C:\path\to".into())],
+            "a backslash before a non-punctuation char is literal"
+        );
+        assert_eq!(
+            parse_inline(r"\`not code\`"),
+            vec![Text("`not code`".into())]
+        );
+        assert_eq!(
+            parse_inline(r"`a\*b`"),
+            vec![Code(r"a\*b".into())],
+            "escapes are literal inside code"
+        );
+    }
+
+    #[test]
+    fn parse_inline_angle_autolinks_drop_the_brackets() {
+        use Inline::{Text, Url};
+        assert_eq!(
+            parse_inline("see <https://x.com/a>."),
+            vec![
+                Text("see ".into()),
+                Url {
+                    text: "https://x.com/a".into(),
+                    target: "https://x.com/a".into()
+                },
+                Text(".".into())
+            ]
+        );
+        assert_eq!(
+            parse_inline("<me@example.com>"),
+            vec![Url {
+                text: "me@example.com".into(),
+                target: "mailto:me@example.com".into()
+            }]
+        );
+        assert_eq!(parse_inline("<div>"), vec![Text("<div>".into())]);
+        assert_eq!(parse_inline("a < b > c"), vec![Text("a < b > c".into())]);
+        assert_eq!(
+            parse_inline("<https://x.com/a b>"),
+            vec![Text("<https://x.com/a b>".into())],
+            "an autolink holds no space"
+        );
+    }
+
+    #[test]
+    fn parse_inline_decodes_html_entities() {
+        use Inline::Text;
+        assert_eq!(
+            parse_inline("Tom &amp; Jerry"),
+            vec![Text("Tom & Jerry".into())]
+        );
+        assert_eq!(parse_inline("&lt;tag&gt;"), vec![Text("<tag>".into())]);
+        assert_eq!(parse_inline("&#169; &#x2014;"), vec![Text("© —".into())]);
+        assert_eq!(parse_inline("a&nbsp;b"), vec![Text("a\u{a0}b".into())]);
+        assert_eq!(
+            parse_inline("&bogus; AT&T"),
+            vec![Text("&bogus; AT&T".into())]
+        );
+        assert_eq!(parse_inline("&#0;"), vec![Text("\u{fffd}".into())]);
+    }
+
+    #[test]
+    fn parse_inline_stays_linear_on_a_line_of_unmatched_markers() {
+        // Every closer that finds no opener raises `openers_bottom`, so a huge
+        // line of markers that never pair (a minified blob, a glob list) costs
+        // one pass instead of a look-back per marker.
+        let closers = "a* ".repeat(60_000);
+        let mixed = "a*a ".repeat(60_000);
+        let started = std::time::Instant::now();
+        assert_eq!(parse_inline(&closers), vec![Inline::Text(closers.clone())]);
+        assert_eq!(parse_inline(&mixed).len(), 60_000 + 1);
+        assert!(!has_open_inline(&closers));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn has_open_inline_tracks_the_new_inline_forms() {
+        assert!(has_open_inline("a ***b"), "an unmatched triple opener");
+        assert!(
+            has_open_inline(r"trailing \"),
+            "the next char may be escaped"
+        );
+        assert!(
+            !has_open_inline(r"\*not open"),
+            "an escaped marker opens nothing"
+        );
+        assert!(
+            has_open_inline("see <https://x"),
+            "an autolink still forming"
+        );
+        assert!(
+            has_open_inline("mail <me@exa"),
+            "an email autolink still forming"
+        );
+        assert!(!has_open_inline("a < b"), "a spaced `<` is settled");
+        assert!(has_open_inline("Tom &amp"), "an entity still forming");
+        assert!(has_open_inline("Tom &"), "a trailing `&` may start one");
+        assert!(!has_open_inline("Tom & Jerry"));
+        assert!(!has_open_inline("**Status:** done"));
+    }
+
+    #[test]
     fn has_open_inline_flags_unsettled_trailing_lines() {
         // An unclosed delimiter could still restyle earlier text → withhold.
         assert!(has_open_inline("a **b"));
@@ -1275,6 +1984,11 @@ mod tests {
             table_cells(r"| a \| b | c |"),
             vec!["a | b", "c"],
             "an escaped pipe stays inside its cell, unescaped"
+        );
+        assert_eq!(
+            table_cells(r"| \*x\* | \\| c |"),
+            vec![r"\*x\*", r"\\", "c"],
+            "other escapes are left whole for the inline parser"
         );
     }
 

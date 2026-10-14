@@ -449,6 +449,49 @@ fn assistant_headings_keep_the_hashes_and_style_per_level_like_codex() {
 }
 
 #[test]
+fn heading_inline_markdown_drops_its_markers_like_codex() {
+    // Models wrap whole headings in emphasis (`## **Title**`). Codex parses
+    // a heading's text as inline markdown, so the `**` is consumed and only
+    // the `#`s stay — a heading that showed `## **Top 10…**` was the
+    // reported bug. The level's dress still applies, composed with the
+    // inline styles.
+    let h2 = message_lines(Role::Assistant, "## **Top 10 PHP Frameworks in 2026**", 80);
+    assert_eq!(plain(&h2[0]), "● ## Top 10 PHP Frameworks in 2026");
+
+    let h3 = message_lines(Role::Assistant, "### **1. Laravel**", 80);
+    assert_eq!(plain(&h3[0]), "● ### 1. Laravel");
+    let laravel = h3[0]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Laravel"))
+        .expect("heading text span");
+    assert!(
+        laravel
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::ITALIC),
+        "h3 keeps bold+italic under the consumed `**`"
+    );
+
+    let h4 = message_lines(Role::Assistant, "#### Run `cargo test` *first*", 80);
+    assert_eq!(plain(&h4[0]), "● #### Run cargo test first");
+    let code = h4[0]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("cargo"))
+        .expect("code span");
+    assert_eq!(
+        code.style.fg,
+        Some(inline_code_color()),
+        "code keeps its colour"
+    );
+    assert!(
+        code.style.add_modifier.contains(Modifier::ITALIC),
+        "and the h4 dress"
+    );
+}
+
+#[test]
 fn assistant_thematic_break_renders_an_em_dash_rule_like_codex() {
     // `---`/`***`/`___` after a blank line render as codex's `———` (Event::Rule),
     // with the raw markers gone.

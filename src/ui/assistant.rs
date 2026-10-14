@@ -2,7 +2,7 @@
 //! highlighting, headings, lists, and quotes — driven line by line so it stays
 //! prefix-stable while streaming. See `docs/markdown.md`.
 
-use super::inline::{inline_spans, linkify_code_segments, linkify_segments, wrap_inline};
+use super::inline::{inline_spans, linkify_code_segments, wrap_inline};
 use super::table::{join_wrapped_table_row, table_block_rows};
 use super::theme::*;
 use super::wrap::cols;
@@ -319,37 +319,38 @@ impl AssistantRenderer {
         if let Some((level, htext)) = markdown::heading_level(line) {
             // Codex keeps the `#` markers visible (`"#".repeat(level)`) and styles
             // the whole line per level — no colour, just modifiers. Normalise the
-            // marker run + a single space, then word-wrap the reconstructed heading.
+            // marker run + a single space; the text after it is inline markdown
+            // like any other (codex parses a heading's content), so a model's
+            // `## **Title**` reads `## Title` — the level's dress the base the
+            // inline styles compose onto.
             let style = heading_style(level);
             let hashes = "#".repeat(level as usize);
-            let content = if htext.is_empty() {
-                hashes
+            let mut segments = if htext.is_empty() {
+                vec![(hashes, style)]
             } else {
-                format!("{hashes} {htext}")
+                vec![(format!("{hashes} "), style)]
             };
-            wrap_inline(
-                &linkify_segments(vec![(content, style)]),
-                self.content_width,
-            )
-            .into_iter()
-            .map(|row| {
-                // Restore the heading dress on word separators, then coalesce
-                // equal styles: a combining mark must share the preceding
-                // space's span or ratatui drops its zero-width grapheme.
-                let mut merged: Vec<Span<'static>> = Vec::with_capacity(row.len());
-                for mut span in row {
-                    span.style = style.patch(span.style);
-                    if let Some(previous) = merged.last_mut()
-                        && previous.style == span.style
-                    {
-                        previous.content.to_mut().push_str(&span.content);
-                    } else {
-                        merged.push(span);
+            segments.extend(inline_spans(&markdown::parse_inline(htext), style));
+            wrap_inline(&segments, self.content_width)
+                .into_iter()
+                .map(|row| {
+                    // Restore the heading dress on word separators, then coalesce
+                    // equal styles: a combining mark must share the preceding
+                    // space's span or ratatui drops its zero-width grapheme.
+                    let mut merged: Vec<Span<'static>> = Vec::with_capacity(row.len());
+                    for mut span in row {
+                        span.style = style.patch(span.style);
+                        if let Some(previous) = merged.last_mut()
+                            && previous.style == span.style
+                        {
+                            previous.content.to_mut().push_str(&span.content);
+                        } else {
+                            merged.push(span);
+                        }
                     }
-                }
-                merged
-            })
-            .collect()
+                    merged
+                })
+                .collect()
         } else if is_thematic_break(line, was_blank) {
             // Codex renders `---`/`***`/`___` as an unstyled `———` rule on its own
             // row (`Event::Rule`). A single settled row, so prefix-stable. Checked
