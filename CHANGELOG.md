@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-14
+
 ### Added
 
 - **A built-in `web-search` skill searches the web.** Mention `$web-search`,
@@ -1162,7 +1164,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/linuztx/alter-zero/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/linuztx/alter-zero/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/linuztx/alter-zero/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/linuztx/alter-zero/compare/v0.10.0...v0.11.0
