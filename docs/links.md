@@ -98,23 +98,27 @@ survives the trip.
      code colour — no blue/underline override. Previously, putting a long
      token URL inside backticks silently bypassed OSC 8: only the first
      wrapped row auto-detected, and clicking lost the rest of the token.
-   - `linkify_segments` and `linkify_code_segments` attach targets to
-     already-styled, **unwrapped** text without changing its bytes or visible
-     styling. They scan the whole source line, then intersect URL byte ranges
-     with its style spans, so syntax highlighting that splits a scheme, path,
-     or query still gives every piece the same full target. Code detection
+   - `linkify_code_segments` attaches targets to already-styled,
+     **unwrapped** code without changing its bytes or visible styling. It
+     scans the whole source line, then intersects URL byte ranges with its
+     style spans, so syntax highlighting that splits a scheme, path, or query
+     still gives every piece the same full target. Code detection
      (`links::find_code_urls`) respects an opening quote, so `').json()` and
      adjacent quoted strings are never swallowed into the target. A quoted
      URL or one starting a code literal keeps trailing punctuation exactly
      (`?token=abc!` includes `!`); the decision depends only on text before
      the URL, so later streamed code cannot change an already-committed
-     target. Prose/heading detection retains its punctuation trimming.
-     Escapes and interpolations in source strings are not evaluated.
-     `AssistantRenderer` marks code before `code_content_rows` and headings
-     before `wrap_inline`. Code spacing, syntax colours, and heading modifiers
-     stay intact; adjacent equal-style heading spans are merged so combining
-     marks stay attached to their preceding glyph. Separate source lines are
-     never joined into a guessed URL.
+     target. Escapes and interpolations in source strings are not evaluated.
+     `AssistantRenderer` marks code before `code_content_rows`; code spacing
+     and syntax colours stay intact. Separate source lines are never joined
+     into a guessed URL.
+   - A **heading's** text is inline markdown like prose (`docs/markdown.md`
+     *Headings*), so a bare URL in it takes the prose dress and carrier
+     through `inline_spans`, under the heading's modifiers; adjacent
+     equal-style heading spans are merged so combining marks stay attached to
+     their preceding glyph. An **autolink** (`<https://…>`) is
+     `Inline::Url`: its bare URL — the angle brackets dropped — in the link
+     dress, carrying its target (`mailto:` for an address).
    - Non-markdown roles (user/system/shell text) and tool output still rely
      on the terminal's detection of unwrapped URLs.
 3. **`src/ui/model_view.rs` — the picker family's marking.** Assistant prose

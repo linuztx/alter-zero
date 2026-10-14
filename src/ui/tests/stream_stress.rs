@@ -116,6 +116,28 @@ const FRAGMENTS: &[&str] = &[
     "||||",            // pipes only
     "|---|",           // a bare delimiter row with no header
     "text\u{200D}zwj", // a lone ZWJ
+    // --- the codex block layout's containers and the CommonMark inline forms ---
+    "- [ ] task",
+    "- [x]",
+    "1. [x] done",
+    "> - quoted item",
+    "  - two-space child",
+    "   1. three-space ordered",
+    "      deep continuation",
+    "  lazy continuation",
+    "+",
+    "1.",
+    "10)",
+    "- - -",
+    "## closed ##",
+    "***both***",
+    "**x *y***",
+    "\\",
+    "&amp;",
+    "&#x2014;",
+    "&nbs",
+    "<me@e.co>",
+    "<http://unclosed",
 ];
 
 /// Joiners between fragments — the newline shapes decide block boundaries.
@@ -251,8 +273,10 @@ fn fuzz_stream_render_agrees_with_batch_on_hostile_soup() {
     // as the corpus and the assertion grew: 2000 docs × 8 widths at two seeds
     // under the old suffix check, then 1500 × 8 under the whole-reply
     // equality, then 2500 × 9 with the setext/escape/autolink/reference-link/
-    // nested-quote/ZWJ/stacked-mark classes added. This committed size keeps
-    // the suite fast.)
+    // nested-quote/ZWJ/stacked-mark classes added, then 2500 × 9 at two seeds
+    // with the codex block layout's containers — quotes holding lists, task
+    // boxes, lazy and continuation lines — and the CommonMark inline forms
+    // added. This committed size keeps the suite fast.)
     let mut rng = Rng(0x5EED_CAFE_F00D_0001);
     for case in 0..300 {
         let doc = hostile_doc(&mut rng);

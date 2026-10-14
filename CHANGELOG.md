@@ -12,6 +12,33 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Replies render their markdown the way codex does, with no stray
+  markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
+  Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
+  instead of the model's `-`, `*` or `+`, task items show `☐`/`☑`, and an
+  ordered list counts from its first number, so `1.`, `1.`, `1.` reads 1, 2,
+  3. Nested lists sit four columns per level, and text under an item hangs
+  under it, including a lazy unindented line, a second paragraph or a code
+  block. A quote can hold a list (`> - item` shows a bullet) or a heading.
+  Blocks are set one blank line apart even when the model left none, a run
+  of blank lines collapses to one, a loose list closes up, and an item that
+  wraps onto a second row gets a blank line before the next. `---` right
+  after a line of text draws a rule instead of showing the dashes
+  (`docs/markdown.md`).
+
+### Fixed
+
+- **Bold-italic and escaped markers no longer leak `*` into a reply.**
+  `***both***` renders bold italic instead of `*both*` in bold, a closing
+  `***` closes both the bold and the italic it ends, and `\*literal\*` shows
+  `*literal*`. Emphasis follows CommonMark's rules, with an exception for
+  CJK text so `**标题：**内容` is still bold. `<https://…>` links drop their
+  angle brackets and HTML entities like `&amp;` decode. A paragraph indented
+  four spaces under a numbered item is no longer drawn as code, and a code
+  fence under a nested item no longer shows its backticks.
+
 ## [0.14.0] - 2026-10-14
 
 ### Added

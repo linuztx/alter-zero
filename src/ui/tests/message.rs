@@ -1,9 +1,7 @@
 //! Committed conversation lines and the repaint helpers.
 
 use super::*;
-use crate::ui::theme::{
-    THEMATIC_BREAK, ai_color, error_color, list_marker_color, system_color, user_bg_color,
-};
+use crate::ui::theme::{ai_color, error_color, list_marker_color, system_color, user_bg_color};
 use crate::ui::wrap::cols;
 
 #[test]
@@ -99,24 +97,6 @@ fn message_lines_pads_user_lines_to_full_display_width() {
         let total: usize = line.spans.iter().map(|s| cols(s.content.as_ref())).sum();
         assert_eq!(total as u16, width, "user line fills full display width");
     }
-}
-
-#[test]
-fn a_dash_rule_without_a_preceding_blank_stays_literal() {
-    // `text\n---` is a setext H2 underline in codex, which we can't render;
-    // rather than fabricate a rule we leave `---` as literal prose.
-    let joined: Vec<String> = message_lines(Role::Assistant, "some text\n---", 80)
-        .iter()
-        .map(plain)
-        .collect();
-    assert!(
-        joined.iter().any(|l| l.contains("---")),
-        "literal --- kept: {joined:?}"
-    );
-    assert!(
-        !joined.iter().any(|l| l.contains(THEMATIC_BREAK)),
-        "no fabricated rule: {joined:?}"
-    );
 }
 
 #[test]

@@ -222,72 +222,250 @@ fn heading_combining_marks_survive_the_painted_buffer() {
     }
 }
 
-#[test]
-fn assistant_renders_bullet_and_ordered_lists() {
-    // Bullets keep the `-`, ordered items keep `N.`, and nesting indent
-    // survives (the earlier wrap_text-collapses-whitespace bug).
-    let text = "- first\n- second\n  - nested\n\n1. one\n2. two";
-    let rows: Vec<String> = message_lines(Role::Assistant, text, 40)
+// --- codex block layout: lists, quotes, block spacing (docs/markdown.md) ---
+
+/// An assistant reply's rendered rows as plain strings.
+fn rows(text: &str, width: u16) -> Vec<String> {
+    message_lines(Role::Assistant, text, width)
         .iter()
         .map(plain)
-        .collect();
+        .collect()
+}
+
+#[test]
+fn assistant_renders_bullet_and_ordered_lists() {
+    // Every bullet renders codex's `•` whatever the source marker, ordered
+    // items `N.`; a list of another type starts a new list, one blank line
+    // apart (the old renderer echoed `- ` and kept the source indent).
     assert_eq!(
-        rows,
+        rows("- first\n- second\n  - nested\n\n1. one\n2. two", 40),
         vec![
-            "● - first",
-            "  - second",
-            "    - nested",
+            "● • first",
+            "  • second",
+            "      • nested",
             "  ",
             "  1. one",
             "  2. two",
         ]
     );
+    assert_eq!(rows("* star\n* star", 40), vec!["● • star", "  • star"]);
+    assert_eq!(rows("+ plus", 40), vec!["● • plus"]);
 }
 
 #[test]
 fn assistant_keeps_every_nesting_level_of_a_deep_list() {
-    // Models nest 2 or 4 spaces per level; a third level (4+ spaces) must
-    // render DEEPER than its parent, not collapse to column 0 (the old ≤3
-    // indent cap fell through to prose, whose wrap collapsed the leading
-    // spaces — a child bullet rendered outdented below its own parent).
-    let text = "- a\n  - b\n    - c\n      - d";
-    let rows: Vec<String> = message_lines(Role::Assistant, text, 60)
-        .iter()
-        .map(plain)
-        .collect();
+    // Codex's geometry: four columns per level whatever the source indent,
+    // so a third level (4+ spaces) still renders deeper than its parent.
+    let expected = vec!["● • a", "      • b", "          • c", "              • d"];
+    assert_eq!(rows("- a\n  - b\n    - c\n      - d", 60), expected);
     assert_eq!(
-        rows,
-        vec!["● - a", "    - b", "      - c", "        - d"],
-        "each level two columns deeper than the one above"
+        rows("- a\n    - b\n        - c\n            - d", 60),
+        expected,
+        "four-space nesting lands on the same columns"
     );
 }
 
 #[test]
 fn a_nested_item_after_a_blank_stays_a_list_not_indented_code() {
     // A loose list (blank between parent and children) nests at 4 spaces —
-    // the indented-code rule must not swallow it. The ordered marker keeps
-    // its accent colour, which the verbatim code path would never apply.
-    let text = "- a\n\n    1. b";
-    let lines = message_lines(Role::Assistant, text, 60);
-    let rows: Vec<String> = lines.iter().map(plain).collect();
-    assert_eq!(rows, vec!["● - a", "  ", "      1. b"], "{rows:?}");
+    // the indented-code rule must not swallow it, and a nested list hugs its
+    // parent (no blank), as in codex. The ordered marker keeps its accent.
+    let lines = message_lines(Role::Assistant, "- a\n\n    1. b", 60);
+    let rendered: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(rendered, vec!["● • a", "      1. b"], "{rendered:?}");
     assert!(
         lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .any(|s| s.content.as_ref() == "1. "
+            .any(|s| s.content.as_ref() == "    1. "
                 && s.style.fg == Some(crate::ui::theme::list_marker_color())),
         "the nested ordered marker keeps its list styling"
     );
 }
 
 #[test]
-fn assistant_renders_blockquote() {
-    let rows: Vec<String> = message_lines(Role::Assistant, "> quoted text", 40)
+fn ordered_lists_renumber_from_their_start_like_codex() {
+    assert_eq!(
+        rows("1. a\n1. b\n1. c", 40),
+        vec!["● 1. a", "  2. b", "  3. c"]
+    );
+    assert_eq!(rows("3. a\n4. b", 40), vec!["● 3. a", "  4. b"]);
+    assert_eq!(rows("1) a\n2) b", 40), vec!["● 1. a", "  2. b"]);
+    // A list nested under a bullet sits four columns in, its numbers
+    // right-aligned there; the parent item spans three rows, so a blank
+    // separates it from its next sibling (codex's AfterMultiline spacing).
+    assert_eq!(
+        rows("- a\n  1. x\n  2. y\n- b", 40),
+        vec!["● • a", "      1. x", "      2. y", "  ", "  • b"]
+    );
+}
+
+#[test]
+fn task_list_items_render_codex_checkboxes() {
+    assert_eq!(
+        rows("- [ ] todo\n- [x] done\n- [X] caps\n- plain", 40),
+        vec!["● ☐ todo", "  ☑ done", "  ☑ caps", "  • plain"]
+    );
+    assert_eq!(rows("1. [x] shipped", 40), vec!["● 1. ☑ shipped"]);
+    assert_eq!(
+        rows("- [x]", 40),
+        vec!["● • [x]"],
+        "a box with nothing after it is literal, as codex leaves it"
+    );
+    // What follows a box is the item's text, never another block marker.
+    assert_eq!(rows("- [x] 10)", 40), vec!["● ☑ 10)"]);
+    assert_eq!(
+        rows("- [ ] # not a heading", 40),
+        vec!["● ☐ # not a heading"]
+    );
+}
+
+#[test]
+fn a_wrapped_item_is_set_apart_from_its_next_sibling() {
+    // Codex's AfterMultiline spacing: an item that renders on more than one
+    // row is followed by a blank before its next sibling; one-row items stay
+    // tight, and a source blank between items is dropped (loose lists are
+    // compacted).
+    assert_eq!(
+        rows(
+            "1. This item wraps onto another visible rendered line\n2. Next item",
+            26
+        ),
+        vec![
+            "● 1. This item wraps onto",
+            "     another visible",
+            "     rendered line",
+            "  ",
+            "  2. Next item",
+        ]
+    );
+    assert_eq!(
+        rows("- a\n\n- b\n\n- c", 40),
+        vec!["● • a", "  • b", "  • c"]
+    );
+}
+
+#[test]
+fn blocks_are_separated_by_exactly_one_blank_line() {
+    // Codex puts one blank line between blocks whatever the source had: a
+    // heading's next block, a paragraph's list, a fence after prose — and
+    // runs of blank lines collapse to one. A soft break stays a line break.
+    assert_eq!(
+        rows("## Title\nText", 40),
+        vec!["● ## Title", "  ", "  Text"]
+    );
+    assert_eq!(rows("### H\n- a", 40), vec!["● ### H", "  ", "  • a"]);
+    assert_eq!(
+        rows("Intro:\n- a\n- b", 40),
+        vec!["● Intro:", "  ", "  • a", "  • b"]
+    );
+    assert_eq!(rows("a\n\n\n\nb", 40), vec!["● a", "  ", "  b"]);
+    assert_eq!(rows("a\nb", 40), vec!["● a", "  b"]);
+    assert_eq!(
+        rows("Run:\n```sh\nls\n```\nDone.", 40),
+        vec!["● Run:", "  ", "  ls", "  ", "  Done."]
+    );
+    assert_eq!(
+        rows("- a\n## Next", 40),
+        vec!["● • a", "  ", "  ## Next"],
+        "a heading ends the list"
+    );
+}
+
+#[test]
+fn a_dash_rule_right_after_a_paragraph_renders_as_a_rule() {
+    // `text\n---` is a setext underline in CommonMark, but in a model's reply
+    // it is a separator that lost its blank line: render the rule rather than
+    // leave `---` showing.
+    assert_eq!(
+        rows("Text\n---\nMore", 40),
+        vec!["● Text", "  ", "  ———", "  ", "  More"]
+    );
+}
+
+#[test]
+fn text_under_a_list_item_hangs_under_its_text() {
+    // Continuation lines — indented, or lazy (unindented, no blank before) —
+    // belong to the item and hang under its text, like codex's soft break.
+    assert_eq!(
+        rows("- item\n  more text", 40),
+        vec!["● • item", "    more text"]
+    );
+    assert_eq!(rows("- item\nlazy", 40), vec!["● • item", "    lazy"]);
+    // A second paragraph in the item keeps its blank; the item now spans
+    // three rows, so its sibling is set apart too.
+    assert_eq!(
+        rows("- a\n\n  para\n- b", 40),
+        vec!["● • a", "  ", "    para", "  ", "  • b"]
+    );
+}
+
+#[test]
+fn an_indented_paragraph_in_a_list_is_prose_not_code() {
+    // Four spaces under `1. ` after a blank is the item's next paragraph —
+    // the old top-level indented-code rule rendered it as code.
+    let lines = message_lines(Role::Assistant, "1. **Step**\n\n    Explanation here.", 40);
+    let rendered: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(rendered, vec!["● 1. Step", "  ", "     Explanation here."]);
+    let span = lines[2]
+        .spans
         .iter()
-        .map(plain)
-        .collect();
-    assert_eq!(rows, vec!["● > quoted text"]);
+        .find(|s| s.content.contains("Explanation"))
+        .expect("the paragraph text");
+    assert_eq!(span.style.fg, None, "prose, not the code style");
+}
+
+#[test]
+fn a_fence_inside_a_list_item_renders_under_its_text() {
+    // A fence nested four or more spaces deep (under a nested item) is still
+    // a fence — the old renderer showed its backticks — and its code hangs
+    // under the item's text.
+    assert_eq!(
+        rows("- a\n  - b\n\n    ```sh\n    ls\n    ```", 40),
+        vec!["● • a", "      • b", "  ", "        ls"]
+    );
+    assert_eq!(
+        rows(
+            "1. Install:\n   ```bash\n   cargo install foo\n   ```\n2. Run",
+            40
+        ),
+        vec![
+            "● 1. Install:",
+            "  ",
+            "     cargo install foo",
+            "  ",
+            "  2. Run",
+        ]
+    );
+}
+
+#[test]
+fn assistant_renders_blockquote() {
+    assert_eq!(rows("> quoted text", 40), vec!["● > quoted text"]);
+}
+
+#[test]
+fn blockquotes_hold_lists_headings_and_paragraphs() {
+    // A quote's content is markdown too: `> - a` is a bullet inside the quote
+    // (the old renderer showed `> - a`), a heading keeps its style, and a
+    // blank `>` line separates paragraphs inside it.
+    assert_eq!(rows("> - a\n> - b", 40), vec!["● > • a", "  > • b"]);
+    assert_eq!(
+        rows("> ## Note\n> body", 40),
+        vec!["● > ## Note", "  > ", "  > body"]
+    );
+    assert_eq!(rows("> a\n>\n> b", 40), vec!["● > a", "  > ", "  > b"]);
+    assert_eq!(rows("> q\n\nafter", 40), vec!["● > q", "  ", "  after"]);
+    assert_eq!(
+        rows("> a\nlazy", 40),
+        vec!["● > a", "  > lazy"],
+        "a lazy line continues the quoted paragraph"
+    );
+    assert_eq!(
+        rows("- item\n  > quoted", 40),
+        vec!["● • item", "  ", "    > quoted"],
+        "a quote inside an item hangs under its text"
+    );
 }
 
 // --- assistant markdown: fenced code blocks + headings (docs/markdown.md) ---

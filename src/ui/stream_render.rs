@@ -223,16 +223,16 @@ impl StreamRender {
         //    whole line is seen (a call's `(`, a `//` comment, a closing `*/`), and
         //    a long code line wraps into several rows — committing an early row
         //    could recolour it once the lookahead char arrives; and
-        //  - a **partial fence marker** (`` ` ``/`` `` ``): a third marker would
-        //    flip it from prose to a one-row label, so its wrapped prose rows must
-        //    not reach scrollback; and
-        //  - a **partial thematic-break run** (`-`/`*`/`_`, 1–2 markers): a third
-        //    marker would collapse its wrapped prose rows into a single `———`
-        //    rule; and
-        //  - a **bare `#` run** (1–6 hashes): its heading *level* — and so its
-        //    style — isn't settled (another `#` deepens it, a 7th flips it to
-        //    prose), so at a width narrower than the run its wrapped rows must
-        //    not reach scrollback yet; and
+        //  - an **unsettled block prefix** (`has_unsettled_block_prefix`), at
+        //    the top level or behind the `>`s and list markers the line already
+        //    holds: a partial fence marker (`` ` ``/`` `` ``, a third would hide
+        //    the line), a thematic run (`--`, `**`; even a complete `---`, which
+        //    `--- x` would turn back into prose), a bare `#` run (its heading
+        //    level and so its style aren't settled), or a list marker with
+        //    nothing after it (`-`, `1.`: a space makes an item, a container
+        //    with its own indent and spacing, anything else prose) — so at a
+        //    narrow width none of its wrapped rows, nor the blank row that sets
+        //    a new block apart, may reach scrollback yet; and
         //  - an **open table** (`in_table`): the block is buffered and renders
         //    whole only when it closes (its widths need every row), so nothing
         //    of it exists to commit — this commits only the settled pre-table
@@ -251,10 +251,7 @@ impl StreamRender {
         if self.renderer.in_code()
             || self.renderer.in_table()
             || markdown::is_table_header_candidate(tail_src)
-            || markdown::is_partial_fence(tail_src)
-            || markdown::is_partial_thematic_break(tail_src)
-            || markdown::is_partial_heading(tail_src)
-            || markdown::is_partial_list_marker(tail_src)
+            || markdown::has_unsettled_block_prefix(tail_src)
             || markdown::has_open_inline(tail_src)
             // A URL still forming at the line's end (`…see ht`, `http://e.`):
             // autolink detection flips on retroactively — the next chars

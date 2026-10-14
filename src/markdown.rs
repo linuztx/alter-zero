@@ -192,6 +192,20 @@ impl BlockScanner {
         Self::default()
     }
 
+    /// Advance past a line the caller already knows is paragraph text — a task
+    /// item's text, which no fence or indent can turn into code.
+    pub fn note_prose(&mut self, line: &str) {
+        self.in_indented = false;
+        self.prev_blank = line.trim().is_empty();
+    }
+
+    /// Whether the scanner is inside an **indented** (4-space) code block — the
+    /// state in which a blank or still-indented next line is code too.
+    #[must_use]
+    pub fn in_indented(&self) -> bool {
+        self.in_indented
+    }
+
     /// Classify the next source `line`, advancing the fence/indent state. The
     /// verdict for a line depends only on the lines before it (a left-to-right
     /// scan), so it never changes once made — the property scrollback commits
@@ -253,7 +267,8 @@ fn is_closing_fence(line: &str, ch: char, len: usize) -> bool {
 /// begins with 4 spaces or a leading tab (a tab counts as ≥4 columns). Whether it
 /// actually *is* code also depends on context (not interrupting a paragraph); the
 /// caller ([`parse_blocks`] / [`BlockScanner`]) applies that `prev_blank` gate.
-fn is_indented_code_line(line: &str) -> bool {
+#[must_use]
+pub fn is_indented_code_line(line: &str) -> bool {
     line.starts_with("    ") || line.starts_with('\t')
 }
 
@@ -325,6 +340,14 @@ pub fn is_partial_heading(line: &str) -> bool {
     }
     let hashes = trimmed.chars().take_while(|&c| c == '#').count();
     (1..=6).contains(&hashes) && hashes == trimmed.len()
+}
+
+/// Whether `line` opens a fenced code block (a fence delimiter whose info
+/// string a backtick fence allows) — the test a lazy paragraph continuation
+/// must fail, since a fence interrupts a paragraph.
+#[must_use]
+pub fn is_fence_opener(line: &str) -> bool {
+    fence_marker(line).is_some()
 }
 
 /// If `line` is a fence delimiter — after ≤3 leading spaces, 3+ of `` ` `` or
@@ -410,7 +433,18 @@ pub fn heading_level(line: &str) -> Option<(u8, &str)> {
     if !after.starts_with(' ') {
         return None;
     }
-    Some((hashes as u8, after.trim_start_matches(' ').trim_end()))
+    // CommonMark's optional closing sequence: a run of `#`s that is the whole
+    // content or follows a space is not content (`## Title ##` → `Title`).
+    let content = after.trim_start_matches(' ').trim_end();
+    let unclosed = content.trim_end_matches('#');
+    let content = if unclosed.is_empty() {
+        ""
+    } else if unclosed.ends_with(' ') {
+        unclosed.trim_end()
+    } else {
+        content
+    };
+    Some((hashes as u8, content))
 }
 
 // --- GFM pipe tables (`docs/markdown.md`). A table is a header row, a
@@ -1430,8 +1464,9 @@ fn entity_forming(rest: &str) -> bool {
 /// A list item's marker: a `-`/`*`/`+` bullet, or an ordered `N.`/`N)` number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListMarker {
-    /// `-`, `*`, or `+` (all rendered as a single bullet).
-    Bullet,
+    /// `-`, `*`, or `+` — all rendered as one bullet glyph, but the char is
+    /// kept: CommonMark starts a new list when it changes.
+    Bullet(char),
     /// `N.` or `N)` — the number and its `.`/`)` delimiter.
     Ordered(u64, char),
 }
@@ -1470,7 +1505,7 @@ pub fn list_item(line: &str) -> Option<ListItem<'_>> {
     if matches!(first, '-' | '*' | '+') {
         return list_content(&trimmed[1..]).map(|content| ListItem {
             indent,
-            marker: ListMarker::Bullet,
+            marker: ListMarker::Bullet(first),
             content,
         });
     }
@@ -1502,20 +1537,76 @@ fn list_content(after_marker: &str) -> Option<&str> {
         .map(|rest| rest.trim_start_matches(' '))
 }
 
-/// Whether `line` is a *partial* ordered-list marker — leading spaces, then a
-/// bare run of 1–9 ASCII digits and nothing else. Such a line renders as prose
-/// (or, at 4+ spaces after a blank, as indented code) now, but a following
-/// `.`/`)` would flip it into an ordered-list marker — recolouring the digits,
-/// restoring the indent [`list_item`] keeps at any depth, and at a narrow width
-/// collapsing wrapped rows — so the streaming committer withholds it, exactly
-/// like [`is_partial_heading`]. The indent is uncapped to match [`list_item`]:
-/// a `    5` can settle into a *nested* `    5. …`. A bullet's `-`/`*` is
-/// already covered by [`is_partial_thematic_break`]; `+` renders atomically,
-/// so neither needs this.
+/// Whether `line` is a *partial* list marker — leading spaces, then a marker
+/// with nothing after it yet: a bare run of 1–9 ASCII digits, the same run
+/// closed by `.`/`)`, or a lone `-`/`*`/`+`. Whatever streams in next decides
+/// what the line is: a space makes it a list item — a container that styles
+/// the marker, sets the item apart from a multi-line sibling and indents the
+/// lines after it — while anything else leaves it prose (`1.5`, `+x`), so
+/// the streaming committer withholds it, exactly like [`is_partial_heading`].
+/// The indent is uncapped to match [`list_item`]: a `    5` can settle into a
+/// *nested* `    5. …`.
 #[must_use]
 pub fn is_partial_list_marker(line: &str) -> bool {
     let trimmed = line.trim_start_matches(' ');
-    (1..=9).contains(&trimmed.len()) && trimmed.bytes().all(|b| b.is_ascii_digit())
+    if matches!(trimmed, "-" | "*" | "+") {
+        return true;
+    }
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    (1..=9).contains(&digits) && matches!(&trimmed[digits..], "" | "." | ")")
+}
+
+/// Whether the still-growing trailing `line` has a **block prefix** the next
+/// character could still change — a partial list marker, fence, heading run or
+/// thematic run — at the top level *or behind the quote markers and list
+/// markers the line already holds* (`> -`, `- 1`, `> > ##`). The renderer
+/// gives a line's container prefixes structure (a quote, an item it indents
+/// under, the blank row that sets a block apart), so until the prefix
+/// settles none of the line's rows may reach scrollback. Conservative by
+/// design: a complete thematic run (`---`) is still unsettled while it trails,
+/// since `--- x` would be prose, and over-withholding only delays a commit.
+#[must_use]
+pub fn has_unsettled_block_prefix(line: &str) -> bool {
+    let mut rest = line;
+    loop {
+        let t = rest.trim_start_matches(' ');
+        if is_partial_list_marker(t)
+            || is_partial_fence(t)
+            || is_partial_heading(t)
+            || thematic_marker_run(t).is_some()
+        {
+            return true;
+        }
+        if let Some(inner) = t.strip_prefix('>') {
+            rest = inner;
+            continue;
+        }
+        match list_item(t) {
+            // After a task box the line is paragraph text, whatever it says.
+            Some(item) if !item.content.is_empty() && task_box(item.content).0.is_none() => {
+                rest = item.content;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Split a GFM task box off a list item's content: `[ ]`, `[x]` or `[X]`
+/// followed by whitespace — returns whether it is ticked and the text after
+/// it. A bare `[x]` with nothing after it is not a box (codex leaves it
+/// literal). What follows a box is the item's paragraph text, never another
+/// block marker.
+#[must_use]
+pub fn task_box(content: &str) -> (Option<bool>, &str) {
+    let done = match content.get(..3) {
+        Some("[ ]") => false,
+        Some("[x]" | "[X]") => true,
+        _ => return (None, content),
+    };
+    match content[3..].strip_prefix([' ', '\t']) {
+        Some(rest) => (Some(done), rest.trim_start_matches([' ', '\t'])),
+        None => (None, content),
+    }
 }
 
 /// If `line` is a blockquote — after ≤3 leading spaces, a `>` — return its inner
@@ -1539,13 +1630,17 @@ mod tests {
     fn list_item_detects_bullets_and_ordered() {
         let b = list_item("- hello").unwrap();
         assert_eq!(b.indent, 0);
-        assert_eq!(b.marker, ListMarker::Bullet);
+        assert_eq!(b.marker, ListMarker::Bullet('-'));
         assert_eq!(b.content, "hello");
         let n = list_item("  2) world").unwrap();
         assert_eq!(n.indent, 2);
         assert_eq!(n.marker, ListMarker::Ordered(2, ')'));
         assert_eq!(n.content, "world");
-        assert_eq!(list_item("* star").unwrap().marker, ListMarker::Bullet);
+        assert_eq!(
+            list_item("* star").unwrap().marker,
+            ListMarker::Bullet('*'),
+            "the bullet's char is kept: CommonMark starts a new list when it changes"
+        );
         assert_eq!(
             list_item("10. ten").unwrap().marker,
             ListMarker::Ordered(10, '.')
@@ -1573,7 +1668,7 @@ mod tests {
         // level three to column 0, outdented below its own parent).
         let deep = list_item("    - deep").expect("a 4-space bullet is a nested item");
         assert_eq!(deep.indent, 4);
-        assert_eq!(deep.marker, ListMarker::Bullet);
+        assert_eq!(deep.marker, ListMarker::Bullet('-'));
         assert_eq!(deep.content, "deep");
         let deeper = list_item("      3) deeper").expect("a 6-space ordered item");
         assert_eq!(deeper.indent, 6);
@@ -1586,7 +1681,20 @@ mod tests {
         assert!(is_partial_list_marker("1"));
         assert!(is_partial_list_marker("10"));
         assert!(is_partial_list_marker("  3"));
-        assert!(!is_partial_list_marker("1."), "a settled ordered marker");
+        // A marker with nothing after it is undecided too: a space makes it an
+        // item (a container the next lines indent under), anything else
+        // prose (`1.5`, `+x`) — so the line can't commit yet.
+        assert!(is_partial_list_marker("1."));
+        assert!(is_partial_list_marker("12)"));
+        assert!(is_partial_list_marker("+"));
+        assert!(is_partial_list_marker("-"));
+        assert!(is_partial_list_marker("      *"), "at any nesting depth");
+        assert!(!is_partial_list_marker("1. x"), "a settled item");
+        assert!(!is_partial_list_marker("1.5"), "prose");
+        assert!(
+            !is_partial_list_marker("--"),
+            "a thematic run, not a marker"
+        );
         assert!(!is_partial_list_marker("1 x"), "prose");
         assert!(!is_partial_list_marker(""));
         assert!(
@@ -2285,6 +2393,53 @@ mod tests {
         assert_eq!(heading_level("# Title"), Some((1, "Title")));
         assert_eq!(heading_level("### The Code"), Some((3, "The Code")));
         assert_eq!(heading_level("###### Deep"), Some((6, "Deep")));
+    }
+
+    #[test]
+    fn heading_level_drops_a_closing_hash_sequence() {
+        // CommonMark's optional closing `#`s (after a space) are not content.
+        assert_eq!(heading_level("## Title ##"), Some((2, "Title")));
+        assert_eq!(heading_level("# Title #####  "), Some((1, "Title")));
+        assert_eq!(heading_level("### ###"), Some((3, "")));
+        assert_eq!(heading_level("## C#"), Some((2, "C#")), "no space, content");
+        assert_eq!(heading_level("## Issue #5"), Some((2, "Issue #5")));
+    }
+
+    #[test]
+    fn task_box_needs_whitespace_after_it() {
+        assert_eq!(task_box("[ ] todo"), (Some(false), "todo"));
+        assert_eq!(task_box("[x] done"), (Some(true), "done"));
+        assert_eq!(task_box("[X]  caps"), (Some(true), "caps"));
+        assert_eq!(task_box("[x] "), (Some(true), ""));
+        assert_eq!(task_box("[x]"), (None, "[x]"), "nothing after: literal");
+        assert_eq!(task_box("[x](u)"), (None, "[x](u)"), "a link");
+        assert_eq!(task_box("[y] no"), (None, "[y] no"));
+        assert_eq!(task_box("世界"), (None, "世界"));
+    }
+
+    #[test]
+    fn has_unsettled_block_prefix_looks_inside_quotes_and_items() {
+        // A trailing line whose block structure the next character could
+        // still change — at the top level, or behind the `>`s and list
+        // markers it already holds.
+        for line in [
+            "-", "1.", "+", "  2)", "> -", "> > 1.", "- 1", "> ##", "  ##", "- **", "> ``", "---",
+            "- ---", "* * *",
+        ] {
+            assert!(has_unsettled_block_prefix(line), "{line:?}");
+        }
+        for line in [
+            "- x",
+            "> text",
+            "1. item",
+            "> - item",
+            "plain",
+            "",
+            "- [x] done",
+            "- [x] 10",
+        ] {
+            assert!(!has_unsettled_block_prefix(line), "{line:?}");
+        }
     }
 
     #[test]
