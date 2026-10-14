@@ -1,7 +1,7 @@
 //! What a request authenticates with, and where it goes — the one seam every
 //! outbound call resolves through, whatever the provider's [`AuthScheme`].
 //!
-//! Three providers here are *sign-ins* rather than pasted keys, and all three
+//! Four providers here are *sign-ins* rather than pasted keys, and all four
 //! keep the same two-layer split: a long-lived token in the `.env` key store,
 //! exchanged (and cached in memory) for the short-lived credential the API
 //! actually takes. GitHub Copilot's exchange additionally names the account's
@@ -16,10 +16,11 @@
 //! That is a property of the (scheme, wire format) *pair*, which is why it is
 //! decided here rather than by either alone.
 //!
-//! See `docs/copilot.md`, `docs/chatgpt.md` and `docs/claude.md`.
+//! See `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md` and
+//! `docs/cline.md`.
 
 use super::config::{AuthScheme, ModelConfig, WireApi};
-use super::{Result, chatgpt, claude, copilot};
+use super::{Result, chatgpt, claude, cline, copilot};
 
 /// How one request authenticates itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -79,6 +80,9 @@ impl RequestAuth {
 /// - **[`AuthScheme::AnthropicConsole`]** → an access token minted from the
 ///   stored refresh token, plus the `anthropic-beta` an OAuth bearer must
 ///   carry on the Messages API (`docs/claude.md`).
+/// - **[`AuthScheme::ClineAccount`]** → an access token minted from the
+///   stored refresh token, spelled `workos:<jwt>` because that is the form
+///   Cline's API takes (`docs/cline.md`).
 ///
 /// A subscription config with no stored token resolves to an empty
 /// [`RequestAuth`] rather than calling out: the `/model` picker builds configs
@@ -114,6 +118,21 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 // a pasted key is refused *with* it. It belongs to the
                 // credential, which is why it is here and not in the file.
                 headers: vec![("anthropic-beta".to_string(), claude::OAUTH_BETA.to_string())],
+            })
+        }
+        AuthScheme::ClineAccount => {
+            let Some(refresh) = stored else {
+                return Ok(RequestAuth::default());
+            };
+            // The bearer comes back `workos:`-prefixed: the spelling is part
+            // of the credential, applied where it is minted
+            // (`cline::bearer_for`) rather than here, so every caller of that
+            // module gets the wire form and not just this seam.
+            let access = cline::authorize(refresh)?;
+            Ok(RequestAuth {
+                bearer: Some(access.bearer),
+                base: None,
+                headers: Vec::new(),
             })
         }
         AuthScheme::GithubCopilot => {

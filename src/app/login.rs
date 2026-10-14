@@ -1,7 +1,9 @@
 //! The inline `/login` onboarding: pick how you sign in — a **subscription**
-//! (GitHub Copilot's device flow, ChatGPT Codex's browser or device code) or
-//! an **API key** (pick a provider, paste its key). See `docs/llm.md`,
-//! `docs/copilot.md` and `docs/chatgpt.md`.
+//! (GitHub Copilot's device flow, ChatGPT Codex's browser or device code,
+//! Anthropic's Console browser sign-in, Cline's device code) or an **API
+//! key** (pick a provider, paste its key). See `docs/llm.md`,
+//! `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md` and
+//! `docs/cline.md`.
 
 use std::time::Duration;
 

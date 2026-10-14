@@ -35,14 +35,17 @@ impl Session<'_> {
     /// the row could only come from a provider file we misread.
     pub(crate) fn start_device_login(&mut self, provider: &str, kind: SigninKind) {
         self.cancel_device_login();
-        if !self.models.is_subscription(provider) {
+        // The row's auth scheme decides which sign-in runs: a row's id is
+        // whatever the provider file named it, and two rows can share one
+        // sign-in.
+        let Some(auth) = self.models.subscription_auth(provider) else {
             self.app
                 .fail_device_login(format!("{provider} has no subscription sign-in."));
             return;
-        }
+        };
         let cancel = CancelToken::new();
         self.device_cancel = Some(cancel.clone());
-        spawn_signin(provider.to_string(), kind, cancel, self.device_tx.clone());
+        spawn_signin(auth, kind, cancel, self.device_tx.clone());
     }
 
     /// Reap a running device flow's worker, if any. Idempotent — Esc, Ctrl+C
@@ -119,6 +122,7 @@ impl Session<'_> {
         llm::copilot::forget(token);
         llm::chatgpt::forget(token);
         llm::claude::forget(token);
+        llm::cline::forget(token);
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();

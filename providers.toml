@@ -20,7 +20,8 @@
 #     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`), or `optional_key` for a server that needs none.
+#     `anthropic_console`, `cline_account`), or `optional_key` for a server
+#     that needs none.
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
 #     docs/ollama.md).
@@ -237,3 +238,42 @@ anthropic-version = "2023-06-01"
 
 [providers.anthropic_console.kwargs]
 api_base = "https://api.anthropic.com/v1"
+
+# Cline's own endpoint: one OpenAI-compatible Chat Completions API in front of
+# Anthropic, OpenAI, Google and the rest, reached with an API key made in your
+# Cline account (app.cline.bot/dashboard/account). The chat base's own
+# `/models` names ids and nothing else, so the picker lists the catalog Cline's
+# clients read instead — `api_model_base` + `/models` is
+# `/api/v1/ai/cline/models`, public and OpenRouter-shaped, whose records carry
+# each model's context window, image input and reasoning (docs/cline.md).
+[providers.cline]
+name = "Cline"
+api_model_base = "https://api.cline.bot/api/v1/ai/cline"
+description = "The models behind the Cline extension and CLI — Anthropic, OpenAI, Google and more — reached with a key from your Cline account."
+api_key_url = "https://app.cline.bot/dashboard/account"
+
+[providers.cline.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+
+# ClinePass — Cline's **subscription** plan ($9.99/month, 2-5x the usage on a
+# curated set of open coding models) — on the same API, reached with a Cline
+# **account sign-in** instead of a pasted key: `/login` runs Cline's own
+# device-code flow (WorkOS, the way its extension and CLI sign in,
+# docs/cline.md). What `api_key_env` stores is the long-lived **Cline refresh
+# token** the sign-in registers; every request mints a short-lived access
+# token from it, sent as `Bearer workos:<jwt>`, so nothing here is sent
+# verbatim. The plan's models are addressed by their `cline-pass/…` slugs,
+# which the public `/models` listing does not carry: Cline publishes the
+# plan's list for its own clients, and a `cline_account` sign-in lists from
+# there, so a model the plan adds is in /model the day it is listed.
+# Usage-billed models bill credits rather than a plan, and are the pasted
+# key's (`cline` above); free models (`cline-free/…`) are deliberately not
+# here: Cline's docs say free-model usage is not supported through the API.
+[providers.cline_pass]
+name = "ClinePass"
+auth = "cline_account"
+description = "Cline's $9.99/month subscription: 2-5x usage on curated open coding models, with your Cline account sign-in"
+api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
+
+[providers.cline_pass.kwargs]
+api_base = "https://api.cline.bot/api/v1"

@@ -465,15 +465,16 @@ impl OpenAiClient {
         outcome.map_err(|e| self.explain(e))
     }
 
-    /// Rewrite a failure the provider explains badly. Only the two
-    /// subscriptions have such a mapping — Copilot's wire bodies name a `code`
-    /// and nothing a user can act on (and the commonest of them,
-    /// `model_not_supported`, is not even about the request being malformed),
-    /// and a ChatGPT 401 means a sign-in to redo rather than a request to fix.
-    /// Every pasted-key provider's error passes through exactly as it did —
-    /// except on the Ollama wire, whose failures are mostly about the
-    /// *machine* (the server not running, a model not pulled, a capability
-    /// the model lacks) and say so in words a user can act on
+    /// Rewrite a failure the provider explains badly. The subscriptions have
+    /// such a mapping — Copilot's wire bodies name a `code` and nothing a user
+    /// can act on (and the commonest of them, `model_not_supported`, is not
+    /// even about the request being malformed), and a ChatGPT 401 means a
+    /// sign-in to redo rather than a request to fix. A pasted Anthropic or
+    /// Cline key shares its sign-in's advice, since the refusals are the
+    /// same; every other pasted-key provider's error passes through exactly
+    /// as it did — except on the Ollama wire, whose failures are mostly about
+    /// the *machine* (the server not running, a model not pulled, a
+    /// capability the model lacks) and say so in words a user can act on
     /// (`docs/ollama.md`).
     fn explain(&self, error: LlmError) -> LlmError {
         if self.cfg.wire_api == super::WireApi::Ollama {
@@ -526,11 +527,20 @@ impl OpenAiClient {
             // several and need different answers — an expired sign-in, a
             // scope, a spend cap (`docs/claude.md`).
             super::AuthScheme::AnthropicConsole => super::claude::auth_advice(*status, body),
+            // Cline's API documents its 401/402/403 meanings, and each wants
+            // a different sentence (`docs/cline.md`).
+            super::AuthScheme::ClineAccount => super::cline::auth_advice(*status, body),
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
             super::AuthScheme::ApiKey if self.cfg.wire_api == super::WireApi::Anthropic => {
                 super::claude::auth_advice(*status, body)
+            }
+            // A pasted Cline key meets the sign-in's plan and credit refusals,
+            // and a 401 worded for Cline's own client that here means the key
+            // (`docs/cline.md`).
+            super::AuthScheme::ApiKey if super::cline::is_api_base(&self.cfg.api_base) => {
+                super::cline::key_advice(*status, body)
             }
             super::AuthScheme::ApiKey | super::AuthScheme::OptionalKey => None,
         };
@@ -2019,6 +2029,35 @@ mod tests {
         let explained = OpenAiClient::new(copilot).explain(failure()).to_string();
         assert!(explained.contains("claude-sonnet-4.6"), "{explained}");
         assert!(explained.contains("/model"), "{explained}");
+    }
+
+    #[test]
+    fn a_pasted_cline_key_s_refusal_is_explained_as_the_key() {
+        // The live API's 401 for a bad key is worded for Cline's own client
+        // ("…the latest version of Cline…") — on a pasted key it means the
+        // key (`docs/cline.md`).
+        let body = r#"{"error":"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."}"#;
+        let failure = || LlmError::Api {
+            status: 401,
+            body: body.to_string(),
+        };
+        let cline = crate::llm::ProvidersFile::builtin()
+            .model_config(&crate::llm::config::Selection {
+                provider_id: "cline".to_string(),
+                model: "deepseek/deepseek-v4.1-flash".to_string(),
+                ..crate::llm::config::Selection::default()
+            })
+            .expect("shipped");
+        assert_eq!(cline.auth, crate::llm::AuthScheme::ApiKey);
+        let explained = OpenAiClient::new(cline).explain(failure()).to_string();
+        assert!(explained.contains("API key"), "{explained}");
+        assert!(
+            !explained.contains("latest version of Cline"),
+            "{explained}"
+        );
+        // Another provider's key meeting the same words keeps them.
+        let plain = OpenAiClient::new(ModelConfig::fallback()).explain(failure());
+        assert_eq!(plain.to_string(), failure().to_string());
     }
 
     #[test]

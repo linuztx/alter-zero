@@ -687,6 +687,20 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
+    // A Cline account sign-in reaches the ClinePass plan, whose models are
+    // not on any `/models`: Cline publishes the plan's list for its own
+    // clients instead (`docs/cline.md`). The listing is the credential's
+    // backend's to decide, as the ChatGPT one's `client_version` is.
+    if cfg.auth == super::AuthScheme::ClineAccount {
+        let plan = super::cline::fetch_clinepass_models()?;
+        // What each plan model borrows its facts from. Not having it costs
+        // only the facts — Cline's own defaults stand in — never a row.
+        let catalog = fetch_cline_catalog(cfg).unwrap_or_default();
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        return clinepass_entries(cfg, plan, &catalog);
+    }
     // A one-shot GET on the session's **shared** HTTP client — the chat
     // stream's own per-operation stall deadline, on purpose: `http_client`
     // caches one client per timeout, so a models-only deadline paid a second
@@ -737,6 +751,123 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// The window Cline's own client assumes for a ClinePass model its catalog
+/// can't name (`CLINE_PASS_MODEL_DEFAULTS` in
+/// `sdk/packages/llms/src/catalog/catalog-cline-recommended.ts`), beside
+/// reasoning on and no image input.
+const CLINEPASS_DEFAULT_CONTEXT: u64 = 128_000;
+
+/// ClinePass's catalog from what the two fetches brought back.
+///
+/// The **rows** are Cline's published list, in its order. A list naming no
+/// model is a failure — the provider's own note in the picker — rather than
+/// a provider with no rows, which would read as though the fetch never
+/// happened: an empty list says nothing about the plan
+/// ([`catalog_or_error`]'s rule for a signed-in ChatGPT account).
+///
+/// The **facts** come from Cline's catalog (`catalog`, the records the key
+/// row lists), found the way Cline's own client finds them: by the model's
+/// name without its lab — `cline-pass/glm-5.3` is `z-ai/glm-5.3`. That gives
+/// the plan's models a context window for the gauge and auto-compaction, the
+/// image input that decides whether a picture is attached, and the reasoning
+/// ladder Ctrl+T cycles. A model the catalog doesn't name — or a name two
+/// labs share, which is not guessed at — gets the facts Cline's client
+/// assumes for one: [`CLINEPASS_DEFAULT_CONTEXT`], reasoning, no images.
+///
+/// # Errors
+/// A published list that named no model.
+fn clinepass_entries(
+    cfg: &ModelConfig,
+    plan: Vec<super::cline::PlanModel>,
+    catalog: &[ModelEntry],
+) -> Result<Vec<ModelEntry>> {
+    if plan.is_empty() {
+        return Err(LlmError::Api {
+            status: 200,
+            body: "Cline's published ClinePass list named no models".to_string(),
+        });
+    }
+    let bare = |id: &str| id.rsplit('/').next().unwrap_or(id).to_string();
+    let mut by_name: std::collections::HashMap<String, Option<&ModelEntry>> =
+        std::collections::HashMap::new();
+    for entry in catalog {
+        by_name
+            .entry(bare(&entry.id))
+            .and_modify(|seen| *seen = None)
+            .or_insert(Some(entry));
+    }
+    Ok(plan
+        .into_iter()
+        .map(|model| {
+            let known = by_name.get(&bare(&model.id)).copied().flatten();
+            clinepass_entry(cfg, model.id, model.name, known)
+        })
+        .collect())
+}
+
+/// One ClinePass row: the plan's id with the catalog record's facts — and its
+/// display name, which says which model this is (`Z.ai: GLM 5.3`), unless the
+/// record has none — or, with no record, Cline's defaults.
+fn clinepass_entry(
+    cfg: &ModelConfig,
+    id: String,
+    name: String,
+    known: Option<&ModelEntry>,
+) -> ModelEntry {
+    match known {
+        Some(known) => ModelEntry {
+            display_name: if known.display_name == known.id {
+                name
+            } else {
+                known.display_name.clone()
+            },
+            id,
+            provider: cfg.provider_id.clone(),
+            reasoning: known.reasoning.clone(),
+            vision: known.vision,
+            context: known.context,
+            service_tiers: Vec::new(),
+        },
+        None => ModelEntry {
+            id,
+            provider: cfg.provider_id.clone(),
+            display_name: name,
+            reasoning: Some(ReasoningSupport {
+                efforts: DEFAULT_EFFORTS.to_vec(),
+                can_disable: true,
+                default_effort: None,
+            }),
+            vision: Some(false),
+            context: Some(CLINEPASS_DEFAULT_CONTEXT),
+            service_tiers: Vec::new(),
+        },
+    }
+}
+
+/// Cline's catalog (boundary — real HTTP): the OpenRouter-shaped records at
+/// [`super::cline::catalog_url`], public and read with no credential, the
+/// way Cline's clients read it — the facts ClinePass's rows borrow.
+fn fetch_cline_catalog(cfg: &ModelConfig) -> Result<Vec<ModelEntry>> {
+    let client = super::http_client(super::openai::NET_OP_TIMEOUT)?;
+    let mut resp = client
+        .get(super::cline::catalog_url())
+        .header("accept", "application/json")
+        .send()
+        .map_err(|e| LlmError::transport(&e))?;
+    if !resp.status().is_success() {
+        return Err(LlmError::Api {
+            status: resp.status().as_u16(),
+            body: String::new(),
+        });
+    }
+    let mut body = String::new();
+    (&mut resp)
+        .take(MODELS_BODY_MAX_BYTES)
+        .read_to_string(&mut body)
+        .map_err(|e| LlmError::Http(e.to_string()))?;
+    parse_models(&body, &cfg.provider_id)
 }
 
 /// The Ollama catalog (boundary — real HTTP): the `/api/tags` body already
@@ -1742,6 +1873,172 @@ mod tests {
         let mut cfg = ModelConfig::fallback();
         cfg.api_model_base = "https://x/v1/".to_string();
         assert_eq!(models_endpoint(&cfg), "https://x/v1/models");
+    }
+
+    // --- ClinePass's catalog (docs/cline.md) ---
+
+    /// Three records as Cline's `/api/v1/ai/cline/models` sends them (the
+    /// fields read, and a few beside them): a reasoner that reads images, a
+    /// text-only reasoner whose parameters name `reasoning` but not
+    /// `reasoning_effort`, and a model with no reasoning at all.
+    const CLINE_CATALOG: &str = r#"{"data":[
+      {"id":"z-ai/glm-5.3-flash","name":"Z.ai: GLM 5.3 Flash","context_length":1048576,
+       "architecture":{"input_modalities":["text","image","video"],"output_modalities":["text"]},
+       "top_provider":{"context_length":1048576,"max_completion_tokens":943718,"is_moderated":false},
+       "supported_parameters":["include_reasoning","max_tokens","reasoning","reasoning_effort","temperature","tool_choice","tools"]},
+      {"id":"xiaomi/mimo-v2.5-pro","name":"Xiaomi: MiMo-V2.5-Pro","context_length":1050000,
+       "architecture":{"input_modalities":["text"],"output_modalities":["text"]},
+       "top_provider":{"context_length":1048576,"max_completion_tokens":131072,"is_moderated":false},
+       "supported_parameters":["include_reasoning","max_tokens","reasoning","temperature","tool_choice","tools"]},
+      {"id":"scaledown/summarize","name":"ScaleDown: Summarize","context_length":1000000,
+       "architecture":{"input_modalities":["text","image","file"],"output_modalities":["text"]},
+       "top_provider":{"context_length":1000000,"max_completion_tokens":4000,"is_moderated":false},
+       "supported_parameters":["max_tokens"]}]}"#;
+
+    /// A ClinePass row as the published list names it.
+    fn plan(id: &str) -> crate::llm::cline::PlanModel {
+        crate::llm::cline::PlanModel {
+            id: id.to_string(),
+            name: id.to_string(),
+        }
+    }
+
+    fn clinepass_config() -> ModelConfig {
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "cline_pass".to_string();
+        cfg.auth = crate::llm::AuthScheme::ClineAccount;
+        cfg
+    }
+
+    #[test]
+    fn cline_s_catalog_names_each_model_s_window_images_and_thinking_ladder() {
+        // The key row lists this catalog rather than the chat base's
+        // `/models`, which names ids and nothing else (docs/cline.md).
+        let models = parse_models(CLINE_CATALOG, "cline").unwrap();
+        let glm = models
+            .iter()
+            .find(|m| m.id == "z-ai/glm-5.3-flash")
+            .unwrap();
+        assert_eq!(glm.display_name, "Z.ai: GLM 5.3 Flash");
+        assert_eq!(glm.context, Some(1_048_576));
+        assert_eq!(glm.vision, Some(true));
+        let ladder = glm.reasoning.as_ref().expect("a reasoner");
+        assert_eq!(
+            ladder.efforts,
+            [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(
+            ladder.can_disable,
+            "Off is offered — the live API honours it"
+        );
+        let mimo = models
+            .iter()
+            .find(|m| m.id == "xiaomi/mimo-v2.5-pro")
+            .unwrap();
+        assert_eq!(mimo.context, Some(1_050_000));
+        assert_eq!(mimo.vision, Some(false));
+        assert!(
+            mimo.reasoning.is_some(),
+            "`reasoning` alone marks a reasoner"
+        );
+        let plain = models
+            .iter()
+            .find(|m| m.id == "scaledown/summarize")
+            .unwrap();
+        assert_eq!(plain.reasoning, None);
+    }
+
+    #[test]
+    fn a_clinepass_model_borrows_its_facts_from_cline_s_catalog_by_bare_name() {
+        // The published list names each plan model and nothing about it;
+        // Cline's own client finds its facts in the catalog under the same
+        // name without the lab — `cline-pass/glm-5.3-flash` is
+        // `z-ai/glm-5.3-flash` — and so does this.
+        let catalog = parse_models(CLINE_CATALOG, "cline_pass").unwrap();
+        let live = vec![
+            plan("cline-pass/glm-5.3-flash"),
+            plan("cline-pass/mimo-v2.5-pro"),
+            plan("cline-pass/qwen3.8-max"),
+        ];
+        let entries = clinepass_entries(&clinepass_config(), live, &catalog).unwrap();
+        let glm = &entries[0];
+        assert_eq!(glm.id, "cline-pass/glm-5.3-flash");
+        assert_eq!(glm.provider, "cline_pass");
+        assert_eq!(glm.display_name, "Z.ai: GLM 5.3 Flash");
+        assert_eq!(glm.context, Some(1_048_576));
+        assert_eq!(glm.vision, Some(true));
+        assert!(glm.reasoning.is_some());
+        let mimo = &entries[1];
+        assert_eq!(mimo.context, Some(1_050_000));
+        assert_eq!(mimo.vision, Some(false));
+        // A plan model the catalog doesn't name gets what Cline's own client
+        // assumes for one: a 128K window, reasoning, and no image input.
+        let qwen = &entries[2];
+        assert_eq!(qwen.id, "cline-pass/qwen3.8-max");
+        assert_eq!(qwen.display_name, "cline-pass/qwen3.8-max");
+        assert_eq!(qwen.context, Some(CLINEPASS_DEFAULT_CONTEXT));
+        assert_eq!(qwen.vision, Some(false));
+        assert!(qwen.reasoning.is_some());
+    }
+
+    #[test]
+    fn a_bare_name_two_labs_share_lends_nothing() {
+        // No two labs share a bare name in the catalog today; if two ever do,
+        // the plan's model is not guessed at.
+        let catalog = parse_models(
+            r#"{"data":[{"id":"a/twin","context_length":1000},
+                        {"id":"b/twin","context_length":2000}]}"#,
+            "cline_pass",
+        )
+        .unwrap();
+        let entries =
+            clinepass_entries(&clinepass_config(), vec![plan("cline-pass/twin")], &catalog)
+                .unwrap();
+        assert_eq!(entries[0].context, Some(CLINEPASS_DEFAULT_CONTEXT));
+    }
+
+    #[test]
+    fn an_empty_published_clinepass_list_is_the_provider_s_failure() {
+        // A list naming nothing says nothing about the plan, and a picker
+        // that silently shows ClinePass with no rows reads as though the
+        // fetch never happened — the ChatGPT listing's rule
+        // (`catalog_or_error`).
+        let error = clinepass_entries(&clinepass_config(), Vec::new(), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("named no models"), "{error}");
+    }
+
+    #[test]
+    fn clinepass_s_published_list_is_its_catalog() {
+        // A model Cline adds is in the picker the day it is listed, under the
+        // name the list gives it, in the list's own order.
+        let live = vec![
+            crate::llm::cline::PlanModel {
+                id: "cline-pass/mimo-v2.6-pro".to_string(),
+                name: "MiMo V2.6 Pro".to_string(),
+            },
+            plan("cline-pass/glm-5.3-flash"),
+        ];
+        let entries = clinepass_entries(&clinepass_config(), live, &[]).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["cline-pass/mimo-v2.6-pro", "cline-pass/glm-5.3-flash"]
+        );
+        assert_eq!(entries[0].display_name, "MiMo V2.6 Pro");
+        assert!(entries.iter().all(|e| e.provider == "cline_pass"));
+        // No catalog to borrow from: Cline's own defaults stand in for every
+        // row, and no row is lost for it.
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.context == Some(CLINEPASS_DEFAULT_CONTEXT) && e.vision == Some(false))
+        );
     }
 
     // --- lenient fields: one odd field must not cost the whole record ---

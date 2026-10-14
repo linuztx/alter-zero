@@ -51,6 +51,20 @@ pub enum AuthScheme {
     /// [`Self::ApiKey`]: a sign-in provider that looks configured and asks
     /// for a pasted key instead.
     AnthropicConsole,
+    /// A **Cline account**: `/login` runs Cline's own device-code sign-in
+    /// (WorkOS, the flow its extension and CLI use) and stores the resulting
+    /// refresh token, which each request mints a short-lived access token
+    /// from — sent as `Bearer workos:<jwt>`. See `docs/cline.md`.
+    ///
+    /// A separate provider from the pasted-key `cline` next door
+    /// (providers.toml), exactly as `anthropic_console` is separate from
+    /// `anthropic`: one row per way in, and the credential in the store is a
+    /// different kind of value.
+    ///
+    /// `rename_all = "snake_case"` spells this `cline_account`, which is the
+    /// value the provider file uses. A test pins it for the same silent
+    /// degradation reason [`Self::AnthropicConsole`]'s does.
+    ClineAccount,
     /// A key that is **accepted but not required**: Ollama's local server
     /// takes no credential at all, while a hosted one (or a proxy in front
     /// of one) takes an ordinary bearer — so a stored key rides as
@@ -494,6 +508,28 @@ mod tests {
     }
 
     #[test]
+    fn cline_ships_the_public_openai_compatible_api() {
+        let file = ProvidersFile::builtin();
+        let cline = file.get("cline").expect("cline present");
+        assert_eq!(cline.name, "Cline");
+        assert_eq!(cline.kwargs.api_base, "https://api.cline.bot/api/v1");
+        // The chat base's own `/models` names the models and nothing else, so
+        // the picker lists the catalog Cline's clients read instead —
+        // `{base}/models` is `/api/v1/ai/cline/models`, whose OpenRouter-shaped
+        // records carry each model's window, image input and reasoning
+        // (docs/cline.md).
+        assert_eq!(cline.models_base(), "https://api.cline.bot/api/v1/ai/cline");
+        assert_eq!(cline.key_env("cline"), "CLINE_API_KEY");
+        assert_eq!(cline.auth, AuthScheme::ApiKey);
+        assert_eq!(cline.wire_api, WireApi::Chat);
+        // `/login`'s key step links the page the key is made on.
+        assert_eq!(
+            cline.api_key_url.as_deref(),
+            Some("https://app.cline.bot/dashboard/account")
+        );
+    }
+
+    #[test]
     fn key_env_defaults_to_uppercased_id() {
         let file = ProvidersFile::builtin();
         let p = file.get("openrouter").unwrap();
@@ -775,6 +811,84 @@ api_base = "https://api.anthropic.com/v1"
         let console = file.get("anthropic_console").unwrap();
         assert_eq!(console.auth, AuthScheme::AnthropicConsole);
         assert!(console.auth.is_subscription());
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_cline_account_sign_in() {
+        // The fourth sign-in: the stored secret is a Cline refresh token, and
+        // every request mints the short-lived access token from it — spelled
+        // `workos:` when it leaves (`docs/cline.md`). The spelling is pinned
+        // because a mismatch degrades *silently* into a pasted-key row.
+        let text = r#"
+[providers.cline_account]
+name = "Cline Account"
+auth = "cline_account"
+description = "Sign in with your Cline account"
+[providers.cline_account.kwargs]
+api_base = "https://api.cline.bot/api/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let account = file.get("cline_account").unwrap();
+        assert_eq!(account.auth, AuthScheme::ClineAccount);
+        assert!(account.auth.is_subscription());
+    }
+
+    #[test]
+    fn every_key_the_shipped_file_sets_is_one_the_parse_reads() {
+        // Unknown keys are ignored, so a file written for a newer build still
+        // parses — which also means a key the shipped file sets and nothing
+        // reads does nothing, silently: a misspelt `api_key_ev`, or a key a
+        // refactor retired, reads as configuration while changing nothing.
+        const READ: &[&str] = &[
+            "name",
+            "auth",
+            "wire_api",
+            "description",
+            "api_key_url",
+            "api_model_base",
+            "api_key_env",
+            "api_base_env",
+            "extra_headers",
+            "kwargs",
+        ];
+        let file: toml::Table = toml::from_str(DEFAULT_PROVIDERS_TOML).unwrap();
+        let providers = file["providers"].as_table().expect("a providers table");
+        assert!(!providers.is_empty());
+        for (id, block) in providers {
+            for key in block.as_table().expect("a provider block").keys() {
+                assert!(
+                    READ.contains(&key.as_str()),
+                    "providers.{id}.{key} is set in the shipped file but never read"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_builtin_file_ships_cline_pass_as_the_one_cline_sign_in() {
+        // ClinePass is the Cline account sign-in: a subscription, whose
+        // scheme is also what lists the plan's `cline-pass/…` models from
+        // the list Cline publishes, since the public `/models` does not
+        // carry them (`docs/cline.md`).
+        let file = ProvidersFile::builtin();
+        let pass = file.get("cline_pass").expect("shipped");
+        assert_eq!(pass.name, "ClinePass");
+        assert_eq!(pass.auth, AuthScheme::ClineAccount);
+        assert_eq!(pass.key_env("cline_pass"), "CLINE_ACCOUNT_REFRESH_TOKEN");
+        assert!(pass.description.is_some(), "a sign-in row needs one");
+        assert_eq!(pass.kwargs.api_base, "https://api.cline.bot/api/v1");
+        // And it is the only Cline sign-in. A second row running the same
+        // flow for the usage-billed catalog was the same sign-in twice under
+        // "Use a subscription", for models that bill credits rather than a
+        // plan — those are the pasted key's (`cline`), and a row with this
+        // scheme lists the plan's.
+        let cline_sign_ins: Vec<String> = file
+            .ids()
+            .into_iter()
+            .filter(|id| file.get(id).unwrap().auth == AuthScheme::ClineAccount)
+            .collect();
+        assert_eq!(cline_sign_ins, ["cline_pass"]);
+        assert_eq!(file.get("cline").unwrap().auth, AuthScheme::ApiKey);
     }
 
     #[test]
