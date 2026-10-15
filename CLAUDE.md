@@ -235,7 +235,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 
 ## Architecture
 
-A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
+A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `partial_json`,
 `session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
@@ -248,10 +248,10 @@ submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
-`agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
+`agent`, `status`, `tips`, `permission`, `draft`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `draft`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -1094,7 +1094,37 @@ into a turn used to open on `(60s)`), the agent session view counting its
 own from the per-agent `AgentRun::command_elapsed` the same way — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
-`docs/tool-streaming.md`; the **bounded peek** (`docs/long-lines.md`: a peek
+`docs/tool-streaming.md`; the **live `write` cell** (a `write` call the model
+is still **generating** streams its file into the strip as the call's
+`content` argument decodes, `docs/write-streaming.md`: every wire now keys
+its tool-call pieces to their call — `stream::ToolCallFragment { index, name,
+arguments }` on `StreamEvent::ToolCallDelta`, the Chat Completions
+accumulator's slot, the Responses `output_index` (the name read off
+`output_item.added`, the done frame adding only what no earlier frame sent,
+`responses::ToolStreams`), the Messages content-block index, Ollama's whole
+call — the pure `partial_json::StringFields` decodes `path` and `content` a
+fragment at a time with the string's escape state carried across pieces
+(a lone `\`, half a `\u` escape, half a surrogate pair), append-only and
+counting its `\n`s as it goes; `App::drafts` and `AgentRun::drafts` hold the
+round's `DraftCall`s from the first piece until the round's calls are
+announced (`RoundCalls`, a batch, a lone `ToolStart`, an agent group, a task
+call, any turn boundary), the piece that opens a `write` draft finalising the
+text before it — the `ThinkingStart` dance, `AgentRun::flushes_segment_on` its
+stateful twin for the session view — and an interrupted draft recording
+nothing, since the cancelled round never made the call; `ui::draft` renders
+`● Write({path})` (the path once its string has closed) over a dim
+`⎿ Writing N lines…` corner and, while the string is open, the **tail** —
+the newest `FILE_PEEK_LINES` display rows, the line still being typed last —
+then, once it closes, the **head** over `… +N lines (ctrl+o to expand)`, the
+shape the committed `Wrote N lines` cell takes, every row through the
+finished cell's own `numbered_row_lines`; highlighting is incremental and
+memoized per draft on a thread-local (the `ui::footer` queued-rows pattern),
+each complete line highlighted once by a highlighter that has seen every
+line before it, the line in progress from a clone; the strip, the agent
+session view and the Ctrl+O transcript all show it, the flow key signed on
+the draft's shape rather than its rows; `smoke.sh` Phase 138 drives the
+offline demo and a stub provider streaming a 40-line write) in
+`docs/write-streaming.md`; the **bounded peek** (`docs/long-lines.md`: a peek
 budgeted in *source lines* let ONE pathological line — a minified bundle, a
 2 KB `curl` JSON body — spend the whole cell on itself, twelve rows of wrapped
 noise under a hint claiming `+1 lines` was hidden, and then let FOUR wrapping
@@ -3023,10 +3053,12 @@ reasoning deltas themselves accumulate in `App::reasoning` for the live
 `Thought for …` cell (`docs/thinking-stream.md`; with
 `ALTER_ZERO_SHOW_THINKING` falsy no buffer is ever opened and they stay opaque,
 counted-only, as they were). Before a tool runs, the backend also streams the model **generating** the call as
-`ToolCallDelta(fragment)` events (the `name`/`arguments` pieces of a `tool_calls`
-delta — `openai::Delta::tool_call`, surfaced ahead of the `ToolStart`); the loop
-counts them via `App::push_tool_call_progress` (never rendered) so the tally ticks
-while the call is produced, exactly like reasoning. The just-sent
+`ToolCallDelta(piece)` events (`stream::ToolCallFragment` — the `name`/`arguments`
+pieces of a `tool_calls` delta keyed to their call, `openai::Delta::tool_calls`,
+surfaced ahead of the round's announcement); the loop counts them via
+`App::push_tool_call_fragment` so the tally ticks while the call is produced,
+exactly like reasoning, and decodes them into the round's **draft calls** — a
+`write`'s live cell streams its file in the strip (`docs/write-streaming.md`). The just-sent
 **user message is counted up front** (`App::count_user_input` after
 `begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
@@ -3482,9 +3514,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `UnboundedSender` (its `send` is sync — callable straight from your background
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, optionally
-  stream `StreamEvent::ToolCallDelta(fragment)`s as the model *generates* the call
-  (its `name`/`arguments` pieces — counted like reasoning so the tally ticks while
-  the call is produced, the text never shown), then send a
+  stream `StreamEvent::ToolCallDelta(piece)`s as the model *generates* the call
+  (its `name`/`arguments` pieces as a `ToolCallFragment`, every piece of one call
+  under the same `index` — counted like reasoning so the tally ticks while the
+  call is produced, and decoded so a `write`'s cell streams its file,
+  `docs/write-streaming.md`), then send a
   `StreamEvent::ToolStart{name,args}`, optionally stream `ToolOutput(chunk)`
   live-output deltas while the tool runs (the running cell tails them —
   `docs/tool-streaming.md`; the real `bash` executor streams completed lines),

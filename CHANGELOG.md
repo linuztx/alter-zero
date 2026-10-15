@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A file streams into view while the model writes it.** A `write` call
+  used to stay invisible until it ran: a model generating a long file showed
+  nothing but a ticking token count. Now its `● Write(path)` cell appears as
+  soon as the model starts the call and fills in as the content arrives. While
+  it streams, the cell shows the newest ten lines, numbered and syntax
+  coloured, with the line being typed at the bottom and a `Writing N lines…`
+  count above. Once the file is complete it switches to the first ten lines
+  over `… +N lines (ctrl+o to expand)`, the same shape the finished cell
+  keeps. Ctrl+O shows the whole file so far, and a subagent's session view
+  streams its own writes the same way. It works with every provider the app
+  supports (`docs/write-streaming.md`).
+
 ### Changed
 
 - **`/skills` opens on a title and a count, and marks what is on.** The menu

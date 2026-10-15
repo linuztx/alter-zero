@@ -346,6 +346,24 @@ agent session view is open, else `App::history` — the `viewed_agent()` branch
 page already take. The clipboard I/O, the toast, and the empty case are
 untouched.
 
+## A `write` the agent is generating
+
+The live `write` cell (`docs/write-streaming.md`) came with its parity built
+in rather than earned by a bug report: `AgentRun` keeps the round's draft
+calls on `AgentRun::drafts`, folded from the same `StreamEvent::ToolCallDelta`
+pieces by the same `app::DraftCalls`, and the session view's strip renders
+them through the same `ui::draft::draft_cells_lines` the main strip does —
+after its tool queue, before its thinking block, the main branch order. The
+viewed agent's Ctrl+O shows them whole, as the main transcript does.
+
+The one thing the boundary has to be told is the segment boundary. Which
+events finalise the agent's run of text used to be a question about the event
+alone, `AgentRun::flushes_segment`; the piece that **opens** a `write` draft
+flushes too, and whether a piece opens one depends on the drafts the run
+already holds. So the boundary asks the run —
+`AgentRun::flushes_segment_on(&event)`, before the fold — and
+`every_flush_point_is_declared` walks both kinds of piece.
+
 ## Testing
 
 - `ui` (unit): the viewed agent's strip previews the injected frontier and

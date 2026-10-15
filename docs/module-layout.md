@@ -45,6 +45,7 @@ widened for the split.
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
 | `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
 | `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
+| `draft.rs` | `DraftCall`/`DraftCalls`: the round's tool calls while the model is still generating them, their `path`/`content` arguments decoded as the pieces land, so a `write`'s cell streams its file (`docs/write-streaming.md`). |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
 | `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
 | `backtrack.rs` | The Esc-Esc backtrack. |
@@ -81,6 +82,7 @@ widened for the split.
 | `conversation.rs` | The whole-history walk and the tail a purge rebuild (resize, `/clear`, a rewind) repaints. |
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
+| `draft.rs` | The live `write` cell of a call still being generated — its streaming tail, then its head — with its per-thread incremental-highlight memo (`docs/write-streaming.md`). |
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary — the amber `Waiting for internet…` verb and `offline for` clause included (`docs/offline.md`). |

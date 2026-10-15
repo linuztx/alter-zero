@@ -124,9 +124,10 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
 
 - `round` is the real streamer: it builds the payload (with tools), streams one
   response — emitting `Chunk`/`Thinking*` exactly as today, plus a
-  `ToolCallDelta(fragment)` for each streamed `tool_calls` piece so the status
-  token tally ticks while the model *generates* the call (counted like reasoning,
-  never rendered; see `docs/status-indicator.md`) — accumulates tool
+  `ToolCallDelta(piece)` for each streamed `tool_calls` piece, keyed to its call,
+  so the status token tally ticks while the model *generates* the call (counted
+  like reasoning, `docs/status-indicator.md`) and a `write` call's cell streams
+  its file as it decodes (`docs/write-streaming.md`) — accumulates tool
   calls, and applies the **existing per-request retry** (`llm::retry`) internally,
   returning a `RoundOutcome`. Retry is unchanged and still per-request.
 - `execute` is the real executor (below). Both are plain closures in the tests, a

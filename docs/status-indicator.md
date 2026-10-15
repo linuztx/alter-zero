@@ -202,10 +202,12 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   (`↓`, and clears any `retry`); `push_thinking` adds tokens (`↓`, the reply
   buffer untouched — the reasoning text goes to the thinking stream's own
   buffer instead, `docs/thinking-stream.md` — and clears any `retry`);
-  `push_tool_call_progress` adds tokens the same way (`↓`, buffer untouched) as
+  `push_tool_call_fragment` adds tokens the same way (`↓`, buffer untouched) as
   the model *generates* a tool call — driven by `StreamEvent::ToolCallDelta`, the
-  streamed `name`/`arguments` fragments the real backend surfaces before the
-  `ToolStart`; `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
+  streamed `name`/`arguments` pieces the real backend surfaces before the
+  round's calls are announced, each keyed to its call (and decoded, so a
+  `write`'s cell streams its file — `docs/write-streaming.md`);
+  `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
   `StreamEvent::Retrying`); `set_offline(host, n)` sets the `Waiting for
   internet…` verb, the `offline for` clause and the row under the line (from
   a `StreamEvent::Offline`), and content, a tool round or a retry clears
@@ -452,14 +454,17 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
 
 ## Tool-call generation in the dummy backend
 
-The same demo trick covers the model *generating* a tool call. Before each
-scripted `ToolStart`, `DummyAi` streams a few `StreamEvent::ToolCallDelta`
-fragments (`DUMMY_READ_CALL` / `DUMMY_BASH_CALL` — the `name` + JSON `arguments`
-pieces), one `THINK_CHUNK_DELAY` pause each, so the token tally visibly ticks
-while the call is produced — just like reasoning. The loop counts them via
-`App::push_tool_call_progress` (never rendered). A real backend surfaces the
-same events straight from its streamed `tool_calls` deltas
-(`openai::Delta::tool_call`), ahead of the `ToolStart` that runs the tool.
+The same demo trick covers the model *generating* a tool call. Ahead of each
+scripted batch, `DummyAi` streams `StreamEvent::ToolCallDelta` pieces
+(`DUMMY_READ_CALL` / `DUMMY_ABOUT_BASH_CALL` — the tool's `name` on a piece of
+its own, then JSON `arguments` pieces, each keyed to its call), a third of a
+word's pause each, so the token tally visibly ticks while the call is produced
+— just like reasoning. The loop counts them via `App::push_tool_call_fragment`,
+which also decodes them: the file-change demo streams its `write` call's real
+arguments, so that call's cell shows the file being written
+(`docs/write-streaming.md`). A real backend surfaces the same events straight
+from its streamed `tool_calls` deltas (`openai::Delta::tool_calls`), ahead of
+the round's announcement.
 
 ## Testing
 
