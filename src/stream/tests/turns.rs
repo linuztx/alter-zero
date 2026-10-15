@@ -857,3 +857,45 @@ fn every_content_line_of_the_markdown_tour_is_distinct() {
         );
     }
 }
+
+#[test]
+fn the_file_change_demo_streams_its_write_like_a_live_model() {
+    // The offline demo has to show the file streaming into its cell
+    // (docs/write-streaming.md), so its `write` is generated the way a live
+    // model generates one: the call named under its slot, then its real JSON
+    // arguments in token-sized pieces — which decode to the very file the
+    // call then writes.
+    let events = turn_events("show me a diff", 0);
+    let mut drafts = crate::app::ToolDrafts::default();
+    let mut pieces = 0usize;
+    for event in &events {
+        if matches!(event, StreamEvent::ToolBatch(_)) {
+            break;
+        }
+        if let StreamEvent::ToolCallDelta(piece) = event {
+            pieces += 1;
+            drafts.push(piece);
+        }
+    }
+    let write = drafts.previews().next().expect("the write previews");
+    assert_eq!(write.path(), Some("fizzbuzz.py"));
+    let written = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } if name == "Write" => arguments.clone(),
+            _ => None,
+        })
+        .expect("the write runs");
+    let content: serde_json::Value = serde_json::from_str(&written).expect("JSON arguments");
+    assert_eq!(
+        write.content(),
+        content["content"].as_str().expect("content")
+    );
+    assert!(write.finished(), "the content closed before the batch");
+    assert!(
+        pieces > 40,
+        "the content streams in many small pieces, not one ({pieces})"
+    );
+}

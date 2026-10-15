@@ -92,6 +92,7 @@ impl App {
     pub fn finish_compact(&mut self, elapsed_secs: u64) -> Option<Compaction> {
         let summary = self.compact_buffer.take()?;
         self.streaming = None;
+        self.tool_drafts.clear();
         self.status = None;
         let mut compaction = Compaction {
             // A model reply often ends with a trailing newline; the bridge

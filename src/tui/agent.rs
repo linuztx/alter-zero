@@ -173,9 +173,15 @@ impl Session<'_> {
         // next `Chunk` then committed against
         // (`docs/agent-view-streaming.md`). `ThinkingStart` stays separate
         // (`opening`): it flushes only when the display is on, and that gate
-        // is the boundary's.
+        // is the boundary's. The fold's answer is asked of the run itself,
+        // because one boundary is a matter of state: the piece that opens a
+        // previewed `write` (docs/write-streaming.md).
         if viewing
-            && (opening || alter_zero::agents::AgentRun::flushes_segment(&event))
+            && (opening
+                || self
+                    .app
+                    .agent(id)
+                    .is_some_and(|run| run.will_flush_segment(&event)))
             && let Some(text) = self
                 .app
                 .viewed_agent()

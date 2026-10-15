@@ -187,6 +187,14 @@ carry a guard rather than an order: `agents` and `files` both exclude
 "do not over**write**" — without the guard that turn would be answered with a
 scripted fizzbuzz.
 
+The `files` demo's `write` is **generated** the way a live model generates
+one, which no other scripted call is: its real JSON arguments, cut into
+token-sized pieces (`stream::tokens`) under the call's slot, each pausing a
+chunk delay like a word of reply text — so the file streams into its cell
+offline, the tail window moving down it and flipping to the head when the
+content closes (`docs/write-streaming.md`, `smoke.sh` Phase 138). The other
+scripted calls keep their few canned pieces, which only tick the tally.
+
 A scenario can also need a **handle** the session may not have attached, and
 `select` skips it when it is missing so the prompt falls through to a script:
 the permission demos need the gate, the ask demo the ask gate, and

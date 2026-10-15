@@ -6,7 +6,7 @@ use super::assistant::code_content_rows;
 use super::inline::wrap_inline_hanging;
 use super::inline_diff::{RefineRow, refine_rows};
 use super::theme::*;
-use super::tool::{more_hint_line, tool_output_lines};
+use super::tool::{more_hint_line, result_row, tool_header_lines, tool_output_lines};
 use super::wrap::{cols, legible_on, segments_cols, truncate_cols};
 use super::*;
 
@@ -651,4 +651,152 @@ pub(super) fn file_cell_lines(
         out.push(more_hint_line(hidden));
     }
     Some(out)
+}
+
+/// Which rows of a previewed call's content its cell shows
+/// (`docs/write-streaming.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftWindow {
+    /// While the content streams: the newest rows, so the line still
+    /// arriving is always the bottom one.
+    Tail,
+    /// Once it has all arrived: the first rows over the `… +N lines` hint —
+    /// the committed cell's own peek.
+    Head,
+    /// The Ctrl+O transcript: every row.
+    Whole,
+}
+
+/// The cell for a **previewed** call — a `write` streaming into its cell
+/// while the model writes it (`docs/write-streaming.md`): the ordinary
+/// `● Write({path})` header, a corner row saying where the call stands, and
+/// the content in the committed `Wrote …` cell's numbered, highlighted
+/// gutter.
+///
+/// `queued` is the cell the call became once its batch was announced — its
+/// header and status then come from it, and the corner reads its
+/// `Waiting…`/`Running…` — or `None` while the call is still being
+/// generated, when the corner counts the lines as they arrive and the bullet
+/// blinks in the running grey. `pulse` is the strip's frame clock (`None`
+/// renders the bullet at rest, `docs/tool-pulse.md`); `whole` is the Ctrl+O
+/// transcript, which shows every line and the whole header.
+///
+/// The window is the committed peek's [`FILE_PEEK_LINES`] **display rows**,
+/// whole source lines only, each capped at [`TOOL_LINE_MAX_ROWS`]: the
+/// newest that fit while a generated call's content streams, the first that
+/// fit — over the hint — once it has arrived or the call is queued. So the
+/// head is the committed cell's body row for row, and resolving the call
+/// changes only its corner row and its bullet's colour.
+pub(super) fn draft_cell_lines(
+    draft: &crate::app::ToolDraft,
+    queued: Option<&ToolCall>,
+    pulse: Option<Duration>,
+    width: u16,
+    paths: &PathDisplay,
+    whole: bool,
+) -> Vec<Line<'static>> {
+    let generating;
+    let tool = match queued {
+        Some(tool) => tool,
+        None => {
+            generating = ToolCall {
+                name: crate::llm::tools::display_name(draft.name()),
+                args: draft.path().unwrap_or_default().to_string(),
+                status: ToolStatus::Running,
+                output: String::new(),
+                timestamp: String::new(),
+                shell: false,
+                truncated: false,
+                context_output: None,
+                arguments: None,
+                approval_note: None,
+                batch: None,
+                call_id: None,
+                position: None,
+            };
+            &generating
+        }
+    };
+    let window = if whole {
+        DraftWindow::Whole
+    } else if queued.is_some() || draft.finished() {
+        DraftWindow::Head
+    } else {
+        DraftWindow::Tail
+    };
+    let mut lines = tool_header_lines(tool, width, !whole, pulse, paths);
+    let lang = draft.path().and_then(file_cell_lang);
+    let cache = draft.highlighted(lang, super::palette::palette().code, CODE_TAB_WIDTH);
+    let total = cache.line_count();
+    let corner = match (queued.map(|tool| tool.status), total) {
+        (Some(ToolStatus::Waiting), _) => TOOL_WAITING.to_string(),
+        (Some(_), _) => TOOL_RUNNING.to_string(),
+        (None, 0) => TOOL_WRITING.to_string(),
+        (None, 1) => format!("{TOOL_WRITING_PREFIX}1 line{TOOL_WRITING_SUFFIX}"),
+        (None, n) => format!("{TOOL_WRITING_PREFIX}{n} lines{TOOL_WRITING_SUFFIX}"),
+    };
+    lines.push(result_row(0, corner));
+    let digits = total.to_string().len();
+    let line_rows = (window != DraftWindow::Whole).then_some(TOOL_LINE_MAX_ROWS);
+    // One source line's display rows — the complete lines from the cache,
+    // the one still arriving from its peek on a clone of the highlighter.
+    let rows_of = |at: usize| -> Vec<Line<'static>> {
+        let segs = cache
+            .lines()
+            .get(at)
+            .map(Vec::as_slice)
+            .or_else(|| cache.partial())
+            .unwrap_or_default();
+        let gutter = format!("{:>digits$}", at + 1);
+        numbered_row_lines(
+            &gutter,
+            None,
+            segs,
+            &[],
+            file_body_indent(),
+            width,
+            line_rows,
+        )
+    };
+    match window {
+        DraftWindow::Whole => {
+            for at in 0..total {
+                lines.extend(rows_of(at));
+            }
+        }
+        DraftWindow::Head => {
+            // The committed peek's walk (`file_cell_lines`): whole source
+            // lines while they fit the budget, the first always.
+            let mut used = 0usize;
+            let mut shown = 0usize;
+            for at in 0..total {
+                let rows = rows_of(at);
+                if used + rows.len() > FILE_PEEK_LINES && used > 0 {
+                    break;
+                }
+                used += rows.len();
+                shown += 1;
+                lines.extend(rows);
+            }
+            if shown < total {
+                lines.push(more_hint_line(total - shown));
+            }
+        }
+        DraftWindow::Tail => {
+            // The same walk from the other end: the newest lines that fit,
+            // put back in file order.
+            let mut used = 0usize;
+            let mut window: Vec<Vec<Line<'static>>> = Vec::new();
+            for at in (0..total).rev() {
+                let rows = rows_of(at);
+                if used + rows.len() > FILE_PEEK_LINES && used > 0 {
+                    break;
+                }
+                used += rows.len();
+                window.push(rows);
+            }
+            lines.extend(window.into_iter().rev().flatten());
+        }
+    }
+    lines
 }

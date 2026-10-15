@@ -3023,10 +3023,21 @@ reasoning deltas themselves accumulate in `App::reasoning` for the live
 `Thought for …` cell (`docs/thinking-stream.md`; with
 `ALTER_ZERO_SHOW_THINKING` falsy no buffer is ever opened and they stay opaque,
 counted-only, as they were). Before a tool runs, the backend also streams the model **generating** the call as
-`ToolCallDelta(fragment)` events (the `name`/`arguments` pieces of a `tool_calls`
-delta — `openai::Delta::tool_call`, surfaced ahead of the `ToolStart`); the loop
-counts them via `App::push_tool_call_progress` (never rendered) so the tally ticks
-while the call is produced, exactly like reasoning. The just-sent
+`ToolCallDelta(fragment)` events — `stream::ToolCallFragment { index, name,
+arguments }`, the `name`/`arguments` pieces of a `tool_calls` delta under the
+wire's own slot for the call (`openai::Delta::tool_calls`, surfaced ahead of
+the round's batch) — which the loop counts via `App::push_tool_call_fragment`
+so the tally ticks while the call is produced, exactly like reasoning, and
+folds into the round's **drafts** (`app::ToolDrafts`, `docs/write-streaming.md`):
+a `write`'s arguments are decoded as they stream (`app::ArgsScanner`) and the
+strip shows the file being written — `● Write({path})` over a `Writing N
+lines…` corner and the **newest** ten numbered, highlighted rows while the
+content arrives (`highlight::LineCache` colouring it incrementally), the
+**first** ten over the `… +N lines` hint once it has, the committed cell's own
+peek, which a queued `Write` keeps under its `Waiting…`; the piece that opens
+the preview flushes the streaming text first (invariant 4), a subagent's write
+streams in its session view the same way, and nothing of a half-made call is
+ever recorded. The just-sent
 **user message is counted up front** (`App::count_user_input` after
 `begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
@@ -3483,8 +3494,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, optionally
   stream `StreamEvent::ToolCallDelta(fragment)`s as the model *generates* the call
-  (its `name`/`arguments` pieces — counted like reasoning so the tally ticks while
-  the call is produced, the text never shown), then send a
+  (its `name`/`arguments` pieces as `ToolCallFragment`s, each under the call's
+  slot in the round — counted like reasoning so the tally ticks while the call
+  is produced, and previewed for a `write`, `docs/write-streaming.md`), then send a
   `StreamEvent::ToolStart{name,args}`, optionally stream `ToolOutput(chunk)`
   live-output deltas while the tool runs (the running cell tails them —
   `docs/tool-streaming.md`; the real `bash` executor streams completed lines),

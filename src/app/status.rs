@@ -243,6 +243,30 @@ impl App {
             status.recovered();
         }
     }
+    /// Fold one streamed piece of a call the model is **generating**
+    /// ([`crate::stream::StreamEvent::ToolCallDelta`]): count it into the
+    /// tally exactly as [`push_tool_call_progress`](App::push_tool_call_progress)
+    /// does, and fold it into the round's drafts so a `write` previews as its
+    /// content arrives (`docs/write-streaming.md`). Returns whether the piece
+    /// **opened a previewed call** — the boundary's cue to flush the
+    /// streaming text before the cell goes up (*flush before you
+    /// interleave*). No draft outside a reply, nor in a `/compact` turn,
+    /// whose backend carries no tools.
+    pub fn push_tool_call_fragment(&mut self, fragment: &crate::stream::ToolCallFragment) -> bool {
+        self.push_tool_call_progress(&fragment.tally_text());
+        if self.streaming.is_none() || self.is_compacting() {
+            return false;
+        }
+        self.tool_drafts.push(fragment)
+    }
+
+    /// The calls the model is still generating this round, and the previewed
+    /// ones the announced batch took over (`docs/write-streaming.md`).
+    #[must_use]
+    pub fn tool_drafts(&self) -> &ToolDrafts {
+        &self.tool_drafts
+    }
+
     /// Fold one provider usage report (the round's final `usage` frame,
     /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
     /// billed total and its cached share, and **snap the live tally to the

@@ -82,6 +82,9 @@ impl App {
     /// it under a fresh batch id so the records its cells resolve into share
     /// one round and carry the provider's own call ids.
     pub fn open_round(&mut self, calls: Vec<RoundCall>) {
+        // The round's calls are all made: nothing more of them streams
+        // (docs/write-streaming.md).
+        self.tool_drafts.seal();
         self.next_batch += 1;
         self.round = Some(OpenRound {
             batch: self.next_batch,
@@ -144,6 +147,10 @@ impl App {
                 (self.next_batch, vec![Identity::default(); items.len()])
             }
         };
+        // The round's previews are queued cells now: each `Write` cell takes
+        // its own (docs/write-streaming.md).
+        self.tool_drafts
+            .adopt(items.iter().map(|item| item.name.as_str()));
         self.tool_queue = items
             .iter()
             .zip(ids)
@@ -210,6 +217,15 @@ impl App {
             front.status = ToolStatus::Running;
             front.arguments = arguments;
             return;
+        }
+        // A call no batch announced is its round's whole announcement — when
+        // it is the only call: pushed behind live ones, pairing drafts by
+        // order could hand a cell another's file, so nothing previews
+        // (docs/write-streaming.md).
+        if self.tool_queue.is_empty() {
+            self.tool_drafts.adopt([name]);
+        } else {
+            self.tool_drafts.clear();
         }
         self.tool_queue.push_back(ToolCall {
             name: name.to_string(),
@@ -421,6 +437,8 @@ impl App {
         status: ToolStatus,
     ) -> Option<ToolCall> {
         let mut tool = self.tool_queue.pop_front()?;
+        // A resolved `Write` gives its draft up (docs/write-streaming.md).
+        self.tool_drafts.resolve(&tool.name);
         self.tool_live.reset();
         self.tool_revision += 1;
         tool.output = output.to_string();

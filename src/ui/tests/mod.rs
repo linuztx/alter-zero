@@ -21,6 +21,7 @@ mod classifier_view;
 mod context_view;
 mod donate_view;
 mod export_view;
+mod file_cell;
 mod footer;
 mod header;
 mod hooks_view;

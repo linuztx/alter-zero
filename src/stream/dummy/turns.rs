@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use super::super::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
+use super::super::{AgentCallDone, AgentSpec, StreamEvent, ToolCallFragment, ToolCallSummary};
 use super::scenario::Cue;
 use super::script::{
     MARKDOWN_TOUR, chunks, dummy_response, handoff, image_ack, reply_parts, tokens,
@@ -30,23 +30,18 @@ use super::script::{
 const DUMMY_THINKING: &str = "Let me read the file first.\nThen edit it and run it.";
 
 /// The dummy's canned tool-call "generation" fragments, streamed as
-/// [`StreamEvent::ToolCallDelta`]s just before each `ToolStart` — the pieces a
-/// real model emits while producing a `tool_calls` request. Never shown; they
-/// only feed the token tally so the status ticks while the model *generates*
-/// the call (like [`DUMMY_THINKING`] does for reasoning). See
-/// `docs/status-indicator.md`.
+/// [`StreamEvent::ToolCallDelta`]s just before each batch — the pieces a real
+/// model emits while producing a `tool_calls` request: the name, then the
+/// arguments. These calls preview nothing, so they only feed the token tally
+/// and the status ticks while the model *generates* them (like
+/// [`DUMMY_THINKING`] does for reasoning, `docs/status-indicator.md`). The
+/// file-change demo's `write` is generated from its real arguments instead,
+/// so the file streams into its cell (`files_turn`, `docs/write-streaming.md`).
 const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"about.py\"}"];
 const DUMMY_ABOUT_EDIT_CALL: &[&str] = &["edit", "{\"path\":", "\"about.py\",", "\"old_string\":"];
 const DUMMY_ABOUT_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"python3 about.py\"}"];
 const DUMMY_PING_CALL: &[&str] = &["bash", "{\"command\":", "\"ping x.invalid\"}"];
 const DUMMY_FIZZ_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"python3 fizzbuzz.py\"}"];
-const DUMMY_WRITE_CALL: &[&str] = &[
-    "write",
-    "{\"path\":",
-    "\"fizzbuzz.py\",",
-    "\"content\":",
-    "…",
-];
 const DUMMY_EDIT_CALL: &[&str] = &[
     "edit",
     "{\"path\":",
@@ -54,6 +49,23 @@ const DUMMY_EDIT_CALL: &[&str] = &[
     "\"old_string\":",
     "…",
 ];
+
+/// A scripted call's generation pieces as `tool_turn` takes them: its name
+/// first, then its argument pieces.
+fn pieces(call: &[&str]) -> Vec<String> {
+    call.iter().map(|piece| (*piece).to_string()).collect()
+}
+
+/// One piece of a scripted call being "generated" — slot `index` of its
+/// round, `name` on the piece that names the call, `arguments` on the rest
+/// (`docs/write-streaming.md`).
+fn generating(index: usize, name: &str, arguments: &str) -> StreamEvent {
+    StreamEvent::ToolCallDelta(ToolCallFragment {
+        index,
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    })
+}
 
 /// The **default turn's story**: alter-zero's own calling card, read, fixed,
 /// and run — the loop a real coding agent spends its life in, and the reason
@@ -666,7 +678,7 @@ pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
         for (wire, args) in *calls {
             // The model "generating" the call ticks the tally, like every
             // other scripted round (docs/status-indicator.md).
-            events.push(StreamEvent::ToolCallDelta(format!("{wire}(…)")));
+            events.push(generating(0, wire, "(…)"));
             events.push(task_call(&mut store, wire, args));
         }
     }
@@ -700,7 +712,7 @@ pub(in crate::stream) fn tasks_finished_turn(cue: &Cue) -> Vec<StreamEvent> {
         (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"in_progress"}"#),
         (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"completed"}"#),
     ] {
-        events.push(StreamEvent::ToolCallDelta(format!("{wire}(…)")));
+        events.push(generating(0, wire, "(…)"));
         events.push(task_call(&mut store, wire, args));
     }
     events.extend(say(TASKS_FINISHED_SEGMENTS[1]));
@@ -794,18 +806,30 @@ pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
 
 /// The vivid three-call `Bash(ping …)` batch — the user's example.
 pub(in crate::stream) fn parallel_turn(cue: &Cue) -> Vec<StreamEvent> {
-    tool_turn(cue, PARALLEL_REPLY, &[DUMMY_PING_CALL], &parallel_batch())
+    tool_turn(
+        cue,
+        PARALLEL_REPLY,
+        &[pieces(DUMMY_PING_CALL)],
+        &parallel_batch(),
+    )
 }
 
 /// The **file-change** demo (`docs/tools.md`): write a buggy fizzbuzz, `edit`
 /// the bug out, then run it — so the numbered `Wrote` body and the tinted
 /// `Updated` hunk both show, which no other offline demo covers.
 pub(in crate::stream) fn files_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let batch = files_batch();
+    // The `write` is generated the way a live model generates one — its real
+    // JSON arguments in token-sized pieces — so the file streams into its
+    // cell offline too (docs/write-streaming.md); the other two calls are
+    // short enough that their scripted pieces say the same thing.
+    let mut write = vec![batch[0].name.to_ascii_lowercase()];
+    write.extend(tokens(&batch[0].arguments));
     tool_turn(
         cue,
         FILES_REPLY,
-        &[DUMMY_WRITE_CALL, DUMMY_EDIT_CALL, DUMMY_FIZZ_BASH_CALL],
-        &files_batch(),
+        &[write, pieces(DUMMY_EDIT_CALL), pieces(DUMMY_FIZZ_BASH_CALL)],
+        &batch,
     )
 }
 
@@ -819,9 +843,9 @@ pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
         cue,
         &dummy_response(cue.text()),
         &[
-            DUMMY_READ_CALL,
-            DUMMY_ABOUT_EDIT_CALL,
-            DUMMY_ABOUT_BASH_CALL,
+            pieces(DUMMY_READ_CALL),
+            pieces(DUMMY_ABOUT_EDIT_CALL),
+            pieces(DUMMY_ABOUT_BASH_CALL),
         ],
         &default_batch(),
     )
@@ -843,7 +867,7 @@ pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
 fn tool_turn(
     cue: &Cue,
     reply: &str,
-    deltas: &[&[&str]],
+    deltas: &[Vec<String>],
     batch: &[ScriptedCall],
 ) -> Vec<StreamEvent> {
     let (first, second) = reply_parts(reply);
@@ -856,9 +880,15 @@ fn tool_turn(
             .map(StreamEvent::ThinkingChunk),
     );
     events.push(StreamEvent::ThinkingEnd);
-    for call in deltas {
-        for frag in *call {
-            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+    // Each call's group opens on its name, the pieces after it are its
+    // arguments, and the group's place in the round is its slot — the shape
+    // a live round's pieces take (docs/write-streaming.md).
+    for (slot, call) in deltas.iter().enumerate() {
+        if let Some((name, pieces)) = call.split_first() {
+            events.push(generating(slot, name, ""));
+            for piece in pieces {
+                events.push(generating(slot, "", piece));
+            }
         }
     }
     events.push(StreamEvent::ToolBatch(

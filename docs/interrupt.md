@@ -13,7 +13,9 @@ Two deliberate divergences from codex tune what happens when there is nothing
 worth keeping:
 
 - **No output yet → undo, don't notify.** If Esc lands before the turn has
-  produced anything (no partial reply, no tool) and nothing waits behind it —
+  produced anything (no partial reply, no tool, no `write` that had begun
+  streaming into its cell — `docs/write-streaming.md`) and nothing waits
+  behind it —
   neither a queued follow-up nor a message handed to this turn that it never
   read (`docs/queue.md`) — the submission is **rolled back** rather than
   interrupted: the just-sent

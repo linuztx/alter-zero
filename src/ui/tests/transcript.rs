@@ -1024,3 +1024,57 @@ fn the_cache_re_renders_its_frozen_prefix_when_the_theme_changes() {
     );
     assert_eq!(bullet(cache.lines(&app, 80)), mocha, "…and back");
 }
+
+#[test]
+fn ctrl_o_shows_a_streaming_write_whole_and_follows_it() {
+    // The transcript shows everything live — a file being written included,
+    // every line of it, refreshed as each piece lands (docs/write-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 0,
+        name: "write".to_string(),
+        arguments: r#"{"path":"a.py","content":"first\nsecond\n"#.to_string(),
+    });
+    let mut cache = TranscriptCache::new();
+    let texts: Vec<String> = cache.lines(&app, 80).iter().map(plain).collect();
+    assert!(texts.iter().any(|row| row == "● Write(a.py)"), "{texts:#?}");
+    assert!(
+        texts.iter().any(|row| row.ends_with("1 first")),
+        "{texts:#?}"
+    );
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 0,
+        name: String::new(),
+        arguments: r#"third\n"#.to_string(),
+    });
+    let texts: Vec<String> = cache.lines(&app, 80).iter().map(plain).collect();
+    assert!(
+        texts.iter().any(|row| row.ends_with("3 third")),
+        "a new piece refreshes the overlay: {texts:#?}"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn ctrl_o_shows_a_queued_writes_whole_file() {
+    let mut app = App::new();
+    app.begin_stream();
+    let content: String = (1..=14).map(|i| format!("row {i}\n")).collect();
+    let arguments = serde_json::json!({ "path": "a.py", "content": content }).to_string();
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 0,
+        name: "write".to_string(),
+        arguments,
+    });
+    app.start_tool_batch(&[crate::stream::ToolCallSummary {
+        name: "Write".to_string(),
+        args: "a.py".to_string(),
+    }]);
+    let texts: Vec<String> = transcript_lines(&app, 80).iter().map(plain).collect();
+    assert!(texts.iter().any(|row| row == "  ⎿  Waiting…"), "{texts:#?}");
+    assert!(
+        texts.iter().any(|row| row.ends_with("14 row 14")),
+        "every line, past the inline peek: {texts:#?}"
+    );
+}

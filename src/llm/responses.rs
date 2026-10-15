@@ -297,11 +297,17 @@ pub enum ResponseEvent {
     Text(String),
     /// Reasoning summary text (the model's own summary of its thinking).
     Reasoning(String),
-    /// A fragment of a tool call being *generated* — never rendered, only
-    /// counted, so the tally ticks while the call is produced.
-    ToolFragment(String),
-    /// A tool call the model finished asking for.
-    ToolCall(ToolCallRequest),
+    /// A `function_call` item **opened** — the first moment its name is
+    /// known, so a call being generated can be named and previewed while its
+    /// arguments stream (`docs/write-streaming.md`). `index` is the item's
+    /// `output_index`, the slot every later piece of it names.
+    ToolOpened { index: usize, name: String },
+    /// A piece of a tool call's arguments being *generated*, under its
+    /// item's `output_index` — counted so the tally ticks while the call is
+    /// produced, and previewed for a `write`.
+    ToolFragment { index: usize, delta: String },
+    /// A tool call the model finished asking for, under its `output_index`.
+    ToolCall { index: usize, call: ToolCallRequest },
     /// The stream finished; the round's usage, when the frame carried one.
     Completed {
         usage: Option<TokenUsage>,
@@ -330,6 +336,16 @@ pub fn parse_event(data: &str) -> ResponseEvent {
             .unwrap_or_default()
             .to_string()
     };
+    // The item's slot in the response's output, which every frame about it
+    // repeats; a frame that lost it folds into the first slot rather than
+    // being dropped (the Anthropic drain's rule for a missing block index).
+    let index = || {
+        value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .unwrap_or(0)
+    };
     match kind {
         "response.output_text.delta" => ResponseEvent::Text(delta()),
         // Both spellings occur: models that stream a *summary* of their
@@ -337,11 +353,27 @@ pub fn parse_event(data: &str) -> ResponseEvent {
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             ResponseEvent::Reasoning(delta())
         }
-        "response.function_call_arguments.delta" => ResponseEvent::ToolFragment(delta()),
-        "response.output_item.done" => value
+        "response.function_call_arguments.delta" => ResponseEvent::ToolFragment {
+            index: index(),
+            delta: delta(),
+        },
+        "response.output_item.added" => value
             .get("item")
-            .and_then(function_call_of)
-            .map_or(ResponseEvent::Ignored, ResponseEvent::ToolCall),
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+            .and_then(|item| item.get("name").and_then(Value::as_str))
+            .map_or(ResponseEvent::Ignored, |name| ResponseEvent::ToolOpened {
+                index: index(),
+                name: name.to_string(),
+            }),
+        "response.output_item.done" => {
+            value
+                .get("item")
+                .and_then(function_call_of)
+                .map_or(ResponseEvent::Ignored, |call| ResponseEvent::ToolCall {
+                    index: index(),
+                    call,
+                })
+        }
         "response.completed" | "response.incomplete" => ResponseEvent::Completed {
             usage: value.get("response").and_then(parse_usage),
             status: value
@@ -613,9 +645,11 @@ mod tests {
     fn a_finished_output_item_yields_the_whole_tool_call() {
         let frame = r#"{"type":"response.output_item.done","item":{"type":"function_call",
             "id":"fc_1","call_id":"call_abc","name":"bash","arguments":"{\"command\":\"ls\"}"}}"#;
-        let ResponseEvent::ToolCall(call) = parse_event(frame) else {
+        let ResponseEvent::ToolCall { index, call } = parse_event(frame) else {
             panic!("expected a tool call");
         };
+        // A frame that names no `output_index` is folded into slot 0.
+        assert_eq!(index, 0);
         // `call_id` links the result back, not the item's own `id`.
         assert_eq!(call.id, "call_abc");
         assert_eq!(call.name, "bash");
@@ -629,10 +663,30 @@ mod tests {
     }
 
     #[test]
-    fn argument_fragments_surface_for_counting_only() {
+    fn argument_fragments_surface_under_their_output_index() {
         assert_eq!(
-            parse_event(r#"{"type":"response.function_call_arguments.delta","delta":"{\"c"}"#),
-            ResponseEvent::ToolFragment("{\"c".to_string())
+            parse_event(
+                r#"{"type":"response.function_call_arguments.delta","output_index":3,"delta":"{\"c"}"#
+            ),
+            ResponseEvent::ToolFragment {
+                index: 3,
+                delta: "{\"c".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_opening_function_call_item_names_its_call() {
+        // The name used to arrive only with the finished item, too late to
+        // preview a call being generated (docs/write-streaming.md).
+        assert_eq!(
+            parse_event(
+                r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_a","name":"write","arguments":""}}"#
+            ),
+            ResponseEvent::ToolOpened {
+                index: 2,
+                name: "write".to_string(),
+            }
         );
     }
 

@@ -8,6 +8,7 @@
 //! `docs/tool-streaming.md`.
 
 use super::agent::{agent_view_preview_lines, agent_view_rule_label};
+use super::file_cell::draft_cell_lines;
 use super::layout::{
     fit_preview_rows, input_box, key_onboarding_rows, live_layout, model_picker_rows,
     strip_other_rows, view_split,
@@ -110,7 +111,9 @@ pub(super) fn preview_lines(
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
         // kind of `StreamRender` (`docs/agent-view-streaming.md`).
-        let streaming = run.tool_queue.is_empty() && run.reasoning().is_none();
+        let streaming = run.tool_queue.is_empty()
+            && run.drafts().previews().next().is_none()
+            && run.reasoning().is_none();
         trim_preview(
             agent_view_preview_lines(run, app.pulse(), width, stream_preview, app.path_display()),
             rows,
@@ -118,6 +121,16 @@ pub(super) fn preview_lines(
         )
     } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         trim_preview(preview_tool_lines(app, width), rows, false)
+    } else if app.tool_drafts().previews().next().is_some() {
+        // A `write` the model is still generating, its file streaming into
+        // the cell (docs/write-streaming.md) — before any batch exists, so
+        // it never meets the queue above, and after the backend closed any
+        // thinking phase, so it never meets the block below.
+        trim_preview(
+            draft_preview_lines(app.tool_drafts(), app.pulse(), width, app.path_display()),
+            rows,
+            false,
+        )
     } else if let Some(text) = app.reasoning() {
         trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
     } else if let Some(lines) = stream_preview {
@@ -172,14 +185,26 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// `live` is that session's running call's live rows and when each last
 /// changed ([`App::live_tail`], [`AgentRun::live_tail`](crate::agents::AgentRun::live_tail)),
 /// which the command tail's window follows (`docs/tool-streaming.md`).
+///
+/// `draft` is the call's adopted draft when it is a previewed call the
+/// round streamed (`docs/write-streaming.md`): a queued `Write` keeps the
+/// head of the file it streamed under its `Waiting…`/`Running…` corner
+/// instead of the bare row, so the cell does not collapse and grow back when
+/// it resolves.
 pub(super) fn live_call_lines(
     tool: &ToolCall,
+    draft: Option<&crate::app::ToolDraft>,
     live: &LiveTail,
     elapsed: Duration,
     pulse: Duration,
     width: u16,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
+    if let Some(draft) = draft
+        && matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running)
+    {
+        return draft_cell_lines(draft, Some(tool), Some(pulse), width, paths, false);
+    }
     if tool.shell && tool.status == ToolStatus::Running {
         return vec![shell_running_line(elapsed)];
     }
@@ -231,12 +256,19 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     {
         return batch;
     }
+    // Each queued previewed call owns the next adopted draft, in queue order
+    // (docs/write-streaming.md).
+    let mut drafts = app.tool_drafts().queued();
     for (i, tool) in app.tool_queue().iter().enumerate() {
         if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
+        let draft = crate::app::previewed_display(&tool.name)
+            .then(|| drafts.next())
+            .flatten();
         lines.extend(live_call_lines(
             tool,
+            draft,
             app.live_tail(),
             elapsed,
             pulse,
@@ -262,6 +294,35 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         {
             lines.push(result_row(1, hint.to_string()));
         }
+    }
+    lines
+}
+
+/// The previewed calls a round is still generating — a `write` streaming
+/// into its cell (`docs/write-streaming.md`) — blank-separated like a batch.
+/// The one builder for the main strip ([`preview_lines`], sized by
+/// `preview_rows` through the same walk) and the agent session view's
+/// ([`super::agent::agent_view_preview_lines`]), so a subagent's file
+/// streams exactly as the main turn's does.
+pub(super) fn draft_preview_lines(
+    drafts: &crate::app::ToolDrafts,
+    pulse: Duration,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for draft in drafts.previews() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(draft_cell_lines(
+            draft,
+            None,
+            Some(pulse),
+            width,
+            paths,
+            false,
+        ));
     }
     lines
 }
@@ -400,9 +461,14 @@ pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16
 /// on; mirrors [`preview_rows`]' own branch order.
 fn strip_preview_is_live_cells(app: &App) -> bool {
     if let Some(run) = app.viewed_agent() {
-        return !run.tool_queue.is_empty() || run.reasoning().is_some();
+        return !run.tool_queue.is_empty()
+            || run.drafts().previews().next().is_some()
+            || run.reasoning().is_some();
     }
-    app.agent_group().is_some() || !app.tool_queue().is_empty() || app.reasoning().is_some()
+    app.agent_group().is_some()
+        || !app.tool_queue().is_empty()
+        || app.tool_drafts().previews().next().is_some()
+        || app.reasoning().is_some()
 }
 
 /// The rows the strip's content occupies at `preview_n` preview rows —
@@ -433,9 +499,11 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 /// the bullet blinks — so signing its rows would purge-rebuild the screen
 /// thirty times a second. This hashes only what a **structural** change moves:
 /// which conversation is on screen, whether a turn's status line is up, each
-/// queued call's name/arguments/status, the live agent group's members, and
-/// whether a thinking phase is open. A new call, a
-/// resolution, a new round or the turn ending re-signs it; a streamed line
+/// queued call's name/arguments/status, the live agent group's members,
+/// whether a thinking phase is open, and each `write` still being generated
+/// — its path and whether it has finished (`docs/write-streaming.md`). A new
+/// call, a resolution, a new round or the turn ending re-signs it, and so
+/// does a `write` flipping from its tail to its head; a streamed line
 /// does not, so the flowed rows freeze where they were committed. (The width
 /// and the flowed row count are hashed by the caller, so a resize — and any
 /// change to how much overflows — re-signs too.)
@@ -460,6 +528,18 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     if let Some(group) = app.agent_group() {
         group.background.hash(&mut hasher);
         group.ids.hash(&mut hasher);
+    }
+    // A previewed call is signed on what its cell is *of* — its path, and
+    // whether it shows the tail it follows while streaming or the head it
+    // settles on — never on its rows: a streamed line re-signs nothing,
+    // while the flip, which replaces every row, does
+    // (docs/write-streaming.md).
+    let drafts = app
+        .viewed_agent()
+        .map_or_else(|| app.tool_drafts(), |run| run.drafts());
+    for draft in drafts.previews() {
+        draft.path().hash(&mut hasher);
+        draft.finished().hash(&mut hasher);
     }
     hasher.finish()
 }

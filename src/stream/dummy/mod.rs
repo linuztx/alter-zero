@@ -457,6 +457,10 @@ fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
         // under the status line visibly grows row by row
         // (docs/task-tools.md).
         StreamEvent::TaskCall { .. } => Some(TOOL_DELAY),
+        // A call's argument pieces trickle like reply text, so a `write`
+        // streams into its cell at a readable pace (docs/write-streaming.md);
+        // the piece that names the call pauses like a thought.
+        StreamEvent::ToolCallDelta(piece) if piece.name.is_empty() => Some(chunk_delay),
         StreamEvent::ThinkingStart
         | StreamEvent::ThinkingChunk(_)
         | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),

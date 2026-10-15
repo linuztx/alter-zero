@@ -1033,7 +1033,10 @@ fn live_tool_call_generation_emits_delta_events() {
     while let Some(event) = rx.blocking_recv() {
         match event {
             StreamEvent::ToolCallDelta(frag) => {
-                assert!(!frag.is_empty(), "a generation fragment is non-empty");
+                assert!(
+                    !frag.tally_text().is_empty(),
+                    "a generation fragment is non-empty"
+                );
                 if !saw_tool_start {
                     generation_before_start = true;
                 }

@@ -45,6 +45,7 @@ widened for the split.
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
 | `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
 | `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
+| `drafts.rs` | The calls a round is still **generating**: `ArgsScanner` (streamed JSON arguments decoded as they arrive), `ToolDraft` and `ToolDrafts` — the lifecycle a `write` previews by while its file streams into its cell (`docs/write-streaming.md`). |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
 | `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
 | `backtrack.rs` | The Esc-Esc backtrack. |

@@ -395,6 +395,16 @@ The overlay renders the running call's output through `tool_full_lines` (the
 *whole* streamed-so-far output, uncapped), the same walk that shows a finished
 tool — so a running cell and a finished one read identically, just growing.
 
+## Before the tool runs: a `write` streams while it is generated
+
+Everything above streams a call's **output**, once it runs. A `write` call's
+**input** streams too: the model generates its `content` for seconds before
+the round ends, and the file streams into the cell as it arrives — the
+newest ten numbered rows while it does, the first ten over the `… +N lines`
+hint once it has, the committed cell's own peek. That is a different stream
+(the `ToolCallDelta` pieces of the round, not this section's
+`ToolOutput`/`ToolScreen`), with its own design: `docs/write-streaming.md`.
+
 ## Demo (the dummy backend)
 
 `stream::turn_events` interleaves a few `ToolOutput` chunks between each `Bash`

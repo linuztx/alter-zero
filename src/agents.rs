@@ -261,6 +261,11 @@ pub struct AgentRun {
     pub user_messages: Vec<String>,
     /// Its live tool calls, front running — the parallel-batch queue shape.
     pub tool_queue: VecDeque<ToolCall>,
+    /// The calls it is still **generating** this round, a `write` previewed
+    /// as its content streams, and the previewed ones its announced batch
+    /// took over — the main session's [`App::tool_drafts`](crate::app::App::tool_drafts),
+    /// one level down (`docs/write-streaming.md`). Live-only, like the queue.
+    drafts: crate::app::ToolDrafts,
     /// The running call's live rows and when each last changed — the main
     /// session's [`App::live_tail`](crate::app::App::live_tail), stamped
     /// with this agent's own command clock ([`Self::command_elapsed`]) so its
@@ -393,6 +398,7 @@ impl AgentRun {
             followups: VecDeque::new(),
             user_messages: Vec::new(),
             tool_queue: VecDeque::new(),
+            drafts: crate::app::ToolDrafts::default(),
             tool_live: crate::app::LiveTail::default(),
             result: None,
             error: None,
@@ -437,6 +443,25 @@ impl AgentRun {
                 | StreamEvent::StreamDone
                 | StreamEvent::Error(_)
         )
+    }
+
+    /// [`flushes_segment`](Self::flushes_segment), asked of **this run**:
+    /// the static boundaries, plus the one only its state can answer — a
+    /// streamed piece that **opens a previewed call**, a `write` whose cell
+    /// goes up under the text before it (`docs/write-streaming.md`). What
+    /// the session view's flush, which runs before the fold, asks; `apply`
+    /// flushes at exactly these points.
+    #[must_use]
+    pub fn will_flush_segment(&self, event: &StreamEvent) -> bool {
+        Self::flushes_segment(event)
+            || matches!(event, StreamEvent::ToolCallDelta(piece) if self.drafts.opens_preview(piece))
+    }
+
+    /// The calls it is still generating this round, and the previewed ones
+    /// its announced batch took over (`docs/write-streaming.md`).
+    #[must_use]
+    pub const fn drafts(&self) -> &crate::app::ToolDrafts {
+        &self.drafts
     }
 
     /// Fold one of the subagent's own [`StreamEvent`]s into this entry —
@@ -524,11 +549,18 @@ impl AgentRun {
                     buffer.push_str(text);
                 }
             }
-            // Opaque progress — counted so the footer tally ticks while the
-            // agent generates a call (the status-line pattern).
-            StreamEvent::ToolCallDelta(text) => {
-                self.tokens += crate::app::count_tokens(text) as u64;
+            // A piece of a call being generated — counted so the footer
+            // tally ticks while the agent generates it (the status-line
+            // pattern).
+            StreamEvent::ToolCallDelta(piece) => {
+                self.tokens += crate::app::count_tokens(&piece.tally_text()) as u64;
                 self.recovered();
+                // A `write` whose cell goes up: the text before it is its own
+                // message first (invariant 4, `will_flush_segment`).
+                if self.drafts.opens_preview(piece) {
+                    self.flush_segment();
+                }
+                self.drafts.push(piece);
             }
             StreamEvent::ToolBatch(items) => {
                 // The round came back (the wires that deliver a call whole
@@ -559,6 +591,10 @@ impl AgentRun {
                         position: None,
                     });
                 }
+                // Each queued `Write` takes the draft it streamed
+                // (docs/write-streaming.md).
+                self.drafts
+                    .adopt(items.iter().map(|item| item.name.as_str()));
             }
             StreamEvent::ToolStart {
                 name,
@@ -586,21 +622,33 @@ impl AgentRun {
                         front.args.clone_from(args);
                         front.arguments.clone_from(arguments);
                     }
-                    _ => self.tool_queue.push_front(ToolCall {
-                        name: name.clone(),
-                        args: args.clone(),
-                        arguments: arguments.clone(),
-                        status: ToolStatus::Running,
-                        output: String::new(),
-                        timestamp: String::new(),
-                        shell: false,
-                        truncated: false,
-                        context_output: None,
-                        approval_note: None,
-                        batch: None,
-                        call_id: None,
-                        position: None,
-                    }),
+                    _ => {
+                        // A call no batch announced is its round's whole
+                        // announcement — when it is the only call: pushed
+                        // ahead of live ones, pairing by order could hand a
+                        // cell another's file, so nothing previews
+                        // (docs/write-streaming.md).
+                        if self.tool_queue.is_empty() {
+                            self.drafts.adopt([name.as_str()]);
+                        } else {
+                            self.drafts.clear();
+                        }
+                        self.tool_queue.push_front(ToolCall {
+                            name: name.clone(),
+                            args: args.clone(),
+                            arguments: arguments.clone(),
+                            status: ToolStatus::Running,
+                            output: String::new(),
+                            timestamp: String::new(),
+                            shell: false,
+                            truncated: false,
+                            context_output: None,
+                            approval_note: None,
+                            batch: None,
+                            call_id: None,
+                            position: None,
+                        });
+                    }
                 }
             }
             // The auto mode classifier allowed this agent's command: the note
@@ -646,7 +694,7 @@ impl AgentRun {
                 truncated,
             } => {
                 self.tokens += crate::app::count_tokens(output) as u64;
-                if let Some(mut front) = self.tool_queue.pop_front() {
+                if let Some(mut front) = self.pop_front_call() {
                     front.status = if *ok {
                         ToolStatus::Ok
                     } else {
@@ -668,7 +716,7 @@ impl AgentRun {
                 truncated,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
-                if let Some(mut front) = self.tool_queue.pop_front() {
+                if let Some(mut front) = self.pop_front_call() {
                     front.status = ToolStatus::Failed;
                     front.output = display.clone();
                     front.context_output = Some(result.clone());
@@ -688,7 +736,7 @@ impl AgentRun {
                 // is charged like every other resolution's — the main
                 // session's `resolve_front_tool` charges it too.
                 self.tokens += crate::app::count_tokens(output) as u64;
-                if let Some(mut front) = self.tool_queue.pop_front() {
+                if let Some(mut front) = self.pop_front_call() {
                     front.status = ToolStatus::Backgrounded;
                     front.output = output.clone();
                     self.history.push(HistoryItem::Tool(front));
@@ -720,6 +768,7 @@ impl AgentRun {
                 self.settle_thinking();
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
+                self.drafts.clear();
                 self.status = AgentStatus::Done;
                 // No usage frame this turn (the dummy, a provider that omits
                 // them): the tokenizer estimate over this transcript stands
@@ -754,6 +803,7 @@ impl AgentRun {
                 self.settle_thinking();
                 self.flush_segment();
                 self.resolve_tools(message);
+                self.drafts.clear();
                 self.error = Some(message.clone());
                 self.status = AgentStatus::Failed;
                 return true;
@@ -771,7 +821,7 @@ impl AgentRun {
                 truncated,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
-                if let Some(mut front) = self.tool_queue.pop_front() {
+                if let Some(mut front) = self.pop_front_call() {
                     front.status = ToolStatus::Ok;
                     front.output = display.clone();
                     front.context_output = Some(result.clone());
@@ -849,8 +899,10 @@ impl AgentRun {
                     began,
                 });
             }
-            StreamEvent::RoundCalls(_)
-            | StreamEvent::Permission(_)
+            // The round's calls are all made: nothing more of them streams
+            // (docs/write-streaming.md).
+            StreamEvent::RoundCalls(_) => self.drafts.seal(),
+            StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
             | StreamEvent::ThinkingEnd
@@ -905,6 +957,9 @@ impl AgentRun {
         // now cancelled.
         self.queued.clear();
         self.followups.clear();
+        // A call it never finished making is never recorded
+        // (docs/write-streaming.md).
+        self.drafts.clear();
         self.status = AgentStatus::Interrupted;
         true
     }
@@ -927,6 +982,7 @@ impl AgentRun {
         // A partial thought is what the user saw — the interrupt's rule.
         self.settle_thinking();
         self.resolve_tools(output);
+        self.drafts.clear();
         self.status = status;
     }
 
@@ -1031,6 +1087,7 @@ impl AgentRun {
         self.turn_usage_cache_write = 0;
         self.round_reasoning.clear();
         self.user_messages.clear();
+        self.drafts.clear();
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
@@ -1172,6 +1229,15 @@ impl AgentRun {
         self.finish_reasoning(secs);
     }
 
+    /// Take the front call off the live queue — it resolved — and, with it,
+    /// the draft a previewed one owns (`docs/write-streaming.md`): both are
+    /// front-first in queue order, so the pair stays aligned.
+    fn pop_front_call(&mut self) -> Option<ToolCall> {
+        let call = self.tool_queue.pop_front()?;
+        self.drafts.resolve(&call.name);
+        Some(call)
+    }
+
     /// Resolve every live tool call as failed with `output` (an interrupt or
     /// backend error killed the run): the running — or permission-waiting —
     /// front call and each `⎿ Waiting…` sibling behind it, in the batch's
@@ -1180,7 +1246,7 @@ impl AgentRun {
     /// agent made keeps its cell in the session view, and its Ctrl+D agrees
     /// with what a chat continuation resumes from.
     fn resolve_tools(&mut self, output: &str) {
-        while let Some(mut call) = self.tool_queue.pop_front() {
+        while let Some(mut call) = self.pop_front_call() {
             call.status = ToolStatus::Failed;
             call.output = output.to_string();
             self.history.push(HistoryItem::Tool(call));
@@ -2945,6 +3011,124 @@ mod tests {
         assert!(run.tool_queue.is_empty());
     }
 
+    // --- a subagent's `write` streaming into its cell (docs/write-streaming.md) ---
+
+    /// One streamed piece of a call under slot `index`.
+    fn piece(index: usize, name: &str, arguments: &str) -> StreamEvent {
+        StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+            index,
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        })
+    }
+
+    #[test]
+    fn a_subagents_write_previews_as_it_streams_after_its_text() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Chunk("Writing it now:".to_string()));
+        let opening = piece(0, "write", r#"{"path":"a.py","content":"x = 1\ny"#);
+        assert!(
+            run.will_flush_segment(&opening),
+            "the piece that opens the preview is a segment boundary"
+        );
+        run.apply(&opening);
+        let draft = run.drafts().previews().next().expect("a preview");
+        assert_eq!(draft.path(), Some("a.py"));
+        assert_eq!(draft.content(), "x = 1\ny");
+        assert!(
+            matches!(
+                run.history.last(),
+                Some(HistoryItem::Message(m)) if m.role == Role::Assistant && m.text == "Writing it now:"
+            ),
+            "the text before the cell became its own message"
+        );
+        let more = piece(0, "", r#" = 2"#);
+        assert!(
+            !run.will_flush_segment(&more),
+            "a later piece flushes nothing"
+        );
+        assert!(
+            run.will_flush_segment(&StreamEvent::StreamDone),
+            "the fold's own static boundaries still answer"
+        );
+        assert!(
+            !run.will_flush_segment(&piece(1, "bash", "{}")),
+            "a bash call previews nothing"
+        );
+    }
+
+    #[test]
+    fn a_subagents_batch_adopts_its_previews_and_each_resolution_drains_its_own() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&piece(0, "write", r#"{"path":"a.py","content":"A\n"}"#));
+        run.apply(&StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Write".to_string(),
+            args: "a.py".to_string(),
+        }]));
+        assert_eq!(run.drafts().previews().count(), 0);
+        assert_eq!(run.drafts().queued().count(), 1, "the queued write owns it");
+        run.apply(&StreamEvent::ToolStart {
+            name: "Write".to_string(),
+            args: "a.py".to_string(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolAnswered {
+            display: "Wrote 1 line to a.py\n1 A".to_string(),
+            result: "File created successfully at: a.py".to_string(),
+            truncated: false,
+        });
+        assert!(run.drafts().is_empty(), "the resolved call took its draft");
+    }
+
+    #[test]
+    fn a_subagents_lone_call_pushed_ahead_of_a_live_write_borrows_no_draft() {
+        // The agent fold pushes a lone call to the queue's FRONT, so pairing
+        // by order would hand the earlier write's file to the newcomer.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        let start = |path: &str| StreamEvent::ToolStart {
+            name: "Write".to_string(),
+            args: path.to_string(),
+            detail: None,
+            arguments: None,
+        };
+        run.apply(&piece(0, "write", r#"{"path":"a.py","content":"A"}"#));
+        run.apply(&start("a.py"));
+        run.apply(&piece(0, "write", r#"{"path":"b.py","content":"B"}"#));
+        run.apply(&start("b.py"));
+        let front = run.tool_queue.front().map(|call| call.args.clone());
+        let paired = run.drafts().queued().next().and_then(|draft| draft.path());
+        assert!(
+            paired.is_none() || paired.map(str::to_string) == front,
+            "the front call shows its own file or none: front {front:?}, draft {paired:?}"
+        );
+    }
+
+    #[test]
+    fn a_subagents_turn_edges_drop_its_drafts() {
+        let streaming = || {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&piece(0, "write", r#"{"path":"a.py","content":"op"#));
+            assert!(!run.drafts().is_empty());
+            run
+        };
+        let mut run = streaming();
+        run.apply(&StreamEvent::StreamDone);
+        assert!(run.drafts().is_empty(), "a finished run");
+        let mut run = streaming();
+        run.apply(&StreamEvent::Error("boom".to_string()));
+        assert!(run.drafts().is_empty(), "a failed run");
+        let mut run = streaming();
+        run.interrupt();
+        assert!(run.drafts().is_empty(), "a stopped run");
+        let mut run = streaming();
+        run.apply(&StreamEvent::RoundCalls(Vec::new()));
+        assert!(
+            run.drafts().previews().all(crate::app::ToolDraft::finished),
+            "the round's announcement seals what streamed"
+        );
+    }
+
     #[test]
     fn interrupt_settles_locally_and_keeps_the_partial() {
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
@@ -3412,7 +3596,13 @@ mod tests {
                 },
             ),
             ("ThinkingChunk", StreamEvent::ThinkingChunk("t".to_string())),
-            ("ToolCallDelta", StreamEvent::ToolCallDelta("{".to_string())),
+            (
+                "ToolCallDelta",
+                StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+                    arguments: "{".to_string(),
+                    ..Default::default()
+                }),
+            ),
             (
                 "ToolBatch",
                 StreamEvent::ToolBatch(vec![ToolCallSummary {
