@@ -284,6 +284,106 @@ fn a_nested_item_after_a_blank_stays_a_list_not_indented_code() {
 }
 
 #[test]
+fn a_sub_list_indented_short_of_its_parents_text_still_nests() {
+    // Models nest sub-bullets two spaces under `1. ` (two or three under
+    // `10. `): short of the item's text column, so CommonMark — and codex —
+    // flatten them into a separate list and break the numbering. Two columns
+    // past the parent's marker is what the model meant: nest it.
+    assert_eq!(
+        rows(
+            "1. **Step one**\n  - detail a\n  - detail b\n2. **Step two**\n  - detail c",
+            40
+        ),
+        vec![
+            "● 1. Step one",
+            "      • detail a",
+            "      • detail b",
+            "  ",
+            "  2. Step two",
+            "      • detail c",
+        ]
+    );
+    assert_eq!(
+        rows(
+            "9. Nine\n10. Ten\n   - sub of ten\n   - another\n11. Eleven",
+            40
+        ),
+        vec![
+            "● 9. Nine",
+            "  10. Ten",
+            "      • sub of ten",
+            "      • another",
+            "  ",
+            "  11. Eleven",
+        ]
+    );
+    assert_eq!(
+        rows("9. Nine\n10. Ten\n  - two under ten\n11. Eleven", 40),
+        vec![
+            "● 9. Nine",
+            "  10. Ten",
+            "      • two under ten",
+            "  ",
+            "  11. Eleven",
+        ]
+    );
+    // One column in is a sibling written sloppily, as CommonMark reads it:
+    // nesting it would renumber the rest of the list.
+    assert_eq!(
+        rows("1. First\n 2. Second\n3. Third", 40),
+        vec!["● 1. First", "  2. Second", "  3. Third"]
+    );
+    assert_eq!(
+        rows("- parent\n - one space child\n- next", 40),
+        vec!["● • parent", "  • one space child", "  • next"]
+    );
+}
+
+#[test]
+fn a_block_indented_short_of_an_items_text_stays_in_the_item() {
+    // The same leniency for a fence, quote or heading opening between the
+    // item's marker and its text — so `2. Run` stays item 2 of one list —
+    // while a paragraph after a blank line must reach the text column.
+    assert_eq!(
+        rows("1. Install:\n  ```bash\n  npm i\n  ```\n2. Run", 40),
+        vec!["● 1. Install:", "  ", "     npm i", "  ", "  2. Run"]
+    );
+    assert_eq!(
+        rows("1. Item\n  > note\n2. Next", 40),
+        vec!["● 1. Item", "     > note", "  ", "  2. Next"]
+    );
+    // The fence's code lines lose exactly the indent the fence line did, so
+    // the code keeps its own indentation.
+    assert_eq!(
+        rows(
+            "1. Install:\n  ```py\n  def f():\n      return 1\n  ```",
+            40
+        ),
+        vec!["● 1. Install:", "  ", "     def f():", "         return 1"]
+    );
+    // An open table's later lines continue it at the table's indent, pipe
+    // or none — a delimiter or row needn't open a block of its own.
+    assert_eq!(
+        rows("1. Compare:\n  | A | B |\n  ---|---\n  1 | 2\n2. Done", 40),
+        vec![
+            "● 1. Compare:",
+            "     ┌───┬───┐",
+            "     │ A │ B │",
+            "     ├───┼───┤",
+            "     │ 1 │ 2 │",
+            "     └───┴───┘",
+            "  ",
+            "  2. Done",
+        ]
+    );
+    assert_eq!(
+        rows("1. Item\n\n  para", 40),
+        vec!["● 1. Item", "  ", "  para"],
+        "a paragraph after a blank needs the text column"
+    );
+}
+
+#[test]
 fn ordered_lists_renumber_from_their_start_like_codex() {
     assert_eq!(
         rows("1. a\n1. b\n1. c", 40),

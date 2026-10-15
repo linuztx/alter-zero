@@ -138,6 +138,17 @@ const FRAGMENTS: &[&str] = &[
     "&nbs",
     "<me@e.co>",
     "<http://unclosed",
+    // --- blocks indented short of an item's text, and indented fences ---
+    "  ```py",
+    "  ```",
+    "      indented code line",
+    "  > short quote",
+    "  ### short heading",
+    "  | x | y |",
+    " - one-space child",
+    " 2. one-space ordered",
+    "  ---|---",
+    "  1 | 2",
 ];
 
 /// Joiners between fragments — the newline shapes decide block boundaries.

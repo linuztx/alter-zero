@@ -401,6 +401,14 @@ codex's way:
   `LIST_NEST_WIDTH` (4) columns deeper — an ordered number right-aligned in
   that padding — whether the model nested by 2, 3 or 4 spaces. Continuation
   rows hang under the item's text.
+- **A block indented short of an item's text** still nests when it starts
+  two columns or more past the item's marker: models write a sub-list two
+  spaces under `1. ` and two or three under `10. `, which CommonMark — and
+  codex — read as a separate list, flattening it and restarting the parent's
+  numbering. A list item, fence, quote, heading or table there stays in the
+  item; one column in is a sibling written sloppily (` 2. b` after `1. a`
+  keeps the count going), and paragraph text still needs the text column
+  or continues lazily.
 - **Text under an item** — an indented continuation line, a *lazy* one
   (unindented, no blank before: CommonMark keeps it in the item's paragraph),
   a second paragraph after a blank, a fence or a quote indented to the item's
@@ -486,8 +494,12 @@ CommonMark's block parser does:
 
 1. **Continue the open containers**, outermost first: a quote needs a `>` (its
    marker and one space consumed), a list item a blank line or one indented to
-   the item's content column (that indent consumed). What is left is the line
-   relative to the innermost container that matched.
+   the item's content column (that indent consumed) — or a block start (a
+   list item, fence, quote, heading or table) two columns or more past the
+   item's marker, all of its indent consumed, which is how models nest under
+   `1. ` (*In — lists and blockquotes*); a line continuing an open table
+   follows the table's indent the same way, pipe or none. What is left is the
+   line relative to the innermost container that matched.
 2. **Laziness.** A line that fails to continue every container but is
    paragraph text right after a paragraph line (no blank between) is a *lazy
    continuation*: every container stays open and it continues the paragraph —
@@ -534,7 +546,9 @@ spaces, so a model that under-indents the code inside an item's fence still
 gets code rather than a fence torn open into prose. Then, as CommonMark says,
 it loses up to the **fence's own indent** (`fence_indent`), so a fence
 written two spaces in keeps its code where the fence is rather than two
-columns right of it.
+columns right of it — and an item the fence's line continued leniently
+strips only what it consumed there (`fence_lenient`), so the code keeps the
+indentation it was written with.
 
 **Why it stays prefix-stable.** Every row a line renders — the separator before
 it included — depends only on the lines before it (the stack, the scopes' last
@@ -547,7 +561,7 @@ becomes an item (`1. x`) or prose (`1.5`), `- 1` a nested list, `---` a rule or
 (`markdown::has_unsettled_block_prefix`, below). The differential test's corpus
 covers every rule here at every prefix and width, and the fuzzer's soup grew
 fragments for the containers (quoted items, task boxes, lazy and continuation
-lines, bare markers).
+lines, bare markers, blocks indented short of an item's text).
 
 ## Prefix-stable holdback (tables + inline emphasis)
 

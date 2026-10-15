@@ -19,7 +19,8 @@ release heading when a version is cut.
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
   instead of the model's `-`, `*` or `+`, task items show `☐`/`☑`, and an
   ordered list counts from its first number, so `1.`, `1.`, `1.` reads 1, 2,
-  3. Nested lists sit four columns per level, and text under an item hangs
+  3. Nested lists sit four columns per level (a sub-list two spaces under
+  `1.` nests rather than restarting the count), and text under an item hangs
   under it, including a lazy unindented line, a second paragraph or a code
   block. A quote can hold a list (`> - item` shows a bullet) or a heading.
   Blocks are set one blank line apart even when the model left none, a run

@@ -209,6 +209,10 @@ enum Container {
 /// An open list item.
 #[derive(Clone, Debug)]
 struct Item {
+    /// The source column its marker sat at, past the enclosing containers'
+    /// prefixes: a block start indented two columns further still belongs to
+    /// the item (see [`AssistantRenderer::match_containers`]).
+    marker_col: usize,
     /// Spaces a later line must be indented, past the enclosing containers'
     /// prefixes, to stay in this item — the source column its content starts at.
     indent: usize,
@@ -272,6 +276,11 @@ pub(super) struct AssistantRenderer {
     /// takes up to that many spaces off each of its code lines, so the code
     /// sits where the fence does.
     fence_indent: usize,
+    /// The items the open fence's line continued **leniently** (indented
+    /// short of their text), with the spaces each consumed there: its code
+    /// lines lose that many for the item instead of the item's whole indent,
+    /// so the code keeps the indentation it was written with.
+    fence_lenient: Vec<(usize, usize)>,
     /// In-progress GFM table accumulation (`docs/markdown.md`). A table is not
     /// prefix-stable — a later row can widen a column — so its source lines are
     /// buffered here and rendered **whole** only when the block closes (a line
@@ -349,6 +358,23 @@ fn is_paragraph_text(rest: &str) -> bool {
         && !markdown::is_table_header_candidate(rest)
 }
 
+/// Whether `rest` (its indent consumed) starts a block that may nest under a
+/// list item it is indented short of: a list item, a fence, a quote, a heading
+/// or a table — never a rule, which a model writes to end a section.
+fn opens_nested_block(rest: &str) -> bool {
+    markdown::thematic_break(rest).is_none()
+        && (markdown::list_item(rest).is_some()
+            || markdown::block_quote(rest).is_some()
+            || markdown::is_fence_opener(rest)
+            || markdown::heading_level(rest).is_some()
+            || markdown::is_table_header_candidate(rest))
+}
+
+/// What [`AssistantRenderer::match_containers`] reports: how many open
+/// containers a line continues, what is left of it past their prefixes, and
+/// the items it continued short of their text with the spaces consumed.
+type Matched<'a> = (usize, &'a str, Vec<(usize, usize)>);
+
 /// The number of leading spaces of `s`.
 fn leading_spaces(s: &str) -> usize {
     s.len() - s.trim_start_matches(' ').len()
@@ -369,6 +395,7 @@ impl AssistantRenderer {
             last_row_blank: false,
             fence_gap: false,
             fence_indent: 0,
+            fence_lenient: Vec::new(),
             table: TableState::None,
         }
     }
@@ -416,14 +443,21 @@ impl AssistantRenderer {
     /// (which renders nothing).
     fn fenced_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
         let mut rest = line;
-        for container in &self.containers {
+        for (i, container) in self.containers.iter().enumerate() {
             match container {
                 Container::Quote(_) => {
                     if let Some(inner) = markdown::block_quote(rest) {
                         rest = inner;
                     }
                 }
-                Container::Item(item) => rest = &rest[leading_spaces(rest).min(item.indent)..],
+                Container::Item(item) => {
+                    let indent = self
+                        .fence_lenient
+                        .iter()
+                        .find(|(at, _)| *at == i)
+                        .map_or(item.indent, |&(_, spaces)| spaces);
+                    rest = &rest[leading_spaces(rest).min(indent)..];
+                }
             }
         }
         let rest = &rest[leading_spaces(rest).min(self.fence_indent)..];
@@ -431,6 +465,7 @@ impl AssistantRenderer {
             markdown::LineKind::CodeEnd => {
                 self.highlighter = None;
                 self.fence_gap = false;
+                self.fence_lenient.clear();
                 Vec::new()
             }
             _ => {
@@ -447,34 +482,51 @@ impl AssistantRenderer {
     /// How many open containers `line` continues, and what is left of it past
     /// their prefixes. A quote continues on a `>` (its marker and one space
     /// consumed); an item on a blank line or one indented to its content (that
-    /// indent consumed).
-    fn match_containers<'a>(&self, line: &'a str) -> (usize, &'a str) {
+    /// indent consumed) — or on a **block start** (a list item, fence, quote,
+    /// heading or table) indented two columns or more past the item's marker
+    /// but short of its text (all of it consumed). Models nest a sub-list two
+    /// spaces under `1. ` and under `10. `, which CommonMark — and codex —
+    /// would flatten into a list of its own, breaking the numbering; that far
+    /// past the parent's marker is what the model meant, while one column in
+    /// is a sibling. A paragraph line there still needs the text column (or
+    /// is a lazy continuation); a line continuing an open table (`in_table`)
+    /// needn't start a block. The items continued that way come back as
+    /// `(index, spaces consumed)` — empty, and so free, on every ordinary line.
+    fn match_containers<'a>(&self, line: &'a str, in_table: bool) -> Matched<'a> {
         let mut rest = line;
+        let mut lenient = Vec::new();
         for (i, container) in self.containers.iter().enumerate() {
             match container {
                 Container::Quote(_) => match markdown::block_quote(rest) {
                     Some(inner) => rest = inner,
-                    None => return (i, rest),
+                    None => return (i, rest, lenient),
                 },
                 Container::Item(item) => {
                     if rest.trim().is_empty() {
                         continue;
                     }
-                    if leading_spaces(rest) < item.indent {
-                        return (i, rest);
+                    let spaces = leading_spaces(rest);
+                    if spaces >= item.indent {
+                        rest = &rest[item.indent..];
+                    } else if spaces >= item.marker_col + 2
+                        && (in_table || opens_nested_block(&rest[spaces..]))
+                    {
+                        rest = &rest[spaces..];
+                        lenient.push((i, spaces));
+                    } else {
+                        return (i, rest, lenient);
                     }
-                    rest = &rest[item.indent..];
                 }
             }
         }
-        (self.containers.len(), rest)
+        (self.containers.len(), rest, lenient)
     }
 
     /// Whether `line` continues the open table — every container still matches
     /// and the rest is the delimiter a pending header needs, or another row —
     /// buffering it if so.
     fn continue_table(&mut self, line: &str) -> bool {
-        let (matched, rest) = self.match_containers(line);
+        let (matched, rest, _) = self.match_containers(line, true);
         if matched < self.containers.len() {
             return false;
         }
@@ -538,7 +590,7 @@ impl AssistantRenderer {
     /// containers, open the quotes and list items the line starts, then render
     /// its leaf — a heading, rule, fence, paragraph line or table header.
     fn block_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
-        let (matched, rest) = self.match_containers(line);
+        let (matched, rest, lenient) = self.match_containers(line, false);
         let blank = rest.trim().is_empty();
         if matched < self.containers.len() {
             // A lazy continuation: paragraph text with no blank before it
@@ -606,14 +658,21 @@ impl AssistantRenderer {
             }
             break;
         }
-        out.extend(self.leaf_line(rest, opened));
+        out.extend(self.leaf_line(rest, opened, lenient));
         out
     }
 
     /// Render a line's leaf — what is left past its container prefixes and
     /// markers. `opened` says the line opened a container, whose first block
-    /// this is: never a paragraph continuation, never a table.
-    fn leaf_line(&mut self, rest: &str, opened: bool) -> Vec<Vec<Span<'static>>> {
+    /// this is: never a paragraph continuation, never a table. `lenient` is
+    /// [`Self::match_containers`]' record of the items the line continued
+    /// short of their text, which a fence opened here strips by.
+    fn leaf_line(
+        &mut self,
+        rest: &str,
+        opened: bool,
+        lenient: Vec<(usize, usize)>,
+    ) -> Vec<Vec<Span<'static>>> {
         if rest.trim().is_empty() {
             self.scanner.classify(rest);
             if self.marker_pending() {
@@ -631,6 +690,7 @@ impl AssistantRenderer {
                 // row of its own first.
                 self.fence_gap = self.last() != Last::Nothing && !self.last_row_blank;
                 self.fence_indent = leading_spaces(rest);
+                self.fence_lenient = lenient;
                 let mut out = Vec::new();
                 if self.marker_pending() {
                     out.extend(self.emit(vec![Vec::new()]));
@@ -830,6 +890,7 @@ impl AssistantRenderer {
         let marker = list_marker(kind, number, depth, task, self.base_style());
         let hang = marker.iter().map(|(text, _)| cols(text)).sum();
         self.containers.push(Container::Item(Item {
+            marker_col: item.indent,
             indent,
             marker,
             hang,

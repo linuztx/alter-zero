@@ -447,6 +447,19 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         // A task box's text is paragraph text: `10)` after it is no nested
         // list (a fuzz find — the box once let the marker loop run on).
         "- [x] 10)\n- [ ] # not a heading\nend",
+        // A fence strips its own indent from its code lines, at the top
+        // level and inside an item.
+        "  ```python\n  def f():\n      return 1\n  ```\nafter",
+        // A tight item keeps a quote, heading or table against its text; a
+        // blank line makes it loose again.
+        "- item\n  > quoted\n- next\n  ### Sub\n- table\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n- loose\n\n  > apart",
+        // A sub-list, fence or quote indented short of its item's text (past
+        // its marker) stays in the item, the fence's code keeping its own
+        // indentation; a paragraph line there is a lazy continuation.
+        "1. **Step one**\n  - detail a\n  - detail b\n2. Install:\n  ```py\n  def f():\n      return 1\n  ```\n3. Note\n  > careful\n  lazy text\n10. Ten\n   - sub of ten",
+        // An open table continues at its indent with pipe-less lines, and a
+        // one-column indent is a sibling, keeping the numbering.
+        "1. Compare:\n  | A | B |\n  ---|---\n  1 | 2\n 2. Second\n3. Third",
     ];
 
     for full in corpus {
