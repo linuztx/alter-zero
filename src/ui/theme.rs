@@ -1356,20 +1356,21 @@ pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 /// the live spinners line up down the list.
 pub(super) const SPINNER_MENU_GAP: usize = 3;
 
-// --- The inline `/theme` picker (docs/theme.md). The `/spinner` picker's
-// frame — its search line, its counter, description and hint — over the
-// `/mcp` lists' rows (the `❯` marker, the `↑ N more above` / `↓ N more below`
-// overflow rows: the `HOOKS_*` glyphs), one per colour theme, each wearing a
-// swatch of its own accents, and a preview built from REAL cells (a user
-// bubble, an `Edit` diff cell, an assistant reply with a code block) rendered
-// under the highlighted theme through the conversation's own builders —
-// beside the list on a wide terminal, codex's picker layout, and under it on a
-// narrow one. The palettes themselves live in `ui::palette`; only the
-// picker's words and geometry are here. ---
+// --- The inline `/theme` picker (docs/theme.md). codex's theme picker in
+// this TUI's dress: the family's frame and `❯` search line over one row per
+// colour theme in the `/mcp` list's shape (the `HOOKS_MARKER` `❯` on the
+// selection, the dim `↑ N more above` / `↓ N more below` rows), each row
+// wearing a swatch of its own accents, and a preview built from REAL cells (a
+// user bubble, an `Edit` diff cell, an assistant reply with a code block)
+// rendered under the highlighted theme through the conversation's own
+// builders — laid BESIDE the list once the terminal has the room, stacked
+// under it when it doesn't. The palettes themselves live in `ui::palette`;
+// only the picker's words and geometry are here. ---
 
-/// The key hint pinned under the description — the picker's whole grammar.
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation the `/mcp` list's hint leads with.
 pub(super) const THEME_HINT: &str =
-    "Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel";
+    "↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel";
 
 /// The list placeholder when the search matches no theme.
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
@@ -1381,33 +1382,29 @@ pub(super) const THEME_NO_MATCH: &str = "No matching themes";
 pub(super) const THEME_SEARCH_ROW: u16 = 2;
 
 /// The cap on the picker's visible list rows (the settings window's size —
-/// the eleven-theme catalog windows by one row, so exactly one overflow row
-/// always says which way the hidden theme is, and the page never changes
-/// height as the selection moves).
+/// the eleven-theme catalog windows by one row, which an overflow row
+/// names). The ten rows and that row stand about as tall as the preview
+/// beside them, so the side-by-side block is balanced.
 pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-/// Columns between the catalog's widest theme name and the swatch column, so
-/// the swatches line up down the list.
+/// Columns between the widest theme name in the catalog and the swatch
+/// column, so the swatches line up down the list.
 pub(super) const THEME_MENU_GAP: usize = 3;
+
+/// Columns between the list column and the preview beside it — codex's
+/// side gap plus its panel inset.
+pub(super) const THEME_PREVIEW_GAP: usize = 4;
+
+/// The narrowest preview column the side-by-side page lays out (codex's
+/// `WIDE_PREVIEW_MIN_WIDTH`): the room the sample needs unwrapped, so the
+/// block keeps its height at every width that gets it. A terminal with less
+/// than the list, the gap and this stacks the preview under the list.
+pub(super) const THEME_PREVIEW_MIN_COLS: usize = 44;
 
 /// One swatch cell — a row wears five, in its own theme's accent, link,
 /// success, warning and error colours, so the palettes compare at a glance
 /// the way the `/spinner` rows' live spinners do.
 pub(super) const THEME_SWATCH: &str = "●";
-
-/// Columns between the list column's widest row and the preview beside it
-/// — codex's side-content gap plus its preview's inset.
-pub(super) const THEME_PREVIEW_GAP: usize = 4;
-
-/// The narrowest preview column the side-by-side layout accepts (codex's
-/// `WIDE_PREVIEW_MIN_WIDTH`), which also holds the sample's widest row — the
-/// reply's code line — so nothing in the preview wraps beside the list. A
-/// terminal that can't spare it stacks the preview under the list instead.
-pub(super) const THEME_PREVIEW_MIN_COLS: usize = 44;
-
-/// The rows kept free above and below the preview when it sits centered
-/// beside a taller list (codex's `PREVIEW_FRAME_PADDING`).
-pub(super) const THEME_PREVIEW_FRAME: usize = 1;
 
 /// The preview's sample conversation: the user asks for a change, an `Edit`
 /// call makes it (a real numbered diff cell — the code theme, the diff tints,

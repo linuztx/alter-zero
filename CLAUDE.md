@@ -392,16 +392,21 @@ system per entry: the four Catppuccin flavours with **Mocha the default**
 `onedark` — the TUI's original chrome value for value, over Atom's One Dark
 code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
-follows the terminal's theme. The `/spinner` picker's frame over that
-catalog in the `/mcp` lists' rows (an accent `❯`, a dim `↓ 1 more below`
-overflow row), every row wearing a five-`●` swatch of its own palette, the
-highlighted theme previewed on **real cells** — a user bubble, an `Edit`
-diff cell, a reply with a code line, built by `message_lines`/`tool_lines`
-with the theme scoped active around them (`ui::with_theme`) so the preview
-and the conversation can never disagree — **beside the list** once the
-terminal spares it 44 columns (codex's picker layout, centered against the
-list, the page then fitting an 80×24 terminal) and under it on a narrower
-one — a still page signed on its rows.
+follows the terminal's theme. codex's theme picker in the family's frame:
+the catalog in the **`/mcp` list's shape** (the accent `❯` on the
+selection, the other rows indented under it, a ten-row centred window whose
+hidden rows dim `↑ N more above` / `↓ N more below` rows name, the hint led
+by `↑/↓ to navigate`), every row wearing a five-`●` swatch of its own
+palette, the highlighted theme previewed on **real cells** — a user bubble,
+an `Edit` diff cell, a reply with a code line, built by
+`message_lines`/`tool_lines` with the theme scoped active around them
+(`ui::with_theme`) so the preview and the conversation can never disagree —
+under codex's bold-title-over-dim-subtitle caption, laid **beside** the
+list once the terminal has room for the catalog-sized list column, a
+four-column gap and the sample unwrapped (`THEME_PREVIEW_MIN_COLS`, 71
+columns in all; under that it stacks under the list), each preview row's
+line style folded onto its spans so the bubble's ground never paints the
+list — a still page signed on its rows.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),

@@ -4,9 +4,9 @@ Every colour the TUI paints — the cyan the pickers select with, the tool
 bullet's green, the `⎿` gutter's dim, the user bubble's ground, the diff
 tints, the banner gradient, and the syntax colours inside code blocks and
 file cells — comes from one **theme**. The **`/theme`** command — the tenth
-composer-replacing inline picker, the `/spinner` picker's twin — chooses
-among eleven, previews them on real cells, and persists the choice across
-sessions. The default is **Catppuccin Mocha**: the code blocks have worn it
+composer-replacing inline picker, laid out like codex's theme picker —
+chooses among eleven, previews them on real cells beside the list, and
+persists the choice across sessions. The default is **Catppuccin Mocha**: the code blocks have worn it
 since the syntect port (`docs/markdown.md`), and the chrome now matches
 instead of framing Catppuccin code in One Dark's cyan.
 
@@ -181,57 +181,92 @@ browse touches several; each costs one parse of a ~20 KB theme, once.
 
 ## The `/theme` picker
 
-At 80 columns:
+On a terminal with room for the list, a gap and the sample unwrapped — 71
+columns over this catalog — the preview sits **beside** the list:
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
 
   ❯
 
-  ❯ mocha       ●●●●● ✓
-    macchiato   ●●●●●      ❯ Rename the greeting in greet.py
-    frappe      ●●●●●      ● Edit(greet.py)
-    latte       ●●●●●        ⎿  Updated greet.py (+1 -1)
-    onedark     ●●●●●            1  def greet(name):
-    dracula     ●●●●●            2 -    print("Hello, world")
-    nord        ●●●●●            2 +    print(f"Hello, {name}")
-    gruvbox     ●●●●●      ● Done — greet.py greets by name now:
-    solarized   ●●●●●
-    monokai     ●●●●●        greet("Alter Zero")  # Hello, Alter Zero
+  ❯ mocha       ●●●●● ✓    Catppuccin Mocha
+    macchiato   ●●●●●      The darkest flavour, and the default
+    frappe      ●●●●●
+    latte       ●●●●●      ❯ Rename the greeting in greet.py
+    onedark     ●●●●●      ● Edit(greet.py)
+    dracula     ●●●●●        ⎿  Updated greet.py (+1 -1)
+    nord        ●●●●●            1  def greet(name):
+    gruvbox     ●●●●●            2 -    print("Hello, world")
+    solarized   ●●●●●            2 +    print(f"Hello, {name}")
+    monokai     ●●●●●      ● Done — greet.py greets by name now:
   ↓ 1 more below
-  (1/11)
+                             greet("Alter Zero")  # Hello, Alter Zero
 
-  Catppuccin Mocha — the darkest flavour, and the default
-
-  Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
-Deliberately the `/spinner` picker's twin — same inline frame, same `❯`
-type-to-search (matching names, **titles** and descriptions, so
-`catppuccin` finds the four flavours and `follows` the terminal theme),
-same `(n/total)` counter, description row and dim hint, the same ten-row
-window (`THEME_MENU_MAX_ROWS`, the settings window's size) — but its list
-wears the **`/mcp` lists' rows**: the accent `❯` on the highlight (the
-`HOOKS_MARKER`), every other name inset to the same column, and a dim
-`↑ N more above` / `↓ N more below` row on whichever side the window hides
-themes (`HOOKS_UP_MARKER`/`HOOKS_DOWN_MARKER`). The eleven-theme catalog
-windows by exactly one row, so exactly one overflow row always shows and
-the page height never moves with the selection. The hint names every key —
-`Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel` — on
-one dim row, `…`-cut below 68 columns like the rest of the family's. Plus
-the two things a theme picker exists for:
+On a narrower one the same preview stacks under the list (here scrolled to
+the end of the catalog, so the overflow row is above the window):
 
-- **Every row wears its own swatch.** After the name column (sized to the
-  catalog's widest name plus `THEME_MENU_GAP` — the whole catalog, not the
-  visible rows, so the swatches and the preview beside them hold still
-  while the window scrolls or a search narrows the list) each row carries
-  five `●`s in *that theme's* accent, link, success, warning and error —
-  read straight off its palette, never the active one — so the catalog
-  compares at a glance the way the `/spinner` rows' live spinners do. The
-  session's current theme carries the `/model` picker's green ✓, and the
-  open seats the highlight on it.
+```
+──────────────────────────────────────────────────────────────
+
+  ❯
+
+  ↑ 1 more above
+    macchiato   ●●●●●
+    frappe      ●●●●●
+    …
+    monokai     ●●●●●
+  ❯ ansi        ●●●●●
+
+  Terminal
+  The terminal's own 16 ANSI colours, so the TUI follows its …
+
+  ❯ Rename the greeting in greet.py
+  ● Edit(greet.py)
+    ⎿  Updated greet.py (+1 -1)
+        1  def greet(name):
+        2 -    print("Hello, world")
+        2 +    print(f"Hello, {name}")
+  ● Done — greet.py greets by name now:
+
+    greet("Alter Zero")  # Hello, Alter Zero
+
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc to…
+
+──────────────────────────────────────────────────────────────
+```
+
+The layout is codex's theme picker (`codex-rs/tui/src/theme_picker.rs` —
+the list on the left, the highlighted theme's sample on the right, stacked
+when the terminal is narrow) in this TUI's dress: the family's inline
+frame and `❯` type-to-search (matching names, **titles** and descriptions,
+so `catppuccin` finds the four flavours and `follows` the terminal theme)
+over the list, and a dim hint led, like the `/mcp` list's, by the
+navigation. Then the things a theme picker exists for:
+
+- **The list is the `/mcp` list.** The selected row is the indent, the
+  accent `❯` (`HOOKS_MARKER`) and the name in bold; every other row keeps
+  the marker's width blank, so the names line up under it. A ten-row window
+  (`THEME_MENU_MAX_ROWS`, the settings window's size) keeps the selection on
+  its middle row (`centered_window`), and the rows it hides are named by a
+  dim `↑ N more above` row over the window and a dim `↓ N more below` row
+  under it — each only when something is hidden that way, exactly as `/mcp`
+  does it. The eleven-theme catalog always hides one row on one side, so the
+  frame holds still as ↑/↓ walk it — the `/settings` always-emit rule
+  (`the_page_height_is_stable_across_selections`). There is no `(n/total)`
+  counter: the overflow rows say what is hidden.
+- **Every row wears its own swatch.** After the name column — sized to the
+  widest name in the **whole catalog** plus `THEME_MENU_GAP`, never just the
+  visible rows', so a search or a scroll moves neither the swatches nor the
+  preview beside them — each row carries five `●`s in *that theme's* accent,
+  link, success, warning and error, read straight off its palette, never the
+  active one, so the catalog compares at a glance the way the `/spinner`
+  rows' live spinners do. The session's current theme carries the `/model`
+  picker's green ✓, and the open seats the highlight on it.
 - **The highlighted theme previews on real cells.** The preview is a
   three-cell sample conversation — a user bubble, an `Edit` diff cell, an
   assistant reply with inline code and a fenced code line — built by
@@ -244,47 +279,51 @@ the two things a theme picker exists for:
   produces can never disagree, since they are the same rows. The diff cell's
   output is the executor's own `llm::tools::update_report` string, so it
   parses and paints exactly as a live `edit` does. The scope ends before the
-  page around it is built: the frame, the rows and the hint keep the
-  **active** theme, only the sample wears the highlighted one
+  page around it is built: the frame, the rows, the caption and the hint
+  keep the **active** theme, only the sample wears the highlighted one
   (`the_preview_wears_the_highlighted_theme_and_the_frame_the_active_one`).
-
-### Beside the list, or under it
-
-Where the preview goes is codex's `/theme` layout (its list popup's side
-content). On a terminal that can spare it a column at least
-`THEME_PREVIEW_MIN_COLS` wide — 44, codex's `WIDE_PREVIEW_MIN_WIDTH`, which
-also holds the sample's widest row (the reply's code line), so nothing in
-the preview wraps — the preview sits **beside** the list,
-`THEME_PREVIEW_GAP` (4) columns right of the list column's widest row
-(codex's two-column gap plus its preview's two-column inset), vertically
-centered against the list by codex's own `centered_offset` rule: a
-`THEME_PREVIEW_FRAME` row kept free above and below when there is room for
-both, the odd row going below, and top-aligned beside a search-narrowed
-list that is shorter than the preview. The list column's width is its
-widest row, ✓ included, so the threshold is 71 columns and an 80-column
-terminal gets the layout. Side by side, the picker is the list's height
-rather than the list's plus the preview's — 22 rows at 80 columns where the
-stacked page is 32 — so it fits an 80×24 terminal instead of flowing half
-its rows into scrollback (`side_by_side_the_page_fits_a_standard_terminal`).
-A narrower terminal stacks the preview **under** the list, inset two
-columns, as it always was; a resize re-lays the open page out through the
-ordinary purge rebuild.
-
-Each body row is the list's line padded out to the preview column, then
-the preview's. A row's **line** style — the user bubble's ground is one —
-is flattened onto its spans first, which is exactly what the paint does
-anyway (a ratatui line's style reaches only its spans' cells), so the
-bubble's ground runs from the preview column to the right edge, the
-conversation's full-width bubble at the preview's width, and never washes
-the list row it shares a line with
-(`beside_the_list_the_bubble_is_grounded_to_the_edge_and_no_further_left`).
+- **A caption names the theme the sample wears.** It is codex's header — a
+  bold title over a dim subtitle — over the preview: the theme's title
+  (`Catppuccin Mocha`), and under it the rest of its description with the
+  title and its dash dropped and the first letter capitalised (`The darkest
+  flavour, and the default`). Two rows rather than the old one-row
+  `Title — description`, because that row was `…`-cut in the preview column
+  of a standard 80-column terminal for five of the eleven themes, the
+  default among them; split, every caption but the terminal theme's long
+  subtitle reads whole at 80 columns, and every one at 100
+  (`a_standard_terminal_shows_every_caption_whole`). Each row is still
+  `…`-cut rather than wrapped, so the preview is one shape for every theme.
+- **Beside the list on a wide terminal, under it on a narrow one.** The
+  preview sits beside the list once the terminal has room for the list
+  column (the widest row the catalog can paint, 23 columns),
+  `THEME_PREVIEW_GAP` (4 — codex's side gap plus its panel inset) and
+  `THEME_PREVIEW_MIN_COLS` (44 — codex's `WIDE_PREVIEW_MIN_WIDTH`, the room
+  the sample needs unwrapped): 71 columns, so a standard 80-column terminal
+  gets it. Under that the preview stacks under the list after a gap, inset
+  two columns. There is one breakpoint, and the sample fits unwrapped at
+  every width past it, so the side-by-side page is one height wherever it
+  is laid out
+  (`the_layout_switches_once_and_beside_the_list_the_sample_never_wraps`).
+  The list column is a constant of the catalog, so neither ↑/↓ nor a search
+  moves the preview sideways
+  (`the_preview_column_holds_still_as_the_list_moves_and_filters`), and
+  beside the list the overflow rows live in the list column, so the
+  preview's rows never move up or down either.
+- **The bubble's ground stays in its own column.** In the conversation the
+  user bubble's dark ground is a *line* style, which ratatui patches into
+  every span on the line — laid beside the list, it would have painted the
+  theme row sharing that line. So every preview row has its line style
+  folded onto its own spans before it is placed (`fold_line_style`), and the
+  composed row carries no line style of its own
+  (`the_bubble_ground_stays_in_the_preview_column`).
 
 The sample is the same shape for every theme, so the page height never
-depends on the selection — the `/settings` always-emit rule
-(`the_page_height_is_stable_across_selections`) — and the page is **still**
-(nothing on it ticks), so unlike the `/spinner` picker it asks for no
-animation frames and its scrollback flow is signed on its **rows**, like the
-`/mascot` picker's: any keystroke re-flows it (`docs/view-flow.md`).
+depends on the selection — and the page is **still** (nothing on it ticks),
+so unlike the `/spinner` picker it asks for no animation frames and its
+scrollback flow is signed on its **rows**, like the `/mascot` picker's: any
+keystroke re-flows it (`docs/view-flow.md`). Laid side by side the page is
+twenty rows against the stacked page's thirty-two, so it fits a 24-row
+terminal without flowing.
 
 A search that matches **nothing** collapses to its essentials — the
 placeholder (`No matching themes`), one blank gap, the hint — the `/mascot`
@@ -356,20 +395,24 @@ the saved theme.
   tints under syntax colours. And rendering through the real builders is
   the picker family's rule: the `/mascot` preview is the banner's own
   builder, the `/spinner` preview the status line's.
-- **Why codex's layout but not the rest of codex's popup?** The side-by-side
-  preview is what made the page fit a standard terminal, so it came over
-  whole — the 44-column minimum, the gap, the centering. The rest stays this
-  TUI's: the rows are the `/mcp` lists' (an accent `❯`, counted overflow
-  rows) rather than codex's full-width selection fill and bare `↑`/`↓`
-  arrows, the frame keeps the family's `❯` search line and needs no title,
-  and the preview is still the conversation's own cells rather than codex's
-  syntax-only diff, because a theme here is a whole design system — chrome
-  and code — and only real cells show both.
-- **Why keep the description row?** It is where a user learns why a theme
-  looks wrong on their terminal (`latte` is for a light one; `ansi` follows
-  the terminal's palette), and it costs one row under a page that already
-  fits. Beside the list it would wrap in the preview column, and a caption
-  whose height depends on the selection would move the frame.
+- **Why codex's layout, and not codex's every detail?** The preview beside
+  the list is codex's, because a preview under a list makes the page as tall
+  as both — thirty-two rows, more than a 24-row terminal shows, so the top
+  of the page flowed into scrollback — where side by side the two read at
+  one glance in twenty. The rest stays this TUI's. The `❯` and the named
+  `↓ N more below` rows are the `/mcp` list's, not codex's `›` over a
+  full-width fill and bare arrows, so a theme list looks like the app's
+  other lists. The list column is sized to the catalog rather than taking
+  codex's half of the width: codex's shaded panel spends half the screen
+  on a list a quarter as wide, and its split stacks the preview on every
+  terminal narrower than 94 columns. The swatches and the ✓ stay, because
+  codex's names carry no colour and ours compare palettes at a glance.
+  There is no title: `/theme` keeps the family's `❯`-filter frame, which has
+  none, and the caption over the preview is codex's header moved to where it
+  names what is shown. And ↑/↓ don't switch the theme live: codex re-themes
+  its whole screen per keystroke and restores it on Esc, but here a switch
+  is a purge rebuild of the whole conversation, so the preview wears the
+  highlighted theme and Enter applies it.
 - **Why is the ANSI theme in the catalog at all?** It is the one theme that
   follows the *terminal's* theme, which for a user who has already themed
   their terminal is the only theme that matters. The cost was making the
@@ -408,9 +451,11 @@ the saved theme.
   theme; `ui::palette::Palette` and `palette_of(theme)` (crate-internal),
   the accessor functions in `ui::theme`.
 - `ui::wrap::{lerp_color, blend_color}` — the blends over `Color`.
-- `ui::theme_view` — `theme_view_lines` (the page builder; its length is
-  the reserved height, `docs/view-flow.md`), `theme_picker_height`,
-  `render_theme_picker`.
+- `ui::theme_view` — `theme_picker_height`, `render_theme_picker`, and the
+  crate-internal page builder `theme_view_lines` (its length is the
+  reserved height, `docs/view-flow.md`), which lays the preview beside the
+  list or under it (`preview_beside`, over `THEME_PREVIEW_GAP` and
+  `THEME_PREVIEW_MIN_COLS`).
 - `tui::theme::Session::select_theme`, `tui::config::{theme_json_path,
   load_theme, save_theme}`.
 
@@ -430,20 +475,20 @@ the saved theme.
   no RGB and its stepping blends, the light theme's inverted inks and
   tints, the gradient/blend derivations, the error toast's softened red in
   every theme, and a rendered cell wearing the active theme.
-- `ui/tests/theme_view.rs` — the framed page (rules, search, rows, counter,
-  preview, description, hint) at a narrow and a wide width, the `/mcp`
-  rows' `❯` and the overflow row on either side of the window, the hint
-  naming the arrow keys, the preview beside the list on a wide terminal and
-  under it on a narrow one, the threshold (at most 80 columns, nothing in
-  the preview wrapped there), the 80×24 fit, the preview column holding
-  still across selections and searches, the bubble's painted ground
-  stopping at the preview column, the preview's real cells, every row's own
-  swatch, the preview in the highlighted theme against the frame in the
-  active one (bullet, code keyword, diff tints, bubble ground), the stable
-  height, the active ✓ and its seat, the no-match collapse, no stacked
-  blanks, width safety around the threshold, the height contract, the
-  cursor on the search line, the flow and its re-signing, and the
-  bottom-anchored render.
+- `ui/tests/theme_view.rs` — the framed page (rules, search, rows,
+  preview, hint, no counter) at a wide and a narrow width, the `/mcp` list's
+  marker and indent, the overflow rows naming what is hidden, the preview
+  beside the list on one column (an 80-column terminal included) and
+  stacked under it after a gap on a narrow one, the one breakpoint with no
+  wrapping past it, the preview column holding still through ↑/↓ and
+  searches, the caption's bold title over its dim subtitle and every caption
+  whole at 100 columns, the preview's real cells, every row's own swatch,
+  the preview in the highlighted theme against the frame in the active one
+  (bullet, code keyword, diff tints, bubble ground), the bubble's ground
+  kept to the preview column, the stable height, the side-by-side page the
+  shorter, the active ✓ and its seat, the no-match collapse, no stacked
+  blanks, width safety, the height contract, the flow and its re-signing,
+  and the bottom-anchored render.
 - `ui/tests/transcript.rs`, `context_view.rs`, `footer.rs` — the three
   caches rebuilding when the theme changes.
 - `highlight` — every code theme resolving, two themes disagreeing on a
@@ -451,10 +496,10 @@ the saved theme.
   theme.
 - `scripts/smoke.sh` Phase 111 — the picker end to end in a real terminal:
   the banner hint in the default accent (raw SGR), the palette entry, the
-  open page with its `❯` rows, overflow row, swatches and real-cell preview
-  beside the list at 90 columns, a resize to 66 stacking the preview under
-  the list and a resize back seating it beside again, ↓ moving the counter
-  and description, a filtered Enter switching the theme with a toast and a
-  `theme.json` write, the **already-painted banner recoloured** by the
-  rebuild, and a **second process against the same config home launching
-  in the saved theme**.
+  open page with its swatches, its `↓ 1 more below` row and its real-cell
+  preview **beside the list** at 90 columns, ↓ moving the marker and the
+  caption, a **resize to 64 columns stacking the preview** under the list
+  and back to 90 laying it beside again, a filtered Enter switching the
+  theme with a toast and a `theme.json` write, the **already-painted banner
+  recoloured** by the rebuild, and a **second process against the same
+  config home launching in the saved theme**.

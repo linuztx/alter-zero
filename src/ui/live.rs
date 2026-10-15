@@ -574,7 +574,8 @@ pub fn render_live_with_preview(
         render_spinner_picker(body, buf, app);
         return;
     }
-    // …and the inline `/theme` picker, the `/spinner` picker's twin. See
+    // …and the inline `/theme` picker, codex's theme picker in the family's
+    // frame (its preview beside the list on a wide terminal). See
     // `docs/theme.md`.
     if app.theme_picker.is_some() {
         let [strip, body] = view_split(area, super::theme_view::theme_menu_rows(app, area.width));
