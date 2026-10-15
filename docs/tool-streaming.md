@@ -341,18 +341,28 @@ subagent session view takes the same shape: `AgentRun` keeps its own
 `live_call_lines` renderer serves both strips, so a subagent's `pacman`
 reads like the main turn's.
 
-### The `Exit code: N` frame, reframed for display
+### The `Exit code: N` frame is the model's, never the cell's
 
 `tool.output` stays framed (`Exit code: 0\n…`) because `context::context_messages`
-replays it verbatim as the model-facing `tool` result on later turns. For the
-**display** (`command_display_output`): on **success** the leading
-`Exit code: 0` line is dropped so the cell reads like the mock — the real
-command output, not the frame; on **failure** it is rewritten to an
-`Error: Exit code N` (or `Error: killed by signal`) line kept above the body,
-so a red cell says *why* it failed even when the command printed nothing (a
-bare `exit 3` used to show `(no output)`). Reframing only fires when the
-frame line is actually present, so non-`bash` tools, `!` shell cells (whose
-output is raw, never framed), and old rollouts are untouched.
+replays it verbatim as the model-facing `tool` result on later turns — the
+agent's context window (and so Ctrl+D) is where the exit code lives. The
+**display** (`command_display_output`) drops the leading frame line whatever
+it says — `Exit code: 0`, `Exit code: 1`, `Exit code: killed by signal` — so
+the cell reads like the real command output, not the frame:
+
+```
+● Bash(false)
+  ⎿  (no output)
+```
+
+The bullet is what says the call failed (red, `ToolStatus::Failed`), and the
+model, which reads the code, is the one that reports or acts on it. This used
+to be different: a failure rewrote the frame to an `Error: Exit code N` (or
+`Error: killed by signal`) row above the body, putting the model's
+bookkeeping on screen in front of what the command printed. The strip only
+fires when the frame line is actually present, so non-`bash` tools, `!` shell
+cells (whose output is raw, never framed, closing on their own
+`[exit status: N]` — `docs/shell-command.md`), and old rollouts are untouched.
 
 ## Live in the Ctrl+O overlay (ours streams; Claude Code doesn't)
 

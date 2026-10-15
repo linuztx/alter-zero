@@ -317,9 +317,9 @@ const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data byt
     --- facebook.com ping statistics ---\n\
     2 packets transmitted, 2 packets received, 0.0% packet loss";
 /// The `parallel` demo's failing command: an unresolvable host, so that batch
-/// shows a red cell beside its green ones. Because the failure travels as the
-/// executor's exit code, the cell heads its output with `Error: Exit code 68`
-/// instead of burying the reason in the body.
+/// shows a red cell beside its green ones. The failure travels as the
+/// executor's exit code, which the model reads in its context while the cell
+/// shows only `ping`'s own message under the red bullet, as a live one does.
 const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host";
 /// `ping`'s "unknown host" exit status — what a real shell reports.
 const DUMMY_PING_EXIT: u8 = 68;
@@ -440,7 +440,7 @@ const PARALLEL_REPLY: &str = concat!(
      round; these are scripted, but the choreography is identical.\n\n",
     "The whole batch was announced before any of it ran, so the calls that hadn't \
      started sat at `⎿ Waiting…` while the front one tailed its output live — and \
-     the one that couldn't resolve its host came back red with its exit code.\n\n",
+     the one that couldn't resolve its host came back red.\n\n",
     handoff!()
 );
 

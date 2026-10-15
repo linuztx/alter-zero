@@ -179,8 +179,9 @@ cores in `llm::tools`:
   cut naming the session's log), a `wait` that passes hands the command to
   the background registry instead of killing it, and a cancel stops it. Output framed for
   the model as codex does: `Exit code: N` + the output; a non-zero exit
-  resolves the cell red (and the display reframes the frame line as
-  `Error: Exit code N` — `docs/tool-streaming.md`).
+  resolves the cell red, and the display drops the frame line whatever the
+  code — the exit code is the model's to read, never the cell's
+  (`docs/tool-streaming.md`).
 - **`read`** — reads the file; a text file applies `offset`/`limit`, formats
   numbered lines (`format_read`, pure), byte-caps the result; an image file
   takes the image branch below.

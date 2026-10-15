@@ -771,60 +771,6 @@ fn wrapped_row_join_accepts_fragments_and_rejects_real_rows() {
 }
 
 #[test]
-fn a_failed_command_cell_surfaces_its_exit_code() {
-    // A red cell says WHY it failed: the display reframes the model-facing
-    // `Exit code: N` line as an `Error: Exit code N` header above the body
-    // (the raw frame stays in tool.output for the model / context replay).
-    let lines = tool_lines(
-        &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3\nboom"),
-        80,
-        &PathDisplay::VERBATIM,
-    );
-    let body: Vec<String> = lines[1..].iter().map(plain).collect();
-    assert!(
-        body[0].contains("Error: Exit code 3"),
-        "the failure header leads: {body:?}"
-    );
-    assert!(body[1].contains("boom"), "the body follows: {body:?}");
-}
-
-#[test]
-fn a_failed_command_cell_with_no_body_still_says_why() {
-    // A failure with empty output used to show "(no output)" — now the
-    // exit code itself is the body.
-    let lines = tool_lines(
-        &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3"),
-        80,
-        &PathDisplay::VERBATIM,
-    );
-    let body: Vec<String> = lines[1..].iter().map(plain).collect();
-    assert_eq!(body.len(), 1, "one row: {body:?}");
-    assert!(
-        body[0].contains("Error: Exit code 3"),
-        "the reason shows: {body:?}"
-    );
-}
-
-#[test]
-fn a_signal_killed_command_cell_says_so() {
-    let lines = tool_lines(
-        &tool(
-            "Bash",
-            "x",
-            ToolStatus::Failed,
-            "Exit code: killed by signal",
-        ),
-        80,
-        &PathDisplay::VERBATIM,
-    );
-    assert!(
-        plain(&lines[1]).contains("Error: killed by signal"),
-        "got {:?}",
-        plain(&lines[1])
-    );
-}
-
-#[test]
 fn bash_cell_output_aligns_under_the_two_space_corner() {
     // Claude-Code's bash cell: the corner is two spaces wide, so output
     // opens at `  ⎿  {line}` (col 5) and the `… +N lines` hint aligns under

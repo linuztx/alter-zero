@@ -370,11 +370,12 @@ fn the_file_change_demo_renders_a_capped_write_and_a_tinted_diff() {
 
 #[test]
 fn every_bash_cell_carries_the_executor_s_exit_code_frame() {
-    // A real `bash` result is framed `Exit code: N\n{output}` — the UI drops
-    // the frame on success and turns it into a red `Error: Exit code N` head
-    // on failure (`ui::command_display_output`). A scripted command that
-    // invents its own footer ("exit status 68") renders as ordinary output,
-    // so a failing demo cell never says why it failed.
+    // A real `bash` result is framed `Exit code: N\n{output}` — the frame is
+    // what the model reads, the cell drops it whatever the code
+    // (`ui::command_display_output`), and the bullet says whether it failed.
+    // A scripted command that invents its own footer ("exit status 68") would
+    // print that footer in the cell and hand the offline Ctrl+D a result no
+    // real executor sends.
     for prompt in ["hello there", "run three pings in parallel"] {
         for (name, args, output) in resolved_tools(&turn_events(prompt, 0)) {
             if name != "Bash" {

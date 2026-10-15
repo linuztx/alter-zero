@@ -35,6 +35,14 @@ release heading when a version is cut.
   of the screen. Rows are counted as they appear on screen, so a line that
   wraps onto two rows uses two of them. The whole thought is still in Ctrl+O,
   while it streams and after it settles (`docs/thinking-stream.md`).
+- **A failed command's cell no longer shows its exit code.** A `Bash(…)`
+  call that failed used to open its output with an `Error: Exit code 1` row
+  (or `Error: killed by signal`), so `false` showed that row over
+  `(no output)`. The cell now shows only what the command printed, as it
+  already did for a command that succeeded, and the red bullet is what says
+  it failed. The exit code still goes to the agent with the output, so it
+  knows the command failed and with which code, and Ctrl+D still shows it
+  (`docs/tool-streaming.md`).
 
 ### Fixed
 
