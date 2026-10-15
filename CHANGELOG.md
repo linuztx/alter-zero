@@ -36,8 +36,9 @@ release heading when a version is cut.
   `*literal*`. Emphasis follows CommonMark's rules, with an exception for
   CJK text so `**标题：**内容` is still bold. `<https://…>` links drop their
   angle brackets and HTML entities like `&amp;` decode. A paragraph indented
-  four spaces under a numbered item is no longer drawn as code, and a code
-  fence under a nested item no longer shows its backticks.
+  four spaces under a numbered item is no longer drawn as code, a code fence
+  under a nested item no longer shows its backticks, and an indented fence
+  keeps its code where the fence is instead of shifting it right.
 - **A long line of unclosed `[` or `![` no longer stalls a reply.** Link
   brackets are paired once per line instead of once per opener, so a 25 KB
   line of them renders in milliseconds rather than over a second.

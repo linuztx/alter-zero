@@ -268,6 +268,10 @@ pub(super) struct AssistantRenderer {
     /// emitted with the block's first code line, so a fence that is still
     /// empty — the reply so far ends on its opener — adds no trailing row.
     fence_gap: bool,
+    /// The open fence's own indent past its containers' prefixes: CommonMark
+    /// takes up to that many spaces off each of its code lines, so the code
+    /// sits where the fence does.
+    fence_indent: usize,
     /// In-progress GFM table accumulation (`docs/markdown.md`). A table is not
     /// prefix-stable — a later row can widen a column — so its source lines are
     /// buffered here and rendered **whole** only when the block closes (a line
@@ -364,6 +368,7 @@ impl AssistantRenderer {
             pending_blank: false,
             last_row_blank: false,
             fence_gap: false,
+            fence_indent: 0,
             table: TableState::None,
         }
     }
@@ -406,8 +411,9 @@ impl AssistantRenderer {
     /// A line inside an open fence: its container prefixes stripped
     /// **leniently** — a quote's `>` where present, up to an item's indent of
     /// spaces — so a model that under-indents a fenced block inside a list item
-    /// still gets code, never a fence torn open into prose; the rest is code,
-    /// or the closing fence (which renders nothing).
+    /// still gets code, never a fence torn open into prose — then up to the
+    /// fence's own indent (CommonMark); the rest is code, or the closing fence
+    /// (which renders nothing).
     fn fenced_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
         let mut rest = line;
         for container in &self.containers {
@@ -420,6 +426,7 @@ impl AssistantRenderer {
                 Container::Item(item) => rest = &rest[leading_spaces(rest).min(item.indent)..],
             }
         }
+        let rest = &rest[leading_spaces(rest).min(self.fence_indent)..];
         match self.scanner.classify(rest) {
             markdown::LineKind::CodeEnd => {
                 self.highlighter = None;
@@ -623,6 +630,7 @@ impl AssistantRenderer {
                 // renders nothing. On an item's marker line the marker takes a
                 // row of its own first.
                 self.fence_gap = self.last() != Last::Nothing && !self.last_row_blank;
+                self.fence_indent = leading_spaces(rest);
                 let mut out = Vec::new();
                 if self.marker_pending() {
                     out.extend(self.emit(vec![Vec::new()]));

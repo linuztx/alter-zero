@@ -440,6 +440,31 @@ fn a_fence_inside_a_list_item_renders_under_its_text() {
 }
 
 #[test]
+fn a_fence_strips_its_own_indent_from_its_code_lines() {
+    // CommonMark: a fence indented N spaces takes up to N spaces off each
+    // code line, so the code sits where the fence does — at the margin for
+    // an indented fence on its own, at the item's text for one under a list
+    // item (the code used to sit those N columns right of it).
+    assert_eq!(
+        rows("  ```python\n  def f():\n      return 1\n  ```", 40),
+        vec!["● def f():", "      return 1"]
+    );
+    assert_eq!(
+        rows(
+            "- Install:\n    ```bash\n    npm install\n    ```\n- Next",
+            40
+        ),
+        vec!["● • Install:", "  ", "    npm install", "  ", "  • Next"]
+    );
+    assert_eq!(
+        rows("1. Build:\n    ```sh\n    cargo build\n    ```\n2. Run", 40),
+        vec!["● 1. Build:", "  ", "     cargo build", "  ", "  2. Run"]
+    );
+    // A code line indented less than its fence keeps what it has.
+    assert_eq!(rows("   ```\nflush\n   ```", 40), vec!["● flush"]);
+}
+
+#[test]
 fn assistant_renders_blockquote() {
     assert_eq!(rows("> quoted text", 40), vec!["● > quoted text"]);
 }

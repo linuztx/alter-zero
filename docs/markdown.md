@@ -525,7 +525,10 @@ its first row, its hang after — because a nested marker already carries its
 depth's padding. A **fenced** block is lenient where CommonMark is strict: a
 code line strips a quote's `>` where present and up to an item's indent of
 spaces, so a model that under-indents the code inside an item's fence still
-gets code rather than a fence torn open into prose.
+gets code rather than a fence torn open into prose. Then, as CommonMark says,
+it loses up to the **fence's own indent** (`fence_indent`), so a fence
+written two spaces in keeps its code where the fence is rather than two
+columns right of it.
 
 **Why it stays prefix-stable.** Every row a line renders — the separator before
 it included — depends only on the lines before it (the stack, the scopes' last
