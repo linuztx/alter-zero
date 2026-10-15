@@ -325,6 +325,53 @@ keystroke re-flows it (`docs/view-flow.md`). Laid side by side the page is
 twenty rows against the stacked page's thirty-two, so it fits a 24-row
 terminal without flowing.
 
+### A terminal too short for the page
+
+A terminal shorter than the whole page gets a **compact** page instead —
+codex's short panel, whose `selection_picker_layout.rs` puts the rule in a
+line: *"optional gaps and previews yield first"*:
+
+```
+──────────────────────────────────────────────────────────
+
+  ❯
+  ↑ 4 more above
+    onedark     ●●●●●
+  ❯ dracula     ●●●●●
+    nord        ●●●●●
+  ↓ 4 more below
+  ↑/↓ to navigate · Type to search · Enter to choose · Es…
+
+──────────────────────────────────────────────────────────
+```
+
+The search line, `THEME_COMPACT_ROWS` (3) rows of the list — codex's
+minimum result rows — and the hint stay; the preview and its caption yield.
+Before this the page bottom-anchored on a short terminal like every framed
+view, which kept the preview and the hint on screen and flowed the search
+line and the theme names into scrollback: wherever the picker was squeezed,
+nothing was left on screen to pick from
+(`a_short_terminal_keeps_the_theme_choices_on_screen`). The overflow rows
+are codex's reserved arrow slots here — the `↑` directly under the search
+line, the `↓` directly over the hint, each blank when nothing is hidden that
+way — because a three-row window over eleven themes hides rows on *both*
+sides in the middle of the list, and rows that came and went would move the
+frame on ↑/↓. Reserved, the page is eleven rows at every selection
+(`the_compact_page_holds_still_across_selections`), and a blank slot is the
+gap the page wants there anyway.
+
+The choice is the page builder's: `theme_view_lines` takes the rows the page
+may have and builds the whole page when it fits them, the compact one when
+it doesn't (`the_whole_page_returns_once_it_fits`). Those rows are the
+terminal's — a composer-replacing view keeps its rows and the streaming
+strip above it gives way (`view_split`) — and every reader of the page
+passes either that height or the region already reserved for the page,
+which is at least the chosen page's height and at most the terminal's, so
+the reserved height, the paint, the cursor seat and the flow always build
+the same page. Nothing flows while the page fits; an area shorter than even
+the compact page bottom-anchors it like the rest of the family, its tail —
+the list's last rows, the hint, the closing rule — staying on screen.
+
 A search that matches **nothing** collapses to its essentials — the
 placeholder (`No matching themes`), one blank gap, the hint — the `/mascot`
 picker's rule, from the `/model` picker's `model_has_detail`.
@@ -341,8 +388,8 @@ background)` hint is blanked while it is open (`App::background_hint_elapsed`, t
 rule every composer-replacing picker follows). It works **mid-turn** like
 `/mascot`: it only replaces the composer, the streaming strip keeps its rows
 above it, and a switch never touches the running turn — the purge rebuild
-re-commits the in-flight partial in the new colours. On a short terminal the
-page bottom-anchors and flows its top into scrollback like its whole family.
+re-commits the in-flight partial in the new colours. On a terminal too short
+for the page the compact page takes over (above).
 
 ## Applying a selection
 
@@ -452,10 +499,11 @@ the saved theme.
   the accessor functions in `ui::theme`.
 - `ui::wrap::{lerp_color, blend_color}` — the blends over `Color`.
 - `ui::theme_view` — `theme_picker_height`, `render_theme_picker`, and the
-  crate-internal page builder `theme_view_lines` (its length is the
-  reserved height, `docs/view-flow.md`), which lays the preview beside the
-  list or under it (`preview_beside`, over `THEME_PREVIEW_GAP` and
-  `THEME_PREVIEW_MIN_COLS`).
+  crate-internal page builder `theme_view_lines(app, width, height)` (its
+  length is the reserved height, `docs/view-flow.md`), which lays the
+  preview beside the list or under it (`preview_beside`, over
+  `THEME_PREVIEW_GAP` and `THEME_PREVIEW_MIN_COLS`) and builds the compact
+  page (`THEME_COMPACT_ROWS`) when the whole one is taller than `height`.
 - `tui::theme::Session::select_theme`, `tui::config::{theme_json_path,
   load_theme, save_theme}`.
 
@@ -487,8 +535,13 @@ the saved theme.
   (bullet, code keyword, diff tints, bubble ground), the bubble's ground
   kept to the preview column, the stable height, the side-by-side page the
   shorter, the active ✓ and its seat, the no-match collapse, no stacked
-  blanks, width safety, the height contract, the flow and its re-signing,
-  and the bottom-anchored render.
+  blanks, width safety, the height contract; on a short terminal the
+  compact page (codex's shape, the theme choices kept on screen, the window
+  keeping the selection in its middle, one height at every selection, the
+  whole page back once it fits, width and blank-row safety, the cursor on
+  its search line), nothing flowing while a page fits, the flow and its
+  re-signing, the render filling the reserved rows, and the bottom-anchored
+  render of an area shorter than the page.
 - `ui/tests/transcript.rs`, `context_view.rs`, `footer.rs` — the three
   caches rebuilding when the theme changes.
 - `highlight` — every code theme resolving, two themes disagreeing on a
@@ -499,7 +552,9 @@ the saved theme.
   open page with its swatches, its `↓ 1 more below` row and its real-cell
   preview **beside the list** at 90 columns, ↓ moving the marker and the
   caption, a **resize to 64 columns stacking the preview** under the list
-  and back to 90 laying it beside again, a filtered Enter switching the
+  and back to 90 laying it beside again, a **resize to 14 rows** showing
+  the compact page (the search line, three theme rows, `↓ 8 more below`,
+  the hint, no preview), a filtered Enter switching the
   theme with a toast and a `theme.json` write, the **already-painted banner
   recoloured** by the rebuild, and a **second process against the same
   config home launching in the saved theme**.

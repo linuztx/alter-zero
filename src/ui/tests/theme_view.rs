@@ -10,6 +10,11 @@ use crate::ui::wrap::cols;
 const WIDE: u16 = 100;
 /// A terminal too narrow for it: the preview stacks under the list.
 const NARROW: u16 = 60;
+/// A terminal tall enough for the whole page at any of these widths.
+const TALL: u16 = 200;
+/// A terminal too short for the whole page at either width (the side-by-side
+/// page is twenty rows, the stacked one thirty-two).
+const SHORT: u16 = 15;
 
 /// An app with session info and the picker open (the ordinary shape).
 fn open_app() -> App {
@@ -24,7 +29,15 @@ fn select(app: &mut App, selected: usize) {
 }
 
 fn texts(app: &App, width: u16) -> Vec<String> {
-    theme_view_lines(app, width).iter().map(plain).collect()
+    texts_at(app, width, TALL)
+}
+
+/// The page's rows on a terminal `height` rows tall, trailing blanks trimmed.
+fn texts_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    theme_view_lines(app, width, height)
+        .iter()
+        .map(|line| plain(line).trim_end().to_string())
+        .collect()
 }
 
 /// Whether `text` is the list row for `name`: past the indent and the `❯`
@@ -92,7 +105,7 @@ fn bullet_fg(line: &Line<'static>) -> Option<Color> {
 
 #[test]
 fn closed_builds_nothing() {
-    assert!(theme_view_lines(&with_session(), 80).is_empty());
+    assert!(theme_view_lines(&with_session(), 80, TALL).is_empty());
     assert_eq!(theme_picker_height(&with_session(), 80, 200), None);
 }
 
@@ -140,7 +153,7 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
     let mut app = open_app();
     select(&mut app, 2);
     for width in [WIDE, NARROW] {
-        let lines = theme_view_lines(&app, width);
+        let lines = theme_view_lines(&app, width, TALL);
         let texts: Vec<String> = lines.iter().map(plain).collect();
         assert!(
             row_for(&texts, "frappe").starts_with("  ❯ frappe"),
@@ -321,11 +334,11 @@ fn the_layout_switches_once_and_beside_the_list_the_sample_never_wraps() {
     for width in 20u16..switch {
         assert!(!is_beside(&app, width), "width {width} is under the switch");
     }
-    let tall = theme_view_lines(&app, 400).len();
+    let tall = theme_view_lines(&app, 400, TALL).len();
     for width in switch..400 {
         assert!(is_beside(&app, width), "width {width} is past the switch");
         assert_eq!(
-            theme_view_lines(&app, width).len(),
+            theme_view_lines(&app, width, TALL).len(),
             tall,
             "width {width} wrapped the preview beside the list"
         );
@@ -368,7 +381,7 @@ fn the_caption_is_codexs_bold_title_over_a_dim_subtitle() {
     let mut app = open_app();
     select(&mut app, 7); // gruvbox
     for width in [WIDE, NARROW] {
-        let lines = theme_view_lines(&app, width);
+        let lines = theme_view_lines(&app, width, TALL);
         let at = lines
             .iter()
             .position(|l| plain(l).contains("Gruvbox Dark"))
@@ -461,7 +474,7 @@ fn every_row_wears_its_own_swatch() {
     // Beside the list the preview's bullets share the row, but a bullet is
     // `● ` and a swatch a bare `●`.
     for width in [WIDE, NARROW] {
-        let lines = theme_view_lines(&open_app(), width);
+        let lines = theme_view_lines(&open_app(), width, TALL);
         for theme in Theme::ALL.iter().take(10) {
             let p = palette_of(*theme);
             let swatches: Vec<Color> = line_for(&lines, theme.name())
@@ -484,14 +497,14 @@ fn every_row_wears_its_own_swatch() {
 fn the_preview_wears_the_highlighted_theme_and_the_frame_the_active_one() {
     for width in [WIDE, NARROW] {
         let mut app = open_app();
-        let mocha = theme_view_lines(&app, width);
+        let mocha = theme_view_lines(&app, width, TALL);
         assert_eq!(
             bullet_fg(edit_header(&mocha)),
             Some(palette_of(Theme::Mocha).success),
             "the Edit bullet is Mocha's green while Mocha is highlighted"
         );
         select(&mut app, 5); // dracula, the sixth row
-        let dracula = theme_view_lines(&app, width);
+        let dracula = theme_view_lines(&app, width, TALL);
         assert_eq!(
             bullet_fg(edit_header(&dracula)),
             Some(palette_of(Theme::Dracula).success),
@@ -534,7 +547,7 @@ fn the_diff_rows_wear_the_highlighted_themes_tints() {
     select(&mut app, 3); // latte
     let p = palette_of(Theme::Latte);
     for width in [WIDE, NARROW] {
-        let lines = theme_view_lines(&app, width);
+        let lines = theme_view_lines(&app, width, TALL);
         let removed = lines
             .iter()
             .find(|l| plain(l).contains("-    print(\"Hello, world\")"))
@@ -572,7 +585,7 @@ fn the_bubble_ground_stays_in_the_preview_column() {
     // list it is folded onto the bubble's own spans, so it never paints the
     // theme row sharing its line.
     let texts = texts(&open_app(), WIDE);
-    let lines = theme_view_lines(&open_app(), WIDE);
+    let lines = theme_view_lines(&open_app(), WIDE, TALL);
     let column = col_of(row_for(&texts, "mocha"), "Catppuccin Mocha");
     let bubble = lines
         .iter()
@@ -605,11 +618,11 @@ fn the_page_height_is_stable_across_selections() {
     // cells carry no RGB.
     for width in [WIDE, 80, NARROW] {
         let mut app = open_app();
-        let h0 = theme_view_lines(&app, width).len();
+        let h0 = theme_view_lines(&app, width, TALL).len();
         for i in 1..Theme::ALL.len() {
             select(&mut app, i);
             assert_eq!(
-                theme_view_lines(&app, width).len(),
+                theme_view_lines(&app, width, TALL).len(),
                 h0,
                 "selection {i} changed the page height at width {width}"
             );
@@ -621,7 +634,7 @@ fn the_page_height_is_stable_across_selections() {
 fn the_side_by_side_page_is_the_shorter_one() {
     let app = open_app();
     assert!(
-        theme_view_lines(&app, WIDE).len() < theme_view_lines(&app, NARROW).len(),
+        theme_view_lines(&app, WIDE, TALL).len() < theme_view_lines(&app, NARROW, TALL).len(),
         "laying the preview beside the list saves its rows"
     );
 }
@@ -710,7 +723,7 @@ fn the_page_never_exceeds_the_width() {
     for width in [24u16, 40, 60, 70, 71, 72, 73, 80, 100, 120, 200] {
         for i in 0..Theme::ALL.len() {
             select(&mut app, i);
-            for line in theme_view_lines(&app, width) {
+            for line in theme_view_lines(&app, width, TALL) {
                 assert!(
                     cols(&plain(&line)) <= width as usize,
                     "width {width} selection {i}: {:?} overflows",
@@ -724,8 +737,8 @@ fn the_page_never_exceeds_the_width() {
 #[test]
 fn height_is_the_line_count_clamped_to_the_terminal() {
     let app = open_app();
-    let lines = theme_view_lines(&app, 80).len() as u16;
-    assert_eq!(theme_menu_rows(&app, 80), lines);
+    let lines = theme_view_lines(&app, 80, TALL).len() as u16;
+    assert_eq!(theme_menu_rows(&app, 80, TALL), lines);
     assert_eq!(
         theme_picker_height(&app, 80, 200),
         Some(lines),
@@ -739,32 +752,264 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 }
 
 #[test]
-fn the_picker_flows_like_its_family_and_a_keystroke_resigns_the_flow() {
+fn a_short_terminal_keeps_the_theme_choices_on_screen() {
+    // codex's short-panel rule: the preview yields first, so the search
+    // line, three theme rows and the hint fit where the whole page cannot —
+    // where the bottom anchor used to keep only the preview on screen and
+    // flow the theme names into scrollback.
+    for width in [WIDE, NARROW] {
+        let texts = texts_at(&open_app(), width, SHORT);
+        assert!(texts.len() <= usize::from(SHORT), "fits: {texts:#?}");
+        assert!(
+            texts[2].trim_start().starts_with('❯'),
+            "the search line on its fixed row: {texts:#?}"
+        );
+        assert!(
+            row_for(&texts, "mocha").starts_with("  ❯ mocha"),
+            "{texts:#?}"
+        );
+        assert_eq!(
+            texts.iter().filter(|t| t.contains("●●●●●")).count(),
+            3,
+            "three theme rows: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.trim_start() == "↓ 8 more below"),
+            "the rest named under them: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("↑/↓ to navigate")),
+            "the hint: {texts:#?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("Edit(greet.py)")),
+            "no preview: {texts:#?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("Catppuccin Mocha")),
+            "no caption: {texts:#?}"
+        );
+    }
+}
+
+#[test]
+fn the_compact_page_is_codexs_short_picker() {
+    // Rule, gap, the search line with the `↑` slot directly under it (codex's
+    // search row over its arrow), three rows, the `↓` slot directly over the
+    // hint, gap, rule. Both slots are always there — blank when nothing is
+    // hidden that way — so the page is one height at every selection, and
+    // a blank slot is the gap the page wants there anyway.
+    let texts = texts_at(&open_app(), NARROW, SHORT);
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 11, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "", "{texts:#?}");
+    assert_eq!(texts[2], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[3], "", "nothing above the first row: {texts:#?}");
+    assert!(texts[4].starts_with("  ❯ mocha"), "{texts:#?}");
+    assert!(texts[5].starts_with("    macchiato"), "{texts:#?}");
+    assert!(texts[6].starts_with("    frappe"), "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 8 more below", "{texts:#?}");
+    assert!(
+        texts[8].starts_with("  ↑/↓ to navigate · Type to search"),
+        "{texts:#?}"
+    );
+    assert_eq!(texts[9], "", "{texts:#?}");
+    assert!(is_rule(&texts[10]), "{texts:#?}");
+}
+
+#[test]
+fn the_compact_window_keeps_the_selection_in_its_middle() {
+    let mut app = open_app();
+    select(&mut app, 5); // dracula: one row either side, the rest named
+    let middle = texts_at(&app, NARROW, SHORT);
+    assert_eq!(middle[3], "  ↑ 4 more above", "{middle:#?}");
+    assert!(middle[4].starts_with("    onedark"), "{middle:#?}");
+    assert!(middle[5].starts_with("  ❯ dracula"), "{middle:#?}");
+    assert!(middle[6].starts_with("    nord"), "{middle:#?}");
+    assert_eq!(middle[7], "  ↓ 4 more below", "{middle:#?}");
+    select(&mut app, Theme::ALL.len() - 1); // ansi: the window pinned to the end
+    let end = texts_at(&app, NARROW, SHORT);
+    assert_eq!(end[3], "  ↑ 8 more above", "{end:#?}");
+    assert!(end[4].starts_with("    solarized"), "{end:#?}");
+    assert!(end[5].starts_with("    monokai"), "{end:#?}");
+    assert!(end[6].starts_with("  ❯ ansi"), "{end:#?}");
+    assert_eq!(end[7], "", "nothing below the last row: {end:#?}");
+}
+
+#[test]
+fn the_compact_page_holds_still_across_selections() {
+    for width in [WIDE, NARROW] {
+        let mut app = open_app();
+        let h0 = theme_view_lines(&app, width, SHORT).len();
+        for i in 1..Theme::ALL.len() {
+            select(&mut app, i);
+            assert_eq!(
+                theme_view_lines(&app, width, SHORT).len(),
+                h0,
+                "selection {i} moved the compact frame at width {width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_whole_page_returns_once_it_fits() {
+    // The compact page is only for a terminal too short for the whole one:
+    // at the whole page's own height it is the whole page, one row shorter
+    // the compact one.
+    let app = open_app();
+    let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Edit(greet.py)"));
+    for width in [WIDE, NARROW] {
+        let whole = u16::try_from(theme_view_lines(&app, width, TALL).len()).expect("rows");
+        assert!(
+            has_preview(&texts_at(&app, width, whole)),
+            "width {width}: the whole page at its own height"
+        );
+        assert!(
+            !has_preview(&texts_at(&app, width, whole - 1)),
+            "width {width}: compact one row short of it"
+        );
+    }
+}
+
+#[test]
+fn a_compact_page_fits_and_never_overflows_the_width_or_stacks_blanks() {
+    let mut app = open_app();
+    for width in [24u16, 40, NARROW, WIDE] {
+        for query in ["", "ca", "nord"] {
+            let len = {
+                let picker = app.theme_picker.as_mut().expect("open");
+                picker.query = query.to_string();
+                app.theme_rows().len()
+            };
+            for i in 0..len {
+                select(&mut app, i);
+                let texts = texts_at(&app, width, SHORT);
+                assert!(
+                    texts.len() <= usize::from(SHORT),
+                    "width {width} query {query:?} selection {i} overflows the height: {texts:#?}"
+                );
+                for text in &texts {
+                    assert!(
+                        cols(text) <= usize::from(width),
+                        "width {width} query {query:?} selection {i}: {text:?} overflows"
+                    );
+                }
+                for pair in texts.windows(2) {
+                    assert!(
+                        !(pair[0].is_empty() && pair[1].is_empty()),
+                        "width {width} query {query:?} selection {i} stacked two blank rows: {texts:#?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_pages_search_line() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = open_app();
-    let page = theme_view_lines(&app, 80).len();
-    let flow = crate::ui::view_flow(&app, 80, 10, 1000).expect("flows on a 10-row terminal");
-    assert_eq!(flow.lines.len(), page - 10, "the skipped top flows");
-    // A still page signs its rows: moving the highlight re-flows it.
-    let before = crate::ui::view_flow_signature(&app, 80, 10, 1000).expect("overflows");
+    for c in "ca".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let height = theme_picker_height(&app, NARROW, SHORT).expect("open");
+    assert!(height <= SHORT, "the compact page fits the terminal");
+    let area = Rect::new(0, SHORT - height, NARROW, height);
+    let (x, y) = crate::ui::cursor_position(area, &app);
+    assert_eq!(
+        y,
+        area.y + crate::ui::theme::THEME_SEARCH_ROW,
+        "on the search line"
+    );
+    // indent (2) + `❯ ` (2) + the two-character query.
+    assert_eq!(x, 2 + 2 + 2);
+}
+
+#[test]
+fn the_picker_flows_like_its_family_and_a_keystroke_resigns_the_flow() {
+    // Even the compact page is taller than a 6-row terminal: its skipped top
+    // — down into the list — flows into scrollback like every framed view's.
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = open_app();
+    let page = theme_view_lines(&app, 80, 6).len();
+    let flow = crate::ui::view_flow(&app, 80, 6, 1000).expect("flows on a 6-row terminal");
+    assert_eq!(flow.lines.len(), page - 6, "the skipped top flows");
+    // A still page signs its rows: moving the highlight off a flowed row
+    // re-flows it.
+    let before = crate::ui::view_flow_signature(&app, 80, 6, 1000).expect("overflows");
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let moved = crate::ui::view_flow_signature(&app, 80, 10, 1000).expect("overflows");
+    let moved = crate::ui::view_flow_signature(&app, 80, 6, 1000).expect("overflows");
     assert_ne!(before, moved, "moving the highlight re-signs the flow");
 }
 
 #[test]
-fn the_picker_renders_into_a_buffer_bottom_anchored() {
+fn a_page_that_fits_flows_nothing() {
+    // The compact page exists so a short terminal keeps the page on screen:
+    // where it fits, nothing flows into scrollback above it.
     let app = open_app();
-    let area = Rect::new(0, 0, 80, 12);
+    for width in [WIDE, NARROW] {
+        assert!(
+            crate::ui::view_flow(&app, width, SHORT, 1000).is_none(),
+            "width {width}: the compact page fits {SHORT} rows"
+        );
+        assert!(
+            crate::ui::view_flow(&app, width, TALL, 1000).is_none(),
+            "width {width}: the whole page fits {TALL} rows"
+        );
+    }
+}
+
+#[test]
+fn the_picker_renders_the_page_its_height_reserves() {
+    // On a 12-row terminal the picker reserves the compact page's rows, and
+    // the paint fills exactly them: the search line, the theme names, the
+    // hint and the closing rule all on screen.
+    let app = open_app();
+    let height = theme_picker_height(&app, 80, 12).expect("open");
+    let area = Rect::new(0, 0, 80, height);
     let mut buf = Buffer::empty(area);
     render_theme_picker(area, &mut buf, &app);
-    let rows: Vec<String> = (0..12).map(|y| row(&buf, y, 80)).collect();
+    let rows: Vec<String> = (0..height).map(|y| row(&buf, y, 80)).collect();
+    let last = rows.last().expect("rows");
     assert!(
-        rows[11].trim().chars().all(|c| c == '─') && !rows[11].trim().is_empty(),
+        last.trim().chars().all(|c| c == '─') && !last.trim().is_empty(),
+        "the closing rule sits on the last row: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.trim() == "❯"),
+        "the search line: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("❯ mocha")),
+        "the theme names: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("↑/↓ to navigate")),
+        "the hint: {rows:#?}"
+    );
+}
+
+#[test]
+fn a_page_taller_than_its_area_is_bottom_anchored() {
+    // An area shorter than even the compact page paints its tail — the hint
+    // and the closing rule stay on screen, with the rows just above them.
+    let app = open_app();
+    let area = Rect::new(0, 0, 80, 6);
+    let mut buf = Buffer::empty(area);
+    render_theme_picker(area, &mut buf, &app);
+    let rows: Vec<String> = (0..6).map(|y| row(&buf, y, 80)).collect();
+    assert!(
+        rows[5].trim().chars().all(|c| c == '─') && !rows[5].trim().is_empty(),
         "the closing rule sits on the last row: {rows:#?}"
     );
     assert!(
         rows.iter().any(|r| r.contains("↑/↓ to navigate")),
         "the hint stays on screen: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("frappe")),
+        "…under the last rows of the list: {rows:#?}"
     );
 }

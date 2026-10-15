@@ -406,7 +406,14 @@ list once the terminal has room for the catalog-sized list column, a
 four-column gap and the sample unwrapped (`THEME_PREVIEW_MIN_COLS`, 71
 columns in all; under that it stacks under the list), each preview row's
 line style folded onto its spans so the bubble's ground never paints the
-list — a still page signed on its rows.
+list — a still page signed on its rows; and on a terminal too short for that
+page, a **compact** one instead (`theme_view_lines(app, width, height)`
+choosing by the rows it may have): codex's short panel, where the preview
+yields first — the search line, a `THEME_COMPACT_ROWS` (3) window of the list
+between codex's reserved `↑`/`↓` slots (directly under the search line and
+over the hint, blank when nothing is hidden that way, so it is one height at
+every selection), the hint — since bottom-anchoring the whole page there kept
+only the preview on screen and flowed the theme names into scrollback.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),

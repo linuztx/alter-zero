@@ -172,7 +172,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // finished cells, nothing on it ticks — so it signs its rows like
         // the `/mascot` picker (`docs/theme.md`).
         return Some(FlowPage::framed(
-            super::theme_view::theme_view_lines(app, width),
+            super::theme_view::theme_view_lines(app, width, term_height),
             term_height,
         ));
     }

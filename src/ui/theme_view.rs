@@ -22,6 +22,13 @@
 //! one side of the window is always hidden, so the frame holds still as ↑/↓
 //! walk it. The page is still (nothing on it ticks), so its flow is signed
 //! on its rows like the `/mascot` picker's.
+//!
+//! A terminal too short for that page gets a **compact** one instead —
+//! codex's short panel, where the preview yields first: the search line,
+//! three rows of the list between codex's reserved `↑`/`↓` slots, and the
+//! hint. Bottom-anchoring the whole page there kept only its preview on
+//! screen and flowed the theme names into scrollback, which made the picker
+//! unusable exactly where it was squeezed.
 
 use super::model_view::{model_placeholder_row, model_rule};
 use super::palette::{palette_of, with_theme};
@@ -146,33 +153,52 @@ fn list_lines(
     width: u16,
     overflow_width: u16,
 ) -> Vec<Line<'static>> {
-    let max = usize::from(THEME_MENU_MAX_ROWS);
-    let offset = centered_window(rows.len(), selected, max);
-    let end = (offset + max).min(rows.len());
+    let (above, window, below) =
+        window_lines(rows, selected, usize::from(THEME_MENU_MAX_ROWS), width);
     let mut lines = Vec::new();
-    if offset > 0 {
+    if above > 0 {
         lines.push(overflow_row(
             HOOKS_UP_MARKER,
-            offset,
+            above,
             "above",
             overflow_width,
         ));
     }
-    lines.extend(rows[offset..end].iter().enumerate().map(|(i, row)| {
-        clamp_spans(
-            theme_row(row, offset + i == selected).spans,
-            usize::from(width),
-        )
-    }));
-    if end < rows.len() {
+    lines.extend(window);
+    if below > 0 {
         lines.push(overflow_row(
             HOOKS_DOWN_MARKER,
-            rows.len() - end,
+            below,
             "below",
             overflow_width,
         ));
     }
     lines
+}
+
+/// The window of `rows` that keeps the selection in view — `max` rows,
+/// [`centered_window`] riding the selection on the middle one — as how many
+/// rows it hides above, its rows (the selected one marked, each `…`-cut to
+/// `width`) and how many it hides below.
+fn window_lines(
+    rows: &[ThemeRow],
+    selected: usize,
+    max: usize,
+    width: u16,
+) -> (usize, Vec<Line<'static>>, usize) {
+    let offset = centered_window(rows.len(), selected, max);
+    let end = (offset + max).min(rows.len());
+    let lines = rows[offset..end]
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            clamp_spans(
+                theme_row(row, offset + i == selected).spans,
+                usize::from(width),
+            )
+        })
+        .collect();
+    (offset, lines, rows.len() - end)
 }
 
 /// The sample `Edit` call the preview's diff cell shows: a finished call
@@ -295,56 +321,25 @@ fn beside(
         .collect()
 }
 
-/// The whole framed page as lines: a top rule, the `❯` search line, the
-/// list column ([`list_lines`] — the windowed theme rows, each wearing its
-/// own swatch, between their `↑`/`↓` overflow rows), the **real-cell
-/// preview** in the highlighted theme under its caption — beside the list
-/// when the terminal has the room ([`preview_beside`]), under it after a gap
-/// when it doesn't — the key hint, and a bottom rule, blank-gapped like its
-/// family. What [`render_theme_picker`] paints (bottom-anchored) and
-/// [`theme_menu_rows`] counts, so the reserved height and the painted rows
-/// can never disagree (`docs/view-flow.md`). Empty when the picker is closed.
-///
-/// A search that matched **nothing** has no list and no preview, so the
-/// page collapses to the placeholder between single gaps — the `/mascot`
-/// picker's rule.
-pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let Some(picker) = app.theme_picker.as_ref() else {
-        return Vec::new();
-    };
-    let rows = app.theme_rows();
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(picker.query.clone()),
-    ]);
-    let hint = model_placeholder_row(THEME_HINT, model_meta_color(), width);
-    let mut lines = vec![model_rule(width), Line::default(), search_line];
-    if rows.is_empty() {
-        lines.extend([
-            Line::default(),
-            model_placeholder_row(THEME_NO_MATCH, model_meta_color(), width),
-            Line::default(),
-            hint,
-            Line::default(),
-            model_rule(width),
-        ]);
-        return lines;
-    }
-    let selected = picker.selected.min(rows.len() - 1);
+/// The whole page's body — what sits between the search line and the hint:
+/// a gap, the list column ([`list_lines`]) and the **real-cell preview** in
+/// the highlighted theme under its caption — beside the list when the
+/// terminal has the room ([`preview_beside`]), under it after a gap when it
+/// doesn't — and the gap over the hint.
+fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     let theme = rows[selected].theme;
-    lines.push(Line::default());
+    let mut lines = vec![Line::default()];
     if preview_beside(width) {
         // Beside the list the overflow rows live in the list column, so the
         // preview's rows never move as the window scrolls.
         let list_width = list_cols();
         let overflow_width = u16::try_from(list_width).unwrap_or(width);
-        let list = list_lines(&rows, selected, width, overflow_width);
+        let list = list_lines(rows, selected, width, overflow_width);
         let room = usize::from(width) - list_width - THEME_PREVIEW_GAP;
         let preview = preview_lines(theme, u16::try_from(room).unwrap_or(width));
         lines.extend(beside(list, list_width, THEME_PREVIEW_GAP, preview));
     } else {
-        lines.extend(list_lines(&rows, selected, width, width));
+        lines.extend(list_lines(rows, selected, width, width));
         lines.push(Line::default());
         let inner = width.saturating_sub(cols(MODEL_INDENT) as u16);
         lines.extend(preview_lines(theme, inner).into_iter().map(|line| {
@@ -354,31 +349,111 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }));
     }
     lines.push(Line::default());
-    lines.push(hint);
-    lines.push(Line::default());
-    lines.push(model_rule(width));
     lines
 }
 
-/// The rows the picker's own frame occupies — the built page's line count
-/// ([`theme_view_lines`]). What [`theme_picker_height`] reserves under the
-/// strip, and what [`render_live`] hands [`render_theme_picker`].
-pub(super) fn theme_menu_rows(app: &App, width: u16) -> u16 {
-    u16::try_from(theme_view_lines(app, width).len()).unwrap_or(u16::MAX)
+/// The compact page's body, for a terminal too short for the whole page —
+/// codex's short panel, where "optional gaps and previews yield first"
+/// (`selection_picker_layout.rs`): a [`THEME_COMPACT_ROWS`]-row window of
+/// the list between two overflow slots and no preview, so what stays on
+/// screen is the choices. The slots are codex's reserved arrow rows — the
+/// `↑` directly under the search line, the `↓` directly over the hint, each
+/// blank when nothing is hidden that way — so the page is one height at
+/// every selection, and a blank slot is the gap the page wants there anyway.
+fn compact_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
+    let (above, window, below) =
+        window_lines(rows, selected, usize::from(THEME_COMPACT_ROWS), width);
+    let slot = |arrow, hidden, direction| {
+        if hidden == 0 {
+            Line::default()
+        } else {
+            overflow_row(arrow, hidden, direction, width)
+        }
+    };
+    let mut lines = vec![slot(HOOKS_UP_MARKER, above, "above")];
+    lines.extend(window);
+    lines.push(slot(HOOKS_DOWN_MARKER, below, "below"));
+    lines
+}
+
+/// The framed page as lines: a top rule, the `❯` search line, a body, the
+/// key hint, and a bottom rule. The body is the **whole page's**
+/// ([`whole_body`] — the list beside or over the captioned real-cell
+/// preview) when the page fits `height` rows, else the **compact page's**
+/// ([`compact_body`] — three rows of the list, no preview), so on a
+/// terminal too short for the whole page the theme names stay on screen
+/// rather than flowing into scrollback above the preview. What
+/// [`render_theme_picker`] paints (bottom-anchored) and [`theme_menu_rows`]
+/// counts, so the reserved height and the painted rows can never disagree
+/// (`docs/view-flow.md`). Empty when the picker is closed.
+///
+/// `height` is the rows the page may take: the terminal's, since the view
+/// keeps its rows and the strip above it gives way (`view_split`), or the
+/// region already reserved for it — which holds the same page, because that
+/// region is at least the chosen page's height and at most the terminal's.
+///
+/// A search that matched **nothing** has no list and no preview, so the
+/// page collapses to the placeholder between single gaps — the `/mascot`
+/// picker's rule.
+pub(super) fn theme_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
+    let Some(picker) = app.theme_picker.as_ref() else {
+        return Vec::new();
+    };
+    let rows = app.theme_rows();
+    let search_line = Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
+        Span::raw(picker.query.clone()),
+    ]);
+    let top = [model_rule(width), Line::default(), search_line];
+    let bottom = [
+        model_placeholder_row(THEME_HINT, model_meta_color(), width),
+        Line::default(),
+        model_rule(width),
+    ];
+    let body = if rows.is_empty() {
+        vec![
+            Line::default(),
+            model_placeholder_row(THEME_NO_MATCH, model_meta_color(), width),
+            Line::default(),
+        ]
+    } else {
+        let selected = picker.selected.min(rows.len() - 1);
+        let whole = whole_body(&rows, selected, width);
+        if top.len() + whole.len() + bottom.len() <= usize::from(height) {
+            whole
+        } else {
+            compact_body(&rows, selected, width)
+        }
+    };
+    let mut lines = Vec::from(top);
+    lines.extend(body);
+    lines.extend(bottom);
+    lines
+}
+
+/// The rows the picker's own frame occupies on a terminal `height` rows
+/// tall — the built page's line count ([`theme_view_lines`]). What
+/// [`theme_picker_height`] reserves under the strip, and what
+/// [`render_live`] hands [`render_theme_picker`].
+pub(super) fn theme_menu_rows(app: &App, width: u16, height: u16) -> u16 {
+    u16::try_from(theme_view_lines(app, width, height).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/theme` picker is open, or `None`
 /// when it isn't (the caller then falls back to [`live_height`]). Like every
 /// sibling picker it **replaces** the composer — and only the composer: the
 /// streaming strip keeps its rows above it, so opening `/theme` mid-turn
-/// never hides the running turn. Clamped to the terminal height.
+/// never hides the running turn. The page is the compact one when the whole
+/// one is taller than the terminal (`theme_view_lines`); clamped to the
+/// terminal height.
 #[must_use]
 pub fn theme_picker_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.theme_picker.as_ref()?;
     Some(super::layout::view_height(
         app,
         width,
-        theme_menu_rows(app, width),
+        theme_menu_rows(app, width, term_height),
         term_height,
     ))
 }
@@ -388,10 +463,11 @@ pub fn theme_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
 /// `/mcp` list's shape with their swatches (`❯ mocha       ●●●●● ✓`) and
 /// overflow rows, the captioned real-cell preview in the highlighted theme —
 /// beside the rows on a wide terminal, under them on a narrow one — the key
-/// hint, and a bottom rule — bottom-anchored, so a squeezed area keeps the
-/// hint and the closing rule on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/theme.md`.
+/// hint, and a bottom rule; or, in an area too short for that, the compact
+/// page of three rows and no preview. Bottom-anchored, so an area shorter
+/// than even the compact page keeps the hint and the closing rule on screen
+/// while the skipped top flows into scrollback (`docs/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/theme.md`.
 pub fn render_theme_picker(area: Rect, buf: &mut Buffer, app: &App) {
-    super::view_flow::render_framed_tail(area, buf, theme_view_lines(app, area.width));
+    super::view_flow::render_framed_tail(area, buf, theme_view_lines(app, area.width, area.height));
 }

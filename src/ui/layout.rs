@@ -1128,7 +1128,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The inline `/theme` picker parks the cursor at the end of its `❯`
     // search line, exactly like the `/spinner` picker (docs/theme.md).
     if let Some(picker) = &app.theme_picker {
-        let rows = super::theme_view::theme_menu_rows(app, area.width);
+        let rows = super::theme_view::theme_menu_rows(app, area.width, area.height);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);

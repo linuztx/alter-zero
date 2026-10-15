@@ -578,7 +578,10 @@ pub fn render_live_with_preview(
     // frame (its preview beside the list on a wide terminal). See
     // `docs/theme.md`.
     if app.theme_picker.is_some() {
-        let [strip, body] = view_split(area, super::theme_view::theme_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::theme_view::theme_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_theme_picker(body, buf, app);
         return;

@@ -22,7 +22,10 @@ release heading when a version is cut.
   below` or `↑ 1 more above` row says what is scrolled out of view, in
   place of the `(1/11)` counter. The preview opens on the theme's name in
   bold over a short description, and the hint now starts with `↑/↓ to
-  navigate` (`docs/theme.md`).
+  navigate`. On a terminal too short for the whole picker, the preview is
+  left out and the list shows three themes at a time, so the search line,
+  the theme names and the hint stay on screen instead of scrolling away
+  above the preview (`docs/theme.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or

@@ -10,7 +10,9 @@ smoke_begin
 # own palette, and the highlighted theme previewed on REAL cells (a user
 # bubble, an Edit diff cell, a reply with a code line) under its title and
 # subtitle — BESIDE the list at 90 columns, UNDER it once a resize narrows the
-# terminal to 64; ↓ moves the marker, the preview and the caption; a filtered
+# terminal to 64, and left out for a compact three-row list once a resize makes
+# the terminal too short for the whole page; ↓ moves the marker, the preview
+# and the caption; a filtered
 # Enter switches the theme with a toast, a
 # {config}/theme.json write and a PURGE REBUILD that recolours what is already
 # on screen — the banner's `/login` hint goes from Mocha's sky to Dracula's
@@ -85,6 +87,23 @@ if printf '%s\n' "$theme_narrow" | grep -F "●●●●●" | grep -qF "● Edi
 	fail "the preview stayed beside the list at 64 columns"
 fi
 expect_has "$theme_narrow" -E '^  Catppuccin Macchiato *$' "the stacked caption's title is not on a row of its own"
+# A terminal too short for the whole page gets the compact one: the search
+# line, three theme rows and the hint stay on screen while the preview yields —
+# where bottom-anchoring the whole page kept only the preview and flowed the
+# theme names into scrollback.
+tmux resize-window -t "$S111" -x 90 -y 14
+sleep 0.6
+theme_short="$(tmux capture-pane -t "$S111" -p)"
+echo "==== Phase 111: a 14-row terminal keeps the theme choices on screen ===="
+printf '%s\n' "$theme_short"
+for expect in "❯ macchiato" "mocha" "frappe" "↓ 8 more below" "↑/↓ to navigate · Type to search"; do
+	expect_has "$theme_short" -F -- "$expect" "the short page is missing '$expect'"
+done
+expect_has "$theme_short" -E '^  ❯ *$' "the short page lost its search line"
+expect_lacks "$theme_short" -F "● Edit(greet.py)" "the short page still shows the preview"
+if [ "$(printf '%s\n' "$theme_short" | grep -c '●●●●●')" -ne 3 ]; then
+	fail "the short page does not show exactly three theme rows"
+fi
 tmux resize-window -t "$S111" -x 90 -y 34
 sleep 0.6
 theme_wide_again="$(tmux capture-pane -t "$S111" -p)"

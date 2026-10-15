@@ -1387,6 +1387,12 @@ pub(super) const THEME_SEARCH_ROW: u16 = 2;
 /// beside them, so the side-by-side block is balanced.
 pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
+/// The list rows the compact page shows — the page a terminal too short
+/// for the whole one gets. codex's minimum result rows
+/// (`selection_picker_layout.rs`): the preview yields first, so the search
+/// line, these rows and the hint stay on screen.
+pub(super) const THEME_COMPACT_ROWS: u16 = 3;
+
 /// Columns between the widest theme name in the catalog and the swatch
 /// column, so the swatches line up down the list.
 pub(super) const THEME_MENU_GAP: usize = 3;
