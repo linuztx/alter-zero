@@ -14,6 +14,13 @@ release heading when a version is cut.
 
 ### Changed
 
+- **`/skills` opens on a title and a count, and marks what is on.** The menu
+  now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
+  the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or
+  `◯ disabled`, so the ones that are on stand out down the list. The count is
+  of the installed skills, not the search results. The note saying skills are
+  off for the session now sits under the count instead of between the search
+  line and the list (`docs/skills.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
@@ -46,6 +53,10 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **`/skills` no longer says skills are off when none are installed.** With
+  no skills found, the page told you to turn them on in `/settings`, where
+  that row can't be switched on until a skill exists. It now shows only where
+  to add one (`docs/skills.md`).
 - **Bold-italic and escaped markers no longer leak `*` into a reply.**
   `***both***` renders bold italic instead of `*both*` in bold, a closing
   `***` closes both the bold and the italic it ends, and `\*literal\*` shows

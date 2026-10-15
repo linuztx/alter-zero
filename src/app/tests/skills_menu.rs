@@ -218,6 +218,39 @@ fn the_session_off_note_rides_the_menu() {
 }
 
 #[test]
+fn the_enabled_count_counts_the_skills_that_are_on() {
+    // The header's `{n} skills · {k} enabled` — every skill starts on, and a
+    // toggle moves the count in the same frame as the row.
+    let mut app = skills_app();
+    let menu = app.skills_menu.as_ref().expect("open");
+    assert_eq!((menu.skills.len(), menu.enabled_count()), (3, 3));
+    app.on_key(key(KeyCode::Enter));
+    let menu = app.skills_menu.as_ref().expect("still open");
+    assert_eq!(menu.enabled_count(), 2, "commit went off");
+}
+
+#[test]
+fn the_enabled_count_ignores_a_disabled_name_not_installed_here() {
+    // `skills.json` keeps a disabled name this checkout doesn't have (the same
+    // file serves another machine where it does exist), so counting
+    // `skills - disabled` would report one skill fewer on than is.
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![meta("commit", "d"), meta("pdf", "d")],
+        ["pdf".to_string(), "elsewhere-only".to_string()]
+            .into_iter()
+            .collect(),
+        true,
+        Vec::new(),
+    );
+    assert_eq!(
+        app.skills_menu.as_ref().expect("open").enabled_count(),
+        1,
+        "only pdf is off here"
+    );
+}
+
+#[test]
 fn arrows_wrap_the_selection_at_both_ends() {
     let mut app = skills_app();
     app.on_key(key(KeyCode::Up));

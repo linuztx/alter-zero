@@ -61,6 +61,23 @@ pub struct SkillsMenu {
     pub query: String,
 }
 
+impl SkillsMenu {
+    /// How many of the discovered skills are on — the header's
+    /// `{n} skills · {k} enabled`.
+    ///
+    /// Counted over `skills`, never as `skills - disabled`: the off-set keeps
+    /// names that are not installed here (`skills.json` serves a checkout on
+    /// another machine too, `docs/skills.md`), and those must not count
+    /// against this one.
+    #[must_use]
+    pub fn enabled_count(&self) -> usize {
+        self.skills
+            .iter()
+            .filter(|skill| !self.disabled.contains(&skill.name))
+            .count()
+    }
+}
+
 impl App {
     /// Open the inline `/skills` menu over the boundary's snapshot. Abandons
     /// any `?` band / palette / file picker (they share the composer the menu

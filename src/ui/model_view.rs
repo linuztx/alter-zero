@@ -295,6 +295,24 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
     ])
 }
 
+/// The row of a framed page's `lines` carrying the `❯` prompt — `/login`'s
+/// list filter or key field, the `/skills` search line — and `None` on a page
+/// that has none (the `/login` sign-in page, which is a wait rather than a
+/// field).
+///
+/// **Found, not counted.** `/login`'s key field used to sit on a constant
+/// row, which stopped being true the moment the provider's description block
+/// moved in above it — that block is as tall as the terminal is narrow — and
+/// the `/skills` search line sits under a session-off note that wraps the
+/// same way. Reading the row back out of the very page the paint builds is
+/// `menu_marker_seat`'s rule, and it cannot drift from what is on screen.
+pub(super) fn view_prompt_row(lines: &[Line<'static>]) -> Option<u16> {
+    lines
+        .iter()
+        .position(|line| line.spans.iter().any(|s| s.content == MODEL_PROMPT))
+        .and_then(|row| u16::try_from(row).ok())
+}
+
 /// A full-width `─` rule in the box's border colour (the picker's top/bottom
 /// frame, matching the input box's rules).
 pub(super) fn model_rule(width: u16) -> Line<'static> {

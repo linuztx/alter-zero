@@ -488,22 +488,6 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
     model_linked_rows(&text, model_meta_color(), width)
 }
 
-/// The row of `lines` carrying the `❯` prompt — a list step's filter, or the
-/// key step's field — and `None` on a page that has neither (the sign-in
-/// page, which is a wait rather than a field).
-///
-/// **Found, not counted.** The key field used to sit on a constant row, which
-/// stopped being true the moment the provider's description block moved in
-/// above it: that block is as tall as the terminal is narrow. Reading the row
-/// back out of the very page the paint builds is `menu_marker_seat`'s rule,
-/// and it cannot drift from what is on screen.
-pub(super) fn login_prompt_row(lines: &[Line<'static>]) -> Option<u16> {
-    lines
-        .iter()
-        .position(|line| line.spans.iter().any(|s| s.content == MODEL_PROMPT))
-        .and_then(|row| u16::try_from(row).ok())
-}
-
 /// A `/login` list page: top rule, gap, the `❯` filter, gap, the windowed
 /// list, a `(n/total)` counter, gap, the step's dim hint rows, gap, bottom
 /// rule.

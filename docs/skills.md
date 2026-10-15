@@ -633,18 +633,25 @@ name is completable there — and nothing here forecloses the palette half.
 
 ## Turning one skill off: the `/skills` menu
 
-`/skills` opens the **fifth composer-replacing inline picker**, and it is
+`/skills` opens the **fifth composer-replacing inline picker**. Its list is
 deliberately the `/settings` menu's twin rather than a new shape — same frame,
 same `❯` type-to-search, same aligned `{label}  {value}` column with the same
-two-tone colouring, same `(n/total)` counter, same Enter/Space grammar:
+two-tone colouring, same `(n/total)` counter, same Enter/Space grammar — under
+the header the `/hooks` and `/mcp` pages open on:
 
 ```
+  Skills
+  3 skills · 2 enabled
+
   ❯
-→ commit-helper        enabled
-  haiku-writer         disabled
-  startup-hook-skill   enabled
+
+→ commit-helper        ✔ enabled
+  haiku-writer         ◯ disabled
+  startup-hook-skill   ✔ enabled
   (1/3)
+
   Write a git commit message in this project's house style…
+
   Type to search · Enter/Space to enable/disable · Esc to cancel
 ```
 
@@ -653,12 +660,37 @@ the skill's **own description** as the line under the list — so the picker
 doubles as the browser that answers "what is this skill actually for?", which
 is the `/hooks` menu's value in the shape of the `/settings` menu.
 
-Two rows the `/settings` menu has no need of:
+The header and the value column answer "what is on?" before a row is read:
 
-- a **session-off note** under the search line when the `/settings` **Skills**
-  row is off, so browsing and toggling with the master switch down never reads
-  as "my toggles do nothing" (it costs a row only when shown — reserving it
-  blank stacked an empty line on the gap beneath it);
+- **The title** wears the pages' one title dress (`header::page_title_line` —
+  bold, in the active theme's banner gradient), so `/skills` reads as one of
+  the composer-replacing pages rather than a bare list.
+- **The count line** — `3 skills · 2 enabled`, dim — counts what is
+  *installed*, never what the search shows: the `(n/total)` counter already
+  follows the query, so a header that shrank with it would say the same thing
+  twice. The enabled count is taken over the discovered skills
+  (`SkillsMenu::enabled_count`), never as `skills - disabled`, because the
+  off-set keeps names that are not installed here (see *Where it persists*).
+  An empty catalog reads `0 skills` alone.
+- **Each value leads with a mark** — `✔ enabled`, `◯ disabled` — the `/login`
+  rows' own pair, so the two lists that answer "is this on?" answer it with
+  one glyph. Only the check is coloured (the `/model` picker's green), the
+  circle stays dim, and the word keeps the `/settings` two-tone. When a row is
+  too narrow for the whole value the word `…`-cuts and the mark keeps its
+  seat — the `/mcp` rows' rule, since the mark *is* the state.
+
+Two notes the `/settings` menu has no need of:
+
+- a **session-off note** in the header, under the count, when the `/settings`
+  **Skills** row is off, so browsing and toggling with the master switch down
+  never reads as "my toggles do nothing". It says what state the whole catalog
+  is in, so it belongs to the header rather than between the search line and
+  the rows it filters. It costs a row only when shown and it wraps, which is
+  why the search line has no fixed row: the caret's seat is found in the built
+  page (`model_view::view_prompt_row`, `/login`'s rule). It is never shown
+  over an empty catalog — with nothing installed that row is unavailable, so
+  the session always reads as off there, and "turn them on in /settings" is
+  advice the row refuses;
 - an empty list that **names the roots** rather than just saying "none" —
   `No skills found. Add one at:` over `~/.claude/skills/<name>/SKILL.md` — since
   "why isn't my skill here?" is the only question an empty list ever raises.

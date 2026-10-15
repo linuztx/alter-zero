@@ -1,25 +1,58 @@
 //! The inline `/skills` menu. See `docs/skills.md`.
 //!
-//! The `/settings` menu's frame, reused rather than re-drawn: the same rules,
-//! the same `❯` search line, the same aligned `{label}  {value}` column with
-//! the same two-tone colouring, the same `(n/total)` counter over the
-//! highlighted row's description, the same hint row. Only the rows differ —
-//! one per discovered skill, its own `description` as the line beneath — plus
-//! one note row this menu has and that one doesn't: the session-off banner,
-//! and the where-to-put-one answer for an empty list.
+//! The `/settings` menu's list under the pages' header: the header `/hooks`
+//! and `/mcp` open on — the title in the pages' title dress over a dim count
+//! line — then the `/settings` frame, reused rather than re-drawn: the same
+//! `❯` search line, the same aligned `{label}  {value}` column with the same
+//! two-tone colouring, the same `(n/total)` counter over the highlighted
+//! row's description, the same hint row. Only the rows differ — one per
+//! discovered skill, its value led by the `/login` rows' `✔`/`◯` status mark,
+//! its own `description` as the line beneath — plus two notes this menu has
+//! and that one doesn't: the session-off note in the header, and the
+//! where-to-put-one answer for an empty list.
 
 use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
 use super::*;
 
-use crate::app::SkillMenuRow;
+use crate::app::{SkillMenuRow, SkillsMenu};
 
-/// One skill row: `{marker}{name}{pad}{enabled|disabled}` — the `/settings`
-/// row's shape exactly, so the two menus read as one family. `name_width` is
-/// the (capped) widest visible name, so the value column lines up down the
-/// list; a name wider than it `…`-cuts rather than paint-clipping at the
-/// buffer edge and shoving the value off the row.
+/// The value a row ends on: its status mark, then its word — `✔ enabled`,
+/// `◯ disabled` — each half in its own colour. The check alone is green
+/// ([`model_active_color`]), the eye's target down a column of names, while
+/// the circle stays dim; the word keeps the `/settings` two-tone, light when
+/// the skill is on and dim when it is off.
+fn skills_value(enabled: bool) -> (&'static str, Color, &'static str, Color) {
+    if enabled {
+        (
+            SKILLS_ON_MARK,
+            model_active_color(),
+            SKILLS_ON_VALUE,
+            settings_value_color(),
+        )
+    } else {
+        (
+            SKILLS_OFF_MARK,
+            model_meta_color(),
+            SKILLS_OFF_VALUE,
+            settings_value_off_color(),
+        )
+    }
+}
+
+/// A value's whole width: the mark, the space after it, the word.
+fn value_cols(enabled: bool) -> usize {
+    let (mark, _, word, _) = skills_value(enabled);
+    cols(mark) + 1 + cols(word)
+}
+
+/// One skill row: `{marker}{name}{pad}{mark} {enabled|disabled}` — the
+/// `/settings` row's shape with a status mark leading the value, so the two
+/// menus read as one family. `name_width` is the (capped) widest visible
+/// name, so the value column lines up down the list; a name wider than it
+/// `…`-cuts rather than paint-clipping at the buffer edge and shoving the
+/// value off the row.
 fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, name_style) = if selected {
@@ -36,24 +69,32 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
     let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
     let reserved = cols(marker) + cols(&name) + pad;
     let value_room = (width as usize).saturating_sub(reserved).max(1);
-    let (value, value_color) = if row.enabled {
-        (SKILLS_ON_VALUE, settings_value_color())
-    } else {
-        (SKILLS_OFF_VALUE, settings_value_off_color())
-    };
-    Line::from(vec![
+    let (mark, mark_color, word, word_color) = skills_value(row.enabled);
+    let mut spans = vec![
         Span::styled(marker.to_string(), marker_style),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(ellipsize(value, value_room), Style::new().fg(value_color)),
-    ])
+        Span::styled(mark, Style::new().fg(mark_color)),
+    ];
+    // The mark IS the state, so it keeps its seat however narrow the row; the
+    // word only restates it, so it is the half that `…`-cuts — the `/mcp`
+    // rows' rule, where the glyph survives a squeeze its words don't.
+    let word_room = value_room.saturating_sub(cols(mark) + 1);
+    if word_room > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            ellipsize(word, word_room),
+            Style::new().fg(word_color),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// The widest visible name — capped so the value column always keeps a seat
 /// on the row (`width` minus the marker, the gap, and the widest value) —
 /// so [`skills_row`] can align the value column.
 fn name_column(rows: &[&SkillMenuRow], width: u16) -> usize {
-    let widest_value = cols(SKILLS_ON_VALUE).max(cols(SKILLS_OFF_VALUE));
+    let widest_value = value_cols(true).max(value_cols(false));
     let cap = (width as usize)
         .saturating_sub(cols(MODEL_MARKER) + SETTINGS_VALUE_GAP + widest_value)
         .max(1);
@@ -136,14 +177,43 @@ fn skills_counter_line(rows: &[SkillMenuRow], selected: usize) -> Line<'static> 
     ])
 }
 
-/// The whole framed page as lines: a top rule, the `❯` search line, the
-/// session-off note (blank when skills are on — always emitted, so the frame
-/// doesn't jump), the windowed skill rows, the `(n/total)` counter, the
-/// highlighted skill's description, the key hint, and a bottom rule —
-/// blank-gapped exactly as the retired internal `Layout` stacked them. What
-/// [`render_skills_menu`] paints (bottom-anchored) and [`skills_menu_rows`]
-/// counts, so the two can never disagree (`docs/view-flow.md`). Empty when
-/// the menu is closed.
+/// `{n} skill(s)` — the count line's noun, singular for one.
+fn skill_noun(n: usize) -> String {
+    if n == 1 {
+        format!("{n} skill")
+    } else {
+        format!("{n} skills")
+    }
+}
+
+/// The header's dim count line — `6 skills · 5 enabled`, `/hooks`' `3 hooks
+/// configured` and `/mcp`'s `2 servers` for this page. It counts what is
+/// **installed**, never what the search shows: the `(n/total)` counter under
+/// the list already follows the query. An empty catalog reads `0 skills`
+/// alone, since a `· 0 enabled` clause would say nothing twice over the
+/// placeholder that answers an empty list. One `…`-cut row, so the header's
+/// height never changes with the width.
+fn skills_count_line(menu: &SkillsMenu, width: u16) -> Line<'static> {
+    let total = menu.skills.len();
+    let text = if total == 0 {
+        skill_noun(total)
+    } else {
+        format!(
+            "{}{FOOTER_SEPARATOR}{} {SKILLS_ON_VALUE}",
+            skill_noun(total),
+            menu.enabled_count()
+        )
+    };
+    model_placeholder_row(&text, model_meta_color(), width)
+}
+
+/// The whole framed page as lines: a top rule, the header (the title, the
+/// count line, and the session-off note when it applies), the `❯` search
+/// line, the windowed skill rows, the `(n/total)` counter, the highlighted
+/// skill's description, the key hint, and a bottom rule — one blank row
+/// between each block, never two. What [`render_skills_menu`] paints
+/// (bottom-anchored) and [`skills_menu_rows`] counts, so the two can never
+/// disagree (`docs/view-flow.md`). Empty when the menu is closed.
 pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = app.skills_menu.as_ref() else {
         return Vec::new();
@@ -156,17 +226,33 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(menu.query.clone()),
     ]);
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
-    let mut lines = vec![model_rule(width), Line::default(), search_line];
-    // The session-off note takes rows only when there IS one to show —
-    // emitting it blank stacked an empty line on the gap below it. Wrapped:
-    // its "/settings" tail is the fix, and a narrow terminal used to cut it.
-    if !menu.session_enabled {
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        super::header::page_title_line(SKILLS_TITLE, width),
+        skills_count_line(menu, width),
+    ];
+    // The session-off note joins the header: it says what state the whole
+    // catalog is in, so it sits under the count rather than between the
+    // search line and the rows it filters. It takes rows only when there IS
+    // one to show, and it wraps — its "/settings" tail is the fix, and a
+    // narrow terminal used to cut it. Which is also why the search line has
+    // no fixed row: the caret's seat is found in this page
+    // (`model_view::view_prompt_row`), never counted.
+    //
+    // Never over an empty catalog: with nothing installed the `/settings`
+    // row is unavailable, so the session always reads as off there, and the
+    // note's advice is one that row refuses. It explains why *listed* rows
+    // do nothing; with none listed, the placeholder answers instead.
+    if !menu.session_enabled && !menu.skills.is_empty() {
         lines.extend(model_wrapped_rows(
             SKILLS_SESSION_OFF,
             toast_error_color(),
             width,
         ));
     }
+    lines.push(Line::default());
+    lines.push(search_line);
     lines.push(Line::default());
     lines.extend(skills_list_lines(app, &rows, selected, width));
     match highlighted {
@@ -222,13 +308,13 @@ pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16
 }
 
 /// Render the **inline** `/skills` menu into the live region, in place of the
-/// composer: a top rule, the `❯` search line, the session-off note (blank when
-/// skills are on), the skill rows (`→ {name}  {enabled|disabled}`), a
-/// `(n/total)` counter, the highlighted skill's description, the key hint, and
-/// a bottom rule — bottom-anchored, so a squeezed area keeps the list and the
-/// closing chrome on screen while the skipped top flows into scrollback
-/// (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/skills.md`.
+/// composer: a top rule, the `Skills` title over its count line (and the
+/// session-off note when it applies), the `❯` search line, the skill rows
+/// (`→ {name}  ✔ enabled`), a `(n/total)` counter, the highlighted skill's
+/// description, the key hint, and a bottom rule — bottom-anchored, so a
+/// squeezed area keeps the list and the closing chrome on screen while the
+/// skipped top flows into scrollback (`docs/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/skills.md`.
 pub fn render_skills_menu(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, skills_view_lines(app, area.width));
 }
