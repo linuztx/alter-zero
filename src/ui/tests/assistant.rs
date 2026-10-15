@@ -594,6 +594,32 @@ fn blockquotes_hold_lists_headings_and_paragraphs() {
 }
 
 #[test]
+fn a_blockquote_wears_codex_green() {
+    // Codex dresses a quote — its `>` column and its text — in green; inline
+    // code inside it keeps its own colour.
+    let green = crate::ui::theme::tool_ok_color();
+    let lines = message_lines(Role::Assistant, "> quoted `code` text\n> more", 40);
+    let spans: Vec<(String, Option<Color>)> = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter(|s| !s.content.trim().is_empty())
+        .map(|s| (s.content.trim().to_string(), s.style.fg))
+        .collect();
+    assert!(
+        spans.contains(&(">".to_string(), Some(green))),
+        "the `>` column is green: {spans:?}"
+    );
+    assert!(
+        spans.contains(&("quoted".to_string(), Some(green))),
+        "the quoted text is green: {spans:?}"
+    );
+    assert!(
+        spans.contains(&("code".to_string(), Some(inline_code_color()))),
+        "inline code keeps its colour: {spans:?}"
+    );
+}
+
+#[test]
 fn a_tight_item_keeps_a_quote_heading_or_table_against_its_text() {
     // Codex sets a block apart when a paragraph *ends*, and an item's own
     // text in a tight list never ends one — so a quote, heading or table

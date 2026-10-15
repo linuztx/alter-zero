@@ -130,7 +130,8 @@ pub(super) fn link_url_color() -> Color {
 // bullet renders `•` whatever its source marker, a task item a ballot box,
 // an ordered item `N.` in an accent colour, renumbered from the list's start;
 // each nesting level sits `LIST_NEST_WIDTH` columns deeper and continuation
-// rows hang under the item's text. A blockquote's `>` and text render dim. ---
+// rows hang under the item's text. A blockquote's `>` and text render green,
+// codex's quote dress. ---
 /// The glyph an unordered list item renders with, at every depth (codex's
 /// `"• "`), whether the model wrote `-`, `*` or `+`.
 pub(super) const LIST_BULLET: &str = "•";
@@ -151,9 +152,9 @@ pub(super) fn list_marker_color() -> Color {
     palette().link
 }
 
-/// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
+/// A blockquote's `>` marker and text — green, codex's quote dress.
 pub(super) fn quote_color() -> Color {
-    tool_dim_color()
+    palette().success
 }
 
 // Code syntax-highlight colours now come from the `highlight` module's theme

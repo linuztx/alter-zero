@@ -1052,7 +1052,7 @@ impl AssistantRenderer {
             .any(|c| matches!(c, Container::Quote(_)))
     }
 
-    /// The text style a block starts from — dim inside a quote.
+    /// The text style a block starts from — the quote's green inside one.
     fn base_style(&self) -> Style {
         if self.in_quote() {
             Style::new().fg(quote_color())

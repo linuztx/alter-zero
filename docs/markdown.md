@@ -416,8 +416,10 @@ codex's way:
   `1. ` is the item's text, not indented code, and a fence nested under a
   second-level item is still a fence (both used to break: code-coloured prose,
   and backticks on screen).
-- **Blockquotes** prefix every row with a dim `> ` (nested quotes repeat it)
-  over dim text, and their content is markdown too: `> - a` is a bullet inside
+- **Blockquotes** prefix every row with a green `> ` (nested quotes repeat it)
+  over green text — codex's quote dress (`blockquote: Style::new().green()`),
+  the theme's `success` role, inline code and links keeping their own colours
+  — and their content is markdown too: `> - a` is a bullet inside
   the quote, `> ## Note` a heading, a blank `>` line separates paragraphs, and
   a lazy line continues the quoted paragraph.
 

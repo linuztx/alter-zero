@@ -22,7 +22,8 @@ release heading when a version is cut.
   3. Nested lists sit four columns per level (a sub-list two spaces under
   `1.` nests rather than restarting the count), and text under an item hangs
   under it, including a lazy unindented line, a second paragraph or a code
-  block. A quote can hold a list (`> - item` shows a bullet) or a heading.
+  block. A quote is green, as in codex, and can hold a list (`> - item`
+  shows a bullet) or a heading.
   Blocks are set one blank line apart even when the model left none, a run
   of blank lines collapses to one, a loose list closes up, and an item that
   wraps onto a second row gets a blank line before the next, while a quote,
