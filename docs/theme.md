@@ -327,16 +327,18 @@ the saved theme.
   come from the palette), and `/mascot` and `/spinner` remain the pickers
   for the glyphs.
 - **Why do the page titles wear the banner's gradient?** Every titled
-  composer-replacing page — `/hooks`, `/mcp`, `/trust`, `/export`, the ↓
-  manager, `/login`'s titled pages, `/donate`, `/secrets` — headlines in
-  one dress, bold and washed accent → link across the title's own width
-  (`ui::header::page_title_line`, over `page_title_spans`, which `/donate`
-  uses beside its heart). A flat accent was a colour the pages shared; the
-  gradient is the banner's own look, so a page reads as part of the app
-  it opened in and follows `/theme` the way the banner does. The pickers
-  that open on a `❯` filter (`/model`, `/settings`, `/skills`, `/theme`,
-  `/mascot`, `/spinner`) have no title to dress, and the full-screen views
-  (`/resume`, Ctrl+O, Ctrl+D) keep the pager's slash-tiled header.
+  composer-replacing page — `/hooks`, `/mcp`, `/skills`, `/trust`,
+  `/export`, the ↓ manager, `/login`'s titled pages, `/donate`, `/secrets`
+  — headlines in one dress, bold and washed accent → link across the
+  title's own width (`ui::header::page_title_line`, over
+  `page_title_spans`, which `/donate` uses beside its heart). A flat accent
+  was a colour the pages shared; the gradient is the banner's own look, so
+  a page reads as part of the app it opened in and follows `/theme` the way
+  the banner does. `/skills` is the one `❯`-filter picker with a title (its
+  header counts the skills, `docs/skills.md`); the others that open on a
+  `❯` filter (`/model`, `/settings`, `/theme`, `/mascot`, `/spinner`) have
+  no title to dress, and the full-screen views (`/resume`, Ctrl+O, Ctrl+D)
+  keep the pager's slash-tiled header.
 
 ## API
 

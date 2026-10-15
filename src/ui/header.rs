@@ -42,8 +42,8 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
 }
 
 /// A page title's spans — the one title dress every composer-replacing page
-/// shares (`/hooks`, `/mcp`, `/trust`, `/export`, the ↓ manager, `/login`'s
-/// pages, `/donate`, `/secrets`): bold and washed in the active theme's
+/// shares (`/hooks`, `/mcp`, `/skills`, `/trust`, `/export`, the ↓ manager,
+/// `/login`'s pages, `/donate`, `/secrets`): bold and washed in the active theme's
 /// banner gradient across the title's own width, so a headline follows
 /// `/theme` the way the banner does (`docs/theme.md`).
 pub(super) fn page_title_spans(text: &str) -> Vec<Span<'static>> {
