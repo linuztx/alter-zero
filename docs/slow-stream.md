@@ -50,9 +50,10 @@ Three pieces, all reusable, so the answer stays checkable:
   whole, so every run the renderer classifies a line by streams **one
   character at a time**: `**` as `*` + `*`, a fence as three pieces, `|---|`
   as five, `10.` as `1` + `0` + `.`. Every partial-marker predicate the
-  committer carries — `is_partial_fence`, `is_partial_heading`,
-  `is_partial_thematic_break`, `is_partial_list_marker`, `has_open_inline`,
-  `has_forming_url` — is exercised on every occurrence. Deterministic (the
+  committer carries — `has_unsettled_block_prefix` (the partial fence,
+  heading, thematic-run and list-marker checks, at every container level),
+  `has_open_inline`, `has_forming_url` — is exercised on every occurrence.
+  Deterministic (the
   smoke phase times a turn by its piece count), faithful (the pieces
   concatenate to the input), never longer than `TOKEN_MAX_CHARS`, never
   cutting a character in half.

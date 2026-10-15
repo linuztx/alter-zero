@@ -275,7 +275,7 @@ fn literal_url_marking_leaves_non_url_segments_unchanged() {
         (String::new(), Style::default()),
     ];
     assert_eq!(
-        crate::ui::inline::linkify_segments(segments.clone()),
+        crate::ui::inline::linkify_code_segments(segments.clone()),
         segments
     );
 }
@@ -289,7 +289,7 @@ fn literal_url_marking_crosses_syntax_styles_and_preserves_unicode_and_spacing()
         ("ps://example.test/日本?q=one".to_string(), second),
         ("&two=2\"  end".to_string(), first),
     ];
-    let actual = crate::ui::inline::linkify_segments(segments.clone());
+    let actual = crate::ui::inline::linkify_code_segments(segments.clone());
     assert_eq!(
         linked_segments(&actual)
             .iter()

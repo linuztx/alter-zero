@@ -2,7 +2,9 @@
 //! highlighting, headings, lists, and quotes — driven line by line so it stays
 //! prefix-stable while streaming. See `docs/markdown.md`.
 
-use super::inline::{inline_spans, linkify_code_segments, linkify_segments, wrap_inline};
+use std::borrow::Cow;
+
+use super::inline::{inline_spans, linkify_code_segments, wrap_inline_hanging};
 use super::table::{join_wrapped_table_row, table_block_rows};
 use super::theme::*;
 use super::wrap::cols;
@@ -10,7 +12,7 @@ use super::*;
 
 /// The style an ATX heading of `level` (1–6) renders with — a faithful port of
 /// codex's `markdown_render.rs::start_heading`: the `#` markers are **kept**
-/// (see [`AssistantRenderer::content_rows`]) and the whole line carries text
+/// (see `AssistantRenderer::heading_rows`) and the whole line carries text
 /// *modifiers only*, no foreground colour, so a heading reads like codex's:
 /// h1 bold+underlined, h2 bold, h3 bold+italic, h4–h6 italic. See
 /// `docs/markdown.md`.
@@ -24,20 +26,6 @@ fn heading_style(level: u8) -> Style {
     Style::new().add_modifier(modifier)
 }
 
-/// Whether `line` should render as a [`THEMATIC_BREAK`]. A `-` rule is
-/// indistinguishable from a **setext `H2` underline** (which we can't render —
-/// it needs lookahead that would break streaming prefix-stability), so a `-` rule
-/// is only honoured when the previous line was blank (`prev_blank`); `*`/`_` runs
-/// are unambiguous and always render. Keeps a `text\n---` pair as literal prose
-/// rather than fabricating a rule where codex would show a heading.
-fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
-    match markdown::thematic_break(line) {
-        Some('-') => prev_blank,
-        Some(_) => true,
-        None => false,
-    }
-}
-
 /// Expand tabs in a single code line to spaces **for display** (see
 /// [`CODE_TAB_WIDTH`]). A tab is zero display columns, so tab-indented code
 /// rendered verbatim would collapse flush-left; this substitutes a fixed run of
@@ -45,11 +33,11 @@ fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
 /// `expand_tabs`. Borrows unchanged in the common (tab-free) case. Applied only
 /// on the render path — the stored message text keeps its tabs, so `/copy` is
 /// byte-exact.
-pub(super) fn expand_code_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn expand_code_tabs(line: &str) -> Cow<'_, str> {
     if line.contains('\t') {
-        std::borrow::Cow::Owned(line.replace('\t', &" ".repeat(CODE_TAB_WIDTH)))
+        Cow::Owned(line.replace('\t', &" ".repeat(CODE_TAB_WIDTH)))
     } else {
-        std::borrow::Cow::Borrowed(line)
+        Cow::Borrowed(line)
     }
 }
 
@@ -98,20 +86,19 @@ pub(super) fn code_content_rows(
     rows
 }
 
-/// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
-/// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
-/// [`wrap_text`] (ATX headings keep their `#`s and style per level, codex-style)
-/// while **code
-/// blocks render verbatim** — each source line kept byte-for-byte,
-/// **syntax-highlighted** ([`highlight::highlight`]) and hard-broken only on width
+/// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`), by
+/// driving one [`AssistantRenderer`] over its source lines: prose word-wraps
+/// with its inline markdown styled, lists and quotes render codex's way, blocks
+/// sit one blank row apart, and **code blocks render verbatim** — each source
+/// line kept byte-for-byte, **syntax-highlighted** and hard-broken only on width
 /// via [`code_content_rows`], with both fences (and the language info-string)
 /// hidden. The bullet lands on row 0 and `INDENT` on the rest, exactly like the
-/// plain path — so fence/heading-free text is byte-identical to before.
+/// plain path.
 ///
-/// **Prefix-stable at the line level:** a line's prose/code mode and its highlight
-/// are fixed by the text before it. (Highlighting uses one-char lookahead within a
-/// line — a call's `(` — so an in-progress code *line* isn't safe to commit until
-/// it completes; [`StreamRender`] withholds it, see there.)
+/// **Prefix-stable at the line level:** a line's rows are fixed by the text
+/// before it and the line itself. (Highlighting uses one-char lookahead within
+/// a line — a call's `(` — so an in-progress code *line* isn't safe to commit
+/// until it completes; [`StreamRender`] withholds it, see there.)
 pub(super) fn assistant_lines(
     text: &str,
     width: u16,
@@ -169,13 +156,90 @@ pub(super) fn row_is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|s| s.content.trim().is_empty())
 }
 
+/// What a scope's last block was — the fact codex's spacing reads
+/// (`docs/markdown.md` *Block layout*): a paragraph an unbroken next text line
+/// continues, a list a matching item joins, or any other block the next one
+/// is set apart from by one blank row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Last {
+    /// Nothing yet: the scope's first block needs no separator.
+    #[default]
+    Nothing,
+    /// A paragraph — a soft-broken next line continues it.
+    Paragraph,
+    /// A list — the next item of the same kind is its sibling.
+    List(ListState),
+    /// Any other block: a heading, rule, code block, table or quote.
+    Block,
+}
+
+/// An open list's running state in the scope holding it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ListState {
+    /// What its items are; an item of another kind starts a new list.
+    kind: ListKind,
+    /// The number the next item shows — ordered lists renumber from their
+    /// start, as codex's parser does (`1.`, `1.`, `1.` reads 1, 2, 3).
+    next: u64,
+    /// Rows the latest closed item rendered, nested content included: codex's
+    /// AfterMultiline rule sets an item that took more than one row apart from
+    /// its next sibling with a blank row.
+    prev_rows: usize,
+}
+
+/// A list's type — CommonMark starts a new list when the bullet character or
+/// the ordered delimiter changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListKind {
+    /// `-`, `*` or `+`.
+    Bullet(char),
+    /// `N.` or `N)`.
+    Ordered(char),
+}
+
+/// One open container a later line has to continue in order to stay inside —
+/// CommonMark's block structure, line by line: a quote continues on a `>`, a
+/// list item on a line indented to its content (or a blank one).
+#[derive(Clone, Debug)]
+enum Container {
+    /// A blockquote, and the last block inside it.
+    Quote(Last),
+    /// A list item.
+    Item(Item),
+}
+
+/// An open list item.
+#[derive(Clone, Debug)]
+struct Item {
+    /// The source column its marker sat at, past the enclosing containers'
+    /// prefixes: a block start indented two columns further still belongs to
+    /// the item (see [`AssistantRenderer::match_containers`]).
+    marker_col: usize,
+    /// Spaces a later line must be indented, past the enclosing containers'
+    /// prefixes, to stay in this item — the source column its content starts at.
+    indent: usize,
+    /// The rendered marker: depth padding then the bullet, box or number.
+    marker: Vec<(String, Style)>,
+    /// The marker's display width — the hanging indent of every later row.
+    hang: usize,
+    /// Whether the item's first row is still to come (it carries the marker).
+    marker_pending: bool,
+    /// Rows rendered since the item opened, nested content included.
+    rows: usize,
+    /// The last block inside the item.
+    last: Last,
+}
+
 /// The incremental, prefix-stable core shared by the batch [`assistant_lines`]
 /// and the streaming [`StreamRender`]: feed an assistant reply's source lines in
 /// order with [`AssistantRenderer::feed_line`] and each returns that line's
-/// finished rows. Fence state ([`markdown::BlockScanner`]) and highlight carry
-/// ([`highlight::Highlighter`]) thread across the calls, so a completed line's
-/// rows never change — which is what lets scrollback commits and the strip
-/// preview cost O(new line) instead of O(whole reply). See `docs/markdown.md`.
+/// finished rows. Fence state ([`markdown::BlockScanner`]), highlight carry
+/// ([`highlight::Highlighter`]) and the **block layout** — the open quotes and
+/// list items, each scope's last block, a pending blank line — thread across
+/// the calls, so a completed line's rows never change: every row depends only
+/// on the lines before it and the line itself. That is what lets scrollback
+/// commits and the strip preview cost O(new line) instead of O(whole reply).
+/// See `docs/markdown.md`.
 ///
 /// The very first row emitted across the whole message carries the coloured
 /// role bullet; every later row is indented under it. `Clone` lets [`StreamRender`]
@@ -195,13 +259,34 @@ pub(super) struct AssistantRenderer {
     highlighter: Option<highlight::Highlighter>,
     /// Whether any row has been emitted yet (the first gets the bullet).
     emitted_any: bool,
-    /// Whether the previous source line was blank — the gate that lets a `-` rule
-    /// (`---`, ambiguous with a setext underline) render as an em-dash break.
-    prev_blank: bool,
+    /// The open quotes and list items, outermost first.
+    containers: Vec<Container>,
+    /// The last block at the message's top level.
+    root: Last,
+    /// A blank source line since the last content line: the next block is set
+    /// apart from the one before (unless it is a sibling item — codex compacts
+    /// loose lists — or a lazy continuation, which a blank rules out).
+    pending_blank: bool,
+    /// Whether the last row emitted was blank, so a separator never stacks on
+    /// one (a code block's own trailing blank line, say).
+    last_row_blank: bool,
+    /// The open fence still owes the blank row that sets it apart: it is
+    /// emitted with the block's first code line, so a fence that is still
+    /// empty — the reply so far ends on its opener — adds no trailing row.
+    fence_gap: bool,
+    /// The open fence's own indent past its containers' prefixes: CommonMark
+    /// takes up to that many spaces off each of its code lines, so the code
+    /// sits where the fence does.
+    fence_indent: usize,
+    /// The items the open fence's line continued **leniently** (indented
+    /// short of their text), with the spaces each consumed there: its code
+    /// lines lose that many for the item instead of the item's whole indent,
+    /// so the code keeps the indentation it was written with.
+    fence_lenient: Vec<(usize, usize)>,
     /// In-progress GFM table accumulation (`docs/markdown.md`). A table is not
     /// prefix-stable — a later row can widen a column — so its source lines are
-    /// buffered here and rendered **whole** only when the block closes (a
-    /// non-table line, a code fence, or end-of-message via [`Self::flush`]).
+    /// buffered here and rendered **whole** only when the block closes (a line
+    /// that does not continue it, or end-of-message via [`Self::flush`]).
     pub(super) table: TableState,
 }
 
@@ -209,11 +294,13 @@ pub(super) struct AssistantRenderer {
 /// A candidate header is held in `PendingHeader` until the next line confirms it
 /// (a matching [`markdown::table_delimiter`]) — the one-line lookahead a pipe
 /// table needs — then `Buffering` accumulates the data rows, emitting **nothing**,
-/// until a non-table line (or a code fence, or end-of-message) closes the block
+/// until a line that does not continue it (or end-of-message) closes the block
 /// and it renders whole through [`table_block_rows`], its column widths fit to
 /// **every** row. Nothing of an open table ever commits to scrollback, so a wide
 /// later row can never invalidate a committed one (prefix-stability is trivial);
 /// the streaming strip previews the forming block instead ([`StreamRender::preview`]).
+/// The rows are the source lines with their container prefixes already
+/// stripped, so a table inside a list item renders under the item's text.
 #[derive(Clone)]
 pub(super) enum TableState {
     /// Not inside a table.
@@ -230,6 +317,107 @@ pub(super) enum TableState {
     },
 }
 
+/// A list item's rendered marker (`docs/markdown.md`), codex's geometry:
+/// `depth` levels deep it sits [`LIST_NEST_WIDTH`] columns per level in; a
+/// bullet is [`LIST_BULLET`] (or a task's box), an ordered item its number
+/// right-aligned in the level's padding and dressed in [`list_marker_color`]
+/// (a task's box follows it).
+fn list_marker(
+    kind: ListKind,
+    number: u64,
+    depth: usize,
+    task: Option<bool>,
+    base: Style,
+) -> Vec<(String, Style)> {
+    let pad = LIST_NEST_WIDTH * depth.saturating_sub(1);
+    let task_box = |done: bool| if done { LIST_TASK_DONE } else { LIST_TASK_OPEN };
+    match kind {
+        ListKind::Bullet(_) => {
+            let glyph = task.map_or(LIST_BULLET, task_box);
+            vec![(format!("{}{glyph} ", " ".repeat(pad)), base)]
+        }
+        ListKind::Ordered(_) => {
+            let width = pad + 1;
+            let mut spans = vec![(format!("{number:>width$}. "), base.fg(list_marker_color()))];
+            if let Some(done) = task {
+                spans.push((format!("{} ", task_box(done)), base));
+            }
+            spans
+        }
+    }
+}
+
+/// Whether `rest` would continue a paragraph — no block starts on it — the
+/// test a **lazy** continuation line must pass to stay inside the containers
+/// it no longer indents for (CommonMark: `- item` then an unindented `text`
+/// line is the item's text).
+fn is_paragraph_text(rest: &str) -> bool {
+    markdown::block_quote(rest).is_none()
+        && markdown::list_item(rest).is_none()
+        && markdown::thematic_break(rest).is_none()
+        && markdown::heading_level(rest).is_none()
+        && !markdown::is_fence_opener(rest)
+        && !markdown::is_table_header_candidate(rest)
+}
+
+/// Whether `rest` (its indent consumed) starts a block that may nest under a
+/// list item it is indented short of: a list item, a fence, a quote, a heading
+/// or a table — never a rule, which a model writes to end a section.
+fn opens_nested_block(rest: &str) -> bool {
+    markdown::thematic_break(rest).is_none()
+        && (markdown::list_item(rest).is_some()
+            || markdown::block_quote(rest).is_some()
+            || markdown::is_fence_opener(rest)
+            || markdown::heading_level(rest).is_some()
+            || markdown::is_table_header_candidate(rest))
+}
+
+/// What [`AssistantRenderer::match_containers`] reports: how many open
+/// containers a line continues, what is left of it past their prefixes, and
+/// the items it continued short of their text with the spaces consumed.
+type Matched<'a> = (usize, &'a str, Vec<(usize, usize)>);
+
+/// The number of leading spaces of `s`.
+fn leading_spaces(s: &str) -> usize {
+    s.len() - s.trim_start_matches(' ').len()
+}
+
+/// `s` past up to `columns` columns of indentation, a tab advancing to the
+/// next multiple of four: a tab straddling the last column leaves the
+/// columns past it as spaces, and the tabs after it stay tabs.
+fn strip_indent(s: Cow<'_, str>, columns: usize) -> Cow<'_, str> {
+    let mut col = 0;
+    for (i, b) in s.bytes().enumerate() {
+        if col >= columns {
+            return drop_prefix(s, i);
+        }
+        match b {
+            b' ' => col += 1,
+            b'\t' => {
+                col += 4 - col % 4;
+                if col > columns {
+                    let rest = &s[i + 1..];
+                    return Cow::Owned(format!("{}{rest}", " ".repeat(col - columns)));
+                }
+            }
+            _ => return drop_prefix(s, i),
+        }
+    }
+    let len = s.len();
+    drop_prefix(s, len)
+}
+
+/// `s` without its first `n` bytes, borrowed when it was.
+fn drop_prefix(s: Cow<'_, str>, n: usize) -> Cow<'_, str> {
+    match s {
+        Cow::Borrowed(b) => Cow::Borrowed(&b[n..]),
+        Cow::Owned(mut o) => {
+            o.drain(..n);
+            Cow::Owned(o)
+        }
+    }
+}
+
 impl AssistantRenderer {
     pub(super) fn new(width: u16, bullet: &str, color: Color) -> Self {
         Self {
@@ -239,25 +427,26 @@ impl AssistantRenderer {
             scanner: markdown::BlockScanner::new(),
             highlighter: None,
             emitted_any: false,
-            prev_blank: true, // start-of-message is a blank boundary
+            containers: Vec::new(),
+            root: Last::Nothing,
+            pending_blank: false,
+            last_row_blank: false,
+            fence_gap: false,
+            fence_indent: 0,
+            fence_lenient: Vec::new(),
             table: TableState::None,
         }
     }
 
-    /// Render the next source `line` into its finished rows, advancing fence +
-    /// highlight state. The first row ever emitted carries the bullet; the rest
-    /// are indented under it.
+    /// Render the next source `line` into its finished rows, advancing the
+    /// block-layout, fence and highlight state. The first row ever emitted
+    /// carries the bullet; the rest are indented under it.
     pub(super) fn feed_line(&mut self, line: &str) -> Vec<Line<'static>> {
         let rows = self.content_rows(line);
         self.stamp(rows)
     }
 
-    /// The row *content* spans for `line` (no bullet/indent prefix yet),
-    /// advancing fence/highlight state. Prose word-wraps (headings keep their
-    /// `#`s and style per level, codex-style); code renders verbatim,
-    /// syntax-highlighted; both the opening and
-    /// closing fence render nothing (no gutter, and the language info-string is
-    /// not shown).
+    /// The row *content* spans for `line` (no bullet/indent prefix yet).
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
         // A CRLF reply's lines arrive ending in '\r' (the source is split on
         // '\n' alone): the CR is part of the line ending, not content — drop
@@ -267,70 +456,377 @@ impl AssistantRenderer {
         // content (prose collapses it as whitespace). Batch and streaming
         // share this entry, so the two never disagree.
         let line = line.strip_suffix('\r').unwrap_or(line);
-        // Track blank-line boundaries for the `-` thematic-break gate below. This
-        // mirrors the scanner's own `prev_blank` (used for indented code) but is
-        // kept here because the rule decision lives in the prose branch, like
-        // headings.
-        let was_blank = self.prev_blank;
-        self.prev_blank = line.trim().is_empty();
-        match self.scanner.classify(line) {
+        // Inside a fence everything is code until the close.
+        if self.highlighter.is_some() {
+            return self.fenced_line(line);
+        }
+        // Tabs in the indentation and after the quote and list markers count
+        // to four-column stops, so every container below reads spaces.
+        let line = markdown::expand_prefix_tabs(line);
+        let line: &str = &line;
+        let mut out = Vec::new();
+        if self.in_table() {
+            if self.continue_table(line) {
+                return out;
+            }
+            // Not a table line: the block closes — render it whole (grid or
+            // records, widths from every row), then the closing line.
+            out = self.flush_table();
+        }
+        out.extend(self.block_line(line));
+        out
+    }
+
+    /// A line inside an open fence: its container prefixes stripped
+    /// **leniently** — a quote's `>` where present, up to an item's indent of
+    /// columns — so a model that under-indents a fenced block inside a list
+    /// item still gets code, never a fence torn open into prose — then up to
+    /// the fence's own indent (CommonMark); the rest is code, or the closing
+    /// fence (which renders nothing). The strips count a tab to its stop and
+    /// leave the code's own tabs past them alone.
+    fn fenced_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        let mut rest = Cow::Borrowed(line);
+        for (i, container) in self.containers.iter().enumerate() {
+            match container {
+                Container::Quote(_) => {
+                    if let Some(inner) = markdown::block_quote(&rest) {
+                        let skip = rest.len() - inner.len();
+                        rest = drop_prefix(rest, skip);
+                    }
+                }
+                Container::Item(item) => {
+                    let indent = self
+                        .fence_lenient
+                        .iter()
+                        .find(|(at, _)| *at == i)
+                        .map_or(item.indent, |&(_, spaces)| spaces);
+                    rest = strip_indent(rest, indent);
+                }
+            }
+        }
+        let rest = strip_indent(rest, self.fence_indent);
+        let rest: &str = &rest;
+        match self.scanner.classify(rest) {
+            markdown::LineKind::CodeEnd => {
+                self.highlighter = None;
+                self.fence_gap = false;
+                self.fence_lenient.clear();
+                Vec::new()
+            }
+            _ => {
+                let mut out = Vec::new();
+                if std::mem::take(&mut self.fence_gap) {
+                    out.extend(self.emit_separator());
+                }
+                out.extend(self.code_line(rest));
+                out
+            }
+        }
+    }
+
+    /// How many open containers `line` continues, and what is left of it past
+    /// their prefixes. A quote continues on a `>` (its marker and one space
+    /// consumed); an item on a blank line or one indented to its content (that
+    /// indent consumed) — or on a **block start** (a list item, fence, quote,
+    /// heading or table) indented two columns or more past the item's marker
+    /// but short of its text (all of it consumed). Models nest a sub-list two
+    /// spaces under `1. ` and under `10. `, which CommonMark — and codex —
+    /// would flatten into a list of its own, breaking the numbering; that far
+    /// past the parent's marker is what the model meant, while one column in
+    /// is a sibling. A paragraph line there still needs the text column (or
+    /// is a lazy continuation); a line continuing an open table (`in_table`)
+    /// needn't start a block. The items continued that way come back as
+    /// `(index, spaces consumed)` — empty, and so free, on every ordinary line.
+    fn match_containers<'a>(&self, line: &'a str, in_table: bool) -> Matched<'a> {
+        let mut rest = line;
+        let mut lenient = Vec::new();
+        for (i, container) in self.containers.iter().enumerate() {
+            match container {
+                Container::Quote(_) => match markdown::block_quote(rest) {
+                    Some(inner) => rest = inner,
+                    None => return (i, rest, lenient),
+                },
+                Container::Item(item) => {
+                    if rest.trim().is_empty() {
+                        continue;
+                    }
+                    let spaces = leading_spaces(rest);
+                    if spaces >= item.indent {
+                        rest = &rest[item.indent..];
+                    } else if spaces >= item.marker_col + 2
+                        && (in_table || opens_nested_block(&rest[spaces..]))
+                    {
+                        rest = &rest[spaces..];
+                        lenient.push((i, spaces));
+                    } else {
+                        return (i, rest, lenient);
+                    }
+                }
+            }
+        }
+        (self.containers.len(), rest, lenient)
+    }
+
+    /// Whether `line` continues the open table — every container still matches
+    /// and the rest is the delimiter a pending header needs, or another row —
+    /// buffering it if so.
+    fn continue_table(&mut self, line: &str) -> bool {
+        let (matched, rest, _) = self.match_containers(line, true);
+        if matched < self.containers.len() {
+            return false;
+        }
+        let continued = match std::mem::replace(&mut self.table, TableState::None) {
+            TableState::None => false,
+            TableState::PendingHeader(header) => {
+                let ncols = markdown::table_cells(&header).len();
+                match markdown::table_delimiter(rest).filter(|a| a.len() == ncols) {
+                    // Header + a matching delimiter → confirmed; buffer the data
+                    // rows until the block closes (the widths need them all).
+                    Some(aligns) => {
+                        self.table = TableState::Buffering {
+                            header,
+                            aligns,
+                            rows: Vec::new(),
+                        };
+                        true
+                    }
+                    None => {
+                        self.table = TableState::PendingHeader(header);
+                        false
+                    }
+                }
+            }
+            TableState::Buffering {
+                header,
+                aligns,
+                mut rows,
+            } => {
+                let row = markdown::is_table_row(rest);
+                if row {
+                    // A pipe-carrying line that doesn't start with `|`, inside a
+                    // leading-pipe table, is the previous row's hard-wrapped tail
+                    // — re-join it instead of minting a phantom one-cell row.
+                    match rows
+                        .last()
+                        .and_then(|prev| join_wrapped_table_row(prev, rest, aligns.len()))
+                    {
+                        Some(joined) => {
+                            rows.pop();
+                            rows.push(joined);
+                        }
+                        None => rows.push(rest.to_string()),
+                    }
+                }
+                self.table = TableState::Buffering {
+                    header,
+                    aligns,
+                    rows,
+                };
+                row
+            }
+        };
+        if continued {
+            self.scanner.classify(rest);
+        }
+        continued
+    }
+
+    /// Render one non-code, non-table line: continue (or close) the open
+    /// containers, open the quotes and list items the line starts, then render
+    /// its leaf — a heading, rule, fence, paragraph line or table header.
+    fn block_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        let (matched, rest, lenient) = self.match_containers(line, false);
+        let blank = rest.trim().is_empty();
+        if matched < self.containers.len() {
+            // A lazy continuation: paragraph text with no blank before it
+            // continues the open paragraph whatever its indent, so every
+            // container stays open (`- item` then an unindented `more`).
+            if !blank
+                && !self.pending_blank
+                && self.last() == Last::Paragraph
+                && is_paragraph_text(rest)
+            {
+                self.scanner.classify(rest);
+                return self.paragraph_line(rest.trim_start(), true);
+            }
+            self.close_containers(matched);
+        }
+        if blank {
+            self.scanner.classify(rest);
+            if self.scanner.in_indented() {
+                // A blank line inside an indented code block is code content.
+                return self.code_line("");
+            }
+            self.pending_blank = true;
+            return Vec::new();
+        }
+        // An open indented code block runs on through every still-indented
+        // line, one that looks like a list item included.
+        if self.scanner.in_indented() && markdown::is_indented_code_line(rest) {
+            self.scanner.classify(rest);
+            return self.code_line(rest);
+        }
+        let mut out = Vec::new();
+        let mut rest = rest;
+        let mut opened = false;
+        loop {
+            // A thematic break outranks a bullet (`- - -`, `* * *`).
+            if markdown::thematic_break(rest).is_some() {
+                break;
+            }
+            if let Some(inner) = markdown::block_quote(rest) {
+                out.extend(self.open_quote());
+                rest = inner;
+                opened = true;
+                continue;
+            }
+            if let Some(item) = markdown::list_item(rest) {
+                let (rows, content, task) = self.open_item(rest, &item);
+                out.extend(rows);
+                rest = content;
+                opened = true;
+                if task {
+                    // A task box's text is the item's paragraph, whatever it
+                    // looks like (`- [x] 10)` is not a nested list).
+                    self.scanner.note_prose(rest);
+                    if rest.trim().is_empty() {
+                        out.extend(self.emit(vec![Vec::new()]));
+                    } else {
+                        out.extend(self.paragraph_line(rest, false));
+                    }
+                    return out;
+                }
+                if rest.trim().is_empty() {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        out.extend(self.leaf_line(rest, opened, lenient));
+        out
+    }
+
+    /// Render a line's leaf — what is left past its container prefixes and
+    /// markers. `opened` says the line opened a container, whose first block
+    /// this is: never a paragraph continuation, never a table. `lenient` is
+    /// [`Self::match_containers`]' record of the items the line continued
+    /// short of their text, which a fence opened here strips by.
+    fn leaf_line(
+        &mut self,
+        rest: &str,
+        opened: bool,
+        lenient: Vec<(usize, usize)>,
+    ) -> Vec<Vec<Span<'static>>> {
+        if rest.trim().is_empty() {
+            self.scanner.classify(rest);
+            if self.marker_pending() {
+                // An item with nothing after its marker: the marker row alone.
+                return self.emit(vec![Vec::new()]);
+            }
+            self.pending_blank = true;
+            return Vec::new();
+        }
+        match self.scanner.classify(rest) {
             markdown::LineKind::CodeStart(lang) => {
-                // A fence can't sit inside a table, so it closes any in-progress
-                // one first; then it opens the block silently (primes highlighting
-                // for the info-string language, emits no row — no gutter, no label).
-                let out = self.flush_table();
+                // A fence opens a block, set apart like any other — by a blank
+                // row its first code line brings (`fence_gap`); its own line
+                // renders nothing. On an item's marker line the marker takes a
+                // row of its own first.
+                self.fence_gap = self.last() != Last::Nothing && !self.last_row_blank;
+                self.fence_indent = leading_spaces(rest);
+                self.fence_lenient = lenient;
+                let mut out = Vec::new();
+                if self.marker_pending() {
+                    out.extend(self.emit(vec![Vec::new()]));
+                }
                 self.highlighter = Some(highlight::Highlighter::new(
                     lang.as_deref(),
                     super::palette::palette().code,
                 ));
+                self.close_block(Last::Block);
                 out
             }
-            markdown::LineKind::CodeEnd => {
-                self.highlighter = None;
-                Vec::new()
+            markdown::LineKind::Code => {
+                // An indented code block's first line.
+                let mut out = self.separator();
+                out.extend(self.code_line(rest));
+                self.close_block(Last::Block);
+                out
             }
-            // A code line never arrives with a table open (a fence flushed it, or
-            // the blank before indented code did), so no flush is needed here.
-            markdown::LineKind::Code => self.render_code_line(line),
-            markdown::LineKind::Prose => self.prose_or_table(line, was_blank),
+            markdown::LineKind::CodeEnd => Vec::new(),
+            markdown::LineKind::Prose => self.prose_leaf(rest, opened),
         }
     }
 
-    /// Render a fenced/indented **code** line: tabs expanded so indentation
-    /// survives, syntax-highlighted by the open fence's language (plain for an
-    /// indented block), hard-broken on width.
-    fn render_code_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
-        let expanded = expand_code_tabs(line);
-        let segs = match self.highlighter.as_mut() {
-            Some(h) => h.line(&expanded),
-            None => vec![highlight::Seg {
-                text: expanded.into_owned(),
-                style: highlight::plain_style(super::palette::palette().code),
-            }],
-        };
-        let styled: Vec<(String, Style)> = segs.into_iter().map(|s| (s.text, s.style)).collect();
-        code_content_rows(&linkify_code_segments(styled), self.content_width)
+    /// A prose leaf: an ATX heading (markers kept, styled per level — codex
+    /// parity — its text inline markdown), a thematic break (`———`), a table
+    /// header candidate (buffered for its delimiter), or a paragraph line.
+    fn prose_leaf(&mut self, rest: &str, opened: bool) -> Vec<Vec<Span<'static>>> {
+        if let Some((level, text)) = markdown::heading_level(rest) {
+            let mut out = self.separator_unless_tight();
+            out.extend(self.heading_rows(level, text));
+            self.close_block(Last::Block);
+            return out;
+        }
+        if markdown::thematic_break(rest).is_some() {
+            // Codex renders `---`/`***`/`___` as an unstyled `———` rule on its
+            // own row (`Event::Rule`) — also right after a paragraph line, where
+            // CommonMark would read a `-` run as a setext underline: in a reply
+            // it is a separator that lost its blank line, and showing `---`
+            // would be the one raw marker left.
+            let mut out = self.separator();
+            let rule = vec![Span::styled(THEMATIC_BREAK.to_string(), self.base_style())];
+            out.extend(self.emit(vec![rule]));
+            self.close_block(Last::Block);
+            return out;
+        }
+        // Header candidacy needs the leading pipe (`is_table_header_candidate`):
+        // the headerless GFM form would let a later `|` re-shape a prose line
+        // whose rows the streaming committer already froze into scrollback.
+        // Tables live at the top level and in list items, never in a quote or
+        // on a marker line.
+        if !opened && !self.in_quote() && markdown::is_table_header_candidate(rest) {
+            self.table = TableState::PendingHeader(rest.to_string());
+            return Vec::new();
+        }
+        self.paragraph_line(rest, !opened)
     }
 
-    /// Render a **non-table** prose line: an ATX heading (markers kept, styled per
-    /// level — codex parity), a thematic break (`———`), or word-wrapped plain
-    /// prose. Pure per-line, so it stays prefix-stable.
-    fn render_prose_line(&self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
-        if let Some((level, htext)) = markdown::heading_level(line) {
-            // Codex keeps the `#` markers visible (`"#".repeat(level)`) and styles
-            // the whole line per level — no colour, just modifiers. Normalise the
-            // marker run + a single space, then word-wrap the reconstructed heading.
-            let style = heading_style(level);
-            let hashes = "#".repeat(level as usize);
-            let content = if htext.is_empty() {
-                hashes
-            } else {
-                format!("{hashes} {htext}")
-            };
-            wrap_inline(
-                &linkify_segments(vec![(content, style)]),
-                self.content_width,
-            )
+    /// Render a paragraph line: inline-parsed, span-wrapped under the
+    /// containers' prefixes. With `may_continue`, a line right after a
+    /// paragraph line (no blank between) continues it — codex's soft break, a
+    /// new row with no separator; otherwise it opens a new paragraph, set apart
+    /// from the block before. Emphasis is line-local, so a complete line's
+    /// styling is final; a trailing line with an open marker is withheld by
+    /// `StreamRender` (`markdown::has_open_inline`).
+    fn paragraph_line(&mut self, text: &str, may_continue: bool) -> Vec<Vec<Span<'static>>> {
+        let continues = may_continue && !self.pending_blank && self.last() == Last::Paragraph;
+        let mut out = if continues {
+            Vec::new()
+        } else {
+            self.separator()
+        };
+        let segments = inline_spans(&markdown::parse_inline(text), self.base_style());
+        let rows = self.wrap(&segments);
+        out.extend(self.emit(rows));
+        self.close_block(Last::Paragraph);
+        out
+    }
+
+    /// A heading's rows: the `#` run (normalised to one space after it) and
+    /// the inline-parsed text, both in the level's dress, word-wrapped.
+    fn heading_rows(&mut self, level: u8, text: &str) -> Vec<Vec<Span<'static>>> {
+        let style = self.base_style().patch(heading_style(level));
+        let hashes = "#".repeat(level as usize);
+        let mut segments = if text.is_empty() {
+            vec![(hashes, style)]
+        } else {
+            vec![(format!("{hashes} "), style)]
+        };
+        segments.extend(inline_spans(&markdown::parse_inline(text), style));
+        let rows = self
+            .wrap(&segments)
             .into_iter()
             .map(|row| {
                 // Restore the heading dress on word separators, then coalesce
@@ -349,174 +845,311 @@ impl AssistantRenderer {
                 }
                 merged
             })
-            .collect()
-        } else if is_thematic_break(line, was_blank) {
-            // Codex renders `---`/`***`/`___` as an unstyled `———` rule on its own
-            // row (`Event::Rule`). A single settled row, so prefix-stable. Checked
-            // before lists so `- - -` / `* * *` stay rules, not bullets.
-            vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
-        } else if let Some(inner) = markdown::block_quote(line) {
-            self.render_block_quote(inner)
-        } else if let Some(item) = markdown::list_item(line) {
-            self.render_list_item(&item)
-        } else {
-            // Plain prose: parse inline `**bold**`/`*italic*`/`~~strike~~`/
-            // `` `code` ``/`[link](url)` into styled spans, then span-preserving
-            // word-wrap. Emphasis is line-local, so a complete line's styling is
-            // final; a trailing line with an open marker is withheld by
-            // `StreamRender` (`markdown::has_open_inline`).
-            let segs = inline_spans(&markdown::parse_inline(line), Style::default());
-            wrap_inline(&segs, self.content_width)
-        }
+            .collect();
+        self.emit(rows)
     }
 
-    /// Render a list item (`docs/markdown.md`): the nesting indent, then the
-    /// marker (`-` for bullets, an accent-coloured `N.` for ordered items), then
-    /// the inline-parsed content span-wrapped with a **hanging indent** — every
-    /// continuation row aligns under the text, not the marker. Line-local, so
-    /// prefix-stable.
-    fn render_list_item(&self, item: &markdown::ListItem) -> Vec<Vec<Span<'static>>> {
-        let (marker_text, marker_style) = match item.marker {
-            markdown::ListMarker::Bullet => ("- ".to_string(), Style::default()),
+    /// Render one fenced/indented **code** line under the containers'
+    /// prefixes: tabs expanded so indentation survives, syntax-highlighted by
+    /// the open fence's language (plain for an indented block), hard-broken on
+    /// the width left beside the prefixes.
+    fn code_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        let expanded = expand_code_tabs(line);
+        let segs = match self.highlighter.as_mut() {
+            Some(h) => h.line(&expanded),
+            None => vec![highlight::Seg {
+                text: expanded.into_owned(),
+                style: highlight::plain_style(super::palette::palette().code),
+            }],
+        };
+        let styled: Vec<(String, Style)> = segs.into_iter().map(|s| (s.text, s.style)).collect();
+        let width = self.width_beside(false);
+        let rows = code_content_rows(&linkify_code_segments(styled), width);
+        self.emit(rows)
+    }
+
+    /// Open a blockquote in the current scope — set apart from the block
+    /// before, unless it sits right under a tight item's text.
+    fn open_quote(&mut self) -> Vec<Vec<Span<'static>>> {
+        let out = self.separator_unless_tight();
+        self.close_block(Last::Block);
+        self.containers.push(Container::Quote(Last::Nothing));
+        out
+    }
+
+    /// Open the list item `item` (parsed from `rest`) in the current scope,
+    /// returning the separator rows it needs, the content after its marker
+    /// (and task box), and whether it had a task box. A matching item after another is a sibling: it takes the
+    /// list's next number and a blank row only when the item before it took
+    /// more than one (codex's AfterMultiline). Otherwise it starts a new list —
+    /// numbered from its own marker, set apart from the block before unless it
+    /// is nested in an item (nested lists hug their parent, as in codex).
+    fn open_item<'a>(
+        &mut self,
+        rest: &'a str,
+        item: &markdown::ListItem<'a>,
+    ) -> (Vec<Vec<Span<'static>>>, &'a str, bool) {
+        let (kind, start, marker_len) = match item.marker {
+            markdown::ListMarker::Bullet(c) => (ListKind::Bullet(c), 1, 1),
             markdown::ListMarker::Ordered(n, delim) => {
-                (format!("{n}{delim} "), Style::new().fg(list_marker_color()))
+                let digits = rest[item.indent..]
+                    .bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .count();
+                (ListKind::Ordered(delim), n, digits + 1)
             }
         };
-        let hang = item.indent + cols(&marker_text);
-        let text_w = (self.content_width as usize).saturating_sub(hang).max(1) as u16;
-        let text_rows = wrap_inline(
-            &inline_spans(&markdown::parse_inline(item.content), Style::default()),
-            text_w,
-        );
-        text_rows
-            .into_iter()
-            .enumerate()
-            .map(|(i, mut text)| {
-                let mut row = Vec::new();
-                if i == 0 {
-                    if item.indent > 0 {
-                        row.push(Span::raw(" ".repeat(item.indent)));
-                    }
-                    row.push(Span::styled(marker_text.clone(), marker_style));
-                } else {
-                    row.push(Span::raw(" ".repeat(hang))); // hang under the text
-                }
-                row.append(&mut text);
-                row
-            })
-            .collect()
+        let nested = matches!(self.containers.last(), Some(Container::Item(_)));
+        let (number, separate) = match self.last() {
+            Last::List(list) if list.kind == kind => (list.next, list.prev_rows > 1),
+            last => (start, last != Last::Nothing && !nested),
+        };
+        let out = if separate && !self.last_row_blank {
+            self.emit_separator()
+        } else {
+            Vec::new()
+        };
+        self.set_last(Last::List(ListState {
+            kind,
+            next: number.saturating_add(1),
+            prev_rows: 0,
+        }));
+        self.pending_blank = false;
+        // Where a later line must indent to stay in the item: the content's
+        // column, CommonMark's rule — one column past the marker when nothing
+        // follows it, or when 5+ spaces do (that content is indented code).
+        let content_at = rest.len() - item.content.len();
+        let spaces = content_at - (item.indent + marker_len);
+        let indent = if item.content.is_empty() || spaces > 4 {
+            item.indent + marker_len + 1
+        } else {
+            content_at
+        };
+        let (task, content) = markdown::task_box(item.content);
+        let depth = 1 + self
+            .containers
+            .iter()
+            .rev()
+            .take_while(|c| !matches!(c, Container::Quote(_)))
+            .count();
+        let marker = list_marker(kind, number, depth, task, self.base_style());
+        let hang = marker.iter().map(|(text, _)| cols(text)).sum();
+        self.containers.push(Container::Item(Item {
+            marker_col: item.indent,
+            indent,
+            marker,
+            hang,
+            marker_pending: true,
+            rows: 0,
+            last: Last::Nothing,
+        }));
+        (out, content, task.is_some())
     }
 
-    /// Render a blockquote (`docs/markdown.md`): a dim `> ` marker on every
-    /// wrapped row, the inline-parsed text dim. Line-local, so prefix-stable.
-    fn render_block_quote(&self, inner: &str) -> Vec<Vec<Span<'static>>> {
-        let marker = "> ";
-        let text_w = (self.content_width as usize)
-            .saturating_sub(cols(marker))
-            .max(1) as u16;
-        let base = Style::new().fg(quote_color());
-        let text_rows = wrap_inline(&inline_spans(&markdown::parse_inline(inner), base), text_w);
-        text_rows
-            .into_iter()
-            .map(|mut text| {
-                let mut row = vec![Span::styled(marker.to_string(), base)];
-                row.append(&mut text);
-                row
-            })
-            .collect()
-    }
-
-    /// Run the GFM-table state machine for a prose `line`
-    /// (docs/table-streaming.md): buffer a candidate header, confirm it against
-    /// the next line's delimiter, then **buffer every data row** — a non-table
-    /// line closes the block, rendering it whole (column widths fit to every
-    /// row) and recursing to render that closing line in place. Returns the
-    /// rows to emit now (empty while the table accumulates — the streaming
-    /// strip previews the forming block instead, [`StreamRender::preview`]).
-    fn prose_or_table(&mut self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
-        match std::mem::replace(&mut self.table, TableState::None) {
-            TableState::None => {
-                // Header candidacy needs the leading pipe
-                // (`is_table_header_candidate`): the headerless GFM form
-                // would let a later `|` re-shape a prose line whose rows the
-                // streaming committer already froze into scrollback.
-                if markdown::is_table_header_candidate(line) {
-                    self.table = TableState::PendingHeader(line.to_string());
-                    Vec::new()
-                } else {
-                    self.render_prose_line(line, was_blank)
-                }
-            }
-            TableState::PendingHeader(header) => {
-                let ncols = markdown::table_cells(&header).len();
-                if let Some(aligns) = markdown::table_delimiter(line).filter(|a| a.len() == ncols) {
-                    // Header + a matching delimiter → confirmed; buffer the data
-                    // rows until the block closes (the widths need them all).
-                    self.table = TableState::Buffering {
-                        header,
-                        aligns,
-                        rows: Vec::new(),
-                    };
-                    Vec::new()
-                } else {
-                    // Not a table — the buffered header was ordinary prose (a line
-                    // with pipes is never a heading or rule, so `was_blank` is moot),
-                    // then process the current line (it may start a fresh table).
-                    let mut out = self.render_prose_line(&header, false);
-                    out.extend(self.prose_or_table(line, was_blank));
-                    out
-                }
-            }
-            TableState::Buffering {
-                header,
-                aligns,
-                mut rows,
-            } => {
-                if markdown::is_table_row(line) {
-                    // A pipe-carrying line that doesn't start with `|`, inside a
-                    // leading-pipe table, is the previous row's hard-wrapped tail
-                    // — re-join it instead of minting a phantom one-cell row.
-                    match rows
-                        .last()
-                        .and_then(|prev| join_wrapped_table_row(prev, line, aligns.len()))
-                    {
-                        Some(joined) => {
-                            rows.pop();
-                            rows.push(joined);
-                        }
-                        None => rows.push(line.to_string()),
-                    }
-                    self.table = TableState::Buffering {
-                        header,
-                        aligns,
-                        rows,
-                    };
-                    Vec::new()
-                } else {
-                    // A non-table line closes the block: render it whole (grid or
-                    // records, widths from every row), then the closing line.
-                    let mut out = table_block_rows(&header, &aligns, &rows, self.content_width);
-                    out.extend(self.prose_or_table(line, was_blank));
-                    out
-                }
+    /// Close every container past the first `keep`, innermost first. A closing
+    /// item hands its row count to its list, for the next sibling's spacing.
+    fn close_containers(&mut self, keep: usize) {
+        while self.containers.len() > keep {
+            if let Some(Container::Item(item)) = self.containers.pop()
+                && let Last::List(list) = self.last_mut()
+            {
+                list.prev_rows = item.rows;
             }
         }
     }
 
-    /// Emit any open table's rows, clearing the state — called when a code
-    /// fence interrupts a table (and by [`Self::flush`] at end-of-message).
-    /// A never-confirmed `PendingHeader` renders as the plain prose line it
+    /// Record that a block of kind `last` was just rendered in the current
+    /// scope, settling any pending blank line.
+    fn close_block(&mut self, last: Last) {
+        self.set_last(last);
+        self.pending_blank = false;
+    }
+
+    /// The blank row that sets a new block apart from the block before it in
+    /// the current scope — none for a scope's first block, and never stacked on
+    /// a blank row already there.
+    fn separator(&mut self) -> Vec<Vec<Span<'static>>> {
+        if self.last() == Last::Nothing || self.last_row_blank {
+            return Vec::new();
+        }
+        self.emit_separator()
+    }
+
+    /// [`Self::separator`] for a heading, quote or table, which codex sets
+    /// apart only after a paragraph *ends* (`needs_newline`): an item's own
+    /// text in a tight list never ends one, so such a block right under it —
+    /// no blank line between — hugs it, while code and rules (codex's
+    /// unconditional gaps) keep theirs. A blank line makes the item loose.
+    fn separator_unless_tight(&mut self) -> Vec<Vec<Span<'static>>> {
+        let in_item = matches!(self.containers.last(), Some(Container::Item(_)));
+        if in_item && self.last() == Last::Paragraph && !self.pending_blank {
+            return Vec::new();
+        }
+        self.separator()
+    }
+
+    /// Emit one separator row: empty, or — inside a quote — the quote's prefix,
+    /// so the quote's `>` column stays unbroken (codex's blank-line rule).
+    fn emit_separator(&mut self) -> Vec<Vec<Span<'static>>> {
+        let row: Vec<Span<'static>> = if self.in_quote() {
+            self.row_prefix(false)
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, style))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.count_row();
+        self.last_row_blank = true;
+        vec![row]
+    }
+
+    /// Prefix each content row with the containers' prefixes (the first row
+    /// carrying a pending item marker), counting the rows into every open item.
+    fn emit(&mut self, rows: Vec<Vec<Span<'static>>>) -> Vec<Vec<Span<'static>>> {
+        let mut out = Vec::with_capacity(rows.len());
+        for (i, row) in rows.into_iter().enumerate() {
+            let marker_row = i == 0 && self.marker_pending();
+            let mut full: Vec<Span<'static>> = self
+                .row_prefix(i == 0)
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, style))
+                .collect();
+            if i == 0 {
+                for container in &mut self.containers {
+                    if let Container::Item(item) = container {
+                        item.marker_pending = false;
+                    }
+                }
+            }
+            self.last_row_blank = !marker_row && row.iter().all(|s| s.content.trim().is_empty());
+            full.extend(row);
+            out.push(full);
+            self.count_row();
+        }
+        out
+    }
+
+    /// The containers' prefix for a row (`first` = a block's first row, which
+    /// carries a pending marker). Quotes add `> ` each; of the items between
+    /// two quotes only the innermost speaks — its marker on its first row, its
+    /// hang after — since a nested marker already carries its depth's padding
+    /// (codex's `prefix_spans`).
+    fn row_prefix(&self, first: bool) -> Vec<(String, Style)> {
+        let quote = Style::new().fg(quote_color());
+        let mut out = Vec::new();
+        for (i, container) in self.containers.iter().enumerate() {
+            match container {
+                Container::Quote(_) => out.push(("> ".to_string(), quote)),
+                Container::Item(item) => {
+                    let innermost = self.containers[i + 1..]
+                        .iter()
+                        .take_while(|c| !matches!(c, Container::Quote(_)))
+                        .all(|c| !matches!(c, Container::Item(_)));
+                    if !innermost {
+                        continue;
+                    }
+                    if first && item.marker_pending {
+                        out.extend(item.marker.iter().cloned());
+                    } else {
+                        out.push((" ".repeat(item.hang), Style::default()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The columns left for content beside a row's prefix (`first` = the
+    /// block's first row).
+    fn width_beside(&self, first: bool) -> u16 {
+        let used: usize = self.row_prefix(first).iter().map(|(t, _)| cols(t)).sum();
+        (self.content_width as usize).saturating_sub(used).max(1) as u16
+    }
+
+    /// Span-wrap styled segments to the widths left beside the prefixes — the
+    /// first row beside a pending marker, the rest beside the hang.
+    fn wrap(&self, segments: &[(String, Style)]) -> Vec<Vec<Span<'static>>> {
+        wrap_inline_hanging(segments, self.width_beside(true), self.width_beside(false))
+    }
+
+    /// Count one emitted row into every open item (codex's AfterMultiline
+    /// reads an item's rows, nested content included).
+    fn count_row(&mut self) {
+        for container in &mut self.containers {
+            if let Container::Item(item) = container {
+                item.rows += 1;
+            }
+        }
+    }
+
+    /// Whether an open item still owes its marker row.
+    fn marker_pending(&self) -> bool {
+        self.containers
+            .iter()
+            .any(|c| matches!(c, Container::Item(item) if item.marker_pending))
+    }
+
+    /// Whether the current line sits inside a blockquote.
+    fn in_quote(&self) -> bool {
+        self.containers
+            .iter()
+            .any(|c| matches!(c, Container::Quote(_)))
+    }
+
+    /// The text style a block starts from — the quote's green inside one.
+    fn base_style(&self) -> Style {
+        if self.in_quote() {
+            Style::new().fg(quote_color())
+        } else {
+            Style::default()
+        }
+    }
+
+    /// The last block of the current (innermost) scope.
+    fn last(&self) -> Last {
+        match self.containers.last() {
+            Some(Container::Quote(last)) => *last,
+            Some(Container::Item(item)) => item.last,
+            None => self.root,
+        }
+    }
+
+    /// The current scope's last block, to update.
+    fn last_mut(&mut self) -> &mut Last {
+        match self.containers.last_mut() {
+            Some(Container::Quote(last)) => last,
+            Some(Container::Item(item)) => &mut item.last,
+            None => &mut self.root,
+        }
+    }
+
+    /// Set the current scope's last block.
+    fn set_last(&mut self, last: Last) {
+        *self.last_mut() = last;
+    }
+
+    /// Emit any open table's rows, clearing the state — called when a line
+    /// does not continue it (and by [`Self::flush`] at end-of-message). A
+    /// never-confirmed `PendingHeader` renders as the plain prose line it
     /// actually was; a `Buffering` table renders whole (a header-only table is
-    /// the opening + bottom border).
+    /// the opening + bottom border), set apart like any block and drawn under
+    /// the containers' prefixes.
     fn flush_table(&mut self) -> Vec<Vec<Span<'static>>> {
         match std::mem::replace(&mut self.table, TableState::None) {
             TableState::None => Vec::new(),
-            TableState::PendingHeader(header) => self.render_prose_line(&header, false),
+            TableState::PendingHeader(header) => self.paragraph_line(&header, true),
             TableState::Buffering {
                 header,
                 aligns,
                 rows,
-            } => table_block_rows(&header, &aligns, &rows, self.content_width),
+            } => {
+                let mut out = self.separator_unless_tight();
+                let width = self.width_beside(false);
+                out.extend(self.emit(table_block_rows(&header, &aligns, &rows, width)));
+                self.close_block(Last::Block);
+                out
+            }
         }
     }
 

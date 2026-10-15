@@ -14,12 +14,42 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Replies render their markdown the way codex does, with no stray
+  markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
+  Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
+  instead of the model's `-`, `*` or `+`, task items show `☐`/`☑`, and an
+  ordered list counts from its first number, so `1.`, `1.`, `1.` reads 1, 2,
+  3. Nested lists sit four columns per level, and a sub-list indented only
+  two spaces under `1.`, or by a tab, still nests. Text under an item hangs
+  under it, including a lazy unindented line, a second paragraph or a code
+  block. A quote is green, as in codex, and can hold a list (`> - item`
+  shows a bullet) or a heading. Blocks are set one blank line apart even
+  when the model left none, a run of blank lines collapses to one, a loose
+  list closes up, and an item that wraps onto a second row gets a blank line
+  before the next, while a quote, heading or table right under an item's
+  text stays against it. `---` right after a line of text draws a rule
+  instead of showing the dashes (`docs/markdown.md`).
 - **The live thinking block shows three lines, not five.** While a model
   thinks, the `● Thinking…` block above the input box now keeps only the
   newest three rows of its reasoning, so a long thought takes two fewer rows
   of the screen. Rows are counted as they appear on screen, so a line that
   wraps onto two rows uses two of them. The whole thought is still in Ctrl+O,
   while it streams and after it settles (`docs/thinking-stream.md`).
+
+### Fixed
+
+- **Bold-italic and escaped markers no longer leak `*` into a reply.**
+  `***both***` renders bold italic instead of `*both*` in bold, a closing
+  `***` closes both the bold and the italic it ends, and `\*literal\*` shows
+  `*literal*`. Emphasis follows CommonMark's rules, with an exception for
+  CJK text so `**标题：**内容` is still bold. `<https://…>` links drop their
+  angle brackets and HTML entities like `&amp;` decode. A paragraph indented
+  four spaces under a numbered item is no longer drawn as code, a code fence
+  under a nested item no longer shows its backticks, and an indented fence
+  keeps its code where the fence is instead of shifting it right.
+- **A long line of unclosed `[` or `![` no longer stalls a reply.** Link
+  brackets are paired once per line instead of once per opener, so a 25 KB
+  line of them renders in milliseconds rather than over a second.
 
 ## [0.14.0] - 2026-10-14
 

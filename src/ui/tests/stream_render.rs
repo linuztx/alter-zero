@@ -417,6 +417,53 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         "- a bullet with **bold** and `code` that wraps over rows\n- next item",
         "intro\n\n- [x] done task\n- [ ] pending task\n\nafter",
         "* star bullet\n+ plus bullet\ndone",
+        // --- Codex block layout (docs/markdown.md *Block layout*): the
+        // container stack, each scope's last block and the pending blank all
+        // thread line to line, so the separators they emit — before a block,
+        // between a multi-row item and its sibling — must commit exactly
+        // where the batch render puts them, at every prefix and width. ---
+        // Renumbering and AfterMultiline: an item that wraps is set apart.
+        "1. an item long enough to wrap at the narrow widths here\n1. next\n1. last\n\nafter",
+        // A loose list compacts; a second paragraph stays in its item.
+        "- a\n\n  second paragraph of a\n- b\n\n- c\nend",
+        // A lazy line continues the item's paragraph, unindented.
+        "- item\nlazy line continues\n- next",
+        // A quote holds a heading, a list, a blank `>` and a lazy line.
+        "> ## Note\n> - one\n> - two\n>\n> body\nlazy\n\nafter",
+        // A fence under a nested item (4+ spaces) stays a fence.
+        "- a\n  - b\n\n    ```sh\n    ls -la\n    ```\n- c",
+        // An under-indented fenced block inside an item is still code.
+        "1. Install:\n   ```bash\nnpm install\n   ```\n2. Run",
+        // Block spacing: headings, a list after a paragraph, a rule right
+        // after a paragraph line, a lazy-then-ended list.
+        "## Title\nText\n### Sub\n- a\nPara after list\n---\nMore",
+        // Task boxes in ordered lists and quotes.
+        "1. [x] done\n2. [ ] todo\n> - [x] quoted task",
+        // CommonMark inline: triple runs, a split closer, escapes, entities,
+        // an autolink.
+        "***bold italic*** and **x *y*** with \\*escaped\\* &amp; <https://e.com/x> &#169; end",
+        // Empty items and every marker shape, then a nested list switching type.
+        "-\n- \n1.\n+ plus\n2) paren\n- a\n  1. x\n  - y\n- b",
+        // A task box's text is paragraph text: `10)` after it is no nested
+        // list (a fuzz find — the box once let the marker loop run on).
+        "- [x] 10)\n- [ ] # not a heading\nend",
+        // A fence strips its own indent from its code lines, at the top
+        // level and inside an item.
+        "  ```python\n  def f():\n      return 1\n  ```\nafter",
+        // A tight item keeps a quote, heading or table against its text; a
+        // blank line makes it loose again.
+        "- item\n  > quoted\n- next\n  ### Sub\n- table\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n- loose\n\n  > apart",
+        // A sub-list, fence or quote indented short of its item's text (past
+        // its marker) stays in the item, the fence's code keeping its own
+        // indentation; a paragraph line there is a lazy continuation.
+        "1. **Step one**\n  - detail a\n  - detail b\n2. Install:\n  ```py\n  def f():\n      return 1\n  ```\n3. Note\n  > careful\n  lazy text\n10. Ten\n   - sub of ten",
+        // An open table continues at its indent with pipe-less lines, and a
+        // one-column indent is a sibling, keeping the numbering.
+        "1. Compare:\n  | A | B |\n  ---|---\n  1 | 2\n 2. Second\n3. Third",
+        // Tabs in a line's block prefix count to four-column stops: a
+        // tab-nested item, a quoted one, a tab after a marker, and a
+        // tab-indented fence whose code keeps its own tabs.
+        "- parent\n\t- tab child\n\t\t- deeper\n- next\n> - a\n>\t- b\n\n-\tafter marker\n\t```sh\n\tls\n\t\tindented\n\t```\ndone",
     ];
 
     for full in corpus {

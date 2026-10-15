@@ -796,8 +796,9 @@ fn a_markdown_prompt_streams_a_long_structured_document_token_by_token() {
         "](https://",
         "\n- ",
         "\n  - ",
-        "\n1. ",
-        "\n10. ",
+        // An ordered list that repeats `8.`: codex's renumbering draws 8, 9,
+        // 10, so it carries a two-digit ordinal too.
+        "\n8. ",
         "- [x] ",
         "- [ ] ",
         "\n> ",

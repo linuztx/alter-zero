@@ -50,14 +50,14 @@ chrome paints is one of these or derived from one:
 | --- | --- |
 | `text` | the reply text, the composer prompt, a tool's name/arguments/output, the shimmer's crest, the comet's head |
 | `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor |
-| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), quotes, timestamps |
+| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), timestamps |
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
 | `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title) |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
-| `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well |
+| `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well, a reply's blockquotes (codex's green) |
 | `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast |
 | `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
 | `purple` | the context view's tool tag, the `/resume` toolbar's focus |

@@ -58,6 +58,12 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
                 out.push((")".to_string(), base));
             }
             markdown::Inline::Image { alt } => out.push((alt.clone(), base)),
+            markdown::Inline::Url { text, target } => {
+                // An autolink shows its bare URL (the `<>` dropped) in the
+                // link dress, carrying its target like a bare URL in prose.
+                let style = base.fg(link_url_color()).add_modifier(Modifier::UNDERLINED);
+                out.push((text.clone(), links::linked(style, target)));
+            }
         }
     }
     out
@@ -90,18 +96,13 @@ pub(super) fn linkify_code_segments(segments: Vec<(String, Style)>) -> Vec<(Stri
     linkify_with(segments, links::find_code_urls)
 }
 
-/// Attach bare URL targets to **unwrapped**, already-styled text without
-/// changing its bytes or dress (code and headings). Detection sees the whole
-/// line, not individual syntax-highlighted segments: a highlighter can split a
-/// URL at `://`, punctuation, or query parameters. Every intersecting piece
-/// carries the full target before either wrapper breaks it into display rows.
-/// Segments must belong to one source line; separate lines are never joined.
-pub(super) fn linkify_segments(segments: Vec<(String, Style)>) -> Vec<(String, Style)> {
-    linkify_with(segments, links::find_urls)
-}
-
-/// Intersect source URL ranges with styled runs, independent of the detector's
-/// prose/code boundary rules.
+/// Intersect source URL ranges with **unwrapped**, already-styled runs without
+/// changing their bytes or dress, independent of the detector's prose/code
+/// boundary rules. Detection sees the whole line, not individual
+/// syntax-highlighted segments: a highlighter can split a URL at `://`,
+/// punctuation, or query parameters. Every intersecting piece carries the full
+/// target before a wrapper breaks it into display rows. Segments must belong to
+/// one source line; separate lines are never joined.
 fn linkify_with(
     segments: Vec<(String, Style)>,
     detect: fn(&str) -> Vec<std::ops::Range<usize>>,

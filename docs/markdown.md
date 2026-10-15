@@ -12,11 +12,19 @@ common set — matching the clean codex/Claude-Code look:
 - **Fenced + indented code blocks** — verbatim (indentation byte-for-byte),
   syntax-highlighted, fences hidden (see *Code* / *Headings* below).
 - **ATX headings** — the `#` markers are **kept** and the line is styled per
-  level, like codex (see *Headings*).
-- **Inline** `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
-  `[text](url)`, `![alt](url)` (see *Inline markdown*).
-- **Lists** (bullets, ordered, task lists) and **blockquotes**, with nesting
-  indent preserved and hanging-indent wrapping (see *Lists and blockquotes*).
+  level, like codex; the text after them is inline markdown, so a model's
+  `## **Title**` reads `## Title` (see *Headings*).
+- **Inline** `**bold**`, `*italic*`, `***both***`, `~~strike~~`,
+  `` `code` ``, `[text](url)`, `![alt](url)`, `<url>` autolinks, backslash
+  escapes and HTML entities, parsed by CommonMark's delimiter-run algorithm
+  (see *Inline markdown*).
+- **Lists** in codex's look — every bullet `•`, task items `☐`/`☑`, ordered
+  items `N.` renumbered from the list's start, four columns per nesting level,
+  hanging-indent wrapping — and **blockquotes** that hold lists and headings
+  (see *Lists and blockquotes* and *Block layout*).
+- **Codex's block spacing** — one blank row between blocks whatever the
+  source had, loose lists compacted, a multi-row item set apart from its next
+  sibling (see *Block layout*).
 - **GFM pipe tables** — box-drawing grids (see *Tables*).
 - **Thematic breaks** (`---` / `***` / `___`) as a `———` rule.
 
@@ -34,12 +42,22 @@ holdback*.
 ## What it looks like
 
 ````text
-● ## The Code                                  ← `## The Code` → `#`s kept, line bold
+● ## The Code                                  ← `## **The Code**` → `#`s kept, `**` consumed
+                                                ← one blank row between blocks
   Save this as snake.py:                        ← prose (word-wrapped, white)
+                                                ← (inserted: codex sets a fence apart)
   def main(stdscr):                             ← code, verbatim, syntax-highlighted
       curses.curs_set(0)                        ← 4-space indent preserved
       while True:
           sh, sw = stdscr.getmaxyx()            ← 8-space indent preserved
+
+  • Status: stable                              ← `- **Status:** stable` → `•`, bold label
+  • Strengths: a long item that wraps onto      ← hanging indent under the text
+    a second row
+                                                ← AfterMultiline: a wrapped item is set apart
+  • Key features: one row
+      1. nested, four columns in                ← `  1. x` → codex's per-depth geometry
+  ☑ shipped                                     ← `- [x] shipped`
 ````
 
 ## Headings (codex parity)
@@ -59,12 +77,22 @@ colour**:
 | `####`+ | italic          |
 
 `ui::heading_style(level)` is a direct port of that mapping, and
-`AssistantRenderer::content_rows` reconstructs the `# ` marker run (normalised to
-one space, like codex) in front of the heading text before word-wrapping. This
-deliberately **reverses** the earlier behaviour (drop the `#`s, bold in
+`AssistantRenderer::heading_rows` reconstructs the `# ` marker run (normalised
+to one space, like codex) in front of the heading text before word-wrapping.
+This deliberately **reverses** the earlier behaviour (drop the `#`s, bold in
 `ai_color()`) so we match codex exactly — a user who reads codex output sees the
-raw markers, so we show them too. It is still a pure per-line transform, so
-prefix-stability and the batch/stream agreement are unchanged.
+raw markers, so we show them too.
+
+The heading's **text is inline markdown**, parsed like any prose line under the
+level's style: codex's pulldown-cmark pass emits `Heading → Strong → Text` for
+`## **Bold title**`, so the `**` is consumed and the line reads `## Bold title`
+(the level's dress and the inline styles compose — an h3 stays bold+italic).
+Wrapping the heading as plain text showed those markers — the reported bug, a
+model wrapping every heading in `**`. A closing `#` sequence (`## Title ##`) is
+dropped, as CommonMark says. It is still a pure per-line transform, and an open
+marker in a still-growing heading is withheld like any other
+(`has_open_inline`), so prefix-stability and the batch/stream agreement are
+unchanged.
 
 Code sits under the assistant bullet (aligned with the wrapped-prose indent, no
 gutter) and is **syntax-highlighted** by real TextMate grammars (the active
@@ -138,8 +166,9 @@ language renders plain (the theme's default foreground).
 Because `AssistantRenderer` is the one core, scrollback, the streaming preview, the
 resize repaint, and the Ctrl+O transcript all agree automatically (invariants 2–4).
 
-Styling is centralized as `CODE_*` / `HEADING_COLOR` consts in
-`ui/theme.rs`. Code hard-breaks at `content_width` rather than letting the terminal
+Styling is centralized in `ui/theme.rs` — the code geometry, the list glyphs
+(`LIST_BULLET`, `LIST_TASK_OPEN`/`LIST_TASK_DONE`, `LIST_NEST_WIDTH`), and the
+colour accessors; the heading styles are modifiers only (`heading_style`). Code hard-breaks at `content_width` rather than letting the terminal
 wrap it — a code line longer than the terminal would otherwise be wrapped by the
 emulator at the wrong column and lose its alignment under the bullet.
 
@@ -258,7 +287,7 @@ call-`(` recolour case (the bug that first exposed the need for the `in_code`
 gate); and `ui::tests::incremental_commits_reconstruct_a_fenced_code_reply` proves
 the streamed commits plus the final flush equal the fully-rendered message.
 `markdown::tests::block_scanner_agrees_with_parse_blocks_on_code_membership` and
-`highlight::tests::highlighter_line_by_line_equals_batch_highlight` lock the
+`highlight::tests::incremental_line_by_line_equals_batch_highlight` lock the
 incremental scanners to their batch counterparts.
 
 ## Scope (and what is deliberately out)
@@ -289,52 +318,111 @@ an indented block — a 4-space marker line after a blank is a loose list's
 **nested item**, which the top-level indent rule would otherwise swallow (the
 CommonMark rule is context-dependent; line-local, the marker is the better
 evidence). A marker-looking line *inside* an already-open block still continues
-it, so genuine code containing `- x` lines stays whole. This is prefix-stable (a line's membership depends only on the
-lines before it) and plain (no highlighter → no within-line lookahead), so its
-completed lines stream to scrollback per row like prose.
+it, so genuine code containing `- x` lines stays whole. Inside a list item the
+rule applies past the item's own indent (the scanner is fed the line with its
+container prefixes stripped, *Block layout*), so a paragraph indented 4 spaces
+under `1. ` is the item's text, not code. This is prefix-stable (a line's
+membership depends only on the lines before it) and plain (no highlighter → no
+within-line lookahead), so its completed lines stream to scrollback per row
+like prose.
 
 **In — thematic breaks.** A `---` / `***` / `___` line (CommonMark rule syntax —
 `markdown::thematic_break`) renders as codex's unstyled `———` em-dash rule
-(`Event::Rule`, `ui::THEMATIC_BREAK`). A `-` rule is ambiguous with a setext `H2`
-underline (which we can't render — it needs next-line lookahead that breaks
-streaming), so a `-` rule is honoured **only after a blank line**
-(`ui::is_thematic_break`'s `prev_blank` gate); `*`/`_` runs are unambiguous and
-always render. While streaming, a *partial* marker run (`--`, `**`) is withheld
-from scrollback until settled (`markdown::is_partial_thematic_break`, wired into
-`StreamRender::commit` beside `is_partial_fence`) — otherwise at content-width 1
-its wrapped prose rows could reach scrollback before the third marker collapses
-them into the one `———` row (the differential test covers width 3 up).
+(`Event::Rule`, `ui::THEMATIC_BREAK`), set apart by a blank row on each side.
+A `-` rule renders **right after a paragraph line too**, where CommonMark would
+read the run as a setext `H2` underline: in a model's reply that shape is a
+separator that lost its blank line, not a heading, and the setext reading needs
+next-line lookahead streaming can't afford — so where the old renderer left the
+`---` showing as prose, the rule is drawn. While streaming, a trailing thematic
+run — partial (`--`, `**`) or complete (`---`, which `--- x` would turn back
+into prose) — is withheld from scrollback until its line settles
+(`markdown::has_unsettled_block_prefix`, see *Prefix-stable holdback*).
 
 **In — inline markdown.** `markdown::parse_inline` turns a prose line into a tree
-of `Inline` nodes (`Text`, `Bold`, `Italic`, `Strike`, `Code`, `Link`, `Image` —
-nesting composes, e.g. `**bold _and italic_**`); `ui::inline_spans` maps each to
-a `Style` (emphasis is modifier-only; code is cyan; a link shows its text then a
-blue underlined ` (url)`; an image renders its alt), and `ui::wrap_inline`
-word-wraps the styled segments **span-preserving** (a bold run keeps its style
-across a wrap boundary; a word split by emphasis — `un**bold**` — stays one word).
-Parsing is CommonMark-lite: `*`/`**` need a non-whitespace flank (so `2 * 3` and
-`snake_case` stay literal), backtick runs match by exact length, `[text](url)`
-and `![alt](url)` parse their brackets. It is **line-local** — an unclosed marker
-stays literal — so a *complete* line's styling is final (its frozen rows never
-restyle). See *Prefix-stable holdback* for the trailing-line case.
+of `Inline` nodes (`Text`, `Bold`, `Italic`, `Strike`, `Code`, `Link`, `Image`,
+`Url` — nesting composes, e.g. `**bold _and italic_**`); `ui::inline_spans` maps
+each to a `Style` (emphasis is modifier-only; code is cyan; a link shows its
+text then a blue underlined ` (url)`; an autolink shows its bare URL in the
+link dress; an image renders its alt), and `ui::wrap_inline` word-wraps the
+styled segments **span-preserving** (a bold run keeps its style across a wrap
+boundary; a word split by emphasis — `un**bold**` — stays one word).
+
+Emphasis follows **CommonMark's delimiter-run algorithm** — the parse codex's
+pulldown-cmark pass makes. Each `*`/`_` run (and `~~` pair) is classified by
+the left/right-flanking rules (`_` never opens or closes inside a word, so
+`snake_case` and `2 * 3` stay literal), then closers, left to right, take the
+nearest compatible opener under the rule of three, the pieces between them
+becoming one node. That is what fixes the old longest-marker-first matcher's
+leaks: `***x***` is italic around bold (it used to show `*x*` in bold), a
+closing `***` splits between the two openers it closes (`**x *y***`), and a
+leftover marker of a longer run stays literal (`**x*` → `*` + *x*).
+`openers_bottom` remembers how far back a search came up empty, so a line of
+unmatched markers stays linear (`parse_inline_stays_linear_on_a_line_of_unmatched_markers`).
+Link and image brackets are paired the same way: `Brackets` matches a
+line's `[`/`]` and `(`/`)` once, in one stack pass, and every opener looks
+its closer up there — a scan per opener made a line of unclosed `![`, `[` or
+`[a](b` quadratic (a 25 KB one took 1.6 s to parse, now ~10 ms;
+`parse_inline_stays_linear_on_a_line_of_unclosed_brackets`).
+One relaxation: CJK text puts no spaces between words, so a run whose outer
+neighbour is a CJK character is not held to the punctuation clause on that
+side — `**标题：**内容` still renders bold, where strict CommonMark (and codex)
+leaves the markers showing.
+
+The tokenizer also resolves **backslash escapes** (`\*` shows `*` and is never
+a delimiter; a backslash before anything but ASCII punctuation stays),
+**autolinks** (`<https://…>` and `<me@example.com>`, shown without the angle
+brackets), **link titles** (`[a](url "title")` links to `url`), and the common
+**HTML entities** (`&amp;`, `&nbsp;`, `&#169;`, `&#x2014;`, … — an unknown name
+stays literal). Code spans keep their backslashes, as CommonMark says, and a
+table cell passes every escape but `\|` through to this parser, so `\*x\*` in a
+cell stays literal. It is **line-local** — an unclosed marker stays literal —
+so a *complete* line's styling is final (its frozen rows never restyle). See
+*Prefix-stable holdback* for the trailing-line case.
 
 **In — lists and blockquotes.** `markdown::list_item` classifies a bullet
-(`-`/`*`/`+`) or ordered (`N.`/`N)`) item — its nesting **indent**, marker, and
-content — and `markdown::block_quote` strips a `>`. Both are **line-local** (the
-line's own prefix decides), checked *after* `thematic_break` so `- - -` / `* * *`
-stay rules. The item indent is **uncapped**: models nest 2 or 4 spaces per
-level, and CommonMark's "4+ spaces is code" rule is a top-level rule a
-line-local parser must not apply inside a list — the old ≤3 cap dropped every
-third level to prose, whose wrap collapsed the indent and rendered a child
-bullet *outdented below its own parent* (a tab indent stays code, and the
-block scanners exempt marker lines from *starting* an indented block — see the
-indented-code section). `ui::render_list_item` keeps the nesting indent, styles
-the marker
-(`-` plain, `N.` accent-coloured), inline-parses the content and wraps it with a
-**hanging indent** (continuation rows align under the text). `ui::render_block_quote`
-prefixes each wrapped row with a dim `> `. **Task lists** (`- [x]`) need no
-special code — the inline parser leaves `[x]` literal (no `(` follows), so they
-render as bullets with a checkbox.
+(`-`/`*`/`+`, its char kept) or ordered (`N.`/`N)`) item — its indent, marker,
+and content — and `markdown::block_quote` strips a `>`, checked *after*
+`thematic_break` so `- - -` / `* * *` stay rules. The renderer treats both as
+**containers** a later line continues (see *Block layout*), and draws them
+codex's way:
+
+- **Bullets** render `•` at every depth, whichever of `-`/`*`/`+` the model
+  wrote (`ui::LIST_BULLET`); a source `-` never shows.
+- **Ordered items** render `N.` in the accent colour (`list_marker_color`),
+  `N)` normalised to `N.`, and **renumbered** from the list's start the way
+  codex counts: `1.`, `1.`, `1.` reads 1, 2, 3, and a list written `3.`, `4.`
+  keeps 3 and 4. An item of another kind — a different bullet char or
+  delimiter, or ordered after bullets — starts a new list (CommonMark).
+- **Task items** (`- [ ]`, `- [x]`, `- [X]`) replace the bullet with `☐`/`☑`
+  (an ordered item keeps its number: `1. ☑`). The box needs whitespace after
+  it — a bare `- [x]` stays literal, as codex leaves it — and what follows a
+  box is the item's text, never another marker (`markdown::task_box`).
+- **Nesting** follows codex's geometry, not the source's: each level sits
+  `LIST_NEST_WIDTH` (4) columns deeper — an ordered number right-aligned in
+  that padding — whether the model nested by 2, 3 or 4 spaces, or by a tab
+  (see *Block layout*: a tab in a line's prefix counts to the next
+  four-column stop). Continuation rows hang under the item's text.
+- **A block indented short of an item's text** still nests when it starts
+  two columns or more past the item's marker: models write a sub-list two
+  spaces under `1. ` and two or three under `10. `, which CommonMark — and
+  codex — read as a separate list, flattening it and restarting the parent's
+  numbering. A list item, fence, quote, heading or table there stays in the
+  item; one column in is a sibling written sloppily (` 2. b` after `1. a`
+  keeps the count going), and paragraph text still needs the text column
+  or continues lazily.
+- **Text under an item** — an indented continuation line, a *lazy* one
+  (unindented, no blank before: CommonMark keeps it in the item's paragraph),
+  a second paragraph after a blank, a fence or a quote indented to the item's
+  content — renders under the item's text. A paragraph indented 4 spaces under
+  `1. ` is the item's text, not indented code, and a fence nested under a
+  second-level item is still a fence (both used to break: code-coloured prose,
+  and backticks on screen).
+- **Blockquotes** prefix every row with a green `> ` (nested quotes repeat it)
+  over green text — codex's quote dress (`blockquote: Style::new().green()`),
+  the theme's `success` role, inline code and links keeping their own colours
+  — and their content is markdown too: `> - a` is a bullet inside
+  the quote, `> ## Note` a heading, a blank `>` line separates paragraphs, and
+  a lazy line continues the quoted paragraph.
 
 **In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
 column count + alignments govern the grid), and data rows render as a box-drawing
@@ -399,6 +487,92 @@ preview re-highlights it on every frame that arrives with a new chunk, and a
 tokenization the same way; past the cap the line renders in the plain code
 style, byte-identical text.
 
+## Block layout (codex's lists, quotes and spacing)
+
+Codex renders through pulldown-cmark, so its picture of a reply is a tree:
+blocks inside list items inside quotes. Ours renders one source line at a time,
+so the renderer carries the part of that tree a line can still join —
+`AssistantRenderer`'s **container stack** — and reads each line the way
+CommonMark's block parser does:
+
+1. **Continue the open containers**, outermost first: a quote needs a `>` (its
+   marker and one space consumed), a list item a blank line or one indented to
+   the item's content column (that indent consumed) — or a block start (a
+   list item, fence, quote, heading or table) two columns or more past the
+   item's marker, all of its indent consumed, which is how models nest under
+   `1. ` (*In — lists and blockquotes*); a line continuing an open table
+   follows the table's indent the same way, pipe or none. What is left is the
+   line relative to the innermost container that matched. Before any of
+   this the line's **block prefix** — its indentation and the whitespace
+   after its `>` and list markers — has its tabs expanded to CommonMark's
+   four-column stops (`markdown::expand_prefix_tabs`), so `\t- child` nests
+   like `    - child` rather than showing its `-`; a tab past the prefix is
+   content.
+2. **Laziness.** A line that fails to continue every container but is
+   paragraph text right after a paragraph line (no blank between) is a *lazy
+   continuation*: every container stays open and it continues the paragraph —
+   `- item` then an unindented `more` is the item's text, `> a` then `b` the
+   quote's. Anything else closes the unmatched containers, innermost first.
+3. **Open new containers** the rest starts — quotes and list items, as many as
+   it holds (`> - x`, `- > x`).
+4. **Render the leaf** — what is left: a fence, indented code, a heading, a
+   rule, a table header, or a paragraph line — under the containers' prefixes.
+
+Every scope — the message, each quote, each item — remembers its **last
+block**, and that is all codex's spacing needs:
+
+- A new block is set apart from the block before it in the same scope by
+  **one blank row** — a heading from its text, a list from the paragraph that
+  introduces it, a fence from the prose around it — whatever the source had:
+  a missing blank line gains one, a run of them collapses to one. A blank line
+  is never rendered where it was; it only ends a paragraph (`pending_blank`)
+  and the next block emits the separator. A separator is never stacked on a
+  blank row already there (a code block's own trailing blank line), and a
+  fence owes its separator until its first code line (`fence_gap`), so a fence
+  still empty when a reply pauses leaves no trailing row.
+- A **soft break** — a text line right after a paragraph line — is a new row
+  with no separator, codex's `soft_break`.
+- **Lists** follow codex's AfterMultiline rule: the blank line between two
+  items in the source is dropped (loose lists compact), and an item whose
+  rows — wrapped text, nested items, continuation paragraphs, code — came to
+  more than one is set apart from its **next sibling** by a blank row. A
+  nested list hugs its parent; a top-level one is set apart like any block.
+- **A tight item's text never ends a paragraph** in codex, so the
+  `needs_newline` that sets a heading, quote or table apart is never raised
+  there: such a block right under the item's text — no blank line between —
+  hugs it (`separator_unless_tight`), while a fence and a rule keep the gap
+  codex always gives them. A blank line makes the item loose, and the
+  separator returns.
+- Inside a quote a separator keeps the quote's `> ` column unbroken.
+
+The prefix a row wears composes the containers codex's way: each quote adds
+`> `; of the items between two quotes only the innermost speaks — its marker on
+its first row, its hang after — because a nested marker already carries its
+depth's padding. A **fenced** block is lenient where CommonMark is strict: a
+code line strips a quote's `>` where present and up to an item's indent of
+columns, so a model that under-indents the code inside an item's fence still
+gets code rather than a fence torn open into prose. Then, as CommonMark says,
+it loses up to the **fence's own indent** (`fence_indent`), so a fence
+written two spaces in keeps its code where the fence is rather than two
+columns right of it — and an item the fence's line continued leniently
+strips only what it consumed there (`fence_lenient`), so the code keeps the
+indentation it was written with. These strips count a tab to its stop and
+leave the code's own tabs past them for `expand_code_tabs`.
+
+**Why it stays prefix-stable.** Every row a line renders — the separator before
+it included — depends only on the lines before it (the stack, the scopes' last
+blocks, the pending blank, the previous item's row count) and the line itself.
+A separator is emitted *with the line that starts the next block*, never after
+the block it follows, so nothing already committed is ever revised. What can
+change while a line is still streaming is its **block prefix** — whether `1.`
+becomes an item (`1. x`) or prose (`1.5`), `- 1` a nested list, `---` a rule or
+`--- x` prose — which the committer withholds until it settles
+(`markdown::has_unsettled_block_prefix`, below). The differential test's corpus
+covers every rule here at every prefix and width, and the fuzzer's soup grew
+fragments for the containers (quoted items, task boxes, lazy and continuation
+lines, bare markers, blocks indented short of an item's text, tab-indented
+items and fences).
+
 ## Prefix-stable holdback (tables + inline emphasis)
 
 `StreamRender` flushes finished rows to real scrollback as the reply streams, so
@@ -449,11 +623,20 @@ already consults to keep an in-progress *code* line out of scrollback):
   `http://e.com`). `links::has_forming_url` reports both shapes and
   `StreamRender::commit` withholds the trailing line while one holds.
 
-Two partial-marker withholds join the existing `is_partial_fence` /
-`is_partial_thematic_break` / `is_partial_heading` set: `has_open_inline` (above)
-and `is_partial_list_marker` (a bare digit run like `10`, which a following
-`.`/`)` would flip into an ordered marker — recolouring the digits and, at a
-narrow width, collapsing their wrapped rows into one marker span).
+The block-level withholds are one predicate,
+**`markdown::has_unsettled_block_prefix`**: a trailing line whose block prefix
+the next character could still change, checked at the top level *and behind
+the `>`s and list markers the line already holds* (`> -`, `- 1`, `> > ##`) —
+a partial fence (`` ` ``/`` `` ``), a thematic run (`--`, `**`, even a complete
+`---`), a bare `#` run (its level, so its style, is unsettled), or a list
+marker with nothing after it (`is_partial_list_marker`: a digit run, `1.`,
+`2)`, or a lone `-`/`*`/`+` — a space makes it an item, a container with its
+own spacing and indent, anything else prose). A task box ends the descent: what
+follows it is the item's text. It reads the line through the same
+`expand_prefix_tabs` the renderer does, so a tab-indented `\t-` is held like
+`    -`. The inline withhold, `has_open_inline` (above),
+also covers the new inline forms — an unmatched opener after the delimiter-run
+algorithm, an autolink or entity still forming, a trailing `\`, `<` or `&`.
 
 **CRLF replies render like their LF twins.** A model echoing Windows files (or
 a provider normalising to CRLF) streams `\r\n` line endings; the source is
