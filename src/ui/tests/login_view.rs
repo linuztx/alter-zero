@@ -9,7 +9,7 @@ const LOGIN_KEY_ROWS: u16 = 9;
 /// The row every list step's `❯` filter sits on — top(0) gap(1) search(2).
 /// Pinned *here* rather than in the theme: it is a claim about the page's
 /// shape, which is a thing to test, while the paint finds its own caret seat
-/// in the page it just built (`login_prompt_row`).
+/// in the page it just built (`view_prompt_row`).
 const LOGIN_SEARCH_ROW: u16 = 2;
 
 /// The row the key step's `❯` field sits on when nothing stands between it

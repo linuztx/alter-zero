@@ -1274,11 +1274,22 @@ pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
 // value column geometry (SETTINGS_VALUE_GAP) and its two-tone value colours
 // wholesale, so the only consts it needs of its own are the words. ---
 
+/// The page's title, in the pages' one title dress
+/// (`header::page_title_line`) — the headline `/hooks` and `/mcp` open on.
+pub(super) const SKILLS_TITLE: &str = "Skills";
+
 /// The value column's two states. `disabled` is already in
 /// [`SETTINGS_OFF_VALUES`], so it dims through the same rule that dims a
 /// `false` knob — one look down the column shows what is live.
 pub(super) const SKILLS_ON_VALUE: &str = "enabled";
 pub(super) const SKILLS_OFF_VALUE: &str = "disabled";
+
+/// The mark leading each value — `✔ enabled`, `◯ disabled` — the `/login`
+/// rows' own pair, so the two lists that answer "is this on?" answer it with
+/// one glyph. The check alone is green ([`model_active_color`]): it is what
+/// the eye hunts for down a column of names, while the circle stays dim.
+pub(super) const SKILLS_ON_MARK: &str = LOGIN_CONFIGURED_MARK;
+pub(super) const SKILLS_OFF_MARK: &str = LOGIN_UNCONFIGURED_MARK;
 
 /// The key hint pinned under the description — the menu's whole grammar.
 pub(super) const SKILLS_HINT: &str =
@@ -1286,12 +1297,6 @@ pub(super) const SKILLS_HINT: &str =
 
 /// The list placeholder when the search matches no skill.
 pub(super) const SKILLS_NO_MATCH: &str = "No matching skills";
-
-/// The row (within the menu's framed area) the `❯` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by `render_skills_menu` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const SKILLS_SEARCH_ROW: u16 = 2;
 
 /// The list placeholder when **nothing was discovered** — an empty list's only
 /// real question is "where should I put one?", so the answer is the row.

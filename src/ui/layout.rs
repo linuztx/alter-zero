@@ -1136,13 +1136,19 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, view_cursor_y(area, body, row));
     }
     // The inline `/skills` menu parks the cursor at the end of its `❯` search
-    // line, exactly like the `/settings` menu (docs/skills.md).
+    // line, like the `/settings` menu (docs/skills.md) — but the line sits
+    // under the page's header, whose session-off note wraps with the width,
+    // so its row is found in the page the paint builds (`view_prompt_row`,
+    // `/login`'s rule) rather than pinned. Built once, read twice: the
+    // page's height and that row.
     if let Some(menu) = &app.skills_menu {
-        let rows = super::skills_view::skills_menu_rows(app, area.width);
+        let lines = super::skills_view::skills_view_lines(app, area.width);
+        let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, SKILLS_SEARCH_ROW);
+        let search = super::model_view::view_prompt_row(&lines).unwrap_or(0);
+        let row = anchored_view_row(rows, body, search);
         return (x, view_cursor_y(area, body, row));
     }
     // The read-only `/hooks` menu has no text entry at all — the permission
@@ -1224,9 +1230,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         // landed on. The key step's field has no fixed row any more (the
         // provider's description block above it is as tall as the terminal is
         // narrow), so the seat is found in the very page the paint builds
-        // rather than counted alongside it (`login_prompt_row`).
+        // rather than counted alongside it (`view_prompt_row`).
         let lines = super::login_view::key_onboarding_lines(onboarding, area.width);
-        let prompt = super::login_view::login_prompt_row(&lines);
+        let prompt = super::model_view::view_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
             // The device page has no field at all, nor has the sign-in method
             // choice before it; the (hidden — see `cursor_visible`) caret

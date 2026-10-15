@@ -504,7 +504,7 @@ in place; unlike it, it is a **two-step** flow.
 - **The `❯` row is found, not counted.** The key field used to sit on a
   constant row, which stopped being true the moment a description of the
   terminal's own width moved in above it, so `cursor_position` reads the row
-  back out of the page the paint just built (`login_prompt_row`, the
+  back out of the page the paint just built (`view_prompt_row`, the
   `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
   drift from it.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating

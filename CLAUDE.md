@@ -467,7 +467,7 @@ for**: the file's own `description` and a linked `Create a key at
 {api_key_url}` (`Install it from …` for a keyless one) between the title and
 the field, wrapped never clipped, omitted whole when the file says neither,
 which is also what made the field's row stop being a constant —
-`login_prompt_row` finds the `❯` in the page the paint just built. `auth =
+`view_prompt_row` finds the `❯` in the page the paint just built. `auth =
 "github_copilot"` in `providers.toml` puts it in the subscription list, where
 Enter runs GitHub's **device flow** on the loop's fourth worker (the one that
 runs for *minutes*) and the page shows the one-time code in a rounded box over
@@ -2185,14 +2185,23 @@ and the **`/skills`
 menu** (the fifth composer-replacing inline picker and deliberately the
 `/settings` menu's **twin** rather than a new shape — same frame, same `❯`
 type-to-search, same aligned `{label}  {value}` column with the same two-tone
-colouring, same `(n/total)` counter, same Enter/Space grammar — over one row
-per discovered skill instead of one per knob, the skill's **own description**
-as the line under the list so the picker doubles as the browser that answers
-"what is this skill for?"; two rows `/settings` has no need of: a
-session-off note when the **Skills** row is down (always reserved, so the
-frame can't jump) and an empty list that **names the roots**
-(`No skills found. Add one at:` over `~/.claude/skills/<name>/SKILL.md`),
-since "why isn't my skill here?" is an empty list's only question. A toggle
+colouring, same `(n/total)` counter, same Enter/Space grammar — under the
+header `/hooks` and `/mcp` open on: the `Skills` title in the pages' title
+dress over a dim `{n} skills · {k} enabled` count of what is **installed**
+(never the search, which the counter already follows; `enabled_count` counts
+over the discovered skills, since the off-set keeps names not installed
+here), over one row per discovered skill instead of one per knob, each value
+led by the `/login` rows' mark (`✔ enabled` with only the check green,
+`◯ disabled` dim, the word `…`-cutting before the mark does), the skill's
+**own description** as the line under the list so the picker doubles as the
+browser that answers "what is this skill for?"; two notes `/settings` has no
+need of: a session-off note **in the header** when the **Skills** row is down
+(a row only when shown, wrapped, so the search line's row is found in the
+built page — `view_prompt_row` — and never over an empty catalog, where that
+row is unavailable and its advice refused) and an empty list that **names the
+roots** (`No skills found. Add one at:` over
+`~/.claude/skills/<name>/SKILL.md`), since "why isn't my skill here?" is an
+empty list's only question. A toggle
 holds in **two** places — the skill leaves the `<system-reminder>` listing
 *and* `SkillRegistry::find` refuses it, so a model that remembers the name
 from an earlier turn gets the recoverable "unknown skill" rather than

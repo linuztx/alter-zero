@@ -65,6 +65,7 @@ sleep 0.6
 rescan_menu="$(tmux capture-pane -t "$S78" -p)"
 echo "==== Phase 78: the menu after the rescan ===="
 printf '%s\n' "$rescan_menu"
-expect_has "$rescan_menu" -E "late-skill +enabled" "the mid-session skill never reached the /skills menu"
+expect_has "$rescan_menu" -E "late-skill +✔ enabled" "the mid-session skill never reached the /skills menu"
+expect_has "$rescan_menu" -F "1 skill · 1 enabled" "the menu's header did not count the mid-session skill"
 tmux kill-session -t "$S78" 2>/dev/null
 rm -rf "$RS_CFG" "$RS_DIR"

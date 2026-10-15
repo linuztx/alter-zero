@@ -5,13 +5,15 @@
 smoke_begin
 
 # the `/skills` MENU (docs/skills.md). The `/settings` menu's
-# twin — same frame, same grammar — over the discovered skills, each one
-# enable/disable-able. Drive it end to end against a REAL skill directory
-# (the rest of the suite runs skill-free, so this phase points
-# ALTER_ZERO_SKILLS_DIR at one it plants): open it from the palette, check the
-# rows and the value column, disable one, confirm the toast and the flipped
-# value, and prove it PERSISTED — a second process against the same config
-# home must open the menu already showing it off.
+# twin — same frame, same grammar — under the pages' header (the `Skills`
+# title over a `{n} skills · {k} enabled` count), over the discovered skills,
+# each one enable/disable-able and its value led by a `✔`/`◯` mark. Drive it
+# end to end against a REAL skill directory (the rest of the suite runs
+# skill-free, so this phase points ALTER_ZERO_SKILLS_DIR at one it plants):
+# open it from the palette, check the header, the rows and the value column,
+# disable one, confirm the toast, the flipped value and the count, and prove
+# it PERSISTED — a second process against the same config home must open the
+# menu already showing it off.
 S77="${S}_skillsmenu"
 SK_CFG="$(mktemp -d)"
 SK_DIR="$(mktemp -d)"
@@ -49,16 +51,19 @@ for expect in "alpha-skill" "beta-skill" "(1/2)" \
 	"Type to search · Enter/Space to enable/disable · Esc to cancel"; do
 	expect_has "$skills_open" -F "$expect" "the skills menu is missing '$expect'"
 done
-expect_has "$skills_open" -E "→ alpha-skill +enabled" "the first row is not marked with its value in the value column"
+expect_has "$skills_open" -E "^  Skills *$" "the skills menu does not open on its title"
+expect_has "$skills_open" -F "2 skills · 2 enabled" "the header does not count the skills and how many are on"
+expect_has "$skills_open" -E "→ alpha-skill +✔ enabled" "the first row is not marked with its value in the value column"
 # Enter disables the highlighted skill: the row flips and a toast confirms.
 tmux send-keys -t "$S77" Enter
 sleep 0.6
 skills_off="$(tmux capture-pane -t "$S77" -p)"
 echo "==== Phase 77: after Enter disabled the highlighted skill ===="
 printf '%s\n' "$skills_off"
-expect_has "$skills_off" -E "alpha-skill +disabled" "Enter did not flip alpha-skill to disabled"
+expect_has "$skills_off" -E "alpha-skill +◯ disabled" "Enter did not flip alpha-skill to disabled"
 expect_has "$skills_off" -F "Skill alpha-skill: disabled" "the toggle was not confirmed with a toast above the box"
-expect_has "$skills_off" -E "beta-skill +enabled" "the toggle moved a sibling row's value too"
+expect_has "$skills_off" -E "beta-skill +✔ enabled" "the toggle moved a sibling row's value too"
+expect_has "$skills_off" -F "2 skills · 1 enabled" "the header's count did not follow the toggle"
 # The menu stays open across toggles; Esc closes back to the composer.
 tmux send-keys -t "$S77" Escape
 sleep 0.5
@@ -80,7 +85,8 @@ sleep 0.6
 skills_reopened="$(tmux capture-pane -t "$S77" -p)"
 echo "==== Phase 77: a fresh process shows the persisted state ===="
 printf '%s\n' "$skills_reopened"
-expect_has "$skills_reopened" -E "alpha-skill +disabled" "the disabled skill did not survive a restart"
-expect_has "$skills_reopened" -E "beta-skill +enabled" "the restart lost the ENABLED skill's state"
+expect_has "$skills_reopened" -E "alpha-skill +◯ disabled" "the disabled skill did not survive a restart"
+expect_has "$skills_reopened" -E "beta-skill +✔ enabled" "the restart lost the ENABLED skill's state"
+expect_has "$skills_reopened" -F "2 skills · 1 enabled" "the restart's header miscounted the skills that are on"
 tmux kill-session -t "$S77" 2>/dev/null
 rm -rf "$SK_CFG" "$SK_DIR"
