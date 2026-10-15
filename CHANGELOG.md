@@ -29,6 +29,12 @@ release heading when a version is cut.
   before the next, while a quote, heading or table right under an item's
   text stays against it. `---` right after a line of text draws a rule
   instead of showing the dashes (`docs/markdown.md`).
+- **The live thinking block shows three lines, not five.** While a model
+  thinks, the `● Thinking…` block above the input box now keeps only the
+  newest three rows of its reasoning, so a long thought takes two fewer rows
+  of the screen. Rows are counted as they appear on screen, so a line that
+  wraps onto two rows uses two of them. The whole thought is still in Ctrl+O,
+  while it streams and after it settles (`docs/thinking-stream.md`).
 
 ### Fixed
 

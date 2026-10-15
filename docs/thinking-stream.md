@@ -77,9 +77,18 @@ machinery in `term.rs`.
 - the **tail** of the reasoning so far in the `⎿` gutter
   (`TOOL_RESULT_PREFIX`, via `ui::file_cell::gutter_row_styled` — the corner on
   the first row, the rest aligned under it): the last `REASONING_PEEK_LINES`
-  wrapped display rows, word-wrapped with spaces preserved (`ui::wrap_output`,
-  the same wrapper the streaming `bash` tail and the Ctrl+O view use), dim and
-  **italic** — the one cue separating a thought's `⎿` body from a tool's.
+  (three) wrapped display rows, word-wrapped with spaces preserved
+  (`ui::wrap_output`, the same wrapper the streaming `bash` tail and the Ctrl+O
+  view use), dim and **italic** — the one cue separating a thought's `⎿` body
+  from a tool's.
+
+**Three rows** (updated 2026-10-15; the window was five). The count is of
+display rows, not source lines, so a line that wraps onto two rows spends two
+of them: three lines of thought at 87 columns — the reported screen — filled
+all five and stood the block six rows tall over the box, every one of them
+pushing the conversation up (invariant 3). Three rows keep what the model is
+writing now in view, the same body height a settled `bash` cell shows above
+its fold (`TOOL_FOLD_ROWS`); the whole thought is one Ctrl+O away.
 
 Blank source lines are skipped: reasoning is full of paragraph breaks, and
 spending the small window on them would show a third as much thought. Walking
