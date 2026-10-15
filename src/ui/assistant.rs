@@ -2,6 +2,8 @@
 //! highlighting, headings, lists, and quotes — driven line by line so it stays
 //! prefix-stable while streaming. See `docs/markdown.md`.
 
+use std::borrow::Cow;
+
 use super::inline::{inline_spans, linkify_code_segments, wrap_inline_hanging};
 use super::table::{join_wrapped_table_row, table_block_rows};
 use super::theme::*;
@@ -31,11 +33,11 @@ fn heading_style(level: u8) -> Style {
 /// `expand_tabs`. Borrows unchanged in the common (tab-free) case. Applied only
 /// on the render path — the stored message text keeps its tabs, so `/copy` is
 /// byte-exact.
-pub(super) fn expand_code_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn expand_code_tabs(line: &str) -> Cow<'_, str> {
     if line.contains('\t') {
-        std::borrow::Cow::Owned(line.replace('\t', &" ".repeat(CODE_TAB_WIDTH)))
+        Cow::Owned(line.replace('\t', &" ".repeat(CODE_TAB_WIDTH)))
     } else {
-        std::borrow::Cow::Borrowed(line)
+        Cow::Borrowed(line)
     }
 }
 
@@ -380,6 +382,42 @@ fn leading_spaces(s: &str) -> usize {
     s.len() - s.trim_start_matches(' ').len()
 }
 
+/// `s` past up to `columns` columns of indentation, a tab advancing to the
+/// next multiple of four: a tab straddling the last column leaves the
+/// columns past it as spaces, and the tabs after it stay tabs.
+fn strip_indent(s: Cow<'_, str>, columns: usize) -> Cow<'_, str> {
+    let mut col = 0;
+    for (i, b) in s.bytes().enumerate() {
+        if col >= columns {
+            return drop_prefix(s, i);
+        }
+        match b {
+            b' ' => col += 1,
+            b'\t' => {
+                col += 4 - col % 4;
+                if col > columns {
+                    let rest = &s[i + 1..];
+                    return Cow::Owned(format!("{}{rest}", " ".repeat(col - columns)));
+                }
+            }
+            _ => return drop_prefix(s, i),
+        }
+    }
+    let len = s.len();
+    drop_prefix(s, len)
+}
+
+/// `s` without its first `n` bytes, borrowed when it was.
+fn drop_prefix(s: Cow<'_, str>, n: usize) -> Cow<'_, str> {
+    match s {
+        Cow::Borrowed(b) => Cow::Borrowed(&b[n..]),
+        Cow::Owned(mut o) => {
+            o.drain(..n);
+            Cow::Owned(o)
+        }
+    }
+}
+
 impl AssistantRenderer {
     pub(super) fn new(width: u16, bullet: &str, color: Color) -> Self {
         Self {
@@ -422,6 +460,10 @@ impl AssistantRenderer {
         if self.highlighter.is_some() {
             return self.fenced_line(line);
         }
+        // Tabs in the indentation and after the quote and list markers count
+        // to four-column stops, so every container below reads spaces.
+        let line = markdown::expand_prefix_tabs(line);
+        let line: &str = &line;
         let mut out = Vec::new();
         if self.in_table() {
             if self.continue_table(line) {
@@ -437,17 +479,19 @@ impl AssistantRenderer {
 
     /// A line inside an open fence: its container prefixes stripped
     /// **leniently** — a quote's `>` where present, up to an item's indent of
-    /// spaces — so a model that under-indents a fenced block inside a list item
-    /// still gets code, never a fence torn open into prose — then up to the
-    /// fence's own indent (CommonMark); the rest is code, or the closing fence
-    /// (which renders nothing).
+    /// columns — so a model that under-indents a fenced block inside a list
+    /// item still gets code, never a fence torn open into prose — then up to
+    /// the fence's own indent (CommonMark); the rest is code, or the closing
+    /// fence (which renders nothing). The strips count a tab to its stop and
+    /// leave the code's own tabs past them alone.
     fn fenced_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
-        let mut rest = line;
+        let mut rest = Cow::Borrowed(line);
         for (i, container) in self.containers.iter().enumerate() {
             match container {
                 Container::Quote(_) => {
-                    if let Some(inner) = markdown::block_quote(rest) {
-                        rest = inner;
+                    if let Some(inner) = markdown::block_quote(&rest) {
+                        let skip = rest.len() - inner.len();
+                        rest = drop_prefix(rest, skip);
                     }
                 }
                 Container::Item(item) => {
@@ -456,11 +500,12 @@ impl AssistantRenderer {
                         .iter()
                         .find(|(at, _)| *at == i)
                         .map_or(item.indent, |&(_, spaces)| spaces);
-                    rest = &rest[leading_spaces(rest).min(indent)..];
+                    rest = strip_indent(rest, indent);
                 }
             }
         }
-        let rest = &rest[leading_spaces(rest).min(self.fence_indent)..];
+        let rest = strip_indent(rest, self.fence_indent);
+        let rest: &str = &rest;
         match self.scanner.classify(rest) {
             markdown::LineKind::CodeEnd => {
                 self.highlighter = None;

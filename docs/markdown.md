@@ -399,8 +399,9 @@ codex's way:
   box is the item's text, never another marker (`markdown::task_box`).
 - **Nesting** follows codex's geometry, not the source's: each level sits
   `LIST_NEST_WIDTH` (4) columns deeper — an ordered number right-aligned in
-  that padding — whether the model nested by 2, 3 or 4 spaces. Continuation
-  rows hang under the item's text.
+  that padding — whether the model nested by 2, 3 or 4 spaces, or by a tab
+  (see *Block layout*: a tab in a line's prefix counts to the next
+  four-column stop). Continuation rows hang under the item's text.
 - **A block indented short of an item's text** still nests when it starts
   two columns or more past the item's marker: models write a sub-list two
   spaces under `1. ` and two or three under `10. `, which CommonMark — and
@@ -501,7 +502,12 @@ CommonMark's block parser does:
    item's marker, all of its indent consumed, which is how models nest under
    `1. ` (*In — lists and blockquotes*); a line continuing an open table
    follows the table's indent the same way, pipe or none. What is left is the
-   line relative to the innermost container that matched.
+   line relative to the innermost container that matched. Before any of
+   this the line's **block prefix** — its indentation and the whitespace
+   after its `>` and list markers — has its tabs expanded to CommonMark's
+   four-column stops (`markdown::expand_prefix_tabs`), so `\t- child` nests
+   like `    - child` rather than showing its `-`; a tab past the prefix is
+   content.
 2. **Laziness.** A line that fails to continue every container but is
    paragraph text right after a paragraph line (no blank between) is a *lazy
    continuation*: every container stays open and it continues the paragraph —
@@ -544,13 +550,14 @@ The prefix a row wears composes the containers codex's way: each quote adds
 its first row, its hang after — because a nested marker already carries its
 depth's padding. A **fenced** block is lenient where CommonMark is strict: a
 code line strips a quote's `>` where present and up to an item's indent of
-spaces, so a model that under-indents the code inside an item's fence still
+columns, so a model that under-indents the code inside an item's fence still
 gets code rather than a fence torn open into prose. Then, as CommonMark says,
 it loses up to the **fence's own indent** (`fence_indent`), so a fence
 written two spaces in keeps its code where the fence is rather than two
 columns right of it — and an item the fence's line continued leniently
 strips only what it consumed there (`fence_lenient`), so the code keeps the
-indentation it was written with.
+indentation it was written with. These strips count a tab to its stop and
+leave the code's own tabs past them for `expand_code_tabs`.
 
 **Why it stays prefix-stable.** Every row a line renders — the separator before
 it included — depends only on the lines before it (the stack, the scopes' last
@@ -563,7 +570,8 @@ becomes an item (`1. x`) or prose (`1.5`), `- 1` a nested list, `---` a rule or
 (`markdown::has_unsettled_block_prefix`, below). The differential test's corpus
 covers every rule here at every prefix and width, and the fuzzer's soup grew
 fragments for the containers (quoted items, task boxes, lazy and continuation
-lines, bare markers, blocks indented short of an item's text).
+lines, bare markers, blocks indented short of an item's text, tab-indented
+items and fences).
 
 ## Prefix-stable holdback (tables + inline emphasis)
 
@@ -624,7 +632,9 @@ a partial fence (`` ` ``/`` `` ``), a thematic run (`--`, `**`, even a complete
 marker with nothing after it (`is_partial_list_marker`: a digit run, `1.`,
 `2)`, or a lone `-`/`*`/`+` — a space makes it an item, a container with its
 own spacing and indent, anything else prose). A task box ends the descent: what
-follows it is the item's text. The inline withhold, `has_open_inline` (above),
+follows it is the item's text. It reads the line through the same
+`expand_prefix_tabs` the renderer does, so a tab-indented `\t-` is held like
+`    -`. The inline withhold, `has_open_inline` (above),
 also covers the new inline forms — an unmatched opener after the delimiter-run
 algorithm, an autolink or entity still forming, a trailing `\`, `<` or `&`.
 

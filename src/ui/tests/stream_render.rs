@@ -460,6 +460,10 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         // An open table continues at its indent with pipe-less lines, and a
         // one-column indent is a sibling, keeping the numbering.
         "1. Compare:\n  | A | B |\n  ---|---\n  1 | 2\n 2. Second\n3. Third",
+        // Tabs in a line's block prefix count to four-column stops: a
+        // tab-nested item, a quoted one, a tab after a marker, and a
+        // tab-indented fence whose code keeps its own tabs.
+        "- parent\n\t- tab child\n\t\t- deeper\n- next\n> - a\n>\t- b\n\n-\tafter marker\n\t```sh\n\tls\n\t\tindented\n\t```\ndone",
     ];
 
     for full in corpus {

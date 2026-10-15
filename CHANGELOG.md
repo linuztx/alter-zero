@@ -19,17 +19,16 @@ release heading when a version is cut.
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
   instead of the model's `-`, `*` or `+`, task items show `☐`/`☑`, and an
   ordered list counts from its first number, so `1.`, `1.`, `1.` reads 1, 2,
-  3. Nested lists sit four columns per level (a sub-list two spaces under
-  `1.` nests rather than restarting the count), and text under an item hangs
+  3. Nested lists sit four columns per level, and a sub-list indented only
+  two spaces under `1.`, or by a tab, still nests. Text under an item hangs
   under it, including a lazy unindented line, a second paragraph or a code
   block. A quote is green, as in codex, and can hold a list (`> - item`
-  shows a bullet) or a heading.
-  Blocks are set one blank line apart even when the model left none, a run
-  of blank lines collapses to one, a loose list closes up, and an item that
-  wraps onto a second row gets a blank line before the next, while a quote,
-  heading or table right under an item's text stays against it. `---` right
-  after a line of text draws a rule instead of showing the dashes
-  (`docs/markdown.md`).
+  shows a bullet) or a heading. Blocks are set one blank line apart even
+  when the model left none, a run of blank lines collapses to one, a loose
+  list closes up, and an item that wraps onto a second row gets a blank line
+  before the next, while a quote, heading or table right under an item's
+  text stays against it. `---` right after a line of text draws a rule
+  instead of showing the dashes (`docs/markdown.md`).
 
 ### Fixed
 

@@ -149,6 +149,11 @@ const FRAGMENTS: &[&str] = &[
     " 2. one-space ordered",
     "  ---|---",
     "  1 | 2",
+    "\t- tab child",
+    ">\t- tab in a quote",
+    "-\ttab after a marker",
+    "\t```",
+    "\t| t | u |",
 ];
 
 /// Joiners between fragments — the newline shapes decide block boundaries.
@@ -287,7 +292,9 @@ fn fuzz_stream_render_agrees_with_batch_on_hostile_soup() {
     // nested-quote/ZWJ/stacked-mark classes added, then 2500 × 9 at two seeds
     // with the codex block layout's containers — quotes holding lists, task
     // boxes, lazy and continuation lines — and the CommonMark inline forms
-    // added. This committed size keeps the suite fast.)
+    // added, then 2500 × 9 at three seeds with blocks indented short of an
+    // item's text and tab-indented items and fences added. This committed
+    // size keeps the suite fast.)
     let mut rng = Rng(0x5EED_CAFE_F00D_0001);
     for case in 0..300 {
         let doc = hostile_doc(&mut rng);

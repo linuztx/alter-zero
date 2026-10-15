@@ -594,6 +594,41 @@ fn blockquotes_hold_lists_headings_and_paragraphs() {
 }
 
 #[test]
+fn tabs_in_a_block_prefix_count_to_four_column_stops() {
+    // A tab-indented sub-list nests like its space-indented twin — codex
+    // reads tabs to CommonMark's four-column stops — instead of showing its
+    // `-` as text.
+    assert_eq!(
+        rows("- parent\n\t- tab child\n- next", 40),
+        vec!["● • parent", "      • tab child", "  ", "  • next"]
+    );
+    // A tab-indented fence stays in its item, and its code keeps the tabs
+    // past the fence's own indent.
+    assert_eq!(
+        rows("- item\n\t```sh\n\tls\n\t\tindented\n\t```", 40),
+        vec!["● • item", "  ", "    ls", "        indented"]
+    );
+    for (tabbed, spaced) in [
+        (
+            "1. Step\n\t- detail\n2. Next",
+            "1. Step\n    - detail\n2. Next",
+        ),
+        ("> - a\n>\t- b", "> - a\n>   - b"),
+        ("-\ttab after the marker", "- tab after the marker"),
+        (
+            "- item\n\n\tsecond para\n- next",
+            "- item\n\n    second para\n- next",
+        ),
+        (
+            "Text\n\n\tcode\tline\n\nafter",
+            "Text\n\n    code\tline\n\nafter",
+        ),
+    ] {
+        assert_eq!(rows(tabbed, 40), rows(spaced, 40), "{tabbed:?}");
+    }
+}
+
+#[test]
 fn a_blockquote_wears_codex_green() {
     // Codex dresses a quote — its `>` column and its text — in green; inline
     // code inside it keeps its own colour.

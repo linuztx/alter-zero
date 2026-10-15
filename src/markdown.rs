@@ -15,6 +15,8 @@
 //! fence still renders as code, identically to a closed one, so nothing changes
 //! when the closing fence finally arrives.
 
+use std::borrow::Cow;
+
 /// One structural block of an assistant reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -1580,6 +1582,68 @@ pub fn is_partial_list_marker(line: &str) -> bool {
     (1..=9).contains(&digits) && matches!(&trimmed[digits..], "" | "." | ")")
 }
 
+/// `line` with the tabs in its **block prefix** — the indentation, quote
+/// markers and list markers its containers are read from — expanded to
+/// spaces at CommonMark's four-column tab stops, which codex's parser reads
+/// too: `\t- child` under `- parent` nests like `    - child` instead of
+/// staying text that shows its `-`. A tab past the prefix is content and
+/// stays (code expands its own). Borrowed when the prefix holds no tab.
+#[must_use]
+pub fn expand_prefix_tabs(line: &str) -> Cow<'_, str> {
+    let end = block_prefix_len(line);
+    if !line.as_bytes()[..end].contains(&b'\t') {
+        return Cow::Borrowed(line);
+    }
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut col = 0;
+    // The prefix is ASCII (spaces, tabs, `>`, markers), so a byte is a column.
+    for b in line[..end].bytes() {
+        if b == b'\t' {
+            let stop = 4 - col % 4;
+            out.extend(std::iter::repeat_n(' ', stop));
+            col += stop;
+        } else {
+            out.push(char::from(b));
+            col += 1;
+        }
+    }
+    out.push_str(&line[end..]);
+    Cow::Owned(out)
+}
+
+/// The byte length of `line`'s block prefix: runs of spaces and tabs, `>`
+/// quote markers, and list markers (`-`, `*`, `+`, `N.`, `N)`) followed by a
+/// space, a tab or the line's end.
+fn block_prefix_len(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    loop {
+        while bytes.get(i).is_some_and(|b| matches!(b, b' ' | b'\t')) {
+            i += 1;
+        }
+        let marker_end = match bytes.get(i) {
+            Some(b'>') => {
+                i += 1;
+                continue;
+            }
+            Some(b'-' | b'*' | b'+') => i + 1,
+            Some(_) => {
+                let digits = bytes[i..].iter().take_while(|b| b.is_ascii_digit()).count();
+                if !(1..=9).contains(&digits) || !matches!(bytes.get(i + digits), Some(b'.' | b')'))
+                {
+                    return i;
+                }
+                i + digits + 1
+            }
+            None => return i,
+        };
+        if !matches!(bytes.get(marker_end), None | Some(b' ' | b'\t')) {
+            return i;
+        }
+        i = marker_end;
+    }
+}
+
 /// Whether the still-growing trailing `line` has a **block prefix** the next
 /// character could still change — a partial list marker, fence, heading run or
 /// thematic run — at the top level *or behind the quote markers and list
@@ -1591,7 +1655,8 @@ pub fn is_partial_list_marker(line: &str) -> bool {
 /// since `--- x` would be prose, and over-withholding only delays a commit.
 #[must_use]
 pub fn has_unsettled_block_prefix(line: &str) -> bool {
-    let mut rest = line;
+    let line = expand_prefix_tabs(line);
+    let mut rest: &str = &line;
     loop {
         let t = rest.trim_start_matches(' ');
         if is_partial_list_marker(t)
@@ -2489,6 +2554,40 @@ mod tests {
         ] {
             assert!(!has_unsettled_block_prefix(line), "{line:?}");
         }
+    }
+
+    #[test]
+    fn expand_prefix_tabs_counts_to_four_column_stops() {
+        // A tab in the indentation, after a `>` or after a list marker
+        // advances to the next multiple of four columns (CommonMark).
+        for (line, expanded) in [
+            ("\t- a", "    - a"),
+            ("  \t- a", "    - a"),
+            ("\t\t1. a", "        1. a"),
+            (">\t- b", ">   - b"),
+            ("> \t- b", ">   - b"),
+            ("-\tfoo", "-   foo"),
+            ("1.\tfoo", "1.  foo"),
+            ("\tcode\twith a tab", "    code\twith a tab"),
+        ] {
+            assert_eq!(expand_prefix_tabs(line), expanded, "{line:?}");
+        }
+        // Past the prefix a tab is content, and a line with no tab in its
+        // prefix comes back as it was.
+        for line in ["a\tb", "plain", "- x\ty", "1.5\tx", ""] {
+            assert!(
+                matches!(expand_prefix_tabs(line), Cow::Borrowed(same) if same == line),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn has_unsettled_block_prefix_reads_tabs_as_indentation() {
+        for line in ["\t-", "\t1.", ">\t-", "-\t1", "\t##"] {
+            assert!(has_unsettled_block_prefix(line), "{line:?}");
+        }
+        assert!(!has_unsettled_block_prefix("\t- item"));
     }
 
     #[test]
