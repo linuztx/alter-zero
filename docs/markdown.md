@@ -517,6 +517,12 @@ block**, and that is all codex's spacing needs:
   rows — wrapped text, nested items, continuation paragraphs, code — came to
   more than one is set apart from its **next sibling** by a blank row. A
   nested list hugs its parent; a top-level one is set apart like any block.
+- **A tight item's text never ends a paragraph** in codex, so the
+  `needs_newline` that sets a heading, quote or table apart is never raised
+  there: such a block right under the item's text — no blank line between —
+  hugs it (`separator_unless_tight`), while a fence and a rule keep the gap
+  codex always gives them. A blank line makes the item loose, and the
+  separator returns.
 - Inside a quote a separator keeps the quote's `> ` column unbroken.
 
 The prefix a row wears composes the containers codex's way: each quote adds

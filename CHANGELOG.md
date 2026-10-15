@@ -24,7 +24,8 @@ release heading when a version is cut.
   block. A quote can hold a list (`> - item` shows a bullet) or a heading.
   Blocks are set one blank line apart even when the model left none, a run
   of blank lines collapses to one, a loose list closes up, and an item that
-  wraps onto a second row gets a blank line before the next. `---` right
+  wraps onto a second row gets a blank line before the next, while a quote,
+  heading or table right under an item's text stays against it. `---` right
   after a line of text draws a rule instead of showing the dashes
   (`docs/markdown.md`).
 

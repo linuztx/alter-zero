@@ -659,7 +659,7 @@ impl AssistantRenderer {
     /// header candidate (buffered for its delimiter), or a paragraph line.
     fn prose_leaf(&mut self, rest: &str, opened: bool) -> Vec<Vec<Span<'static>>> {
         if let Some((level, text)) = markdown::heading_level(rest) {
-            let mut out = self.separator();
+            let mut out = self.separator_unless_tight();
             out.extend(self.heading_rows(level, text));
             self.close_block(Last::Block);
             return out;
@@ -763,9 +763,10 @@ impl AssistantRenderer {
         self.emit(rows)
     }
 
-    /// Open a blockquote in the current scope — set apart from the block before.
+    /// Open a blockquote in the current scope — set apart from the block
+    /// before, unless it sits right under a tight item's text.
     fn open_quote(&mut self) -> Vec<Vec<Span<'static>>> {
-        let out = self.separator();
+        let out = self.separator_unless_tight();
         self.close_block(Last::Block);
         self.containers.push(Container::Quote(Last::Nothing));
         out
@@ -866,6 +867,19 @@ impl AssistantRenderer {
             return Vec::new();
         }
         self.emit_separator()
+    }
+
+    /// [`Self::separator`] for a heading, quote or table, which codex sets
+    /// apart only after a paragraph *ends* (`needs_newline`): an item's own
+    /// text in a tight list never ends one, so such a block right under it —
+    /// no blank line between — hugs it, while code and rules (codex's
+    /// unconditional gaps) keep theirs. A blank line makes the item loose.
+    fn separator_unless_tight(&mut self) -> Vec<Vec<Span<'static>>> {
+        let in_item = matches!(self.containers.last(), Some(Container::Item(_)));
+        if in_item && self.last() == Last::Paragraph && !self.pending_blank {
+            return Vec::new();
+        }
+        self.separator()
     }
 
     /// Emit one separator row: empty, or — inside a quote — the quote's prefix,
@@ -1024,7 +1038,7 @@ impl AssistantRenderer {
                 aligns,
                 rows,
             } => {
-                let mut out = self.separator();
+                let mut out = self.separator_unless_tight();
                 let width = self.width_beside(false);
                 out.extend(self.emit(table_block_rows(&header, &aligns, &rows, width)));
                 self.close_block(Last::Block);

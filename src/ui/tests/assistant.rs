@@ -488,8 +488,70 @@ fn blockquotes_hold_lists_headings_and_paragraphs() {
     );
     assert_eq!(
         rows("- item\n  > quoted", 40),
-        vec!["● • item", "  ", "    > quoted"],
+        vec!["● • item", "    > quoted"],
         "a quote inside an item hangs under its text"
+    );
+}
+
+#[test]
+fn a_tight_item_keeps_a_quote_heading_or_table_against_its_text() {
+    // Codex sets a block apart when a paragraph *ends*, and an item's own
+    // text in a tight list never ends one — so a quote, heading or table
+    // right under it hugs it (codex's `blockquote_list_then_nested_blockquote`)
+    // while code and rules still sit a blank row off. A blank line between
+    // makes the item loose and the gap comes back.
+    assert_eq!(
+        rows("- item one\n  > quoted under it\n- item two", 40),
+        vec![
+            "● • item one",
+            "    > quoted under it",
+            "  ",
+            "  • item two"
+        ]
+    );
+    assert_eq!(
+        rows("> - parent\n>   > child", 40),
+        vec!["● > • parent", "  >   > child"]
+    );
+    assert_eq!(
+        rows("- item one\n  ### A heading inside\n- item two", 40),
+        vec![
+            "● • item one",
+            "    ### A heading inside",
+            "  ",
+            "  • item two"
+        ]
+    );
+    assert_eq!(
+        rows(
+            "1. Compare:\n   | A | B |\n   |---|---|\n   | 1 | 2 |\n2. Done",
+            40
+        ),
+        vec![
+            "● 1. Compare:",
+            "     ┌───┬───┐",
+            "     │ A │ B │",
+            "     ├───┼───┤",
+            "     │ 1 │ 2 │",
+            "     └───┴───┘",
+            "  ",
+            "  2. Done",
+        ]
+    );
+    assert_eq!(
+        rows("- item\n\n  > quoted after a blank", 40),
+        vec!["● • item", "  ", "    > quoted after a blank"],
+        "a blank line makes the item loose"
+    );
+    assert_eq!(
+        rows("- a\n  - b\n  > after the nested list", 40),
+        vec!["● • a", "      • b", "  ", "    > after the nested list"],
+        "only the item's own text hugs: a nested list ends a block"
+    );
+    assert_eq!(
+        rows("- a\n  ---", 40),
+        vec!["● • a", "  ", "    ———"],
+        "a rule keeps its gap"
     );
 }
 
