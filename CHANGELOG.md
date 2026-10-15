@@ -38,6 +38,9 @@ release heading when a version is cut.
   angle brackets and HTML entities like `&amp;` decode. A paragraph indented
   four spaces under a numbered item is no longer drawn as code, and a code
   fence under a nested item no longer shows its backticks.
+- **A long line of unclosed `[` or `![` no longer stalls a reply.** Link
+  brackets are paired once per line instead of once per opener, so a 25 KB
+  line of them renders in milliseconds rather than over a second.
 
 ## [0.14.0] - 2026-10-14
 

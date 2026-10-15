@@ -358,6 +358,11 @@ closing `***` splits between the two openers it closes (`**x *y***`), and a
 leftover marker of a longer run stays literal (`**x*` → `*` + *x*).
 `openers_bottom` remembers how far back a search came up empty, so a line of
 unmatched markers stays linear (`parse_inline_stays_linear_on_a_line_of_unmatched_markers`).
+Link and image brackets are paired the same way: `Brackets` matches a
+line's `[`/`]` and `(`/`)` once, in one stack pass, and every opener looks
+its closer up there — a scan per opener made a line of unclosed `![`, `[` or
+`[a](b` quadratic (a 25 KB one took 1.6 s to parse, now ~10 ms;
+`parse_inline_stays_linear_on_a_line_of_unclosed_brackets`).
 One relaxation: CJK text puts no spaces between words, so a run whose outer
 neighbour is a CJK character is not held to the punctuation clause on that
 side — `**标题：**内容` still renders bold, where strict CommonMark (and codex)

@@ -816,6 +816,7 @@ impl InlineScan {
             stack: Vec::new(),
             open: false,
         };
+        let brackets = Brackets::new(text);
         let mut plain = String::new();
         let mut i = 0;
         while i < text.len() {
@@ -851,23 +852,23 @@ impl InlineScan {
                     }
                 }
                 '!' if rest.starts_with("![") => {
-                    if let Some((node, next)) = image_at(text, i) {
+                    if let Some((node, next)) = image_at(text, i, &brackets) {
                         scan.push_text(&mut plain);
                         scan.push(Piece::Node(node));
                         i = next;
                     } else {
-                        scan.open |= link_openable(text, i);
+                        scan.open |= link_openable(text, i, &brackets);
                         plain.push('!');
                         i += 1;
                     }
                 }
                 '[' => {
-                    if let Some((node, next)) = link_at(text, i) {
+                    if let Some((node, next)) = link_at(text, i, &brackets) {
                         scan.push_text(&mut plain);
                         scan.push(Piece::Node(node));
                         i = next;
                     } else {
-                        scan.open |= link_openable(text, i);
+                        scan.open |= link_openable(text, i, &brackets);
                         plain.push('[');
                         i += 1;
                     }
@@ -1131,10 +1132,75 @@ fn strip_code_span(content: &str) -> String {
     }
 }
 
+/// Every `[`…`]` and `(`…`)` pair of a line, matched in one pass — depth
+/// tracked per kind, a backslash skipping the byte after it — which is the
+/// pairing a forward scan from each opener would find. A line of unclosed
+/// brackets used to rescan its rest for every `[` (twice: once to try the
+/// link, once to ask whether it could still form), which made a 25 KB line
+/// of `![` cost over a second per render.
+struct Brackets {
+    /// `(open, close)` byte offsets of matched `[`/`]` pairs, sorted by open.
+    square: Vec<(usize, usize)>,
+    /// The same for `(`/`)`.
+    round: Vec<(usize, usize)>,
+}
+
+impl Brackets {
+    fn new(text: &str) -> Self {
+        let bytes = text.as_bytes();
+        let (mut square, mut round) = (Vec::new(), Vec::new());
+        let (mut open_square, mut open_round) = (Vec::new(), Vec::new());
+        let mut j = 0;
+        while j < bytes.len() {
+            match bytes[j] {
+                b'\\' => {
+                    j += 2; // skip the escaped byte
+                    continue;
+                }
+                b'[' => open_square.push(j),
+                b']' => {
+                    if let Some(open) = open_square.pop() {
+                        square.push((open, j));
+                    }
+                }
+                b'(' => open_round.push(j),
+                b')' => {
+                    if let Some(open) = open_round.pop() {
+                        round.push((open, j));
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        square.sort_unstable();
+        round.sort_unstable();
+        Self { square, round }
+    }
+
+    /// The content between a `[` at byte `i` and its matching `]`, plus the
+    /// byte index just past the `]`.
+    fn square<'a>(&self, text: &'a str, i: usize) -> Option<(&'a str, usize)> {
+        Self::content(&self.square, text, i)
+    }
+
+    /// The content between a `(` at byte `i` and its matching `)`, plus the
+    /// byte index just past the `)`.
+    fn round<'a>(&self, text: &'a str, i: usize) -> Option<(&'a str, usize)> {
+        Self::content(&self.round, text, i)
+    }
+
+    fn content<'a>(pairs: &[(usize, usize)], text: &'a str, i: usize) -> Option<(&'a str, usize)> {
+        let k = pairs.binary_search_by_key(&i, |&(open, _)| open).ok()?;
+        let close = pairs[k].1;
+        Some((&text[i + 1..close], close + 1))
+    }
+}
+
 /// Parse a `[text](url)` link at byte `i` (`text[i] == '['`).
-fn link_at(text: &str, i: usize) -> Option<(Inline, usize)> {
-    let (label, after_label) = bracket_content(text, i)?;
-    let (url, next) = paren_content(text, after_label)?;
+fn link_at(text: &str, i: usize, brackets: &Brackets) -> Option<(Inline, usize)> {
+    let (label, after_label) = brackets.square(text, i)?;
+    let (url, next) = brackets.round(text, after_label)?;
     Some((
         Inline::Link {
             text: parse_inline(label),
@@ -1145,9 +1211,9 @@ fn link_at(text: &str, i: usize) -> Option<(Inline, usize)> {
 }
 
 /// Parse an `![alt](url)` image at byte `i` (`text[i..]` starts `![`).
-fn image_at(text: &str, i: usize) -> Option<(Inline, usize)> {
-    let (alt, after_alt) = bracket_content(text, i + 1)?;
-    let (_url, next) = paren_content(text, after_alt)?;
+fn image_at(text: &str, i: usize, brackets: &Brackets) -> Option<(Inline, usize)> {
+    let (alt, after_alt) = brackets.square(text, i + 1)?;
+    let (_url, next) = brackets.round(text, after_alt)?;
     Some((
         Inline::Image {
             alt: unescape_punct(alt),
@@ -1190,58 +1256,16 @@ fn unescape_punct(s: &str) -> String {
 /// Whether a `[`/`![` at byte `i` could still grow into a link — its bracket is
 /// unclosed, or closed but the `(url)` part is still incomplete (or could yet
 /// begin). A `[a]` followed by a non-`(` char is settled literal, not openable.
-fn link_openable(text: &str, i: usize) -> bool {
+fn link_openable(text: &str, i: usize, brackets: &Brackets) -> bool {
     let open = if text[i..].starts_with('!') { i + 1 } else { i };
-    let Some((_, after_label)) = bracket_content(text, open) else {
+    let Some((_, after_label)) = brackets.square(text, open) else {
         return true; // bracket still open
     };
     match text[after_label..].chars().next() {
         None => true, // `[label]` at end — `(` could still follow
-        Some('(') => paren_content(text, after_label).is_none(), // `(url` unclosed
+        Some('(') => brackets.round(text, after_label).is_none(), // `(url` unclosed
         Some(_) => false, // `[label]x` — settled, not a link
     }
-}
-
-/// The content between a `[` at byte `i` and its matching `]` (bracket-nesting
-/// aware, backslash-escape aware), plus the byte index just past the `]`.
-fn bracket_content(text: &str, i: usize) -> Option<(&str, usize)> {
-    delimited(text, i, b'[', b']')
-}
-
-/// The content between a `(` at byte `after_label` and its matching `)`, plus the
-/// byte index just past the `)`.
-fn paren_content(text: &str, i: usize) -> Option<(&str, usize)> {
-    if !text[i..].starts_with('(') {
-        return None;
-    }
-    delimited(text, i, b'(', b')')
-}
-
-/// The content between an `open` delimiter at byte `i` and its matching `close`
-/// (depth-tracked, `\`-escape aware), plus the index past the closer. Both
-/// delimiters are ASCII, so the byte walk only ever slices on char boundaries.
-fn delimited(text: &str, i: usize, open: u8, close: u8) -> Option<(&str, usize)> {
-    let bytes = text.as_bytes();
-    let start = i + 1;
-    let mut depth = 1usize;
-    let mut j = start;
-    while j < text.len() {
-        let b = bytes[j];
-        if b == b'\\' {
-            j += 2; // skip the escaped byte
-            continue;
-        }
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some((&text[start..j], j + 1));
-            }
-        }
-        j += 1;
-    }
-    None
 }
 
 /// Parse an autolink at byte `i` (`text[i] == '<'`): a URL — a 2–32 character
@@ -1993,6 +2017,31 @@ mod tests {
         assert!(!has_open_inline(&closers));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn parse_inline_stays_linear_on_a_line_of_unclosed_brackets() {
+        // Every `[` that fails to open a link used to rescan the rest of the
+        // line, twice (once to try the link, once to ask whether it could
+        // still form) — a 25 KB line of `![` took over a second per render,
+        // which the strip pays on every chunk of a streaming reply. The
+        // brackets and parens are matched once per line now.
+        let lines = [
+            ("![a ".repeat(6_000), true),
+            ("[a ".repeat(8_000), true),
+            ("[a](b ".repeat(4_000), true),
+            ("(a [b] ".repeat(4_000), false),
+        ];
+        let started = std::time::Instant::now();
+        for (line, open) in &lines {
+            assert_eq!(parse_inline(line), vec![Inline::Text(line.clone())]);
+            assert_eq!(has_open_inline(line), *open, "{}", &line[..12]);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
             "took {:?}",
             started.elapsed()
         );
