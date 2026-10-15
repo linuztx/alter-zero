@@ -10,8 +10,17 @@
 //! its own `description` as the line beneath — plus two notes this menu has
 //! and that one doesn't: the session-off note in the header, and the
 //! where-to-put-one answer for an empty list.
+//!
+//! A terminal too short for that page gets a **compact** one instead — the
+//! `/theme` picker's, over this list: the description and the counter yield
+//! first, then the header, leaving the search line, three skill rows between
+//! codex's reserved `↑`/`↓` slots, and the hint. Bottom-anchoring the whole
+//! page there flowed the search line and the top of the list into
+//! scrollback, so the row Enter would toggle could be off screen.
 
-use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
+use super::model_view::{
+    model_overflow_slot, model_placeholder_row, model_rule, model_wrapped_rows,
+};
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
 use super::*;
@@ -49,7 +58,7 @@ fn value_cols(enabled: bool) -> usize {
 
 /// One skill row: `{marker}{name}{pad}{mark} {enabled|disabled}` — the
 /// `/settings` row's shape with a status mark leading the value, so the two
-/// menus read as one family. `name_width` is the (capped) widest visible
+/// menus read as one family. `name_width` is the (capped) widest listed
 /// name, so the value column lines up down the list; a name wider than it
 /// `…`-cuts rather than paint-clipping at the buffer edge and shoving the
 /// value off the row.
@@ -90,10 +99,10 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
     Line::from(spans)
 }
 
-/// The widest visible name — capped so the value column always keeps a seat
-/// on the row (`width` minus the marker, the gap, and the widest value) —
-/// so [`skills_row`] can align the value column.
-fn name_column(rows: &[&SkillMenuRow], width: u16) -> usize {
+/// The widest name among `rows` — capped so the value column always keeps a
+/// seat on the row (`width` minus the marker, the gap, and the widest value)
+/// — so [`skills_row`] can align the value column.
+fn name_column(rows: &[SkillMenuRow], width: u16) -> usize {
     let widest_value = value_cols(true).max(value_cols(false));
     let cap = (width as usize)
         .saturating_sub(cols(MODEL_MARKER) + SETTINGS_VALUE_GAP + widest_value)
@@ -108,7 +117,7 @@ fn name_column(rows: &[&SkillMenuRow], width: u16) -> usize {
 /// The placeholder lines shown in place of the list: one row saying nothing
 /// matched the search, or — when nothing was discovered at all — the roots
 /// skills are looked for in, since that is the only question an empty list
-/// raises. Its length is [`skills_list_rows`]'s zero-row answer.
+/// raises. The middle of [`skills_placeholder_body`].
 fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let roots = app
         .skills_menu
@@ -137,41 +146,36 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
 }
 
-/// The menu's list lines: the rows windowed ([`centered_window`]) to keep the
-/// selection **centered** and capped at [`SETTINGS_MENU_MAX_ROWS`], else the
-/// placeholder block.
-fn skills_list_lines(
-    app: &App,
+/// The window of `rows` that keeps the selection in view — `max` rows,
+/// [`centered_window`] riding the selection on the middle one — as how many
+/// rows it hides above, its rows (the selected one marked) and how many it
+/// hides below. The value column is sized off **every** listed row, not just
+/// the ones in view, so it holds still as ↑/↓ scroll the window — the
+/// compact page's three rows would otherwise move it at nearly every step.
+/// `rows` is never empty here.
+fn skills_window(
     rows: &[SkillMenuRow],
     selected: usize,
+    max: usize,
     width: u16,
-) -> Vec<Line<'static>> {
-    if rows.is_empty() {
-        return skills_empty_lines(app, width);
-    }
-    let max = SETTINGS_MENU_MAX_ROWS as usize;
-    let selected = selected.min(rows.len() - 1);
+) -> (usize, Vec<Line<'static>>, usize) {
     let offset = centered_window(rows.len(), selected, max);
-    let visible: Vec<&SkillMenuRow> = rows.iter().skip(offset).take(max).collect();
-    let name_width = name_column(&visible, width);
-    visible
+    let end = (offset + max).min(rows.len());
+    let name_width = name_column(rows, width);
+    let lines = rows[offset..end]
         .iter()
         .enumerate()
         .map(|(i, row)| skills_row(row, offset + i == selected, name_width, width))
-        .collect()
+        .collect();
+    (offset, lines, rows.len() - end)
 }
 
-/// The `(selected+1/total)` counter under the list, or a blank line when the
-/// list is empty.
-fn skills_counter_line(rows: &[SkillMenuRow], selected: usize) -> Line<'static> {
-    if rows.is_empty() {
-        return Line::default();
-    }
-    let selected = selected.min(rows.len() - 1);
+/// The `(selected+1/total)` counter under the whole page's list.
+fn skills_counter_line(selected: usize, total: usize) -> Line<'static> {
     Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
-            format!("({}/{})", selected + 1, rows.len()),
+            format!("({}/{total})", selected + 1),
             Style::new().fg(model_meta_color()),
         ),
     ])
@@ -207,43 +211,24 @@ fn skills_count_line(menu: &SkillsMenu, width: u16) -> Line<'static> {
     model_placeholder_row(&text, model_meta_color(), width)
 }
 
-/// The whole framed page as lines: a top rule, the header (the title, the
-/// count line, and the session-off note when it applies), the `❯` search
-/// line, the windowed skill rows, the `(n/total)` counter, the highlighted
-/// skill's description, the key hint, and a bottom rule — one blank row
-/// between each block, never two. What [`render_skills_menu`] paints
-/// (bottom-anchored) and [`skills_menu_rows`] counts, so the two can never
-/// disagree (`docs/view-flow.md`). Empty when the menu is closed.
-pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let Some(menu) = app.skills_menu.as_ref() else {
-        return Vec::new();
-    };
-    let rows = app.skill_menu_rows();
-    let selected = menu.selected;
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(menu.query.clone()),
-    ]);
-    let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
+/// The page's header: the title, the count line, and — when skills are off
+/// for the session — the note saying so. The note joins the header because
+/// it says what state the whole catalog is in, so it sits under the count
+/// rather than between the search line and the rows it filters. It takes
+/// rows only when there IS one to show, and it wraps — its "/settings" tail
+/// is the fix, and a narrow terminal used to cut it. Which is also why the
+/// search line has no fixed row: the caret's seat is found in the page
+/// (`model_view::view_prompt_row`), never counted.
+///
+/// Never over an empty catalog: with nothing installed the `/settings` row
+/// is unavailable, so the session always reads as off there, and the note's
+/// advice is one that row refuses. It explains why *listed* rows do nothing;
+/// with none listed, the placeholder answers instead.
+fn skills_header_lines(menu: &SkillsMenu, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
-        model_rule(width),
-        Line::default(),
         super::header::page_title_line(SKILLS_TITLE, width),
         skills_count_line(menu, width),
     ];
-    // The session-off note joins the header: it says what state the whole
-    // catalog is in, so it sits under the count rather than between the
-    // search line and the rows it filters. It takes rows only when there IS
-    // one to show, and it wraps — its "/settings" tail is the fix, and a
-    // narrow terminal used to cut it. Which is also why the search line has
-    // no fixed row: the caret's seat is found in this page
-    // (`model_view::view_prompt_row`), never counted.
-    //
-    // Never over an empty catalog: with nothing installed the `/settings`
-    // row is unavailable, so the session always reads as off there, and the
-    // note's advice is one that row refuses. It explains why *listed* rows
-    // do nothing; with none listed, the placeholder answers instead.
     if !menu.session_enabled && !menu.skills.is_empty() {
         lines.extend(model_wrapped_rows(
             SKILLS_SESSION_OFF,
@@ -251,29 +236,82 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         ));
     }
+    lines
+}
+
+/// The whole page's body — what sits between the search line and the hint:
+/// a gap, the rows ([`skills_window`] at [`SETTINGS_MENU_MAX_ROWS`]), the
+/// `(n/total)` counter, and the highlighted skill's description between
+/// gaps. The description wraps whole, because this picker doubles as the
+/// browser that answers "what is this skill for?" and a SKILL.md
+/// description routinely outruns the terminal width.
+fn skills_whole_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<Line<'static>> {
+    let (_, window, _) = skills_window(rows, selected, usize::from(SETTINGS_MENU_MAX_ROWS), width);
+    let mut lines = vec![Line::default()];
+    lines.extend(window);
+    lines.push(skills_counter_line(selected, rows.len()));
     lines.push(Line::default());
-    lines.push(search_line);
+    lines.extend(model_wrapped_rows(
+        &rows[selected].description,
+        model_meta_color(),
+        width,
+    ));
     lines.push(Line::default());
-    lines.extend(skills_list_lines(app, &rows, selected, width));
-    match highlighted {
-        // A real row: the counter and the skill's own description — wrapped
-        // whole, because this picker doubles as the browser that answers
-        // "what is this skill for?" and a SKILL.md description routinely
-        // outruns the terminal width.
-        Some(row) => {
-            lines.push(skills_counter_line(&rows, selected));
-            lines.push(Line::default());
-            lines.extend(model_wrapped_rows(
-                &row.description,
-                model_meta_color(),
-                width,
-            ));
-            lines.push(Line::default());
-        }
-        // Nothing matched: one gap carries the placeholder to the hint (the
-        // `/settings` menu's collapse — the two menus stay twins).
-        None => lines.push(Line::default()),
+    lines
+}
+
+/// The compact page's body, for a terminal too short for the whole page —
+/// codex's short panel, where "optional gaps and previews yield first"
+/// (`selection_picker_layout.rs`): a [`SKILLS_COMPACT_ROWS`]-row window of
+/// the rows between two reserved overflow slots ([`model_overflow_slot`] —
+/// the `↑` directly under the search line, the `↓` directly over the hint),
+/// and no counter or description, so what stays on screen is the choices.
+/// The `/theme` picker's compact body for this list.
+fn skills_compact_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<Line<'static>> {
+    let (above, window, below) =
+        skills_window(rows, selected, usize::from(SKILLS_COMPACT_ROWS), width);
+    let mut lines = vec![model_overflow_slot(HOOKS_UP_MARKER, above, "above", width)];
+    lines.extend(window);
+    lines.push(model_overflow_slot(
+        HOOKS_DOWN_MARKER,
+        below,
+        "below",
+        width,
+    ));
+    lines
+}
+
+/// The body when the list is empty: the placeholder block between single
+/// gaps — one gap carries it to the hint (the `/settings` menu's collapse,
+/// so the two menus stay twins). There is no window to compact, so it is the
+/// same at every height.
+fn skills_placeholder_body(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::default()];
+    lines.extend(skills_empty_lines(app, width));
+    lines.push(Line::default());
+    lines
+}
+
+/// Frame `body` as a page: a top rule and a gap, the `header` and a gap
+/// under it (when there is a header), the `❯` search line, the body, the key
+/// hint, a gap and the bottom rule.
+fn skills_page(
+    menu: &SkillsMenu,
+    header: &[Line<'static>],
+    body: Vec<Line<'static>>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![model_rule(width), Line::default()];
+    if !header.is_empty() {
+        lines.extend_from_slice(header);
+        lines.push(Line::default());
     }
+    lines.push(Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
+        Span::raw(menu.query.clone()),
+    ]));
+    lines.extend(body);
     lines.push(model_placeholder_row(
         SKILLS_HINT,
         model_meta_color(),
@@ -284,25 +322,83 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The rows the menu's own frame occupies — the built page's line count
-/// ([`skills_view_lines`]). What [`skills_menu_height`] reserves under the
-/// strip, and what [`render_live`] hands [`render_skills_menu`].
-pub(super) fn skills_menu_rows(app: &App, width: u16) -> u16 {
-    u16::try_from(skills_view_lines(app, width).len()).unwrap_or(u16::MAX)
+/// The framed page as lines — one blank row between each block, never two —
+/// choosing the first of three pages that fits `height` rows:
+///
+/// 1. the **whole** page: the header ([`skills_header_lines`]), the `❯`
+///    search line, the windowed skill rows, the `(n/total)` counter, the
+///    highlighted skill's description and the key hint;
+/// 2. the **compact** page, the header kept: the description and the counter
+///    yield first ([`skills_compact_body`] — three rows between reserved
+///    `↑`/`↓` slots), codex's short-panel rule;
+/// 3. the compact page **without the header**, which yields next — the
+///    `/theme` picker's compact page, row for row.
+///
+/// So on a terminal too short for the whole page the search line, the
+/// highlighted row and the hint stay on screen, where bottom-anchoring it
+/// flowed the search line and the top of the list into scrollback. A page
+/// shorter than even the third is still bottom-anchored (`docs/view-flow.md`).
+/// What [`render_skills_menu`] paints and [`skills_menu_rows`] counts, so the
+/// two can never disagree. Empty when the menu is closed.
+///
+/// `height` is the rows the page may take: the terminal's, since the view
+/// keeps its rows and the strip above it gives way (`view_split`), or the
+/// region already reserved for it — which holds the same page, because that
+/// region is at least the chosen page's height and at most the terminal's.
+///
+/// An empty list — a search matching nothing, or nothing installed — has no
+/// window to compact, so only its header yields.
+pub(super) fn skills_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
+    let Some(menu) = app.skills_menu.as_ref() else {
+        return Vec::new();
+    };
+    let rows = app.skill_menu_rows();
+    let selected = menu.selected.min(rows.len().saturating_sub(1));
+    let header = skills_header_lines(menu, width);
+    let fits = |page: &[Line<'static>]| page.len() <= usize::from(height);
+    let compact = if rows.is_empty() {
+        skills_placeholder_body(app, width)
+    } else {
+        let whole = skills_page(
+            menu,
+            &header,
+            skills_whole_body(&rows, selected, width),
+            width,
+        );
+        if fits(&whole) {
+            return whole;
+        }
+        skills_compact_body(&rows, selected, width)
+    };
+    let headed = skills_page(menu, &header, compact.clone(), width);
+    if fits(&headed) {
+        return headed;
+    }
+    skills_page(menu, &[], compact, width)
+}
+
+/// The rows the menu's own frame occupies on a terminal `height` rows tall —
+/// the built page's line count ([`skills_view_lines`]). What
+/// [`skills_menu_height`] reserves under the strip, and what [`render_live`]
+/// hands [`render_skills_menu`].
+pub(super) fn skills_menu_rows(app: &App, width: u16, height: u16) -> u16 {
+    u16::try_from(skills_view_lines(app, width, height).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/skills` menu is open, or `None`
 /// when it isn't (the caller then falls back to [`live_height`]). Like every
 /// sibling picker the menu **replaces** the composer — and only the composer:
 /// the streaming strip keeps its rows above it, so opening `/skills` mid-turn
-/// never hides the running turn. Clamped to the terminal height.
+/// never hides the running turn. The page is a compact one when the whole
+/// one is taller than the terminal (`skills_view_lines`); clamped to the
+/// terminal height.
 #[must_use]
 pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.skills_menu.as_ref()?;
     Some(super::layout::view_height(
         app,
         width,
-        skills_menu_rows(app, width),
+        skills_menu_rows(app, width, term_height),
         term_height,
     ))
 }
@@ -311,10 +407,16 @@ pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16
 /// composer: a top rule, the `Skills` title over its count line (and the
 /// session-off note when it applies), the `❯` search line, the skill rows
 /// (`→ {name}  ✔ enabled`), a `(n/total)` counter, the highlighted skill's
-/// description, the key hint, and a bottom rule — bottom-anchored, so a
-/// squeezed area keeps the list and the closing chrome on screen while the
-/// skipped top flows into scrollback (`docs/view-flow.md`). Pure —
-/// `render_live` paints this. See `docs/skills.md`.
+/// description, the key hint, and a bottom rule; or, in an area too short
+/// for that, the compact page of three rows, with the header while it fits.
+/// Bottom-anchored, so an area shorter than even the compact page keeps the
+/// hint and the closing rule on screen while the skipped top flows into
+/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/skills.md`.
 pub fn render_skills_menu(area: Rect, buf: &mut Buffer, app: &App) {
-    super::view_flow::render_framed_tail(area, buf, skills_view_lines(app, area.width));
+    super::view_flow::render_framed_tail(
+        area,
+        buf,
+        skills_view_lines(app, area.width, area.height),
+    );
 }

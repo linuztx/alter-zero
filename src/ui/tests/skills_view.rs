@@ -18,6 +18,13 @@ const FIRST_ROW: u16 = 7;
 /// The page row the `❯` search line sits on when no note is shown.
 const SEARCH_ROW: u16 = 5;
 
+/// A terminal tall enough for any whole page here.
+const TALL: u16 = 200;
+
+/// A terminal too short for [`many_app`]'s whole page (22 rows) but tall
+/// enough for its compact page with the header kept (14 rows).
+const SHORT: u16 = 15;
+
 fn meta(name: &str, description: &str) -> SkillMetadata {
     SkillMetadata {
         name: name.to_string(),
@@ -103,7 +110,7 @@ fn the_page_opens_on_a_title_over_the_skill_count() {
     // title in the pages' one title dress, the catalog's size under it, then
     // a gap and the search line.
     let app = skills_app();
-    let lines = crate::ui::skills_view::skills_view_lines(&app, 78);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 78, TALL);
     let texts: Vec<String> = lines
         .iter()
         .map(|l| plain(l).trim_end().to_string())
@@ -312,12 +319,9 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
 
 // --- the no-match page collapses its empty slots (docs/skills.md) ---
 
-/// The menu's page as trimmed plain rows.
+/// The menu's page on a tall terminal, as trimmed plain rows.
 fn page(app: &App, width: u16) -> Vec<String> {
-    crate::ui::skills_view::skills_view_lines(app, width)
-        .iter()
-        .map(|l| plain(l).trim_end().to_string())
-        .collect()
+    page_at(app, width, TALL)
 }
 
 #[test]
@@ -431,7 +435,7 @@ fn the_highlighted_skill_description_wraps_instead_of_clipping() {
         true,
         vec!["~/.claude/skills".to_string()],
     );
-    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40, TALL);
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
@@ -464,7 +468,7 @@ fn the_empty_state_skill_paths_wrap_instead_of_clipping() {
         true,
         vec!["~/.config/some/deeply/nested/alter-zero/project/skills".to_string()],
     );
-    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40, TALL);
     let all = lines
         .iter()
         .map(plain)
@@ -483,7 +487,7 @@ fn the_session_off_note_wraps_instead_of_clipping() {
     // ("/settings") must survive a narrow terminal.
     let mut app = App::new();
     app.open_skills_menu(vec![meta("s", "d")], Default::default(), false, vec![]);
-    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40, TALL);
     let all = lines
         .iter()
         .map(plain)
@@ -506,7 +510,7 @@ fn a_long_skill_name_marks_its_cut_and_keeps_the_value_seated() {
         true,
         vec![],
     );
-    let lines = crate::ui::skills_view::skills_view_lines(&app, 36);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 36, TALL);
     let row = lines
         .iter()
         .map(plain)
@@ -529,7 +533,7 @@ fn a_long_skill_name_marks_its_cut_and_keeps_the_value_seated() {
 fn a_narrow_row_cuts_the_word_but_keeps_the_mark() {
     // The `/mcp` rows' rule: when the value can't fit whole, the word `…`-cuts
     // and the glyph survives — the mark IS the state, the word restates it.
-    let lines = crate::ui::skills_view::skills_view_lines(&skills_app(), 12);
+    let lines = crate::ui::skills_view::skills_view_lines(&skills_app(), 12, TALL);
     let row = lines
         .iter()
         .map(plain)
@@ -582,11 +586,396 @@ fn the_cursor_finds_the_search_line_under_a_wrapped_session_note() {
 
 #[test]
 fn the_cursor_seat_follows_the_bottom_anchor() {
-    // A page one row taller than its region paints from its second row, so
-    // the search line sits one row higher on screen than its page row — and
-    // the caret must sit on the painted line (docs/view-flow.md).
+    // A region one row shorter than even the smallest page — the compact one
+    // without its header, whose search line is page row 2 — paints that page
+    // from its second row, so the search line sits one row higher on screen
+    // than its page row, and the caret must sit on the painted line
+    // (docs/view-flow.md).
     let app = skills_app();
-    let page_rows = skills_menu_height(&app, 78, 200).expect("open");
-    let (_, y) = cursor_position(Rect::new(0, 0, 78, page_rows - 1), &app);
-    assert_eq!(y, SEARCH_ROW - 1, "the seat follows the anchored paint");
+    let smallest = page_at(&app, 78, 1);
+    assert_eq!(
+        smallest[2], "  ❯",
+        "the search line is row 2: {smallest:#?}"
+    );
+    let height = u16::try_from(smallest.len()).expect("rows") - 1;
+    let (_, y) = cursor_position(Rect::new(0, 0, 78, height), &app);
+    assert_eq!(y, 1, "the seat follows the anchored paint");
+}
+
+// --- the compact page: a short terminal keeps the choices on screen ---
+
+/// An app with the menu open over eight skills, `pdf` turned off — enough
+/// that a three-row window hides rows on both sides of a middle selection.
+/// The first name is the longest, so a value column sized off only the rows
+/// in view would move as the window scrolls.
+fn many_app() -> App {
+    let names = [
+        "commit-message-helper",
+        "dataviz",
+        "haiku-writer",
+        "jina-reader",
+        "pdf",
+        "skill-creator",
+        "web-search",
+        "yt-dlp",
+    ];
+    let mut app = App::new();
+    app.open_skills_menu(
+        names
+            .iter()
+            .map(|name| meta(name, &format!("What {name} does")))
+            .collect(),
+        ["pdf".to_string()].into_iter().collect(),
+        true,
+        vec!["~/.claude/skills".to_string()],
+    );
+    app
+}
+
+/// The menu's page on a terminal `height` rows tall, as trimmed plain rows.
+fn page_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    crate::ui::skills_view::skills_view_lines(app, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+/// Highlight row `i` of the filtered list.
+fn select(app: &mut App, i: usize) {
+    app.skills_menu.as_mut().expect("open").selected = i;
+}
+
+/// How many rows of `texts` are skill rows (they carry a state mark).
+fn skill_rows(texts: &[String]) -> usize {
+    texts.iter().filter(|t| mark_col(t).is_some()).count()
+}
+
+/// The display column of the row's `✔`/`◯` state mark, if it has one.
+fn mark_col(text: &str) -> Option<usize> {
+    text.find(SKILLS_ON_MARK)
+        .or_else(|| text.find(SKILLS_OFF_MARK))
+        .map(|i| crate::ui::wrap::cols(&text[..i]))
+}
+
+fn is_rule(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c == '─')
+}
+
+#[test]
+fn a_short_terminal_keeps_the_skill_choices_on_screen() {
+    // The whole page is 22 rows here. On 15, bottom-anchoring it used to
+    // flow the search line and the highlighted row into scrollback, leaving
+    // the description and the rows below the selection — nothing showed
+    // what Enter would toggle. codex's short-panel rule instead: the
+    // description yields first, so the search line, three skill rows and
+    // the hint stay on screen.
+    let app = many_app();
+    assert_eq!(page_at(&app, 78, TALL).len(), 22, "the whole page");
+    let texts = page_at(&app, 78, SHORT);
+    assert!(texts.len() <= usize::from(SHORT), "fits: {texts:#?}");
+    assert!(
+        texts.iter().any(|t| t == "  ❯"),
+        "the search line: {texts:#?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("→ commit-message-helper")),
+        "the highlighted skill: {texts:#?}"
+    );
+    assert_eq!(skill_rows(&texts), 3, "three skill rows: {texts:#?}");
+    assert!(
+        texts.iter().any(|t| t == "  ↓ 5 more below"),
+        "the rest named under them: {texts:#?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains(SKILLS_HINT)),
+        "the hint: {texts:#?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|t| t.contains("What commit-message-helper does")),
+        "no description: {texts:#?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("(1/8)")),
+        "no counter — the overflow slots say what is hidden: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_page_keeps_the_header_while_it_fits() {
+    // codex keeps a picker's header for as long as it fits: rule, gap, the
+    // title over the count, gap, the search line with the `↑` slot directly
+    // under it, three rows, the `↓` slot directly over the hint, gap, rule.
+    // Both slots are always there — blank when nothing is hidden that way —
+    // so the page is one height at every selection, and a blank slot is the
+    // gap the page wants there anyway.
+    let texts = page_at(&many_app(), 78, SHORT);
+    assert_eq!(texts.len(), 14, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "", "{texts:#?}");
+    assert_eq!(texts[2], format!("  {SKILLS_TITLE}"), "{texts:#?}");
+    assert_eq!(texts[3], "  8 skills · 7 enabled", "{texts:#?}");
+    assert_eq!(texts[4], "", "{texts:#?}");
+    assert_eq!(texts[5], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[6], "", "nothing above the first row: {texts:#?}");
+    assert!(
+        texts[7].starts_with("→ commit-message-helper"),
+        "{texts:#?}"
+    );
+    assert!(texts[8].starts_with("  dataviz"), "{texts:#?}");
+    assert!(texts[9].starts_with("  haiku-writer"), "{texts:#?}");
+    assert_eq!(texts[10], "  ↓ 5 more below", "{texts:#?}");
+    assert_eq!(texts[11], format!("  {SKILLS_HINT}"), "{texts:#?}");
+    assert_eq!(texts[12], "", "{texts:#?}");
+    assert!(is_rule(&texts[13]), "{texts:#?}");
+}
+
+#[test]
+fn a_terminal_too_short_for_the_header_drops_it_too() {
+    // The header yields after the description: rule, gap, the search line,
+    // the slots around three rows, the hint, gap, rule — the /theme
+    // picker's compact page, row for row.
+    let texts = page_at(&many_app(), 78, 13);
+    assert_eq!(texts.len(), 11, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "", "{texts:#?}");
+    assert_eq!(texts[2], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert!(
+        texts[4].starts_with("→ commit-message-helper"),
+        "{texts:#?}"
+    );
+    assert!(texts[5].starts_with("  dataviz"), "{texts:#?}");
+    assert!(texts[6].starts_with("  haiku-writer"), "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 5 more below", "{texts:#?}");
+    assert_eq!(texts[8], format!("  {SKILLS_HINT}"), "{texts:#?}");
+    assert_eq!(texts[9], "", "{texts:#?}");
+    assert!(is_rule(&texts[10]), "{texts:#?}");
+    assert!(
+        !texts.iter().any(|t| t.contains(SKILLS_TITLE)),
+        "no header: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_window_keeps_the_selection_in_its_middle() {
+    let mut app = many_app();
+    select(&mut app, 3); // jina-reader: one row either side, the rest named
+    let middle = page_at(&app, 78, SHORT);
+    assert_eq!(middle[6], "  ↑ 2 more above", "{middle:#?}");
+    assert!(middle[7].starts_with("  haiku-writer"), "{middle:#?}");
+    assert!(middle[8].starts_with("→ jina-reader"), "{middle:#?}");
+    assert!(middle[9].starts_with("  pdf"), "{middle:#?}");
+    assert_eq!(middle[10], "  ↓ 3 more below", "{middle:#?}");
+    select(&mut app, 7); // yt-dlp: the window pinned to the end
+    let end = page_at(&app, 78, SHORT);
+    assert_eq!(end[6], "  ↑ 5 more above", "{end:#?}");
+    assert!(end[7].starts_with("  skill-creator"), "{end:#?}");
+    assert!(end[8].starts_with("  web-search"), "{end:#?}");
+    assert!(end[9].starts_with("→ yt-dlp"), "{end:#?}");
+    assert_eq!(end[10], "", "nothing below the last row: {end:#?}");
+}
+
+#[test]
+fn the_compact_page_holds_still_across_selections() {
+    // Neither the frame nor the value column moves as ↑/↓ walk the window:
+    // the page is one height at every selection, and the value column is
+    // sized off every listed row rather than the three in view.
+    for height in [SHORT, 13] {
+        let mut app = many_app();
+        let h0 = page_at(&app, 78, height).len();
+        let col0 = page_at(&app, 78, height)
+            .iter()
+            .find_map(|t| mark_col(t))
+            .expect("a skill row");
+        for i in 0..8 {
+            select(&mut app, i);
+            let texts = page_at(&app, 78, height);
+            assert_eq!(
+                texts.len(),
+                h0,
+                "selection {i} moved the frame at height {height}"
+            );
+            for text in texts.iter().filter(|t| mark_col(t).is_some()) {
+                assert_eq!(
+                    mark_col(text),
+                    Some(col0),
+                    "selection {i} moved the value column: {texts:#?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_whole_page_returns_once_it_fits() {
+    // The compact page is only for a terminal too short for the whole one:
+    // at the whole page's own height it is the whole page, one row shorter
+    // the compact one.
+    let app = many_app();
+    let has_description = |texts: &[String]| {
+        texts
+            .iter()
+            .any(|t| t.contains("What commit-message-helper does"))
+    };
+    let whole = u16::try_from(page_at(&app, 78, TALL).len()).expect("rows");
+    assert!(
+        has_description(&page_at(&app, 78, whole)),
+        "at its own height"
+    );
+    assert!(
+        !has_description(&page_at(&app, 78, whole - 1)),
+        "compact one row short of it"
+    );
+}
+
+#[test]
+fn the_session_off_note_yields_with_the_header() {
+    // The note is part of the header — it says what state the whole catalog
+    // is in — so the compact page keeps it while the header fits and drops
+    // it with the header.
+    let mut app = many_app();
+    app.skills_menu.as_mut().expect("open").session_enabled = false;
+    let kept = page_at(&app, 78, SHORT);
+    assert_eq!(kept.len(), 15, "the note costs its row: {kept:#?}");
+    assert!(kept[4].contains(SKILLS_SESSION_OFF), "{kept:#?}");
+    let dropped = page_at(&app, 78, SHORT - 1);
+    assert_eq!(dropped.len(), 11, "{dropped:#?}");
+    assert!(
+        !dropped.iter().any(|t| t.contains(SKILLS_SESSION_OFF)),
+        "{dropped:#?}"
+    );
+}
+
+#[test]
+fn a_page_with_nothing_to_choose_drops_only_its_header() {
+    // An unmatched search and an empty catalog list nothing, so there is no
+    // window to compact; a terminal too short for the page still drops the
+    // header, keeping the search line and the placeholder on screen.
+    let mut app = many_app();
+    app.skills_menu.as_mut().expect("open").query = "zzz".to_string();
+    assert_eq!(page_at(&app, 78, TALL).len(), 12, "the whole no-match page");
+    let texts = page_at(&app, 78, 11);
+    assert_eq!(texts.len(), 9, "{texts:#?}");
+    assert_eq!(texts[2], "  ❯ zzz", "{texts:#?}");
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert!(texts[4].contains(SKILLS_NO_MATCH), "{texts:#?}");
+    assert_eq!(texts[5], "", "{texts:#?}");
+    assert!(texts[6].contains(SKILLS_HINT), "{texts:#?}");
+}
+
+#[test]
+fn a_compact_page_fits_and_never_overflows_the_width_or_stacks_blanks() {
+    let mut app = many_app();
+    for session_enabled in [true, false] {
+        app.skills_menu.as_mut().expect("open").session_enabled = session_enabled;
+        for width in [24u16, 40, 78] {
+            for query in ["", "er", "pdf", "zzz"] {
+                app.skills_menu.as_mut().expect("open").query = query.to_string();
+                let len = app.skill_menu_rows().len().max(1);
+                for i in 0..len {
+                    select(&mut app, i);
+                    for height in [11u16, 13, SHORT] {
+                        let texts = page_at(&app, width, height);
+                        let context = format!(
+                            "width {width} height {height} query {query:?} selection {i} \
+                             session {session_enabled}"
+                        );
+                        assert!(
+                            texts.len() <= usize::from(height),
+                            "{context} overflows the height: {texts:#?}"
+                        );
+                        for text in &texts {
+                            assert!(
+                                crate::ui::wrap::cols(text) <= usize::from(width),
+                                "{context}: {text:?} overflows"
+                            );
+                        }
+                        for pair in texts.windows(2) {
+                            assert!(
+                                !(pair[0].is_empty() && pair[1].is_empty()),
+                                "{context} stacked two blank rows: {texts:#?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_pages_search_line() {
+    let mut app = many_app();
+    for c in "er".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Three skills match `er`: too many for the whole page on 15 rows.
+    for (term, search_row) in [(SHORT, 5u16), (12, 2)] {
+        let height = skills_menu_height(&app, 78, term).expect("open");
+        assert!(height <= term, "the compact page fits the terminal");
+        let area = Rect::new(0, term - height, 78, height);
+        let (x, y) = cursor_position(area, &app);
+        assert_eq!(y, area.y + search_row, "on the search line at {term} rows");
+        // indent (2) + `❯ ` (2) + the two-character query.
+        assert_eq!(x, 2 + 2 + 2);
+    }
+}
+
+#[test]
+fn the_menu_flows_like_its_family_on_a_terminal_too_short_for_any_page() {
+    // Even the compact page without its header is taller than a 6-row
+    // terminal: its skipped top flows into scrollback like every framed
+    // view's.
+    let app = many_app();
+    let page = page_at(&app, 78, 6).len();
+    assert_eq!(page, 11, "the smallest page");
+    let flow = crate::ui::view_flow(&app, 78, 6, 1000).expect("flows on a 6-row terminal");
+    assert_eq!(flow.lines.len(), page - 6, "the skipped top flows");
+}
+
+#[test]
+fn a_page_that_fits_flows_nothing() {
+    // The compact page exists so a short terminal keeps the page on screen:
+    // where it fits, nothing flows into scrollback above it.
+    let app = many_app();
+    for term in [12, SHORT, TALL] {
+        assert!(
+            crate::ui::view_flow(&app, 78, term, 1000).is_none(),
+            "a page fits {term} rows"
+        );
+    }
+}
+
+#[test]
+fn the_menu_renders_the_page_its_height_reserves() {
+    // On a 12-row terminal the menu reserves the compact page's rows, and the
+    // paint fills exactly them: the search line, the highlighted skill, the
+    // hint and the closing rule all on screen.
+    let app = many_app();
+    let height = skills_menu_height(&app, 78, 12).expect("open");
+    assert_eq!(height, 11, "the compact page without its header");
+    let mut buf = buffer(78, height);
+    render_skills_menu(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..height).map(|y| row(&buf, y, 78)).collect();
+    assert!(
+        is_rule(rows.last().expect("rows").trim()),
+        "the closing rule on the last row: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.trim() == "❯"),
+        "the search line: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with("→ commit-message-helper")),
+        "the highlighted skill: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains(SKILLS_HINT)),
+        "the hint: {rows:#?}"
+    );
 }

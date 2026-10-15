@@ -18,6 +18,39 @@ pub(super) fn model_placeholder_row(text: &str, color: Color, width: u16) -> Lin
     ])
 }
 
+/// A list's dim overflow row — `↑ 3 more above`, `↓ 6 more below` — the
+/// `/mcp` list's, `…`-cut to `width` like any [`model_placeholder_row`].
+pub(super) fn model_overflow_row(
+    arrow: &str,
+    hidden: usize,
+    direction: &str,
+    width: u16,
+) -> Line<'static> {
+    model_placeholder_row(
+        &format!("{arrow}{hidden} more {direction}"),
+        model_meta_color(),
+        width,
+    )
+}
+
+/// A compact page's reserved overflow slot, codex's arrow row: the
+/// [`model_overflow_row`] when `hidden` rows lie that way, else a blank row —
+/// so the page is one height at every selection, and a blank slot is the gap
+/// the page wants there anyway. The `/theme` and `/skills` compact pages put
+/// one directly under the search line and one directly over the hint.
+pub(super) fn model_overflow_slot(
+    arrow: &str,
+    hidden: usize,
+    direction: &str,
+    width: u16,
+) -> Line<'static> {
+    if hidden == 0 {
+        Line::default()
+    } else {
+        model_overflow_row(arrow, hidden, direction, width)
+    }
+}
+
 /// `text` word-wrapped to two-space-inset rows in `color` — the multi-row
 /// sibling of [`model_placeholder_row`] for informational text (an error's
 /// diagnostic, an actionable hint, a path, a description): the picker pages

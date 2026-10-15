@@ -586,10 +586,13 @@ pub fn render_live_with_preview(
         render_theme_picker(body, buf, app);
         return;
     }
-    // …and the inline `/skills` menu, the `/settings` menu's twin. See
-    // `docs/skills.md`.
+    // …and the inline `/skills` menu, the `/settings` menu's twin (its
+    // compact page on a short terminal). See `docs/skills.md`.
     if app.skills_menu.is_some() {
-        let [strip, body] = view_split(area, super::skills_view::skills_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::skills_view::skills_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_skills_menu(body, buf, app);
         return;

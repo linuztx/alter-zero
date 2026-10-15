@@ -1309,6 +1309,11 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
+/// The skill rows the compact page shows — the page a terminal too short for
+/// the whole one gets. The `/theme` picker's compact window
+/// ([`THEME_COMPACT_ROWS`]), so the family's two short pages agree.
+pub(super) const SKILLS_COMPACT_ROWS: u16 = THEME_COMPACT_ROWS;
+
 // --- the inline /mascot picker (docs/mascot.md). The /settings menu's twin
 // again: it reuses the family's frame, marker, prompt and colours, adding
 // only its own words — the page's centre is the live banner preview, drawn

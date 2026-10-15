@@ -2217,7 +2217,17 @@ built page — `view_prompt_row` — and never over an empty catalog, where that
 row is unavailable and its advice refused) and an empty list that **names the
 roots** (`No skills found. Add one at:` over
 `~/.claude/skills/<name>/SKILL.md`), since "why isn't my skill here?" is an
-empty list's only question. A toggle
+empty list's only question. On a terminal too short for that page it builds
+a **compact** one instead — the `/theme` picker's, codex's order of what
+yields (`skills_view_lines(app, width, height)` taking the first page that
+fits): the description and the counter go first, then the header (title,
+count and note together), leaving the search line, a `SKILLS_COMPACT_ROWS`
+(3) window between the reserved `↑`/`↓` slots (`model_overflow_slot`, the
+two compact pages' shared row) and the hint, with the value column sized off
+every listed row so it holds still as the window scrolls, since
+bottom-anchoring the whole page flowed the search line and the top of the
+list into scrollback and could hide the row Enter would toggle; a list with
+nothing to choose drops only its header. A toggle
 holds in **two** places — the skill leaves the `<system-reminder>` listing
 *and* `SkillRegistry::find` refuses it, so a model that remembers the name
 from an earlier turn gets the recoverable "unknown skill" rather than
@@ -2237,7 +2247,8 @@ from everything-on, and a disabled name not installed here **kept** rather
 than pruned since the same file serves a checkout elsewhere), because skill
 relevance is project-specific while the `/settings` **Skills** row is
 already the session-wide switch; `smoke.sh` Phase 77 drives the palette
-entry, the rows, a toggle and its persistence across a restart); and the **Ctrl+O
+entry, the rows, a toggle and its persistence across a restart, Phase 77b the
+compact pages on 14 and 12 rows); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

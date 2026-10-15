@@ -1137,12 +1137,13 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     }
     // The inline `/skills` menu parks the cursor at the end of its `❯` search
     // line, like the `/settings` menu (docs/skills.md) — but the line sits
-    // under the page's header, whose session-off note wraps with the width,
-    // so its row is found in the page the paint builds (`view_prompt_row`,
-    // `/login`'s rule) rather than pinned. Built once, read twice: the
-    // page's height and that row.
+    // under the page's header, whose session-off note wraps with the width
+    // and which a short terminal's compact page drops, so its row is found
+    // in the page the paint builds (`view_prompt_row`, `/login`'s rule)
+    // rather than pinned. Built once, read twice: the page's height and that
+    // row.
     if let Some(menu) = &app.skills_menu {
-        let lines = super::skills_view::skills_view_lines(app, area.width);
+        let lines = super::skills_view::skills_view_lines(app, area.width, area.height);
         let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);

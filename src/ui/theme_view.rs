@@ -30,7 +30,9 @@
 //! screen and flowed the theme names into scrollback, which made the picker
 //! unusable exactly where it was squeezed.
 
-use super::model_view::{model_placeholder_row, model_rule};
+use super::model_view::{
+    model_overflow_row, model_overflow_slot, model_placeholder_row, model_rule,
+};
 use super::palette::{palette_of, with_theme};
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize};
@@ -130,16 +132,6 @@ fn preview_beside(width: u16) -> bool {
     usize::from(width) >= list_cols() + THEME_PREVIEW_GAP + THEME_PREVIEW_MIN_COLS
 }
 
-/// The `/mcp` list's dim overflow row — `↑ 3 more above`, `↓ 6 more below`
-/// — `…`-cut to `width`.
-fn overflow_row(arrow: &str, hidden: usize, direction: &str, width: u16) -> Line<'static> {
-    model_placeholder_row(
-        &format!("{arrow}{hidden} more {direction}"),
-        model_meta_color(),
-        width,
-    )
-}
-
 /// The list column in the `/mcp` list's shape: a `↑ N more above` row only
 /// when rows are scrolled off the top, the window of rows
 /// ([`centered_window`] at [`THEME_MENU_MAX_ROWS`], the selection riding the
@@ -157,7 +149,7 @@ fn list_lines(
         window_lines(rows, selected, usize::from(THEME_MENU_MAX_ROWS), width);
     let mut lines = Vec::new();
     if above > 0 {
-        lines.push(overflow_row(
+        lines.push(model_overflow_row(
             HOOKS_UP_MARKER,
             above,
             "above",
@@ -166,7 +158,7 @@ fn list_lines(
     }
     lines.extend(window);
     if below > 0 {
-        lines.push(overflow_row(
+        lines.push(model_overflow_row(
             HOOKS_DOWN_MARKER,
             below,
             "below",
@@ -363,16 +355,14 @@ fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'stati
 fn compact_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     let (above, window, below) =
         window_lines(rows, selected, usize::from(THEME_COMPACT_ROWS), width);
-    let slot = |arrow, hidden, direction| {
-        if hidden == 0 {
-            Line::default()
-        } else {
-            overflow_row(arrow, hidden, direction, width)
-        }
-    };
-    let mut lines = vec![slot(HOOKS_UP_MARKER, above, "above")];
+    let mut lines = vec![model_overflow_slot(HOOKS_UP_MARKER, above, "above", width)];
     lines.extend(window);
-    lines.push(slot(HOOKS_DOWN_MARKER, below, "below"));
+    lines.push(model_overflow_slot(
+        HOOKS_DOWN_MARKER,
+        below,
+        "below",
+        width,
+    ));
     lines
 }
 
