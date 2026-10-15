@@ -344,11 +344,13 @@ pub(super) fn reasoning_label_color() -> Color {
     status_done_color()
 }
 
-/// How many **wrapped display rows** of the thought the live block tails. The
+/// How many **wrapped display rows** of the thought the live block tails —
+/// three, so with its header the block is at most four rows tall. Rows, not
+/// source lines: a line that wraps onto two rows spends two of them. The
 /// window is small on purpose: it grows the live region upward (invariant 3),
 /// and what the user wants is the frontier — what the model is thinking
 /// *now*. The whole thing is in the Ctrl+O transcript.
-pub(super) const REASONING_PEEK_LINES: usize = 5;
+pub(super) const REASONING_PEEK_LINES: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Background shells (docs/background.md): the backgrounded cell's fixed row,

@@ -7,8 +7,8 @@ use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
 use crate::ui::theme::{
-    REASONING_PEEK_LINES, SHIMMER_SWEEP, TOOL_PULSE_PERIOD, reasoning_label_color,
-    reasoning_shimmer_base, shimmer_base, shimmer_highlight,
+    SHIMMER_SWEEP, TOOL_PULSE_PERIOD, reasoning_label_color, reasoning_shimmer_base, shimmer_base,
+    shimmer_highlight,
 };
 use crate::ui::wrap::cols;
 
@@ -111,32 +111,84 @@ fn the_live_block_heads_with_a_bulleted_thinking_label_over_the_gutter() {
     assert_eq!(plain(&lines[1]), "  ⎿  weighing options");
 }
 
-#[test]
-fn the_live_block_tails_the_newest_rows() {
-    // A long think must not grow the live region without bound: the block
-    // shows the last REASONING_PEEK_LINES rows — what just streamed — the way
-    // a running `bash` cell tails its output.
-    let text = (1..=20)
+/// Twenty one-row lines of thought, `line 1` … `line 20`.
+fn twenty_lines() -> String {
+    (1..=20)
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
-        .join("\n");
-    let lines = live_reasoning_lines(&text, Duration::ZERO, 60);
-    assert_eq!(lines.len(), 1 + REASONING_PEEK_LINES);
+        .join("\n")
+}
+
+#[test]
+fn the_live_block_tails_the_newest_three_rows() {
+    // A long think must not grow the live region without bound: the block
+    // shows the last three rows — what just streamed — the way a running
+    // `bash` cell tails its output.
+    let lines = live_reasoning_lines(&twenty_lines(), Duration::ZERO, 60);
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(
-        plain(&lines[1]),
-        "  ⎿  line 16",
-        "the corner opens the tail"
+        body,
+        ["  ⎿  line 18", "     line 19", "     line 20"],
+        "the corner opens the tail and later rows indent under it"
     );
+}
+
+#[test]
+fn a_wrapping_think_shows_its_newest_three_display_rows() {
+    // The reported screen, at its own 87 columns: three lines of thought that
+    // wrap to five rows filled the whole window, so the block stood six rows
+    // tall over the box. The window counts display rows, not source lines,
+    // so it keeps the newest three wherever they wrap from — here both rows
+    // of the line still streaming and the one line above them.
+    let text = "- I should strictly use tools before answering and verify results \
+                never claim unverified success\n\
+                - I should keep answers concise and formatted\n\
+                The user just said \"Hi\" - this is not a request for any specific work, \
+                no tasks, no files to read, no commands to";
+    let lines = live_reasoning_lines(text, Duration::ZERO, 87);
+    let body: Vec<String> = lines[1..]
+        .iter()
+        .map(|line| plain(line).trim_end().to_string())
+        .collect();
     assert_eq!(
-        plain(lines.last().unwrap()),
-        "     line 20",
-        "later rows indent under the corner"
+        body,
+        [
+            "  ⎿  - I should keep answers concise and formatted",
+            "     The user just said \"Hi\" - this is not a request for any specific work, no tasks,",
+            "     no files to read, no commands to",
+        ]
+    );
+}
+
+#[test]
+fn a_long_think_stands_four_rows_tall_in_the_strip() {
+    // What the live region spends on it: the header and three rows of
+    // thought, then the strip's gap — never a fourth row of the thought.
+    let mut app = App::new();
+    app.begin_stream();
+    app.begin_reasoning();
+    app.push_thinking(&twenty_lines());
+    let width = 60;
+    let pv = preview_rows(&app, width);
+    assert_eq!(pv, 4, "the header plus three rows of thought");
+    let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0, 0);
+    let mut buf = buffer(width, h);
+    render_live(buf.area, &mut buf, &app);
+    assert!(row(&buf, 0, width).starts_with("● Thinking…"));
+    assert!(row(&buf, 1, width).starts_with("  ⎿  line 18"));
+    assert!(row(&buf, 3, width).starts_with("     line 20"));
+    assert!(
+        row(&buf, 4, width).trim().is_empty(),
+        "the strip's gap follows the third row: {:?}",
+        row(&buf, 4, width)
     );
 }
 
 #[test]
 fn the_live_block_wraps_long_lines_instead_of_clipping() {
-    let lines = live_reasoning_lines("alpha beta gamma delta", Duration::ZERO, 14);
+    // Three rows at this width, the whole window, so every word stays in view
+    // and what this checks is the wrap, not the tail.
+    let lines = live_reasoning_lines("alpha beta gamma", Duration::ZERO, 14);
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert!(body.len() > 1, "a long line wraps: {body:?}");
     for row in &body {
@@ -144,7 +196,7 @@ fn the_live_block_wraps_long_lines_instead_of_clipping() {
     }
     let joined = body.join("").replace("  ", " ");
     assert!(joined.contains("alpha"), "{body:?}");
-    assert!(joined.contains("delta"), "no text is lost: {body:?}");
+    assert!(joined.contains("gamma"), "no text is lost: {body:?}");
 }
 
 #[test]
