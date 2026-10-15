@@ -56,10 +56,10 @@ fn list_item_wraps_with_a_hanging_indent() {
         .iter()
         .map(plain)
         .collect();
-    // content width 10: "- " marker leaves 8 for text.
+    // content width 10: the "• " marker leaves 8 for text.
     assert_eq!(
         rows,
-        vec!["● - alpha", "    beta", "    gamma", "    delta"]
+        vec!["● • alpha", "    beta", "    gamma", "    delta"]
     );
 }
 

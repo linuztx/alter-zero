@@ -38,7 +38,7 @@ pub(super) struct Palette {
     pub text_muted: Color,
     /// The dim everything secondary wears: the `⎿` corners and placeholders,
     /// the footer, the hints, the counters, a waiting or resting-running
-    /// bullet, the quotes and timestamps.
+    /// bullet, the timestamps.
     pub dim: Color,
     /// The composer box's rules and every framed view's.
     pub border: Color,
@@ -61,7 +61,8 @@ pub(super) struct Palette {
     /// context view's user tag — and the gradient's far end.
     pub link: Color,
     /// Success: the finished tool bullet, a diff's `+`, the active model's
-    /// ✓, a completed task, a background notice that went well.
+    /// ✓, a completed task, a background notice that went well — and a
+    /// reply's blockquotes, codex's green.
     pub success: Color,
     /// Failure: the error bullet, a failed tool, a diff's `-`, the `!` shell
     /// mode's red — and, mixed toward `dim`, an error toast.
