@@ -1,25 +1,34 @@
 //! The inline `/theme` picker. See `docs/theme.md`.
 //!
 //! The `/spinner` picker's frame — same rules, same `❯` search line, same
-//! `→` marker and accent selection, same `(n/total)` counter and dim hint —
-//! over one row per colour theme, and two things of its own. **Every row
-//! wears a swatch of its own palette** (five `●`s in that theme's accent,
-//! link, success, warning and error colours), the way the spinner rows wear
-//! their own spinners, so the catalog compares at a glance. And the
-//! highlighted theme previews on **real cells**: a user bubble, an `Edit`
-//! diff cell and an assistant reply with a code block, built by
-//! [`message_lines`] and [`tool_lines`] — the conversation's own builders —
-//! with the highlighted theme scoped active around them
+//! `(n/total)` counter, description and dim hint — over a list that wears
+//! the `/mcp` lists' rows: the accent `❯` on the highlight, the other names
+//! inset to match, and a dim `↑ N more above` / `↓ N more below` row where
+//! the window hides themes. Two things of its own. **Every row wears a
+//! swatch of its own palette** (five `●`s in that theme's accent, link,
+//! success, warning and error colours), the way the spinner rows wear their
+//! own spinners, so the catalog compares at a glance. And the highlighted
+//! theme previews on **real cells**: a user bubble, an `Edit` diff cell and
+//! an assistant reply with a code block, built by [`message_lines`] and
+//! [`tool_lines`] — the conversation's own builders — with the highlighted
+//! theme scoped active around them
 //! ([`with_theme`](super::palette::with_theme)), so what the picker shows
-//! and what Enter produces can never disagree. The page is still (nothing
-//! on it ticks), so its flow is signed on its rows like the `/mascot`
-//! picker's, and the sample is the same shape for every theme, so the frame
-//! never moves as ↑/↓ walk the catalog.
+//! and what Enter produces can never disagree.
+//!
+//! Where the preview goes is codex's picker layout: **beside the list**
+//! when the terminal can spare it a column [`THEME_PREVIEW_MIN_COLS`] wide,
+//! vertically centered against the list, so the page is the list's height
+//! rather than the list's plus the preview's; **under the list** on a
+//! narrower terminal. The list column is sized off the whole catalog, so the
+//! preview never moves sideways as ↑/↓ walk the list or a search narrows it.
+//! The page is still (nothing on it ticks), so its flow is signed on its
+//! rows like the `/mascot` picker's, and the sample is the same shape for
+//! every theme, so the frame never moves as the selection does.
 
 use super::model_view::{model_placeholder_row, model_rule};
 use super::palette::{palette_of, with_theme};
 use super::theme::*;
-use super::wrap::cols;
+use super::wrap::{clamp_spans, cols};
 use super::*;
 
 use crate::app::{Theme, ThemeRow};
@@ -36,66 +45,65 @@ fn swatch_spans(theme: Theme) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// One theme row: `{marker}{name}{pad}{swatches} {✓}` — the selected row's
-/// marker and name light up in the active accent (the picker family's), the
-/// name column is sized to the widest visible name plus [`THEME_MENU_GAP`],
-/// the row's swatches wear its own palette, and the session's current theme
-/// carries the `/model` picker's green ✓.
-fn theme_row(row: &ThemeRow, selected: bool, name_col: usize) -> Line<'static> {
-    let marker = if selected { MODEL_MARKER } else { "  " };
-    let (marker_style, name_style) = if selected {
+/// The name column: the catalog's widest name plus [`THEME_MENU_GAP`]. Sized
+/// off the whole catalog rather than the visible rows, so the swatches — and
+/// the preview beside them — hold still while the window scrolls or a search
+/// narrows the list.
+fn name_col() -> usize {
+    Theme::ALL
+        .iter()
+        .map(|theme| cols(theme.name()))
+        .max()
+        .unwrap_or(0)
+        + THEME_MENU_GAP
+}
+
+/// One theme row, the `/mcp` lists' shape: `  ❯ gruvbox     ●●●●● ✓` — the
+/// two-column inset, the accent `❯` on the highlight (spaces of its width
+/// elsewhere), the name (accent and bold when highlighted, the muted ink
+/// otherwise) padded out to `name_col`, the row's own swatches, and the
+/// `/model` picker's green ✓ on the session's current theme. `…`-cut to
+/// `width` on a terminal too narrow for the whole row.
+fn theme_row(row: &ThemeRow, selected: bool, name_col: usize, width: u16) -> Line<'static> {
+    let (marker, name_style) = if selected {
         (
-            Style::new().fg(model_selected_color()),
+            Span::styled(HOOKS_MARKER, Style::new().fg(model_selected_color())),
             Style::new()
                 .fg(model_selected_color())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::default(), Style::new().fg(model_id_color()))
+        (
+            Span::raw(" ".repeat(cols(HOOKS_MARKER))),
+            Style::new().fg(model_id_color()),
+        )
     };
     let name = row.theme.name();
     let mut spans = vec![
-        Span::styled(marker.to_string(), marker_style),
+        Span::raw(MODEL_INDENT),
+        marker,
         Span::styled(name.to_string(), name_style),
         Span::raw(" ".repeat(name_col.saturating_sub(cols(name)))),
     ];
     spans.extend(swatch_spans(row.theme));
     if row.active {
         spans.push(Span::styled(
-            MODEL_ACTIVE_MARK.to_string(),
+            MODEL_ACTIVE_MARK,
             Style::new().fg(model_active_color()),
         ));
     }
-    Line::from(spans)
+    clamp_spans(spans, usize::from(width))
 }
 
-/// The picker's list lines: the rows windowed ([`centered_window`]) at
-/// [`THEME_MENU_MAX_ROWS`], or a single placeholder when the search matches
-/// nothing.
-fn theme_list_lines(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
-    if rows.is_empty() {
-        return vec![model_placeholder_row(
-            THEME_NO_MATCH,
-            model_meta_color(),
-            width,
-        )];
-    }
-    let max = THEME_MENU_MAX_ROWS as usize;
-    let selected = selected.min(rows.len() - 1);
-    let offset = centered_window(rows.len(), selected, max);
-    let visible = rows.iter().skip(offset).take(max);
-    let name_col = visible
-        .clone()
-        .map(|row| cols(row.theme.name()))
-        .max()
-        .unwrap_or(0)
-        + THEME_MENU_GAP;
-    rows.iter()
-        .enumerate()
-        .skip(offset)
-        .take(max)
-        .map(|(i, row)| theme_row(row, i == selected, name_col))
-        .collect()
+/// The list column's width: a row at its widest — the active one, ✓
+/// included. Every other line the column holds (an overflow row, the
+/// counter) is narrower, so this is where the preview's gap starts.
+fn list_cols() -> usize {
+    let widest = ThemeRow {
+        theme: Theme::default(),
+        active: true,
+    };
+    theme_row(&widest, true, name_col(), u16::MAX).width()
 }
 
 /// The `(selected+1/total)` counter under the list.
@@ -108,6 +116,46 @@ fn theme_counter_line(rows: &[ThemeRow], selected: usize) -> Line<'static> {
             Style::new().fg(model_meta_color()),
         ),
     ])
+}
+
+/// The list column: the rows windowed ([`centered_window`]) at
+/// [`THEME_MENU_MAX_ROWS`], a dim `↑ N more above` / `↓ N more below` row on
+/// whichever side the window hides themes (the `/mcp` lists' overflow rows),
+/// and the `(n/total)` counter — or a single placeholder when the search
+/// matches nothing.
+fn list_column(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return vec![model_placeholder_row(
+            THEME_NO_MATCH,
+            model_meta_color(),
+            width,
+        )];
+    }
+    let window = usize::from(THEME_MENU_MAX_ROWS).max(1);
+    let selected = selected.min(rows.len() - 1);
+    let offset = centered_window(rows.len(), selected, window);
+    let end = (offset + window).min(rows.len());
+    let overflow = |text: String| model_placeholder_row(&text, model_meta_color(), width);
+    let mut lines = Vec::new();
+    if offset > 0 {
+        lines.push(overflow(format!("{HOOKS_UP_MARKER}{offset} more above")));
+    }
+    let name_col = name_col();
+    lines.extend(
+        rows.iter()
+            .enumerate()
+            .take(end)
+            .skip(offset)
+            .map(|(i, row)| theme_row(row, i == selected, name_col, width)),
+    );
+    if end < rows.len() {
+        lines.push(overflow(format!(
+            "{HOOKS_DOWN_MARKER}{} more below",
+            rows.len() - end
+        )));
+    }
+    lines.push(theme_counter_line(rows, selected));
+    lines
 }
 
 /// The sample `Edit` call the preview's diff cell shows: a finished call
@@ -137,20 +185,26 @@ fn sample_edit() -> ToolCall {
     }
 }
 
-/// The preview for `theme`, inset two columns inside the frame: the sample
-/// conversation's three cells rendered under `theme` by the conversation's
-/// own builders. The scope ends before the surrounding page is built, so the
+/// The sample conversation's three cells for `theme` at `width` columns,
+/// rendered by the conversation's own builders with `theme` scoped active
+/// around them. The scope ends before the surrounding page is built, so the
 /// frame, the rows and the hint keep the **active** theme — only the sample
 /// wears the highlighted one.
-fn preview_lines(theme: Theme, width: u16) -> Vec<Line<'static>> {
-    let inner = width.saturating_sub(cols(MODEL_INDENT) as u16).max(1);
-    let cells = with_theme(theme, || {
-        let mut lines = message_lines(Role::User, THEME_PREVIEW_USER, inner);
-        lines.extend(tool_lines(&sample_edit(), inner, &PathDisplay::VERBATIM));
-        lines.extend(message_lines(Role::Assistant, THEME_PREVIEW_REPLY, inner));
+fn sample_cells(theme: Theme, width: u16) -> Vec<Line<'static>> {
+    with_theme(theme, || {
+        let mut lines = message_lines(Role::User, THEME_PREVIEW_USER, width);
+        lines.extend(tool_lines(&sample_edit(), width, &PathDisplay::VERBATIM));
+        lines.extend(message_lines(Role::Assistant, THEME_PREVIEW_REPLY, width));
         lines
-    });
-    cells
+    })
+}
+
+/// The preview stacked under the list: the sample's cells inset two columns
+/// inside the frame, each keeping its own line style (the bubble's ground
+/// runs the whole row, as in the conversation).
+fn stacked_preview(theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(cols(MODEL_INDENT) as u16).max(1);
+    sample_cells(theme, inner)
         .into_iter()
         .map(|line| {
             let style = line.style;
@@ -161,13 +215,70 @@ fn preview_lines(theme: Theme, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// `line`'s spans with the line's own style patched into each — exactly what
+/// the paint would show (a line's style reaches only its spans' cells) — so
+/// a cell can share its row with another column: the bubble's ground then
+/// covers the bubble and stops at its first column instead of washing the
+/// list row beside it.
+fn flat_spans(line: Line<'static>) -> Vec<Span<'static>> {
+    let style = line.style;
+    line.spans
+        .into_iter()
+        .map(|span| Span::styled(span.content, style.patch(span.style)))
+        .collect()
+}
+
+/// Where a `content`-row preview starts beside an `available`-row list:
+/// centered, a [`THEME_PREVIEW_FRAME`] kept free above and below when there
+/// is room for both, the odd row going below — codex's `centered_offset`.
+/// Zero beside a list no taller than the preview (it top-aligns there).
+fn centered_offset(available: usize, content: usize) -> usize {
+    let free = available.saturating_sub(content);
+    let frame = if free >= 2 * THEME_PREVIEW_FRAME {
+        THEME_PREVIEW_FRAME
+    } else {
+        0
+    };
+    frame + (free - 2 * frame) / 2
+}
+
+/// The list column and the preview side by side — codex's picker layout:
+/// each row is the list's line padded out to `preview_x`, then the
+/// preview's, the preview vertically centered against the list
+/// ([`centered_offset`]). Every row's styles are flattened onto its spans
+/// ([`flat_spans`]), so neither column's line style spills onto the other.
+fn side_by_side(
+    list: Vec<Line<'static>>,
+    preview: Vec<Line<'static>>,
+    preview_x: usize,
+) -> Vec<Line<'static>> {
+    let offset = centered_offset(list.len(), preview.len());
+    let rows = list.len().max(offset + preview.len());
+    let mut list = list.into_iter();
+    let mut preview = preview.into_iter();
+    (0..rows)
+        .map(|row| {
+            let mut spans = list.next().map(flat_spans).unwrap_or_default();
+            if let Some(cell) = (row >= offset).then(|| preview.next()).flatten() {
+                let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+                spans.push(Span::raw(" ".repeat(preview_x.saturating_sub(used))));
+                spans.extend(flat_spans(cell));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// The whole framed page as lines: a top rule, the `❯` search line, the
-/// theme rows (each wearing its own swatch), the `(n/total)` counter, the
-/// **real-cell preview** in the highlighted theme, that theme's description,
-/// the key hint, and a bottom rule — blank-gapped like its family. What
-/// [`render_theme_picker`] paints (bottom-anchored) and [`theme_menu_rows`]
-/// counts, so the reserved height and the painted rows can never disagree
-/// (`docs/view-flow.md`). Empty when the picker is closed.
+/// list column (the theme rows, each wearing its own swatch, between their
+/// overflow rows, over the `(n/total)` counter) with the **real-cell
+/// preview** in the highlighted theme beside it — or, on a terminal too
+/// narrow to spare the preview [`THEME_PREVIEW_MIN_COLS`] columns, under it
+/// — then that theme's description, the key hint, and a bottom rule,
+/// blank-gapped like its family. What [`render_theme_picker`] paints
+/// (bottom-anchored) and [`theme_menu_rows`] counts, so the reserved height
+/// and the painted rows can never disagree (`docs/view-flow.md`). Empty when
+/// the picker is closed.
 ///
 /// A search that matched **nothing** has no count, no preview and no
 /// description, so those slots collapse to a single blank gap rather than
@@ -192,15 +303,22 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         search_line,
         Line::default(),
     ];
-    lines.extend(theme_list_lines(&rows, selected, width));
+    let list = list_column(&rows, selected, width);
     match highlighted {
-        // A real selection: the counter, the preview and the description sit
-        // between the list and the hint. The sample is the same shape for
-        // every theme, so the frame holds still as ↑/↓ move.
+        // A real selection: the preview beside the list, or under it, then
+        // the description. The sample is the same shape for every theme, so
+        // the frame holds still as ↑/↓ move.
         Some(theme) => {
-            lines.push(theme_counter_line(&rows, selected));
-            lines.push(Line::default());
-            lines.extend(preview_lines(theme, width));
+            let preview_x = list_cols() + THEME_PREVIEW_GAP;
+            let preview_cols = usize::from(width).saturating_sub(preview_x);
+            if preview_cols >= THEME_PREVIEW_MIN_COLS {
+                let cells = sample_cells(theme, u16::try_from(preview_cols).unwrap_or(u16::MAX));
+                lines.extend(side_by_side(list, cells, preview_x));
+            } else {
+                lines.extend(list);
+                lines.push(Line::default());
+                lines.extend(stacked_preview(theme, width));
+            }
             lines.push(Line::default());
             lines.push(model_placeholder_row(
                 theme.description(),
@@ -210,7 +328,10 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::default());
         }
         // Nothing matched: one gap carries the placeholder to the hint.
-        None => lines.push(Line::default()),
+        None => {
+            lines.extend(list);
+            lines.push(Line::default());
+        }
     }
     lines.push(model_placeholder_row(THEME_HINT, model_meta_color(), width));
     lines.push(Line::default());
@@ -243,9 +364,10 @@ pub fn theme_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
 
 /// Render the **inline** `/theme` picker into the live region, in place of
 /// the composer: a top rule, the `❯` search line, the theme rows with their
-/// swatches (`→ mocha      ●●●●● ✓`), a `(n/total)` counter, the real-cell
-/// preview in the highlighted theme, its description, the key hint, and a
-/// bottom rule — bottom-anchored, so a squeezed area keeps the preview, the
+/// swatches (`  ❯ mocha       ●●●●● ✓`) between their overflow rows over a
+/// `(n/total)` counter, the real-cell preview in the highlighted theme
+/// beside them (under them on a narrow terminal), its description, the key
+/// hint, and a bottom rule — bottom-anchored, so a squeezed area keeps the
 /// hint and the closing rule on screen while the skipped top flows into
 /// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
 /// `docs/theme.md`.

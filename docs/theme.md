@@ -181,50 +181,57 @@ browse touches several; each costs one parse of a ~20 KB theme, once.
 
 ## The `/theme` picker
 
+At 80 columns:
+
 ```
-────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────
+
   ❯
-  → mocha       ●●●●● ✓
-    macchiato   ●●●●●
-    frappe      ●●●●●
-    latte       ●●●●●
-    onedark     ●●●●●
-    dracula     ●●●●●
-    nord        ●●●●●
-    gruvbox     ●●●●●
+
+  ❯ mocha       ●●●●● ✓
+    macchiato   ●●●●●      ❯ Rename the greeting in greet.py
+    frappe      ●●●●●      ● Edit(greet.py)
+    latte       ●●●●●        ⎿  Updated greet.py (+1 -1)
+    onedark     ●●●●●            1  def greet(name):
+    dracula     ●●●●●            2 -    print("Hello, world")
+    nord        ●●●●●            2 +    print(f"Hello, {name}")
+    gruvbox     ●●●●●      ● Done — greet.py greets by name now:
     solarized   ●●●●●
-    monokai     ●●●●●
+    monokai     ●●●●●        greet("Alter Zero")  # Hello, Alter Zero
+  ↓ 1 more below
   (1/11)
 
-  ❯ Rename the greeting in greet.py
-  ● Edit(greet.py)
-    ⎿  Updated greet.py (+1 -1)
-        1  def greet(name):
-        2 -    print("Hello, world")
-        2 +    print(f"Hello, {name}")
-  ● Done — greet.py greets by name now:
-    greet("Alter Zero")  # Hello, Alter Zero
-
   Catppuccin Mocha — the darkest flavour, and the default
-  Type to search · Enter to choose · Esc to cancel
-────────────────────────────────────────────────────────────────
+
+  Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel
+
+────────────────────────────────────────────────────────────────────────────────
 ```
 
 Deliberately the `/spinner` picker's twin — same inline frame, same `❯`
 type-to-search (matching names, **titles** and descriptions, so
 `catppuccin` finds the four flavours and `follows` the terminal theme),
-same `→` marker in the active accent, same `(n/total)` counter, description
-row and dim hint, the same ten-row window (`THEME_MENU_MAX_ROWS`, the
-settings window's size — the eleven-theme catalog windows by one row) —
-plus the two things a theme picker exists for:
+same `(n/total)` counter, description row and dim hint, the same ten-row
+window (`THEME_MENU_MAX_ROWS`, the settings window's size) — but its list
+wears the **`/mcp` lists' rows**: the accent `❯` on the highlight (the
+`HOOKS_MARKER`), every other name inset to the same column, and a dim
+`↑ N more above` / `↓ N more below` row on whichever side the window hides
+themes (`HOOKS_UP_MARKER`/`HOOKS_DOWN_MARKER`). The eleven-theme catalog
+windows by exactly one row, so exactly one overflow row always shows and
+the page height never moves with the selection. The hint names every key —
+`Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel` — on
+one dim row, `…`-cut below 68 columns like the rest of the family's. Plus
+the two things a theme picker exists for:
 
 - **Every row wears its own swatch.** After the name column (sized to the
-  widest visible name plus `THEME_MENU_GAP`) each row carries five `●`s in
-  *that theme's* accent, link, success, warning and error — read straight
-  off its palette, never the active one — so the catalog compares at a
-  glance the way the `/spinner` rows' live spinners do. The session's
-  current theme carries the `/model` picker's green ✓, and the open seats
-  the highlight on it.
+  catalog's widest name plus `THEME_MENU_GAP` — the whole catalog, not the
+  visible rows, so the swatches and the preview beside them hold still
+  while the window scrolls or a search narrows the list) each row carries
+  five `●`s in *that theme's* accent, link, success, warning and error —
+  read straight off its palette, never the active one — so the catalog
+  compares at a glance the way the `/spinner` rows' live spinners do. The
+  session's current theme carries the `/model` picker's green ✓, and the
+  open seats the highlight on it.
 - **The highlighted theme previews on real cells.** The preview is a
   three-cell sample conversation — a user bubble, an `Edit` diff cell, an
   assistant reply with inline code and a fenced code line — built by
@@ -240,6 +247,37 @@ plus the two things a theme picker exists for:
   page around it is built: the frame, the rows and the hint keep the
   **active** theme, only the sample wears the highlighted one
   (`the_preview_wears_the_highlighted_theme_and_the_frame_the_active_one`).
+
+### Beside the list, or under it
+
+Where the preview goes is codex's `/theme` layout (its list popup's side
+content). On a terminal that can spare it a column at least
+`THEME_PREVIEW_MIN_COLS` wide — 44, codex's `WIDE_PREVIEW_MIN_WIDTH`, which
+also holds the sample's widest row (the reply's code line), so nothing in
+the preview wraps — the preview sits **beside** the list,
+`THEME_PREVIEW_GAP` (4) columns right of the list column's widest row
+(codex's two-column gap plus its preview's two-column inset), vertically
+centered against the list by codex's own `centered_offset` rule: a
+`THEME_PREVIEW_FRAME` row kept free above and below when there is room for
+both, the odd row going below, and top-aligned beside a search-narrowed
+list that is shorter than the preview. The list column's width is its
+widest row, ✓ included, so the threshold is 71 columns and an 80-column
+terminal gets the layout. Side by side, the picker is the list's height
+rather than the list's plus the preview's — 22 rows at 80 columns where the
+stacked page is 32 — so it fits an 80×24 terminal instead of flowing half
+its rows into scrollback (`side_by_side_the_page_fits_a_standard_terminal`).
+A narrower terminal stacks the preview **under** the list, inset two
+columns, as it always was; a resize re-lays the open page out through the
+ordinary purge rebuild.
+
+Each body row is the list's line padded out to the preview column, then
+the preview's. A row's **line** style — the user bubble's ground is one —
+is flattened onto its spans first, which is exactly what the paint does
+anyway (a ratatui line's style reaches only its spans' cells), so the
+bubble's ground runs from the preview column to the right edge, the
+conversation's full-width bubble at the preview's width, and never washes
+the list row it shares a line with
+(`beside_the_list_the_bubble_is_grounded_to_the_edge_and_no_further_left`).
 
 The sample is the same shape for every theme, so the page height never
 depends on the selection — the `/settings` always-emit rule
@@ -318,6 +356,20 @@ the saved theme.
   tints under syntax colours. And rendering through the real builders is
   the picker family's rule: the `/mascot` preview is the banner's own
   builder, the `/spinner` preview the status line's.
+- **Why codex's layout but not the rest of codex's popup?** The side-by-side
+  preview is what made the page fit a standard terminal, so it came over
+  whole — the 44-column minimum, the gap, the centering. The rest stays this
+  TUI's: the rows are the `/mcp` lists' (an accent `❯`, counted overflow
+  rows) rather than codex's full-width selection fill and bare `↑`/`↓`
+  arrows, the frame keeps the family's `❯` search line and needs no title,
+  and the preview is still the conversation's own cells rather than codex's
+  syntax-only diff, because a theme here is a whole design system — chrome
+  and code — and only real cells show both.
+- **Why keep the description row?** It is where a user learns why a theme
+  looks wrong on their terminal (`latte` is for a light one; `ansi` follows
+  the terminal's palette), and it costs one row under a page that already
+  fits. Beside the list it would wrap in the preview column, and a caption
+  whose height depends on the selection would move the frame.
 - **Why is the ANSI theme in the catalog at all?** It is the one theme that
   follows the *terminal's* theme, which for a user who has already themed
   their terminal is the only theme that matters. The cost was making the
@@ -379,12 +431,19 @@ the saved theme.
   tints, the gradient/blend derivations, the error toast's softened red in
   every theme, and a rendered cell wearing the active theme.
 - `ui/tests/theme_view.rs` — the framed page (rules, search, rows, counter,
-  preview, description, hint), the preview's real cells, every row's own
+  preview, description, hint) at a narrow and a wide width, the `/mcp`
+  rows' `❯` and the overflow row on either side of the window, the hint
+  naming the arrow keys, the preview beside the list on a wide terminal and
+  under it on a narrow one, the threshold (at most 80 columns, nothing in
+  the preview wrapped there), the 80×24 fit, the preview column holding
+  still across selections and searches, the bubble's painted ground
+  stopping at the preview column, the preview's real cells, every row's own
   swatch, the preview in the highlighted theme against the frame in the
   active one (bullet, code keyword, diff tints, bubble ground), the stable
   height, the active ✓ and its seat, the no-match collapse, no stacked
-  blanks, width safety, the height contract, the flow and its re-signing,
-  and the bottom-anchored render.
+  blanks, width safety around the threshold, the height contract, the
+  cursor on the search line, the flow and its re-signing, and the
+  bottom-anchored render.
 - `ui/tests/transcript.rs`, `context_view.rs`, `footer.rs` — the three
   caches rebuilding when the theme changes.
 - `highlight` — every code theme resolving, two themes disagreeing on a
@@ -392,7 +451,9 @@ the saved theme.
   theme.
 - `scripts/smoke.sh` Phase 111 — the picker end to end in a real terminal:
   the banner hint in the default accent (raw SGR), the palette entry, the
-  open page with its swatches and real-cell preview, ↓ moving the counter
+  open page with its `❯` rows, overflow row, swatches and real-cell preview
+  beside the list at 90 columns, a resize to 66 stacking the preview under
+  the list and a resize back seating it beside again, ↓ moving the counter
   and description, a filtered Enter switching the theme with a toast and a
   `theme.json` write, the **already-painted banner recoloured** by the
   rebuild, and a **second process against the same config home launching

@@ -14,6 +14,14 @@ release heading when a version is cut.
 
 ### Changed
 
+- **`/theme` shows its preview beside the list, the way codex does.** On a
+  terminal at least 71 columns wide, the sample conversation sits to the
+  right of the theme list, centered against it, so the whole picker fits an
+  80×24 terminal instead of spilling into scrollback. A narrower terminal
+  still shows the preview under the list. The list now looks like the
+  `/mcp` lists: the highlighted theme carries a `❯`, and a dim
+  `↓ 1 more below` or `↑ 1 more above` row says which way the hidden theme
+  is. The key hint now mentions `↑/↓ to navigate` (`docs/theme.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or

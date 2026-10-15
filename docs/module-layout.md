@@ -93,7 +93,7 @@ widened for the split.
 | `mascot_view.rs` | The inline `/mascot` picker with its live banner preview (`docs/mascot.md`). |
 | `spinner_view.rs` | The inline `/spinner` picker — live spinner rows over a sample status-line preview (`docs/spinner.md`). |
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
-| `theme_view.rs` | The inline `/theme` picker — swatch rows over a real-cell preview in the highlighted theme (`docs/theme.md`). |
+| `theme_view.rs` | The inline `/theme` picker — `❯` swatch rows beside (on a narrow terminal, over) a real-cell preview in the highlighted theme (`docs/theme.md`). |
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |

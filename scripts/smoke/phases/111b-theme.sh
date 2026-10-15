@@ -5,10 +5,13 @@
 smoke_begin
 
 # the `/theme` picker (docs/theme.md). The `/spinner` picker's
-# frame over the colour-theme catalog, each row wearing a swatch of its own
-# palette and the highlighted theme previewed on REAL cells (a user bubble, an
-# Edit diff cell, a reply with a code line); ↓ moves the counter, the preview
-# and the description; a filtered Enter switches the theme with a toast, a
+# frame over the colour-theme catalog in the `/mcp` lists' rows (the `❯`
+# marker, a `↓ 1 more below` overflow row), each row wearing a swatch of its
+# own palette and the highlighted theme previewed on REAL cells (a user
+# bubble, an Edit diff cell, a reply with a code line) — BESIDE the list at 90
+# columns, codex's layout, and UNDER it once a resize narrows the terminal;
+# ↓ moves the counter, the preview and the description; a filtered Enter
+# switches the theme with a toast, a
 # {config}/theme.json write and a PURGE REBUILD that recolours what is already
 # on screen — the banner's `/login` hint goes from Mocha's sky to Dracula's
 # cyan, read off the raw SGR bytes (`capture-pane -e`); and a second process
@@ -39,21 +42,41 @@ sleep 0.5
 theme_open="$(tmux capture-pane -t "$S111" -p)"
 echo "==== Phase 111: the picker open (mocha highlighted, the real-cell preview) ===="
 printf '%s\n' "$theme_open"
-for expect in "→ mocha" "macchiato" "frappe" "latte" "onedark" "dracula" "nord" "gruvbox" "(1/11)" \
+for expect in "❯ mocha" "macchiato" "frappe" "latte" "onedark" "dracula" "nord" "gruvbox" \
+	"↓ 1 more below" "(1/11)" \
 	"❯ Rename the greeting in greet.py" "● Edit(greet.py)" "Updated greet.py (+1 -1)" \
 	'-    print("Hello, world")' '+    print(f"Hello, {name}")' "● Done — greet.py greets by name now:" \
 	"Catppuccin Mocha — the darkest flavour, and the default" \
-	"Type to search · Enter to choose · Esc to cancel"; do
+	"Type to search · ↑/↓ to navigate · Enter to choose · Esc to cancel"; do
 	expect_has "$theme_open" -F -- "$expect" "the open picker is missing '$expect'"
 done
 # Every listed row wears its five-swatch palette sample.
-if [ "$(printf '%s\n' "$theme_open" | grep -cE '^ *(→ )?[a-z]+ +●●●●●')" -lt 10 ]; then
+if [ "$(printf '%s\n' "$theme_open" | grep -cE '^ *(❯ )?[a-z]+ +●●●●●')" -lt 10 ]; then
 	fail "the theme rows do not wear their swatches"
 fi
 # The mocha row is the only one wearing the ✓ (the session's theme).
-if [ "$(printf '%s\n' "$theme_open" | grep -c '✓')" -ne 1 ] || ! printf '%s\n' "$theme_open" | grep -F "→ mocha" | grep -qF "✓"; then
+if [ "$(printf '%s\n' "$theme_open" | grep -c '✓')" -ne 1 ] || ! printf '%s\n' "$theme_open" | grep -F "❯ mocha" | grep -qF "✓"; then
 	fail "the ✓ does not sit on the mocha row alone"
 fi
+# 90 columns seat the preview BESIDE the list: its cells share their screen
+# rows with the theme rows instead of stacking under the counter.
+if [ "$(printf '%s\n' "$theme_open" | grep -cE '●●●●●( ✓)? +.*(Rename the greeting|Edit\(greet\.py\)|Updated greet\.py|print\()')" -lt 4 ]; then
+	fail "the preview does not sit beside the list at 90 columns"
+fi
+# A resize below the side-by-side width stacks the preview under the list
+# (the purge rebuild re-lays the open page out), and growing back seats it
+# beside the list again.
+tmux resize-window -t "$S111" -x 66 -y 34
+sleep 0.6
+theme_narrow="$(tmux capture-pane -t "$S111" -p)"
+echo "==== Phase 111: at 66 columns the preview stacks under the list ===="
+printf '%s\n' "$theme_narrow"
+expect_has "$theme_narrow" -E '^  ❯ Rename the greeting in greet\.py' "the preview did not stack under the list at 66 columns"
+expect_lacks "$theme_narrow" -E '●●●●●.*(Rename the greeting|Edit\(greet\.py\))' "a list row still carries the preview at 66 columns"
+tmux resize-window -t "$S111" -x 90 -y 34
+sleep 0.6
+theme_regrown="$(tmux capture-pane -t "$S111" -p)"
+expect_has "$theme_regrown" -E '●●●●●( ✓)? +.*Edit\(greet\.py\)' "the preview did not return beside the list at 90 columns"
 # ↓ to macchiato: the counter and the description follow the selection.
 tmux send-keys -t "$S111" Down
 sleep 0.4
@@ -108,7 +131,7 @@ theme_relaunch="$(tmux capture-pane -t "$S111" -p)"
 echo "==== Phase 111: a fresh launch keeps the saved theme ===="
 printf '%s\n' "$theme_relaunch"
 expect_has "$theme_relaunch" -F "(6/11)" "the saved theme did not seat the highlight on dracula after a relaunch"
-if ! printf '%s\n' "$theme_relaunch" | grep -F "→ dracula" | grep -qF "✓"; then
+if ! printf '%s\n' "$theme_relaunch" | grep -F "❯ dracula" | grep -qF "✓"; then
 	fail "the saved theme does not wear the ✓ after a relaunch"
 fi
 tmux kill-session -t "$S111" 2>/dev/null

@@ -393,11 +393,15 @@ system per entry: the four Catppuccin flavours with **Mocha the default**
 code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
 follows the terminal's theme. The `/spinner` picker's frame over that
-catalog, every row wearing a five-`●` swatch of its own palette, the
+catalog in the `/mcp` lists' rows (an accent `❯`, a dim `↓ 1 more below`
+overflow row), every row wearing a five-`●` swatch of its own palette, the
 highlighted theme previewed on **real cells** — a user bubble, an `Edit`
 diff cell, a reply with a code line, built by `message_lines`/`tool_lines`
 with the theme scoped active around them (`ui::with_theme`) so the preview
-and the conversation can never disagree — a still page signed on its rows.
+and the conversation can never disagree — **beside the list** once the
+terminal spares it 44 columns (codex's picker layout, centered against the
+list, the page then fitting an 80×24 terminal) and under it on a narrower
+one — a still page signed on its rows.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
