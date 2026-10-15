@@ -880,6 +880,12 @@ pub(super) fn agent_view_preview_lines(
         }
         return lines;
     }
+    // The `write` calls the agent is generating, each streaming its file —
+    // the main strip's cells over the agent's own drafts
+    // (`docs/write-streaming.md`).
+    if run.drafts.has_writes() {
+        return super::draft::draft_cells_lines(&run.drafts, Some(pulse), width, paths);
+    }
     // An open thinking phase previews its live block, after the tool branch
     // and before the reply's — what is genuinely executing is what the user
     // waits on, and the model cannot be streaming a reply while it thinks
@@ -911,6 +917,7 @@ pub(super) fn agent_view_preview_lines(
 /// (`docs/agent-view-streaming.md`, `docs/table-streaming.md`).
 pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width: u16) -> u16 {
     if run.tool_queue.is_empty()
+        && !run.drafts.has_writes()
         && run.reasoning().is_none()
         && run.streaming.as_deref().is_some_and(|t| !t.is_empty())
     {

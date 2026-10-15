@@ -59,6 +59,9 @@
 //!   the `mcp__server__tool` naming contract, the JSON-RPC/SSE protocol
 //!   shapes, and the `/mcp` manager's snapshot vocabulary (the I/O client is
 //!   [`llm::mcp`]; see `docs/mcp.md`).
+//! - [`partial_json`] — decoding a JSON object's top-level string fields
+//!   while it streams, a fragment at a time: the live `write` cell's `path`
+//!   and `content` (pure; see `docs/write-streaming.md`).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
 //! - [`permission`]  — tool permission requests: the pure prompt vocabulary
@@ -157,6 +160,7 @@ pub mod links;
 pub mod llm;
 pub mod markdown;
 pub mod mcp;
+pub mod partial_json;
 pub mod paste;
 pub mod permission;
 pub mod project_doc;

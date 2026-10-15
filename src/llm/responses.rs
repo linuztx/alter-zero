@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use super::config::ModelConfig;
 use super::tools::ToolCallRequest;
 use super::{ChatMessage, ContentPart, MessageContent};
-use crate::stream::TokenUsage;
+use crate::stream::{TokenUsage, ToolCallFragment};
 
 /// Build the streamed request body for `messages` — as a JSON tree, the
 /// tests' view of the request. The wire streams a [`RequestSource`], which
@@ -297,11 +297,19 @@ pub enum ResponseEvent {
     Text(String),
     /// Reasoning summary text (the model's own summary of its thinking).
     Reasoning(String),
-    /// A fragment of a tool call being *generated* — never rendered, only
-    /// counted, so the tally ticks while the call is produced.
-    ToolFragment(String),
+    /// A function call began — its tool's name, ahead of every argument
+    /// delta (`response.output_item.added`). `slot` is the item's
+    /// `output_index`, which keys every later frame of the same call.
+    ToolBegin { slot: Option<u64>, name: String },
+    /// A fragment of a tool call's arguments as the model generates them —
+    /// counted so the tally ticks, and decoded by the live `write` cell
+    /// (`docs/write-streaming.md`).
+    ToolFragment { slot: Option<u64>, delta: String },
     /// A tool call the model finished asking for.
-    ToolCall(ToolCallRequest),
+    ToolCall {
+        slot: Option<u64>,
+        call: ToolCallRequest,
+    },
     /// The stream finished; the round's usage, when the frame carried one.
     Completed {
         usage: Option<TokenUsage>,
@@ -337,11 +345,28 @@ pub fn parse_event(data: &str) -> ResponseEvent {
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             ResponseEvent::Reasoning(delta())
         }
-        "response.function_call_arguments.delta" => ResponseEvent::ToolFragment(delta()),
-        "response.output_item.done" => value
-            .get("item")
-            .and_then(function_call_of)
-            .map_or(ResponseEvent::Ignored, ResponseEvent::ToolCall),
+        "response.function_call_arguments.delta" => ResponseEvent::ToolFragment {
+            slot: output_index(&value),
+            delta: delta(),
+        },
+        "response.output_item.added" => {
+            value
+                .get("item")
+                .and_then(function_call_of)
+                .map_or(ResponseEvent::Ignored, |call| ResponseEvent::ToolBegin {
+                    slot: output_index(&value),
+                    name: call.name,
+                })
+        }
+        "response.output_item.done" => {
+            value
+                .get("item")
+                .and_then(function_call_of)
+                .map_or(ResponseEvent::Ignored, |call| ResponseEvent::ToolCall {
+                    slot: output_index(&value),
+                    call,
+                })
+        }
         "response.completed" | "response.incomplete" => ResponseEvent::Completed {
             usage: value.get("response").and_then(parse_usage),
             status: value
@@ -352,6 +377,117 @@ pub fn parse_event(data: &str) -> ResponseEvent {
         },
         "response.failed" | "error" => ResponseEvent::Failed(failure_message(&value, data)),
         _ => ResponseEvent::Ignored,
+    }
+}
+
+/// The `output_index` a frame names its output item by — what keys one
+/// call's frames together.
+fn output_index(value: &Value) -> Option<u64> {
+    value.get("output_index").and_then(Value::as_u64)
+}
+
+/// The keys the Responses drain gives the calls of one round, and what each
+/// has already sent — so every [`ToolCallFragment`] names its call, and the
+/// `output_item.done` frame streams only what no earlier frame did
+/// (`docs/write-streaming.md`).
+///
+/// A call's frames are keyed by their `output_index`. A frame that omits it
+/// (no server this was tried against does, but the field is the server's to
+/// send) falls back to the open call for a delta, and to a fresh key for a
+/// call that opens or lands whole.
+#[derive(Debug, Default)]
+pub struct ToolStreams {
+    calls: Vec<StreamedCall>,
+}
+
+/// What one call has sent so far.
+#[derive(Debug)]
+struct StreamedCall {
+    key: usize,
+    named: bool,
+    arguments: bool,
+    /// Its `output_item.done` has landed.
+    finished: bool,
+}
+
+impl ToolStreams {
+    /// A call opened, naming its tool.
+    pub fn begin(&mut self, slot: Option<u64>, name: &str) -> ToolCallFragment {
+        let at = self.position(slot, true);
+        self.calls[at].named = true;
+        ToolCallFragment {
+            index: self.calls[at].key,
+            name: Some(name.to_string()),
+            arguments: String::new(),
+        }
+    }
+
+    /// A piece of a call's arguments.
+    pub fn fragment(&mut self, slot: Option<u64>, delta: &str) -> ToolCallFragment {
+        let at = self.position(slot, false);
+        self.calls[at].arguments = true;
+        ToolCallFragment {
+            index: self.calls[at].key,
+            name: None,
+            arguments: delta.to_string(),
+        }
+    }
+
+    /// A call finished: whatever of it no earlier frame streamed — its name,
+    /// its arguments — or `None` when they all did.
+    pub fn done(&mut self, slot: Option<u64>, call: &ToolCallRequest) -> Option<ToolCallFragment> {
+        let at = match slot {
+            Some(_) => self.position(slot, false),
+            // With no index to match by, the call still open is the one
+            // finishing — or, when none is, a call that lands whole.
+            None => match self.calls.iter().rposition(|c| !c.finished) {
+                Some(at) => at,
+                None => self.position(None, true),
+            },
+        };
+        let entry = &mut self.calls[at];
+        let name = (!entry.named).then(|| call.name.clone());
+        let arguments = if entry.arguments {
+            String::new()
+        } else {
+            call.arguments.clone()
+        };
+        entry.named = true;
+        entry.arguments = true;
+        entry.finished = true;
+        let index = entry.key;
+        (name.is_some() || !arguments.is_empty()).then_some(ToolCallFragment {
+            index,
+            name,
+            arguments,
+        })
+    }
+
+    /// The entry for `slot`, created when new — with no slot, a fresh one for
+    /// a call that `opens`, else the latest.
+    fn position(&mut self, slot: Option<u64>, opens: bool) -> usize {
+        if let Some(slot) = slot {
+            let key = usize::try_from(slot).unwrap_or(usize::MAX);
+            if let Some(at) = self.calls.iter().position(|c| c.key == key) {
+                return at;
+            }
+            return self.push(key);
+        }
+        if !opens && let Some(last) = self.calls.len().checked_sub(1) {
+            return last;
+        }
+        let key = self.calls.iter().map(|c| c.key + 1).max().unwrap_or(0);
+        self.push(key)
+    }
+
+    fn push(&mut self, key: usize) -> usize {
+        self.calls.push(StreamedCall {
+            key,
+            named: false,
+            arguments: false,
+            finished: false,
+        });
+        self.calls.len() - 1
     }
 }
 
@@ -611,15 +747,31 @@ mod tests {
 
     #[test]
     fn a_finished_output_item_yields_the_whole_tool_call() {
-        let frame = r#"{"type":"response.output_item.done","item":{"type":"function_call",
+        let frame = r#"{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call",
             "id":"fc_1","call_id":"call_abc","name":"bash","arguments":"{\"command\":\"ls\"}"}}"#;
-        let ResponseEvent::ToolCall(call) = parse_event(frame) else {
+        let ResponseEvent::ToolCall { slot, call } = parse_event(frame) else {
             panic!("expected a tool call");
         };
+        assert_eq!(slot, Some(2), "the item's output index keys the call");
         // `call_id` links the result back, not the item's own `id`.
         assert_eq!(call.id, "call_abc");
         assert_eq!(call.name, "bash");
         assert_eq!(call.arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn a_function_call_item_names_its_tool_as_it_opens() {
+        // `output_item.added` comes ahead of every argument delta — the first
+        // moment the live cell can know a `write` is being generated.
+        let frame = r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call",
+            "id":"fc_1","call_id":"call_abc","name":"write","arguments":""}}"#;
+        assert_eq!(
+            parse_event(frame),
+            ResponseEvent::ToolBegin {
+                slot: Some(1),
+                name: "write".to_string()
+            }
+        );
     }
 
     #[test]
@@ -629,11 +781,85 @@ mod tests {
     }
 
     #[test]
-    fn argument_fragments_surface_for_counting_only() {
+    fn argument_fragments_carry_the_output_index_of_their_call() {
         assert_eq!(
-            parse_event(r#"{"type":"response.function_call_arguments.delta","delta":"{\"c"}"#),
-            ResponseEvent::ToolFragment("{\"c".to_string())
+            parse_event(
+                r#"{"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_1","delta":"{\"c"}"#
+            ),
+            ResponseEvent::ToolFragment {
+                slot: Some(1),
+                delta: "{\"c".to_string()
+            }
         );
+        // A frame that omits the index still streams.
+        assert_eq!(
+            parse_event(r#"{"type":"response.function_call_arguments.delta","delta":"x"}"#),
+            ResponseEvent::ToolFragment {
+                slot: None,
+                delta: "x".to_string()
+            }
+        );
+    }
+
+    fn call(name: &str, arguments: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: "call_1".to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    fn piece(index: usize, name: Option<&str>, arguments: &str) -> ToolCallFragment {
+        ToolCallFragment {
+            index,
+            name: name.map(str::to_string),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_call_streams_its_name_then_its_arguments_and_the_done_adds_nothing() {
+        let mut streams = ToolStreams::default();
+        assert_eq!(streams.begin(Some(1), "write"), piece(1, Some("write"), ""));
+        assert_eq!(streams.fragment(Some(1), "{\"pa"), piece(1, None, "{\"pa"));
+        assert_eq!(streams.fragment(Some(1), "th\"}"), piece(1, None, "th\"}"));
+        // Everything the done frame carries was already sent — counting it
+        // again would double the tally.
+        assert_eq!(streams.done(Some(1), &call("write", r#"{"path"}"#)), None);
+    }
+
+    #[test]
+    fn a_call_delivered_whole_at_its_done_frame_streams_once_there() {
+        let mut streams = ToolStreams::default();
+        assert_eq!(
+            streams.done(Some(0), &call("bash", r#"{"command":"ls"}"#)),
+            Some(piece(0, Some("bash"), r#"{"command":"ls"}"#))
+        );
+    }
+
+    #[test]
+    fn a_named_call_whose_arguments_arrive_only_at_the_done_frame_gets_them_there() {
+        let mut streams = ToolStreams::default();
+        assert_eq!(streams.begin(Some(3), "read"), piece(3, Some("read"), ""));
+        assert_eq!(
+            streams.done(Some(3), &call("read", r#"{"path":"a"}"#)),
+            Some(piece(3, None, r#"{"path":"a"}"#))
+        );
+    }
+
+    #[test]
+    fn frames_without_an_output_index_still_key_each_call_apart() {
+        let mut streams = ToolStreams::default();
+        let first = streams.begin(None, "write");
+        let piece_of_first = streams.fragment(None, "{");
+        let second = streams.begin(None, "bash");
+        let piece_of_second = streams.fragment(None, "[");
+        assert_eq!(
+            piece_of_first.index, first.index,
+            "a piece extends the open call"
+        );
+        assert_eq!(piece_of_second.index, second.index);
+        assert_ne!(first.index, second.index, "a new call is a new key");
     }
 
     #[test]

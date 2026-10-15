@@ -490,6 +490,11 @@ pub(super) fn bg_notice_waiting_color() -> Color {
 /// header *and* this row, previewed live) and as the whole `!` shell cell.
 pub(super) const TOOL_RUNNING: &str = "Running…";
 
+/// The verb a live `write` draft's corner row wears while the model generates
+/// the call — `⎿ Writing 14 lines…`, the present tense of the finished cell's
+/// `Wrote 14 lines` (`docs/write-streaming.md`).
+pub(super) const DRAFT_WRITING: &str = "Writing";
+
 /// Placeholder body for a tool queued in a **parallel batch** but not yet
 /// started — the dim `⎿ Waiting…` row shown under a not-yet-running sibling's
 /// `● name(args)` header while another call in the batch executes. See

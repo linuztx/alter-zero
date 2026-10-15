@@ -215,8 +215,10 @@ fn main() {
             StreamEvent::ThinkingEnd => {}
             StreamEvent::ToolCallDelta(frag) => {
                 // The model is generating a tool call — show the streamed
-                // name/argument fragments dim (the app counts these tokens).
-                print!("\x1b[90m{frag}\x1b[0m");
+                // name/argument fragments dim (the app counts these tokens and
+                // streams a `write`'s file — docs/write-streaming.md).
+                let name = frag.name.unwrap_or_default();
+                print!("\x1b[90m{name}{}\x1b[0m", frag.arguments);
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }

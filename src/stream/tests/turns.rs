@@ -467,6 +467,52 @@ fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
 }
 
 #[test]
+fn the_file_change_demo_streams_its_write_as_a_live_model_would() {
+    // A live model generates a `write` call's arguments a few characters at
+    // a time, and the live cell streams the file as they decode
+    // (docs/write-streaming.md). The demo streams its write the same way, so
+    // the cell shows offline: the call's pieces reassemble into exactly the
+    // arguments it then runs with, there are enough of them to watch, and
+    // the app's own draft decoder reads the whole file out of them.
+    let events = turn_events("show me a diff", 0);
+    let pieces: Vec<&ToolCallFragment> = events
+        .iter()
+        .take_while(|e| !matches!(e, StreamEvent::ToolBatch(_)))
+        .filter_map(|e| match e {
+            StreamEvent::ToolCallDelta(piece) => Some(piece),
+            _ => None,
+        })
+        .collect();
+    let write: Vec<&ToolCallFragment> = pieces.iter().copied().filter(|p| p.index == 0).collect();
+    assert_eq!(write[0].name.as_deref(), Some("write"), "named as it opens");
+    let streamed: String = write.iter().map(|p| p.arguments.as_str()).collect();
+    let ran = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolStart {
+                name, arguments, ..
+            } if name == "Write" => arguments.clone(),
+            _ => None,
+        })
+        .expect("the write runs");
+    assert_eq!(streamed, ran, "the pieces are the call the demo runs");
+    assert!(
+        write.len() >= 40,
+        "token-sized pieces, enough to watch the file stream: {}",
+        write.len()
+    );
+    let mut drafts = crate::app::DraftCalls::default();
+    for piece in &pieces {
+        drafts.push(piece);
+    }
+    let draft = drafts.writes().next().expect("a write draft");
+    assert_eq!(draft.path(), Some("fizzbuzz.py"));
+    let content = draft.content().expect("the content decoded");
+    assert!(content.complete);
+    assert!(content.text.contains("def fizzbuzz"), "{}", content.text);
+}
+
+#[test]
 fn a_diff_prompt_scripts_the_write_then_edit_demo() {
     // The file-change design (`docs/tools.md`) has no offline demo otherwise:
     // a `Write` shows the whole new file numbered, an `Edit` shows only the

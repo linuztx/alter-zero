@@ -82,6 +82,9 @@ impl App {
     /// it under a fresh batch id so the records its cells resolve into share
     /// one round and carry the provider's own call ids.
     pub fn open_round(&mut self, calls: Vec<RoundCall>) {
+        // The calls are whole now: their own cells take over from the drafts
+        // that showed them being written (docs/write-streaming.md).
+        self.drafts.clear();
         self.next_batch += 1;
         self.round = Some(OpenRound {
             batch: self.next_batch,
@@ -106,6 +109,9 @@ impl App {
     /// (the `!` shell, the dummy's lone calls) skips it and a lone
     /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
     pub fn start_tool_batch(&mut self, items: &[ToolCallSummary]) {
+        // A batch no round announced (the offline dummy) ends the drafts here
+        // instead (docs/write-streaming.md).
+        self.drafts.clear();
         // The round came back: a request that was retrying, or waiting for a
         // lost connection, got through — the wires that deliver a call whole
         // stream no delta ahead of this (`docs/offline.md`).
@@ -192,6 +198,7 @@ impl App {
     /// silently — the derived context would quietly fall back to the lossy
     /// summary with nothing to notice.
     pub fn start_tool(&mut self, name: &str, args: &str, arguments: Option<&str>) {
+        self.drafts.clear();
         // A lone call (no batch announced it) is the round coming back too.
         if let Some(status) = self.status.as_mut() {
             status.recovered();

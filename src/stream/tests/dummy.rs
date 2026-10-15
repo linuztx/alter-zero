@@ -339,6 +339,22 @@ fn the_dummy_declines_a_chat_with_no_subagents_attached() {
 }
 
 #[test]
+fn a_streamed_write_plays_back_in_a_watchable_few_seconds() {
+    // Each piece of a call being generated pauses like a fraction of a word:
+    // the file-change demo's write streams for long enough to watch its file
+    // scroll by, and not so long that the demo drags (docs/write-streaming.md).
+    let generating: Duration = turn_events("show me a diff", 0)
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolCallDelta(_)))
+        .filter_map(|e| crate::stream::dummy::pace(e, CHUNK_DELAY))
+        .sum();
+    assert!(
+        generating >= Duration::from_secs(1) && generating <= Duration::from_secs(5),
+        "{generating:?}"
+    );
+}
+
+#[test]
 fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
     // A slow model streams a few tokens a second, and the whole point of
     // `ALTER_ZERO_CHUNK_DELAY_MS` is to make the dummy do the same, so the

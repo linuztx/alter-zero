@@ -175,7 +175,7 @@ fn parse_file_cell(tool: &ToolCall) -> Option<(String, Vec<FileRow>)> {
 
 /// The highlight language for a file cell — the extension of the path in the
 /// cell's args (`index.html` → `html`); `None` (plain text) without one.
-fn file_cell_lang(args: &str) -> Option<&str> {
+pub(super) fn file_cell_lang(args: &str) -> Option<&str> {
     let name = args.rsplit(['/', '\\']).next().unwrap_or(args);
     let (stem, ext) = name.rsplit_once('.')?;
     (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
@@ -249,7 +249,7 @@ fn summary_head_lines(head: &str, width: u16) -> Vec<Line<'static>> {
 /// ([`TOOL_RESULT_PREFIX`]), matching Claude-Code's file-change look (the
 /// numbers land just inside the corner). The `⋮` hunk gaps and `…` notes align
 /// here too. See `docs/tools.md`.
-fn file_body_indent() -> usize {
+pub(super) fn file_body_indent() -> usize {
     cols(TOOL_RESULT_PREFIX) + 1
 }
 
@@ -422,7 +422,7 @@ fn row_segments(
 /// `docs/long-lines.md`): a minified `.json` line is cut to that many rows and
 /// marked, instead of painting dozens of rows inline. `None` — the Ctrl+O
 /// expansion and the permission prompt's preview — renders it whole.
-fn numbered_row_lines(
+pub(super) fn numbered_row_lines(
     gutter: &str,
     sign: Option<char>,
     segs: &[highlight::Seg],

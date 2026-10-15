@@ -42,7 +42,7 @@ use super::openai::Delta;
 use super::reasoning::ThinkingMode;
 use super::tools::ToolCallRequest;
 use super::{CacheControl, ChatMessage, ContentPart, MessageContent};
-use crate::stream::TokenUsage;
+use crate::stream::{TokenUsage, ToolCallFragment};
 
 /// The `max_tokens` every request carries, since the API requires one and the
 /// app has no per-model output cap to hand ([`super::models::ModelEntry`]
@@ -612,7 +612,11 @@ impl MessageAccumulator {
             },
         );
         Step::Delta(Delta {
-            tool_call: name,
+            tool_calls: vec![ToolCallFragment {
+                index: block_key(value),
+                name: Some(name),
+                arguments: String::new(),
+            }],
             ..Delta::default()
         })
     }
@@ -663,10 +667,16 @@ impl MessageAccumulator {
                 if let Some(open) = self.open.get_mut(&block_index(value)) {
                     open.arguments.push_str(&fragment);
                 }
-                // Never rendered — counted, so the tally ticks while the call
-                // is produced (`docs/status-indicator.md`).
+                // Counted, so the tally ticks while the call is produced
+                // (`docs/status-indicator.md`), and keyed to its block, so
+                // the live `write` cell can decode it
+                // (`docs/write-streaming.md`).
                 Step::Delta(Delta {
-                    tool_call: fragment,
+                    tool_calls: vec![ToolCallFragment {
+                        index: block_key(value),
+                        name: None,
+                        arguments: fragment,
+                    }],
                     ..Delta::default()
                 })
             }
@@ -753,6 +763,11 @@ impl MessageAccumulator {
 /// the first block than dropped.
 fn block_index(value: &Value) -> u64 {
     value.get("index").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// [`block_index`] as the key a streamed [`ToolCallFragment`] carries.
+fn block_key(value: &Value) -> usize {
+    usize::try_from(block_index(value)).unwrap_or(usize::MAX)
 }
 
 /// What to tell the user when the model declined the request outright. The
@@ -1316,16 +1331,36 @@ mod tests {
         assert_eq!(calls[0].id, "toolu_1");
         assert_eq!(calls[0].name, "get_weather");
         assert_eq!(calls[0].arguments, r#"{"location": "Paris"}"#);
-        // Counted, never rendered — the tally ticks while the call is made.
-        assert_eq!(deltas[0].tool_call, "get_weather");
+        // Each piece names its call by the block's index — the name as the
+        // block opens, then the arguments as they stream — so the tally
+        // ticks and the live `write` cell can decode them
+        // (docs/write-streaming.md).
+        let pieces: Vec<ToolCallFragment> =
+            deltas.iter().flat_map(|d| d.tool_calls.clone()).collect();
+        assert_eq!(
+            pieces,
+            vec![
+                piece(1, Some("get_weather"), ""),
+                piece(1, None, r#"{"location":"#),
+                piece(1, None, r#" "Paris"}"#),
+            ]
+        );
         assert!(deltas.iter().all(|d| d.response.is_empty()));
+    }
+
+    fn piece(index: usize, name: Option<&str>, arguments: &str) -> ToolCallFragment {
+        ToolCallFragment {
+            index,
+            name: name.map(str::to_string),
+            arguments: arguments.to_string(),
+        }
     }
 
     #[test]
     fn two_tool_use_blocks_are_kept_apart_by_their_index() {
         // A parallel batch interleaves its blocks, so a single "current call"
         // would splice one call's arguments into another's.
-        let (_, acc, _) = fold(&[
+        let (deltas, acc, _) = fold(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"read","input":{}}}"#,
             r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"b","name":"bash","input":{}}}"#,
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":\"ls\"}"}}"#,
@@ -1339,6 +1374,20 @@ mod tests {
         assert_eq!(calls[0].arguments, r#"{"path":"x"}"#);
         assert_eq!(calls[1].id, "b");
         assert_eq!(calls[1].arguments, r#"{"cmd":"ls"}"#);
+        // The streamed pieces are kept apart the same way.
+        let keys: Vec<(usize, String)> = deltas
+            .iter()
+            .flat_map(|d| d.tool_calls.iter())
+            .map(|p| (p.index, p.arguments.clone()))
+            .filter(|(_, args)| !args.is_empty())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                (1, r#"{"cmd":"ls"}"#.to_string()),
+                (0, r#"{"path":"x"}"#.to_string()),
+            ]
+        );
     }
 
     #[test]

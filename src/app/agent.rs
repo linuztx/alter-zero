@@ -311,6 +311,8 @@ impl App {
     /// spec and open the live group cell. The loop flushed the streaming
     /// segment first (the ToolBatch dance), so the cell slots after the text.
     pub fn start_agent_group(&mut self, background: bool, specs: &[AgentSpec]) {
+        // The round's calls are whole (docs/write-streaming.md).
+        self.drafts.clear();
         for spec in specs {
             // The launch's place in the round the backend announced ahead
             // of it, found by the call id its spec carries

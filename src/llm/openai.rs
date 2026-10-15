@@ -18,7 +18,7 @@ use super::config::ModelConfig;
 use super::thinking::ThinkingSplitter;
 use super::tools::ToolCallRequest;
 use super::{ChatMessage, LlmError, Result};
-use crate::stream::{CancelToken, TokenUsage};
+use crate::stream::{CancelToken, TokenUsage, ToolCallFragment};
 
 /// The HTTP client's per-operation deadline (see [`super::http_client`]): it
 /// bounds the whole send/header exchange — connect, uploading the request
@@ -49,15 +49,16 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A split delta surfaced to the caller each SSE frame: the visible response
 /// text and the (hidden) reasoning text, already peeled apart by the
-/// [`ThinkingSplitter`], plus the raw tool-call fragment (`name`/`arguments`
-/// pieces) streamed this frame — surfaced so the caller can count the tokens
-/// the model spends *generating* a tool call, the same way reasoning is counted
-/// (never rendered; see `docs/status-indicator.md`).
+/// [`ThinkingSplitter`], plus the tool-call pieces (`name`/`arguments`
+/// fragments) streamed this frame, each keyed to the call it belongs to —
+/// surfaced so the caller can count the tokens the model spends *generating*
+/// a call (`docs/status-indicator.md`) and the live `write` cell can decode
+/// its file as it streams (`docs/write-streaming.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Delta {
     pub response: String,
     pub reasoning: String,
-    pub tool_call: String,
+    pub tool_calls: Vec<ToolCallFragment>,
 }
 
 /// What one completed stream produced: the accumulated text/reasoning, the
@@ -701,8 +702,10 @@ fn run_transport(
 ///
 /// The one structural difference: a tool call arrives **whole**, on a single
 /// `response.output_item.done` frame, where Chat Completions dribbles it out
-/// as `tool_calls` fragments. So there is no accumulator here — the argument
-/// fragments that *do* stream are surfaced for the token tally only.
+/// as `tool_calls` fragments. So there is no accumulator here — the name
+/// (`output_item.added`) and the argument fragments that *do* stream ahead of
+/// it are surfaced, keyed by [`super::responses::ToolStreams`], for the token
+/// tally and the live `write` cell (`docs/write-streaming.md`).
 fn drain_responses(
     rx: &Receiver<Result<Vec<u8>>>,
     cancel: &CancelToken,
@@ -713,6 +716,7 @@ fn drain_responses(
     let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
     let mut finish_reason: Option<String> = None;
     let mut usage: Option<TokenUsage> = None;
+    let mut streams = super::responses::ToolStreams::default();
     pump_lines(rx, cancel, &mut |line: &[u8]| {
         let Ok(frame) = std::str::from_utf8(line) else {
             return SseStep::Continue;
@@ -742,21 +746,32 @@ fn drain_responses(
                     });
                 }
             }
-            super::responses::ResponseEvent::ToolFragment(fragment) => {
-                if !fragment.is_empty() {
+            super::responses::ResponseEvent::ToolBegin { slot, name } => {
+                // The call's name, ahead of its arguments: the live `write`
+                // cell opens on it (docs/write-streaming.md).
+                on_delta(Delta {
+                    tool_calls: vec![streams.begin(slot, &name)],
+                    ..Delta::default()
+                });
+            }
+            super::responses::ResponseEvent::ToolFragment { slot, delta } => {
+                if !delta.is_empty() {
                     on_delta(Delta {
-                        tool_call: fragment,
+                        tool_calls: vec![streams.fragment(slot, &delta)],
                         ..Delta::default()
                     });
                 }
             }
-            super::responses::ResponseEvent::ToolCall(call) => {
-                // The name arrives with the finished item, so this is also
-                // the first moment the tally can see it.
-                on_delta(Delta {
-                    tool_call: call.name.clone(),
-                    ..Delta::default()
-                });
+            super::responses::ResponseEvent::ToolCall { slot, call } => {
+                // Only what no earlier frame streamed — the name and the
+                // arguments of a call that arrived whole — so nothing is
+                // counted twice.
+                if let Some(piece) = streams.done(slot, &call) {
+                    on_delta(Delta {
+                        tool_calls: vec![piece],
+                        ..Delta::default()
+                    });
+                }
                 tool_calls.push(call);
             }
             super::responses::ResponseEvent::Completed { usage: got, status } => {
@@ -1015,7 +1030,7 @@ fn drain_stream(
         on_delta(Delta {
             response: resp_tail,
             reasoning: reason_tail,
-            tool_call: String::new(),
+            tool_calls: Vec::new(),
         });
     }
     Ok(StreamOutcome {
@@ -1054,13 +1069,18 @@ impl ToolCallAccumulator {
     /// Gemini's OpenAI layer reuse index 0 for every parallel call, and the
     /// non-streaming `message.tool_calls` shape omits `index` entirely, so
     /// keying by index alone corrupted distinct calls into one.
+    ///
+    /// Returns the **slot** the fragment folded into — the key its
+    /// [`ToolCallFragment`] carries, so a piece names the call it extends by
+    /// the same rule the calls themselves are told apart by
+    /// (`docs/write-streaming.md`).
     fn push(
         &mut self,
         index: Option<usize>,
         id: Option<&str>,
         name: Option<&str>,
         arguments: Option<&str>,
-    ) {
+    ) -> usize {
         // Which entry would this fragment continue? With an index, the latest
         // entry carrying it (so continuations follow a same-index split);
         // without one, the latest entry outright.
@@ -1072,16 +1092,14 @@ impl ToolCallAccumulator {
             Some(id) if !id.is_empty() => self.calls[p].id.is_empty() || self.calls[p].id == id,
             _ => true,
         });
-        let entry = match pos {
-            Some(p) => &mut self.calls[p],
-            None => {
-                self.calls.push(PartialToolCall {
-                    index,
-                    ..Default::default()
-                });
-                self.calls.last_mut().expect("just pushed an entry")
-            }
-        };
+        let slot = pos.unwrap_or_else(|| {
+            self.calls.push(PartialToolCall {
+                index,
+                ..Default::default()
+            });
+            self.calls.len() - 1
+        });
+        let entry = &mut self.calls[slot];
         if let Some(id) = id.filter(|s| !s.is_empty()) {
             entry.id = id.to_string();
         }
@@ -1091,6 +1109,7 @@ impl ToolCallAccumulator {
         if let Some(args) = arguments {
             entry.arguments.push_str(args);
         }
+        slot
     }
 
     /// Were any tool-call deltas seen?
@@ -1180,39 +1199,43 @@ fn process_payload(
     }
     // Tool-call fragments and the finish reason ride the same JSON frame as the
     // text delta — fold them in before the content early-return so a
-    // tool-call-only frame (no content) is never skipped. The raw name/argument
-    // pieces are also gathered into `tool_frag` so the caller can count the
-    // model *generating* the call (docs/status-indicator.md).
+    // tool-call-only frame (no content) is never skipped. Each name/argument
+    // piece is also surfaced, keyed to the slot it folded into, so the caller
+    // can count the model *generating* the call (docs/status-indicator.md)
+    // and the live `write` cell can decode it (docs/write-streaming.md).
     let (tool_deltas, reason) = parse_sse_tool_calls(data);
-    let mut tool_frag = String::new();
+    let mut pieces = Vec::new();
     for td in tool_deltas {
-        if let Some(name) = &td.name {
-            tool_frag.push_str(name);
-        }
-        if let Some(args) = &td.arguments {
-            tool_frag.push_str(args);
-        }
-        tools.push(
+        let slot = tools.push(
             td.index,
             td.id.as_deref(),
             td.name.as_deref(),
             td.arguments.as_deref(),
         );
+        let name = td.name.filter(|name| !name.is_empty());
+        let arguments = td.arguments.unwrap_or_default();
+        if name.is_some() || !arguments.is_empty() {
+            pieces.push(ToolCallFragment {
+                index: slot,
+                name,
+                arguments,
+            });
+        }
     }
     if let Some(reason) = reason {
         *finish_reason = Some(reason);
     }
     let (content, reasoning) = parse_sse_data(data);
     // Nothing to surface this frame (a keep-alive, or a finish_reason-only frame).
-    if content.is_empty() && reasoning.is_empty() && tool_frag.is_empty() {
+    if content.is_empty() && reasoning.is_empty() && pieces.is_empty() {
         return SseStep::Continue;
     }
     let (resp_delta, reason_delta) = splitter.feed(&content, &reasoning);
-    if !resp_delta.is_empty() || !reason_delta.is_empty() || !tool_frag.is_empty() {
+    if !resp_delta.is_empty() || !reason_delta.is_empty() || !pieces.is_empty() {
         on_delta(Delta {
             response: resp_delta,
             reasoning: reason_delta,
-            tool_call: tool_frag,
+            tool_calls: pieces,
         });
     }
     SseStep::Continue
@@ -2232,8 +2255,9 @@ mod tests {
         assert!(deltas[0].response.is_empty(), "no visible reply text");
         assert!(deltas[0].reasoning.is_empty(), "not reasoning");
         assert_eq!(
-            deltas[0].tool_call, r#"bash{"command":"#,
-            "the name + arguments fragment rides for counting"
+            deltas[0].tool_calls,
+            vec![fragment(0, Some("bash"), r#"{"command":"#)],
+            "the name + arguments piece rides, keyed to its call"
         );
     }
 
@@ -2245,7 +2269,73 @@ mod tests {
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}"#,
         );
         assert_eq!(deltas.len(), 1);
-        assert_eq!(deltas[0].tool_call, r#""ls"}"#);
+        assert_eq!(deltas[0].tool_calls, vec![fragment(0, None, r#""ls"}"#)]);
+    }
+
+    /// One expected [`ToolCallFragment`].
+    fn fragment(index: usize, name: Option<&str>, arguments: &str) -> ToolCallFragment {
+        ToolCallFragment {
+            index,
+            name: name.map(str::to_string),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    /// Every tool-call piece `lines` surface, in order, through one shared
+    /// accumulator — the way a real stream folds them.
+    fn tool_fragments(lines: &[&str]) -> Vec<ToolCallFragment> {
+        let mut splitter = ThinkingSplitter::new();
+        let mut tools = ToolCallAccumulator::default();
+        let mut finish = None;
+        let mut usage = None;
+        let mut out = Vec::new();
+        for line in lines {
+            let _ = process_sse_line(
+                line.as_bytes(),
+                &mut splitter,
+                &mut tools,
+                &mut finish,
+                &mut usage,
+                &mut |d: Delta| out.extend(d.tool_calls),
+            );
+        }
+        out
+    }
+
+    #[test]
+    fn interleaved_parallel_calls_keep_their_pieces_apart() {
+        // Two calls streaming at once: every piece names the call it extends,
+        // so the live cell never splices one call's arguments into another's.
+        let pieces = tool_fragments(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"write","arguments":"{\"pa"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"bash","arguments":"{\"co"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":"}}]}}]}"#,
+        ]);
+        assert_eq!(
+            pieces,
+            vec![
+                fragment(0, Some("write"), r#"{"pa"#),
+                fragment(1, Some("bash"), r#"{"co"#),
+                fragment(0, None, r#"th":"#),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reused_wire_index_with_a_new_id_is_a_new_call() {
+        // Gemini's OpenAI layer numbers every parallel call 0; the id is what
+        // tells them apart — the accumulator's rule, and so the pieces' key.
+        let pieces = tool_fragments(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read","arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b","function":{"name":"write","arguments":"{"}}]}}]}"#,
+        ]);
+        assert_eq!(
+            pieces,
+            vec![
+                fragment(0, Some("read"), "{}"),
+                fragment(1, Some("write"), "{"),
+            ]
+        );
     }
 
     #[test]
@@ -2382,6 +2472,42 @@ mod tests {
         let mut deltas = Vec::new();
         let out = drain_stream(&rx, &CancelToken::new(), |d| deltas.push(d));
         (out, deltas)
+    }
+
+    /// The Responses drain's twin of [`drain_queued`].
+    fn drain_responses_queued(events: &[&str]) -> (Result<StreamOutcome>, Vec<Delta>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for e in events {
+            tx.send(Ok(format!("data: {e}\n").into_bytes())).unwrap();
+        }
+        drop(tx);
+        let mut deltas = Vec::new();
+        let out = drain_responses(&rx, &CancelToken::new(), |d| deltas.push(d));
+        (out, deltas)
+    }
+
+    #[test]
+    fn drain_responses_streams_a_call_as_the_model_generates_it() {
+        let (out, deltas) = drain_responses_queued(&[
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"write","arguments":""}}"#,
+            r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":"}"#,
+            r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"a\"}"}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"write","arguments":"{\"path\":\"a\"}"}}"#,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        ]);
+        let pieces: Vec<ToolCallFragment> = deltas.into_iter().flat_map(|d| d.tool_calls).collect();
+        assert_eq!(
+            pieces,
+            vec![
+                fragment(0, Some("write"), ""),
+                fragment(0, None, r#"{"path":"#),
+                fragment(0, None, r#""a"}"#),
+            ],
+            "the name as the call opens, then its arguments — the done frame adds nothing"
+        );
+        let outcome = out.unwrap();
+        assert_eq!(outcome.tool_calls.len(), 1);
+        assert_eq!(outcome.tool_calls[0].arguments, r#"{"path":"a"}"#);
     }
 
     /// The Anthropic drain's twin of [`drain_queued`].
@@ -2591,7 +2717,7 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\
             1,
             "the generation fragment surfaced for counting"
         );
-        assert_eq!(deltas[0].tool_call, "bash{}");
+        assert_eq!(deltas[0].tool_calls, vec![fragment(0, Some("bash"), "{}")]);
     }
 
     #[test]

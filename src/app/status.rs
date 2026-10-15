@@ -228,21 +228,6 @@ impl App {
             status.recovered();
         }
     }
-    /// Count a streamed tool-call generation delta (the model emitting a tool
-    /// call's `name`/`arguments` fragments) into the live token tally (arrow
-    /// down — it is model output, streaming) **without** touching the reply
-    /// buffer: the fragment is opaque JSON, never rendered. This keeps the
-    /// status count ticking while the model *generates* a tool call, exactly
-    /// like reasoning ticks it while the model thinks (see
-    /// `docs/status-indicator.md`). No-op when no turn is in flight.
-    pub fn push_tool_call_progress(&mut self, chunk: &str) {
-        if let Some(status) = self.status.as_mut() {
-            status.tokens += count_tokens(chunk);
-            status.arrow = TokenArrow::Down;
-            // Generating the call is content too — a retrying request recovered.
-            status.recovered();
-        }
-    }
     /// Fold one provider usage report (the round's final `usage` frame,
     /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
     /// billed total and its cached share, and **snap the live tally to the

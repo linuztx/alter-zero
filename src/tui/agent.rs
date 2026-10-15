@@ -165,17 +165,23 @@ impl Session<'_> {
         // (the fold consumes the buffer).
         //
         // **Which events those are is the fold's own answer**
-        // ([`AgentRun::flushes_segment`]), not a list kept here: the
-        // hand-kept one drifted, missing `HookNote` — whose arm flushes the
-        // buffer — so a `SubagentStop` continuation dropped the reply's
-        // withheld tail from the screen *and* left `agent_render` holding a
-        // prefix of a buffer that no longer existed, which the continuation's
-        // next `Chunk` then committed against
-        // (`docs/agent-view-streaming.md`). `ThinkingStart` stays separate
-        // (`opening`): it flushes only when the display is on, and that gate
-        // is the boundary's.
+        // ([`AgentRun::flushes_segment_on`], asked before the fold), not a
+        // list kept here: the hand-kept one drifted, missing `HookNote` —
+        // whose arm flushes the buffer — so a `SubagentStop` continuation
+        // dropped the reply's withheld tail from the screen *and* left
+        // `agent_render` holding a prefix of a buffer that no longer existed,
+        // which the continuation's next `Chunk` then committed against
+        // (`docs/agent-view-streaming.md`). It asks the run itself because one
+        // boundary is the run's state, not the event's: the tool-call piece
+        // that opens a `write` draft (`docs/write-streaming.md`).
+        // `ThinkingStart` stays separate (`opening`): it flushes only when the
+        // display is on, and that gate is the boundary's.
         if viewing
-            && (opening || alter_zero::agents::AgentRun::flushes_segment(&event))
+            && (opening
+                || self
+                    .app
+                    .agent(id)
+                    .is_some_and(|run| run.flushes_segment_on(&event)))
             && let Some(text) = self
                 .app
                 .viewed_agent()

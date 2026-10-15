@@ -6,6 +6,7 @@
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::conversation::is_shell_header;
+use super::draft::draft_full_lines;
 use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
@@ -145,6 +146,11 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     }
     for tool in &run.tool_queue {
         lines.extend(tool_full_lines(tool, width, app.path_display()));
+        lines.push(Line::default());
+    }
+    // The `write` calls it is generating, whole (`docs/write-streaming.md`).
+    for draft in run.drafts.writes() {
+        lines.extend(draft_full_lines(draft, width, app.path_display()));
         lines.push(Line::default());
     }
     // …and what the user typed into this agent while it works — the messages
@@ -314,6 +320,10 @@ struct TranscriptSig {
     /// tree counters, its Ctrl+O cell) invalidates the tail exactly like a
     /// streaming tool (docs/agent-tool.md).
     agents_generation: u64,
+    /// A fingerprint of the `write` calls being generated — each one's header
+    /// and how much of its file has decoded — so the overlay follows a file
+    /// streaming under it (docs/write-streaming.md).
+    drafts: u64,
 }
 
 impl TranscriptSig {
@@ -334,8 +344,25 @@ impl TranscriptSig {
             queued_len: app.queued.len() + app.steered.len(),
             backtrack_selected: app.backtrack.selected,
             agents_generation: app.agents_generation(),
+            drafts: drafts_fingerprint(app),
         }
     }
+}
+
+/// [`TranscriptSig::drafts`]: what each `write` draft's expansion reads that
+/// can change — its id, its path, its decoded length and whether it closed.
+fn drafts_fingerprint(app: &App) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    for draft in app.drafts().writes() {
+        draft.id().hash(&mut hasher);
+        draft.path().hash(&mut hasher);
+        draft
+            .content()
+            .map(|content| (content.text.len(), content.complete))
+            .hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 impl TranscriptCache {
@@ -502,6 +529,14 @@ impl TranscriptCache {
         for tool in app.tool_queue() {
             self.lines
                 .extend(tool_full_lines(tool, width, app.path_display()));
+            self.lines.push(Line::default());
+        }
+        // The `write` calls the model is still generating, every line decoded
+        // so far — what the strip's cell folds behind its hint
+        // (docs/write-streaming.md).
+        for draft in app.drafts().writes() {
+            self.lines
+                .extend(draft_full_lines(draft, width, app.path_display()));
             self.lines.push(Line::default());
         }
         if !app.queued.is_empty() || !app.steered.is_empty() {

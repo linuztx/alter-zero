@@ -300,6 +300,12 @@ pub struct AgentRun {
     /// set a delta is counted and dropped exactly as it always was
     /// (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
     reasoning: Option<String>,
+    /// The round's **draft calls** — what this agent is generating, decoded
+    /// as it streams — so its session view's live `write` cell shows the file
+    /// before the call is whole, exactly as the main strip does
+    /// (`docs/write-streaming.md`). Display state, never transcript: cleared
+    /// when the round's calls are announced and when the run ends.
+    pub drafts: crate::app::DraftCalls,
     /// Where this round's settled thinking cells landed in
     /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
     /// frame can snap their tokenizer estimates to the provider's
@@ -400,12 +406,25 @@ impl AgentRun {
             stopped_by_user: false,
             last_call: None,
             reasoning: None,
+            drafts: crate::app::DraftCalls::default(),
             round_reasoning: Vec::new(),
             thinking: None,
             command_elapsed: None,
             retry: None,
             offline: None,
         }
+    }
+
+    /// Will folding `event` into this run **finalise the run of streamed text
+    /// before it**? `flushes_segment`'s answer — the events that always do — plus
+    /// the one boundary that depends on the run's own state: the piece that
+    /// opens a `write` draft, whose live cell goes up after the text before
+    /// it (`docs/write-streaming.md`). Asked **before** the fold, which is
+    /// when the session view must commit the tail its render withheld.
+    #[must_use]
+    pub fn flushes_segment_on(&self, event: &StreamEvent) -> bool {
+        Self::flushes_segment(event)
+            || matches!(event, StreamEvent::ToolCallDelta(piece) if self.drafts.would_open(piece))
     }
 
     /// Does folding `event` **finalise the run of streamed text before it**
@@ -415,7 +434,8 @@ impl AgentRun {
     /// One definition, two readers: `apply` consumes the buffer at these
     /// points, and the session view commits the tail its `StreamRender`
     /// withheld — then resets that render — at exactly the same ones
-    /// (`tui::agent`). A hand-kept list in the boundary is what drifted
+    /// (`tui::agent`, through [`flushes_segment_on`](Self::flushes_segment_on),
+    /// which adds the one stateful boundary). A hand-kept list in the boundary is what drifted
     /// before: [`StreamEvent::HookNote`] flushes the buffer in the fold but
     /// was missing from the view's list, so a `SubagentStop` continuation
     /// dropped the reply's withheld tail from the screen *and* left the
@@ -427,7 +447,7 @@ impl AgentRun {
     /// itself (`/settings` **Hide thinking**), so this stays the question
     /// `apply` alone answers. `every_flush_point_is_declared` pins the pair.
     #[must_use]
-    pub const fn flushes_segment(event: &StreamEvent) -> bool {
+    const fn flushes_segment(event: &StreamEvent) -> bool {
         matches!(
             event,
             StreamEvent::ToolBatch(_)
@@ -524,17 +544,25 @@ impl AgentRun {
                     buffer.push_str(text);
                 }
             }
-            // Opaque progress — counted so the footer tally ticks while the
-            // agent generates a call (the status-line pattern).
-            StreamEvent::ToolCallDelta(text) => {
-                self.tokens += crate::app::count_tokens(text) as u64;
+            // A piece of a call the agent is generating — counted so the
+            // footer tally ticks (the status-line pattern), and decoded into
+            // its draft, so the session view streams a `write` as it is
+            // written (docs/write-streaming.md). The piece that opens one
+            // finalises the text before it — flush before you interleave.
+            StreamEvent::ToolCallDelta(piece) => {
+                self.tokens += crate::app::fragment_tokens(piece) as u64;
                 self.recovered();
+                if self.drafts.push(piece) {
+                    self.flush_segment();
+                }
             }
             StreamEvent::ToolBatch(items) => {
                 // The round came back (the wires that deliver a call whole
                 // stream no delta first) — any wait is over.
                 self.recovered();
                 self.flush_segment();
+                // The calls are whole: their cells take over from the drafts.
+                self.drafts.clear();
                 // The announcement is the round's **whole** queue, exactly as
                 // `App::start_tool_batch` treats it: anything left over from
                 // an earlier round would otherwise sit at the front and take
@@ -567,6 +595,7 @@ impl AgentRun {
                 arguments,
             } => {
                 self.flush_segment();
+                self.drafts.clear();
                 self.tool_uses += 1;
                 self.tool_live.reset();
                 // A new command has run no time yet: the roster tick injects
@@ -720,6 +749,7 @@ impl AgentRun {
                 self.settle_thinking();
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
+                self.drafts.clear();
                 self.status = AgentStatus::Done;
                 // No usage frame this turn (the dummy, a provider that omits
                 // them): the tokenizer estimate over this transcript stands
@@ -753,6 +783,9 @@ impl AgentRun {
                 // reply and the red notice (the main session's order).
                 self.settle_thinking();
                 self.flush_segment();
+                // A call still being generated dies unmade
+                // (docs/write-streaming.md).
+                self.drafts.clear();
                 self.resolve_tools(message);
                 self.error = Some(message.clone());
                 self.status = AgentStatus::Failed;
@@ -895,6 +928,9 @@ impl AgentRun {
         // Keep a partial thought: what streamed is what the user saw.
         self.settle_thinking();
         self.flush_segment();
+        // A call still being generated was never made: the loop is cancelled
+        // before the round ends (docs/write-streaming.md).
+        self.drafts.clear();
         self.resolve_tools(crate::app::INTERRUPT_TOOL_OUTPUT);
         // A stopped agent's loop is cancelled, so nothing will ever take what
         // is still queued for it: drop the rows rather than leave them
@@ -3412,7 +3448,25 @@ mod tests {
                 },
             ),
             ("ThinkingChunk", StreamEvent::ThinkingChunk("t".to_string())),
-            ("ToolCallDelta", StreamEvent::ToolCallDelta("{".to_string())),
+            (
+                "ToolCallDelta",
+                StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+                    index: 0,
+                    name: Some("bash".to_string()),
+                    arguments: "{".to_string(),
+                }),
+            ),
+            // The piece that opens a `write` draft is a segment boundary of
+            // its own: the live cell goes up after the text before it
+            // (docs/write-streaming.md).
+            (
+                "ToolCallDelta opening a write",
+                StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+                    index: 0,
+                    name: Some("write".to_string()),
+                    arguments: String::new(),
+                }),
+            ),
             (
                 "ToolBatch",
                 StreamEvent::ToolBatch(vec![ToolCallSummary {
@@ -3571,27 +3625,100 @@ mod tests {
 
     #[test]
     fn every_flush_point_is_declared() {
-        // `AgentRun::flushes_segment` is the boundary's only source of truth
-        // for where the session view must finish + reset its `StreamRender`
-        // (`docs/agent-view-streaming.md`). It has to agree with what `apply`
-        // actually does to the buffer for **every** event, or the view falls
-        // behind the fold again — which is how `HookNote` came to drop a
-        // reply's withheld tail and leave the render pointing at a buffer
-        // that no longer existed.
+        // `AgentRun::flushes_segment_on` is the boundary's only source of
+        // truth for where the session view must finish + reset its
+        // `StreamRender` (`docs/agent-view-streaming.md`). It has to agree
+        // with what `apply` actually does to the buffer for **every** event,
+        // or the view falls behind the fold again — which is how `HookNote`
+        // came to drop a reply's withheld tail and leave the render pointing
+        // at a buffer that no longer existed. Asked before the fold, as the
+        // boundary asks it.
         for (name, event) in one_of_every_event() {
             let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
             run.apply(&StreamEvent::Chunk("partial answer".to_string()));
+            let flushes = run.flushes_segment_on(&event);
             run.apply(&event);
             // `flush_segment` *takes* the buffer, so a finalised segment
             // leaves `None` — a `Chunk` merely appending to it has not
             // finalised anything.
             let consumed = run.streaming.is_none();
             assert_eq!(
-                AgentRun::flushes_segment(&event),
-                consumed,
+                flushes, consumed,
                 "{name}: the predicate and the fold disagree about the segment"
             );
         }
+    }
+
+    fn piece(index: usize, name: Option<&str>, arguments: &str) -> StreamEvent {
+        StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+            index,
+            name: name.map(str::to_string),
+            arguments: arguments.to_string(),
+        })
+    }
+
+    #[test]
+    fn a_write_the_agent_is_generating_streams_into_a_draft_on_its_run() {
+        // The session view's live `write` cell reads these, exactly like the
+        // main strip reads `App::drafts` (docs/write-streaming.md).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&piece(0, Some("write"), r#"{"path":"a.py","content":"x"#));
+        let draft = run.drafts.writes().next().expect("a write draft");
+        assert_eq!(draft.path(), Some("a.py"));
+        assert_eq!(draft.content().expect("opened").text, "x");
+        assert!(run.tokens > 0, "the pieces tick the agent's tally too");
+    }
+
+    #[test]
+    fn only_the_piece_that_opens_a_write_draft_finalises_the_text_before_it() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::Chunk("Writing the file now.".to_string()));
+        assert!(
+            !run.flushes_segment_on(&piece(0, Some("bash"), "{")),
+            "a call that never renders splits nothing"
+        );
+        let opening = piece(1, Some("write"), "");
+        assert!(run.flushes_segment_on(&opening));
+        run.apply(&opening);
+        assert!(run.streaming.is_none(), "the run of text was finalised");
+        assert!(
+            matches!(run.history.last(),
+                Some(HistoryItem::Message(m)) if m.text == "Writing the file now."),
+            "and recorded ahead of the cell: {:?}",
+            run.history
+        );
+        assert!(
+            !run.flushes_segment_on(&piece(1, None, "{")),
+            "a later piece of the open draft is no boundary"
+        );
+    }
+
+    #[test]
+    fn the_rounds_calls_or_the_runs_end_take_its_drafts_down() {
+        let ends = [
+            StreamEvent::ToolBatch(vec![ToolCallSummary {
+                name: "Write".to_string(),
+                args: "a.py".to_string(),
+            }]),
+            StreamEvent::ToolStart {
+                name: "Write".to_string(),
+                args: "a.py".to_string(),
+                detail: None,
+                arguments: None,
+            },
+            StreamEvent::StreamDone,
+            StreamEvent::Error("boom".to_string()),
+        ];
+        for end in ends {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&piece(0, Some("write"), "{"));
+            run.apply(&end);
+            assert!(run.drafts.is_empty(), "{end:?} left a draft behind");
+        }
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&piece(0, Some("write"), "{"));
+        run.interrupt();
+        assert!(run.drafts.is_empty(), "a stop takes the draft down too");
     }
 
     #[test]

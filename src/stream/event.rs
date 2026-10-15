@@ -34,6 +34,25 @@ pub struct ToolCallSummary {
     pub args: String,
 }
 
+/// One streamed piece of a tool call the model is **generating** — the
+/// `name`/`arguments` fragments a provider sends before the round ends and
+/// the call runs, carried by [`StreamEvent::ToolCallDelta`]. Every piece of
+/// one call carries the same `index`; a piece with a new one is a new call.
+/// What lets the live `write` cell decode its file while the model is still
+/// writing it (`docs/write-streaming.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCallFragment {
+    /// The call this piece belongs to — a key unique within the round, in the
+    /// wire's own terms (the Chat Completions accumulator slot, the Responses
+    /// output index, the Messages content-block index). Not a position: a
+    /// round's keys may skip numbers.
+    pub index: usize,
+    /// The call's wire tool name, on the piece that carries it.
+    pub name: Option<String>,
+    /// The next piece of the call's JSON arguments, verbatim (may be empty).
+    pub arguments: String,
+}
+
 /// One subagent announced by a [`StreamEvent::AgentBatch`]: the identity the
 /// roster entry ([`crate::agents::AgentRun`]) is created from. `id` is the
 /// registry id its agent-channel events will carry; `background` mirrors the
@@ -370,14 +389,16 @@ pub enum StreamEvent {
     /// The model's thinking phase ended. Always follows a
     /// [`StreamEvent::ThinkingStart`]; drops the `Thinking for Ns` suffix.
     ThinkingEnd,
-    /// A fragment of a tool call the model is **generating** — the streamed
-    /// `name`/`arguments` pieces of a `tool_calls` delta, before the tool runs.
-    /// Opaque JSON, never rendered, but counted into the live token tally (like
-    /// [`StreamEvent::ThinkingChunk`]) so the status keeps ticking while the
-    /// model generates the call. Emitted by a real backend during a
-    /// tool-calling round, ahead of the [`StreamEvent::ToolStart`] that begins
-    /// executing it. See `docs/status-indicator.md`.
-    ToolCallDelta(String),
+    /// A piece of a tool call the model is **generating** — its streamed
+    /// `name`/`arguments` fragments, before the round ends and the call runs,
+    /// keyed to the call it belongs to ([`ToolCallFragment`]). Counted into
+    /// the live token tally (like [`StreamEvent::ThinkingChunk`]) so the
+    /// status keeps ticking while the model generates the call
+    /// (`docs/status-indicator.md`), and decoded as it lands: a `write` call's
+    /// cell streams its file into the strip while the model writes it
+    /// (`docs/write-streaming.md`). Emitted by a real backend during a
+    /// tool-calling round, ahead of the round's [`StreamEvent::RoundCalls`].
+    ToolCallDelta(ToolCallFragment),
     /// A failed request is being retried (the connection/send failed before any
     /// content streamed, or the server returned a transient status). Carries the
     /// 1-based retry number and the ceiling, shown live in the status line as

@@ -65,11 +65,14 @@ expect_lacks "$think_done" -F "Then edit it and run it." "the chain-of-thought r
 if ! printf '%s' "$think_done" | grep -B 1 -E "^Thought for" | head -1 | grep -qE "^[[:space:]]*$"; then
 	fail "the thought cell was spliced into the streaming reply instead of following a finalised segment (invariant 4)"
 fi
-# Ctrl+O expands it back.
+# Ctrl+O expands it back. The overlay opens pinned to the bottom while the
+# turn streams on under it, so how much of the transcript sits below the
+# thought depends on how far the turn has got — jump to the top, where the
+# thought is, and poll for it there rather than racing the turn.
 tmux send-keys -t "$S66" C-o
-sleep 0.6
-think_overlay="$(tmux capture-pane -t "$S66" -p -S -200)"
-if ! printf '%s' "$think_overlay" | grep -qF "Then edit it and run it."; then
+wait_for 3 "$S66" -F "T R A N S C R I P T" || fail "Ctrl+O did not open the transcript"
+tmux send-keys -t "$S66" Home
+if ! think_overlay="$(wait_pane 3 "$S66" -F "Then edit it and run it.")"; then
 	echo "==== Phase 66: captured overlay ===="
 	printf '%s\n' "$think_overlay"
 	fail "the Ctrl+O transcript did not expand the thought's chain-of-thought"

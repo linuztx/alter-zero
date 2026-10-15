@@ -436,10 +436,10 @@ fn replay(
 /// How long to pause *after* sending `event`, so a scripted turn plays back at
 /// human speed: a tool "runs" for [`TOOL_DELAY`] (grey) before its `ToolEnd`
 /// resolves it, the model "thinks" one [`THINK_CHUNK_DELAY`] step per reasoning
-/// event, and every word/output line trickles at `chunk_delay` —
-/// [`CHUNK_DELAY`] unless the backend was built slower. `None` means the next
-/// event follows immediately.
-fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
+/// event, every word/output line trickles at `chunk_delay` — [`CHUNK_DELAY`]
+/// unless the backend was built slower — and a call being generated at a third
+/// of that per piece. `None` means the next event follows immediately.
+pub(in crate::stream) fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
     match event {
         StreamEvent::Chunk(_) => Some(chunk_delay),
         StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
@@ -457,9 +457,11 @@ fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
         // under the status line visibly grows row by row
         // (docs/task-tools.md).
         StreamEvent::TaskCall { .. } => Some(TOOL_DELAY),
-        StreamEvent::ThinkingStart
-        | StreamEvent::ThinkingChunk(_)
-        | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),
+        StreamEvent::ThinkingStart | StreamEvent::ThinkingChunk(_) => Some(THINK_CHUNK_DELAY),
+        // A call being generated streams token-sized pieces, a third of a
+        // word's pause each — a demo `write` scrolls its file by in a couple
+        // of seconds, like a live model's (docs/write-streaming.md).
+        StreamEvent::ToolCallDelta(_) => Some(chunk_delay / 3),
         _ => None,
     }
 }

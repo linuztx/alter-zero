@@ -1246,37 +1246,6 @@ fn push_thinking_is_a_no_op_when_idle() {
 }
 
 #[test]
-fn push_tool_call_progress_grows_the_tally_pointing_down_without_touching_the_reply() {
-    // While the model *generates* a tool call, the streamed name/argument
-    // fragments count into the tally (arrow ↓ — model output) so the status
-    // keeps ticking, but the opaque JSON never reaches the reply buffer.
-    let mut app = App::new();
-    app.begin_stream();
-    app.push_chunk("let me check ");
-    let before = app.status().unwrap().tokens;
-    app.push_tool_call_progress(r#"bash{"command":"ls -la"}"#);
-    let status = app.status().unwrap();
-    assert!(
-        status.tokens > before,
-        "the tool-call fragment counts tokens"
-    );
-    assert_eq!(status.arrow, TokenArrow::Down, "generation streams down");
-    assert_eq!(
-        app.streaming_text(),
-        Some("let me check "),
-        "the reply buffer is untouched by tool-call JSON"
-    );
-}
-
-#[test]
-fn push_tool_call_progress_is_a_no_op_when_idle() {
-    let mut app = App::new();
-    app.push_tool_call_progress(r#"{"command":"ls"}"#);
-    assert!(app.status().is_none(), "no status conjured up");
-    assert_eq!(app.streaming_text(), None);
-}
-
-#[test]
 fn apply_usage_snaps_the_tally_to_the_real_total() {
     // The provider's usage frame counts what the estimate never saw (the
     // system prompt, the re-sent context), so it REPLACES the ticked
@@ -1496,7 +1465,11 @@ fn the_request_getting_through_ends_the_wait() {
         ("a chunk", |app| app.push_chunk("hello")),
         ("a reasoning delta", |app| app.push_thinking("hmm")),
         ("a tool-call delta", |app| {
-            app.push_tool_call_progress("{\"co")
+            app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+                index: 0,
+                name: Some("bash".into()),
+                arguments: "{\"co".into(),
+            });
         }),
         ("a batch announcement", |app| {
             app.start_tool_batch(&[ToolCallSummary {

@@ -388,11 +388,19 @@ impl Session<'_> {
                 self.app.push_thinking(&chunk);
                 false
             }
-            StreamEvent::ToolCallDelta(chunk) => {
-                // The model is generating a tool call: opaque JSON, counted into
-                // the token tally only (like reasoning) so the status ticks while
-                // it generates — never rendered, never committed.
-                self.app.push_tool_call_progress(&chunk);
+            StreamEvent::ToolCallDelta(piece) => {
+                // The model is generating a tool call: the piece counts into
+                // the token tally (like reasoning) so the status ticks while it
+                // generates, and decodes into the round's drafts — a `write`'s
+                // cell streams its file in the strip (docs/write-streaming.md).
+                // Live only: nothing commits until the call itself resolves.
+                // The piece that opens a `write` draft is a boundary: flush
+                // before you interleave, the `ThinkingStart` dance, so the cell
+                // goes up under the text that preceded it.
+                if self.app.push_tool_call_fragment(&piece) {
+                    self.flush_segment(committing, width);
+                    self.render.reset();
+                }
                 false
             }
             StreamEvent::ThinkingEnd => {

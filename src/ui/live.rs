@@ -110,13 +110,17 @@ pub(super) fn preview_lines(
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
         // kind of `StreamRender` (`docs/agent-view-streaming.md`).
-        let streaming = run.tool_queue.is_empty() && run.reasoning().is_none();
+        let streaming =
+            run.tool_queue.is_empty() && !run.drafts.has_writes() && run.reasoning().is_none();
         trim_preview(
             agent_view_preview_lines(run, app.pulse(), width, stream_preview, app.path_display()),
             rows,
             streaming,
         )
-    } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
+    } else if app.agent_group().is_some()
+        || !app.tool_queue().is_empty()
+        || app.drafts().has_writes()
+    {
         trim_preview(preview_tool_lines(app, width), rows, false)
     } else if let Some(text) = app.reasoning() {
         trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
@@ -263,6 +267,16 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(result_row(1, hint.to_string()));
         }
     }
+    // The `write` calls the model is still generating, after anything already
+    // running — each streaming its file as it decodes (docs/write-streaming.md).
+    let drafts =
+        super::draft::draft_cells_lines(app.drafts(), Some(pulse), width, app.path_display());
+    if !drafts.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(drafts);
+    }
     lines
 }
 
@@ -400,9 +414,12 @@ pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16
 /// on; mirrors [`preview_rows`]' own branch order.
 fn strip_preview_is_live_cells(app: &App) -> bool {
     if let Some(run) = app.viewed_agent() {
-        return !run.tool_queue.is_empty() || run.reasoning().is_some();
+        return !run.tool_queue.is_empty() || run.drafts.has_writes() || run.reasoning().is_some();
     }
-    app.agent_group().is_some() || !app.tool_queue().is_empty() || app.reasoning().is_some()
+    app.agent_group().is_some()
+        || !app.tool_queue().is_empty()
+        || app.drafts().has_writes()
+        || app.reasoning().is_some()
 }
 
 /// The rows the strip's content occupies at `preview_n` preview rows —
@@ -460,6 +477,20 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     if let Some(group) = app.agent_group() {
         group.background.hash(&mut hasher);
         group.ids.hash(&mut hasher);
+    }
+    // A `write` being generated: which one, its header, and whether its file
+    // has closed — the switch from the tail to the head reshapes the cell,
+    // while a streamed line only scrolls it (docs/write-streaming.md).
+    let drafts = app
+        .viewed_agent()
+        .map_or_else(|| app.drafts(), |run| &run.drafts);
+    for draft in drafts.writes() {
+        draft.id().hash(&mut hasher);
+        draft.path().hash(&mut hasher);
+        draft
+            .content()
+            .is_some_and(|content| content.complete)
+            .hash(&mut hasher);
     }
     hasher.finish()
 }

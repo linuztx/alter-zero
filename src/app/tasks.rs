@@ -96,6 +96,8 @@ impl App {
         ok: bool,
         tasks: crate::tasks::TaskStore,
     ) {
+        // The round's calls are whole (docs/write-streaming.md).
+        self.drafts.clear();
         if let Some(turn) = self.status.as_mut() {
             turn.tokens += count_tokens(output);
             turn.arrow = TokenArrow::Up;

@@ -198,8 +198,10 @@ impl App {
         self.turn_usage_cache_write = 0;
         // No phase of a previous turn survives into this one — an abandoned
         // buffer would otherwise preview under the new turn's status
-        // (docs/thinking-stream.md).
+        // (docs/thinking-stream.md) — and no draft either
+        // (docs/write-streaming.md).
         self.drop_reasoning();
+        self.drafts.clear();
         // The walk picks up one past the last verb a line wore, and
         // `set_status_times` moves it on from here (docs/status-indicator.md).
         let start = self.verb_cursor;
@@ -251,6 +253,7 @@ impl App {
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;
         self.drop_reasoning();
+        self.drafts.clear();
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
             // Never rendered: a shell turn ends without a summary (end_turn
@@ -341,6 +344,8 @@ impl App {
     /// clearing the status) for an idle composer or a `!` shell turn, whose
     /// committed cell is its own record (`docs/shell-command.md`).
     pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
+        // A draft never outlives its turn (docs/write-streaming.md).
+        self.drafts.clear();
         let status = self.status.take()?;
         // No usage frame arrived this turn (the dummy, or a provider that
         // omits them): the tokenizer estimate stands in for the context gauge
@@ -389,6 +394,9 @@ impl App {
     /// flush to scrollback, or `None` if no reply was in progress. The
     /// stream-order mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
+        // A call still being generated dies with the request — the model never
+        // finished making it, so nothing records it (docs/write-streaming.md).
+        self.drafts.clear();
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
@@ -455,6 +463,10 @@ impl App {
         if !self.is_streaming() && !self.turn_active() {
             return None;
         }
+        // A call still being generated was never made: the round was
+        // cancelled, so the model's wire history holds no such call and
+        // nothing records it here either (docs/write-streaming.md).
+        self.drafts.clear();
         // A /compact turn: drop the half-streamed summary — the swap happens
         // only at StreamDone (codex replaces history at the very end), so an
         // interrupt leaves the old context standing. Taking the buffer also

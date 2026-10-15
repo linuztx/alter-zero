@@ -34,6 +34,7 @@ mod compact;
 mod composer;
 mod diff;
 mod donate;
+mod draft;
 mod export;
 mod file_picker;
 mod hooks_menu;
@@ -81,6 +82,8 @@ pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
+pub(crate) use self::draft::fragment_tokens;
+pub use self::draft::{DraftCall, DraftCalls};
 pub use self::export::{EXPORT_EMPTY_NOTICE, ExportPicker, ExportTarget, export_file_name};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
@@ -234,6 +237,12 @@ pub struct App {
     /// without. Cleared by every [`apply_usage`](App::apply_usage) (one frame
     /// ends one round) and by every turn start.
     round_reasoning: Vec<usize>,
+    /// The round's **draft calls** — the tool calls the model is generating,
+    /// their arguments decoded as they stream, so the strip's live `write`
+    /// cell shows its file before the call is whole. Display state, never
+    /// history: cleared the moment the round's calls are announced, and at
+    /// every turn boundary. See `docs/write-streaming.md`.
+    drafts: DraftCalls,
     /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
     /// crossed the threshold) vs the manual command — recorded onto the marker
     /// so its cell can say `· auto`. Meaningful only while
@@ -1159,8 +1168,10 @@ impl App {
         self.streaming = None;
         self.compact_buffer = None;
         // An open thinking phase goes with the rest of the in-flight turn —
-        // the user asked for a blank screen (docs/thinking-stream.md).
+        // the user asked for a blank screen (docs/thinking-stream.md) — and
+        // so does a call still being generated (docs/write-streaming.md).
         self.drop_reasoning();
+        self.drafts.clear();
         // A fresh slate — but the system prompt and the standing AGENTS.md
         // instructions still ride the next request, so the gauge re-seats on
         // the estimate rather than hard-zeroing (a bare session still reads

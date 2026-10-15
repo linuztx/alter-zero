@@ -42,7 +42,7 @@ use super::reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
 use super::thinking::{ChatStreamResult, ThinkingSplitter};
 use super::tools::ToolCallRequest;
 use super::{ChatMessage, ContentPart, LlmError, MessageContent, Result};
-use crate::stream::TokenUsage;
+use crate::stream::{TokenUsage, ToolCallFragment};
 
 /// Where a local server listens when nothing says otherwise — Ollama's own
 /// default, and what the `/login` host field offers.
@@ -537,10 +537,15 @@ impl ChatAccumulator {
                     .id
                     .filter(|id| !id.is_empty())
                     .unwrap_or_else(|| format!("call_{}", self.calls.len()));
-                // Counted as it lands, never rendered
-                // (`docs/status-indicator.md`).
-                delta.tool_call.push_str(&call.function.name);
-                delta.tool_call.push_str(&arguments);
+                // Counted as it lands (`docs/status-indicator.md`) — whole,
+                // one piece keyed by the call's place in the round, which is
+                // as much of a live `write` cell as this wire can give
+                // (`docs/write-streaming.md`).
+                delta.tool_calls.push(ToolCallFragment {
+                    index: self.calls.len(),
+                    name: Some(call.function.name.clone()),
+                    arguments: arguments.clone(),
+                });
                 self.calls.push(ToolCallRequest {
                     id,
                     name: call.function.name,
@@ -561,7 +566,7 @@ impl ChatAccumulator {
                 });
             }
         }
-        if delta.response.is_empty() && delta.reasoning.is_empty() && delta.tool_call.is_empty() {
+        if delta.response.is_empty() && delta.reasoning.is_empty() && delta.tool_calls.is_empty() {
             if self.finished {
                 return Step::Done;
             }
@@ -583,7 +588,7 @@ impl ChatAccumulator {
         (!response.is_empty() || !reasoning.is_empty()).then_some(Delta {
             response,
             reasoning,
-            tool_call: String::new(),
+            tool_calls: Vec::new(),
         })
     }
 
@@ -1295,7 +1300,15 @@ mod tests {
             r#"{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":5}"#,
         ]);
         assert_eq!(deltas.len(), 1, "the call is counted as it lands");
-        assert_eq!(deltas[0].tool_call, r#"get_weather{"city":"Paris"}"#);
+        assert_eq!(
+            deltas[0].tool_calls,
+            vec![ToolCallFragment {
+                index: 0,
+                name: Some("get_weather".to_string()),
+                arguments: r#"{"city":"Paris"}"#.to_string(),
+            }],
+            "the whole call lands as one keyed piece"
+        );
         let (calls, reason, _) = acc.finish();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "call_v1gr5rr3");
