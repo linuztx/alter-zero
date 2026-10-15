@@ -707,9 +707,9 @@ the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
 `Working…` wears but floored at the near-white `reasoning_shimmer_base()`, since
 codex's grey base is right for a metric and unreadable for a header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
-tool's output there), tail-following its last `REASONING_PEEK_LINES` wrapped
-rows; at the phase's end the cell shape goes away entirely and it **collapses**
-into one committed **bullet-less** two-tone
+tool's output there), tail-following its last `REASONING_PEEK_LINES` (3)
+wrapped rows; at the phase's end the cell shape goes away entirely and it
+**collapses** into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
 the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
@@ -3220,7 +3220,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `reasoning_shimmer_base()` the live label's sweep rests at (codex's grey
   `shimmer_base()` would read as dim), the `reasoning_label_color()` the settled
   line takes from `status_done_color()` on **both** surfaces, and the
-  `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
+  `REASONING_PEEK_LINES` (3) live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the comet style's white head + mid-grey

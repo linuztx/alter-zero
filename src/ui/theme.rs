@@ -60,7 +60,7 @@ pub(super) const CURSOR_COLUMN: u16 = 1;
 // module (syntect + two_face grammars, Catppuccin Mocha theme — codex parity;
 // the theme owns the code palette now, so there are no `CODE_*_COLOR` consts).
 // Headings keep their `#` markers and style the line per level, matching codex
-// (`heading_style`). ---
+// (`heading_style`); their text is inline markdown like any other. ---
 /// A tab inside a code block expands to this many spaces **for display**. A tab
 /// is zero display columns (unicode-width treats it as a control char), so code
 /// rendered verbatim would lose all its tab indentation (Go, Makefiles, …
@@ -126,17 +126,35 @@ pub(super) fn link_url_color() -> Color {
     palette().link
 }
 
-// --- List and blockquote styling (docs/markdown.md). Bullets keep `-`, ordered
-// items keep `N.` in an accent colour; a blockquote's `>` and text render dim.
-// Continuation rows hang under the item's text. ---
-/// The accent colour of an ordered list's `N.`/`N)` marker.
+// --- List and blockquote styling (docs/markdown.md), codex's look: every
+// bullet renders `•` whatever its source marker, a task item a ballot box,
+// an ordered item `N.` in an accent colour, renumbered from the list's start;
+// each nesting level sits `LIST_NEST_WIDTH` columns deeper and continuation
+// rows hang under the item's text. A blockquote's `>` and text render green,
+// codex's quote dress. ---
+/// The glyph an unordered list item renders with, at every depth (codex's
+/// `"• "`), whether the model wrote `-`, `*` or `+`.
+pub(super) const LIST_BULLET: &str = "•";
+
+/// A task item's open checkbox (`- [ ]`), replacing its bullet (codex).
+pub(super) const LIST_TASK_OPEN: &str = "☐";
+
+/// A task item's ticked checkbox (`- [x]` / `- [X]`), replacing its bullet.
+pub(super) const LIST_TASK_DONE: &str = "☑";
+
+/// Columns each list nesting level adds — codex's `depth * 4 - 3` geometry: a
+/// level's bullet sits this much deeper than its parent's, whatever indent the
+/// source nested it by.
+pub(super) const LIST_NEST_WIDTH: usize = 4;
+
+/// The accent colour of an ordered list's `N.` marker.
 pub(super) fn list_marker_color() -> Color {
     palette().link
 }
 
-/// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
+/// A blockquote's `>` marker and text — green, codex's quote dress.
 pub(super) fn quote_color() -> Color {
-    tool_dim_color()
+    palette().success
 }
 
 // Code syntax-highlight colours now come from the `highlight` module's theme
@@ -344,11 +362,13 @@ pub(super) fn reasoning_label_color() -> Color {
     status_done_color()
 }
 
-/// How many **wrapped display rows** of the thought the live block tails. The
+/// How many **wrapped display rows** of the thought the live block tails —
+/// three, so with its header the block is at most four rows tall. Rows, not
+/// source lines: a line that wraps onto two rows spends two of them. The
 /// window is small on purpose: it grows the live region upward (invariant 3),
 /// and what the user wants is the frontier — what the model is thinking
 /// *now*. The whole thing is in the Ctrl+O transcript.
-pub(super) const REASONING_PEEK_LINES: usize = 5;
+pub(super) const REASONING_PEEK_LINES: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Background shells (docs/background.md): the backgrounded cell's fixed row,
