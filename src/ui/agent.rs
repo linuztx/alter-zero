@@ -857,10 +857,16 @@ pub(super) fn agent_view_preview_lines(
 ) -> Vec<Line<'static>> {
     if !run.tool_queue.is_empty() {
         let mut lines = Vec::new();
+        // A queued previewed call keeps the file it streamed, the main
+        // strip's rule (docs/write-streaming.md).
+        let mut drafts = run.drafts().queued();
         for (i, tool) in run.tool_queue.iter().enumerate() {
             if i > 0 {
                 lines.push(Line::default());
             }
+            let draft = crate::app::previewed_display(&tool.name)
+                .then(|| drafts.next())
+                .flatten();
             // A live strip like the main one — the agent's running call
             // blinks here too (`docs/tool-pulse.md`) and a running command
             // tails its streamed output under the `(Ns · wait …)` clock
@@ -871,6 +877,7 @@ pub(super) fn agent_view_preview_lines(
             // call started a minute in used to open on `+N lines (60s)`.
             lines.extend(super::live::live_call_lines(
                 tool,
+                draft,
                 run.live_tail(),
                 run.command_elapsed.unwrap_or(Duration::ZERO),
                 pulse,
@@ -879,6 +886,11 @@ pub(super) fn agent_view_preview_lines(
             ));
         }
         return lines;
+    }
+    // A `write` the agent is still generating streams into its cell, the
+    // main strip's next branch (docs/write-streaming.md).
+    if run.drafts().previews().next().is_some() {
+        return super::live::draft_preview_lines(run.drafts(), pulse, width, paths);
     }
     // An open thinking phase previews its live block, after the tool branch
     // and before the reply's — what is genuinely executing is what the user
@@ -911,6 +923,7 @@ pub(super) fn agent_view_preview_lines(
 /// (`docs/agent-view-streaming.md`, `docs/table-streaming.md`).
 pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width: u16) -> u16 {
     if run.tool_queue.is_empty()
+        && run.drafts().previews().next().is_none()
         && run.reasoning().is_none()
         && run.streaming.as_deref().is_some_and(|t| !t.is_empty())
     {

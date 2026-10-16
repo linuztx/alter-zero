@@ -643,3 +643,55 @@ fn a_streaming_replys_frontier_never_flows() {
         "the frontier is already committed row by row — nothing to freeze"
     );
 }
+
+/// A turn generating a 30-line `write`, its content still open.
+fn streaming_write_app(lines: usize, closed: bool) -> App {
+    let content: String = (1..=lines).map(|i| format!("row {i}\n")).collect();
+    let encoded = serde_json::to_string(&content).expect("a string encodes");
+    let content = if closed {
+        format!("{encoded}}}")
+    } else {
+        encoded[..encoded.len() - 1].to_string()
+    };
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 0,
+        name: "write".to_string(),
+        arguments: format!(r#"{{"path":"a.py","content":{content}"#),
+    });
+    app
+}
+
+#[test]
+fn a_streaming_write_is_a_live_cell_the_strip_flows_rather_than_trims() {
+    let app = streaming_write_app(30, false);
+    let (width, height) = (60u16, 8u16);
+    assert_eq!(
+        crate::ui::live::strip_content_preview_rows(&app, width, height),
+        crate::ui::preview_rows(&app, width),
+        "the content is built at its full ask"
+    );
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the strip overflows");
+    assert!(
+        plain(&flow.lines[0]).contains("Write(a.py)"),
+        "the header freezes above the region: {:?}",
+        flow.lines.iter().map(plain).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_streaming_writes_flow_holds_while_lines_arrive_and_re_signs_when_it_finishes() {
+    let (width, height) = (60u16, 8u16);
+    let before = view_flow_signature(&streaming_write_app(30, false), width, height, NO_CAP)
+        .expect("overflows");
+    let after = view_flow_signature(&streaming_write_app(31, false), width, height, NO_CAP)
+        .expect("still overflows");
+    assert_eq!(before, after, "a streamed line must not churn a rebuild");
+    let finished = view_flow_signature(&streaming_write_app(31, true), width, height, NO_CAP)
+        .expect("still overflows");
+    assert_ne!(
+        after, finished,
+        "the flip from tail to head replaces every row, so it re-signs"
+    );
+}

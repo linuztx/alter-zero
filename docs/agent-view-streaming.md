@@ -278,11 +278,16 @@ agent's transcript and never its screen, *and* `agent_render` kept a prefix of
 a buffer that no longer existed — which the continuation's next `Chunk` then
 committed against.
 
-The list is now `AgentRun::flushes_segment`, next to the fold that defines it,
-and `agents::tests::every_flush_point_is_declared` walks **every** event
-variant asserting the predicate and the fold agree about the buffer. A new
-variant cannot slip past. (`ThinkingStart` stays separate: it flushes too, but
-only when the display is on, and that gate is the boundary's.)
+The list is now the fold's own, next to the fold that defines it: the
+boundary asks `AgentRun::will_flush_segment` of the run, before the fold —
+the static boundaries (a private `flushes_segment`, so the boundary cannot ask
+that half alone) plus the one only the run's state can answer, the piece that
+opens a `write`'s live preview (`docs/write-streaming.md`). And
+`agents::tests::every_flush_point_is_declared` walks **every** event variant
+— that opening piece included — asking the predicate the same way and
+asserting it and the fold agree about the buffer. A new variant cannot slip
+past. (`ThinkingStart` stays separate: it flushes too, but only when the
+display is on, and that gate is the boundary's.)
 
 The **local** settle needed the same treatment. `AgentRun::interrupt` finalises
 three things — the open thought, the run of streamed text, the running call —
@@ -367,7 +372,8 @@ untouched.
   `ToolRejected`, `ToolBackgrounded` — leaves its cell as the transcript's
   last item, and a backend `Error` leaves the call it killed there (the
   invariant `commit_agent_tail` keys on; the old event list is what drifted).
-  `flushes_segment` agrees with the fold for every event variant
+  `will_flush_segment`, asked before the fold, agrees with the fold for every
+  event variant, a `write`'s opening piece included
   (`every_flush_point_is_declared`); a batch announcement replaces the queue;
   all three resolutions record `truncated`; a backgrounded call charges its
   acknowledgement.

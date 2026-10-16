@@ -721,6 +721,14 @@ pub(super) const INLINE_DIFF_MIN_COMMON_PCT: usize = 30;
 /// re-rendering inside its 32 ms frame.
 pub(super) const INLINE_DIFF_MAX_CELLS: usize = 40_000;
 
+/// The corner row of a `write` still being generated, before its first line
+/// arrives — and, around the count, once lines do: `Writing 17 lines…`
+/// (`docs/write-streaming.md`). The count grows as the lines stream in; the
+/// committed cell's `Wrote 17 lines to {path}` takes the row's place.
+pub(super) const TOOL_WRITING: &str = "Writing…";
+pub(super) const TOOL_WRITING_PREFIX: &str = "Writing ";
+pub(super) const TOOL_WRITING_SUFFIX: &str = "…";
+
 /// How many numbered body rows a `write`/`edit` cell shows inline before the
 /// `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row Write preview;
 /// other tools keep the tighter [`TOOL_PEEK_LINES`]).

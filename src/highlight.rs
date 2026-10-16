@@ -416,6 +416,121 @@ pub fn highlight(lines: &[&str], lang: Option<&str>, code: CodeTheme) -> Vec<Vec
     lines.iter().map(|line| h.line(line)).collect()
 }
 
+/// A **growing** text highlighted incrementally — what a `write` streaming
+/// into its cell is coloured with (`docs/write-streaming.md`).
+///
+/// A grammar is a state machine, so line 40 can only be coloured by a
+/// highlighter that has read lines 1 to 39: a docstring opened on line 3
+/// makes line 40 a string. Re-highlighting the whole text on every frame
+/// costs tens of microseconds a line, many times a frame. So the cache keeps
+/// each **complete** line's segments, highlighted once, with the
+/// highlighter's state after the last of them, and colours the unfinished
+/// last line on a *clone* of that state — the peek `ui::StreamRender` takes
+/// at a code block's withheld line — remembered by the text's length so the
+/// several builds one frame makes are free.
+///
+/// Lines split like [`str::lines`]: a `\r` before a line break is dropped, and
+/// a text ending at a line break has no unfinished line. Tabs are expanded to
+/// `tab_width` spaces **before** highlighting, the order the committed file
+/// cell uses, so the two colour a line alike.
+#[derive(Clone, Default)]
+pub struct LineCache {
+    /// What the cached lines were highlighted for: the language and the code
+    /// theme. A change rebuilds the cache.
+    key: Option<(Option<String>, CodeTheme, usize)>,
+    /// The highlighter's state after the cached complete lines.
+    state: Option<Highlighter>,
+    /// Each complete line's segments, in order.
+    lines: Vec<Vec<Seg>>,
+    /// Bytes of the text the complete lines cover, their line breaks
+    /// included.
+    consumed: usize,
+    /// The unfinished last line's segments, with the text length they were
+    /// made at; `None` while the text ends at a line break.
+    partial: Option<(usize, Vec<Seg>)>,
+}
+
+impl std::fmt::Debug for LineCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The highlighter's state is syntect's; the shape is what matters.
+        f.debug_struct("LineCache")
+            .field("key", &self.key)
+            .field("lines", &self.lines.len())
+            .field("consumed", &self.consumed)
+            .field("partial", &self.partial.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LineCache {
+    /// Bring the cache up to `text`, highlighted as `lang` under `code` with
+    /// tabs expanded to `tab_width` spaces. `text` is expected to **extend**
+    /// the text the cache last saw — a streamed value only ever grows — so
+    /// only the lines completed since are highlighted. A text that does not
+    /// (shorter than the lines already read, or no longer breaking where they
+    /// ended), or a different language, theme or tab width, rebuilds the
+    /// cache from the start.
+    pub fn update(&mut self, text: &str, lang: Option<&str>, code: CodeTheme, tab_width: usize) {
+        let key = (lang.map(str::to_string), code, tab_width);
+        let extends = self.consumed <= text.len()
+            && (self.consumed == 0 || text.as_bytes()[self.consumed - 1] == b'\n');
+        if self.key.as_ref() != Some(&key) || !extends {
+            *self = Self {
+                key: Some(key),
+                state: Some(Highlighter::new(lang, code)),
+                ..Self::default()
+            };
+        }
+        let state = self
+            .state
+            .get_or_insert_with(|| Highlighter::new(lang, code));
+        let expand = |line: &str| -> String {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.contains('\t') {
+                line.replace('\t', &" ".repeat(tab_width))
+            } else {
+                line.to_string()
+            }
+        };
+        while let Some(at) = text[self.consumed..].find('\n') {
+            let line = &text[self.consumed..self.consumed + at];
+            self.lines.push(state.line(&expand(line)));
+            self.consumed += at + 1;
+            self.partial = None;
+        }
+        let rest = &text[self.consumed..];
+        if rest.is_empty() {
+            self.partial = None;
+        } else if self
+            .partial
+            .as_ref()
+            .is_none_or(|(len, _)| *len != text.len())
+        {
+            self.partial = Some((text.len(), state.clone().line(&expand(rest))));
+        }
+    }
+
+    /// The complete lines' segments, in order.
+    #[must_use]
+    pub fn lines(&self) -> &[Vec<Seg>] {
+        &self.lines
+    }
+
+    /// The unfinished last line's segments — `None` when the text is empty or
+    /// ends at a line break.
+    #[must_use]
+    pub fn partial(&self) -> Option<&[Seg]> {
+        self.partial.as_ref().map(|(_, segs)| segs.as_slice())
+    }
+
+    /// How many lines the text has, counted as [`str::lines`] counts them:
+    /// the complete ones and the unfinished one.
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.lines.len() + usize::from(self.partial.is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,5 +833,96 @@ mod tests {
             first,
             highlight(&["def f():"], Some("python"), CodeTheme::CatppuccinMocha).remove(0)
         );
+    }
+
+    // --- the incremental line cache (docs/write-streaming.md) ---
+
+    /// What a fresh highlight of `text`'s complete lines gives, and of its
+    /// unfinished last line resumed from them — the cache's whole contract.
+    fn whole(text: &str, lang: Option<&str>) -> (Vec<Vec<Seg>>, Option<Vec<Seg>>) {
+        let (done, partial) = match text.rfind('\n') {
+            Some(at) => (&text[..at], &text[at + 1..]),
+            None => ("", text),
+        };
+        let mut h = Highlighter::new(lang, CodeTheme::default());
+        let lines: Vec<Vec<Seg>> = if text.contains('\n') {
+            done.split('\n')
+                .map(|line| h.line(&line.replace('\t', "    ")))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let partial = (!partial.is_empty()).then(|| h.line(&partial.replace('\t', "    ")));
+        (lines, partial)
+    }
+
+    #[test]
+    fn a_line_cache_fed_a_growing_text_matches_highlighting_it_whole() {
+        // A docstring spanning lines: a cache that restarted its highlighter
+        // anywhere would colour the middle line as code.
+        let text = "def f():\n    \"\"\"Doc\n    still doc\n    \"\"\"\n\treturn 1  # done\n";
+        let mut cache = LineCache::default();
+        for (at, _) in text.char_indices().skip(1).chain([(text.len(), ' ')]) {
+            let prefix = &text[..at];
+            cache.update(prefix, Some("python"), CodeTheme::default(), 4);
+            let (lines, partial) = whole(prefix, Some("python"));
+            assert_eq!(cache.lines(), &lines[..], "complete lines of {prefix:?}");
+            assert_eq!(
+                cache.partial(),
+                partial.as_deref(),
+                "partial line of {prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_cache_highlights_each_complete_line_once() {
+        let mut cache = LineCache::default();
+        cache.update("a = 1\nb = 2\n", Some("python"), CodeTheme::default(), 4);
+        let first = cache.lines()[0].clone();
+        // Growing the text re-reads nothing it has already highlighted.
+        cache.update(
+            "a = 1\nb = 2\nc = ",
+            Some("python"),
+            CodeTheme::default(),
+            4,
+        );
+        assert_eq!(cache.lines().len(), 2);
+        assert_eq!(cache.lines()[0], first);
+        assert_eq!(joined(cache.partial().expect("a partial line")), "c = ");
+    }
+
+    #[test]
+    fn a_line_cache_rebuilds_for_a_new_language_a_new_theme_or_a_shorter_text() {
+        let text = "x = \"s\"\n";
+        let mut cache = LineCache::default();
+        cache.update(text, None, CodeTheme::default(), 4);
+        assert_eq!(cache.lines(), &whole(text, None).0[..]);
+        cache.update(text, Some("python"), CodeTheme::default(), 4);
+        assert_eq!(cache.lines(), &whole(text, Some("python")).0[..]);
+        cache.update(text, Some("python"), CodeTheme::Dracula, 4);
+        let mut dracula = Highlighter::new(Some("python"), CodeTheme::Dracula);
+        assert_eq!(cache.lines(), &[dracula.line("x = \"s\"")][..]);
+        cache.update("y\n", Some("python"), CodeTheme::Dracula, 4);
+        assert_eq!(cache.lines().len(), 1);
+        assert_eq!(joined(&cache.lines()[0]), "y");
+    }
+
+    #[test]
+    fn a_line_cache_expands_tabs_and_drops_carriage_returns() {
+        let mut cache = LineCache::default();
+        cache.update("\tone\r\ntwo\r", None, CodeTheme::default(), 4);
+        assert_eq!(joined(&cache.lines()[0]), "    one");
+        assert_eq!(joined(cache.partial().expect("a partial line")), "two");
+        assert_eq!(cache.line_count(), 2);
+    }
+
+    #[test]
+    fn a_line_cache_counts_lines_the_way_str_lines_does() {
+        for text in ["", "a", "a\n", "a\nb", "a\nb\n", "\n", "\n\n", "a\r\n"] {
+            let mut cache = LineCache::default();
+            cache.update(text, None, CodeTheme::default(), 4);
+            assert_eq!(cache.line_count(), text.lines().count(), "{text:?}");
+        }
     }
 }

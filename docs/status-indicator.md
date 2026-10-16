@@ -204,8 +204,10 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   buffer instead, `docs/thinking-stream.md` — and clears any `retry`);
   `push_tool_call_progress` adds tokens the same way (`↓`, buffer untouched) as
   the model *generates* a tool call — driven by `StreamEvent::ToolCallDelta`, the
-  streamed `name`/`arguments` fragments the real backend surfaces before the
-  `ToolStart`; `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
+  streamed `name`/`arguments` pieces the real backend surfaces before the
+  round's batch, each counted by its `ToolCallFragment::tally_text` (through
+  `App::push_tool_call_fragment`, which also previews a `write` as it streams,
+  `docs/write-streaming.md`); `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
   `StreamEvent::Retrying`); `set_offline(host, n)` sets the `Waiting for
   internet…` verb, the `offline for` clause and the row under the line (from
   a `StreamEvent::Offline`), and content, a tool round or a retry clears
@@ -453,13 +455,17 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
 ## Tool-call generation in the dummy backend
 
 The same demo trick covers the model *generating* a tool call. Before each
-scripted `ToolStart`, `DummyAi` streams a few `StreamEvent::ToolCallDelta`
-fragments (`DUMMY_READ_CALL` / `DUMMY_BASH_CALL` — the `name` + JSON `arguments`
-pieces), one `THINK_CHUNK_DELAY` pause each, so the token tally visibly ticks
-while the call is produced — just like reasoning. The loop counts them via
-`App::push_tool_call_progress` (never rendered). A real backend surfaces the
-same events straight from its streamed `tool_calls` deltas
-(`openai::Delta::tool_call`), ahead of the `ToolStart` that runs the tool.
+scripted batch, `DummyAi` streams a few `StreamEvent::ToolCallDelta` pieces
+(`DUMMY_READ_CALL` / `DUMMY_BASH_CALL` — the `name`, then JSON `arguments`
+pieces, each under its call's slot): the naming piece pauses one
+`THINK_CHUNK_DELAY`, each argument piece one chunk delay, so the token tally
+visibly ticks while the call is produced — just like reasoning. The loop
+counts them via `App::push_tool_call_fragment`; none of these calls preview
+anything. The file-change demo's `write` is the exception: it is generated
+from its real arguments in token-sized pieces, so the file streams into its
+cell (`docs/write-streaming.md`). A real backend surfaces the same events
+straight from its streamed `tool_calls` deltas (`openai::Delta::tool_calls`),
+ahead of the round's batch.
 
 ## Testing
 

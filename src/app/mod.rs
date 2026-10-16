@@ -34,6 +34,7 @@ mod compact;
 mod composer;
 mod diff;
 mod donate;
+mod drafts;
 mod export;
 mod file_picker;
 mod hooks_menu;
@@ -81,6 +82,7 @@ pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
+pub use self::drafts::{ArgField, ArgsScanner, ToolDraft, ToolDrafts, previewed_display};
 pub use self::export::{EXPORT_EMPTY_NOTICE, ExportPicker, ExportTarget, export_file_name};
 pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
@@ -283,6 +285,11 @@ pub struct App {
     /// active call through [`current_tool`](App::current_tool) and the whole
     /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
     tool_queue: VecDeque<ToolCall>,
+    /// The calls the model is still **generating** this round, previewed
+    /// live — a `write` streams into its cell as its content arrives — and
+    /// the previewed ones the announced batch took over
+    /// (`docs/write-streaming.md`). Live-only: nothing here is ever recorded.
+    tool_drafts: ToolDrafts,
     /// The running call's **live** rows — the tail of its `output` the next
     /// [`push_tool_screen`](App::push_tool_screen) replaces
     /// (`docs/interactive-shell.md`), and when each last changed, so the
@@ -1168,6 +1175,7 @@ impl App {
         self.refresh_context_used();
         self.auto_compact_blocked = false;
         self.tool_queue.clear();
+        self.tool_drafts.clear();
         self.status = None;
         // A message the running turn never got to read goes with it: the user
         // asked for a blank screen (docs/queue.md).

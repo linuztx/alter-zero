@@ -842,6 +842,13 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   (`App::push_thinking`, which also accumulates it for the thinking stream's
   live block when a phase is open — `docs/thinking-stream.md`), so the count keeps
   ticking while the model thinks.
+- On `ToolCallDelta(piece)`: the model is generating a call. The piece is
+  counted into the tally and folded into the round's drafts
+  (`App::push_tool_call_fragment`); a `write`'s file streams into a live cell
+  — the newest ten rows while it arrives, the first ten once it has — and the
+  piece that opens it flushes the text segment first, like a `ToolStart`.
+  Nothing is committed: the cell commits when the call resolves
+  (`docs/write-streaming.md`).
 - On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
   summary), then commit the final text segment + spacer + the summary. Because the
   streaming strip (preview + gap + status + gap) is drawn *above* the box, the loop first

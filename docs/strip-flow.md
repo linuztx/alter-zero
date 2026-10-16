@@ -78,8 +78,10 @@ would purge-rebuild the whole screen thirty times a second, so it takes the ↓
 manager's `FlowSign::Frozen` (`docs/view-flow.md`) over
 `ui::live::strip_flow_key`: which conversation is on screen, whether a status
 line is up, each queued call's name/arguments/status, the live agent group's
-members, and whether a thinking phase is open. A new call, a resolution, a new
-round or the turn ending re-signs it; a streamed line does not. The width and
+members, whether a thinking phase is open, and each `write` still being
+generated, by its path and whether it has finished (`docs/write-streaming.md`).
+A new call, a resolution, a new round, the turn ending or a streaming `write`
+flipping from its tail to its head re-signs it; a streamed line does not. The width and
 the flowed row count are hashed by the caller, so a resize re-signs too.
 
 Frozen rows therefore age: at 11 rows the scrollback may end on `icmp_seq=9`

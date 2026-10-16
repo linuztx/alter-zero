@@ -1950,16 +1950,20 @@ fn stream_round(
                 }
                 let _ = tx.send(StreamEvent::Chunk(delta.response));
             }
-            if !delta.tool_call.is_empty() {
-                // The model is generating a tool call: count its tokens so the
-                // status keeps ticking (docs/status-indicator.md). Close the
+            if !delta.tool_calls.is_empty() {
+                // The model is generating a tool call: each piece goes out
+                // under its call's slot, so the status keeps ticking
+                // (docs/status-indicator.md) and a `write` previews as its
+                // content arrives (docs/write-streaming.md). Close the
                 // thinking phase first if a reasoning burst preceded the call.
                 emitted = true;
                 if thinking {
                     thinking = false;
                     let _ = tx.send(StreamEvent::ThinkingEnd);
                 }
-                let _ = tx.send(StreamEvent::ToolCallDelta(delta.tool_call));
+                for piece in delta.tool_calls {
+                    let _ = tx.send(StreamEvent::ToolCallDelta(piece));
+                }
             }
         });
         // A stream that ends while still "thinking" (reasoning only, no

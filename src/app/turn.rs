@@ -198,8 +198,10 @@ impl App {
         self.turn_usage_cache_write = 0;
         // No phase of a previous turn survives into this one — an abandoned
         // buffer would otherwise preview under the new turn's status
-        // (docs/thinking-stream.md).
+        // (docs/thinking-stream.md) — and no call it was still generating
+        // (docs/write-streaming.md).
         self.drop_reasoning();
+        self.tool_drafts.clear();
         // The walk picks up one past the last verb a line wore, and
         // `set_status_times` moves it on from here (docs/status-indicator.md).
         let start = self.verb_cursor;
@@ -251,6 +253,7 @@ impl App {
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;
         self.drop_reasoning();
+        self.tool_drafts.clear();
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
             // Never rendered: a shell turn ends without a summary (end_turn
@@ -304,6 +307,9 @@ impl App {
     /// `None` — recording nothing — when the final segment is empty (a turn that
     /// ended right after a tool call) or nothing was streaming.
     pub fn finish_stream(&mut self) -> Option<String> {
+        // A call the round never finished making is never recorded
+        // (docs/write-streaming.md).
+        self.tool_drafts.clear();
         let text = self.streaming.take()?;
         // A turn can end right after a tool call with no trailing text; don't
         // record (or later commit) a phantom empty assistant message for it. A
@@ -389,6 +395,7 @@ impl App {
     /// flush to scrollback, or `None` if no reply was in progress. The
     /// stream-order mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
+        self.tool_drafts.clear();
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
@@ -470,6 +477,12 @@ impl App {
         }
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
+        // A file that was streaming into its cell is output the user saw —
+        // the undo below is for a turn that showed nothing — but the call
+        // itself was never finished, so nothing of it is recorded
+        // (docs/write-streaming.md).
+        let previewed = self.tool_drafts.previews().next().is_some();
+        self.tool_drafts.clear();
 
         // No output produced (no partial, no running or waiting tool) and
         // nothing queued behind it → undo the submission wholesale: roll the
@@ -496,6 +509,7 @@ impl App {
         if !compacting
             && submission_is_intact
             && partial.is_none()
+            && !previewed
             && self.tool_queue.is_empty()
             && self.agent_group.is_none()
             && self.queued.is_empty()
@@ -626,6 +640,7 @@ impl App {
     /// even when the prompt is refused, both references' rule. Returns
     /// whether a submission was rolled back (a stale event rolls nothing).
     pub fn block_prompt(&mut self, reason: &str) -> bool {
+        self.tool_drafts.clear();
         if self.streaming.take().is_none() {
             return false;
         }

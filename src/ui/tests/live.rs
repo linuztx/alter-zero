@@ -1,7 +1,7 @@
 //! Painting the live region and its streaming strip.
 
 use super::*;
-use crate::ui::live::preview_tool_lines;
+use crate::ui::live::{preview_lines, preview_tool_lines};
 use crate::ui::theme::{
     INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
     TOOL_BACKGROUND_HINT_DELAY, TOOL_PULSE_PERIOD, footer_focus_bg, footer_focus_fg,
@@ -1205,4 +1205,99 @@ fn the_caret_never_leaves_the_box_while_typing() {
         let (x, _) = cursor_position(area, &app);
         assert!(x < 72, "{n} chars: the caret sits at column {x}");
     }
+}
+
+// --- a `write` streaming into its cell (docs/write-streaming.md) ---
+
+/// One streamed piece of a `write` under slot 0.
+fn write_piece(name: &str, arguments: &str) -> crate::stream::ToolCallFragment {
+    crate::stream::ToolCallFragment {
+        index: 0,
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    }
+}
+
+#[test]
+fn a_streaming_write_takes_the_preview_slot_and_is_counted_exactly() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        r#"{"path":"a.py","content":"one\ntwo\nthr"#,
+    ));
+    let rows = preview_rows(&app, 60);
+    let lines = preview_lines(&app, 60, None, rows);
+    assert_eq!(usize::from(rows), lines.len(), "the count is the paint");
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts,
+        [
+            "● Write(a.py)",
+            "  ⎿  Writing 3 lines…",
+            "      1 one",
+            "      2 two",
+            "      3 thr",
+        ]
+    );
+}
+
+#[test]
+fn a_streaming_write_shows_in_the_painted_region() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        r#"{"path":"a.py","content":"print(1)\npri"#,
+    ));
+    let pv = preview_rows(&app, 60);
+    let h = live_height(&app.input, 60, 30, true, pv, 0, 0, 0, 0, 0, 0);
+    let mut buf = buffer(60, h);
+    render_live(buf.area, &mut buf, &app);
+    let all: String = (0..h)
+        .map(|y| row(&buf, y, 60))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(all.contains("Write(a.py)"), "{all}");
+    assert!(all.contains("Writing 2 lines…"), "{all}");
+    assert!(all.contains("1 print(1)"), "{all}");
+}
+
+#[test]
+fn a_queued_write_previews_its_head_under_waiting() {
+    // After the batch announcement the call is a queued cell — and it keeps
+    // the file it streamed, not a bare `⎿ Waiting…` row, so the cell does
+    // not collapse and then grow back when it resolves.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        r#"{"path":"a.py","content":"one\ntwo\n"}"#,
+    ));
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 1,
+        name: "bash".to_string(),
+        arguments: r#"{"command":"ls"}"#.to_string(),
+    });
+    app.start_tool_batch(&[
+        crate::stream::ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ls".to_string(),
+        },
+        crate::stream::ToolCallSummary {
+            name: "Write".to_string(),
+            args: "a.py".to_string(),
+        },
+    ]);
+    app.start_tool("Bash", "ls", None);
+    let texts: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
+    let at = texts
+        .iter()
+        .position(|row| row == "● Write(a.py)")
+        .expect("the queued write's header");
+    assert_eq!(
+        texts[at + 1..],
+        ["  ⎿  Waiting…", "      1 one", "      2 two"],
+        "{texts:#?}"
+    );
 }

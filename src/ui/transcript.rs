@@ -6,6 +6,7 @@
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::conversation::is_shell_header;
+use super::file_cell::draft_cell_lines;
 use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
@@ -143,10 +144,12 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
         lines.extend(reasoning_live_full_lines(text, width));
         lines.push(Line::default());
     }
-    for tool in &run.tool_queue {
-        lines.extend(tool_full_lines(tool, width, app.path_display()));
-        lines.push(Line::default());
-    }
+    lines.extend(live_call_full_lines(
+        &run.tool_queue,
+        run.drafts(),
+        width,
+        app.path_display(),
+    ));
     // …and what the user typed into this agent while it works — the messages
     // waiting for its next round boundary **and** the Tab follow-up turns
     // waiting for it to settle. The main tail's rule (`docs/queue.md`): the
@@ -303,6 +306,10 @@ struct TranscriptSig {
     /// session's same-length redraw (`45%` → `46%`) or a refined header
     /// changes no length above (`docs/interactive-shell.md`).
     tool_revision: u64,
+    /// The round's drafts' revision: a `write` streaming into its cell moves
+    /// no length above, and the overlay follows it like a streaming tool's
+    /// output (`docs/write-streaming.md`).
+    drafts_revision: u64,
     /// How many messages are waiting above the box — the follow-up entries
     /// **and** the ones handed to the running turn. Both, because pushing onto
     /// `App::steered` changes no history length and no tool queue, so a
@@ -331,6 +338,7 @@ impl TranscriptSig {
                 .front()
                 .map(|t| (queue.len(), t.status, t.output.len())),
             tool_revision: app.tool_revision(),
+            drafts_revision: app.tool_drafts().revision(),
             queued_len: app.queued.len() + app.steered.len(),
             backtrack_selected: app.backtrack.selected,
             agents_generation: app.agents_generation(),
@@ -499,11 +507,12 @@ impl TranscriptCache {
                 }
             }
         }
-        for tool in app.tool_queue() {
-            self.lines
-                .extend(tool_full_lines(tool, width, app.path_display()));
-            self.lines.push(Line::default());
-        }
+        self.lines.extend(live_call_full_lines(
+            app.tool_queue(),
+            app.tool_drafts(),
+            width,
+            app.path_display(),
+        ));
         if !app.queued.is_empty() || !app.steered.is_empty() {
             self.lines.extend(queued_lines(app, width));
             self.lines.push(Line::default());
@@ -554,6 +563,46 @@ impl TranscriptCache {
         self.refresh(app, width);
         self.selection.clone()
     }
+}
+
+/// Every live call of a conversation, expanded for the pager, each over a
+/// blank row: the queue's cells in order — a queued previewed call with the
+/// whole file it streamed under its `Waiting…`/`Running…` corner — then each
+/// call still being generated, every line so far (`docs/write-streaming.md`).
+/// The one walk the main transcript's tail and an agent's share, so the two
+/// pagers show a streaming file alike.
+fn live_call_full_lines(
+    queue: &VecDeque<ToolCall>,
+    drafts: &crate::app::ToolDrafts,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut adopted = drafts.queued();
+    for tool in queue {
+        let draft = crate::app::previewed_display(&tool.name)
+            .then(|| adopted.next())
+            .flatten();
+        match draft {
+            Some(draft) if matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running) => {
+                lines.extend(draft_cell_lines(
+                    draft,
+                    Some(tool),
+                    None,
+                    width,
+                    paths,
+                    true,
+                ));
+            }
+            _ => lines.extend(tool_full_lines(tool, width, paths)),
+        }
+        lines.push(Line::default());
+    }
+    for draft in drafts.previews() {
+        lines.extend(draft_cell_lines(draft, None, None, width, paths, true));
+        lines.push(Line::default());
+    }
+    lines
 }
 
 /// Where the transcript scroll must sit to show `target` in a `viewport`-row

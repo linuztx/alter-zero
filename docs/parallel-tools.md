@@ -23,7 +23,12 @@ started render as dim `⎿ Waiting…` cells — Claude-Code's parallel-tool loo
 
 The running call **tails its live output** (the last lines + a `+N lines (Ns ·
 timeout …)` footer, its own clock beside the timeout it runs under) as it
-streams — see `docs/tool-streaming.md`; the `⎿ Waiting…` siblings are unchanged.
+streams — see `docs/tool-streaming.md`; the `⎿ Waiting…` siblings are unchanged,
+except a queued `Write` whose file streamed into its cell while the round was
+generated: it keeps that file's first ten numbered rows under its `Waiting…`
+corner, so the cell neither collapses nor grows back when it resolves
+(`docs/write-streaming.md`). Only in the live strip: the permission prompt's
+context cells keep the one-row `⎿ Waiting…`, since the prompt shows the file.
 
 This lifts the old limitation (`docs/tools.md`, before this change: *"Parallel
 tool calls … are executed sequentially (the TUI shows one running tool at a

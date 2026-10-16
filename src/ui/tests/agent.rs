@@ -1332,3 +1332,35 @@ fn a_live_agent_cells_nested_headers_shorten_from_the_record() {
         "the running call too: {texts:?}"
     );
 }
+
+#[test]
+fn an_agent_views_strip_streams_the_subagents_write_like_the_main_one() {
+    // Main parity (docs/write-streaming.md): a subagent's file streams into
+    // its cell in its session view, through the same builder.
+    use crate::stream::{StreamEvent, ToolCallFragment};
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Scaffold", false)]);
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::ToolCallDelta(ToolCallFragment {
+            index: 0,
+            name: "write".to_string(),
+            arguments: r#"{"path":"a.py","content":"one\ntwo"#.to_string(),
+        }),
+    );
+    app.open_agent_view("a1");
+    let rows = preview_rows(&app, 60);
+    let lines = preview_lines(&app, 60, None, rows);
+    assert_eq!(usize::from(rows), lines.len(), "the count is the paint");
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts,
+        [
+            "● Write(a.py)",
+            "  ⎿  Writing 2 lines…",
+            "      1 one",
+            "      2 two",
+        ]
+    );
+}
