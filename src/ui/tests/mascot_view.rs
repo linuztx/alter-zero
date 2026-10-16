@@ -11,13 +11,19 @@ fn open_app() -> App {
     app
 }
 
+/// A terminal tall enough for the whole page.
+const TALL: u16 = 200;
+
 fn texts(app: &App, width: u16) -> Vec<String> {
-    mascot_view_lines(app, width).iter().map(plain).collect()
+    mascot_view_lines(app, width, TALL)
+        .iter()
+        .map(plain)
+        .collect()
 }
 
 #[test]
 fn closed_builds_nothing() {
-    assert!(mascot_view_lines(&with_session(), 80).is_empty());
+    assert!(mascot_view_lines(&with_session(), 80, TALL).is_empty());
     assert_eq!(mascot_picker_height(&with_session(), 80, 200), None);
 }
 
@@ -82,11 +88,11 @@ fn the_preview_slot_height_is_stable_across_selections() {
     // Mascots are 3–5 rows tall; the preview slot pads to the tallest so
     // the frame never jumps as ↑/↓ move (the /settings always-emit rule).
     let mut app = open_app();
-    let h0 = mascot_view_lines(&app, 80).len();
+    let h0 = mascot_view_lines(&app, 80, TALL).len();
     for i in 1..Mascot::ALL.len() {
         app.mascot_picker.as_mut().expect("open").selected = i;
         assert_eq!(
-            mascot_view_lines(&app, 80).len(),
+            mascot_view_lines(&app, 80, TALL).len(),
             h0,
             "selection {i} changed the page height"
         );
@@ -188,7 +194,7 @@ fn the_page_never_exceeds_the_width() {
     for width in [24u16, 40, 60, 80, 120] {
         for i in 0..Mascot::ALL.len() {
             app.mascot_picker.as_mut().expect("open").selected = i;
-            for line in mascot_view_lines(&app, width) {
+            for line in mascot_view_lines(&app, width, TALL) {
                 assert!(
                     crate::ui::wrap::cols(&plain(&line)) <= width as usize,
                     "width {width} selection {i}: {:?} overflows",
@@ -202,8 +208,8 @@ fn the_page_never_exceeds_the_width() {
 #[test]
 fn height_is_the_line_count_clamped_to_the_terminal() {
     let app = open_app();
-    let lines = mascot_view_lines(&app, 80).len() as u16;
-    assert_eq!(mascot_menu_rows(&app, 80), lines);
+    let lines = mascot_view_lines(&app, 80, TALL).len() as u16;
+    assert_eq!(mascot_menu_rows(&app, 80, TALL), lines);
     assert_eq!(
         mascot_picker_height(&app, 80, 200),
         Some(lines),
@@ -221,8 +227,141 @@ fn the_picker_flows_like_its_family() {
     // A short terminal bottom-anchors the page and flows the skipped top
     // into scrollback (docs/view-flow.md) — the picker must be flow-eligible
     // like /settings, or its page top would silently clip.
+    // Even the compact page is taller than a 10-row terminal.
     let app = open_app();
-    let page = mascot_view_lines(&app, 80).len();
+    let page = mascot_view_lines(&app, 80, 10).len();
     let flow = crate::ui::view_flow(&app, 80, 10, 1000).expect("flows on a 10-row terminal");
     assert_eq!(flow.lines.len(), page - 10, "the skipped top flows");
+}
+
+// --- the compact page: a short terminal keeps the choices on screen ---
+
+/// The page on a terminal `height` rows tall, as trimmed plain rows.
+fn page_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    mascot_view_lines(app, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+fn select(app: &mut App, i: usize) {
+    app.mascot_picker.as_mut().expect("open").selected = i;
+}
+
+/// How many rows of `texts` are mascot rows.
+fn mascot_rows(texts: &[String]) -> usize {
+    texts
+        .iter()
+        .filter(|t| {
+            let name = t.trim_start_matches('→').trim();
+            Mascot::ALL
+                .iter()
+                .any(|m| name == m.name() || name.starts_with(&format!("{} ", m.name())))
+        })
+        .count()
+}
+
+fn is_rule(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c == '─')
+}
+
+#[test]
+fn a_short_terminal_keeps_the_mascot_choices_on_screen() {
+    // The whole page — the list, the counter, the banner preview and the
+    // description — is 21 rows. On 12, bottom-anchoring it kept the preview
+    // and flowed the search line and the highlighted mascot into scrollback.
+    // The preview, the description and the counter yield instead.
+    let app = open_app();
+    assert_eq!(page_at(&app, 80, TALL).len(), 21, "the whole page");
+    let texts = page_at(&app, 80, 12);
+    assert!(texts.len() <= 12, "fits: {texts:#?}");
+    assert!(
+        texts.iter().any(|t| t == "  ❯"),
+        "the search line: {texts:#?}"
+    );
+    assert!(texts.iter().any(|t| t.starts_with("→ crest")), "{texts:#?}");
+    assert_eq!(mascot_rows(&texts), 3, "three rows: {texts:#?}");
+    assert!(texts.iter().any(|t| t == "  ↓ 3 more below"), "{texts:#?}");
+    assert!(
+        texts.iter().any(|t| t.contains("Enter to choose")),
+        "{texts:#?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("(1/6)")),
+        "no counter: {texts:#?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("Alter Zero")),
+        "no banner preview: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_mascot_page_is_the_familys_short_page() {
+    let texts = page_at(&open_app(), 80, 12);
+    assert_eq!(texts.len(), 11, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "", "{texts:#?}");
+    assert_eq!(texts[2], "  ❯", "{texts:#?}");
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert!(texts[4].starts_with("→ crest"), "{texts:#?}");
+    assert_eq!(texts[5], "  bloom", "{texts:#?}");
+    assert_eq!(texts[6], "  sprout", "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 3 more below", "{texts:#?}");
+    assert!(texts[8].contains("Enter to choose"), "{texts:#?}");
+    assert_eq!(texts[9], "", "{texts:#?}");
+    assert!(is_rule(&texts[10]), "{texts:#?}");
+}
+
+#[test]
+fn the_compact_mascot_window_rides_the_selection_and_holds_still() {
+    let mut app = open_app();
+    select(&mut app, 3); // twin
+    let texts = page_at(&app, 80, 12);
+    assert_eq!(texts[3], "  ↑ 2 more above", "{texts:#?}");
+    assert_eq!(texts[4], "  sprout", "{texts:#?}");
+    assert!(texts[5].starts_with("→ twin"), "{texts:#?}");
+    assert_eq!(texts[6], "  skiter", "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 1 more below", "{texts:#?}");
+    for i in 0..Mascot::ALL.len() {
+        select(&mut app, i);
+        assert_eq!(
+            page_at(&app, 80, 12).len(),
+            11,
+            "selection {i} moved the frame"
+        );
+    }
+}
+
+#[test]
+fn the_whole_mascot_page_returns_once_it_fits() {
+    let app = open_app();
+    let whole = u16::try_from(page_at(&app, 80, TALL).len()).expect("rows");
+    let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Alter Zero"));
+    assert!(
+        has_preview(&page_at(&app, 80, whole)),
+        "whole at its own height"
+    );
+    assert!(
+        !has_preview(&page_at(&app, 80, whole - 1)),
+        "compact a row short"
+    );
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_mascot_search_line() {
+    let app = open_app();
+    let height = mascot_picker_height(&app, 80, 12).expect("open");
+    assert_eq!(height, 11, "the compact page");
+    let area = Rect::new(0, 1, 80, height);
+    let (_, y) = crate::ui::cursor_position(area, &app);
+    assert_eq!(
+        y,
+        1 + crate::ui::theme::MASCOT_SEARCH_ROW,
+        "on the search line"
+    );
+    assert!(
+        crate::ui::view_flow(&app, 80, 12, 1000).is_none(),
+        "nothing flows"
+    );
 }

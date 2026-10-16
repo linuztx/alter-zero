@@ -184,9 +184,19 @@ swallowed (nothing anyone pastes is a style name), and the running cell's
 `/mascot` joins the list with it). It works **mid-turn** like `/mascot`: it
 only replaces the composer, and the streaming strip keeps its rows above it
 — which for this picker is the point, since the strip's status row is what
-a switch changes, on the very next frame. On a short terminal the page
-bottom-anchors and flows its top into scrollback like its whole family
-(`docs/view-flow.md`) — with one difference, below.
+a switch changes, on the very next frame.
+
+On a terminal too short for the page — it is twenty-two rows — the picker
+builds the family's **compact** page instead (`docs/view-flow.md` *A page
+that sheds rows before it flows*): the live preview line, the description
+and the counter yield, and three styles sit between the reserved overflow
+slots, each still wearing its own live spinner, so the search line, the
+highlighted style and the hint stay on screen where bottom-anchoring the
+whole page flowed them into scrollback. The glyph column is sized off every
+listed style, not the three in view, so it holds still as the window
+scrolls. Only a terminal shorter than the compact page still bottom-anchors
+and flows its top into scrollback like its whole family — with one
+difference, below.
 
 ### The flow is signed on the selection, not the rows
 
@@ -318,6 +328,7 @@ wears it.
   and its seat, the no-match collapse, no stacked blanks, width safety, the
   height contract, flow eligibility, and the tick-stable / keystroke-sensitive
   flow signature.
+- `scripts/smoke.sh` Phase 138 — the compact page on a 12-row terminal.
 - `scripts/smoke.sh` Phase 110 — the picker end to end in a real terminal:
   open from the palette seated on the default gravity (its ✓ on a fresh
   config home), the live rows (the ball on its floor, the wave's

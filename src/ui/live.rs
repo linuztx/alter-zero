@@ -560,7 +560,10 @@ pub fn render_live_with_preview(
     // …and the inline `/mascot` picker, the `/settings` menu's twin. See
     // `docs/mascot.md`.
     if app.mascot_picker.is_some() {
-        let [strip, body] = view_split(area, super::mascot_view::mascot_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::mascot_view::mascot_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_mascot_picker(body, buf, app);
         return;
@@ -571,7 +574,7 @@ pub fn render_live_with_preview(
     if app.spinner_picker.is_some() {
         let [strip, body] = view_split(
             area,
-            super::spinner_view::spinner_menu_rows(app, area.width),
+            super::spinner_view::spinner_menu_rows(app, area.width, area.height),
         );
         render_strip_above(strip, buf, app, stream_preview);
         render_spinner_picker(body, buf, app);

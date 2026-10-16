@@ -39,4 +39,28 @@ expect_has "$short_settings_walk" -E '^  ↓ [0-9]+ more below$' "/settings lost
 tmux send-keys -t "$S138" Escape
 sleep 0.4
 expect_has "$(pane "$S138")" -F "dummy_model_name" "Esc did not close /settings back to the composer"
+# /mascot and /spinner: their live previews yield with the counter and the
+# description, and three rows stay between the slots.
+submit "$S138" "/mascot"
+short_mascot="$(wait_pane 5 "$S138" -F "Enter to choose")"
+echo "==== Phase 138: /mascot on 12 rows ===="
+printf '%s\n' "$short_mascot"
+expect_has "$short_mascot" -E '^  ❯ *$' "/mascot lost its search line on 12 rows"
+expect_has "$short_mascot" -E '^→ crest' "/mascot lost its highlighted row on 12 rows"
+expect_has "$short_mascot" -E '^  ↓ [0-9]+ more below$' "/mascot does not name the rows under its window"
+expect_lacks "$short_mascot" -E '\([0-9]+/[0-9]+\)' "/mascot still shows its counter on 12 rows"
+expect_lacks "$short_mascot" -F "crested hatchling" "/mascot still shows its description on 12 rows"
+tmux send-keys -t "$S138" Escape
+sleep 0.4
+submit "$S138" "/spinner"
+short_spinner="$(wait_pane 5 "$S138" -F "Enter to choose")"
+echo "==== Phase 138: /spinner on 12 rows ===="
+printf '%s\n' "$short_spinner"
+expect_has "$short_spinner" -E '^  ❯ *$' "/spinner lost its search line on 12 rows"
+expect_has "$short_spinner" -E '^→ gravity' "/spinner lost its highlighted row on 12 rows"
+expect_has "$short_spinner" -E '^  ↓ [0-9]+ more below$' "/spinner does not name the rows under its window"
+expect_lacks "$short_spinner" -F "Working" "/spinner still shows its live preview on 12 rows"
+tmux send-keys -t "$S138" Escape
+sleep 0.4
+expect_has "$(pane "$S138")" -F "dummy_model_name" "Esc did not close /spinner back to the composer"
 tmux kill-session -t "$S138" 2>/dev/null

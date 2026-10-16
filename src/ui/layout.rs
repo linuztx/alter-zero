@@ -1108,7 +1108,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The inline `/mascot` picker parks the cursor at the end of its `❯`
     // search line, exactly like the `/settings` menu (docs/mascot.md).
     if let Some(picker) = &app.mascot_picker {
-        let rows = super::mascot_view::mascot_menu_rows(app, area.width);
+        let rows = super::mascot_view::mascot_menu_rows(app, area.width, area.height);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
@@ -1118,7 +1118,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The inline `/spinner` picker parks the cursor at the end of its `❯`
     // search line, exactly like the `/mascot` picker (docs/spinner.md).
     if let Some(picker) = &app.spinner_picker {
-        let rows = super::spinner_view::spinner_menu_rows(app, area.width);
+        let rows = super::spinner_view::spinner_menu_rows(app, area.width, area.height);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);

@@ -163,7 +163,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if app.mascot_picker.is_some() {
         return Some(FlowPage::framed(
-            super::mascot_view::mascot_view_lines(app, width),
+            super::mascot_view::mascot_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -189,7 +189,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         picker.selected.hash(&mut hasher);
         picker.query.hash(&mut hasher);
         return Some(FlowPage {
-            lines: super::spinner_view::spinner_view_lines(app, width),
+            lines: super::spinner_view::spinner_view_lines(app, width, term_height),
             sign: FlowSign::Frozen(hasher.finish()),
             painted: term_height.max(1),
         });

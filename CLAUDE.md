@@ -326,7 +326,9 @@ gradient mascot beside the bold `Alter Zero (v…)` title, the dim cwd, and the
 cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/settings` family's frame over the six-mascot catalog
-with a **live banner preview** rendered by the header's own builder, the
+with a **live banner preview** rendered by the header's own builder — on a
+terminal too short for that page, the family's compact one, preview,
+description and counter yielding (`docs/view-flow.md`) — the
 choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/mascot` picker's twin over
@@ -338,7 +340,9 @@ row wears its own spinner and the highlighted style previews as a whole
 sample status line through `ui::styled_status_line`, the strip's own
 renderer, animated off the injected frame clock with no turn running
 (`App::wants_animation_frames`) and its flow signed on the selection rather
-than its rows so a frame never churns a purge rebuild; the choice persisted
+than its rows so a frame never churns a purge rebuild, its compact page on a
+short terminal keeping three live rows between the reserved slots with the
+glyph column sized off every style; the choice persisted
 **per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
