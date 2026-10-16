@@ -35,7 +35,7 @@ fn model_rows_show_marker_provider_tag_and_active_check() {
     let picker = model_picker(three_models(), 0, "anthropic/claude-fable-5");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // First list row (y = MODEL_SEARCH_ROW + 2 = 4).
+    // First list row (y = SEARCH_ROW + 2 = 4).
     let first = row(&buf, 4, 60);
     assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
     assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
@@ -1348,4 +1348,56 @@ fn the_cursor_sits_on_the_compact_provider_filter() {
         crate::ui::view_flow(&app, 70, 12, 1000).is_none(),
         "nothing flows"
     );
+}
+
+// --- a terminal shorter than the compact page keeps the filter line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_login_filter_line() {
+    let app = login_app();
+    assert_sheds_to_its_search_line(
+        |height| login_page_at(&app, 70, height),
+        "",
+        "→ Use a subscription",
+        "enter select",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &login_page_at(&app, 70, height), 70, "");
+    }
+    let app = seven_providers();
+    assert_sheds_to_its_search_line(
+        |height| login_page_at(&app, 70, height),
+        "",
+        "→ Provider 0",
+        "esc back",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &login_page_at(&app, 70, height), 70, "");
+    }
+    let mut app = seven_providers();
+    app.key_onboarding.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| login_page_at(&app, 70, height),
+        "zzz",
+        "No matching providers",
+        "esc back",
+    );
+}
+
+#[test]
+fn the_key_fields_caret_follows_the_bottom_anchor() {
+    // The key step keeps no ladder — its field already sits at the foot of
+    // the page, where the anchor keeps it — so a terminal shorter than the
+    // page paints it from a skipped top, and the caret must sit on the
+    // painted field rather than on its page row (docs/view-flow.md).
+    let app = login_app_described(KeyKind::Secret);
+    let onboarding = app.key_onboarding.as_ref().expect("open");
+    let page = page_texts(onboarding, 70);
+    let field = page
+        .iter()
+        .position(|t| t.trim_start().starts_with('❯'))
+        .expect("the field");
+    let height = u16::try_from(page.len() - 2).expect("rows");
+    let (_, y) = cursor_position(Rect::new(0, 0, 70, height), &app);
+    assert_eq!(usize::from(y), field - 2, "two rows skipped: {page:#?}");
 }

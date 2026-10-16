@@ -113,14 +113,46 @@ first; headers, tabs, search, and at least one result remain visible"*):
    there anyway;
 3. a header goes last.
 
-Only a page shorter than even the last of them bottom-anchors and flows the
-way every framed page does. The pages must shrink in that order, because the
-height comes from two places: the reserved height and the flow pass the
+The height comes from two places: the reserved height and the flow pass the
 terminal's, while the paint and the cursor seat pass the region already
 reserved for the page — at least the chosen page's height and at most the
-terminal's — and a builder whose pages shrink in order picks the same page
-from either. A page with nothing to choose from (a search matching nothing,
-an empty catalog) has no window to compact, so only its header yields.
+terminal's — and a builder that takes the first page that fits picks the
+same page from either.
+
+### Below the compact page: the search line never goes
+
+A page that has no rung left bottom-anchors, and bottom-anchoring a picker's
+compact page did to it what it had done to the whole page: on eight rows the
+search line flowed into scrollback — and the hardware cursor, which cannot
+sit on a scrollback row, clamped onto a theme or a setting at the body's
+top — and on six the highlighted row went with it. So the search-line
+pickers (`/theme`, `/skills`, `/settings`, `/mascot`, `/spinner`, `/model`
+and `/login`'s lists) don't stop at the compact page. It is the first of ten
+rungs (`model_view::compact_page`), each a row shorter than the last but
+where the overflow pair goes, which is two rows at once:
+
+| rows | what the page keeps |
+| ---- | ------------------- |
+| 11 | rule, gap, search, `↑`, three rows, `↓`, hint, gap, rule — the compact page |
+| 10 | the gap under the top rule goes: the search line sits on the rule, the composer's own look |
+| 8 | the `↑`/`↓` pair goes — codex reserves its arrow rows only beside three rows of results |
+| 7 | the top rule goes: a page this short fills the terminal, so nothing on screen is above it to set apart, and the search line opens the screen |
+| 6 | the gap over the bottom rule goes |
+| 5, 4 | the rows go, three to two to one — the highlighted one |
+| 3 | the bottom rule goes |
+| 2 | the hint goes |
+| 1 | the highlighted row goes, leaving the search line |
+
+So on any terminal at least a row tall the page fits, nothing of it flows,
+and the caret sits on the search line after the query — found in the built
+page (`view_prompt_row`), never pinned to row 2, since the rungs move it
+up. `/model`, which has no hint row, keeps its `Model Name:` line in the
+hint's place, so the same rungs apply. A page with nothing to choose from —
+a search matching nothing, a list still loading, an empty catalog — puts
+its placeholder in the list's place (`placeholder_window`: whole while the
+page keeps three rows, its first rows after) and sheds the same way, so what
+was typed stays on screen above the placeholder; a page with nothing under
+its list (`/model`'s placeholder) keeps no gap for one.
 
 The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
 (`docs/skills.md`), `/settings` (`docs/settings.md`), `/mascot`
@@ -133,7 +165,7 @@ window one box tall (`docs/donate.md`). The `AskUserQuestion` modal walks the
 same kind of ladder (`docs/ask.md`): its options' descriptions yield, then
 its rows window around the selection, and its chip strip of question tabs
 goes last, codex's tabs-stay-longest order. `smoke.sh` Phase 138 opens them
-on a 12-row terminal.
+on a 12-row terminal, and the search-line pickers on 7 rows too.
 
 ## Scope — which views flow
 
@@ -147,14 +179,15 @@ on a 12-row terminal.
   precedence: a view flows only while it is the one actually painted (an ask
   or permission modal covers everything below it).
 
-  The pickers' one wrinkle: their `❯` search line sits in the page **top**,
-  so on a terminal shorter than their page it is part of the flow. That
-  stays correct because a keystroke changes the flowed rows and re-signs the
-  flow — the purge rebuild re-flows the typed query with the page — while
-  the hardware cursor, which cannot sit on a scrollback row, clamps at the
-  body top (`anchored_view_row`, the seat's skip subtraction). Their pages
-  are bounded by construction (windowed lists, ~15–18 rows), so this regime
-  only exists on terminals shorter than that.
+  The search-line pickers stay eligible but never actually flow: their `❯`
+  search line sits in the page **top**, where a flow would take it into
+  scrollback, so their builders shed rows down to the search line instead
+  (*Below the compact page* above) and every page fits the terminal. They
+  stay eligible so that a builder that ever overshot would still flow its
+  top rather than drop it into no buffer; the hardware cursor would then
+  clamp at the body top (`anchored_view_row`, the seat's skip subtraction),
+  as it still does for the `/login` key step, whose field sits at the foot
+  of its page where the anchor keeps it.
 - **Flow + bottom anchor, with a context rule**: the tool-permission prompt
   (`docs/permissions.md`). Its body — the numbered write/diff, the command —
   shows **whole** now (the retired cap hid the middle behind a `… +N lines`

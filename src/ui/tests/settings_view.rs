@@ -6,8 +6,8 @@ use super::*;
 use crate::permission::PermissionMode;
 use crate::settings::{SettingAvailability, SettingKey};
 use crate::ui::theme::{
-    GAP_ROWS, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS, SETTINGS_SEARCH_ROW, STATUS_GAP_ROWS,
-    STATUS_ROWS, model_selected_color, settings_value_color, settings_value_off_color,
+    GAP_ROWS, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS, STATUS_GAP_ROWS, STATUS_ROWS,
+    model_selected_color, settings_value_color, settings_value_off_color,
 };
 
 /// The fixed rows framing the menu: top rule, gap, search, gap (4 above
@@ -49,10 +49,7 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
     let last = buf.area.height - 1;
     assert!(row(&buf, 0, 78).starts_with('─'), "top rule");
     assert!(row(&buf, 1, 78).trim().is_empty(), "gap, no header banner");
-    assert!(
-        row(&buf, SETTINGS_SEARCH_ROW, 78).contains('❯'),
-        "the search line"
-    );
+    assert!(row(&buf, SEARCH_ROW, 78).contains('❯'), "the search line");
     assert!(row(&buf, last, 78).starts_with('─'), "bottom rule");
     assert!(row(&buf, last - 1, 78).trim().is_empty(), "trailing gap");
     assert!(
@@ -195,9 +192,9 @@ fn the_search_query_shows_after_the_prompt() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    let search = row(&buf, SETTINGS_SEARCH_ROW, 78);
+    let search = row(&buf, SEARCH_ROW, 78);
     assert!(search.contains("❯ temp"), "{search:?}");
-    assert_eq!(buf[(2, SETTINGS_SEARCH_ROW)].fg, model_selected_color());
+    assert_eq!(buf[(2, SEARCH_ROW)].fg, model_selected_color());
     // …and the list narrowed to the one match.
     assert!(
         row(&buf, 4, 78).contains("Temperature"),
@@ -271,7 +268,7 @@ fn the_cursor_sits_at_the_end_of_the_search_query() {
     let height = settings_height(&app, 78, 200).unwrap();
     let area = Rect::new(0, 3, 78, height);
     let (x, y) = cursor_position(area, &app);
-    assert_eq!(y, 3 + SETTINGS_SEARCH_ROW, "on the search row");
+    assert_eq!(y, 3 + SEARCH_ROW, "on the search row");
     // indent (2) + `❯ ` (2) + the 5-character query.
     assert_eq!(x, 2 + 2 + 5);
 }
@@ -290,40 +287,37 @@ fn a_narrow_terminal_truncates_rather_than_overflowing() {
 }
 
 #[test]
-fn a_squeezed_settings_menu_is_bottom_anchored() {
-    // The menu is a content-driven framed body like /mcp's now
-    // (docs/view-flow.md): an area shorter than even its smallest page — the
-    // compact one — paints that page's LAST rows, so the list's tail, the
-    // hint and the closing rule stay on screen and the skipped top can flow
-    // into scrollback. (The old internal Layout squeezed the *list* instead,
-    // clipping rows out of its middle — a selection could sit under the clip
-    // while its description still showed.)
+fn a_squeezed_settings_menu_paints_the_page_built_for_its_height() {
+    // A terminal shorter than the compact page no longer bottom-anchors it —
+    // which flowed the search line, and then the highlighted row, out of
+    // sight — but gets a smaller rung that fits it whole: the region holds
+    // exactly the page built for that height, every row painted, the search
+    // line on screen. Each rung is a row shorter than the last but where the
+    // overflow pair goes, two rows at once.
     let app = settings_app();
     let width = 78u16;
-    let smallest = page_at(&app, width, 1).len();
-    let natural = u16::try_from(smallest).expect("rows");
-    let mut full = buffer(width, natural);
-    render_settings(full.area, &mut full, &app);
-    let height = natural - 2;
-    let mut buf = buffer(width, height);
-    render_settings(buf.area, &mut buf, &app);
-    for y in 0..height {
+    for height in 1..=11u16 {
+        let page = page_at(&app, width, height);
+        let short_by = if height == 9 { 1 } else { 0 };
         assert_eq!(
-            row(&buf, y, width),
-            row(&full, y + 2, width),
-            "squeezed row {y} is the smallest page's row {}",
-            y + 2
+            page.len(),
+            usize::from(height - short_by),
+            "{height}: {page:#?}"
         );
+        let region = settings_height(&app, width, height).expect("open");
+        assert_eq!(
+            usize::from(region),
+            page.len(),
+            "{height}: the region is the page"
+        );
+        let mut buf = buffer(width, region);
+        render_settings(buf.area, &mut buf, &app);
+        let painted: Vec<String> = (0..region)
+            .map(|y| row(&buf, y, width).trim_end().to_string())
+            .collect();
+        assert_eq!(painted, page, "{height}: the page, unskipped");
+        assert!(painted.iter().any(|r| r == "  ❯"), "{height}: {painted:#?}");
     }
-    assert!(
-        row(&buf, height - 1, width).starts_with("──"),
-        "the bottom rule is the last row"
-    );
-    let all: Vec<String> = (0..height).map(|y| row(&buf, y, width)).collect();
-    assert!(
-        all.iter().any(|r| r.contains(SETTINGS_HINT)),
-        "the key hint stays on screen: {all:?}"
-    );
 }
 
 // --- the no-match page collapses its empty slots (docs/settings.md) ---
@@ -668,24 +662,20 @@ fn the_cursor_sits_on_the_compact_settings_search_line() {
     assert_eq!(height, 11, "the compact page");
     let area = Rect::new(0, 1, 78, height);
     let (x, y) = cursor_position(area, &app);
-    assert_eq!(y, 1 + SETTINGS_SEARCH_ROW, "on the search line");
+    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
     // indent (2) + `❯ ` (2) + the one-character query.
     assert_eq!(x, 2 + 2 + 1);
 }
 
 #[test]
-fn the_settings_menu_flows_only_where_no_page_fits() {
+fn the_settings_menu_never_flows() {
     let app = settings_app();
-    assert!(
-        crate::ui::view_flow(&app, 78, 12, 1000).is_none(),
-        "fits 12"
-    );
-    assert!(
-        crate::ui::view_flow(&app, 78, TALL, 1000).is_none(),
-        "fits tall"
-    );
-    let flow = crate::ui::view_flow(&app, 78, 6, 1000).expect("6 rows flow");
-    assert_eq!(flow.lines.len(), 11 - 6, "the compact page's top flows");
+    for height in (1..=12).chain([TALL]) {
+        assert!(
+            crate::ui::view_flow(&app, 78, height, 1000).is_none(),
+            "{height} rows: a rung fits"
+        );
+    }
 }
 
 #[test]
@@ -702,4 +692,37 @@ fn the_settings_menu_renders_the_page_its_height_reserves() {
         "{rows:#?}"
     );
     assert!(rows.iter().any(|r| r.contains(SETTINGS_HINT)), "{rows:#?}");
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_settings_search_line() {
+    let app = settings_app();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 78, height),
+        "",
+        "→ Hide thinking",
+        "Enter/Space to change",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &page_at(&app, 78, height), 78, "");
+    }
+}
+
+#[test]
+fn a_tiny_terminal_keeps_what_was_typed_over_no_settings_match() {
+    let mut app = settings_app();
+    for c in "zzz".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 78, height),
+        "zzz",
+        "No matching settings",
+        "Enter/Space to change",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &page_at(&app, 78, height), 78, "zzz");
+    }
 }

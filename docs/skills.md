@@ -771,10 +771,13 @@ way, `view_split`), and every reader of the page — the reserved height, the
 paint, the cursor seat, the flow — passes either that height or the region
 already reserved for the page, which always builds the same page. The cursor
 seat already finds the search line in the built page (`view_prompt_row`), so
-it follows the header away for free. Nothing flows while a page fits; an area
-shorter than even the smallest page bottom-anchors it like the rest of the
-family. `smoke.sh` Phase 77b drives all three pages and a toggle on the
-compact one.
+it follows the header away for free. On a terminal shorter still the compact
+page sheds what is left one row at a time and never its search line
+(`docs/view-flow.md` *Below the compact page*) — the gaps, the `↑`/`↓` pair,
+the rules, the rows down to the highlighted skill, the hint — so the page
+fits at every height and nothing flows; an empty list puts its placeholder
+in the list's place and sheds the same way. `smoke.sh` Phase 77b drives all
+three pages and a toggle on the compact one, Phase 138 the menu on 7 rows.
 
 ### What a toggle changes
 

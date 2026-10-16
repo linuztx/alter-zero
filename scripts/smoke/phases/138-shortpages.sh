@@ -170,6 +170,87 @@ wait_pane 10 "$S138" -S -60 -- -F "User declined to answer questions" >/dev/null
 	fail "Esc did not decline the questions"
 tmux kill-session -t "$S138" 2>/dev/null
 
+# The search-line pickers on 7 rows (docs/view-flow.md *Below the compact
+# page*). Bottom-anchoring the compact page flowed its search line — and the
+# caret, clamped onto a list row — into scrollback on eight rows, and the
+# highlighted row on six. The page sheds its gaps, its ↑/↓ rows, its rules
+# and list rows instead, so the search line stays on screen with the caret on
+# it, the highlighted row under it, the hint under that: a long list's page
+# opens on its search line, a short one's (two skills, the /login root) still
+# fits its top rule over it.
+for skill in alpha beta; do
+	mkdir -p "$SMOKE_SKILLS/$skill"
+	printf -- '---\nname: %s\ndescription: The %s skill.\n---\nBody.\n' "$skill" "$skill" >"$SMOKE_SKILLS/$skill/SKILL.md"
+done
+S138T="${S}_tiny"
+launch "$S138T" 90 7
+caret_on_search_line() { # $1 label, $2 the pane, $3 the query
+	local row cur
+	row="$(printf '%s\n' "$2" | grep -n -x -F "  ❯${3:+ $3}" | head -1 | cut -d: -f1)"
+	if [ -z "$row" ]; then
+		fail "$1: the search line is not on screen"
+		return
+	fi
+	cur="$(tmux display-message -p -t "$S138T" '#{cursor_x},#{cursor_y}')"
+	expect_eq "$cur" "$((4 + ${#3})),$((row - 1))" "$1: the caret is not on the search line"
+}
+close_picker() { # $1 label
+	tmux send-keys -t "$S138T" Escape
+	wait_pane 5 "$S138T" -F "dummy_model_name" >/dev/null ||
+		fail "Esc did not close $1 back to the composer"
+}
+submit "$S138T" "/theme"
+wait_pane 5 "$S138T" -F "Enter to choose" >/dev/null
+tmux send-keys -t "$S138T" Down Down Down Down Down
+tiny_theme="$(wait_pane 5 "$S138T" -E '^  ❯ dracula')"
+echo "==== Phase 138: /theme on 7 rows ===="
+printf '%s\n' "$tiny_theme"
+expect_eq "$(printf '%s\n' "$tiny_theme" | head -1)" "  ❯" "/theme on 7 rows does not open on its search line"
+expect_has "$tiny_theme" -E '^    onedark ' "/theme on 7 rows lost the theme above the highlighted one"
+expect_has "$tiny_theme" -E '^    nord ' "/theme on 7 rows lost the theme below the highlighted one"
+expect_has "$tiny_theme" -F "↑/↓ to navigate" "/theme on 7 rows lost its hint"
+caret_on_search_line "/theme on 7 rows" "$tiny_theme" ""
+# What was typed stays over a search that matches nothing.
+tmux send-keys -t "$S138T" -l "zzz"
+tiny_nomatch="$(wait_pane 5 "$S138T" -F "No matching themes")"
+echo "==== Phase 138: /theme matching nothing on 7 rows ===="
+printf '%s\n' "$tiny_nomatch"
+caret_on_search_line "/theme matching nothing on 7 rows" "$tiny_nomatch" "zzz"
+tmux send-keys -t "$S138T" Escape # clears the search
+sleep 0.3
+close_picker /theme
+for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:→ crest:Enter to choose" \
+	"/spinner:→ gravity:Enter to choose" "/skills:→ alpha:Enter/Space to enable"; do
+	cmd="${picker%%:*}"
+	rest="${picker#*:}"
+	row="${rest%%:*}"
+	hint="${rest#*:}"
+	submit "$S138T" "$cmd"
+	tiny="$(wait_pane 5 "$S138T" -F "$hint")"
+	echo "==== Phase 138: $cmd on 7 rows ===="
+	printf '%s\n' "$tiny"
+	expect_has "$tiny" -F "$row" "$cmd on 7 rows lost its highlighted row"
+	caret_on_search_line "$cmd on 7 rows" "$tiny" ""
+	close_picker "$cmd"
+done
+submit "$S138T" "/login"
+tiny_login="$(wait_pane 5 "$S138T" -F "Use an API key")"
+echo "==== Phase 138: /login on 7 rows ===="
+printf '%s\n' "$tiny_login"
+expect_has "$tiny_login" -E '^→ Use a subscription' "/login on 7 rows lost its highlighted row"
+caret_on_search_line "/login on 7 rows" "$tiny_login" ""
+tmux send-keys -t "$S138T" Down Enter
+tiny_providers="$(wait_pane 5 "$S138T" -F "esc back")"
+echo "==== Phase 138: /login's provider list on 7 rows ===="
+printf '%s\n' "$tiny_providers"
+expect_eq "$(printf '%s\n' "$tiny_providers" | head -1)" "  ❯" "/login's provider list on 7 rows does not open on its filter line"
+expect_has "$tiny_providers" -E '^→ .+ · (✔|◯) ' "/login's provider list on 7 rows lost its highlighted provider"
+caret_on_search_line "/login's provider list on 7 rows" "$tiny_providers" ""
+tmux send-keys -t "$S138T" Escape
+wait_pane 5 "$S138T" -F "Use an API key" >/dev/null
+close_picker /login
+tmux kill-session -t "$S138T" 2>/dev/null
+
 # /model: a stub provider lists twelve models, and the compact page keeps
 # three of them, the search line, and the highlighted model's name line.
 M_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -225,6 +306,20 @@ expect_has "$short_model" -E '^→ stub/model-00 \[stub\]' "/model lost its high
 expect_has "$short_model" -E '^  ↓ 9 more below$' "/model does not name the models under its window"
 expect_has "$short_model" -F "Stub: Model 0" "/model's compact page lost the highlighted model's name"
 expect_lacks "$short_model" -E '\([0-9]+/[0-9]+\)' "/model still shows its counter on 12 rows"
+tmux send-keys -t "$S138" Escape
+sleep 0.4
+tmux kill-session -t "$S138" 2>/dev/null
+# …and on 7 rows the search line opens the screen, the name line in the
+# hint's place.
+launch "$S138" 90 7 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_PROVIDERS_FILE=$M_PROVIDERS STUB_API_KEY=smoke-138 $APP"
+submit "$S138" "/model"
+tiny_model="$(wait_pane 10 "$S138" -F "stub/model-01")"
+echo "==== Phase 138: /model on 7 rows ===="
+printf '%s\n' "$tiny_model"
+expect_eq "$(printf '%s\n' "$tiny_model" | head -1)" "  ❯" "/model on 7 rows does not open on its search line"
+expect_has "$tiny_model" -E '^→ stub/model-00 \[stub\]' "/model on 7 rows lost its highlighted model"
+expect_has "$tiny_model" -F "Stub: Model 0" "/model on 7 rows lost the highlighted model's name"
+expect_eq "$(tmux display-message -p -t "$S138" '#{cursor_x},#{cursor_y}')" "4,0" "/model on 7 rows: the caret is not on the search line"
 tmux send-keys -t "$S138" Escape
 sleep 0.4
 tmux kill-session -t "$S138" 2>/dev/null

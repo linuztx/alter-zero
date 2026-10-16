@@ -207,8 +207,17 @@ when nothing is hidden that way, so the page is eleven rows at every
 selection. The value column is sized off every listed setting rather than
 the rows in view, so it holds still as the window scrolls — it used to shift
 on the whole page too, whenever ↑/↓ scrolled `Auto-resize images` in or out
-of the ten rows shown. The search line stays on page row 2 in all three
-pages, which is why the cursor's `SETTINGS_SEARCH_ROW` seat needed no change.
+of the ten rows shown.
+
+On a terminal shorter still the compact page sheds what is left one row at a
+time and never its search line (`docs/view-flow.md` *Below the compact
+page*): the gap under the top rule, the `↑`/`↓` pair, the top rule, the gap
+over the bottom rule, the rows down to the highlighted setting, the bottom
+rule and the hint. Bottom-anchored instead, the compact page flowed the
+search line into scrollback on eight rows and the highlighted setting on
+six. The rungs move the search line up, so the cursor's seat finds it in the
+built page (`view_prompt_row`) rather than pinning it to row 2; a search
+matching nothing sheds the same way, keeping what was typed.
 
 ### Keys
 

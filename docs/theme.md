@@ -368,13 +368,33 @@ strip above it gives way (`view_split`) — and every reader of the page
 passes either that height or the region already reserved for the page,
 which is at least the chosen page's height and at most the terminal's, so
 the reserved height, the paint, the cursor seat and the flow always build
-the same page. Nothing flows while the page fits; an area shorter than even
-the compact page bottom-anchors it like the rest of the family, its tail —
-the list's last rows, the hint, the closing rule — staying on screen.
+the same page.
+
+On a terminal shorter still, the compact page sheds what is left one row at
+a time and never its search line (`docs/view-flow.md` *Below the compact
+page*): the gap under the top rule, the `↑`/`↓` pair, the top rule, the gap
+over the bottom rule, the rows down to the highlighted one, the bottom rule
+and the hint. Bottom-anchored instead, the compact page flowed its search
+line into scrollback on eight rows — the caret clamped onto a theme row —
+and its highlighted theme on six. Seven rows now read:
+
+```
+  ❯
+    onedark     ●●●●●
+  ❯ dracula     ●●●●●
+    nord        ●●●●●
+  ↑/↓ to navigate · Type to search · Enter to choose · Es…
+
+──────────────────────────────────────────────────────────
+```
+
+So the page fits at every height, nothing of it flows, and the caret sits on
+the search line, found in the built page rather than pinned to row 2.
 
 A search that matches **nothing** collapses to its essentials — the
 placeholder (`No matching themes`), one blank gap, the hint — the `/mascot`
-picker's rule, from the `/model` picker's `model_has_detail`.
+picker's rule, from the `/model` picker's `model_has_detail` — and sheds the
+same way, keeping what was typed over the placeholder.
 
 Keys: ↑/↓ move, **wrapping at the ends** (the shared `wrap_step` grammar);
 PageUp/PageDown/Home/End jump (clamping); printable keys filter (Backspace
@@ -503,8 +523,9 @@ the saved theme.
   length is the reserved height, `docs/view-flow.md`), which lays the
   preview beside the list or under it (`preview_beside`, over
   `THEME_PREVIEW_GAP` and `THEME_PREVIEW_MIN_COLS`) and builds the compact
-  page (`COMPACT_LIST_ROWS`, `model_compact_list`) when the whole one is
-  taller than `height` (`first_page_that_fits`).
+  page (`model_view::compact_page` — `COMPACT_LIST_ROWS` rows between the
+  overflow slots, and the rungs under it down to the search line) when the
+  whole one is taller than `height` (`first_page_that_fits`).
 - `tui::theme::Session::select_theme`, `tui::config::{theme_json_path,
   load_theme, save_theme}`.
 
@@ -540,9 +561,13 @@ the saved theme.
   compact page (codex's shape, the theme choices kept on screen, the window
   keeping the selection in its middle, one height at every selection, the
   whole page back once it fits, width and blank-row safety, the cursor on
-  its search line), nothing flowing while a page fits, the flow and its
-  re-signing, the render filling the reserved rows, and the bottom-anchored
-  render of an area shorter than the page.
+  its search line); on a terminal shorter than the compact page the rungs
+  (the search line, the highlighted theme and the hint kept from ten rows
+  down to one, seven rows reading search line, three themes, hint, gap,
+  rule, the caret on the search line at every height, what was typed kept
+  over no match), nothing flowing at any height, the render filling the
+  reserved rows, and an area shorter than the compact page painting a rung
+  whole.
 - `ui/tests/transcript.rs`, `context_view.rs`, `footer.rs` — the three
   caches rebuilding when the theme changes.
 - `highlight` — every code theme resolving, two themes disagreeing on a

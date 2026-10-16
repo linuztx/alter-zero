@@ -392,9 +392,15 @@ the bottom rule — the shape of the user's mock):
   ```
 
   Bottom-anchoring the whole page there flowed the search line and the
-  highlighted model into scrollback. A placeholder page has no list to
-  compact and is the same at every height; `smoke.sh` Phase 138 opens the
-  picker over a stub provider's twelve models on a 12-row terminal.
+  highlighted model into scrollback. On a terminal shorter still the compact
+  page sheds what is left one row at a time and never its search line
+  (`docs/view-flow.md` *Below the compact page*) — the gaps, the `↑`/`↓`
+  pair, the rules, the rows down to the highlighted model, the name line —
+  and a placeholder page (loading, an error, no match) puts its placeholder
+  in the list's place and sheds the same way, keeping what was typed; the
+  cursor's seat finds the search line in the built page (`view_prompt_row`).
+  `smoke.sh` Phase 138 opens the picker over a stub provider's twelve models
+  on a 12-row terminal and on 7.
 
 ### Styling
 
@@ -540,9 +546,12 @@ in place; unlike it, it is a **two-step** flow.
   `Keys are saved to` note yielding. The provider list is seventeen rows with
   the built-in catalog, and bottom-anchoring it on twelve flowed the filter
   and the highlighted provider into scrollback; the root's two rows are the
-  same page either way. The key step and the sign-in pages keep their one
-  shape — their field or their wait sits at the bottom, which the anchor
-  already keeps on screen.
+  same page either way. On a terminal shorter still the compact page sheds
+  what is left one row at a time and never its filter line (`docs/view-flow.md`
+  *Below the compact page*), a filter matching nothing putting its
+  placeholder in the list's place. The key step and the sign-in pages keep
+  their one shape — their field or their wait sits at the bottom, which the
+  anchor already keeps on screen.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a

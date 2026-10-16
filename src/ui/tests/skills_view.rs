@@ -584,24 +584,6 @@ fn the_cursor_finds_the_search_line_under_a_wrapped_session_note() {
     assert_eq!(usize::from(y), search, "the caret sits on the drawn line");
 }
 
-#[test]
-fn the_cursor_seat_follows_the_bottom_anchor() {
-    // A region one row shorter than even the smallest page — the compact one
-    // without its header, whose search line is page row 2 — paints that page
-    // from its second row, so the search line sits one row higher on screen
-    // than its page row, and the caret must sit on the painted line
-    // (docs/view-flow.md).
-    let app = skills_app();
-    let smallest = page_at(&app, 78, 1);
-    assert_eq!(
-        smallest[2], "  ❯",
-        "the search line is row 2: {smallest:#?}"
-    );
-    let height = u16::try_from(smallest.len()).expect("rows") - 1;
-    let (_, y) = cursor_position(Rect::new(0, 0, 78, height), &app);
-    assert_eq!(y, 1, "the seat follows the anchored paint");
-}
-
 // --- the compact page: a short terminal keeps the choices on screen ---
 
 /// An app with the menu open over eight skills, `pdf` turned off — enough
@@ -926,23 +908,12 @@ fn the_cursor_sits_on_the_compact_pages_search_line() {
 }
 
 #[test]
-fn the_menu_flows_like_its_family_on_a_terminal_too_short_for_any_page() {
-    // Even the compact page without its header is taller than a 6-row
-    // terminal: its skipped top flows into scrollback like every framed
-    // view's.
+fn the_menu_never_flows() {
+    // The compact page exists so a short terminal keeps the page on screen,
+    // and the rungs under it shed down to the search line alone: whatever
+    // the height, nothing flows into scrollback above it.
     let app = many_app();
-    let page = page_at(&app, 78, 6).len();
-    assert_eq!(page, 11, "the smallest page");
-    let flow = crate::ui::view_flow(&app, 78, 6, 1000).expect("flows on a 6-row terminal");
-    assert_eq!(flow.lines.len(), page - 6, "the skipped top flows");
-}
-
-#[test]
-fn a_page_that_fits_flows_nothing() {
-    // The compact page exists so a short terminal keeps the page on screen:
-    // where it fits, nothing flows into scrollback above it.
-    let app = many_app();
-    for term in [12, SHORT, TALL] {
+    for term in (1..=12).chain([SHORT, TALL]) {
         assert!(
             crate::ui::view_flow(&app, 78, term, 1000).is_none(),
             "a page fits {term} rows"
@@ -1013,4 +984,35 @@ fn a_long_description_is_cut_to_one_row_before_the_list_shrinks() {
     // A skill whose description fits one row looks the same either way.
     select(&mut app, 1);
     assert_eq!(page_at(&app, 78, 22), page_at(&app, 78, TALL));
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+fn skills_page_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    crate::ui::skills_view::skills_view_lines(app, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_skills_search_line() {
+    let app = skills_app();
+    assert_sheds_to_its_search_line(
+        |height| skills_page_at(&app, 78, height),
+        "",
+        "→ commit-helper",
+        "Enter/Space to enable/disable",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &skills_page_at(&app, 78, height), 78, "");
+    }
+    let mut app = skills_app();
+    app.skills_menu.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| skills_page_at(&app, 78, height),
+        "zzz",
+        "No matching skills",
+        "Enter/Space to enable/disable",
+    );
 }

@@ -1083,71 +1083,51 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                 .min(usize::from(area.width.saturating_sub(1))) as u16);
         return (x, y);
     }
-    // The inline `/model` picker parks the cursor at the end of its `>` search
-    // line (see `model_view_lines`' stack: top rule, gap, search) — inside the
-    // picker's own frame, which the streaming strip above it has pushed down
-    // ([`view_split`], the same split the paint uses) and the bottom anchor
-    // may have shifted up ([`anchored_view_row`]).
-    if let Some(picker) = &app.model_picker {
-        let rows = model_picker_rows(picker, area.width, area.height);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, MODEL_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/settings` menu parks the cursor at the end of its `❯`
-    // search line, exactly like the `/model` picker (docs/settings.md).
-    if let Some(picker) = &app.settings_picker {
-        let rows = super::settings_view::settings_rows(app, area.width, area.height);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, SETTINGS_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/mascot` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/settings` menu (docs/mascot.md).
-    if let Some(picker) = &app.mascot_picker {
-        let rows = super::mascot_view::mascot_menu_rows(app, area.width, area.height);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, MASCOT_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/spinner` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/mascot` picker (docs/spinner.md).
-    if let Some(picker) = &app.spinner_picker {
-        let rows = super::spinner_view::spinner_menu_rows(app, area.width, area.height);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, SPINNER_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/theme` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/spinner` picker (docs/theme.md).
-    if let Some(picker) = &app.theme_picker {
-        let rows = super::theme_view::theme_menu_rows(app, area.width, area.height);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, THEME_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/skills` menu parks the cursor at the end of its `❯` search
-    // line, like the `/settings` menu (docs/skills.md) — but the line sits
-    // under the page's header, whose session-off note wraps with the width
-    // and which a short terminal's compact page drops, so its row is found
-    // in the page the paint builds (`view_prompt_row`, `/login`'s rule)
-    // rather than pinned. Built once, read twice: the page's height and that
-    // row.
-    if let Some(menu) = &app.skills_menu {
-        let lines = super::skills_view::skills_view_lines(app, area.width, area.height);
+    // The search-line pickers park the cursor at the end of their `❯` search
+    // line — inside the picker's own frame, which the streaming strip above
+    // it has pushed down ([`view_split`], the same split the paint uses).
+    // The line's row is found in the very page the paint builds
+    // (`view_prompt_row`, `/login`'s rule), never pinned: a short terminal's
+    // compact page drops the gap or the rule above it (`compact_page`), and
+    // the `/skills` header over it wraps with the width. Built once, read
+    // twice: the page's height and that row.
+    let search_line = if let Some(picker) = &app.model_picker {
+        Some((
+            super::model_view::model_view_lines(picker, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.settings_picker {
+        Some((
+            super::settings_view::settings_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.mascot_picker {
+        Some((
+            super::mascot_view::mascot_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.spinner_picker {
+        Some((
+            super::spinner_view::spinner_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.theme_picker {
+        Some((
+            super::theme_view::theme_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else {
+        app.skills_menu.as_ref().map(|menu| {
+            (
+                super::skills_view::skills_view_lines(app, area.width, area.height),
+                menu.query.as_str(),
+            )
+        })
+    };
+    if let Some((lines, query)) = search_line {
         let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
         let search = super::model_view::view_prompt_row(&lines).unwrap_or(0);
         let row = anchored_view_row(rows, body, search);

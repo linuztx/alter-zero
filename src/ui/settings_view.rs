@@ -6,8 +6,8 @@
 //! because the rows *are* the live session state ([`App::setting_rows`]).
 
 use super::model_view::{
-    Description, first_page_that_fits, list_window, model_compact_list, model_description_rows,
-    model_placeholder_row, model_rule,
+    Description, compact_page, first_page_that_fits, list_window, model_description_rows,
+    model_placeholder_row, model_rule, placeholder_window,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
@@ -128,16 +128,6 @@ fn settings_whole_body(
     lines
 }
 
-/// The compact page's body, for a terminal too short for the whole page: a
-/// [`COMPACT_LIST_ROWS`]-row window of the rows between the two reserved
-/// overflow slots ([`model_compact_list`]) and no counter or description —
-/// the `/theme` and `/skills` compact pages' body for this list.
-fn settings_compact_body(rows: &[SettingRow], selected: usize, width: u16) -> Vec<Line<'static>> {
-    let (above, window, below) =
-        settings_window(rows, selected, usize::from(COMPACT_LIST_ROWS), width);
-    model_compact_list(above, window, below, width)
-}
-
 /// The framed page as lines — a top rule, the `❯` search line, a body, the
 /// key hint, and a bottom rule, one blank row between each block — the first
 /// of three pages that fits `height` rows ([`first_page_that_fits`]):
@@ -147,18 +137,20 @@ fn settings_compact_body(rows: &[SettingRow], selected: usize, width: u16) -> Ve
 /// 2. the whole page with the description **cut to one row**, which is one
 ///    height at every selection, so a terminal at the edge never flips
 ///    between the whole and the compact page as ↑/↓ cross a long one;
-/// 3. the **compact** page ([`settings_compact_body`]): the description and
-///    the counter yield, and three rows of the list stay between the search
-///    line and the hint.
+/// 3. the **compact** page ([`compact_page`]): the description and the
+///    counter yield, and three rows of the list stay between the search
+///    line and the hint — and on a terminal shorter still the gaps, the
+///    overflow slots, the rules and the rows yield one by one, never the
+///    search line (`docs/view-flow.md`).
 ///
-/// Only a terminal shorter than even the compact page bottom-anchors it
-/// (`docs/view-flow.md`). What [`render_settings`] paints and
+/// What [`render_settings`] paints and
 /// [`settings_rows`] counts, so the reserved height and the painted rows can
 /// never disagree. `height` is the terminal's, or the region already
 /// reserved for the page, which builds the same page. A search that matched
 /// nothing has no count and nothing to describe, so its page collapses to
 /// the placeholder between single gaps — the `/model` picker's placeholder
-/// rule. Empty when the menu is closed.
+/// rule — and sheds the same way, keeping what was typed. Empty when the
+/// menu is closed.
 pub(super) fn settings_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
     let Some(picker) = app.settings_picker.as_ref() else {
         return Vec::new();
@@ -169,22 +161,26 @@ pub(super) fn settings_view_lines(app: &App, width: u16, height: u16) -> Vec<Lin
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
+    let hint = model_placeholder_row(SETTINGS_HINT, model_meta_color(), width);
     let page = |body: Vec<Line<'static>>| {
         let mut lines = vec![model_rule(width), Line::default(), search_line.clone()];
         lines.extend(body);
-        lines.extend([
-            model_placeholder_row(SETTINGS_HINT, model_meta_color(), width),
-            Line::default(),
-            model_rule(width),
-        ]);
+        lines.extend([hint.clone(), Line::default(), model_rule(width)]);
         lines
     };
     if rows.is_empty() {
-        return page(vec![
-            Line::default(),
-            model_placeholder_row(SETTINGS_NO_MATCH, model_meta_color(), width),
-            Line::default(),
-        ]);
+        let block = [model_placeholder_row(
+            SETTINGS_NO_MATCH,
+            model_meta_color(),
+            width,
+        )];
+        return compact_page(
+            height,
+            &search_line,
+            &|max| placeholder_window(&block, max),
+            &[hint],
+            width,
+        );
     }
     let selected = picker.selected.min(rows.len() - 1);
     let whole = |description| settings_whole_body(&rows, selected, description, width);
@@ -193,7 +189,15 @@ pub(super) fn settings_view_lines(app: &App, width: u16, height: u16) -> Vec<Lin
         &[
             &|| page(whole(Description::Wrapped)),
             &|| page(whole(Description::OneRow)),
-            &|| page(settings_compact_body(&rows, selected, width)),
+            &|| {
+                compact_page(
+                    height,
+                    &search_line,
+                    &|max| settings_window(&rows, selected, max, width),
+                    std::slice::from_ref(&hint),
+                    width,
+                )
+            },
         ],
     )
 }
@@ -228,9 +232,10 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// Render the **inline** `/settings` menu into the live region, in place of the
 /// composer: a top rule, the `❯` search line, the setting rows (`→ {label}
 /// {value}`), a `(n/total)` counter, the highlighted setting's description, the
-/// key hint, and a bottom rule — bottom-anchored, so a squeezed area keeps the
-/// whole list, the hint and the closing rule on screen while the skipped top
-/// flows into scrollback (`docs/view-flow.md`). Pure — `render_live` paints
+/// key hint, and a bottom rule; or, in an area too short for that, the
+/// compact page, which sheds its own rows down to the search line in an area
+/// shorter still. The page is built for the area's height, so it always fits
+/// and nothing flows (`docs/view-flow.md`). Pure — `render_live` paints
 /// this. See `docs/settings.md`.
 pub fn render_settings(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(

@@ -114,6 +114,202 @@ pub(super) fn model_compact_list(
     lines
 }
 
+/// What one rung of a compact page keeps (`COMPACT_RUNGS`): the frame's
+/// rules and gaps, the overflow slots, how many rows of the list, and the
+/// tail. The `❯` search line is on every rung.
+#[derive(Clone, Copy)]
+struct Rung {
+    top_rule: bool,
+    top_gap: bool,
+    slots: bool,
+    rows: u16,
+    tail: bool,
+    bottom_gap: bool,
+    bottom_rule: bool,
+}
+
+/// The compact page.
+const COMPACT: Rung = Rung {
+    top_rule: true,
+    top_gap: true,
+    slots: true,
+    rows: COMPACT_LIST_ROWS,
+    tail: true,
+    bottom_gap: true,
+    bottom_rule: true,
+};
+
+/// A search-line picker's compact page and the rungs it sheds down to, each
+/// one row shorter than the last but where the overflow pair goes —
+/// codex's order (`selection_picker_layout.rs`: *"optional gaps and
+/// previews yield first; headers, tabs, search, and at least one result
+/// remain visible"*), adapted to this frame:
+///
+/// 1. the compact page: rule, gap, search, `↑`, three rows, `↓`, tail, gap,
+///    rule;
+/// 2. the gap under the top rule — the search line then sits on the rule,
+///    the composer's own look;
+/// 3. the overflow slots, as a pair: codex reserves its arrow rows only
+///    beside three rows of results;
+/// 4. the top rule — a page this short fills the terminal, so nothing is on
+///    screen above it to set apart, and the search line opens the screen;
+/// 5. the gap over the bottom rule;
+/// 6. the rows, three to two to one — the highlighted one;
+/// 7. the bottom rule;
+/// 8. the tail;
+/// 9. the highlighted row, leaving the search line alone.
+const COMPACT_RUNGS: [Rung; 10] = [
+    COMPACT,
+    Rung {
+        top_gap: false,
+        ..COMPACT
+    },
+    Rung {
+        top_gap: false,
+        slots: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        bottom_gap: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        rows: 2,
+        bottom_gap: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        rows: 1,
+        bottom_gap: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        rows: 1,
+        bottom_gap: false,
+        bottom_rule: false,
+        ..COMPACT
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        rows: 1,
+        tail: false,
+        bottom_gap: false,
+        bottom_rule: false,
+    },
+    Rung {
+        top_rule: false,
+        top_gap: false,
+        slots: false,
+        rows: 0,
+        tail: false,
+        bottom_gap: false,
+        bottom_rule: false,
+    },
+];
+
+/// One rung of a compact page as lines: what `rung` keeps of the frame
+/// around the `search` line, the list's `window` — called with the rows the
+/// rung shows — and the `tail` under it (the key hint, `/model`'s name line,
+/// or nothing, when the `↓` slot is the gap over the bottom rule and no
+/// second gap stacks on it).
+fn rung_lines(
+    rung: Rung,
+    search: &Line<'static>,
+    window: &dyn Fn(usize) -> (usize, Vec<Line<'static>>, usize),
+    tail: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if rung.top_rule {
+        lines.push(model_rule(width));
+    }
+    if rung.top_gap {
+        lines.push(Line::default());
+    }
+    lines.push(search.clone());
+    if rung.rows > 0 {
+        let (above, rows, below) = window(usize::from(rung.rows));
+        if rung.slots {
+            lines.extend(model_compact_list(above, rows, below, width));
+        } else {
+            lines.extend(rows);
+        }
+    }
+    if rung.tail && !tail.is_empty() {
+        lines.extend(tail.iter().cloned());
+        if rung.bottom_gap {
+            lines.push(Line::default());
+        }
+    }
+    if rung.bottom_rule {
+        lines.push(model_rule(width));
+    }
+    lines
+}
+
+/// A search-line picker's compact page on a terminal `height` rows tall: the
+/// first of `COMPACT_RUNGS` that fits — the search line on every one, so it
+/// never flows into scrollback (where the caret cannot follow it), and the
+/// highlighted row on every one but the last. `window(max)` builds the
+/// list's window of at most `max` rows riding the selection, as
+/// [`list_window`] does — how many rows it hides above, its rows, how many
+/// below; a placeholder's window is [`placeholder_window`]. Like
+/// [`first_page_that_fits`], a region between the chosen page's height and
+/// the terminal's builds the same rung.
+pub(super) fn compact_page(
+    height: u16,
+    search: &Line<'static>,
+    window: &dyn Fn(usize) -> (usize, Vec<Line<'static>>, usize),
+    tail: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut page = Vec::new();
+    for rung in COMPACT_RUNGS {
+        page = rung_lines(rung, search, window, tail, width);
+        if page.len() <= usize::from(height) {
+            break;
+        }
+    }
+    page
+}
+
+/// A placeholder block — a search that matched nothing, a list still
+/// loading, an empty catalog — as a compact page's window
+/// ([`compact_page`]): the whole block while the page keeps three rows of
+/// list, its first `max` rows once the rows shrink. Nothing is hidden around
+/// it, so the overflow slots stay blank.
+pub(super) fn placeholder_window(
+    block: &[Line<'static>],
+    max: usize,
+) -> (usize, Vec<Line<'static>>, usize) {
+    let shown = if max >= usize::from(COMPACT_LIST_ROWS) {
+        block.len()
+    } else {
+        max.min(block.len())
+    };
+    (0, block[..shown].to_vec(), 0)
+}
+
 /// The first of `pages` — tried in order, most complete first, each built
 /// only once the ones before it did not fit — whose rows fit `height`; the
 /// last one when none does, which then bottom-anchors like any framed page.
@@ -452,17 +648,19 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 /// dropped).
 ///
 /// The first of two pages that fits `height` rows ([`first_page_that_fits`]):
-/// the **whole** page, or, on a terminal too short for it, the **compact**
-/// page — three models between the reserved overflow slots
-/// ([`model_compact_list`]), the counter and the failed providers' rows
-/// yielding, so the search line and the highlighted model stay on screen
+/// the **whole** page, or, on a terminal too short for it, a **compact**
+/// page ([`compact_page`]) — three models between the reserved overflow
+/// slots, the counter and the failed providers' rows yielding, and on a
+/// terminal shorter still the gaps, the slots, the rules and the rows one
+/// by one — so the search line and the highlighted model stay on screen
 /// (`docs/view-flow.md` *A page that sheds rows before it flows*). The
 /// picker has no hint row, so the compact page keeps the highlighted
 /// model's `Model Name:` line where its siblings keep theirs, which gives it
-/// their shape. A placeholder page has no list to compact and is the same at
-/// every height. What [`render_model_picker`] paints (bottom-anchored when
-/// even the compact page is too tall) and `layout::model_picker_rows`
-/// counts, so the reserved height and the painted rows can never disagree.
+/// their shape. A placeholder page (loading, an error, no match) has
+/// nothing under its list, so its `↓` slot is the gap over the bottom rule,
+/// and it sheds the same way, keeping what was typed. What
+/// [`render_model_picker`] paints and `layout::model_picker_rows` counts,
+/// so the reserved height and the painted rows can never disagree.
 pub(super) fn model_view_lines(
     picker: &ModelPicker,
     width: u16,
@@ -482,10 +680,14 @@ pub(super) fn model_view_lines(
     if !model_has_detail(picker) {
         // A placeholder (loading / error / needs-login / no match): the blank
         // counter + name collapse to a single gap above the bottom rule.
-        let mut body = vec![Line::default()];
-        body.extend(model_list_lines(picker, width));
-        body.push(Line::default());
-        return page(body);
+        let block = model_list_lines(picker, width);
+        return compact_page(
+            height,
+            &search_line,
+            &|max| placeholder_window(&block, max),
+            &[],
+            width,
+        );
     }
     let whole = || {
         let mut body = vec![Line::default()];
@@ -497,28 +699,34 @@ pub(super) fn model_view_lines(
         body.push(Line::default());
         page(body)
     };
-    let compact = || {
-        let matches = picker.matches();
-        let selected = picker.selected.min(matches.len() - 1);
-        let (above, range, below) =
-            list_window(matches.len(), selected, usize::from(COMPACT_LIST_ROWS));
-        let window = matches[range.clone()]
+    let matches = picker.matches();
+    let selected = picker.selected.min(matches.len() - 1);
+    let window = |max| {
+        let (above, range, below) = list_window(matches.len(), selected, max);
+        let rows = matches[range.clone()]
             .iter()
             .zip(range)
             .map(|(m, i)| model_row(m, i == selected, picker.is_active(m), width))
             .collect();
-        let mut body = model_compact_list(above, window, below, width);
-        body.push(model_name_line(picker, width));
-        body.push(Line::default());
-        page(body)
+        (above, rows, below)
+    };
+    let compact = || {
+        compact_page(
+            height,
+            &search_line,
+            &window,
+            &[model_name_line(picker, width)],
+            width,
+        )
     };
     first_page_that_fits(height, &[&whole, &compact])
 }
 
 /// Render the **inline** `/model` picker into the live region, in place of the
-/// composer — bottom-anchored, so a squeezed area keeps the list and closing
-/// chrome on screen while the skipped top flows into scrollback
-/// (`docs/view-flow.md`). Pure — `render_live` paints this. See `docs/llm.md`.
+/// composer. The page is built for the area's height — the whole list, the
+/// compact page, or that page's rungs down to the search line — so it always
+/// fits and nothing flows (`docs/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/llm.md`.
 pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
     super::view_flow::render_framed_tail(
         area,

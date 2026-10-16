@@ -314,33 +314,33 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 }
 
 #[test]
-fn the_picker_flows_like_its_family() {
-    // Even the compact page is taller than a 10-row terminal.
+fn the_picker_never_flows_its_page() {
     let app = open_app();
-    let page = spinner_view_lines(&app, 80, 10).len();
-    let flow = crate::ui::view_flow(&app, 80, 10, 1000).expect("flows on a 10-row terminal");
-    assert_eq!(flow.lines.len(), page - 10, "the skipped top flows");
+    for height in (1..=12).chain([TALL]) {
+        assert!(
+            crate::ui::view_flow(&app, 80, height, 1000).is_none(),
+            "{height} rows: a rung fits"
+        );
+    }
 }
 
 #[test]
-fn a_tick_never_resigns_the_flow_but_a_keystroke_does() {
-    // The page animates at the 32 ms cadence, so it signs the SELECTION and
-    // the query — the ↓ manager's details-page rule — never its rows: a
-    // frame advancing the spinners must not purge-rebuild the screen, while
-    // a keystroke that moves the highlight re-flows the page.
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+fn a_tick_never_churns_the_page() {
+    // The page animates at the 32 ms cadence. A page that flowed would have
+    // to sign its selection rather than its rows so a frame never
+    // purge-rebuilt the screen (it still does — `FlowSign::Frozen`); the
+    // rungs make the question moot, since the page fits at every height and
+    // holds its height through a tick.
     let mut app = open_app();
-    let (width, height) = (80u16, 10u16);
-    let before = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    app.set_pulse(Duration::from_millis(480));
-    let ticked = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_eq!(before, ticked, "a tick must not churn a purge rebuild");
-    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let moved = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_ne!(before, moved, "moving the highlight re-signs the flow");
-    app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    let typed = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_ne!(moved, typed, "typing into the search re-signs the flow");
+    for height in (1..=12).chain([TALL]) {
+        let before = page_at(&app, 80, height).len();
+        app.set_pulse(Duration::from_millis(480));
+        assert_eq!(page_at(&app, 80, height).len(), before, "{height} rows");
+        assert!(
+            crate::ui::view_flow(&app, 80, height, 1000).is_none(),
+            "{height} rows"
+        );
+    }
 }
 
 // --- the compact page: a short terminal keeps the choices on screen ---
@@ -446,13 +446,33 @@ fn the_cursor_sits_on_the_compact_spinner_search_line() {
     assert_eq!(height, 11, "the compact page");
     let area = Rect::new(0, 1, 80, height);
     let (_, y) = crate::ui::cursor_position(area, &app);
-    assert_eq!(
-        y,
-        1 + crate::ui::theme::SPINNER_SEARCH_ROW,
-        "on the search line"
-    );
+    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
     assert!(
         crate::ui::view_flow(&app, 80, 12, 1000).is_none(),
         "nothing flows"
+    );
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_spinner_search_line() {
+    let app = open_app();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "",
+        "→ gravity",
+        "Enter to choose",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &page_at(&app, 80, height), 80, "");
+    }
+    let mut app = open_app();
+    app.spinner_picker.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "zzz",
+        "No matching spinners",
+        "Enter to choose",
     );
 }

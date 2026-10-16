@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::theme::{
-    MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, error_color, model_selected_color,
+    MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, error_color, model_selected_color,
 };
 
 #[test]
@@ -14,7 +14,7 @@ fn model_picker_frames_with_rules_and_no_header() {
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
     assert!(row(&buf, 1, 60).trim().is_empty(), "no header banner");
     // The search line moved up to row 2.
-    assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
+    assert!(row(&buf, SEARCH_ROW, 60).contains('❯'), "search line");
 }
 
 #[test]
@@ -23,10 +23,10 @@ fn model_picker_shows_the_search_prompt_and_query() {
     picker.query = "haiku".into();
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let search = row(&buf, MODEL_SEARCH_ROW, 60);
+    let search = row(&buf, SEARCH_ROW, 60);
     assert!(search.contains("❯ haiku"), "{search:?}");
     // The `❯` prompt is cyan.
-    assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, model_selected_color());
+    assert_eq!(buf[(2, SEARCH_ROW)].fg, model_selected_color());
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn cursor_sits_at_the_end_of_the_model_search_query() {
     let area = Rect::new(0, 0, 60, model_picker_height(&app, 60, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
     // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7.
-    assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
+    assert_eq!((x, y), (7, SEARCH_ROW));
 }
 
 /// Rejoin built rows word-by-word so a wrapped needle matches across rows.
@@ -465,6 +465,219 @@ fn the_compact_list_reserves_a_slot_on_either_side_of_its_window() {
     );
 }
 
+// --- the compact page's rungs: the search line never yields ---
+
+/// A `len`-row list named `row 0`, `row 1`, … with `selected` marked `→` —
+/// a compact page's window, riding the selection like every picker's.
+fn named_rows(len: usize, selected: usize) -> impl Fn(usize) -> (usize, Vec<Line<'static>>, usize) {
+    move |max| {
+        let (above, range, below) = crate::ui::model_view::list_window(len, selected, max);
+        let rows = range
+            .map(|i| {
+                Line::from(if i == selected {
+                    format!("→ row {i}")
+                } else {
+                    format!("  row {i}")
+                })
+            })
+            .collect();
+        (above, rows, below)
+    }
+}
+
+/// The compact page on a terminal `height` rows tall over a `len`-row list
+/// with `selected` highlighted and `tail` under it, as trimmed plain rows.
+fn compact_at(height: u16, len: usize, selected: usize, tail: &[&str]) -> Vec<String> {
+    use crate::ui::model_view::compact_page;
+    let search = Line::from("  ❯ query");
+    let tail: Vec<Line<'static>> = tail.iter().map(|t| Line::from(t.to_string())).collect();
+    compact_page(height, &search, &named_rows(len, selected), &tail, 20)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn the_compact_page_sheds_a_row_at_a_time_and_never_its_search_line() {
+    // Bottom-anchored, a compact page taller than the terminal flowed its
+    // search line into scrollback — and the caret with it — and, two rows
+    // shorter, the highlighted row too. codex's rule instead: the search
+    // line and the highlighted row stay; what is optional yields, one row at
+    // a time, so every height has a page that fits it.
+    let rule = "─".repeat(20);
+    let rule = rule.as_str();
+    let expect = |rows: &[&str]| rows.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+    let compact = expect(&[
+        rule,
+        "",
+        "  ❯ query",
+        "  ↑ 4 more above",
+        "  row 4",
+        "→ row 5",
+        "  row 6",
+        "  ↓ 4 more below",
+        "  hint",
+        "",
+        rule,
+    ]);
+    assert_eq!(
+        compact_at(11, 11, 5, &["  hint"]),
+        compact,
+        "the compact page"
+    );
+    // The gap under the top rule goes first: the search line sits on the
+    // rule like the composer's own input.
+    assert_eq!(
+        compact_at(10, 11, 5, &["  hint"]),
+        expect(&[
+            rule,
+            "  ❯ query",
+            "  ↑ 4 more above",
+            "  row 4",
+            "→ row 5",
+            "  row 6",
+            "  ↓ 4 more below",
+            "  hint",
+            "",
+            rule,
+        ])
+    );
+    // Then the overflow slots, a pair: codex reserves them only beside three
+    // rows.
+    let unslotted = expect(&[
+        rule,
+        "  ❯ query",
+        "  row 4",
+        "→ row 5",
+        "  row 6",
+        "  hint",
+        "",
+        rule,
+    ]);
+    assert_eq!(
+        compact_at(9, 11, 5, &["  hint"]),
+        unslotted,
+        "the pair is two rows"
+    );
+    assert_eq!(compact_at(8, 11, 5, &["  hint"]), unslotted);
+    // Then the top rule — on a terminal this short nothing is above it.
+    assert_eq!(
+        compact_at(7, 11, 5, &["  hint"]),
+        expect(&[
+            "  ❯ query",
+            "  row 4",
+            "→ row 5",
+            "  row 6",
+            "  hint",
+            "",
+            rule
+        ])
+    );
+    // Then the gap over the bottom rule.
+    assert_eq!(
+        compact_at(6, 11, 5, &["  hint"]),
+        expect(&["  ❯ query", "  row 4", "→ row 5", "  row 6", "  hint", rule])
+    );
+    // Then the rows, down to the highlighted one.
+    assert_eq!(
+        compact_at(5, 11, 5, &["  hint"]),
+        expect(&["  ❯ query", "  row 4", "→ row 5", "  hint", rule])
+    );
+    assert_eq!(
+        compact_at(4, 11, 5, &["  hint"]),
+        expect(&["  ❯ query", "→ row 5", "  hint", rule])
+    );
+    // Then the bottom rule, the hint, and last the highlighted row.
+    assert_eq!(
+        compact_at(3, 11, 5, &["  hint"]),
+        expect(&["  ❯ query", "→ row 5", "  hint"])
+    );
+    assert_eq!(
+        compact_at(2, 11, 5, &["  hint"]),
+        expect(&["  ❯ query", "→ row 5"])
+    );
+    assert_eq!(compact_at(1, 11, 5, &["  hint"]), expect(&["  ❯ query"]));
+}
+
+#[test]
+fn every_compact_page_fits_keeps_its_search_line_and_holds_one_height() {
+    for len in [1_usize, 2, 3, 4, 11] {
+        for height in 1_u16..=12 {
+            let mut heights = Vec::new();
+            for selected in 0..len {
+                let texts = compact_at(height, len, selected, &["  hint"]);
+                let context = format!("len {len} height {height} at {selected}");
+                assert!(texts.len() <= usize::from(height), "{context}: {texts:#?}");
+                assert!(
+                    texts.iter().any(|t| t == "  ❯ query"),
+                    "{context}: the search line stays: {texts:#?}"
+                );
+                if height >= 2 {
+                    let mark = format!("→ row {selected}");
+                    assert!(texts.contains(&mark), "{context}: {texts:#?}");
+                }
+                if height >= 3 {
+                    assert!(texts.iter().any(|t| t == "  hint"), "{context}: {texts:#?}");
+                }
+                assert!(
+                    texts
+                        .windows(2)
+                        .all(|pair| !(pair[0].is_empty() && pair[1].is_empty())),
+                    "{context}: two blank rows stack: {texts:#?}"
+                );
+                heights.push(texts.len());
+            }
+            assert!(
+                heights.windows(2).all(|pair| pair[0] == pair[1]),
+                "len {len} height {height}: one height at every selection: {heights:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_with_no_tail_keeps_no_gap_for_one() {
+    // `/model`'s placeholder pages have nothing under the list: the `↓` slot
+    // is the gap over the bottom rule, and no second blank stacks on it.
+    let rule = "─".repeat(20);
+    assert_eq!(
+        compact_at(20, 2, 0, &[]),
+        [
+            rule.as_str(),
+            "",
+            "  ❯ query",
+            "",
+            "→ row 0",
+            "  row 1",
+            "",
+            rule.as_str()
+        ]
+        .map(str::to_string)
+    );
+    assert_eq!(
+        compact_at(4, 2, 0, &[]),
+        ["  ❯ query", "→ row 0", "  row 1", rule.as_str()].map(str::to_string)
+    );
+}
+
+#[test]
+fn a_placeholder_window_is_whole_until_the_list_would_shrink() {
+    use crate::ui::model_view::placeholder_window;
+    let block: Vec<Line<'static>> = (0..4).map(|i| Line::from(format!("line {i}"))).collect();
+    let rows = |max| {
+        placeholder_window(&block, max)
+            .1
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(placeholder_window(&block, 3).0, 0, "nothing hidden above");
+    assert_eq!(placeholder_window(&block, 3).2, 0, "nothing hidden below");
+    assert_eq!(rows(3), ["line 0", "line 1", "line 2", "line 3"], "whole");
+    assert_eq!(rows(2), ["line 0", "line 1"], "its head");
+    assert_eq!(rows(1), ["line 0"]);
+}
+
 // --- the compact page: a short terminal keeps the choices on screen ---
 
 /// A terminal tall enough for the whole page.
@@ -561,12 +774,43 @@ fn the_whole_model_page_returns_once_it_fits() {
 }
 
 #[test]
-fn a_placeholder_page_has_no_compact_form() {
-    // Loading, no key, every provider failed, nothing matched: no list to
-    // compact, so the page is the same at every height.
+fn a_placeholder_page_sheds_like_the_list_page() {
+    // Loading, no key, every provider failed, nothing matched: the
+    // placeholder stands in the list's place and the page sheds the same
+    // rungs, keeping the search line — what was typed — over it. Tall, it
+    // is the page it always was: the placeholder between single gaps.
     let mut picker = twelve_models();
     picker.query = "zzz".into();
-    assert_eq!(page_at(&picker, 70, 6), page_at(&picker, 70, TALL));
+    let rule = "─".repeat(70);
+    assert_eq!(
+        page_at(&picker, 70, TALL),
+        [
+            rule.as_str(),
+            "",
+            "  ❯ zzz",
+            "",
+            "  No matching models",
+            "",
+            rule.as_str()
+        ]
+        .map(str::to_string)
+    );
+    assert_eq!(
+        page_at(&picker, 70, 6),
+        [
+            rule.as_str(),
+            "  ❯ zzz",
+            "",
+            "  No matching models",
+            "",
+            rule.as_str()
+        ]
+        .map(str::to_string)
+    );
+    assert_eq!(
+        page_at(&picker, 70, 3),
+        ["  ❯ zzz", "  No matching models", rule.as_str()].map(str::to_string)
+    );
 }
 
 #[test]
@@ -578,9 +822,59 @@ fn the_cursor_sits_on_the_compact_model_search_line() {
     assert_eq!(height, 11, "the compact page");
     let area = Rect::new(0, 1, 70, height);
     let (_, y) = cursor_position(area, &app);
-    assert_eq!(y, 1 + MODEL_SEARCH_ROW, "on the search line");
+    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
     assert!(
         crate::ui::view_flow(&app, 70, 12, 1000).is_none(),
         "nothing flows"
     );
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+fn model_page_at(picker: &ModelPicker, width: u16, height: u16) -> Vec<String> {
+    crate::ui::model_view::model_view_lines(picker, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_model_search_line() {
+    // `/model` has no hint row: its tail is the highlighted model's name.
+    let picker = twelve_models();
+    assert_sheds_to_its_search_line(
+        |height| model_page_at(&picker, 70, height),
+        "",
+        "→ vendor/model-00",
+        "Vendor: Model 0",
+    );
+    let mut app = App::new();
+    app.open_model_picker("vendor/model-00");
+    app.set_models(twelve_models().models);
+    for height in 1..=10 {
+        let page = model_page_at(app.model_picker.as_ref().expect("open"), 70, height);
+        assert_caret_on_search_line(&app, &page, 70, "");
+    }
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_model_search_line_over_a_placeholder() {
+    // Loading, an error, no match: no tail, the placeholder in the list's
+    // place.
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.query = "zzzz".into();
+    for height in 1..=10_u16 {
+        let texts = model_page_at(&picker, 70, height);
+        assert!(texts.len() <= usize::from(height), "{height}: {texts:#?}");
+        assert!(
+            texts.iter().any(|t| t == "  ❯ zzzz"),
+            "{height}: {texts:#?}"
+        );
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t.contains("No matching models")),
+                "{height}: {texts:#?}"
+            );
+        }
+    }
 }

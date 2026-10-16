@@ -166,45 +166,35 @@ fn the_flow_keeps_its_newest_rows_under_the_cap() {
 }
 
 #[test]
-fn a_picker_taller_than_the_terminal_flows_like_the_menus() {
-    // The windowed pickers are framed bodies too (docs/view-flow.md): on a
-    // terminal shorter than even their smallest page — the compact one — the
-    // skipped top flows, and their spot in the precedence chain sits ahead
-    // of the browsing menus — a /settings menu open over an /mcp one is the
-    // painted view, so it is the one that flows.
+fn a_picker_sheds_rows_where_a_menu_flows() {
+    // The search-line pickers are framed bodies too (docs/view-flow.md), but
+    // a terminal shorter than their compact page gets a smaller rung, down
+    // to the search line alone, so their pages never flow. Their spot in the
+    // precedence chain still sits ahead of the browsing menus: a /settings
+    // menu open over an /mcp one is the painted view, so the /mcp page that
+    // flows on its own flows nothing then.
+    let width = 78u16;
     let mut app = App::new();
     app.open_settings();
-    let width = 78u16;
-    let page = crate::ui::settings_view::settings_view_lines(&app, width, 1).len();
-    let height = u16::try_from(page).expect("rows") - 3;
-    let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
-    assert_eq!(flow.lines.len(), 3, "exactly the skipped top rows flow");
-    let top: Vec<String> = flow.lines.iter().map(plain).collect();
+    for height in 1..=12 {
+        assert!(
+            view_flow(&app, width, height, NO_CAP).is_none(),
+            "{height} rows: a rung fits"
+        );
+    }
+    let height = 3;
+    let mut mcp = App::new();
+    mcp.open_mcp_menu(Vec::new());
     assert!(
-        top[0].starts_with("──"),
-        "the flow starts at the page top (the opening rule): {top:?}"
+        view_flow(&mcp, width, height, NO_CAP).is_some(),
+        "the /mcp page flows on its own"
     );
-    assert!(
-        top.iter().any(|r| r.contains('❯')),
-        "the search line is in the flowed top, re-flowed per keystroke: {top:?}"
-    );
-
-    // Typing re-signs the flow (the search line lives in it).
-    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
-    let mut typed = App::new();
-    typed.open_settings();
-    typed.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    let after = view_flow_signature(&typed, width, height, NO_CAP).expect("still overflows");
-    assert_ne!(before, after, "the typed query re-signs the flow");
-
-    // Precedence: the picker wins over a simultaneously-open menu.
     let mut both = App::new();
     both.open_mcp_menu(Vec::new());
     both.open_settings();
-    let flow = view_flow(&both, width, height, NO_CAP).expect("the settings page flows");
     assert!(
-        flow.lines.iter().map(plain).any(|r| r.contains('❯')),
-        "the flowed rows are the settings page's, not the mcp list's"
+        view_flow(&both, width, height, NO_CAP).is_none(),
+        "the settings page is the painted one, and it fits"
     );
 }
 

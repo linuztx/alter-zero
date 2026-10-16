@@ -6,8 +6,8 @@
 use crate::app::ProviderChoice;
 
 use super::model_view::{
-    first_page_that_fits, list_window, model_compact_list, model_linked_rows,
-    model_placeholder_row, model_rule, model_wrapped_rows,
+    compact_page, first_page_that_fits, list_window, model_linked_rows, model_placeholder_row,
+    model_rule, model_wrapped_rows, placeholder_window,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
@@ -534,17 +534,18 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
         KeyStep::Subscription => LOGIN_SUBSCRIPTION_HINT,
         _ => LOGIN_PROVIDER_HINT,
     };
+    let filter = login_prompt_line(Line::from(onboarding.query.clone()));
+    // Placed, not wrapped: `wrap_text` is the *message* wrapper and collapses
+    // runs of whitespace, which is exactly the double space separating one
+    // `{key} {thing}` pair from the next. A hint is short and fixed, so an
+    // `…`-cut at a narrow width costs nothing the path row above it doesn't
+    // already say.
+    let hint = model_placeholder_row(hint, model_meta_color(), width);
     let page = |body: Vec<Line<'static>>, note: Vec<Line<'static>>| {
-        let mut lines = vec![model_rule(width), Line::default()];
-        lines.push(login_prompt_line(Line::from(onboarding.query.clone())));
+        let mut lines = vec![model_rule(width), Line::default(), filter.clone()];
         lines.extend(body);
         lines.extend(note);
-        // Placed, not wrapped: `wrap_text` is the *message* wrapper and
-        // collapses runs of whitespace, which is exactly the double space
-        // separating one `{key} {thing}` pair from the next. A hint is short
-        // and fixed, so an `…`-cut at a narrow width costs nothing the path
-        // row above it doesn't already say.
-        lines.push(model_placeholder_row(hint, model_meta_color(), width));
+        lines.push(hint.clone());
         lines.push(Line::default());
         lines.push(model_rule(width));
         lines
@@ -576,18 +577,20 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
         page(body, note)
     };
     let rows = login_rows(onboarding);
-    if rows.is_empty() {
-        return whole();
-    }
-    let compact = || {
-        let (above, window, below) = login_window(
-            &rows,
-            onboarding.selected,
-            usize::from(COMPACT_LIST_ROWS),
-            width,
-        );
-        page(model_compact_list(above, window, below, width), Vec::new())
+    // A filter matching nothing puts its placeholder in the list's place.
+    let block = if rows.is_empty() {
+        login_list_lines(onboarding, width)
+    } else {
+        Vec::new()
     };
+    let window = |max| {
+        if rows.is_empty() {
+            placeholder_window(&block, max)
+        } else {
+            login_window(&rows, onboarding.selected, max, width)
+        }
+    };
+    let compact = || compact_page(height, &filter, &window, std::slice::from_ref(&hint), width);
     first_page_that_fits(height, &[&whole, &compact])
 }
 

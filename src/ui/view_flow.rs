@@ -119,11 +119,15 @@ pub struct ViewFlow {
 /// chips, options and entry fields change only on a keystroke, which
 /// re-signs the flow — the picker-search rule); the permission prompt's
 /// builder needs `term_height` for its keep-context decision (a ticking
-/// agent tree rides only a page that fits — never the flow); a picker's
-/// search line sits in the page top, and a keystroke re-signs the flow so
-/// the typed query re-flows with it. The ↓ background manager flows too — it
-/// and the `/spinner` picker are the two pages that tick between keystrokes,
-/// so they are the two signed [`FlowSign::Frozen`] rather than on their rows.
+/// agent tree rides only a page that fits — never the flow); the
+/// search-line pickers build the first page that fits the terminal, their
+/// compact rungs shedding down to the search line alone
+/// (`model_view::compact_page`), so on any terminal at least a row tall
+/// their page never flows — they stay eligible so a builder that ever
+/// overshot would still flow rather than drop rows into no buffer. The ↓
+/// background manager flows too — it and the `/spinner` picker are the two
+/// pages that tick between keystrokes, so they are the two signed
+/// [`FlowSign::Frozen`] rather than on their rows.
 ///
 /// Each branch returns the page **with** what its flow is signed on, so a
 /// view cannot acquire a flow without stating which changes to it matter.
@@ -182,9 +186,9 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // the 32 ms cadence an open picker keeps running
         // (`App::wants_animation_frames`) — so, like the manager's details
         // page, it signs the **selection and the query** rather than its
-        // rows: a frame never churns a purge rebuild, while a keystroke that
-        // moves the highlight or edits the search re-flows the page
-        // (`docs/spinner.md`).
+        // rows: were its page ever to flow, a frame would never churn a
+        // purge rebuild, while a keystroke that moves the highlight or edits
+        // the search would re-flow it (`docs/spinner.md`).
         let mut hasher = DefaultHasher::new();
         picker.selected.hash(&mut hasher);
         picker.query.hash(&mut hasher);

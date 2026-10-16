@@ -418,9 +418,16 @@ compact window) window of the list between codex's reserved `↑`/`↓` slots
 (directly under the search line and over the hint, blank when nothing is
 hidden that way, so it is one height at every selection), the hint — since
 bottom-anchoring the whole page there kept only the preview on screen and
-flowed the theme names into scrollback; the family rule, and its shared
-pieces (`model_view::first_page_that_fits`, `model_compact_list`), are
-`docs/view-flow.md` *A page that sheds rows before it flows*.
+flowed the theme names into scrollback; and on a terminal shorter still that
+compact page sheds the rest one row at a time — the gap under the top rule,
+the `↑`/`↓` pair, the top rule, the gap over the bottom rule, the rows down
+to the highlighted one, the bottom rule, the hint — and never its search
+line (`model_view::compact_page`'s ten rungs, every search-line picker's:
+bottom-anchoring the compact page had flowed the search line, and the caret
+with it, into scrollback on eight rows); the family rule, and its shared
+pieces (`model_view::first_page_that_fits`, `compact_page`,
+`placeholder_window`), are `docs/view-flow.md` *A page that sheds rows
+before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
@@ -2041,9 +2048,14 @@ the whole page each builds the family's compact page instead (the first page
 that fits, `model_view::first_page_that_fits` — description, preview and
 counter yield, then a header, and a `COMPACT_LIST_ROWS` window sits between
 reserved `↑`/`↓` slots, `model_compact_list`; `/model`, having no hint row,
-keeps its `Model Name:` line in the hint's place; `docs/view-flow.md` *A page
-that sheds rows before it flows*, `smoke.sh` Phase 138), so the search line
-and the highlighted row stay on screen rather than flowing away; the
+keeps its `Model Name:` line in the hint's place; below the compact page the
+rungs of `model_view::compact_page` shed down to the search line alone, a
+placeholder — no match, still loading — standing in the list's place, so
+these pickers never flow on any terminal and their caret seats on the search
+line found in the built page (`view_prompt_row`), never a pinned row;
+`docs/view-flow.md` *A page that sheds rows before it flows*, `smoke.sh`
+Phase 138), so the search line and the highlighted row stay on screen rather
+than flowing away; the
 boundary keeps the flowed rows' signature (`Session::flowed_view`) and
 answers any mismatch — navigation, resize, close — with the standard purge
 rebuild (`repaint_conversation`/`repaint_agent_view` append the flow to the
@@ -3334,9 +3346,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`settings_value_color()` for a live value, `settings_value_off_color()` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
-  `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_SEARCH_ROW` cursor seat the
-  `settings_view_lines` builder and `cursor_position` share (the page height
-  is the built line count — `docs/view-flow.md`) — see `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
+  and `SETTINGS_MENU_MAX_ROWS` — the cursor seated on the search line
+  `cursor_position` finds in the page `settings_view_lines` builds
+  (`view_prompt_row`, since a short terminal's rungs move it up), the page
+  height the built line count — `docs/view-flow.md` — see
+  `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
   rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
   `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the

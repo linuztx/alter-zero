@@ -66,6 +66,16 @@ release heading when a version is cut.
   and the row of question tabs goes last, so the question, the option you
   are on and the keys stay visible. A question with code previews drops
   the notes line and shortens the preview first (`docs/ask.md`).
+- **The pickers keep their search line on a very short terminal.** Below
+  about eleven rows, `/theme`, `/skills`, `/settings`, `/mascot`,
+  `/spinner`, `/model` and `/login` used to scroll the search line off the
+  top, and with it what you had typed and the cursor; on six rows the
+  highlighted row went too. Now they give up the blank rows, the
+  `↑`/`↓ N more` rows, the borders and then list rows one at a time
+  instead, so the search line stays at the top with the highlighted row
+  and the keys under it, down to the smallest terminal. A search that
+  matches nothing keeps what you typed on screen the same way
+  (`docs/view-flow.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

@@ -14,13 +14,16 @@
 //! A terminal too short for that page gets a **compact** one instead — the
 //! `/theme` picker's, over this list: the description and the counter yield
 //! first, then the header, leaving the search line, three skill rows between
-//! codex's reserved `↑`/`↓` slots, and the hint. Bottom-anchoring the whole
-//! page there flowed the search line and the top of the list into
-//! scrollback, so the row Enter would toggle could be off screen.
+//! codex's reserved `↑`/`↓` slots, and the hint — and a terminal shorter
+//! still sheds that panel's own rows one by one, down to the search line
+//! alone. Bottom-anchoring the whole page there flowed the search line and
+//! the top of the list into scrollback, so the row Enter would toggle could
+//! be off screen.
 
 use super::model_view::{
-    Description, first_page_that_fits, list_window, model_compact_list, model_description_rows,
-    model_placeholder_row, model_rule, model_wrapped_rows,
+    Description, compact_page, first_page_that_fits, list_window, model_compact_list,
+    model_description_rows, model_placeholder_row, model_rule, model_wrapped_rows,
+    placeholder_window,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
@@ -290,13 +293,23 @@ fn skills_placeholder_body(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// The menu's `❯` search line, carrying the query.
+fn skills_search_line(menu: &SkillsMenu) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
+        Span::raw(menu.query.clone()),
+    ])
+}
+
 /// Frame `body` as a page: a top rule and a gap, the `header` and a gap
-/// under it (when there is a header), the `❯` search line, the body, the key
-/// hint, a gap and the bottom rule.
+/// under it (when there is a header), the `search` line, the body, the
+/// `hint`, a gap and the bottom rule.
 fn skills_page(
-    menu: &SkillsMenu,
     header: &[Line<'static>],
+    search: &Line<'static>,
     body: Vec<Line<'static>>,
+    hint: &Line<'static>,
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width), Line::default()];
@@ -304,17 +317,9 @@ fn skills_page(
         lines.extend_from_slice(header);
         lines.push(Line::default());
     }
-    lines.push(Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(menu.query.clone()),
-    ]));
+    lines.push(search.clone());
     lines.extend(body);
-    lines.push(model_placeholder_row(
-        SKILLS_HINT,
-        model_meta_color(),
-        width,
-    ));
+    lines.push(hint.clone());
     lines.push(Line::default());
     lines.push(model_rule(width));
     lines
@@ -333,14 +338,17 @@ fn skills_page(
 ///    yield ([`skills_compact_body`] — three rows between reserved `↑`/`↓`
 ///    slots), codex's short-panel rule;
 /// 4. the compact page **without the header**, which yields next — the
-///    `/theme` picker's compact page, row for row.
+///    `/theme` picker's compact page, row for row — and below it the rungs
+///    every search-line picker sheds to ([`compact_page`]): the gaps, the
+///    overflow slots, the rules and the rows one by one, never the search
+///    line.
 ///
 /// So on a terminal too short for the whole page the search line, the
 /// highlighted row and the hint stay on screen, where bottom-anchoring it
-/// flowed the search line and the top of the list into scrollback. A page
-/// shorter than even the last is still bottom-anchored (`docs/view-flow.md`).
-/// What [`render_skills_menu`] paints and [`skills_menu_rows`] counts, so the
-/// two can never disagree. Empty when the menu is closed.
+/// flowed the search line and the top of the list into scrollback
+/// (`docs/view-flow.md`). What [`render_skills_menu`] paints and
+/// [`skills_menu_rows`] counts, so the two can never disagree. Empty when
+/// the menu is closed.
 ///
 /// `height` is the rows the page may take: the terminal's, since the view
 /// keeps its rows and the strip above it gives way (`view_split`), or the
@@ -348,7 +356,8 @@ fn skills_page(
 /// region is at least the chosen page's height and at most the terminal's.
 ///
 /// An empty list — a search matching nothing, or nothing installed — has no
-/// window to compact, so only its header yields.
+/// window to compact, so its header yields and then it sheds the same way,
+/// its placeholder in the list's place.
 pub(super) fn skills_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
     let Some(menu) = app.skills_menu.as_ref() else {
         return Vec::new();
@@ -356,25 +365,40 @@ pub(super) fn skills_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
     let rows = app.skill_menu_rows();
     let selected = menu.selected.min(rows.len().saturating_sub(1));
     let header = skills_header_lines(menu, width);
-    let page =
-        |header: &[Line<'static>], body: Vec<Line<'static>>| skills_page(menu, header, body, width);
+    let search = skills_search_line(menu);
+    let hint = model_placeholder_row(SKILLS_HINT, model_meta_color(), width);
+    let page = |body: Vec<Line<'static>>| skills_page(&header, &search, body, &hint, width);
     if rows.is_empty() {
+        let block = skills_empty_lines(app, width);
         return first_page_that_fits(
             height,
-            &[
-                &|| page(&header, skills_placeholder_body(app, width)),
-                &|| page(&[], skills_placeholder_body(app, width)),
-            ],
+            &[&|| page(skills_placeholder_body(app, width)), &|| {
+                compact_page(
+                    height,
+                    &search,
+                    &|max| placeholder_window(&block, max),
+                    std::slice::from_ref(&hint),
+                    width,
+                )
+            }],
         );
     }
     let whole = |description| skills_whole_body(&rows, selected, description, width);
     first_page_that_fits(
         height,
         &[
-            &|| page(&header, whole(Description::Wrapped)),
-            &|| page(&header, whole(Description::OneRow)),
-            &|| page(&header, skills_compact_body(&rows, selected, width)),
-            &|| page(&[], skills_compact_body(&rows, selected, width)),
+            &|| page(whole(Description::Wrapped)),
+            &|| page(whole(Description::OneRow)),
+            &|| page(skills_compact_body(&rows, selected, width)),
+            &|| {
+                compact_page(
+                    height,
+                    &search,
+                    &|max| skills_window(&rows, selected, max, width),
+                    std::slice::from_ref(&hint),
+                    width,
+                )
+            },
         ],
     )
 }
@@ -410,11 +434,11 @@ pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16
 /// session-off note when it applies), the `❯` search line, the skill rows
 /// (`→ {name}  ✔ enabled`), a `(n/total)` counter, the highlighted skill's
 /// description, the key hint, and a bottom rule; or, in an area too short
-/// for that, the compact page of three rows, with the header while it fits.
-/// Bottom-anchored, so an area shorter than even the compact page keeps the
-/// hint and the closing rule on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/skills.md`.
+/// for that, the compact page of three rows, with the header while it fits,
+/// which sheds its own rows down to the search line in an area shorter
+/// still. The page is built for the area's height, so it always fits and
+/// nothing flows (`docs/view-flow.md`). Pure — `render_live` paints this.
+/// See `docs/skills.md`.
 pub fn render_skills_menu(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

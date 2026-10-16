@@ -1272,11 +1272,6 @@ pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change 
 /// The list placeholder when the search matches no setting.
 pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
 
-/// The row (within the menu's framed area) the `❯` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_settings`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
-
 // --- the inline /skills menu (docs/skills.md). Deliberately the /settings
 // menu's twin rather than a new shape: it reuses that menu's frame, its
 // value column geometry (SETTINGS_VALUE_GAP) and its two-tone value colours
@@ -1328,12 +1323,6 @@ pub(super) const MASCOT_HINT: &str = "Type to search · Enter to choose · Esc t
 /// The list placeholder when the search matches no mascot.
 pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
 
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_mascot_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const MASCOT_SEARCH_ROW: u16 = 2;
-
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the eight-mascot catalog never actually windows today).
 pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
@@ -1349,12 +1338,6 @@ pub(super) const SPINNER_HINT: &str = "Type to search · Enter to choose · Esc 
 
 /// The list placeholder when the search matches no style.
 pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
-
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_spinner_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const SPINNER_SEARCH_ROW: u16 = 2;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the nine-style catalog never actually windows today).
@@ -1382,12 +1365,6 @@ pub(super) const THEME_HINT: &str =
 
 /// The list placeholder when the search matches no theme.
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
-
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_theme_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const THEME_SEARCH_ROW: u16 = 2;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the eleven-theme catalog windows by one row, which an overflow row
@@ -2547,11 +2524,6 @@ pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("
 /// stopped rather than stopping it twice (`docs/agent-tool.md`).
 pub(super) const AGENT_HINT_AGENT_DONE: &[(&str, &str)] =
     &[("Enter", " to view"), ("x", " to clear")];
-
-/// The row (within the picker's framed area) the `>` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const MODEL_SEARCH_ROW: u16 = 2;
 
 // --- the inline tool-permission prompt (docs/permissions.md) ---
 

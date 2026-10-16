@@ -194,9 +194,11 @@ slots, each still wearing its own live spinner, so the search line, the
 highlighted style and the hint stay on screen where bottom-anchoring the
 whole page flowed them into scrollback. The glyph column is sized off every
 listed style, not the three in view, so it holds still as the window
-scrolls. Only a terminal shorter than the compact page still bottom-anchors
-and flows its top into scrollback like its whole family — with one
-difference, below.
+scrolls. On a terminal shorter still the compact page sheds what is left one
+row at a time and never its search line (`docs/view-flow.md` *Below the
+compact page*) — the gaps, the `↑`/`↓` pair, the rules, the rows down to the
+highlighted style, the hint — so the page fits at every height and never
+flows; were it to, it would differ from its family in one way, below.
 
 ### The flow is signed on the selection, not the rows
 
@@ -205,12 +207,15 @@ keystroke signs its **rows**, so any edit re-flows; a page that **ticks**
 between keystrokes must not, or every frame would purge-rebuild the whole
 screen thirty times a second. The ↓ manager's details page was the one such
 page; the `/spinner` picker is the second. So `ui::view_flow` signs it
-`FlowSign::Frozen` on the picker's `(selected, query)`: a frame advancing
-the spinners leaves the signature alone (its flowed top freezes in
-scrollback, which is what scrollback holds for everything else anyway),
-while a keystroke that moves the highlight or edits the search re-signs it
-and the standard purge rebuild re-flows the page. Pinned by
-`a_tick_never_resigns_the_flow_but_a_keystroke_does`.
+`FlowSign::Frozen` on the picker's `(selected, query)`: were its page to
+flow, a frame advancing the spinners would leave the signature alone (its
+flowed top freezing in scrollback, which is what scrollback holds for
+everything else anyway), while a keystroke that moved the highlight or
+edited the search would re-sign it and the standard purge rebuild re-flow
+the page. Since its rungs shed down to the search line the page fits every
+terminal and the question does not come up —
+`a_tick_never_churns_the_page` pins that a tick holds its height and flows
+nothing at every height.
 
 ## Applying a selection
 
@@ -328,7 +333,8 @@ wears it.
   and its seat, the no-match collapse, no stacked blanks, width safety, the
   height contract, flow eligibility, and the tick-stable / keystroke-sensitive
   flow signature.
-- `scripts/smoke.sh` Phase 138 — the compact page on a 12-row terminal.
+- `scripts/smoke.sh` Phase 138 — the compact page on a 12-row terminal, and
+  the search line on 7.
 - `scripts/smoke.sh` Phase 110 — the picker end to end in a real terminal:
   open from the palette seated on the default gravity (its ✓ on a fresh
   config home), the live rows (the ball on its floor, the wave's

@@ -223,15 +223,17 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 }
 
 #[test]
-fn the_picker_flows_like_its_family() {
-    // A short terminal bottom-anchors the page and flows the skipped top
-    // into scrollback (docs/view-flow.md) — the picker must be flow-eligible
-    // like /settings, or its page top would silently clip.
-    // Even the compact page is taller than a 10-row terminal.
+fn the_picker_never_flows_its_page() {
+    // A terminal shorter than the compact page gets a smaller rung, down to
+    // the search line alone, so nothing flows into scrollback — least of all
+    // the search line (docs/view-flow.md).
     let app = open_app();
-    let page = mascot_view_lines(&app, 80, 10).len();
-    let flow = crate::ui::view_flow(&app, 80, 10, 1000).expect("flows on a 10-row terminal");
-    assert_eq!(flow.lines.len(), page - 10, "the skipped top flows");
+    for height in (1..=12).chain([TALL]) {
+        assert!(
+            crate::ui::view_flow(&app, 80, height, 1000).is_none(),
+            "{height} rows"
+        );
+    }
 }
 
 // --- the compact page: a short terminal keeps the choices on screen ---
@@ -355,13 +357,33 @@ fn the_cursor_sits_on_the_compact_mascot_search_line() {
     assert_eq!(height, 11, "the compact page");
     let area = Rect::new(0, 1, 80, height);
     let (_, y) = crate::ui::cursor_position(area, &app);
-    assert_eq!(
-        y,
-        1 + crate::ui::theme::MASCOT_SEARCH_ROW,
-        "on the search line"
-    );
+    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
     assert!(
         crate::ui::view_flow(&app, 80, 12, 1000).is_none(),
         "nothing flows"
+    );
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_mascot_search_line() {
+    let app = open_app();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "",
+        "→ crest",
+        "Enter to choose",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &page_at(&app, 80, height), 80, "");
+    }
+    let mut app = open_app();
+    app.mascot_picker.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "zzz",
+        "No matching mascots",
+        "Enter to choose",
     );
 }

@@ -918,46 +918,24 @@ fn the_cursor_sits_on_the_compact_pages_search_line() {
     assert!(height <= SHORT, "the compact page fits the terminal");
     let area = Rect::new(0, SHORT - height, NARROW, height);
     let (x, y) = crate::ui::cursor_position(area, &app);
-    assert_eq!(
-        y,
-        area.y + crate::ui::theme::THEME_SEARCH_ROW,
-        "on the search line"
-    );
+    assert_eq!(y, area.y + SEARCH_ROW, "on the search line");
     // indent (2) + `❯ ` (2) + the two-character query.
     assert_eq!(x, 2 + 2 + 2);
 }
 
 #[test]
-fn the_picker_flows_like_its_family_and_a_keystroke_resigns_the_flow() {
-    // Even the compact page is taller than a 6-row terminal: its skipped top
-    // — down into the list — flows into scrollback like every framed view's.
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut app = open_app();
-    let page = theme_view_lines(&app, 80, 6).len();
-    let flow = crate::ui::view_flow(&app, 80, 6, 1000).expect("flows on a 6-row terminal");
-    assert_eq!(flow.lines.len(), page - 6, "the skipped top flows");
-    // A still page signs its rows: moving the highlight off a flowed row
-    // re-flows it.
-    let before = crate::ui::view_flow_signature(&app, 80, 6, 1000).expect("overflows");
-    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let moved = crate::ui::view_flow_signature(&app, 80, 6, 1000).expect("overflows");
-    assert_ne!(before, moved, "moving the highlight re-signs the flow");
-}
-
-#[test]
-fn a_page_that_fits_flows_nothing() {
-    // The compact page exists so a short terminal keeps the page on screen:
-    // where it fits, nothing flows into scrollback above it.
+fn the_picker_never_flows_its_page() {
+    // The compact page exists so a short terminal keeps the page on screen,
+    // and the rungs under it shed down to the search line alone: whatever
+    // the height, nothing flows into scrollback above it.
     let app = open_app();
     for width in [WIDE, NARROW] {
-        assert!(
-            crate::ui::view_flow(&app, width, SHORT, 1000).is_none(),
-            "width {width}: the compact page fits {SHORT} rows"
-        );
-        assert!(
-            crate::ui::view_flow(&app, width, TALL, 1000).is_none(),
-            "width {width}: the whole page fits {TALL} rows"
-        );
+        for height in (1..=12).chain([SHORT, TALL]) {
+            assert!(
+                crate::ui::view_flow(&app, width, height, 1000).is_none(),
+                "width {width}: a rung fits {height} rows"
+            );
+        }
     }
 }
 
@@ -992,24 +970,82 @@ fn the_picker_renders_the_page_its_height_reserves() {
 }
 
 #[test]
-fn a_page_taller_than_its_area_is_bottom_anchored() {
-    // An area shorter than even the compact page paints its tail — the hint
-    // and the closing rule stay on screen, with the rows just above them.
+fn an_area_shorter_than_the_compact_page_paints_a_rung_whole() {
+    // An area shorter than even the compact page used to paint its tail and
+    // flow its search line away; it gets a smaller rung instead, painted
+    // whole: the search line opens it, the highlighted theme and the rows
+    // round it, the hint and the closing rule end it.
     let app = open_app();
     let area = Rect::new(0, 0, 80, 6);
     let mut buf = Buffer::empty(area);
     render_theme_picker(area, &mut buf, &app);
-    let rows: Vec<String> = (0..6).map(|y| row(&buf, y, 80)).collect();
+    let rows: Vec<String> = (0..6)
+        .map(|y| row(&buf, y, 80).trim_end().to_string())
+        .collect();
+    assert_eq!(rows[0], "  ❯", "the search line opens it: {rows:#?}");
+    assert!(rows[1].starts_with("  ❯ mocha"), "{rows:#?}");
+    assert!(rows[3].starts_with("    frappe"), "{rows:#?}");
+    assert!(rows[4].contains("↑/↓ to navigate"), "the hint: {rows:#?}");
     assert!(
-        rows[5].trim().chars().all(|c| c == '─') && !rows[5].trim().is_empty(),
+        rows[5].chars().all(|c| c == '─') && !rows[5].is_empty(),
         "the closing rule sits on the last row: {rows:#?}"
     );
-    assert!(
-        rows.iter().any(|r| r.contains("↑/↓ to navigate")),
-        "the hint stays on screen: {rows:#?}"
-    );
-    assert!(
-        rows.iter().any(|r| r.contains("frappe")),
-        "…under the last rows of the list: {rows:#?}"
-    );
 }
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_search_line_and_the_highlighted_theme() {
+    // The reported screen: on seven rows the compact page's top flowed into
+    // scrollback — its search line, the caret clamped onto `onedark` — and
+    // on six the highlighted theme went too. The page sheds what is
+    // optional instead, row by row, and the search line never goes.
+    let mut app = open_app();
+    select(&mut app, 5);
+    for width in [WIDE, NARROW] {
+        assert_sheds_to_its_search_line(
+            |height| texts_at(&app, width, height),
+            "",
+            "❯ dracula",
+            "↑/↓ to navigate",
+        );
+        for height in 1..=10 {
+            assert_caret_on_search_line(&app, &texts_at(&app, width, height), width, "");
+        }
+    }
+}
+
+#[test]
+fn on_seven_rows_the_search_line_opens_the_page() {
+    // Three themes around the highlighted one, the hint, the gap and the
+    // bottom rule under the search line — what the screen held before, with
+    // the search line where `onedark` was.
+    let mut app = open_app();
+    select(&mut app, 5);
+    let texts = texts_at(&app, WIDE, 7);
+    assert_eq!(texts.len(), 7, "{texts:#?}");
+    assert_eq!(texts[0], "  ❯", "{texts:#?}");
+    assert!(texts[1].starts_with("    onedark"), "{texts:#?}");
+    assert!(texts[2].starts_with("  ❯ dracula"), "{texts:#?}");
+    assert!(texts[3].starts_with("    nord"), "{texts:#?}");
+    assert!(texts[4].contains("↑/↓ to navigate"), "{texts:#?}");
+    assert_eq!(texts[5], "", "{texts:#?}");
+    assert!(texts[6].chars().all(|c| c == '─'), "{texts:#?}");
+}
+
+#[test]
+fn a_tiny_terminal_keeps_what_was_typed_over_no_match() {
+    let mut app = open_app();
+    app.theme_picker.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| texts_at(&app, WIDE, height),
+        "zzz",
+        THEME_NO_MATCH_TEXT,
+        "↑/↓ to navigate",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &texts_at(&app, WIDE, height), WIDE, "zzz");
+    }
+}
+
+const THEME_NO_MATCH_TEXT: &str = "No matching themes";

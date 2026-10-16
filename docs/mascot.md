@@ -109,10 +109,12 @@ screen.
 
 Bottom-anchoring the whole page there kept the preview and flowed the search
 line and the highlighted mascot into scrollback. `mascot_view_lines(app,
-width, height)` builds the first page that fits (`first_page_that_fits`); the
-search line stays on page row 2 in both, so the cursor's `MASCOT_SEARCH_ROW`
-seat needed no change, and only a terminal shorter than the compact page
-still bottom-anchors and flows its top into scrollback.
+width, height)` builds the first page that fits (`first_page_that_fits`),
+and on a terminal shorter than the compact page that page sheds what is left
+one row at a time and never its search line (`docs/view-flow.md` *Below the
+compact page*) — the gaps, the `↑`/`↓` pair, the rules, the rows down to the
+highlighted mascot, the hint — so nothing flows at any height, and the
+cursor's seat finds the search line in the built page (`view_prompt_row`).
 
 ## Applying a selection
 
@@ -201,7 +203,8 @@ a project.
   stable slot height, the active ✓, the no-match placeholder, width safety,
   the height contract, and flow eligibility.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
-- `scripts/smoke.sh` Phase 138 — the compact page on a 12-row terminal.
+- `scripts/smoke.sh` Phase 138 — the compact page on a 12-row terminal, and
+  the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:
   open from the palette, preview follows ↓, filtered Enter switches the
   banner, the toast confirms, and a **second process against the same config
