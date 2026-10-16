@@ -504,8 +504,9 @@ pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
 /// count (`model_view_lines`), so the height and the paint agree by
 /// construction (`docs/view-flow.md`). What [`model_picker_height`] reserves
 /// under the strip, and what [`render_live`] hands [`render_model_picker`].
-pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16) -> u16 {
-    u16::try_from(super::model_view::model_view_lines(picker, width).len()).unwrap_or(u16::MAX)
+pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16, height: u16) -> u16 {
+    u16::try_from(super::model_view::model_view_lines(picker, width, height).len())
+        .unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/model` picker is open, or `None`
@@ -522,7 +523,7 @@ pub fn model_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
     Some(view_height(
         app,
         width,
-        model_picker_rows(picker, width),
+        model_picker_rows(picker, width, term_height),
         term_height,
     ))
 }
@@ -561,8 +562,8 @@ pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option
 /// count (`key_onboarding_lines`): the provider step grows with its list, the
 /// key step is a fixed height. What [`key_onboarding_height`] reserves under
 /// the strip, and what [`render_live`] hands [`render_key_onboarding`].
-pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding, width: u16) -> u16 {
-    u16::try_from(super::login_view::key_onboarding_lines(onboarding, width).len())
+pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding, width: u16, height: u16) -> u16 {
+    u16::try_from(super::login_view::key_onboarding_lines(onboarding, width, height).len())
         .unwrap_or(u16::MAX)
 }
 
@@ -577,7 +578,7 @@ pub fn key_onboarding_height(app: &App, width: u16, term_height: u16) -> Option<
     Some(view_height(
         app,
         width,
-        key_onboarding_rows(onboarding, width),
+        key_onboarding_rows(onboarding, width, term_height),
         term_height,
     ))
 }
@@ -1088,7 +1089,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // ([`view_split`], the same split the paint uses) and the bottom anchor
     // may have shifted up ([`anchored_view_row`]).
     if let Some(picker) = &app.model_picker {
-        let rows = model_picker_rows(picker, area.width);
+        let rows = model_picker_rows(picker, area.width, area.height);
         let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
@@ -1232,7 +1233,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         // provider's description block above it is as tall as the terminal is
         // narrow), so the seat is found in the very page the paint builds
         // rather than counted alongside it (`view_prompt_row`).
-        let lines = super::login_view::key_onboarding_lines(onboarding, area.width);
+        let lines = super::login_view::key_onboarding_lines(onboarding, area.width, area.height);
         let prompt = super::model_view::view_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
             // The device page has no field at all, nor has the sign-in method

@@ -69,7 +69,7 @@ fn counter_notes_a_provider_that_failed() {
     // Found by content, not by row index: the page grew a reason row under the
     // list (`model_error_lines`) and it is bottom-anchored, so a fixed row
     // number pins the assertion to a layout rather than to the behaviour.
-    let lines = crate::ui::model_view::model_view_lines(&picker, 60);
+    let lines = crate::ui::model_view::model_view_lines(&picker, 60, 200);
     let counter = lines
         .iter()
         .map(plain)
@@ -332,7 +332,7 @@ fn an_unmatched_provider_filter_collapses_to_placeholder_and_hint() {
     let mut app = login_app_provider();
     app.key_onboarding.as_mut().expect("open").query = "zzz".to_string();
     let onboarding = app.key_onboarding.as_ref().expect("open");
-    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 78)
+    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 78, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -356,7 +356,7 @@ fn no_login_page_ever_stacks_two_blank_rows() {
     for query in ["", "open", "zzz"] {
         app.key_onboarding.as_mut().expect("open").query = query.to_string();
         let onboarding = app.key_onboarding.as_ref().expect("open");
-        let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 78)
+        let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 78, 200)
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
@@ -378,7 +378,7 @@ fn the_env_path_hint_wraps_at_narrow_widths() {
     let mut app = login_app_provider();
     let onboarding = app.key_onboarding.as_mut().unwrap();
     onboarding.env_path = "~/.config/alter-zero/deeply/nested/credentials.env".into();
-    let lines = key_onboarding_lines(onboarding, 40);
+    let lines = key_onboarding_lines(onboarding, 40, 200);
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
@@ -406,7 +406,7 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
     let mut app = login_app_provider();
     let onboarding = app.key_onboarding.as_mut().unwrap();
     onboarding.providers[0].name = "An Extremely Long Provider Display Name".into();
-    let lines = key_onboarding_lines(onboarding, 30);
+    let lines = key_onboarding_lines(onboarding, 30, 200);
     // 38 columns of name into a 30-column row: the marker and the ✓ keep
     // their seats and the name shows its cut.
     let row = lines
@@ -430,7 +430,7 @@ fn the_method_step_offers_the_two_ways_in_with_no_counter() {
     // `(1/2)` counter, which would say nothing they don't.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 70)
+    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -540,7 +540,7 @@ fn the_device_page_counts_the_code_down() {
     let mut app = login_app_device();
     app.set_device_remaining(Some(std::time::Duration::from_secs(851)));
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 72);
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 72, 200);
     let wait = lines
         .iter()
         .map(plain)
@@ -554,7 +554,7 @@ fn an_expired_code_says_so_rather_than_counting_zero() {
     let mut app = login_app_device();
     app.set_device_remaining(Some(std::time::Duration::ZERO));
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let wait = crate::ui::login_view::key_onboarding_lines(onboarding, 72)
+    let wait = crate::ui::login_view::key_onboarding_lines(onboarding, 72, 200)
         .iter()
         .map(plain)
         .find(|l| l.contains("Waiting for approval"))
@@ -618,7 +618,7 @@ fn a_device_page_with_no_code_yet_still_frames_itself() {
         });
     }
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 72)
+    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 72, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -650,7 +650,7 @@ fn signin_page(kind: crate::app::SigninKind, uri: &str, width: u16) -> Vec<Line<
         });
     }
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+    crate::ui::login_view::key_onboarding_lines(onboarding, width, 200)
 }
 
 /// Every link target carried by any span of `lines`.
@@ -772,7 +772,7 @@ fn no_device_page_ever_stacks_two_blank_rows() {
             _ => {}
         }
         let onboarding = app.key_onboarding.as_ref().unwrap();
-        let texts: Vec<String> = key_onboarding_lines(onboarding, 72)
+        let texts: Vec<String> = key_onboarding_lines(onboarding, 72, 200)
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
@@ -801,7 +801,7 @@ fn the_waiting_page_is_title_status_hint_and_nothing_else() {
         });
     }
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let texts: Vec<String> = key_onboarding_lines(onboarding, 72)
+    let texts: Vec<String> = key_onboarding_lines(onboarding, 72, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -851,7 +851,7 @@ fn the_device_pages_hidden_cursor_parks_off_the_code() {
     let app = login_app_device();
     assert!(!cursor_visible(&app), "the page is a wait, not a field");
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72).len() as u16;
+    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72, 200).len() as u16;
     let area = Rect::new(0, 0, 72, rows);
     let (_, y) = cursor_position(area, &app);
     assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
@@ -877,7 +877,7 @@ fn the_device_seat_does_not_move_when_the_code_arrives() {
     }
     let seat_of = |app: &App| {
         let onboarding = app.key_onboarding.as_ref().unwrap();
-        let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72).len() as u16;
+        let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 72, 200).len() as u16;
         cursor_position(Rect::new(0, 0, 72, rows.max(1)), app)
     };
     let waiting = seat_of(&app);
@@ -901,7 +901,7 @@ fn span_fg(line: &Line, needle: &str) -> Option<ratatui::style::Color> {
 
 /// The row of a built `/login` page whose text contains `needle`.
 fn page_row(onboarding: &KeyOnboarding, width: u16, needle: &str) -> Line<'static> {
-    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+    crate::ui::login_view::key_onboarding_lines(onboarding, width, 200)
         .into_iter()
         .find(|l| plain(l).contains(needle))
         .unwrap_or_else(|| panic!("no row matched {needle:?}"))
@@ -985,7 +985,7 @@ fn the_method_root_rows_carry_no_configured_status() {
 
 /// A built `/login` page as trailing-trimmed row texts.
 fn page_texts(onboarding: &KeyOnboarding, width: u16) -> Vec<String> {
-    crate::ui::login_view::key_onboarding_lines(onboarding, width)
+    crate::ui::login_view::key_onboarding_lines(onboarding, width, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect()
@@ -1049,7 +1049,7 @@ fn the_key_step_describes_the_provider_and_links_its_key_page() {
     // of all *where* the key they are being asked to paste comes from.
     let app = login_app_described(KeyKind::Secret);
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70);
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200);
     let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     assert!(text.contains("every major lab"), "the description: {text}");
     assert!(
@@ -1076,7 +1076,7 @@ fn a_narrow_key_page_wraps_the_description_rather_than_cutting_it() {
     // is a sentence that stops mid-word, and a clipped URL is a dead link.
     let app = login_app_described(KeyKind::Secret);
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 40);
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 40, 200);
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
@@ -1174,7 +1174,7 @@ fn the_sign_in_method_choice_is_a_titled_two_row_question() {
     use crate::ui::login_view::key_onboarding_lines;
     let app = login_app_signin_method();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let lines = key_onboarding_lines(onboarding, 76);
+    let lines = key_onboarding_lines(onboarding, 76, 200);
     let texts: Vec<String> = lines
         .iter()
         .map(|l| plain(l).trim_end().to_string())
@@ -1237,7 +1237,7 @@ fn the_method_choice_hides_the_cursor_and_parks_it_on_the_title() {
     let app = login_app_signin_method();
     assert!(!cursor_visible(&app), "a question, not a field");
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 76).len() as u16;
+    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 76, 200).len() as u16;
     let (_, y) = cursor_position(Rect::new(0, 0, 76, rows), &app);
     assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
 }
@@ -1251,8 +1251,101 @@ fn a_long_subscription_name_still_fits_the_method_title() {
     app.key_onboarding.as_mut().unwrap().subscriptions[1].name =
         "A Subscription With A Very Long Name Indeed".into();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let lines = key_onboarding_lines(onboarding, 30);
+    let lines = key_onboarding_lines(onboarding, 30, 200);
     let title = plain(&lines[2]);
     assert!(crate::ui::wrap::cols(&title) <= 30, "{title:?}");
     assert!(title.contains('…'), "{title:?}");
+}
+
+// --- the compact page: a short terminal keeps the choices on screen ---
+
+/// The `/login` API-key list over seven providers, the first highlighted.
+fn seven_providers() -> App {
+    let mut app = login_app_provider();
+    let onboarding = app.key_onboarding.as_mut().expect("open");
+    let template = onboarding.providers[0].clone();
+    onboarding.providers = (0..7)
+        .map(|i| ProviderChoice {
+            id: format!("provider-{i}"),
+            name: format!("Provider {i}"),
+            env_var: format!("PROVIDER_{i}_API_KEY"),
+            ..template.clone()
+        })
+        .collect();
+    app
+}
+
+fn login_page_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    let onboarding = app.key_onboarding.as_ref().expect("open");
+    crate::ui::login_view::key_onboarding_lines(onboarding, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_short_terminal_keeps_the_provider_choices_on_screen() {
+    // The provider list's whole page — seven rows, the counter, the
+    // where-keys-are-saved note and the hint — is 17 rows; on 12 it flowed
+    // the filter and the highlighted provider into scrollback. The counter
+    // and the note yield, and three providers sit between the slots.
+    let app = seven_providers();
+    assert_eq!(login_page_at(&app, 70, 200).len(), 17, "the whole page");
+    let texts = login_page_at(&app, 70, 12);
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 11, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(
+        texts[LOGIN_SEARCH_ROW as usize], "  ❯",
+        "the filter: {texts:#?}"
+    );
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert!(texts[4].starts_with("→ Provider 0"), "{texts:#?}");
+    assert!(texts[5].starts_with("  Provider 1"), "{texts:#?}");
+    assert!(texts[6].starts_with("  Provider 2"), "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 4 more below", "{texts:#?}");
+    assert!(texts[8].contains("esc back"), "the hint: {texts:#?}");
+    assert!(is_rule(&texts[10]), "{texts:#?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("Keys are saved to")),
+        "the note yields: {texts:#?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("(1/7)")),
+        "no counter: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_provider_window_rides_the_selection() {
+    let mut app = seven_providers();
+    app.key_onboarding.as_mut().expect("open").selected = 6;
+    let texts = login_page_at(&app, 70, 12);
+    assert_eq!(texts[3], "  ↑ 4 more above", "{texts:#?}");
+    assert!(texts[6].starts_with("→ Provider 6"), "{texts:#?}");
+    assert_eq!(texts[7], "", "nothing below the last row: {texts:#?}");
+    let whole = u16::try_from(login_page_at(&app, 70, 200).len()).expect("rows");
+    let has_note = |texts: &[String]| texts.iter().any(|t| t.contains("Keys are saved to"));
+    assert!(
+        has_note(&login_page_at(&app, 70, whole)),
+        "whole at its own height"
+    );
+    assert!(
+        !has_note(&login_page_at(&app, 70, whole - 1)),
+        "compact a row short"
+    );
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_provider_filter() {
+    let app = seven_providers();
+    let height = key_onboarding_height(&app, 70, 12).expect("open");
+    assert_eq!(height, 11, "the compact page");
+    let area = Rect::new(0, 1, 70, height);
+    let (_, y) = cursor_position(area, &app);
+    assert_eq!(y, 1 + LOGIN_SEARCH_ROW, "on the filter line");
+    assert!(
+        crate::ui::view_flow(&app, 70, 12, 1000).is_none(),
+        "nothing flows"
+    );
 }

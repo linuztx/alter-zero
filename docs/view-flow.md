@@ -124,8 +124,9 @@ an empty catalog) has no window to compact, so only its header yields.
 
 The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
 (`docs/skills.md`), `/settings` (`docs/settings.md`), `/mascot`
-(`docs/mascot.md`) and `/spinner` (`docs/spinner.md`). `smoke.sh` Phase 138
-opens them on a 12-row terminal.
+(`docs/mascot.md`), `/spinner` (`docs/spinner.md`), and `/model` and
+`/login`'s lists (`docs/llm.md`). `smoke.sh` Phase 138 opens them on a 12-row
+terminal.
 
 ## Scope — which views flow
 

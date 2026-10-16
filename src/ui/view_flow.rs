@@ -145,13 +145,13 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if let Some(picker) = &app.model_picker {
         return Some(FlowPage::framed(
-            super::model_view::model_view_lines(picker, width),
+            super::model_view::model_view_lines(picker, width, term_height),
             term_height,
         ));
     }
     if let Some(onboarding) = &app.key_onboarding {
         return Some(FlowPage::framed(
-            super::login_view::key_onboarding_lines(onboarding, width),
+            super::login_view::key_onboarding_lines(onboarding, width, term_height),
             term_height,
         ));
     }

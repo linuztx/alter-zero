@@ -535,14 +535,17 @@ pub fn render_live_with_preview(
     // reported bug; the ↓ manager band's rule — `docs/llm.md`,
     // `docs/background.md`). `model_picker_height` reserves the same sum.
     if let Some(picker) = &app.model_picker {
-        let [strip, body] = view_split(area, model_picker_rows(picker, area.width));
+        let [strip, body] = view_split(area, model_picker_rows(picker, area.width, area.height));
         render_strip_above(strip, buf, app, stream_preview);
         render_model_picker(body, buf, picker);
         return;
     }
     // The inline `/login` onboarding flow sits under the same strip.
     if let Some(onboarding) = &app.key_onboarding {
-        let [strip, body] = view_split(area, key_onboarding_rows(onboarding, area.width));
+        let [strip, body] = view_split(
+            area,
+            key_onboarding_rows(onboarding, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_key_onboarding(body, buf, onboarding);
         return;

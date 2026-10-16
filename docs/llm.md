@@ -369,6 +369,32 @@ the bottom rule — the shape of the user's mock):
   like every framed view; `docs/view-flow.md`). The `/login` provider step
   follows the same rule: with no provider matched its counter takes no row, so
   one gap carries `No matching providers` to the hint.
+- On a terminal too short for the page (nineteen rows with ten models listed),
+  `model_view_lines(picker, width, height)` builds the family's **compact**
+  page instead (`docs/view-flow.md` *A page that sheds rows before it flows*):
+  three models between the reserved `↑ N more above` / `↓ N more below`
+  slots, the counter and the failed providers' rows yielding. The picker has
+  no hint row, so the compact page keeps the highlighted model's `Model Name:`
+  line where its siblings keep their hint — the same eleven-row shape:
+
+  ```
+  ────────────────────────────────────────────────
+
+    ❯
+
+  → stub/model-00 [stub]
+    stub/model-01 [stub]
+    stub/model-02 [stub]
+    ↓ 9 more below
+    Model Name: Stub: Model 0
+
+  ────────────────────────────────────────────────
+  ```
+
+  Bottom-anchoring the whole page there flowed the search line and the
+  highlighted model into scrollback. A placeholder page has no list to
+  compact and is the same at every height; `smoke.sh` Phase 138 opens the
+  picker over a stub provider's twelve models on a 12-row terminal.
 
 ### Styling
 
@@ -507,6 +533,16 @@ in place; unlike it, it is a **two-step** flow.
   back out of the page the paint just built (`view_prompt_row`, the
   `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
   drift from it.
+- The three list steps (the method root, the subscriptions, the providers)
+  share one page builder, and on a terminal too short for it they build the
+  family's **compact** page (`docs/view-flow.md`): the filter, three rows
+  between the reserved overflow slots and the key hint, the counter and the
+  `Keys are saved to` note yielding. The provider list is seventeen rows with
+  the built-in catalog, and bottom-anchoring it on twelve flowed the filter
+  and the highlighted provider into scrollback; the root's two rows are the
+  same page either way. The key step and the sign-in pages keep their one
+  shape — their field or their wait sits at the bottom, which the anchor
+  already keeps on screen.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a

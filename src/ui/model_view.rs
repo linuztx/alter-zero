@@ -444,40 +444,75 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
     ))
 }
 
-/// The whole framed page as lines — the shape of the user's mock: a top rule,
-/// the `❯` search line, the scrolling model list (each row `→ id [provider]
-/// ✓`), and — when a real model is highlighted — the `(n/total)` counter and
-/// the `Model Name:` line above the bottom rule (a placeholder page collapses
+/// The framed page as lines — the shape of the user's mock: a top rule, the
+/// `❯` search line, the scrolling model list (each row `→ id [provider] ✓`),
+/// and — when a real model is highlighted — the `(n/total)` counter and the
+/// `Model Name:` line above the bottom rule (a placeholder page collapses
 /// them to a single gap). Headerless (the "Showing models…" banner was
-/// dropped). What [`render_model_picker`] paints (bottom-anchored) and
-/// `layout::model_picker_rows` counts, so the reserved height and the painted
-/// rows can never disagree (`docs/view-flow.md`).
-pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
+/// dropped).
+///
+/// The first of two pages that fits `height` rows ([`first_page_that_fits`]):
+/// the **whole** page, or, on a terminal too short for it, the **compact**
+/// page — three models between the reserved overflow slots
+/// ([`model_compact_list`]), the counter and the failed providers' rows
+/// yielding, so the search line and the highlighted model stay on screen
+/// (`docs/view-flow.md` *A page that sheds rows before it flows*). The
+/// picker has no hint row, so the compact page keeps the highlighted
+/// model's `Model Name:` line where its siblings keep theirs, which gives it
+/// their shape. A placeholder page has no list to compact and is the same at
+/// every height. What [`render_model_picker`] paints (bottom-anchored when
+/// even the compact page is too tall) and `layout::model_picker_rows`
+/// counts, so the reserved height and the painted rows can never disagree.
+pub(super) fn model_view_lines(
+    picker: &ModelPicker,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
-    lines.extend(model_list_lines(picker, width));
-    if model_has_detail(picker) {
-        lines.push(model_counter_line(picker, width));
-        lines.push(Line::default());
-        lines.push(model_name_line(picker, width));
-        lines.extend(model_error_lines(picker, width));
-        lines.push(Line::default());
-    } else {
+    let page = |body: Vec<Line<'static>>| {
+        let mut lines = vec![model_rule(width), Line::default(), search_line.clone()];
+        lines.extend(body);
+        lines.push(model_rule(width));
+        lines
+    };
+    if !model_has_detail(picker) {
         // A placeholder (loading / error / needs-login / no match): the blank
         // counter + name collapse to a single gap above the bottom rule.
-        lines.push(Line::default());
+        let mut body = vec![Line::default()];
+        body.extend(model_list_lines(picker, width));
+        body.push(Line::default());
+        return page(body);
     }
-    lines.push(model_rule(width));
-    lines
+    let whole = || {
+        let mut body = vec![Line::default()];
+        body.extend(model_list_lines(picker, width));
+        body.push(model_counter_line(picker, width));
+        body.push(Line::default());
+        body.push(model_name_line(picker, width));
+        body.extend(model_error_lines(picker, width));
+        body.push(Line::default());
+        page(body)
+    };
+    let compact = || {
+        let matches = picker.matches();
+        let selected = picker.selected.min(matches.len() - 1);
+        let (above, range, below) =
+            list_window(matches.len(), selected, usize::from(COMPACT_LIST_ROWS));
+        let window = matches[range.clone()]
+            .iter()
+            .zip(range)
+            .map(|(m, i)| model_row(m, i == selected, picker.is_active(m), width))
+            .collect();
+        let mut body = model_compact_list(above, window, below, width);
+        body.push(model_name_line(picker, width));
+        body.push(Line::default());
+        page(body)
+    };
+    first_page_that_fits(height, &[&whole, &compact])
 }
 
 /// Render the **inline** `/model` picker into the live region, in place of the
@@ -485,5 +520,9 @@ pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'st
 /// chrome on screen while the skipped top flows into scrollback
 /// (`docs/view-flow.md`). Pure — `render_live` paints this. See `docs/llm.md`.
 pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
-    super::view_flow::render_framed_tail(area, buf, model_view_lines(picker, area.width));
+    super::view_flow::render_framed_tail(
+        area,
+        buf,
+        model_view_lines(picker, area.width, area.height),
+    );
 }

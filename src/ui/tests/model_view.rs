@@ -202,7 +202,7 @@ fn provider_errors_wrap_instead_of_clipping() {
         provider: "openrouter".into(),
         message: "HTTP 429 too many requests — retry after sixty seconds".into(),
     });
-    let lines = model_view_lines(&picker, 40);
+    let lines = model_view_lines(&picker, 40, TALL);
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
@@ -223,7 +223,7 @@ fn the_needs_login_hint_wraps_keeping_its_actionable_tail() {
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(vec![], 0, "x");
     picker.status = ModelLoad::NeedsLogin;
-    let lines = model_view_lines(&picker, 30);
+    let lines = model_view_lines(&picker, 30, TALL);
     assert!(
         joined(&lines).contains("run /login to add one"),
         "{lines:#?}"
@@ -259,7 +259,7 @@ fn the_counter_suffix_clamps_to_the_width() {
         provider: "a-very-long-provider-name-indeed".into(),
         message: "boom".into(),
     });
-    let lines = model_view_lines(&picker, 30);
+    let lines = model_view_lines(&picker, 30, TALL);
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 30,
@@ -284,7 +284,7 @@ fn a_cut_model_name_detail_ends_with_an_ellipsis() {
     )];
     let picker = model_picker(models, 0, "x");
     use crate::ui::model_view::model_view_lines;
-    let lines = model_view_lines(&picker, 30);
+    let lines = model_view_lines(&picker, 30, TALL);
     let name = lines
         .iter()
         .map(plain)
@@ -307,7 +307,7 @@ fn a_failed_provider_shows_its_reason_beneath_the_list() {
         provider: "GitHub Copilot".into(),
         message: "HTTP 403: no Copilot subscription on this account".into(),
     });
-    let text = model_view_lines(&picker, 70)
+    let text = model_view_lines(&picker, 70, TALL)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -329,7 +329,7 @@ fn every_failed_providers_reason_is_shown() {
             message: message.into(),
         });
     }
-    let text = model_view_lines(&picker, 70)
+    let text = model_view_lines(&picker, 70, TALL)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -348,7 +348,7 @@ fn a_page_length_failure_reason_is_capped_not_left_to_own_the_picker() {
         provider: "GitHub Copilot".into(),
         message: "wordy ".repeat(400),
     });
-    let lines = model_view_lines(&picker, 70);
+    let lines = model_view_lines(&picker, 70, TALL);
     let reason_rows = lines
         .iter()
         .map(plain)
@@ -379,14 +379,14 @@ fn a_page_length_failure_reason_is_capped_not_left_to_own_the_picker() {
 fn a_clean_load_adds_no_reason_rows_at_all() {
     use crate::ui::model_view::model_view_lines;
     let picker = model_picker(three_models(), 0, "x");
-    let before = model_view_lines(&picker, 70).len();
+    let before = model_view_lines(&picker, 70, TALL).len();
     let mut failed = model_picker(three_models(), 0, "x");
     failed.errors.push(ModelFetchError {
         provider: "GitHub Copilot".into(),
         message: "boom".into(),
     });
     assert!(
-        model_view_lines(&failed, 70).len() > before,
+        model_view_lines(&failed, 70, TALL).len() > before,
         "the block only exists when something failed"
     );
 }
@@ -462,5 +462,125 @@ fn the_compact_list_reserves_a_slot_on_either_side_of_its_window() {
     assert_eq!(
         texts(model_compact_list(0, window, 0, 40)),
         ["", "a", "b", "c", ""]
+    );
+}
+
+// --- the compact page: a short terminal keeps the choices on screen ---
+
+/// A terminal tall enough for the whole page.
+const TALL: u16 = 200;
+
+/// A ready picker over twelve models, the first highlighted and active.
+fn twelve_models() -> ModelPicker {
+    let models = (0..12)
+        .map(|i| {
+            model_entry(
+                &format!("vendor/model-{i:02}"),
+                "openrouter",
+                &format!("Vendor: Model {i}"),
+            )
+        })
+        .collect();
+    model_picker(models, 0, "vendor/model-00")
+}
+
+fn page_at(picker: &ModelPicker, width: u16, height: u16) -> Vec<String> {
+    crate::ui::model_view::model_view_lines(picker, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+fn is_rule(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c == '─')
+}
+
+#[test]
+fn a_short_terminal_keeps_the_model_choices_on_screen() {
+    // The whole page — ten rows of the list, the counter and the name line —
+    // is 19 rows; on 12, bottom-anchoring it flowed the search line and the
+    // highlighted model into scrollback. The counter and the error rows
+    // yield and three models sit between the reserved slots; with no hint
+    // row of its own, the page keeps the highlighted model's name line in
+    // the hint's place, so it has its siblings' shape.
+    let picker = twelve_models();
+    assert_eq!(page_at(&picker, 70, TALL).len(), 19, "the whole page");
+    let texts = page_at(&picker, 70, 12);
+    assert_eq!(texts.len(), 11, "{texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "", "{texts:#?}");
+    assert_eq!(texts[2], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[3], "", "nothing above the first row: {texts:#?}");
+    assert!(texts[4].starts_with("→ vendor/model-00"), "{texts:#?}");
+    assert!(texts[5].starts_with("  vendor/model-01"), "{texts:#?}");
+    assert!(texts[6].starts_with("  vendor/model-02"), "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 9 more below", "{texts:#?}");
+    assert!(
+        texts[8].contains("Vendor: Model 0"),
+        "the name line: {texts:#?}"
+    );
+    assert_eq!(texts[9], "", "{texts:#?}");
+    assert!(is_rule(&texts[10]), "{texts:#?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("(1/12)")),
+        "no counter: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_model_window_rides_the_selection_and_holds_still() {
+    let mut picker = twelve_models();
+    picker.selected = 6;
+    let texts = page_at(&picker, 70, 12);
+    assert_eq!(texts[3], "  ↑ 5 more above", "{texts:#?}");
+    assert!(texts[5].starts_with("→ vendor/model-06"), "{texts:#?}");
+    assert_eq!(texts[7], "  ↓ 4 more below", "{texts:#?}");
+    for i in 0..12 {
+        picker.selected = i;
+        assert_eq!(
+            page_at(&picker, 70, 12).len(),
+            11,
+            "selection {i} moved the frame"
+        );
+    }
+}
+
+#[test]
+fn the_whole_model_page_returns_once_it_fits() {
+    let picker = twelve_models();
+    let whole = u16::try_from(page_at(&picker, 70, TALL).len()).expect("rows");
+    let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains("(1/12)"));
+    assert!(
+        has_counter(&page_at(&picker, 70, whole)),
+        "whole at its own height"
+    );
+    assert!(
+        !has_counter(&page_at(&picker, 70, whole - 1)),
+        "compact a row short"
+    );
+}
+
+#[test]
+fn a_placeholder_page_has_no_compact_form() {
+    // Loading, no key, every provider failed, nothing matched: no list to
+    // compact, so the page is the same at every height.
+    let mut picker = twelve_models();
+    picker.query = "zzz".into();
+    assert_eq!(page_at(&picker, 70, 6), page_at(&picker, 70, TALL));
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_model_search_line() {
+    let mut app = App::new();
+    app.open_model_picker("vendor/model-00");
+    app.set_models(twelve_models().models);
+    let height = model_picker_height(&app, 70, 12).expect("open");
+    assert_eq!(height, 11, "the compact page");
+    let area = Rect::new(0, 1, 70, height);
+    let (_, y) = cursor_position(area, &app);
+    assert_eq!(y, 1 + MODEL_SEARCH_ROW, "on the search line");
+    assert!(
+        crate::ui::view_flow(&app, 70, 12, 1000).is_none(),
+        "nothing flows"
     );
 }

@@ -2023,7 +2023,15 @@ the same shape now: each render is one **line builder**
 `skills_view_lines`, the retired internal `Layout` stacks), its height the
 built line count so the reserved rows and the painted rows can never
 disagree, flow-eligible like the menus (their top-of-frame `❯` search line
-re-flows per keystroke, since a keystroke re-signs the flow); the
+re-flows per keystroke, since a keystroke re-signs the flow) — and, with
+`/theme`, `/mascot` and `/spinner`, height-aware: on a terminal too short for
+the whole page each builds the family's compact page instead (the first page
+that fits, `model_view::first_page_that_fits` — description, preview and
+counter yield, then a header, and a `COMPACT_LIST_ROWS` window sits between
+reserved `↑`/`↓` slots, `model_compact_list`; `/model`, having no hint row,
+keeps its `Model Name:` line in the hint's place; `docs/view-flow.md` *A page
+that sheds rows before it flows*, `smoke.sh` Phase 138), so the search line
+and the highlighted row stay on screen rather than flowing away; the
 boundary keeps the flowed rows' signature (`Session::flowed_view`) and
 answers any mismatch — navigation, resize, close — with the standard purge
 rebuild (`repaint_conversation`/`repaint_agent_view` append the flow to the

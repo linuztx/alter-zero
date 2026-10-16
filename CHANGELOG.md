@@ -38,16 +38,18 @@ release heading when a version is cut.
   the search line, the skill you are on and the hint stay on screen instead
   of scrolling away, and the menu no longer jumps between the two layouts as
   you move past a long description (`docs/skills.md`).
-- **`/settings`, `/mascot` and `/spinner` keep what you are choosing
-  visible on a short terminal.** Each needs about twenty rows; on fewer, the
-  row you had highlighted and the search line used to scroll off the top.
-  Now what the choice doesn't need goes first — a long `/settings`
-  description is cut to one row, then the descriptions, the counter and
-  the `/mascot` and `/spinner` previews are left out — and the list shows
-  three rows at a time, with `↑ N more above` and `↓ N more below` rows
-  naming the rest, so the search line, the highlighted row and the hint
-  always stay on screen. The `/settings` values and the `/spinner` glyphs
-  stay lined up in one column as you scroll (`docs/view-flow.md`).
+- **`/settings`, `/mascot`, `/spinner`, `/model` and `/login` keep what you
+  are choosing visible on a short terminal.** Each needs about twenty rows;
+  on fewer, the row you had highlighted and the search line used to scroll
+  off the top. Now what the choice doesn't need goes first — a long
+  `/settings` description is cut to one row, then the descriptions, the
+  counter, the `/mascot` and `/spinner` previews and `/login`'s note about
+  where keys are saved are left out — and the list shows three rows at a
+  time, with `↑ N more above` and `↓ N more below` rows naming the rest, so
+  the search line, the highlighted row and the hint always stay on screen.
+  `/model` keeps the highlighted model's full name under the list. The
+  `/settings` values and the `/spinner` glyphs stay lined up in one column
+  as you scroll (`docs/view-flow.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
