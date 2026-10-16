@@ -122,8 +122,9 @@ terminal's — and a builder whose pages shrink in order picks the same page
 from either. A page with nothing to choose from (a search matching nothing,
 an empty catalog) has no window to compact, so only its header yields.
 
-The compact pages so far: `/theme` (`docs/theme.md`) and `/skills`
-(`docs/skills.md`).
+The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
+(`docs/skills.md`) and `/settings` (`docs/settings.md`). `smoke.sh` Phase 138
+opens them on a 12-row terminal.
 
 ## Scope — which views flow
 

@@ -157,7 +157,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if app.settings_picker.is_some() {
         return Some(FlowPage::framed(
-            super::settings_view::settings_view_lines(app, width),
+            super::settings_view::settings_view_lines(app, width, term_height),
             term_height,
         ));
     }

@@ -168,15 +168,15 @@ fn the_flow_keeps_its_newest_rows_under_the_cap() {
 #[test]
 fn a_picker_taller_than_the_terminal_flows_like_the_menus() {
     // The windowed pickers are framed bodies too (docs/view-flow.md): on a
-    // terminal shorter than their page the skipped top flows, and their spot
-    // in the precedence chain sits ahead of the browsing menus — a /settings
-    // menu open over an /mcp one is the painted view, so it is the one that
-    // flows.
+    // terminal shorter than even their smallest page — the compact one — the
+    // skipped top flows, and their spot in the precedence chain sits ahead
+    // of the browsing menus — a /settings menu open over an /mcp one is the
+    // painted view, so it is the one that flows.
     let mut app = App::new();
     app.open_settings();
     let width = 78u16;
-    let page = crate::ui::settings_height(&app, width, 200).expect("open");
-    let height = page - 3;
+    let page = crate::ui::settings_view::settings_view_lines(&app, width, 1).len();
+    let height = u16::try_from(page).expect("rows") - 3;
     let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
     assert_eq!(flow.lines.len(), 3, "exactly the skipped top rows flow");
     let top: Vec<String> = flow.lines.iter().map(plain).collect();

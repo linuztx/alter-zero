@@ -38,6 +38,14 @@ release heading when a version is cut.
   the search line, the skill you are on and the hint stay on screen instead
   of scrolling away, and the menu no longer jumps between the two layouts as
   you move past a long description (`docs/skills.md`).
+- **`/settings` keeps the setting you are on visible on a short terminal.**
+  The menu needs about twenty rows; on fewer, the setting you had
+  highlighted and the search line used to scroll off the top. Now a long
+  description is first cut to one row, then left out along with the
+  counter while the list shows three settings at a time, with
+  `↑ N more above` and `↓ N more below` rows naming the rest — the search
+  line, the highlighted setting and the hint always stay on screen. The
+  values stay lined up in one column as you scroll (`docs/settings.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

@@ -2405,7 +2405,12 @@ every phase with `ALTER_ZERO_TELEMETRY=0` and Phase 115 drives the whole loop
 against a local stub)
 of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
 highlighted row's description, and a `Type to search · Enter/Space to change ·
-Esc to cancel` hint; every value **cycles** — there is no free-text field, so
+Esc to cancel` hint — on a terminal too short for that page, the family's
+**compact** page instead (`settings_view_lines(app, width, height)`, the
+first page that fits: a long description cut to one row, then the description
+and the counter gone and a `COMPACT_LIST_ROWS` window between the reserved
+`↑`/`↓` slots, the value column sized off every listed row so it holds still,
+`docs/view-flow.md`, `smoke.sh` Phase 138); every value **cycles** — there is no free-text field, so
 Enter and Space mean the same thing on every row and Space never reaches the
 type-to-search (which matches the label *and* the description, so `agents.md`
 finds **Project docs**). The pure model is `settings::SessionSettings` +

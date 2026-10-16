@@ -169,6 +169,47 @@ count, painted bottom-anchored with the skipped top flowing into scrollback,
 always at least one setting, and a search that matches nothing still shows its
 placeholder in the same frame.
 
+### A terminal too short for the page
+
+The whole page is twenty-one rows or more, and bottom-anchoring it on a
+shorter terminal kept the description and the hint while the search line and
+the highlighted row flowed into scrollback — on twelve rows the row Enter
+would change was off screen. So `settings_view_lines` takes the rows the page
+may have and builds the first of three pages that fits them
+(`first_page_that_fits`, the family rule in `docs/view-flow.md` *A page that
+sheds rows before it flows*):
+
+1. the whole page;
+2. the whole page with the description cut to one row
+   (`Description::OneRow`) — several descriptions wrap to two rows on an
+   80-column terminal, so the whole page's height moves with the selection,
+   and a terminal at the edge, deciding on that height alone, flipped
+   between the whole and the compact page as ↑/↓ passed one;
+3. the compact page, the `/theme` and `/skills` one row for row:
+
+```
+──────────────────────────────────────────────────────────
+
+  ❯
+  ↑ 5 more above
+  Tools                true
+→ Permission mode      manual
+  Checkpoints          false
+  ↓ 10 more below
+  Type to search · Enter/Space to change · Esc to cancel
+
+──────────────────────────────────────────────────────────
+```
+
+The description and the counter yield, and a `COMPACT_LIST_ROWS` (3) window
+sits between the reserved overflow slots (`model_compact_list`), each blank
+when nothing is hidden that way, so the page is eleven rows at every
+selection. The value column is sized off every listed setting rather than
+the rows in view, so it holds still as the window scrolls — it used to shift
+on the whole page too, whenever ↑/↓ scrolled `Auto-resize images` in or out
+of the ten rows shown. The search line stays on page row 2 in all three
+pages, which is why the cursor's `SETTINGS_SEARCH_ROW` seat needed no change.
+
 ### Keys
 
 | Key | Effect |
@@ -322,4 +363,5 @@ backend rebuild, the checkpoint flip, the file write — is covered by
 `scripts/smoke.sh` Phase 67, which opens the menu, searches, cycles a value, and
 checks the toast and the collapsed composer; Phase 109 drives the per-directory
 half (a knob cycled in one directory, the defaults in the next, both against
-one config home).
+one config home); Phase 138 opens it on a 12-row terminal and walks its compact
+page.

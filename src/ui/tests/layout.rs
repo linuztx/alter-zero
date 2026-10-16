@@ -1102,14 +1102,17 @@ fn a_menu_whose_marker_scrolled_off_seats_on_the_painted_hint_before_the_corner(
 
 #[test]
 fn the_picker_cursor_seat_subtracts_the_bottom_anchor_skip() {
-    // A /settings page one row taller than the region paints from its second
-    // row (view_body_skip = 1), so the `❯` search line sits one row higher on
-    // screen than its page row — and the hardware cursor must sit on the
-    // painted line, not one below it (docs/view-flow.md).
+    // A /settings page one row taller than the region — its smallest page,
+    // the compact one, since any taller page that does not fit gives way to
+    // it — paints from its second row (view_body_skip = 1), so the `❯`
+    // search line sits one row higher on screen than its page row, and the
+    // hardware cursor must sit on the painted line, not one below it
+    // (docs/view-flow.md).
     let mut app = App::new();
     app.open_settings();
     let width = 78u16;
-    let page = crate::ui::settings_height(&app, width, 200).expect("open");
+    let page = crate::ui::settings_view::settings_view_lines(&app, width, 1).len();
+    let page = u16::try_from(page).expect("rows");
     let area = Rect::new(0, 0, width, page - 1);
     let (_, y) = cursor_position(area, &app);
     assert_eq!(
