@@ -210,7 +210,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // The `/donate` page is still — nothing on it ticks — so it signs
         // its rows like the `/hooks` menu (`docs/donate.md`).
         return Some(FlowPage::framed(
-            super::donate_view::donate_view_lines(app, width),
+            super::donate_view::donate_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -219,7 +219,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // rows like `/donate` — and its values are masked in those rows
         // before they can flow (`docs/secrets.md`).
         return Some(FlowPage::framed(
-            super::secrets_view::secrets_view_lines(app, width),
+            super::secrets_view::secrets_view_lines(app, width, term_height),
             term_height,
         ));
     }

@@ -619,7 +619,10 @@ pub fn render_live_with_preview(
     // …and the read-only `/donate` page, its sibling — the same built-line
     // body. See `docs/donate.md`.
     if app.donate_picker.is_some() {
-        let [strip, body] = view_split(area, super::donate_view::donate_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::donate_view::donate_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_donate_picker(body, buf, app);
         return;
@@ -629,7 +632,7 @@ pub fn render_live_with_preview(
     if app.secrets_page.is_some() {
         let [strip, body] = view_split(
             area,
-            super::secrets_view::secrets_menu_rows(app, area.width),
+            super::secrets_view::secrets_menu_rows(app, area.width, area.height),
         );
         render_strip_above(strip, buf, app, stream_preview);
         render_secrets_picker(body, buf, app);

@@ -14,6 +14,16 @@ smoke_begin
 # matched loosely: a catalog that grows with each new feature must not fail
 # this phase instead of that feature's own.
 S138="${S}_shortpages"
+# Eight secrets for /secrets to window (docs/secrets.md).
+{
+	printf '{\n  "secrets": [\n'
+	for i in 0 1 2 3 4 5 6 7; do
+		[ "$i" -gt 0 ] && printf ',\n'
+		printf '    { "name": "SMOKE_%s", "value": "smoke-value-%s", "context": "Smoke secret %s" }' "$i" "$i" "$i"
+	done
+	printf '\n  ]\n}\n'
+} >"$SMOKE_CFG/secrets.json"
+chmod 600 "$SMOKE_CFG/secrets.json"
 launch "$S138" 90 12
 # /settings: three settings between the slots, the highlighted one on screen,
 # no counter and no description.
@@ -74,8 +84,59 @@ expect_has "$short_login" -E '^  ❯ *$' "/login lost its filter line on 12 rows
 expect_has "$short_login" -E '^→ .+ · (✔|◯) ' "/login lost its highlighted provider on 12 rows"
 expect_has "$short_login" -E '^  ↓ [0-9]+ more below$' "/login does not name the providers under its window"
 expect_lacks "$short_login" -F "Keys are saved to" "/login still shows its note on 12 rows"
-tmux send-keys -t "$S138" Escape Escape
+# One Esc back to the sign-in fork, one more to close it — sent apart, since
+# two ESC bytes in one write read as a single Alt+Esc.
+tmux send-keys -t "$S138" Escape
+wait_pane 5 "$S138" -F "Use an API key" >/dev/null
+tmux send-keys -t "$S138" Escape
+wait_pane 5 "$S138" -F "dummy_model_name" >/dev/null ||
+	fail "Esc did not close /login back to the composer"
+# /donate: the highlighted address alone, its label still opening the screen
+# — the anchor skips only the top rule and the blank ↑ slot — over the
+# caution and the hint (docs/donate.md).
+submit "$S138" "/donate"
+short_donate="$(wait_pane 5 "$S138" -F "enter/c copy address")"
+echo "==== Phase 138: /donate on 12 rows ===="
+printf '%s\n' "$short_donate"
+expect_has "$short_donate" -E '^  ❯ 1\. BTC' "/donate lost its highlighted label on 12 rows"
+expect_has "$short_donate" -F "Network: Bitcoin" "/donate lost the highlighted address's networks on 12 rows"
+expect_has "$short_donate" -E '^  ↓ 2 more below$' "/donate does not count the addresses under the highlighted one"
+expect_has "$short_donate" -F "cannot be recovered" "/donate lost its caution on 12 rows"
+expect_lacks "$short_donate" -E '^ +2\. ETH' "/donate still lists the other addresses on 12 rows"
+expect_lacks "$short_donate" -F "Support" "/donate still shows its title on 12 rows"
+tmux send-keys -t "$S138" Down
 sleep 0.4
+short_donate_eth="$(pane "$S138")"
+echo "==== Phase 138: /donate after ↓ ===="
+printf '%s\n' "$short_donate_eth"
+expect_has "$short_donate_eth" -E '^  ❯ 2\. ETH' "↓ did not move /donate to the next address"
+expect_has "$short_donate_eth" -F "Networks: Ethereum" "/donate lost the second address's networks"
+expect_has "$short_donate_eth" -E '^  ↓ 1 more below$' "/donate does not count the address under the second"
+tmux send-keys -t "$S138" Escape
+sleep 0.4
+expect_has "$(pane "$S138")" -F "dummy_model_name" "Esc did not close /donate back to the composer"
+# /secrets: eight secrets on 12 rows — three between the slots, the header
+# gone, the masks still lined up (docs/secrets.md).
+submit "$S138" "/secrets"
+short_secrets="$(wait_pane 5 "$S138" -F "c copy placeholder")"
+echo "==== Phase 138: /secrets on 12 rows ===="
+printf '%s\n' "$short_secrets"
+expect_has "$short_secrets" -E '^  ❯ <secret:SMOKE_0> ' "/secrets lost its highlighted secret on 12 rows"
+expect_has "$short_secrets" -F "<secret:SMOKE_2>  ••••••••  Smoke secret 2" "/secrets lost its mask column on 12 rows"
+expect_has "$short_secrets" -E '^  ↓ 6 more below$' "/secrets does not count the secrets under its window"
+expect_lacks "$short_secrets" -F "Credentials the agent uses" "/secrets still shows its blurb on 12 rows"
+expect_lacks "$short_secrets" -F "<secret:SMOKE_3>" "/secrets shows more than its window on 12 rows"
+tmux send-keys -t "$S138" Down Down Down Down Down
+sleep 0.4
+short_secrets_walk="$(pane "$S138")"
+echo "==== Phase 138: /secrets after five ↓ ===="
+printf '%s\n' "$short_secrets_walk"
+expect_has "$short_secrets_walk" -E '^  ❯ <secret:SMOKE_5>' "the /secrets window did not follow the selection"
+expect_has "$short_secrets_walk" -E '^  ↑ 4 more above$' "/secrets does not count the secrets over its window"
+expect_has "$short_secrets_walk" -E '^  ↓ 2 more below$' "/secrets lost the row counting the secrets under its window"
+tmux send-keys -t "$S138" Escape
+sleep 0.4
+expect_has "$(pane "$S138")" -F "dummy_model_name" "Esc did not close /secrets back to the composer"
 tmux kill-session -t "$S138" 2>/dev/null
 
 # /model: a stub provider lists twelve models, and the compact page keeps

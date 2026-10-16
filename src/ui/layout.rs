@@ -1168,7 +1168,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The read-only `/donate` page seats on its highlighted `❯` the same way
     // (docs/donate.md).
     if app.donate_picker.is_some() {
-        let lines = super::donate_view::donate_view_lines(app, area.width);
+        let lines = super::donate_view::donate_view_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
     // …and the read-only `/export` page, its sibling (docs/export.md).
@@ -1181,7 +1181,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the builder reports — three fields make "the row with the `❯`" a
     // question the lines alone cannot answer (docs/secrets.md).
     if app.secrets_page.is_some() {
-        let build = super::secrets_view::secrets_build(app, area.width);
+        let build = super::secrets_view::secrets_build(app, area.width, area.height);
         let Some((col, row)) = build.cursor else {
             return menu_marker_seat(&build.lines, area);
         };

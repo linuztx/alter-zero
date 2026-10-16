@@ -50,6 +50,15 @@ release heading when a version is cut.
   `/model` keeps the highlighted model's full name under the list. The
   `/settings` values and the `/spinner` glyphs stay lined up in one column
   as you scroll (`docs/view-flow.md`).
+- **`/donate` and `/secrets` keep the highlighted entry on screen on a short
+  terminal.** On `/donate`, the addresses you are not on fold down to their
+  one-line labels while the highlighted one keeps its box and its networks,
+  then the title goes, and on a shorter terminal still the highlighted
+  address shows alone, with rows saying how many are above and below it;
+  the caution and the hint stay. A long `/secrets`
+  list shows three secrets at a time around the highlighted one, with rows
+  naming how many more are above and below, then drops its title
+  (`docs/donate.md`, `docs/secrets.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

@@ -454,7 +454,13 @@ over a network listed under its address, and Enter/`c`/a digit
 copies the highlighted address through `/copy`'s clipboard path with a
 `Copied the BTC address to clipboard` toast while the page stays open; the
 catalog is the const `app::DONATION_ADDRESSES`, never a file, and the
-page is still, so it flows signed on its rows) in `docs/donate.md`; the
+page is still, so it flows signed on its rows; on a terminal too short for
+every box the addresses the highlight is not on collapse to their label
+rows — an accordion, the highlighted one keeping its box and its networks
+under its own label — before the title and the blurb go, and then the
+highlighted address stands alone between the ↑/↓ overflow slots, the
+caution and the hint staying on every page, `docs/view-flow.md` *A page
+that sheds rows before it flows*) in `docs/donate.md`; the
 **`/export` page** (`docs/export.md`: `/copy`'s sibling over the **whole**
 conversation — the `/donate` page's shape, a read-only composer-replacing
 two-row page, `❯ 1. Copy to clipboard` over `2. Save to file`, the
