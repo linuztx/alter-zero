@@ -390,3 +390,77 @@ fn a_clean_load_adds_no_reason_rows_at_all() {
         "the block only exists when something failed"
     );
 }
+
+// --- the compact page's shared pieces (docs/view-flow.md) ---
+
+#[test]
+fn the_first_page_that_fits_wins_and_the_pages_after_it_are_never_built() {
+    use crate::ui::model_view::first_page_that_fits;
+    let built = std::cell::Cell::new(0);
+    let page = |rows: usize| {
+        built.set(built.get() + 1);
+        vec![Line::default(); rows]
+    };
+    let whole = || page(20);
+    let compact = || page(11);
+    let smaller = || page(5);
+    let chosen = first_page_that_fits(15, &[&whole, &compact, &smaller]);
+    assert_eq!(
+        chosen.len(),
+        11,
+        "the whole page is too tall, the compact fits"
+    );
+    assert_eq!(
+        built.get(),
+        2,
+        "the page after the one that fits is never built"
+    );
+    assert_eq!(first_page_that_fits(20, &[&whole, &compact]).len(), 20);
+}
+
+#[test]
+fn when_no_page_fits_the_last_is_used_and_bottom_anchors() {
+    use crate::ui::model_view::first_page_that_fits;
+    let whole = || vec![Line::default(); 20];
+    let compact = || vec![Line::default(); 11];
+    assert_eq!(first_page_that_fits(6, &[&whole, &compact]).len(), 11);
+}
+
+#[test]
+fn the_list_window_names_what_it_hides_on_either_side() {
+    use crate::ui::model_view::list_window;
+    assert_eq!(list_window(8, 0, 3), (0, 0..3, 5), "pinned to the top");
+    assert_eq!(
+        list_window(8, 3, 3),
+        (2, 2..5, 3),
+        "the selection in the middle"
+    );
+    assert_eq!(list_window(8, 7, 3), (5, 5..8, 0), "pinned to the end");
+    assert_eq!(
+        list_window(2, 1, 3),
+        (0, 0..2, 0),
+        "a short list shows whole"
+    );
+}
+
+#[test]
+fn the_compact_list_reserves_a_slot_on_either_side_of_its_window() {
+    use crate::ui::model_view::model_compact_list;
+    let window = vec![Line::from("a"), Line::from("b"), Line::from("c")];
+    let texts = |lines: Vec<Line<'static>>| -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect()
+    };
+    assert_eq!(
+        texts(model_compact_list(2, window.clone(), 4, 40)),
+        ["  ↑ 2 more above", "a", "b", "c", "  ↓ 4 more below"]
+    );
+    // Nothing hidden that way: the slot stays, blank — one height at every
+    // selection, and the gap the page wants there anyway.
+    assert_eq!(
+        texts(model_compact_list(0, window, 0, 40)),
+        ["", "a", "b", "c", ""]
+    );
+}

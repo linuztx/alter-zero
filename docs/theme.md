@@ -345,8 +345,8 @@ line: *"optional gaps and previews yield first"*:
 ──────────────────────────────────────────────────────────
 ```
 
-The search line, `THEME_COMPACT_ROWS` (3) rows of the list — codex's
-minimum result rows — and the hint stay; the preview and its caption yield.
+The search line, `COMPACT_LIST_ROWS` (3, the whole family's compact window)
+rows of the list — codex's minimum result rows — and the hint stay; the preview and its caption yield.
 Before this the page bottom-anchored on a short terminal like every framed
 view, which kept the preview and the hint on screen and flowed the search
 line and the theme names into scrollback: wherever the picker was squeezed,
@@ -503,7 +503,8 @@ the saved theme.
   length is the reserved height, `docs/view-flow.md`), which lays the
   preview beside the list or under it (`preview_beside`, over
   `THEME_PREVIEW_GAP` and `THEME_PREVIEW_MIN_COLS`) and builds the compact
-  page (`THEME_COMPACT_ROWS`) when the whole one is taller than `height`.
+  page (`COMPACT_LIST_ROWS`, `model_compact_list`) when the whole one is
+  taller than `height` (`first_page_that_fits`).
 - `tui::theme::Session::select_theme`, `tui::config::{theme_json_path,
   load_theme, save_theme}`.
 

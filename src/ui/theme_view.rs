@@ -31,7 +31,8 @@
 //! unusable exactly where it was squeezed.
 
 use super::model_view::{
-    model_overflow_row, model_overflow_slot, model_placeholder_row, model_rule,
+    first_page_that_fits, list_window, model_compact_list, model_overflow_row,
+    model_placeholder_row, model_rule,
 };
 use super::palette::{palette_of, with_theme};
 use super::theme::*;
@@ -178,19 +179,13 @@ fn window_lines(
     max: usize,
     width: u16,
 ) -> (usize, Vec<Line<'static>>, usize) {
-    let offset = centered_window(rows.len(), selected, max);
-    let end = (offset + max).min(rows.len());
-    let lines = rows[offset..end]
+    let (above, range, below) = list_window(rows.len(), selected, max);
+    let lines = rows[range.clone()]
         .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            clamp_spans(
-                theme_row(row, offset + i == selected).spans,
-                usize::from(width),
-            )
-        })
+        .zip(range)
+        .map(|(row, i)| clamp_spans(theme_row(row, i == selected).spans, usize::from(width)))
         .collect();
-    (offset, lines, rows.len() - end)
+    (above, lines, below)
 }
 
 /// The sample `Edit` call the preview's diff cell shows: a finished call
@@ -346,24 +341,17 @@ fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'stati
 
 /// The compact page's body, for a terminal too short for the whole page —
 /// codex's short panel, where "optional gaps and previews yield first"
-/// (`selection_picker_layout.rs`): a [`THEME_COMPACT_ROWS`]-row window of
+/// (`selection_picker_layout.rs`): a [`COMPACT_LIST_ROWS`]-row window of
 /// the list between two overflow slots and no preview, so what stays on
 /// screen is the choices. The slots are codex's reserved arrow rows — the
 /// `↑` directly under the search line, the `↓` directly over the hint, each
 /// blank when nothing is hidden that way — so the page is one height at
-/// every selection, and a blank slot is the gap the page wants there anyway.
+/// every selection, and a blank slot is the gap the page wants there anyway
+/// ([`model_compact_list`]).
 fn compact_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     let (above, window, below) =
-        window_lines(rows, selected, usize::from(THEME_COMPACT_ROWS), width);
-    let mut lines = vec![model_overflow_slot(HOOKS_UP_MARKER, above, "above", width)];
-    lines.extend(window);
-    lines.push(model_overflow_slot(
-        HOOKS_DOWN_MARKER,
-        below,
-        "below",
-        width,
-    ));
-    lines
+        window_lines(rows, selected, usize::from(COMPACT_LIST_ROWS), width);
+    model_compact_list(above, window, below, width)
 }
 
 /// The framed page as lines: a top rule, the `❯` search line, a body, the
@@ -395,31 +383,30 @@ pub(super) fn theme_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
-    let top = [model_rule(width), Line::default(), search_line];
-    let bottom = [
-        model_placeholder_row(THEME_HINT, model_meta_color(), width),
-        Line::default(),
-        model_rule(width),
-    ];
-    let body = if rows.is_empty() {
-        vec![
+    let page = |body: Vec<Line<'static>>| {
+        let mut lines = vec![model_rule(width), Line::default(), search_line.clone()];
+        lines.extend(body);
+        lines.extend([
+            model_placeholder_row(THEME_HINT, model_meta_color(), width),
+            Line::default(),
+            model_rule(width),
+        ]);
+        lines
+    };
+    if rows.is_empty() {
+        return page(vec![
             Line::default(),
             model_placeholder_row(THEME_NO_MATCH, model_meta_color(), width),
             Line::default(),
-        ]
-    } else {
-        let selected = picker.selected.min(rows.len() - 1);
-        let whole = whole_body(&rows, selected, width);
-        if top.len() + whole.len() + bottom.len() <= usize::from(height) {
-            whole
-        } else {
-            compact_body(&rows, selected, width)
-        }
-    };
-    let mut lines = Vec::from(top);
-    lines.extend(body);
-    lines.extend(bottom);
-    lines
+        ]);
+    }
+    let selected = picker.selected.min(rows.len() - 1);
+    first_page_that_fits(
+        height,
+        &[&|| page(whole_body(&rows, selected, width)), &|| {
+            page(compact_body(&rows, selected, width))
+        }],
+    )
 }
 
 /// The rows the picker's own frame occupies on a terminal `height` rows

@@ -409,11 +409,14 @@ line style folded onto its spans so the bubble's ground never paints the
 list — a still page signed on its rows; and on a terminal too short for that
 page, a **compact** one instead (`theme_view_lines(app, width, height)`
 choosing by the rows it may have): codex's short panel, where the preview
-yields first — the search line, a `THEME_COMPACT_ROWS` (3) window of the list
-between codex's reserved `↑`/`↓` slots (directly under the search line and
-over the hint, blank when nothing is hidden that way, so it is one height at
-every selection), the hint — since bottom-anchoring the whole page there kept
-only the preview on screen and flowed the theme names into scrollback.
+yields first — the search line, a `COMPACT_LIST_ROWS` (3, the family's one
+compact window) window of the list between codex's reserved `↑`/`↓` slots
+(directly under the search line and over the hint, blank when nothing is
+hidden that way, so it is one height at every selection), the hint — since
+bottom-anchoring the whole page there kept only the preview on screen and
+flowed the theme names into scrollback; the family rule, and its shared
+pieces (`model_view::first_page_that_fits`, `model_compact_list`), are
+`docs/view-flow.md` *A page that sheds rows before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
@@ -2220,10 +2223,14 @@ roots** (`No skills found. Add one at:` over
 empty list's only question. On a terminal too short for that page it builds
 a **compact** one instead — the `/theme` picker's, codex's order of what
 yields (`skills_view_lines(app, width, height)` taking the first page that
-fits): the description and the counter go first, then the header (title,
-count and note together), leaving the search line, a `SKILLS_COMPACT_ROWS`
-(3) window between the reserved `↑`/`↓` slots (`model_overflow_slot`, the
-two compact pages' shared row) and the hint, with the value column sized off
+fits): the description goes first — cut to one row on a terminal just
+short of the wrapped one (`Description::OneRow`, since a wrapped description
+moves the page's height with the selection and the page used to flip between
+whole and compact as ↑/↓ crossed a long one), then gone with the counter —
+then the header (title, count and note together), leaving the search line, a
+`COMPACT_LIST_ROWS` (3) window between the reserved `↑`/`↓` slots
+(`model_compact_list`, the compact pages' shared body) and the hint, with
+the value column sized off
 every listed row so it holds still as the window scrolls, since
 bottom-anchoring the whole page flowed the search line and the top of the
 list into scrollback and could hide the row Enter would toggle; a list with

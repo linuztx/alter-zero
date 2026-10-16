@@ -32,11 +32,12 @@ release heading when a version is cut.
   `◯ disabled`, so the ones that are on stand out down the list. The count is
   of the installed skills, not the search results. The note saying skills are
   off for the session now sits under the count instead of between the search
-  line and the list. On a terminal too short for the whole menu, the
-  description is left out (and on a shorter one the heading too) and the
-  list shows three skills at a time, so the search line, the skill you are
-  on and the hint stay on screen instead of scrolling away
-  (`docs/skills.md`).
+  line and the list. On a terminal too short for the whole menu, a long
+  description is first cut to one row, then left out (and on a shorter
+  terminal the heading too) while the list shows three skills at a time, so
+  the search line, the skill you are on and the hint stay on screen instead
+  of scrolling away, and the menu no longer jumps between the two layouts as
+  you move past a long description (`docs/skills.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

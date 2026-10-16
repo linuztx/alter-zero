@@ -979,3 +979,38 @@ fn the_menu_renders_the_page_its_height_reserves() {
         "the hint: {rows:#?}"
     );
 }
+
+#[test]
+fn a_long_description_is_cut_to_one_row_before_the_list_shrinks() {
+    // Descriptions wrap to different heights, so the whole page's height
+    // moves with the selection; deciding whole-versus-compact on it alone
+    // flipped the page between the two as ↑/↓ crossed a long description.
+    // A terminal one row short of the wrapped description gets the whole
+    // list with the description cut to one row instead, which is one height
+    // at every selection.
+    let mut app = many_app();
+    let long = "Write a commit message in the house style, with a short subject and a body \
+                that explains what changed and why";
+    app.skills_menu.as_mut().expect("open").skills[0].description = long.to_string();
+    let wrapped = page_at(&app, 78, TALL);
+    assert_eq!(
+        wrapped.len(),
+        23,
+        "the description wraps to two rows: {wrapped:#?}"
+    );
+    let texts = page_at(&app, 78, 22);
+    assert_eq!(texts.len(), 22, "{texts:#?}");
+    assert_eq!(skill_rows(&texts), 8, "the whole list stays: {texts:#?}");
+    assert!(texts.iter().any(|t| t.contains("(1/8)")), "{texts:#?}");
+    let description = texts
+        .iter()
+        .find(|t| t.contains("Write a commit message"))
+        .expect("the description");
+    assert!(
+        description.ends_with('…'),
+        "cut to one row: {description:?}"
+    );
+    // A skill whose description fits one row looks the same either way.
+    select(&mut app, 1);
+    assert_eq!(page_at(&app, 78, 22), page_at(&app, 78, TALL));
+}

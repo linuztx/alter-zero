@@ -702,7 +702,8 @@ twenty for six skills. A shorter terminal gets a **compact** page instead —
 the `/theme` picker's (`docs/theme.md`), over this list — and codex's order of
 what yields: *"optional gaps and previews yield first"*, while a header stays
 for as long as it fits (`selection_picker_layout.rs`). Here the description
-and the `(n/total)` counter yield first:
+yields first — cut to one row on a terminal just short of the wrapped one,
+then gone with the `(n/total)` counter:
 
 ```
 ──────────────────────────────────────────────────────────
@@ -739,8 +740,8 @@ of the header:
 ──────────────────────────────────────────────────────────
 ```
 
-The search line, `SKILLS_COMPACT_ROWS` (3, the `/theme` compact window) rows
-and the hint always stay. Before this the page bottom-anchored on a short
+The search line, `COMPACT_LIST_ROWS` (3, the whole family's compact window)
+rows and the hint always stay. Before this the page bottom-anchored on a short
 terminal like every framed view, which kept the description, the hint and the
 bottom of the list on screen and flowed the search line and the top of the
 list into scrollback — so the row Enter would toggle could be off screen
@@ -755,8 +756,16 @@ choose from — a search matching nothing, an empty catalog — has no window to
 compact, so only its header yields.
 
 The choice is the page builder's: `skills_view_lines` takes the rows the page
-may have and builds the first of the three pages that fits them — whole,
-compact with the header, compact without it. Those rows are the terminal's (a
+may have and builds the first of four pages that fits them
+(`first_page_that_fits`) — whole, whole with the description cut to one row,
+compact with the header, compact without it. The cut step is there because
+descriptions wrap to different heights: the whole page's height moves with
+the selection, so a terminal at the edge, deciding on that height alone,
+flipped between the whole and the compact page as ↑/↓ crossed a long
+description. Cut to one row it is one height at every selection, and the
+list shrinks only on a terminal too short for that
+(`a_long_description_is_cut_to_one_row_before_the_list_shrinks`). Those rows
+are the terminal's (a
 composer-replacing view keeps its rows and the streaming strip above it gives
 way, `view_split`), and every reader of the page — the reserved height, the
 paint, the cursor seat, the flow — passes either that height or the region

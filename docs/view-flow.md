@@ -83,6 +83,48 @@ The flow's tail contribution is capped like every rebuild write
 (`RESIZE_REFLOW_MAX_ROWS`, keeping the rows nearest the region) so a
 pathological page can't turn one navigation into an unbounded write.
 
+## A page that sheds rows before it flows: the compact pages
+
+Bottom-anchoring keeps a page's *tail* on screen, which is the right thing
+for a page whose choices sit at the bottom — the permission prompt's options,
+`/trust`'s two rows. A picker is the other shape: its `❯` search line and the
+highlighted row sit near the **top**, under the page's header, and its
+description or preview sits below the list. Anchored on a short terminal,
+such a page kept the description and the hint and flowed the search line and
+the top of the list into scrollback — the row Enter would act on was
+reachable only by scrolling the terminal up.
+
+So a picker's builder takes the rows it may have and builds the **first page
+that fits** them (`model_view::first_page_that_fits`), trying the most
+complete first, and what yields is what the choices don't need, in codex's
+order (`selection_picker_layout.rs`: *"optional gaps and previews yield
+first; headers, tabs, search, and at least one result remain visible"*):
+
+1. a long description is cut to one row (`Description::OneRow`), where the
+   page has one — a wrapped description moves the page's height with the
+   selection, and a page deciding on that height alone flipped between its
+   whole and its compact layout as ↑/↓ crossed a long one;
+2. the description, a preview and the `(n/total)` counter go, and the list
+   becomes a `COMPACT_LIST_ROWS` (3) window between two reserved overflow
+   slots (`model_compact_list`): codex's arrow rows, the `↑ N more above`
+   directly under the search line and the `↓ N more below` directly over the
+   hint, each blank when nothing is hidden that way, so the frame is one
+   height at every selection and a blank slot is the gap the page wants
+   there anyway;
+3. a header goes last.
+
+Only a page shorter than even the last of them bottom-anchors and flows the
+way every framed page does. The pages must shrink in that order, because the
+height comes from two places: the reserved height and the flow pass the
+terminal's, while the paint and the cursor seat pass the region already
+reserved for the page — at least the chosen page's height and at most the
+terminal's — and a builder whose pages shrink in order picks the same page
+from either. A page with nothing to choose from (a search matching nothing,
+an empty catalog) has no window to compact, so only its header yields.
+
+The compact pages so far: `/theme` (`docs/theme.md`) and `/skills`
+(`docs/skills.md`).
+
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing

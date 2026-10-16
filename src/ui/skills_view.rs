@@ -19,7 +19,8 @@
 //! scrollback, so the row Enter would toggle could be off screen.
 
 use super::model_view::{
-    model_overflow_slot, model_placeholder_row, model_rule, model_wrapped_rows,
+    Description, first_page_that_fits, list_window, model_compact_list, model_description_rows,
+    model_placeholder_row, model_rule, model_wrapped_rows,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
@@ -147,27 +148,26 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The window of `rows` that keeps the selection in view — `max` rows,
-/// [`centered_window`] riding the selection on the middle one — as how many
-/// rows it hides above, its rows (the selected one marked) and how many it
-/// hides below. The value column is sized off **every** listed row, not just
-/// the ones in view, so it holds still as ↑/↓ scroll the window — the
-/// compact page's three rows would otherwise move it at nearly every step.
-/// `rows` is never empty here.
+/// [`list_window`] riding the selection on the middle one — as how many rows
+/// it hides above, its rows (the selected one marked) and how many it hides
+/// below. The value column is sized off **every** listed row, not just the
+/// ones in view, so it holds still as ↑/↓ scroll the window — the compact
+/// page's three rows would otherwise move it at nearly every step. `rows` is
+/// never empty here.
 fn skills_window(
     rows: &[SkillMenuRow],
     selected: usize,
     max: usize,
     width: u16,
 ) -> (usize, Vec<Line<'static>>, usize) {
-    let offset = centered_window(rows.len(), selected, max);
-    let end = (offset + max).min(rows.len());
+    let (above, range, below) = list_window(rows.len(), selected, max);
     let name_width = name_column(rows, width);
-    let lines = rows[offset..end]
+    let lines = rows[range.clone()]
         .iter()
-        .enumerate()
-        .map(|(i, row)| skills_row(row, offset + i == selected, name_width, width))
+        .zip(range)
+        .map(|(row, i)| skills_row(row, i == selected, name_width, width))
         .collect();
-    (offset, lines, rows.len() - end)
+    (above, lines, below)
 }
 
 /// The `(selected+1/total)` counter under the whole page's list.
@@ -242,18 +242,24 @@ fn skills_header_lines(menu: &SkillsMenu, width: u16) -> Vec<Line<'static>> {
 /// The whole page's body — what sits between the search line and the hint:
 /// a gap, the rows ([`skills_window`] at [`SETTINGS_MENU_MAX_ROWS`]), the
 /// `(n/total)` counter, and the highlighted skill's description between
-/// gaps. The description wraps whole, because this picker doubles as the
-/// browser that answers "what is this skill for?" and a SKILL.md
-/// description routinely outruns the terminal width.
-fn skills_whole_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<Line<'static>> {
+/// gaps, laid out by `description`. Wrapped whole when the terminal has the
+/// room, because this picker doubles as the browser that answers "what is
+/// this skill for?" and a SKILL.md description routinely outruns the
+/// terminal width.
+fn skills_whole_body(
+    rows: &[SkillMenuRow],
+    selected: usize,
+    description: Description,
+    width: u16,
+) -> Vec<Line<'static>> {
     let (_, window, _) = skills_window(rows, selected, usize::from(SETTINGS_MENU_MAX_ROWS), width);
     let mut lines = vec![Line::default()];
     lines.extend(window);
     lines.push(skills_counter_line(selected, rows.len()));
     lines.push(Line::default());
-    lines.extend(model_wrapped_rows(
+    lines.extend(model_description_rows(
         &rows[selected].description,
-        model_meta_color(),
+        description,
         width,
     ));
     lines.push(Line::default());
@@ -262,23 +268,15 @@ fn skills_whole_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<
 
 /// The compact page's body, for a terminal too short for the whole page —
 /// codex's short panel, where "optional gaps and previews yield first"
-/// (`selection_picker_layout.rs`): a [`SKILLS_COMPACT_ROWS`]-row window of
-/// the rows between two reserved overflow slots ([`model_overflow_slot`] —
+/// (`selection_picker_layout.rs`): a [`COMPACT_LIST_ROWS`]-row window of
+/// the rows between two reserved overflow slots ([`model_compact_list`] —
 /// the `↑` directly under the search line, the `↓` directly over the hint),
 /// and no counter or description, so what stays on screen is the choices.
 /// The `/theme` picker's compact body for this list.
 fn skills_compact_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     let (above, window, below) =
-        skills_window(rows, selected, usize::from(SKILLS_COMPACT_ROWS), width);
-    let mut lines = vec![model_overflow_slot(HOOKS_UP_MARKER, above, "above", width)];
-    lines.extend(window);
-    lines.push(model_overflow_slot(
-        HOOKS_DOWN_MARKER,
-        below,
-        "below",
-        width,
-    ));
-    lines
+        skills_window(rows, selected, usize::from(COMPACT_LIST_ROWS), width);
+    model_compact_list(above, window, below, width)
 }
 
 /// The body when the list is empty: the placeholder block between single
@@ -323,21 +321,24 @@ fn skills_page(
 }
 
 /// The framed page as lines — one blank row between each block, never two —
-/// choosing the first of three pages that fits `height` rows:
+/// the first of four pages that fits `height` rows ([`first_page_that_fits`]):
 ///
 /// 1. the **whole** page: the header ([`skills_header_lines`]), the `❯`
 ///    search line, the windowed skill rows, the `(n/total)` counter, the
-///    highlighted skill's description and the key hint;
-/// 2. the **compact** page, the header kept: the description and the counter
-///    yield first ([`skills_compact_body`] — three rows between reserved
-///    `↑`/`↓` slots), codex's short-panel rule;
-/// 3. the compact page **without the header**, which yields next — the
+///    highlighted skill's description wrapped whole, and the key hint;
+/// 2. the whole page with the description **cut to one row**, which is one
+///    height at every selection, so a terminal at the edge never flips
+///    between the whole and the compact page as ↑/↓ cross a long one;
+/// 3. the **compact** page, the header kept: the description and the counter
+///    yield ([`skills_compact_body`] — three rows between reserved `↑`/`↓`
+///    slots), codex's short-panel rule;
+/// 4. the compact page **without the header**, which yields next — the
 ///    `/theme` picker's compact page, row for row.
 ///
 /// So on a terminal too short for the whole page the search line, the
 /// highlighted row and the hint stay on screen, where bottom-anchoring it
 /// flowed the search line and the top of the list into scrollback. A page
-/// shorter than even the third is still bottom-anchored (`docs/view-flow.md`).
+/// shorter than even the last is still bottom-anchored (`docs/view-flow.md`).
 /// What [`render_skills_menu`] paints and [`skills_menu_rows`] counts, so the
 /// two can never disagree. Empty when the menu is closed.
 ///
@@ -355,26 +356,27 @@ pub(super) fn skills_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
     let rows = app.skill_menu_rows();
     let selected = menu.selected.min(rows.len().saturating_sub(1));
     let header = skills_header_lines(menu, width);
-    let fits = |page: &[Line<'static>]| page.len() <= usize::from(height);
-    let compact = if rows.is_empty() {
-        skills_placeholder_body(app, width)
-    } else {
-        let whole = skills_page(
-            menu,
-            &header,
-            skills_whole_body(&rows, selected, width),
-            width,
+    let page =
+        |header: &[Line<'static>], body: Vec<Line<'static>>| skills_page(menu, header, body, width);
+    if rows.is_empty() {
+        return first_page_that_fits(
+            height,
+            &[
+                &|| page(&header, skills_placeholder_body(app, width)),
+                &|| page(&[], skills_placeholder_body(app, width)),
+            ],
         );
-        if fits(&whole) {
-            return whole;
-        }
-        skills_compact_body(&rows, selected, width)
-    };
-    let headed = skills_page(menu, &header, compact.clone(), width);
-    if fits(&headed) {
-        return headed;
     }
-    skills_page(menu, &[], compact, width)
+    let whole = |description| skills_whole_body(&rows, selected, description, width);
+    first_page_that_fits(
+        height,
+        &[
+            &|| page(&header, whole(Description::Wrapped)),
+            &|| page(&header, whole(Description::OneRow)),
+            &|| page(&header, skills_compact_body(&rows, selected, width)),
+            &|| page(&[], skills_compact_body(&rows, selected, width)),
+        ],
+    )
 }
 
 /// The rows the menu's own frame occupies on a terminal `height` rows tall —

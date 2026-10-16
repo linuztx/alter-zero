@@ -1231,6 +1231,14 @@ pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 /// to keep the selection **centered**, like the `/model` list.
 pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 10;
 
+/// The list rows a **compact** page shows — the page a picker builds instead
+/// of its whole one on a terminal too short for that. codex's minimum result
+/// rows (`selection_picker_layout.rs`): what is optional yields first — a
+/// description, a preview, the counter, then a header — so the search line,
+/// these rows and the hint stay on screen. One size for the whole family, so
+/// every short page reads the same (`docs/view-flow.md`).
+pub(super) const COMPACT_LIST_ROWS: u16 = 3;
+
 /// Columns between the longest visible label and the value column, so the
 /// values line up in a block (the palette's `MENU_DESC_COL` idea, sized to the
 /// visible rows rather than pinned).
@@ -1309,11 +1317,6 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
-/// The skill rows the compact page shows — the page a terminal too short for
-/// the whole one gets. The `/theme` picker's compact window
-/// ([`THEME_COMPACT_ROWS`]), so the family's two short pages agree.
-pub(super) const SKILLS_COMPACT_ROWS: u16 = THEME_COMPACT_ROWS;
-
 // --- the inline /mascot picker (docs/mascot.md). The /settings menu's twin
 // again: it reuses the family's frame, marker, prompt and colours, adding
 // only its own words — the page's centre is the live banner preview, drawn
@@ -1391,12 +1394,6 @@ pub(super) const THEME_SEARCH_ROW: u16 = 2;
 /// names). The ten rows and that row stand about as tall as the preview
 /// beside them, so the side-by-side block is balanced.
 pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
-
-/// The list rows the compact page shows — the page a terminal too short
-/// for the whole one gets. codex's minimum result rows
-/// (`selection_picker_layout.rs`): the preview yields first, so the search
-/// line, these rows and the hint stay on screen.
-pub(super) const THEME_COMPACT_ROWS: u16 = 3;
 
 /// Columns between the widest theme name in the catalog and the swatch
 /// column, so the swatches line up down the list.

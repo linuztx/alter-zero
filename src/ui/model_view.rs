@@ -51,6 +51,95 @@ pub(super) fn model_overflow_slot(
     }
 }
 
+/// How a picker lays out the highlighted row's description under its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Description {
+    /// Wrapped whole — the whole page's own layout, since the description is
+    /// often why the row exists.
+    Wrapped,
+    /// Cut to one `…`-ended row — the step a description takes before the
+    /// list shrinks: a wrapped one moves the page's height with the
+    /// selection, and a page deciding whole-versus-compact on that height
+    /// alone flips between the two as ↑/↓ cross a long description.
+    OneRow,
+}
+
+/// `text`'s rows in the picker family's dim, laid out by `layout`.
+pub(super) fn model_description_rows(
+    text: &str,
+    layout: Description,
+    width: u16,
+) -> Vec<Line<'static>> {
+    match layout {
+        Description::Wrapped => model_wrapped_rows(text, model_meta_color(), width),
+        Description::OneRow => {
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            vec![model_placeholder_row(&flat, model_meta_color(), width)]
+        }
+    }
+}
+
+/// The window of a `len`-row list that keeps `selected` in view — `max`
+/// rows, [`centered_window`] riding the selection on the middle one — as how
+/// many rows it hides above, the visible index range, and how many it hides
+/// below.
+pub(super) fn list_window(
+    len: usize,
+    selected: usize,
+    max: usize,
+) -> (usize, std::ops::Range<usize>, usize) {
+    let offset = centered_window(len, selected, max);
+    let end = (offset + max).min(len);
+    (offset, offset..end, len - end)
+}
+
+/// A compact page's list: the reserved `↑` slot, the window's rows, the
+/// reserved `↓` slot ([`model_overflow_slot`] both) — what a picker lays
+/// between its search line and its hint on a terminal too short for its whole
+/// page (`docs/view-flow.md`).
+pub(super) fn model_compact_list(
+    above: usize,
+    window: Vec<Line<'static>>,
+    below: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![model_overflow_slot(HOOKS_UP_MARKER, above, "above", width)];
+    lines.extend(window);
+    lines.push(model_overflow_slot(
+        HOOKS_DOWN_MARKER,
+        below,
+        "below",
+        width,
+    ));
+    lines
+}
+
+/// The first of `pages` — tried in order, most complete first, each built
+/// only once the ones before it did not fit — whose rows fit `height`; the
+/// last one when none does, which then bottom-anchors like any framed page.
+/// The rule every height-aware page shares (`docs/view-flow.md`): on a
+/// terminal too short for the whole page, what is optional yields before the
+/// choices do.
+///
+/// The pages must shrink in order, so that every reader of a page — the
+/// reserved height, the paint, the cursor seat, the flow — builds the same
+/// one whether it passes the terminal's height or the region already
+/// reserved for the page, which is at least the chosen page's height and at
+/// most the terminal's.
+pub(super) fn first_page_that_fits(
+    height: u16,
+    pages: &[&dyn Fn() -> Vec<Line<'static>>],
+) -> Vec<Line<'static>> {
+    let mut page = Vec::new();
+    for build in pages {
+        page = build();
+        if page.len() <= usize::from(height) {
+            break;
+        }
+    }
+    page
+}
+
 /// `text` word-wrapped to two-space-inset rows in `color` — the multi-row
 /// sibling of [`model_placeholder_row`] for informational text (an error's
 /// diagnostic, an actionable hint, a path, a description): the picker pages
