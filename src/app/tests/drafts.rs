@@ -110,25 +110,76 @@ fn text_that_is_not_an_object_yields_no_fields() {
     }
 }
 
+/// Objects whose fields hold everything the decoder must get right — escapes
+/// of every kind, a surrogate pair, literal non-ASCII, nested values and
+/// scalars under other keys (a nested `content` among them), whitespace
+/// between the tokens, an empty value — for the tests that hold it to what
+/// `serde_json` reads in the same text.
+const SAMPLES: &[&str] = &[
+    r#"{"path":"/tmp/a.py","content":"def f():\n    return \"x\\y\"\n"}"#,
+    r#"{"path":"a.py","content":"def f():\n\treturn \"é😀\"\n"}"#,
+    r#"{"content":"tab\there é 😀 \/ \b\f\r","path":"b"}"#,
+    r#"{"skip":{"content":"no","list":[1,{"z":"}"}]},"content":"ünïcödé ✓","n":3}"#,
+    "{ \"meta\" : { \"a\": [1, \"}\\\"\", {\"b\": null}] } ,\n \"n\" : -12.5e3, \
+     \"ok\": true, \"none\": null, \"content\" : \"body\" , \"path\":\"p.rs\" }",
+    r#"  { "path" : "spaced name.txt" , "content" : "" }  "#,
+];
+
+/// The keys a preview reads.
+const KEYS: [&str; 2] = ["path", "content"];
+
+/// What `serde_json` reads for `key` in the whole of `json` — the oracle.
+fn serde_field(json: &str, key: &str) -> Option<String> {
+    let whole: serde_json::Value = serde_json::from_str(json).expect("a valid sample");
+    whole
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+#[test]
+fn every_two_piece_split_decodes_what_serde_reads() {
+    for json in SAMPLES {
+        for at in (0..=json.len()).filter(|&at| json.is_char_boundary(at)) {
+            let mut scanner = ArgsScanner::default();
+            scanner.feed(&json[..at]);
+            scanner.feed(&json[at..]);
+            for key in KEYS {
+                assert_eq!(
+                    field(&scanner, key),
+                    serde_field(json, key).map(|value| (value, true)),
+                    "{json} split at {at}: {key}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_decoded_value_only_ever_grows_whatever_the_split() {
     // The render cache keys on this: every prefix of the stream decodes to a
-    // prefix of the whole value (docs/write-streaming.md).
-    let text = r#"{"path":"a.py","content":"def f():\n\treturn \"\u00e9\ud83d\ude00\"\n"}"#;
-    let whole = field(&scan_chars(text), "content").expect("content").0;
-    let mut scanner = ArgsScanner::default();
-    let mut previous = String::new();
-    for c in text.chars() {
-        scanner.feed(c.encode_utf8(&mut [0; 4]));
-        let now = field(&scanner, "content")
-            .map(|(v, _)| v)
-            .unwrap_or_default();
-        assert!(now.starts_with(&previous), "{previous:?} -> {now:?}");
-        assert!(
-            whole.starts_with(&now),
-            "{now:?} is not a prefix of {whole:?}"
-        );
-        previous = now;
+    // prefix of the whole value (docs/write-streaming.md) — of what serde
+    // reads in it — fed one character at a time, the worst split a stream
+    // can make.
+    for json in SAMPLES {
+        let mut scanner = ArgsScanner::default();
+        let mut previous = [String::new(), String::new()];
+        for c in json.chars() {
+            scanner.feed(c.encode_utf8(&mut [0; 4]));
+            for (key, previous) in KEYS.iter().zip(&mut previous) {
+                let whole = serde_field(json, key).unwrap_or_default();
+                let now = field(&scanner, key).map(|(v, _)| v).unwrap_or_default();
+                assert!(
+                    now.starts_with(previous.as_str()),
+                    "{json}: {key} {previous:?} -> {now:?}"
+                );
+                assert!(
+                    whole.starts_with(&now),
+                    "{json}: {key} {now:?} is not a prefix of {whole:?}"
+                );
+                *previous = now;
+            }
+        }
     }
 }
 

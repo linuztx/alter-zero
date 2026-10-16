@@ -582,7 +582,10 @@ false`. `drain_responses` is `drain_stream`'s sibling over the shared
 `pump_lines` byte loop, so Esc is honoured identically either way; its one
 structural difference is that a tool call arrives **whole** on a single
 `response.output_item.done` frame rather than as accumulated fragments (the
-fragments that do stream are surfaced for the token tally only). Its
+pieces that do stream — the name as the item opens, the argument deltas — are
+surfaced for the token tally and the live `write` preview, the finished item
+adding whatever of the call none of them carried, `responses::ToolStreams`,
+`docs/write-streaming.md`). Its
 `/models?client_version=…` listing — the query is required, not defaulted —
 answers `{"models": […]}` with `slug`, `context_window` ×
 `effective_context_window_percent` (the share the backend enforces, Copilot's

@@ -165,7 +165,7 @@ impl Session<'_> {
         // (the fold consumes the buffer).
         //
         // **Which events those are is the fold's own answer**
-        // ([`AgentRun::flushes_segment`]), not a list kept here: the
+        // ([`AgentRun::will_flush_segment`]), not a list kept here: the
         // hand-kept one drifted, missing `HookNote` — whose arm flushes the
         // buffer — so a `SubagentStop` continuation dropped the reply's
         // withheld tail from the screen *and* left `agent_render` holding a

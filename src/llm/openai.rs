@@ -705,7 +705,8 @@ fn run_transport(
 /// as `tool_calls` fragments. So there is no accumulator here — the pieces
 /// that *do* stream, the name as the item opens and the argument deltas
 /// after it, are surfaced under the item's `output_index` for the tally and
-/// the live preview only (`docs/write-streaming.md`).
+/// the live preview only, and the finished item adds whatever of the call
+/// none of them carried (`responses::ToolStreams`, `docs/write-streaming.md`).
 fn drain_responses(
     rx: &Receiver<Result<Vec<u8>>>,
     cancel: &CancelToken,
@@ -716,10 +717,10 @@ fn drain_responses(
     let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
     let mut finish_reason: Option<String> = None;
     let mut usage: Option<TokenUsage> = None;
-    // The slots whose call has been named, and those whose arguments
-    // streamed: what decides how much a finished item still owes the tally.
-    let mut named: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut streamed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Which call each frame belongs to, and what each has already sent:
+    // what decides how much a finished item still owes the preview and the
+    // tally.
+    let mut streams = super::responses::ToolStreams::default();
     pump_lines(rx, cancel, &mut |line: &[u8]| {
         let Ok(frame) = std::str::from_utf8(line) else {
             return SseStep::Continue;
@@ -749,47 +750,26 @@ fn drain_responses(
                     });
                 }
             }
-            super::responses::ResponseEvent::ToolOpened { index, name } => {
-                if !name.is_empty() && named.insert(index) {
+            super::responses::ResponseEvent::ToolOpened { slot, name } => {
+                if let Some(piece) = streams.opened(slot, &name) {
                     on_delta(Delta {
-                        tool_calls: vec![ToolCallFragment {
-                            index,
-                            name,
-                            arguments: String::new(),
-                        }],
+                        tool_calls: vec![piece],
                         ..Delta::default()
                     });
                 }
             }
-            super::responses::ResponseEvent::ToolFragment { index, delta } => {
+            super::responses::ResponseEvent::ToolFragment { slot, delta } => {
                 if !delta.is_empty() {
-                    streamed.insert(index);
                     on_delta(Delta {
-                        tool_calls: vec![ToolCallFragment {
-                            index,
-                            name: String::new(),
-                            arguments: delta,
-                        }],
+                        tool_calls: vec![streams.fragment(slot, delta)],
                         ..Delta::default()
                     });
                 }
             }
-            super::responses::ResponseEvent::ToolCall { index, call } => {
-                // A call whose item never announced its opening is named
-                // here — with its arguments too when none of them streamed —
-                // so the tally counts each part of the call exactly once.
-                if !named.contains(&index) {
-                    let arguments = if streamed.contains(&index) {
-                        String::new()
-                    } else {
-                        call.arguments.clone()
-                    };
+            super::responses::ResponseEvent::ToolCall { slot, call } => {
+                if let Some(piece) = streams.finished(slot, &call) {
                     on_delta(Delta {
-                        tool_calls: vec![ToolCallFragment {
-                            index,
-                            name: call.name.clone(),
-                            arguments,
-                        }],
+                        tool_calls: vec![piece],
                         ..Delta::default()
                     });
                 }
@@ -2748,6 +2728,58 @@ data: {"type":"response.completed","response":{"status":"completed"}}
                 fragment(2, "bash", r#"{"command":"ls"}"#),
             ]
         );
+    }
+
+    #[test]
+    fn a_responses_call_named_as_it_opens_gets_arguments_that_arrive_only_when_it_finishes() {
+        // A server that streams no argument deltas: the finished item is the
+        // first frame carrying them, and the preview and the tally still get
+        // them — once (docs/write-streaming.md).
+        let (out, deltas) = drain_responses_queued(vec![Ok(br#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_a","name":"write","arguments":""}}
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_a","name":"write","arguments":"{\"path\":\"a.py\",\"content\":\"x\\n\"}"}}
+data: {"type":"response.completed","response":{"status":"completed"}}
+"#
+        .to_vec())]);
+        let pieces: Vec<ToolCallFragment> = deltas.into_iter().flat_map(|d| d.tool_calls).collect();
+        assert_eq!(
+            pieces,
+            [
+                fragment(1, "write", ""),
+                fragment(1, "", r#"{"path":"a.py","content":"x\n"}"#),
+            ]
+        );
+        assert_eq!(out.expect("the stream completes").tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn responses_frames_without_an_output_index_still_key_each_call_apart() {
+        // The index is the server's to send. One that omits it streams its
+        // items one at a time, so a delta belongs to the call opened last,
+        // every opening is a new call, and a call landing whole after the
+        // others finished is a new one too — never folded into the first
+        // call's preview, or its name lost.
+        let (out, deltas) = drain_responses_queued(vec![Ok(br#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_a","name":"write","arguments":""}}
+data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"a\"}"}
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_a","name":"write","arguments":"{\"path\":\"a\"}"}}
+data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_b","name":"bash","arguments":""}}
+data: {"type":"response.function_call_arguments.delta","delta":"{}"}
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_b","name":"bash","arguments":"{}"}}
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_c","name":"read","arguments":"{}"}}
+data: {"type":"response.completed","response":{"status":"completed"}}
+"#
+        .to_vec())]);
+        let pieces: Vec<ToolCallFragment> = deltas.into_iter().flat_map(|d| d.tool_calls).collect();
+        assert_eq!(
+            pieces,
+            [
+                fragment(0, "write", ""),
+                fragment(0, "", r#"{"path":"a"}"#),
+                fragment(1, "bash", ""),
+                fragment(1, "", "{}"),
+                fragment(2, "read", "{}"),
+            ]
+        );
+        assert_eq!(out.expect("the stream completes").tool_calls.len(), 3);
     }
 
     #[test]

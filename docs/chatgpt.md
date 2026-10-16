@@ -468,16 +468,20 @@ identically whichever format is in flight.
 | --- | --- |
 | `response.output_text.delta` | reply text |
 | `response.reasoning_summary_text.delta`, `response.reasoning_text.delta` | reasoning |
-| `response.function_call_arguments.delta` | a `Delta.tool_call` fragment, counted only |
-| `response.output_item.done` (a `function_call` item) | a whole `ToolCallRequest` |
+| `response.output_item.added` (a `function_call` item) | a `ToolCallFragment` naming the call |
+| `response.function_call_arguments.delta` | a `ToolCallFragment` of its arguments — counted, and previewed for a `write` |
+| `response.output_item.done` (a `function_call` item) | a whole `ToolCallRequest`, plus a fragment of whatever of it no earlier frame carried |
 | `response.completed` / `.incomplete` | usage + the finish reason |
 | `response.failed`, `error` | an in-band failure |
 
 The structural difference from Chat Completions: **a tool call arrives whole**,
 on one frame, where Chat Completions dribbles it out as `tool_calls` fragments.
-So there is no accumulator here. The argument fragments that *do* stream are
-surfaced for the token tally, exactly as the chat path surfaces its own, so the
-status line ticks while the call is produced.
+So there is no accumulator here. The pieces that *do* stream — the name as the
+item opens, the argument deltas after it — are surfaced for the token tally,
+exactly as the chat path surfaces its own, so the status line ticks while the
+call is produced, and for the live `write` preview; the finished item adds
+whatever of the call none of them carried, so each part is counted once
+(`responses::ToolStreams`, `docs/write-streaming.md`).
 
 Usage is renamed but not reshaped: `input_tokens`/`output_tokens` rather than
 `prompt_tokens`/`completion_tokens`, with `input_tokens_details.cached_tokens`

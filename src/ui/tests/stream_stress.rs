@@ -952,7 +952,7 @@ fn an_agent_views_live_tool_cell_outranks_its_streaming_frontier() {
     // is what the user waits on. A subagent that streamed text and then
     // announced a batch previews the batch — and the text it withheld is not
     // lost, it was finalised at the flush point the fold declares
-    // (`AgentRun::flushes_segment`).
+    // (`AgentRun::will_flush_segment`).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Mixed round", false)]);

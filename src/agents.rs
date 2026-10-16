@@ -421,7 +421,10 @@ impl AgentRun {
     /// One definition, two readers: `apply` consumes the buffer at these
     /// points, and the session view commits the tail its `StreamRender`
     /// withheld — then resets that render — at exactly the same ones
-    /// (`tui::agent`). A hand-kept list in the boundary is what drifted
+    /// (`tui::agent`, through [`will_flush_segment`](Self::will_flush_segment),
+    /// which adds the one boundary only the run's state can answer — so this
+    /// stateless half is private, and the boundary cannot ask it alone). A
+    /// hand-kept list in the boundary is what drifted
     /// before: [`StreamEvent::HookNote`] flushes the buffer in the fold but
     /// was missing from the view's list, so a `SubagentStop` continuation
     /// dropped the reply's withheld tail from the screen *and* left the
@@ -433,7 +436,7 @@ impl AgentRun {
     /// itself (`/settings` **Hide thinking**), so this stays the question
     /// `apply` alone answers. `every_flush_point_is_declared` pins the pair.
     #[must_use]
-    pub const fn flushes_segment(event: &StreamEvent) -> bool {
+    const fn flushes_segment(event: &StreamEvent) -> bool {
         matches!(
             event,
             StreamEvent::ToolBatch(_)
@@ -445,12 +448,13 @@ impl AgentRun {
         )
     }
 
-    /// [`flushes_segment`](Self::flushes_segment), asked of **this run**:
-    /// the static boundaries, plus the one only its state can answer — a
-    /// streamed piece that **opens a previewed call**, a `write` whose cell
-    /// goes up under the text before it (`docs/write-streaming.md`). What
-    /// the session view's flush, which runs before the fold, asks; `apply`
-    /// flushes at exactly these points.
+    /// Will folding `event` into **this run** finalise the run of streamed
+    /// text before it? The fold's static segment boundaries, plus the one
+    /// only its state can answer — a streamed piece that **opens a previewed
+    /// call**, a `write` whose cell goes up under the text before it
+    /// (`docs/write-streaming.md`). What the session view's flush, which
+    /// runs before the fold, asks; `apply` flushes at exactly these points,
+    /// which `every_flush_point_is_declared` pins for every event.
     #[must_use]
     pub fn will_flush_segment(&self, event: &StreamEvent) -> bool {
         Self::flushes_segment(event)
@@ -3026,12 +3030,9 @@ mod tests {
     fn a_subagents_write_previews_as_it_streams_after_its_text() {
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&StreamEvent::Chunk("Writing it now:".to_string()));
-        let opening = piece(0, "write", r#"{"path":"a.py","content":"x = 1\ny"#);
-        assert!(
-            run.will_flush_segment(&opening),
-            "the piece that opens the preview is a segment boundary"
-        );
-        run.apply(&opening);
+        // That the opening piece is a segment boundary, and that a bash
+        // call's is not, is `every_flush_point_is_declared`'s to pin.
+        run.apply(&piece(0, "write", r#"{"path":"a.py","content":"x = 1\ny"#));
         let draft = run.drafts().previews().next().expect("a preview");
         assert_eq!(draft.path(), Some("a.py"));
         assert_eq!(draft.content(), "x = 1\ny");
@@ -3042,18 +3043,9 @@ mod tests {
             ),
             "the text before the cell became its own message"
         );
-        let more = piece(0, "", r#" = 2"#);
         assert!(
-            !run.will_flush_segment(&more),
-            "a later piece flushes nothing"
-        );
-        assert!(
-            run.will_flush_segment(&StreamEvent::StreamDone),
-            "the fold's own static boundaries still answer"
-        );
-        assert!(
-            !run.will_flush_segment(&piece(1, "bash", "{}")),
-            "a bash call previews nothing"
+            !run.will_flush_segment(&piece(0, "", r#" = 2"#)),
+            "a later piece of the open preview flushes nothing"
         );
     }
 
@@ -3604,6 +3596,25 @@ mod tests {
                 }),
             ),
             (
+                "ToolCallDelta naming a bash call",
+                StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+                    index: 0,
+                    name: "bash".to_string(),
+                    arguments: "{".to_string(),
+                }),
+            ),
+            // The piece that opens a previewed `write` is a segment boundary
+            // of its own: the live cell goes up under the text before it
+            // (docs/write-streaming.md).
+            (
+                "ToolCallDelta opening a write",
+                StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+                    index: 0,
+                    name: "write".to_string(),
+                    arguments: String::new(),
+                }),
+            ),
+            (
                 "ToolBatch",
                 StreamEvent::ToolBatch(vec![ToolCallSummary {
                     name: "Bash".to_string(),
@@ -3761,24 +3772,26 @@ mod tests {
 
     #[test]
     fn every_flush_point_is_declared() {
-        // `AgentRun::flushes_segment` is the boundary's only source of truth
-        // for where the session view must finish + reset its `StreamRender`
-        // (`docs/agent-view-streaming.md`). It has to agree with what `apply`
-        // actually does to the buffer for **every** event, or the view falls
-        // behind the fold again — which is how `HookNote` came to drop a
-        // reply's withheld tail and leave the render pointing at a buffer
-        // that no longer existed.
+        // `AgentRun::will_flush_segment` is the boundary's only source of
+        // truth for where the session view must finish + reset its
+        // `StreamRender` (`docs/agent-view-streaming.md`). It has to agree
+        // with what `apply` actually does to the buffer for **every** event,
+        // or the view falls behind the fold again — which is how `HookNote`
+        // came to drop a reply's withheld tail and leave the render pointing
+        // at a buffer that no longer existed. Asked of the run before the
+        // fold, as the boundary asks it: one boundary, the piece opening a
+        // `write`'s preview, is a matter of the run's state.
         for (name, event) in one_of_every_event() {
             let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
             run.apply(&StreamEvent::Chunk("partial answer".to_string()));
+            let flushes = run.will_flush_segment(&event);
             run.apply(&event);
             // `flush_segment` *takes* the buffer, so a finalised segment
             // leaves `None` — a `Chunk` merely appending to it has not
             // finalised anything.
             let consumed = run.streaming.is_none();
             assert_eq!(
-                AgentRun::flushes_segment(&event),
-                consumed,
+                flushes, consumed,
                 "{name}: the predicate and the fold disagree about the segment"
             );
         }

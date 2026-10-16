@@ -55,14 +55,22 @@ wire's own slot for the call:
 |---|---|---|
 | Chat Completions | the entry `ToolCallAccumulator::push` resolved the delta into (it already split same-index calls with different ids) | the first delta's `function.name` |
 | Anthropic Messages | the `tool_use` content block's index | `content_block_start` |
-| Responses | the item's `output_index` | `response.output_item.added`, which the drain now reads; the name used to arrive only with the finished item |
+| Responses | the item's `output_index` — or, on a frame without one, the call still open (a new call when the frame opens one) | `response.output_item.added`, which the drain now reads; the name used to arrive only with the finished item |
 | Ollama | the call's position in the round | the whole call, which arrives in one frame |
 
 The slot is an identity, not a position: an Anthropic text block takes an index
 too. The token tally is unchanged, because `ToolCallFragment::tally_text` is the
 name and the argument text, which is what the old string carried. The Responses
-drain counts a name once, at `output_item.added`. It names the call again at
-`output_item.done` only for a call whose opening it never saw.
+drain keeps the books in `responses::ToolStreams`: it counts a name once, at
+`output_item.added`, and `output_item.done` adds only what no earlier frame
+sent — the name of a call whose opening it never saw, and the arguments of a
+call none of whose arguments streamed as deltas, which is how a server that
+hands over a call's arguments only with its finished item still gets its file
+previewed, and counted once. `output_index` is the server's to send. A stream
+produces its output items one at a time, so a frame without one belongs to the
+call still open, or starts a new call when it opens one or when every earlier
+call has finished — never folded into the first call's preview, which is where
+a missing index used to put it.
 
 ## Reading arguments that have not finished arriving
 
@@ -83,6 +91,14 @@ matter downstream:
 The first field of a duplicated key is the one read. Text that is not an object
 yields no fields and nothing is shown, since the preview is cosmetic and the call
 itself is still parsed by `serde_json` when the round ends.
+
+`serde_json` is also the decoder's oracle in the tests. Each sample — every
+escape, a surrogate pair, literal non-ASCII, a nested `content` under another
+key, scalars, whitespace between the tokens — is fed split in two at **every**
+character boundary, and must decode to exactly the fields serde reads in the
+whole text, each closed; fed a character at a time, every field must only ever
+grow toward serde's value. A decoder that agreed only with itself would pass a
+test that checked it against its own whole-text answer.
 
 ## The round's drafts
 
@@ -205,8 +221,10 @@ A subagent's `write` streams in its session view exactly as the main one's does
 same lifecycle, and `agent_view_preview_lines`/`agent_preview_rows` render the
 previews through the same builder. The view's segment flush runs **before** the
 fold, so it asks `AgentRun::will_flush_segment`, the fold's own answer, which now
-includes a piece opening a previewed call. A hand-kept list here is what dropped
-a `SubagentStop` continuation's tail once (`docs/agent-view-streaming.md`).
+includes a piece opening a previewed call — and `every_flush_point_is_declared`
+asks it the same way of one of every event, that opening piece included. A
+hand-kept list here is what dropped a `SubagentStop` continuation's tail once
+(`docs/agent-view-streaming.md`).
 
 ## Offline
 
