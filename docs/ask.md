@@ -111,10 +111,24 @@ park until the user decides.
 
 - **`ui::ask_view`** — the renderer, `permission_view`'s sibling: one builder
   (`ask_lines`) produces every row (rule → chip strip → question → options →
-  hints → rule) whole, and `ask_height` reserves those rows clamped to the
+  hints → rule), and `ask_height` reserves those rows clamped to the
   terminal (`ui::region_is_modal` covers the prompt so the close
-  purge-rebuilds like the permission prompt's). A page taller than the
-  terminal is a framed view like the rest (`docs/view-flow.md`): the paint
+  purge-rebuilds like the permission prompt's). On a terminal too short for
+  the whole page the builder takes the rows it may have and builds the
+  first page that fits them (`docs/view-flow.md` *A page that sheds rows
+  before it flows*), shedding what the choice doesn't need first. On a
+  plain question the options' descriptions are cut to one row each, then
+  left out; then the rows window three at a time around the selection,
+  between `↑ N more above` / `↓ N more below` slots standing in for the
+  page's gaps; and the chip strip goes last — codex's order, the tabs
+  staying longest — so the question, the highlighted row and the hint stay
+  on screen (on 12 rows the dummy's coffee question shows the question,
+  three of its five rows and the hint). A preview question drops its dim
+  `Notes: press n to add notes` line first (the key hint still offers `n`;
+  typed notes and the open field stay on every page), then cuts the panel
+  to the option column's height, then drops the chip strip. The review page
+  keeps its one shape, its choices already at the bottom. A page taller
+  than even the last of those is a framed view like the rest: the paint
   **bottom-anchors** — the options, the hints and the closing rule stay on
   screen — and the skipped top (the chip strip, the question, the first
   options) **flows into the terminal's real scrollback**, where the

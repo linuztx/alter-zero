@@ -59,6 +59,13 @@ release heading when a version is cut.
   list shows three secrets at a time around the highlighted one, with rows
   naming how many more are above and below, then drops its title
   (`docs/donate.md`, `docs/secrets.md`).
+- **The agent's multiple-choice questions keep the question on screen on a
+  short terminal.** The question used to scroll off the top, often with
+  the first options. Now the option descriptions are shortened and then
+  left out, the options show three at a time around the highlighted one,
+  and the row of question tabs goes last, so the question, the option you
+  are on and the keys stay visible. A question with code previews drops
+  the notes line and shortens the preview first (`docs/ask.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

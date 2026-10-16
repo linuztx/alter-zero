@@ -133,7 +133,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // used to put the chip strip, the question and the first options in
         // no buffer at all on a short terminal.
         return Some(FlowPage::framed(
-            super::ask_view::ask_lines(app, width),
+            super::ask_view::ask_lines(app, width, term_height),
             term_height,
         ));
     }

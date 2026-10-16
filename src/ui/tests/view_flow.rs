@@ -284,12 +284,14 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     // The ask modal is the permission prompt's sibling here too
     // (docs/view-flow.md): a page taller than the terminal used to drop its
     // top rows — the chip strip, the question, the first options — into no
-    // buffer at all (the reported "small terminal hides the texts"). Now the
-    // skipped top flows into real scrollback, where the terminal's own
-    // scrolling reads it, and the painted tail keeps the interactive rows.
+    // buffer at all (the reported "small terminal hides the texts"). The page
+    // sheds what the choice doesn't need first (docs/ask.md); shorter than
+    // even its smallest page, the skipped top flows into real scrollback,
+    // where the terminal's own scrolling reads it, and the painted tail keeps
+    // the interactive rows.
     let app = tall_ask_app();
-    let (width, height) = (60u16, 12u16);
-    let lines = crate::ui::ask_lines(&app, width);
+    let (width, height) = (60u16, 8u16);
+    let lines = crate::ui::ask_lines(&app, width, height);
     assert!(lines.len() > usize::from(height), "the page overflows");
     let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
     let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
@@ -301,10 +303,6 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     assert!(
         flowed[0].starts_with('─'),
         "the flow opens at the page's top rule: {flowed:?}"
-    );
-    assert!(
-        flowed.iter().any(|r| r.contains("Long list")),
-        "the chip strip rides the flow: {flowed:?}"
     );
     assert!(
         flowed.iter().any(|r| r.contains("Which of these")),
@@ -319,7 +317,7 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     // Stepping between two rows inside the painted tail holds the flowed
     // top's signature — no purge rebuild for a tail-only ↑/↓ (the
     // permission prompt's rule). ↑ wraps to Chat, ↑ again to the Other row;
-    // both sit in the tail, and the first ↑ took the `❯` out of the flow.
+    // both sit in the window's tail, under the same flowed top.
     let mut app = tall_ask_app();
     app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let a = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");

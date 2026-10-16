@@ -129,8 +129,11 @@ lists (`docs/llm.md`), the `/secrets` list (`docs/secrets.md`), and
 `/donate`, whose list is of boxes rather than rows, so it collapses before
 it windows — an accordion first, the addresses the highlight is not on
 folded to their label rows while the highlighted one keeps its box, then a
-window one box tall (`docs/donate.md`). `smoke.sh` Phase 138 opens them on a
-12-row terminal.
+window one box tall (`docs/donate.md`). The `AskUserQuestion` modal walks the
+same kind of ladder (`docs/ask.md`): its options' descriptions yield, then
+its rows window around the selection, and its chip strip of question tabs
+goes last, codex's tabs-stay-longest order. `smoke.sh` Phase 138 opens them
+on a 12-row terminal.
 
 ## Scope — which views flow
 

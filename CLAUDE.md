@@ -1781,7 +1781,13 @@ warning whenever the submission would be partial, then `● question` over the
 **green** `→ answer` for the **answered questions only** — an unanswered one
 is omitted; its ☐ chip and the warning already say so —
 `❯ 1. Submit answers / 2. Cancel`) whose empty submission walks to the first
-unanswered question instead of submitting nothing; Esc anywhere **declines**
+unanswered question instead of submitting nothing; on a terminal too short
+for the whole page a question sheds rows before it flows (`ask_lines` takes
+the height — the descriptions cut to one row then left out, then the rows
+windowed three at a time between the ↑/↓ overflow slots, the chip strip
+last; a preview question drops its dim notes line, then cuts the panel to
+the option column, then the chips), so the question, the highlighted row
+and the hint stay on screen; Esc anywhere **declines**
 (the turn continues: red `User declined to answer questions` cell over the
 `· question (options)` rows, the model reading the stop-and-wait result and
 reacting in the same turn — never a forced interrupt); a submission resolves

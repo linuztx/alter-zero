@@ -10,9 +10,10 @@ smoke_begin
 # and flowed its search line and its highlighted row into scrollback, so the
 # row Enter would act on was off screen. Each picker now sheds what its
 # choices don't need and keeps the search line, three rows between the ↑/↓
-# overflow slots, and the hint. Drive each one on a 12-row pane. Counts are
-# matched loosely: a catalog that grows with each new feature must not fail
-# this phase instead of that feature's own.
+# overflow slots, and the hint — /donate and /secrets their highlighted entry,
+# and the AskUserQuestion modal its question (docs/ask.md). Drive each one on
+# a 12-row pane. Counts are matched loosely where a catalog grows with each
+# new feature, which must not fail this phase instead of that feature's own.
 S138="${S}_shortpages"
 # Eight secrets for /secrets to window (docs/secrets.md).
 {
@@ -137,6 +138,36 @@ expect_has "$short_secrets_walk" -E '^  ↓ 2 more below$' "/secrets lost the ro
 tmux send-keys -t "$S138" Escape
 sleep 0.4
 expect_has "$(pane "$S138")" -F "dummy_model_name" "Esc did not close /secrets back to the composer"
+# The AskUserQuestion modal (docs/ask.md): the coffee question sheds its chip
+# strip, its descriptions and two of its five rows, and keeps the question,
+# the highlighted option and the hint.
+submit "$S138" "ask me some questions"
+short_ask="$(wait_pane 10 "$S138" -F "What's your favorite way to drink coffee?")" ||
+	fail "the dummy's ask modal never opened"
+echo "==== Phase 138: the ask modal on 12 rows ===="
+printf '%s\n' "$short_ask"
+expect_has "$short_ask" -E '^ ❯ 1\. Black' "the ask modal lost its highlighted option on 12 rows"
+expect_has "$short_ask" -E '^ ↓ 2 more below$' "the ask modal does not count the rows under its window"
+expect_has "$short_ask" -F "Esc to cancel" "the ask modal lost its hint on 12 rows"
+expect_lacks "$short_ask" -F "Coffee style" "the ask modal still shows its chip strip on 12 rows"
+expect_lacks "$short_ask" -F "No milk" "the ask modal still shows its descriptions on 12 rows"
+# The preview question: the notes line yields and the panel is cut to the
+# options' height, so the question and every option stay on screen.
+tmux send-keys -t "$S138" Tab
+sleep 0.3
+tmux send-keys -t "$S138" Tab
+short_preview="$(wait_pane 5 "$S138" -F "Which code style do you prefer")" ||
+	fail "Tab did not reach the preview question"
+echo "==== Phase 138: the ask modal's preview page on 12 rows ===="
+printf '%s\n' "$short_preview"
+expect_has "$short_preview" -E '^ ❯ 1\. Arrow function' "the preview page lost its highlighted option on 12 rows"
+expect_has "$short_preview" -F "3. One-liner" "the preview page lost an option on 12 rows"
+expect_has "$short_preview" -F "const greet = (name) => {" "the preview page lost its panel on 12 rows"
+expect_has "$short_preview" -F "n to add notes" "the preview page's hint no longer offers notes"
+expect_lacks "$short_preview" -F "Notes: press n" "the preview page still shows its notes line on 12 rows"
+tmux send-keys -t "$S138" Escape
+wait_pane 10 "$S138" -S -60 -- -F "User declined to answer questions" >/dev/null ||
+	fail "Esc did not decline the questions"
 tmux kill-session -t "$S138" 2>/dev/null
 
 # /model: a stub provider lists twelve models, and the compact page keeps
