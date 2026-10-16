@@ -11,7 +11,6 @@ per change.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → Hide thinking           false
@@ -28,7 +27,6 @@ per change.
   Hide the model's chain-of-thought…
 
   Type to search · Enter/Space to change · Esc to cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 

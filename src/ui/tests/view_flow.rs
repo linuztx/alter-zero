@@ -409,9 +409,11 @@ fn the_details_pages_flowed_top_freezes_while_the_shell_ticks() {
     // running (`App::wants_animation_frames`). Signing those rows would
     // purge-rebuild the whole screen thirty times a second, so this one page
     // signs the **shell it describes** instead: the rows committed above the
-    // region freeze there, which is what scrollback holds anyway.
+    // region freeze there, which is what scrollback holds anyway. The page
+    // is 24 rows, so an 18-row terminal flows its top six: the rule, the
+    // title, the gap, the status, the runtime and the command.
     let mut app = tall_background_app();
-    let (width, height) = (60u16, 20u16);
+    let (width, height) = (60u16, 18u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
         .expect("overflows")
         .lines
@@ -479,9 +481,11 @@ fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
         );
     }
     app.open_background_view();
-    let (width, height) = (60u16, 6u16);
+    // The page is 10 rows, so a 4-row terminal flows its top six — the
+    // header and the first two shell rows.
+    let (width, height) = (60u16, 4u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
-        .expect("the list overflows a 6-row terminal")
+        .expect("the list overflows a 4-row terminal")
         .lines
         .iter()
         .map(plain)
@@ -694,4 +698,437 @@ fn a_streaming_writes_flow_holds_while_lines_arrive_and_re_signs_when_it_finishe
         after, finished,
         "the flip from tail to head replaces every row, so it re-signs"
     );
+}
+
+// ===== every framed page sits flush against its rules =====
+
+/// One key press — how the per-view tests walk a page through its levels.
+fn press(app: &mut App, code: KeyCode) {
+    app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+/// A bare app with a permission prompt of `kind` open.
+fn prompt_app(kind: PermissionKind, target: &str, body: &str, detail: Option<&str>) -> App {
+    let mut app = App::new();
+    app.open_permission(PermissionRequest {
+        id: "perm_frame".to_string(),
+        kind,
+        target: target.to_string(),
+        body: body.to_string(),
+        detail: detail.map(str::to_string),
+        agent: None,
+        agent_id: None,
+    });
+    app
+}
+
+/// A bare app with the ask modal open on `questions`.
+fn ask_app(questions: Vec<crate::ask::AskQuestion>) -> App {
+    let mut app = App::new();
+    app.open_ask(crate::ask::AskRequest {
+        id: "ask_frame".to_string(),
+        questions,
+    });
+    app
+}
+
+/// A one-question ask, its options previewed side by side when `preview`.
+fn ask_question(header: &str, preview: bool) -> crate::ask::AskQuestion {
+    crate::ask::AskQuestion {
+        question: format!("Which {header} do you prefer?"),
+        header: header.to_string(),
+        options: ["One", "Two"]
+            .iter()
+            .map(|label| crate::ask::AskOption {
+                label: (*label).to_string(),
+                description: format!("The {label} option"),
+                preview: preview.then(|| format!("fn {label}() {{}}")),
+            })
+            .collect(),
+        multi_select: false,
+    }
+}
+
+/// An `/mcp` server with one tool, for the manager's four pages.
+fn frame_server() -> McpServerSnapshot {
+    McpServerSnapshot {
+        name: "deepwiki".to_string(),
+        scope: crate::mcp::McpScope::User,
+        config_path: "~/.alter-zero/mcp.json".to_string(),
+        config: McpServerConfig::Http {
+            url: "https://deepwiki.test/mcp".to_string(),
+            headers: Default::default(),
+            sse_fallback: false,
+        },
+        status: McpServerStatus::Connected,
+        auth: None,
+        identity: None,
+        tools: vec![McpToolInfo {
+            name: "ask_question".to_string(),
+            description: "Ask about a repository.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }],
+    }
+}
+
+/// Every framed inline view built at `width`, one entry per page shape: each
+/// picker with a selection and with a search that matched nothing, every
+/// `/login` step, each menu's levels and pages, both modals' kinds and
+/// pages. The views `flow_page` lists — everything that replaces the
+/// composer — so a new framed page belongs here too.
+fn framed_pages(width: u16) -> Vec<(&'static str, Vec<Line<'static>>)> {
+    use crate::ui::model_view::model_view_lines;
+    let mut pages: Vec<(&'static str, Vec<Line<'static>>)> = Vec::new();
+
+    // /model — a real selection, every placeholder, a failed provider.
+    let model = |picker: &ModelPicker| model_view_lines(picker, width);
+    pages.push(("/model", model(&model_picker(three_models(), 0, "x"))));
+    let mut no_match = model_picker(three_models(), 0, "x");
+    no_match.query = "zzzz".into();
+    pages.push(("/model no match", model(&no_match)));
+    let loading = ModelPicker {
+        active_id: "x".into(),
+        ..ModelPicker::default()
+    };
+    pages.push(("/model loading", model(&loading)));
+    let failed = ModelPicker {
+        status: ModelLoad::Error("401 bad key".into()),
+        active_id: "x".into(),
+        ..ModelPicker::default()
+    };
+    pages.push(("/model error", model(&failed)));
+    let login_first = ModelPicker {
+        status: ModelLoad::NeedsLogin,
+        active_id: "x".into(),
+        ..ModelPicker::default()
+    };
+    pages.push(("/model needs login", model(&login_first)));
+    let mut partial = model_picker(three_models(), 0, "x");
+    partial.errors = vec![ModelFetchError {
+        provider: "Together AI".into(),
+        message: "503 upstream unavailable".into(),
+    }];
+    pages.push(("/model failed provider", model(&partial)));
+
+    // /login — the three lists, the method choice, the sign-in page before
+    // and after its code, the key and host fields.
+    let login = |app: &App| {
+        crate::ui::login_view::key_onboarding_lines(app.key_onboarding.as_ref().unwrap(), width)
+    };
+    pages.push(("/login method", login(&login_app())));
+    pages.push(("/login subscription", login(&login_app_subscription())));
+    pages.push(("/login provider", login(&login_app_provider())));
+    pages.push(("/login sign-in method", login(&login_app_signin_method())));
+    pages.push(("/login device", login(&login_app_device())));
+    let mut starting = login_app_subscription();
+    {
+        let onboarding = starting.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Device;
+        onboarding.device = Some(crate::app::DeviceLogin {
+            provider_id: "github_copilot".into(),
+            provider_name: "GitHub Copilot".into(),
+            ..Default::default()
+        });
+    }
+    pages.push(("/login device starting", login(&starting)));
+    let mut key = login_app_provider();
+    {
+        let onboarding = key.key_onboarding.as_mut().unwrap();
+        onboarding.step = KeyStep::Key;
+        onboarding.chosen = Some(0);
+    }
+    pages.push(("/login key", login(&key)));
+
+    // /settings — a selection, then a search that matched nothing.
+    let mut settings = App::new();
+    settings.open_settings();
+    pages.push((
+        "/settings",
+        crate::ui::settings_view::settings_view_lines(&settings, width),
+    ));
+    settings.settings_picker.as_mut().unwrap().query = "zzzz".into();
+    pages.push((
+        "/settings no match",
+        crate::ui::settings_view::settings_view_lines(&settings, width),
+    ));
+
+    // /skills — a catalog, a search that matched nothing, an empty catalog.
+    let skill = crate::skills::SkillMetadata {
+        name: "dataviz".to_string(),
+        description: "Charts and dashboards".to_string(),
+        dir: std::path::PathBuf::from("/skills/dataviz"),
+        path: std::path::PathBuf::from("/skills/dataviz/SKILL.md"),
+    };
+    let roots = vec!["~/.claude/skills".to_string()];
+    let mut skills = App::new();
+    skills.open_skills_menu(vec![skill], Default::default(), true, roots.clone());
+    pages.push((
+        "/skills",
+        crate::ui::skills_view::skills_view_lines(&skills, width),
+    ));
+    skills.skills_menu.as_mut().unwrap().query = "zzzz".into();
+    pages.push((
+        "/skills no match",
+        crate::ui::skills_view::skills_view_lines(&skills, width),
+    ));
+    let mut no_skills = App::new();
+    no_skills.open_skills_menu(Vec::new(), Default::default(), false, roots);
+    pages.push((
+        "/skills none installed",
+        crate::ui::skills_view::skills_view_lines(&no_skills, width),
+    ));
+
+    // /mascot, /spinner, /theme — a selection, then no match.
+    let mut mascot = with_session();
+    mascot.open_mascot_picker();
+    pages.push((
+        "/mascot",
+        crate::ui::mascot_view::mascot_view_lines(&mascot, width),
+    ));
+    mascot.mascot_picker.as_mut().unwrap().query = "zzzz".into();
+    pages.push((
+        "/mascot no match",
+        crate::ui::mascot_view::mascot_view_lines(&mascot, width),
+    ));
+    let mut spinner = with_session();
+    spinner.open_spinner_picker();
+    pages.push((
+        "/spinner",
+        crate::ui::spinner_view::spinner_view_lines(&spinner, width),
+    ));
+    spinner.spinner_picker.as_mut().unwrap().query = "zzzz".into();
+    pages.push((
+        "/spinner no match",
+        crate::ui::spinner_view::spinner_view_lines(&spinner, width),
+    ));
+    let mut theme = with_session();
+    theme.open_theme_picker();
+    pages.push((
+        "/theme",
+        crate::ui::theme_view::theme_view_lines(&theme, width),
+    ));
+    theme.theme_picker.as_mut().unwrap().query = "zzzz".into();
+    pages.push((
+        "/theme no match",
+        crate::ui::theme_view::theme_view_lines(&theme, width),
+    ));
+
+    // /hooks — the four levels down one configured row, and an event with
+    // nothing configured.
+    let file = crate::hooks::HooksFile::parse(
+        r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command","command":"./guard.sh"}]}]}}"#,
+    )
+    .expect("the fixture parses");
+    let overview = crate::hooks::HooksOverview::from_file(&file);
+    let mut hooks = App::new();
+    hooks.open_hooks_menu(
+        overview.clone(),
+        Some("~/.alter-zero/hooks.json".into()),
+        true,
+    );
+    pages.push(("/hooks events", crate::ui::hooks_view_lines(&hooks, width)));
+    press(&mut hooks, KeyCode::Enter);
+    pages.push((
+        "/hooks matchers",
+        crate::ui::hooks_view_lines(&hooks, width),
+    ));
+    press(&mut hooks, KeyCode::Enter);
+    pages.push(("/hooks hooks", crate::ui::hooks_view_lines(&hooks, width)));
+    press(&mut hooks, KeyCode::Enter);
+    pages.push(("/hooks detail", crate::ui::hooks_view_lines(&hooks, width)));
+    let mut empty_event = App::new();
+    empty_event.open_hooks_menu(overview, None, true);
+    press(&mut empty_event, KeyCode::Down); // PostToolUse — nothing configured
+    press(&mut empty_event, KeyCode::Enter);
+    pages.push((
+        "/hooks empty event",
+        crate::ui::hooks_view_lines(&empty_event, width),
+    ));
+
+    // /mcp — the list (empty and not), and each page a server opens.
+    let mut no_servers = App::new();
+    no_servers.open_mcp_menu(Vec::new());
+    pages.push(("/mcp empty", mcp_view_lines(&no_servers, width)));
+    let mut mcp = App::new();
+    mcp.open_mcp_menu(vec![frame_server()]);
+    pages.push(("/mcp list", mcp_view_lines(&mcp, width)));
+    for (name, page) in [
+        ("/mcp server", McpPage::Server),
+        ("/mcp tools", McpPage::Tools),
+        ("/mcp tool", McpPage::Tool { tool: 0 }),
+        ("/mcp auth", McpPage::Auth),
+    ] {
+        mcp.mcp_menu.as_mut().unwrap().page = page;
+        pages.push((name, mcp_view_lines(&mcp, width)));
+    }
+
+    // /trust — a review with files, and one with none.
+    let mut trust = App::new();
+    trust.open_trust_menu(TrustReview {
+        root: "~/repo".into(),
+        trusted: false,
+        files: vec![TrustFileReview {
+            label: "Hooks".into(),
+            path: "~/repo/.alter-zero/hooks.json".into(),
+            items: vec!["PreToolUse (bash): ./guard.sh".into()],
+            error: None,
+            pending: true,
+        }],
+    });
+    pages.push(("/trust", trust_view_lines(&trust, width)));
+    let mut no_files = App::new();
+    no_files.open_trust_menu(TrustReview {
+        root: "~/repo".into(),
+        trusted: false,
+        files: Vec::new(),
+    });
+    pages.push(("/trust no files", trust_view_lines(&no_files, width)));
+
+    // /donate and /export.
+    let mut donate = with_session();
+    donate.open_donate_picker();
+    pages.push(("/donate", crate::ui::donate_view_lines(&donate, width)));
+    let mut export = with_session();
+    export.record_user_message("hello");
+    export.open_export_picker();
+    pages.push(("/export", crate::ui::export_view_lines(&export, width)));
+
+    // /secrets — the list (empty and not), and the form.
+    let mut secrets = with_session();
+    secrets.open_secrets_page();
+    pages.push((
+        "/secrets empty",
+        crate::ui::secrets_view::secrets_view_lines(&secrets, width),
+    ));
+    press(&mut secrets, KeyCode::Enter); // the add row → the form
+    pages.push((
+        "/secrets form",
+        crate::ui::secrets_view::secrets_view_lines(&secrets, width),
+    ));
+    let mut listed = with_session();
+    listed.set_secret_metas(vec![crate::secrets::SecretMeta {
+        name: "GITHUB_TOKEN".into(),
+        context: "the GitHub API".into(),
+    }]);
+    listed.open_secrets_page();
+    pages.push((
+        "/secrets list",
+        crate::ui::secrets_view::secrets_view_lines(&listed, width),
+    ));
+
+    // The ↓ background manager — the list, a shell's details, the empty list.
+    let mut background = App::new();
+    background.bg_started("bash_1", "ping x.com", None, true, None);
+    background.open_background_view();
+    pages.push((
+        "↓ manager list",
+        crate::ui::background_view_lines(&background, width),
+    ));
+    background.background_view = Some(BackgroundView::Details {
+        id: "bash_1".to_string(),
+    });
+    pages.push((
+        "↓ manager details",
+        crate::ui::background_view_lines(&background, width),
+    ));
+    let mut no_shells = App::new();
+    no_shells.bg_started("bash_1", "ping x.com", None, true, None);
+    no_shells.bg_exited("bash_1", Some(0), false);
+    no_shells.open_background_view();
+    pages.push((
+        "↓ manager empty",
+        crate::ui::background_view_lines(&no_shells, width),
+    ));
+
+    // The permission prompt — every kind, and Tab's amend field.
+    let prompt = |app: &App| crate::ui::permission_lines(app, width, 200);
+    pages.push((
+        "permission bash",
+        prompt(&prompt_app(PermissionKind::Bash, "echo hi", "", None)),
+    ));
+    pages.push((
+        "permission write",
+        prompt(&prompt_app(
+            PermissionKind::Write,
+            "hello.py",
+            "1 print(\"hi\")",
+            None,
+        )),
+    ));
+    pages.push((
+        "permission edit",
+        prompt(&prompt_app(
+            PermissionKind::Edit,
+            "hello.py",
+            "1 -old = 1\n1 +new = 2",
+            None,
+        )),
+    ));
+    pages.push((
+        "permission mcp",
+        prompt(&prompt_app(
+            PermissionKind::Mcp,
+            "mcp__deepwiki__ask_question",
+            r#"question: "why""#,
+            Some("Ask about a repository."),
+        )),
+    ));
+    pages.push((
+        "permission session",
+        prompt(&prompt_app(
+            PermissionKind::Session,
+            "b7x2k9m1q",
+            "y⏎",
+            Some("python3"),
+        )),
+    ));
+    let mut amend = prompt_app(PermissionKind::Bash, "echo hi", "", None);
+    press(&mut amend, KeyCode::Tab);
+    pages.push(("permission amend", prompt(&amend)));
+
+    // The ask modal — the list page, the preview page, the review page.
+    pages.push((
+        "ask list",
+        crate::ui::ask_lines(&ask_app(vec![ask_question("Coffee", false)]), width),
+    ));
+    pages.push((
+        "ask preview",
+        crate::ui::ask_lines(&ask_app(vec![ask_question("Style", true)]), width),
+    ));
+    let mut review = ask_app(vec![
+        ask_question("Coffee", false),
+        ask_question("Tea", false),
+    ]);
+    press(&mut review, KeyCode::Right);
+    press(&mut review, KeyCode::Right); // → the Submit page
+    pages.push(("ask review", crate::ui::ask_lines(&review, width)));
+
+    pages
+}
+
+#[test]
+fn every_framed_page_sits_flush_against_its_rules() {
+    // A framed page's two rules ARE its padding: a blank row just inside
+    // either one costs a terminal row on every page and says nothing, so
+    // each page opens on its first content row and closes on its last —
+    // the frame the user asked for, the rows saved for the content
+    // (`docs/view-flow.md`).
+    for width in [40u16, 80] {
+        let mut padded = Vec::new();
+        for (name, lines) in framed_pages(width) {
+            let rows: Vec<String> = lines.iter().map(plain).collect();
+            assert!(rows.len() >= 3, "{name} @{width}: no content: {rows:#?}");
+            assert!(
+                rows[0].starts_with('─') && rows[rows.len() - 1].starts_with('─'),
+                "{name} @{width}: not framed by rules: {rows:#?}"
+            );
+            if rows[1].trim().is_empty() {
+                padded.push(format!("{name} @{width}: a blank row under the top rule"));
+            }
+            if rows[rows.len() - 2].trim().is_empty() {
+                padded.push(format!("{name} @{width}: a blank row over the bottom rule"));
+            }
+        }
+        assert!(padded.is_empty(), "padded frames: {padded:#?}");
+    }
 }

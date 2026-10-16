@@ -70,16 +70,21 @@ fn the_events_level_is_framed_with_title_count_info_and_hint() {
     let texts = texts(&app, 78);
     assert!(texts.first().expect("frame").starts_with('─'), "top rule");
     assert!(texts.last().expect("frame").starts_with('─'), "bottom rule");
-    assert_eq!(texts[2], "  Hooks");
-    assert_eq!(texts[3], "  4 hooks configured");
+    // The title flush under the top rule — no padding row between them.
+    assert_eq!(texts[1], "  Hooks");
+    assert_eq!(texts[2], "  4 hooks configured");
     assert!(
-        texts[5].starts_with("  ℹ This menu is read-only."),
+        texts[4].starts_with("  ℹ This menu is read-only."),
         "the read-only banner: {:?}",
-        texts[5]
+        texts[4]
     );
     let hint = find(&texts, HOOKS_HINT);
     assert_eq!(texts[hint], format!("  {HOOKS_HINT}"));
-    assert!(texts[hint - 1].is_empty() && texts[hint + 1].is_empty());
+    assert!(texts[hint - 1].is_empty(), "a gap over the hint");
+    assert!(
+        texts[hint + 1].starts_with('─'),
+        "the hint closes on the bottom rule: {texts:#?}"
+    );
 }
 
 #[test]
@@ -171,11 +176,11 @@ fn the_matchers_level_titles_the_event_and_lists_sourced_rows() {
     let mut app = hooks_app();
     press(&mut app, KeyCode::Enter);
     let texts = texts(&app, 90);
-    assert_eq!(texts[2], "  PreToolUse - Matchers");
+    assert_eq!(texts[1], "  PreToolUse - Matchers");
     assert!(
-        texts[3].starts_with("  Input to command is the tool call"),
+        texts[2].starts_with("  Input to command is the tool call"),
         "the event description sits under the title: {:?}",
-        texts[3]
+        texts[2]
     );
     assert!(
         texts.iter().any(|l| l.contains("Exit code 2")),
@@ -200,7 +205,7 @@ fn the_hooks_level_lists_handlers_with_the_source_header() {
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Enter);
     let texts = texts(&app, 90);
-    assert_eq!(texts[2], "  PreToolUse - Matcher: bash");
+    assert_eq!(texts[1], "  PreToolUse - Matcher: bash");
     let first = find(&texts, "[command] checking…");
     assert!(
         texts[first].starts_with(&format!("  {HOOKS_MARKER}1.")),
@@ -217,7 +222,7 @@ fn a_matcherless_event_titles_bare_and_descends_straight_to_its_hooks() {
     let mut app = hooks_app();
     press(&mut app, KeyCode::Char('9')); // Stop
     let texts = texts(&app, 90);
-    assert_eq!(texts[2], "  Stop", "no `- Matcher:` suffix");
+    assert_eq!(texts[1], "  Stop", "no `- Matcher:` suffix");
     assert!(texts.iter().any(|l| l.contains("[command] ./done.sh")));
 }
 
@@ -227,7 +232,7 @@ fn an_event_with_nothing_configured_shows_the_empty_state() {
     press(&mut app, KeyCode::Down); // PostToolUse
     press(&mut app, KeyCode::Enter);
     let texts = texts(&app, 90);
-    assert_eq!(texts[2], "  PostToolUse - Matchers");
+    assert_eq!(texts[1], "  PostToolUse - Matchers");
     let empty = find(&texts, HOOKS_EMPTY);
     assert!(
         texts[empty + 2].contains("To add hooks, edit hooks.json"),
@@ -252,12 +257,12 @@ fn the_detail_page_shows_fields_the_boxed_command_and_the_note() {
     press(&mut app, KeyCode::Enter); // bash hooks
     press(&mut app, KeyCode::Enter); // first hook's details
     let texts = texts(&app, 78);
-    assert_eq!(texts[2], "  Hook details");
-    assert_eq!(texts[4], "  Event:    PreToolUse");
-    assert_eq!(texts[5], "  Matcher:  bash");
-    assert_eq!(texts[6], "  Type:     command");
+    assert_eq!(texts[1], "  Hook details");
+    assert_eq!(texts[3], "  Event:    PreToolUse");
+    assert_eq!(texts[4], "  Matcher:  bash");
+    assert_eq!(texts[5], "  Type:     command");
     assert_eq!(
-        texts[7],
+        texts[6],
         "  Source:   User settings (~/.alter-zero/hooks.json)"
     );
     let label = find(&texts, "Command:");
@@ -285,7 +290,10 @@ fn the_detail_page_shows_fields_the_boxed_command_and_the_note() {
         !texts.iter().any(|l| l.contains(HOOKS_HINT)),
         "the detail page has nothing to confirm"
     );
-    assert!(texts[hint + 1].is_empty(), "trailing gap before the rule");
+    assert!(
+        texts[hint + 1].starts_with('─'),
+        "the hint closes on the bottom rule"
+    );
 }
 
 #[test]
@@ -294,9 +302,9 @@ fn a_matcherless_detail_omits_the_matcher_row() {
     press(&mut app, KeyCode::Char('9')); // Stop → hooks
     press(&mut app, KeyCode::Enter); // its one hook's details
     let texts = texts(&app, 78);
-    assert_eq!(texts[4], "  Event:    Stop");
+    assert_eq!(texts[3], "  Event:    Stop");
     assert_eq!(
-        texts[5], "  Type:     command",
+        texts[4], "  Type:     command",
         "a matcher the engine ignores is not presented as if it filtered"
     );
     assert!(!texts.iter().any(|l| l.contains("Matcher:")));
@@ -483,9 +491,9 @@ fn every_level_title_wears_the_title_dress() {
     for level in ["events", "matchers", "hooks", "detail"] {
         let lines = hooks_view_lines(&app, 78);
         assert!(
-            wears_the_title_dress(&lines[2]),
+            wears_the_title_dress(&lines[1]),
             "{level}: {:?}",
-            plain(&lines[2])
+            plain(&lines[1])
         );
         press(&mut app, KeyCode::Enter);
     }
@@ -495,7 +503,7 @@ fn every_level_title_wears_the_title_dress() {
 fn the_selection_and_chrome_wear_the_picker_familys_colours() {
     let app = hooks_app();
     let lines = hooks_view_lines(&app, 78);
-    let title = &lines[2];
+    let title = &lines[1];
     assert!(
         wears_the_title_dress(title),
         "the title wears the theme's gradient, like every page's: {title:?}"
@@ -511,7 +519,7 @@ fn the_selection_and_chrome_wear_the_picker_familys_colours() {
             .any(|s| s.style.fg == Some(model_selected_color())),
         "the selected row lights up in the palette accent"
     );
-    let count = &lines[3];
+    let count = &lines[2];
     assert_eq!(
         count.spans[1].style.fg,
         Some(model_meta_color()),
@@ -539,7 +547,7 @@ fn render_paints_the_lines_and_the_cursor_hides_seated_on_the_selection() {
     let mut buf = buffer(78, height);
     render_hooks_menu(buf.area, &mut buf, &app);
     assert!(row(&buf, 0, 78).starts_with('─'));
-    assert!(row(&buf, 2, 78).contains("Hooks"));
+    assert!(row(&buf, 1, 78).contains("Hooks"));
     // No text entry anywhere in the menu — the permission prompt's rule: the
     // frame shows no hardware cursor at all (a kitty cursor animation blinks
     // at whatever seat a menu picks), while the *seat* still tracks the

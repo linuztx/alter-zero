@@ -383,6 +383,14 @@ which Ctrl+V reads the clipboard from.
   first, then this file. Because `std::env::set_var` is `unsafe` (forbidden here),
   the loaded keys live in an in-memory map, never the process env. Opens
   mid-turn — over the same kept streaming strip — like `/model`.
+- **Every framed inline page sits flush against its rules**
+  (`docs/view-flow.md` *The frame*). The pickers, the menus, the `/login`
+  pages, the ↓ manager band and the permission and ask modals all frame their
+  content between a top and a bottom rule, and the rules are the padding: the
+  first content row sits directly under the top rule and the last directly on
+  the bottom one. Blank rows only separate blocks inside a page. Each page used
+  to spend a blank row just inside each rule, two terminal rows that said
+  nothing; one family test builds every page shape and pins the frame.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
   `docs/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
   the backend (never `join()`ing it on the loop — joining couples the UI to the

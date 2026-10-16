@@ -556,7 +556,9 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     // call's, which reads like one — does not.
     let framed = file_change;
     let framing = if framed { 2 } else { 0 };
-    let mut frame = vec![rule(width), Line::default(), title_row(request, width)];
+    // The title sits flush under the rule, and the hint row closes on the
+    // bottom one: the rules are the frame (`docs/view-flow.md` *The frame*).
+    let mut frame = vec![rule(width), title_row(request, width)];
     if file_change {
         // The file named the way the cell it becomes will name it —
         // relative under the cwd, `~`-relative under home, absolute elsewhere
@@ -599,19 +601,18 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         frame.push(body_rule(width));
     }
     frame.extend(below);
-    frame.push(Line::default());
     frame.push(rule(width));
 
     // The live cells that raised this — kept visible above the modal so the
     // question reads as being *about* something on screen. Their budget is
     // whatever the terminal has left once the prompt's fixed rows AND a floor
-    // for the body are set aside — the head is the 5 rows the frame opens
-    // with (the blank after the cells, the rule, its gap, the title, the
-    // target/gap row) — so a big parallel batch collapses its excess
-    // `⎿ Waiting…` siblings into the summary row instead of squeezing the
-    // body out (see [`context_lines`]).
+    // for the body are set aside — the head is the 4 rows the frame opens
+    // with (the blank after the cells, the rule, the title, the target/gap
+    // row) — so a big parallel batch collapses its excess `⎿ Waiting…`
+    // siblings into the summary row instead of squeezing the body out (see
+    // [`context_lines`]).
     let context_budget = usize::from(term_height).saturating_sub(
-        5 + below_len + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
+        4 + below_len + framing + 1 /* the closing rule */ + body_reserve(request, file_change),
     );
     let budgeted = context_lines(app, width, context_budget);
     let context = if budgeted.is_empty() {

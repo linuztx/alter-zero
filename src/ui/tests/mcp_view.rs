@@ -434,6 +434,34 @@ fn the_menu_hides_the_cursor_seated_on_the_selection_and_auth_brings_it_back() {
 }
 
 #[test]
+fn the_auth_pages_caret_sits_on_the_url_field_whatever_wraps_under_it() {
+    // The `URL >` field is typed into, so its caret is shown — and it must
+    // land on the field's own row. The return note under the field wraps on
+    // a narrow terminal (and the `Checking…` row joins it once a URL is
+    // submitted), so a row counted up from the bottom lands on the note; the
+    // seat is found in the page the paint builds, `view_prompt_row`'s rule.
+    for width in [100u16, 50] {
+        let mut app = mcp_app();
+        app.on_key(key(KeyCode::Enter)); // linear
+        app.on_key(key(KeyCode::Enter)); // Authenticate
+        app.on_key(key(KeyCode::Char('h')));
+        app.on_key(key(KeyCode::Char('i')));
+        let height = crate::ui::mcp_menu_height(&app, width, 60).unwrap();
+        let mut buf = buffer(width, height);
+        render_mcp_menu(buf.area, &mut buf, &app);
+        let field = (0..height)
+            .find(|&y| row(&buf, y, width).trim_start().starts_with("URL > hi"))
+            .expect("the field is painted");
+        // indent(2) + "URL > "(6) + "hi"(2) = 10.
+        assert_eq!(
+            crate::ui::cursor_position(buf.area, &app),
+            (10, field),
+            "@{width}"
+        );
+    }
+}
+
+#[test]
 fn the_auth_page_shows_the_url_and_paste_field() {
     let mut app = mcp_app();
     app.on_key(key(KeyCode::Enter)); // linear

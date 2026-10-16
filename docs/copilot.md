@@ -33,14 +33,12 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → Use a subscription
   Use an API key
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -52,7 +50,6 @@ would say nothing they don't. Type-to-filter works here like every list step
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → GitHub Copilot · ✔ configured
@@ -60,7 +57,6 @@ would say nothing they don't. Type-to-filter works here like every list step
   (1/2)
 
   ↑↓ navigate  enter sign in  esc back
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -83,7 +79,6 @@ All three lists open straight onto their filter now.
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   Sign in to GitHub Copilot
 
   Visit https://github.com/login/device            (dim — the code is the
@@ -96,7 +91,6 @@ All three lists open straight onto their filter now.
   Waiting for approval… · expires in 14:11
 
   c copy code  esc cancel
-
 ────────────────────────────────────────────────────────────────────────
 ```
 
@@ -105,13 +99,11 @@ open for content that does not exist yet:
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   Sign in to GitHub Copilot
 
   Requesting a code…
 
   c copy code  esc cancel
-
 ────────────────────────────────────────────────────────────────────────
 ```
 

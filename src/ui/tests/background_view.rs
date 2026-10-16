@@ -67,9 +67,9 @@ fn the_manager_empty_state_says_no_tasks_running() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts[2], "  Background");
-    assert_eq!(texts[4], "  No tasks currently running");
-    assert_eq!(texts[6], "  ↑/↓ to select · Enter to view · Esc to close");
+    assert_eq!(texts[1], "  Background");
+    assert_eq!(texts[3], "  No tasks currently running");
+    assert_eq!(texts[5], "  ↑/↓ to select · Enter to view · Esc to close");
     assert!(
         !texts.iter().any(|l| l.contains("x to stop")),
         "nothing to stop in the empty state: {texts:?}"
@@ -104,9 +104,9 @@ fn both_page_titles_wear_the_menus_title_dress() {
     });
     let details = background_view_lines(&app, 60);
     for (lines, title) in [(&list, "Background"), (&details, "Shell details")] {
-        assert_eq!(plain(&lines[2]).trim(), title);
+        assert_eq!(plain(&lines[1]).trim(), title);
         assert!(
-            wears_the_title_dress(&lines[2]),
+            wears_the_title_dress(&lines[1]),
             "{title} wears the title dress the other menus' titles do"
         );
     }

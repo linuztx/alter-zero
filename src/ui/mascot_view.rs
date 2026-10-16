@@ -116,7 +116,8 @@ fn preview_slot(app: &App, width: u16) -> usize {
 /// The whole framed page as lines: a top rule, the `❯` search line, the
 /// mascot rows, the `(n/total)` counter, the **live banner preview**, the
 /// highlighted mascot's description, the key hint, and a bottom rule —
-/// blank-gapped like its family. What [`render_mascot_picker`] paints
+/// blank-gapped like its family, flush against both rules
+/// (`docs/view-flow.md` *The frame*). What [`render_mascot_picker`] paints
 /// (bottom-anchored) and [`mascot_menu_rows`] counts, so the reserved height
 /// and the painted rows can never disagree (`docs/view-flow.md`). Empty when
 /// the picker is closed.
@@ -139,12 +140,7 @@ pub(super) fn mascot_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.mascot);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(mascot_list_lines(&rows, selected, width));
     match highlighted {
         // A real selection: the counter, the live banner preview and the
@@ -171,7 +167,6 @@ pub(super) fn mascot_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         model_meta_color(),
         width,
     ));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

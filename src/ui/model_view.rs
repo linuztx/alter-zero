@@ -325,34 +325,28 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 /// The whole framed page as lines — the shape of the user's mock: a top rule,
 /// the `❯` search line, the scrolling model list (each row `→ id [provider]
 /// ✓`), and — when a real model is highlighted — the `(n/total)` counter and
-/// the `Model Name:` line above the bottom rule (a placeholder page collapses
-/// them to a single gap). Headerless (the "Showing models…" banner was
-/// dropped). What [`render_model_picker`] paints (bottom-anchored) and
-/// `layout::model_picker_rows` counts, so the reserved height and the painted
-/// rows can never disagree (`docs/view-flow.md`).
+/// the `Model Name:` line, then the bottom rule (a placeholder page has
+/// neither, so its list closes the frame). Headerless (the "Showing models…"
+/// banner was dropped), and flush against both rules: the rules are the
+/// frame's padding, so no blank row sits just inside either one
+/// (`docs/view-flow.md` *The frame*). What [`render_model_picker`] paints
+/// (bottom-anchored) and `layout::model_picker_rows` counts, so the reserved
+/// height and the painted rows can never disagree (`docs/view-flow.md`).
 pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(model_list_lines(picker, width));
+    // A placeholder (loading / error / needs-login / no match) has no counter
+    // and no name to show, so those rows simply don't exist.
     if model_has_detail(picker) {
         lines.push(model_counter_line(picker, width));
         lines.push(Line::default());
         lines.push(model_name_line(picker, width));
         lines.extend(model_error_lines(picker, width));
-        lines.push(Line::default());
-    } else {
-        // A placeholder (loading / error / needs-login / no match): the blank
-        // counter + name collapse to a single gap above the bottom rule.
-        lines.push(Line::default());
     }
     lines.push(model_rule(width));
     lines

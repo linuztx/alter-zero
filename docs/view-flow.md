@@ -83,6 +83,53 @@ The flow's tail contribution is capped like every rebuild write
 (`RESIZE_REFLOW_MAX_ROWS`, keeping the rows nearest the region) so a
 pathological page can't turn one navigation into an unbounded write.
 
+## The frame
+
+Every framed page is the same frame: a full-width top rule, the content, a
+full-width bottom rule — the pickers (`/model`, `/settings`, `/skills`,
+`/mascot`, `/spinner`, `/theme`), the menus (`/hooks`, `/mcp`, `/trust`), the
+pages (`/login`, `/donate`, `/export`, `/secrets`), the ↓ manager band, and the
+permission and ask modals. **The rules are the padding.** The first content row
+— a `❯` search line, a title, the ask modal's chip strip — sits flush under the
+top rule, and the last — a key hint, a placeholder, the `Model Name:` line —
+flush on the bottom one:
+
+```
+────────────────────────────────────────────────
+  ❯ cla
+
+→ anthropic/claude-3-haiku    [openrouter]
+  anthropic/claude-3.5-haiku  [openrouter]
+  (2/12)
+
+  Model Name: Anthropic: Claude 3 Haiku
+────────────────────────────────────────────────
+```
+
+Blank rows separate the **blocks inside** a page — the search line from the
+list, the counter from the name, the description from the hint — never the
+content from its own frame. A blank row just inside a rule says nothing the
+rule doesn't, and every page used to spend two of them: one under the top
+rule, one over the bottom — rows taken from a region that already shares the
+terminal with the conversation and, mid-turn, with the streaming strip above
+it (the reported "extra new lines"). A page whose detail rows are absent says
+so by not having them: the `/model` placeholder closes the frame itself rather
+than leaving a blank where the counter and name would have been.
+`ui::tests::view_flow::every_framed_page_sits_flush_against_its_rules` builds
+every page shape — each picker with a selection and with a search that matched
+nothing, every `/login` step, each menu level and page, both modals' kinds — at
+two widths and pins it, so a new framed page joins that list.
+
+The seats that count a row from a frame edge follow from it. The pickers'
+search line is row 1 (`MODEL_SEARCH_ROW` and its siblings); the `/login`
+sign-in pages park their hidden cursor on row 1, the title
+(`DEVICE_CURSOR_ROW`); the permission prompt finds its options
+`PERMISSION_TAIL_ROWS` (gap, hint, rule) up from the region's bottom. A row
+that moves with the content is **found** in the built page rather than counted:
+`view_prompt_row` for a `❯` field under a block that wraps, and the `/mcp` auth
+page's `URL >` field the same way, since the return note under it wraps on a
+narrow terminal.
+
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
@@ -139,9 +186,9 @@ pathological page can't turn one navigation into an unbounded write.
   the value it had when the page was committed until something re-signs the
   flow — stale, where it used to be *nowhere* — while the page still on
   screen keeps tailing, unchanged, exactly as it was. Which rows those are is
-  a matter of how short the terminal is: the page is 26 rows, so 24 rows
+  a matter of how short the terminal is: the page is 24 rows, so 23 rows
   flows the top rule alone and 18 flows the whole field block; the output box
-  only starts flowing below 15. A details view whose shell has gone renders
+  only starts flowing below 16. A details view whose shell has gone renders
   the *list* (`background_view_lines`' defensive fallback), so it signs like
   one.
 - **Flow (frozen) + bottom anchor**: the **streaming strip** itself

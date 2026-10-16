@@ -4,19 +4,19 @@ use super::*;
 
 /// The key step's whole page height for a provider the file describes in no
 /// words (see `key_onboarding_lines`); a description block grows it.
-const LOGIN_KEY_ROWS: u16 = 9;
+const LOGIN_KEY_ROWS: u16 = 7;
 
-/// The row every list step's `❯` filter sits on — top(0) gap(1) search(2).
+/// The row every list step's `❯` filter sits on — top(0) search(1).
 /// Pinned *here* rather than in the theme: it is a claim about the page's
 /// shape, which is a thing to test, while the paint finds its own caret seat
 /// in the page it just built (`view_prompt_row`).
-const LOGIN_SEARCH_ROW: u16 = 2;
+const LOGIN_SEARCH_ROW: u16 = 1;
 
 /// The row the key step's `❯` field sits on when nothing stands between it
-/// and the title — top(0) gap(1) title(2) gap(3) field(4). A described
+/// and the title — top(0) title(1) gap(2) field(3). A described
 /// provider pushes it down, which is the whole reason the seat is found and
 /// not counted.
-const LOGIN_KEY_INPUT_ROW: u16 = 4;
+const LOGIN_KEY_INPUT_ROW: u16 = 3;
 use crate::ui::login_view::{login_host_prompt, login_key_prompt};
 use crate::ui::theme::{DEVICE_CURSOR_ROW, error_color, model_meta_color, model_selected_color};
 
@@ -35,14 +35,14 @@ fn model_rows_show_marker_provider_tag_and_active_check() {
     let picker = model_picker(three_models(), 0, "anthropic/claude-fable-5");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // First list row (y = MODEL_SEARCH_ROW + 2 = 4).
-    let first = row(&buf, 4, 60);
+    // First list row (y = MODEL_SEARCH_ROW + 2 = 3).
+    let first = row(&buf, 3, 60);
     assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
     assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
     // The selected marker is cyan.
-    assert_eq!(buf[(0, 4)].fg, model_selected_color());
-    // The active model (row 1, y=5) carries the ✓.
-    let second = row(&buf, 5, 60);
+    assert_eq!(buf[(0, 3)].fg, model_selected_color());
+    // The active model (row 1, y=4) carries the ✓.
+    let second = row(&buf, 4, 60);
     assert!(second.contains('✓'), "active model has a check: {second:?}");
 }
 
@@ -52,9 +52,9 @@ fn counter_notes_more_providers_still_loading() {
     // list now with a dim "loading more…" hint beside the counter.
     let mut picker = model_picker(three_models(), 0, "x");
     picker.pending = 1;
-    let mut buf = buffer(60, 12);
+    let mut buf = buffer(60, 10);
     render_model_picker(buf.area, &mut buf, &picker);
-    let counter = row(&buf, 7, 60);
+    let counter = row(&buf, 6, 60);
     assert!(counter.contains("(1/3)"), "{counter:?}");
     assert!(counter.contains("loading more"), "{counter:?}");
 }
@@ -95,34 +95,34 @@ fn all_failed_picker_shows_one_red_row_per_provider() {
             message: "HTTP 401".into(),
         },
     ];
-    // Natural height: collapsed chrome (6) + 2 error rows = 8.
-    let mut buf = buffer(60, 8);
+    // Natural height: chrome (4: rule, search, gap, rule) + 2 error rows = 6.
+    let mut buf = buffer(60, 6);
     render_model_picker(buf.area, &mut buf, &picker);
-    let r0 = row(&buf, 4, 60);
-    let r1 = row(&buf, 5, 60);
+    let r0 = row(&buf, 3, 60);
+    let r1 = row(&buf, 4, 60);
     assert!(r0.contains("OpenRouter"), "{r0:?}");
     assert!(r0.contains("HTTP 500"), "{r0:?}");
     assert!(r1.contains("Agent Zero API"), "{r1:?}");
-    assert_eq!(buf[(2, 4)].fg, error_color(), "error rows are red");
+    assert_eq!(buf[(2, 3)].fg, error_color(), "error rows are red");
 }
 
 #[test]
 fn render_login_provider_step_frames_lists_and_marks_configured() {
     let app = login_app_provider();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    // rule(0) gap(1) ❯(2) gap(3) rows(4,5) counter(6) gap(7) path(8) nav(9)
-    // gap(10) rule(11).
-    let mut buf = buffer(60, 12);
+    // rule(0) ❯(1) gap(2) rows(3,4) counter(5) gap(6) path(7) nav(8) rule(9).
+    let mut buf = buffer(60, 10);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, 1, 60).trim().is_empty(), "gap under the rule");
-    // The `❯` filter line, straight under the rule — no heading over it.
+    // The `❯` filter line, flush under the rule — no heading and no blank
+    // padding row over it.
+    assert_eq!(LOGIN_SEARCH_ROW, 1);
     assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'));
-    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 4): selected →, the name,
+    // First provider row (y = LOGIN_SEARCH_ROW + 2 = 3): selected →, the name,
     // and its configured status — and nothing else. The env var it saves under
     // is named by the hint below and by the save toast; repeating it on every
     // row only crowds the list.
-    let first = row(&buf, 4, 60);
+    let first = row(&buf, 3, 60);
     assert!(first.starts_with("→ OpenRouter"), "{first:?}");
     assert!(
         !first.contains('[') && !first.contains("OPENROUTER_API_KEY"),
@@ -132,24 +132,26 @@ fn render_login_provider_step_frames_lists_and_marks_configured() {
         first.contains("✔ configured"),
         "a configured provider says so: {first:?}"
     );
-    // Together AI (row 1, y=5) has no key — and says *that*, rather than
+    // Together AI (row 1, y=4) has no key — and says *that*, rather than
     // leaving the reader to notice a missing mark.
     assert!(
-        row(&buf, 5, 60).contains("◯ unconfigured"),
+        row(&buf, 4, 60).contains("◯ unconfigured"),
         "{:?}",
-        row(&buf, 5, 60)
+        row(&buf, 4, 60)
     );
     // The hints name the real .env path and the step's own key grammar.
     assert!(
-        row(&buf, 8, 60).contains("Keys are saved to ~/.alter-zero/.env"),
+        row(&buf, 7, 60).contains("Keys are saved to ~/.alter-zero/.env"),
         "hint: {:?}",
-        row(&buf, 8, 60)
+        row(&buf, 7, 60)
     );
     assert!(
-        row(&buf, 9, 60).contains("esc back"),
+        row(&buf, 8, 60).contains("esc back"),
         "{:?}",
-        row(&buf, 9, 60)
+        row(&buf, 8, 60)
     );
+    // …and the key hint closes on the bottom rule, no padding row between.
+    assert!(row(&buf, 9, 60).starts_with('─'), "bottom rule");
 }
 
 #[test]
@@ -161,10 +163,10 @@ fn render_login_key_step_masks_the_entered_key() {
     assert_eq!(onboarding.step, KeyStep::Key);
     let mut buf = buffer(60, LOGIN_KEY_ROWS);
     render_key_onboarding(buf.area, &mut buf, onboarding);
-    // The cyan title (row 2, after the top rule + gap) names the provider.
-    assert!(row(&buf, 2, 60).contains("Enter your OpenRouter API key"));
+    // The cyan title (row 1, flush under the top rule) names the provider.
+    assert!(row(&buf, 1, 60).contains("Enter your OpenRouter API key"));
     assert!(
-        painted_title_wears_the_dress(&buf, 2),
+        painted_title_wears_the_dress(&buf, 1),
         "titles wear the theme's gradient"
     );
     // The field is masked: dots, never the plaintext key.
@@ -215,14 +217,14 @@ fn render_login_host_step_asks_for_the_host_and_shows_it_unmasked() {
     let mut buf = buffer(60, LOGIN_KEY_ROWS);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(
-        row(&buf, 2, 60).contains("Enter your Ollama host"),
+        row(&buf, 1, 60).contains("Enter your Ollama host"),
         "{:?}",
-        row(&buf, 2, 60)
+        row(&buf, 1, 60)
     );
     assert!(
-        !row(&buf, 2, 60).contains("API key"),
+        !row(&buf, 1, 60).contains("API key"),
         "not a key: {:?}",
-        row(&buf, 2, 60)
+        row(&buf, 1, 60)
     );
     let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
     assert!(field.contains("myhost:11434"), "unmasked: {field:?}");
@@ -273,7 +275,7 @@ fn render_live_shows_the_onboarding_when_open() {
     // the provider list.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
     assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'), "filter line");
-    assert!(row(&buf, 4, 60).contains("OpenRouter"), "a provider row");
+    assert!(row(&buf, 3, 60).contains("OpenRouter"), "a provider row");
 }
 
 #[test]
@@ -305,13 +307,13 @@ fn model_picker_shows_a_login_hint_when_no_provider_is_configured() {
     let picker = app.model_picker.as_ref().unwrap();
     let mut buf = buffer(60, 12);
     render_model_picker(buf.area, &mut buf, picker);
-    // The list area (row 4) points at /login, in cyan (not a red error).
-    let list = row(&buf, 4, 60);
+    // The list area (row 3) points at /login, in cyan (not a red error).
+    let list = row(&buf, 3, 60);
     assert!(list.contains("run /login"), "{list:?}");
-    assert_eq!(buf[(2, 4)].fg, model_selected_color());
-    // No counter or model-name line when there's nothing selectable.
-    assert!(row(&buf, 7, 60).trim().is_empty(), "no counter");
-    assert!(row(&buf, 9, 60).trim().is_empty(), "no model name");
+    assert_eq!(buf[(2, 3)].fg, model_selected_color());
+    // No counter or model-name line when there's nothing selectable: the
+    // hint closes the frame.
+    assert!(row(&buf, 4, 60).starts_with('─'), "the bottom rule follows");
 }
 
 fn login_app_key() -> App {
@@ -337,17 +339,15 @@ fn an_unmatched_provider_filter_collapses_to_placeholder_and_hint() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
+    assert_eq!(texts.len(), 8, "the collapsed page is 8 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert!(texts[2].contains('❯'), "{texts:?}");
-    assert_eq!(texts[3], "", "{texts:?}");
-    assert!(texts[4].contains("No matching providers"), "{texts:?}");
-    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[6].contains("Keys are saved"), "the hint: {texts:?}");
-    assert!(texts[7].contains("esc back"), "the key hint: {texts:?}");
-    assert_eq!(texts[8], "", "{texts:?}");
-    assert!(is_rule(&texts[9]), "{texts:?}");
+    assert!(texts[1].contains('❯'), "{texts:?}");
+    assert_eq!(texts[2], "", "{texts:?}");
+    assert!(texts[3].contains("No matching providers"), "{texts:?}");
+    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[5].contains("Keys are saved"), "the hint: {texts:?}");
+    assert!(texts[6].contains("esc back"), "the key hint: {texts:?}");
+    assert!(is_rule(&texts[7]), "{texts:?}");
 }
 
 #[test]
@@ -425,8 +425,8 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
 
 #[test]
 fn the_method_step_offers_the_two_ways_in_with_no_counter() {
-    // The root question: rule(0) gap(1) ❯(2) gap(3) rows(4,5) gap(6) hint(7)
-    // gap(8) rule(9). No title — the two rows *are* the question — and no
+    // The root question: rule(0) ❯(1) gap(2) rows(3,4) gap(5) hint(6)
+    // rule(7). No title — the two rows *are* the question — and no
     // `(1/2)` counter, which would say nothing they don't.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
@@ -434,12 +434,12 @@ fn the_method_step_offers_the_two_ways_in_with_no_counter() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts.len(), 10, "{texts:?}");
-    assert!(texts[2].contains('❯'), "{texts:?}");
-    assert_eq!(texts[4], "→ Use a subscription", "{texts:?}");
-    assert_eq!(texts[5], "  Use an API key", "{texts:?}");
-    assert!(texts[7].contains("↑↓ navigate"), "{texts:?}");
-    assert!(texts[7].contains("escape/ctrl+c cancel"), "{texts:?}");
+    assert_eq!(texts.len(), 8, "{texts:?}");
+    assert!(texts[1].contains('❯'), "{texts:?}");
+    assert_eq!(texts[3], "→ Use a subscription", "{texts:?}");
+    assert_eq!(texts[4], "  Use an API key", "{texts:?}");
+    assert!(texts[6].contains("↑↓ navigate"), "{texts:?}");
+    assert!(texts[6].contains("escape/ctrl+c cancel"), "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains("(1/2)")),
         "no counter on the root: {texts:?}"
@@ -453,7 +453,7 @@ fn the_subscription_step_lists_each_row_under_its_filter() {
     let mut buf = buffer(70, 10);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(row(&buf, LOGIN_SEARCH_ROW, 70).contains('❯'), "the filter");
-    let entry = row(&buf, 4, 70);
+    let entry = row(&buf, 3, 70);
     assert!(entry.starts_with("→ GitHub Copilot"), "{entry:?}");
     assert!(
         !entry.contains("Sign in with your GitHub account"),
@@ -463,8 +463,8 @@ fn the_subscription_step_lists_each_row_under_its_filter() {
         entry.contains("✔ configured"),
         "already signed in: {entry:?}"
     );
-    assert!(row(&buf, 5, 70).contains("(1/1)"), "the counter");
-    assert!(row(&buf, 7, 70).contains("enter sign in"), "the hint");
+    assert!(row(&buf, 4, 70).contains("(1/1)"), "the counter");
+    assert!(row(&buf, 6, 70).contains("enter sign in"), "the hint");
 }
 
 #[test]
@@ -489,7 +489,7 @@ fn a_subscription_is_still_findable_by_words_the_row_no_longer_shows() {
     // And the row it finds still shows none of those words.
     let mut buf = buffer(70, 10);
     render_key_onboarding(buf.area, &mut buf, app.key_onboarding.as_ref().unwrap());
-    let entry = row(&buf, 4, 70);
+    let entry = row(&buf, 3, 70);
     assert!(entry.contains("GitHub Copilot"), "{entry:?}");
     assert!(!entry.contains("Sign in with your"), "{entry:?}");
 }
@@ -503,19 +503,19 @@ fn the_device_page_shows_the_url_and_the_code_in_a_box() {
     let mut buf = buffer(72, 16);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(
-        row(&buf, 2, 72).contains("Sign in to GitHub Copilot"),
+        row(&buf, 1, 72).contains("Sign in to GitHub Copilot"),
         "title"
     );
     assert!(
-        painted_title_wears_the_dress(&buf, 2),
+        painted_title_wears_the_dress(&buf, 1),
         "titles wear the theme's gradient"
     );
     assert!(
-        row(&buf, 4, 72).contains("Visit https://github.com/login/device"),
+        row(&buf, 3, 72).contains("Visit https://github.com/login/device"),
         "{:?}",
-        row(&buf, 4, 72)
+        row(&buf, 3, 72)
     );
-    assert!(row(&buf, 5, 72).contains("and enter this one-time code"));
+    assert!(row(&buf, 4, 72).contains("and enter this one-time code"));
     // The rounded box, sized to the code (9 glyphs + 2 pad each side = 13).
     let box_row = code_box_row(&buf, 72);
     let top = row(&buf, box_row, 72);
@@ -524,12 +524,16 @@ fn the_device_page_shows_the_url_and_the_code_in_a_box() {
     assert!(middle.contains("│  C363-262E  │"), "{middle:?}");
     assert!(row(&buf, box_row + 2, 72).contains("╰─────────────╯"));
     assert!(
-        row(&buf, 11, 72).contains("Waiting for approval"),
+        row(&buf, 10, 72).contains("Waiting for approval"),
         "the wait"
     );
     assert!(
-        row(&buf, 13, 72).contains("c copy code  esc cancel"),
+        row(&buf, 12, 72).contains("c copy code  esc cancel"),
         "the hint"
+    );
+    assert!(
+        row(&buf, 13, 72).starts_with('─'),
+        "the hint closes the frame"
     );
 }
 
@@ -622,7 +626,7 @@ fn a_device_page_with_no_code_yet_still_frames_itself() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert!(texts[2].contains("Sign in to GitHub Copilot"), "{texts:?}");
+    assert!(texts[1].contains("Sign in to GitHub Copilot"), "{texts:?}");
     assert!(
         texts.iter().any(|t| t.contains("Requesting a code")),
         "{texts:?}"
@@ -787,9 +791,9 @@ fn no_device_page_ever_stacks_two_blank_rows() {
 
 #[test]
 fn the_waiting_page_is_title_status_hint_and_nothing_else() {
-    // The exact shape asked for: rule, gap, title, gap, status, gap, hint,
-    // gap, rule — no rows held open for a URL and a code box that do not
-    // exist yet.
+    // The exact shape asked for: rule, title, gap, status, gap, hint, rule —
+    // no rows held open for a URL and a code box that do not exist yet, and
+    // no padding row just inside either rule.
     use crate::ui::login_view::key_onboarding_lines;
     let mut app = login_app_subscription();
     {
@@ -806,16 +810,14 @@ fn the_waiting_page_is_title_status_hint_and_nothing_else() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 9, "{texts:?}");
+    assert_eq!(texts.len(), 7, "{texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert!(texts[2].contains("Sign in to GitHub Copilot"), "{texts:?}");
-    assert_eq!(texts[3], "", "{texts:?}");
-    assert!(texts[4].contains("Requesting a code"), "{texts:?}");
-    assert_eq!(texts[5], "", "{texts:?}");
-    assert!(texts[6].contains("c copy code"), "{texts:?}");
-    assert_eq!(texts[7], "", "{texts:?}");
-    assert!(is_rule(&texts[8]), "{texts:?}");
+    assert!(texts[1].contains("Sign in to GitHub Copilot"), "{texts:?}");
+    assert_eq!(texts[2], "", "{texts:?}");
+    assert!(texts[3].contains("Requesting a code"), "{texts:?}");
+    assert_eq!(texts[4], "", "{texts:?}");
+    assert!(texts[5].contains("c copy code"), "{texts:?}");
+    assert!(is_rule(&texts[6]), "{texts:?}");
 }
 
 #[test]
@@ -862,7 +864,7 @@ fn the_device_pages_hidden_cursor_parks_off_the_code() {
 
 #[test]
 fn the_device_seat_does_not_move_when_the_code_arrives() {
-    // The page grows from 9 rows to 16 when GitHub answers. A seat measured
+    // The page grows from 7 rows to 14 when GitHub answers. A seat measured
     // from the frame's top is the same screen row across that change, so the
     // trail fires once at most — a seat further down jumps with the growth,
     // and the countdown re-arms a frame every 32ms behind it.
@@ -996,12 +998,12 @@ fn the_two_list_steps_open_straight_onto_their_filter() {
     // The subscription and provider pages used to repeat the method row that
     // opened them as a cyan heading. It says nothing the hint under the list
     // and the rows themselves don't, and it pushed every row two lines down —
-    // so all three lists are one shape now: rule, gap, filter.
+    // so all three lists are one shape now: rule, filter.
     for app in [login_app_subscription(), login_app_provider()] {
         let onboarding = app.key_onboarding.as_ref().unwrap();
         let texts = page_texts(onboarding, 70);
         assert!(
-            texts[2].contains('❯'),
+            texts[1].contains('❯'),
             "the filter is the first content row: {texts:?}"
         );
         for heading in ["Use a subscription", "Use an API key"] {
@@ -1015,8 +1017,8 @@ fn the_two_list_steps_open_straight_onto_their_filter() {
     // set, not a heading over one.
     let app = login_app();
     let texts = page_texts(app.key_onboarding.as_ref().unwrap(), 70);
-    assert!(texts[2].contains('❯'), "{texts:?}");
-    assert!(texts[4].contains("Use a subscription"), "{texts:?}");
+    assert!(texts[1].contains('❯'), "{texts:?}");
+    assert!(texts[3].contains("Use a subscription"), "{texts:?}");
 }
 
 // --- the key step introduces the provider it is asking for (docs/llm.md) ---
@@ -1167,8 +1169,8 @@ fn a_provider_is_findable_by_the_words_of_its_description() {
 
 #[test]
 fn the_sign_in_method_choice_is_a_titled_two_row_question() {
-    // The exact shape: rule(0) gap(1) title(2) gap(3) rows(4,5) gap(6)
-    // hint(7) gap(8) rule(9). A title, because the two rows answer a question
+    // The exact shape: rule(0) title(1) gap(2) rows(3,4) gap(5) hint(6)
+    // rule(7). A title, because the two rows answer a question
     // the subscription list did not ask; no `❯` filter and no `(1/2)`
     // counter, because a question with two answers is not searched.
     use crate::ui::login_view::key_onboarding_lines;
@@ -1180,19 +1182,17 @@ fn the_sign_in_method_choice_is_a_titled_two_row_question() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 10, "{texts:?}");
-    assert!(is_rule(&texts[0]) && is_rule(&texts[9]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert_eq!(texts[2].trim(), "Select ChatGPT Codex login method:");
-    assert_eq!(texts[3], "", "{texts:?}");
-    assert_eq!(texts[4], "→ Browser login (default)", "{texts:?}");
-    assert_eq!(texts[5], "  Device code login (headless)", "{texts:?}");
-    assert_eq!(texts[6], "", "{texts:?}");
+    assert_eq!(texts.len(), 8, "{texts:?}");
+    assert!(is_rule(&texts[0]) && is_rule(&texts[7]), "{texts:?}");
+    assert_eq!(texts[1].trim(), "Select ChatGPT Codex login method:");
+    assert_eq!(texts[2], "", "{texts:?}");
+    assert_eq!(texts[3], "→ Browser login (default)", "{texts:?}");
+    assert_eq!(texts[4], "  Device code login (headless)", "{texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
     assert_eq!(
-        texts[7].trim(),
+        texts[6].trim(),
         "↑↓ navigate  enter select  escape/ctrl+c cancel"
     );
-    assert_eq!(texts[8], "", "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains('❯')),
         "no filter: {texts:?}"
@@ -1204,10 +1204,10 @@ fn the_sign_in_method_choice_is_a_titled_two_row_question() {
     // The title wears the pages' title dress, the highlighted row the
     // selection accent, the other row the plain name colour — the root's
     // rows exactly.
-    assert!(wears_the_title_dress(&lines[2]), "{:?}", lines[2]);
-    assert_eq!(span_fg(&lines[4], "Browser"), Some(model_selected_color()));
-    assert_ne!(span_fg(&lines[5], "Device"), Some(model_selected_color()));
-    assert_eq!(span_fg(&lines[7], "navigate"), Some(model_meta_color()));
+    assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+    assert_eq!(span_fg(&lines[3], "Browser"), Some(model_selected_color()));
+    assert_ne!(span_fg(&lines[4], "Device"), Some(model_selected_color()));
+    assert_eq!(span_fg(&lines[6], "navigate"), Some(model_meta_color()));
 }
 
 #[test]
@@ -1218,14 +1218,14 @@ fn the_highlight_follows_the_selection_on_the_method_choice() {
     let mut buf = buffer(76, 10);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(
-        row(&buf, 4, 76).starts_with("  Browser login (default)"),
+        row(&buf, 3, 76).starts_with("  Browser login (default)"),
         "{:?}",
-        row(&buf, 4, 76)
+        row(&buf, 3, 76)
     );
     assert!(
-        row(&buf, 5, 76).starts_with("→ Device code login (headless)"),
+        row(&buf, 4, 76).starts_with("→ Device code login (headless)"),
         "{:?}",
-        row(&buf, 5, 76)
+        row(&buf, 4, 76)
     );
 }
 
@@ -1252,7 +1252,7 @@ fn a_long_subscription_name_still_fits_the_method_title() {
         "A Subscription With A Very Long Name Indeed".into();
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let lines = key_onboarding_lines(onboarding, 30);
-    let title = plain(&lines[2]);
+    let title = plain(&lines[1]);
     assert!(crate::ui::wrap::cols(&title) <= 30, "{title:?}");
     assert!(title.contains('…'), "{title:?}");
 }

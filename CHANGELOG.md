@@ -29,6 +29,15 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Pickers, menus and prompts no longer pad their frames.** Every inline
+  page that takes the composer's place, from `/model`, `/login` and
+  `/settings` to the `/hooks` and `/mcp` menus, the ↓ background manager and
+  the permission and question prompts, used to leave a blank line under its
+  top rule and another over its bottom one. Both are gone: the search line or
+  title now starts right under the top rule and the last line sits right on
+  the bottom one, so each page is two lines shorter and leaves more of the
+  conversation on screen. The blank lines between a page's own sections are
+  unchanged (`docs/view-flow.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or

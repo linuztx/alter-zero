@@ -10,13 +10,17 @@ use crate::ui::theme::{
     model_meta_color, model_selected_color, settings_value_color, settings_value_off_color,
 };
 
-/// The page row the first skill sits on: top rule (0), gap (1), title (2),
-/// count (3), gap (4), search (5), gap (6) — the session-off note, when it
-/// applies, takes rows under the count.
-const FIRST_ROW: u16 = 7;
+/// The page row the first skill sits on: top rule (0), title (1), count (2),
+/// gap (3), search (4), gap (5) — the session-off note, when it applies,
+/// takes rows under the count.
+const FIRST_ROW: u16 = 6;
 
 /// The page row the `❯` search line sits on when no note is shown.
-const SEARCH_ROW: u16 = 5;
+const SEARCH_ROW: u16 = 4;
+
+/// The page row the header's count line sits on: top rule (0), title (1),
+/// count (2).
+const COUNT_ROW: usize = 2;
 
 fn meta(name: &str, description: &str) -> SkillMetadata {
     SkillMetadata {
@@ -99,21 +103,20 @@ fn colour_at(buf: &Buffer, y: u16, width: u16, needle: &str) -> ratatui::style::
 
 #[test]
 fn the_page_opens_on_a_title_over_the_skill_count() {
-    // The pages' header (`/hooks`, `/mcp`): a gap under the top rule, the
-    // title in the pages' one title dress, the catalog's size under it, then
-    // a gap and the search line.
+    // The pages' header (`/hooks`, `/mcp`): the title flush under the top
+    // rule in the pages' one title dress, the catalog's size under it, then a
+    // gap and the search line.
     let app = skills_app();
     let lines = crate::ui::skills_view::skills_view_lines(&app, 78);
     let texts: Vec<String> = lines
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts[1], "", "a gap under the top rule: {texts:?}");
-    assert_eq!(texts[2], format!("  {SKILLS_TITLE}"), "{texts:?}");
-    assert!(wears_the_title_dress(&lines[2]), "{:?}", lines[2]);
-    assert_eq!(texts[3], "  2 skills · 1 enabled", "{texts:?}");
-    assert_eq!(texts[4], "", "{texts:?}");
-    assert!(texts[5].contains('❯'), "the search line follows: {texts:?}");
+    assert_eq!(texts[1], format!("  {SKILLS_TITLE}"), "{texts:?}");
+    assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+    assert_eq!(texts[2], "  2 skills · 1 enabled", "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains('❯'), "the search line follows: {texts:?}");
 }
 
 #[test]
@@ -125,9 +128,9 @@ fn the_count_line_is_dim_and_counts_the_catalog_not_the_search() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    assert_eq!(row(&buf, 3, 78).trim_end(), "  2 skills · 1 enabled");
+    assert_eq!(row(&buf, 2, 78).trim_end(), "  2 skills · 1 enabled");
     assert_eq!(
-        buf[(2, 3)].fg,
+        buf[(2, 2)].fg,
         model_meta_color(),
         "dim, like /hooks' count"
     );
@@ -137,14 +140,14 @@ fn the_count_line_is_dim_and_counts_the_catalog_not_the_search() {
 fn the_count_follows_a_toggle_in_the_same_frame() {
     let mut app = skills_app();
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(page(&app, 78)[3], "  2 skills · 0 enabled");
+    assert_eq!(page(&app, 78)[COUNT_ROW], "  2 skills · 0 enabled");
 }
 
 #[test]
 fn a_lone_skill_is_counted_in_the_singular() {
     let mut app = App::new();
     app.open_skills_menu(vec![meta("pdf", "d")], Default::default(), true, vec![]);
-    assert_eq!(page(&app, 78)[3], "  1 skill · 1 enabled");
+    assert_eq!(page(&app, 78)[COUNT_ROW], "  1 skill · 1 enabled");
 }
 
 #[test]
@@ -158,7 +161,7 @@ fn an_empty_catalog_counts_zero_with_no_enabled_clause() {
         true,
         vec!["~/.claude/skills".to_string()],
     );
-    assert_eq!(page(&app, 78)[3], "  0 skills");
+    assert_eq!(page(&app, 78)[COUNT_ROW], "  0 skills");
 }
 
 #[test]
@@ -329,19 +332,17 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     app.skills_menu.as_mut().expect("open").query = "zzz".to_string();
     let texts = page(&app, 78);
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 12, "the collapsed page is 12 rows: {texts:?}");
+    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert_eq!(texts[2], format!("  {SKILLS_TITLE}"), "{texts:?}");
-    assert_eq!(texts[3], "  2 skills · 1 enabled", "{texts:?}");
-    assert_eq!(texts[4], "", "{texts:?}");
-    assert!(texts[5].contains('❯'), "{texts:?}");
-    assert_eq!(texts[6], "", "{texts:?}");
-    assert!(texts[7].contains(SKILLS_NO_MATCH), "{texts:?}");
-    assert_eq!(texts[8], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[9].contains("Type to search"), "{texts:?}");
-    assert_eq!(texts[10], "", "{texts:?}");
-    assert!(is_rule(&texts[11]), "{texts:?}");
+    assert_eq!(texts[1], format!("  {SKILLS_TITLE}"), "{texts:?}");
+    assert_eq!(texts[2], "  2 skills · 1 enabled", "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains('❯'), "{texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
+    assert!(texts[6].contains(SKILLS_NO_MATCH), "{texts:?}");
+    assert_eq!(texts[7], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[8].contains("Type to search"), "{texts:?}");
+    assert!(is_rule(&texts[9]), "{texts:?}");
 }
 
 #[test]
@@ -349,9 +350,9 @@ fn the_session_off_note_joins_the_header_only_when_it_applies() {
     // On: the count line, one gap, the search line — no row spent on a note.
     let on = skills_app();
     let texts = page(&on, 78);
-    assert_eq!(texts[3], "  2 skills · 1 enabled", "{texts:?}");
-    assert_eq!(texts[4], "", "one gap under the header: {texts:?}");
-    assert!(texts[5].contains('❯'), "{texts:?}");
+    assert_eq!(texts[2], "  2 skills · 1 enabled", "{texts:?}");
+    assert_eq!(texts[3], "", "one gap under the header: {texts:?}");
+    assert!(texts[4].contains('❯'), "{texts:?}");
 
     // Off, the note sits right under the count: it says what state the
     // catalog is in, so it belongs to the header — not wedged between the
@@ -367,10 +368,10 @@ fn the_session_off_note_joins_the_header_only_when_it_applies() {
         vec!["~/.claude/skills".to_string()],
     );
     let texts = page(&off, 78);
-    assert_eq!(texts[3], "  1 skill · 1 enabled", "{texts:?}");
-    assert!(texts[4].contains(SKILLS_SESSION_OFF), "{texts:?}");
-    assert_eq!(texts[5], "", "{texts:?}");
-    assert!(texts[6].contains('❯'), "{texts:?}");
+    assert_eq!(texts[2], "  1 skill · 1 enabled", "{texts:?}");
+    assert!(texts[3].contains(SKILLS_SESSION_OFF), "{texts:?}");
+    assert_eq!(texts[4], "", "{texts:?}");
+    assert!(texts[5].contains('❯'), "{texts:?}");
 }
 
 #[test]
@@ -565,7 +566,7 @@ fn the_cursor_sits_at_the_end_of_the_search_query() {
 fn the_cursor_finds_the_search_line_under_a_wrapped_session_note() {
     // The note joins the header and wraps with the width, so the search
     // line's row is found in the page the paint builds, never counted: at 40
-    // columns the note takes two rows and pushes the search line to row 7.
+    // columns the note takes two rows and pushes the search line to row 6.
     let mut app = skills_app();
     app.skills_menu.as_mut().expect("open").session_enabled = false;
     let width = 40;
@@ -574,7 +575,7 @@ fn the_cursor_finds_the_search_line_under_a_wrapped_session_note() {
         .iter()
         .position(|t| t.contains('❯'))
         .expect("the search line");
-    assert_eq!(search, 7, "below a two-row note: {texts:?}");
+    assert_eq!(search, 6, "below a two-row note: {texts:?}");
     let height = skills_menu_height(&app, width, 200).expect("open");
     let (_, y) = cursor_position(Rect::new(0, 0, width, height), &app);
     assert_eq!(usize::from(y), search, "the caret sits on the drawn line");

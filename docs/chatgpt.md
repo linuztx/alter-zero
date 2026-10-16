@@ -216,14 +216,12 @@ for, verbatim:
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   Select ChatGPT Codex login method:
 
 → Browser login (default)
   Device code login (headless)
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 

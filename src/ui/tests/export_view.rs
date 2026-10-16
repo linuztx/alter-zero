@@ -204,11 +204,13 @@ fn no_page_ever_stacks_two_blank_rows() {
                     "width {width} selection {selected} stacked two blank rows: {texts:?}"
                 );
             }
-            assert_eq!(texts[1], "", "one gap under the top rule: {texts:?}");
-            assert_eq!(
+            // …and none just inside either rule: the title sits flush under
+            // the top one and the hint flush on the bottom one.
+            assert_ne!(texts[1], "", "no gap under the top rule: {texts:?}");
+            assert_ne!(
                 texts[texts.len() - 2],
                 "",
-                "one gap over the bottom rule: {texts:?}"
+                "no gap over the bottom rule: {texts:?}"
             );
         }
     }

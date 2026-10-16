@@ -5,15 +5,19 @@ use crate::ui::theme::{
     MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, MODEL_SEARCH_ROW, error_color, model_selected_color,
 };
 
+/// The row the list (or its placeholder) opens on: top rule (0), search (1),
+/// gap (2), list (3).
+const LIST_ROW: u16 = MODEL_SEARCH_ROW + 2;
+
 #[test]
 fn model_picker_frames_with_rules_and_no_header() {
     let picker = model_picker(three_models(), 0, "anthropic/claude-3-haiku");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // Top rule, then a blank gap where the old "Showing models…" banner was.
+    // Top rule, then — with no header banner and no blank padding row — the
+    // search line, flush under it.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, 1, 60).trim().is_empty(), "no header banner");
-    // The search line moved up to row 2.
+    assert_eq!(MODEL_SEARCH_ROW, 1, "the search line is the first row");
     assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
 }
 
@@ -32,23 +36,22 @@ fn model_picker_shows_the_search_prompt_and_query() {
 #[test]
 fn model_picker_counter_and_name_reflect_the_selection() {
     let picker = model_picker(three_models(), 2, "x");
-    // Size the buffer to the picker's natural height (9 chrome + 3 list),
+    // Size the buffer to the picker's natural height (7 chrome + 3 list),
     // like the boundary does — otherwise the Min(0) list would expand and
     // push the counter/name rows down.
-    let mut buf = buffer(60, 12);
+    let mut buf = buffer(60, 10);
     render_model_picker(buf.area, &mut buf, &picker);
-    // Counter row = top(0) gap(1) search(2) gap(3) list(4,5,6) → 7.
-    let counter = row(&buf, 7, 60);
+    // Counter row = top(0) search(1) gap(2) list(3,4,5) → 6.
+    let counter = row(&buf, 6, 60);
     assert!(counter.contains("(3/3)"), "{counter:?}");
-    // Model-name row = counter(7) + gap(8) + 1 = 9.
-    let name = row(&buf, 9, 60);
+    // Model-name row = counter(6) + gap(7) + 1 = 8.
+    let name = row(&buf, 8, 60);
     assert!(
         name.contains("Model Name: MoonshotAI: Kimi K2.6"),
         "{name:?}"
     );
-    // A trailing blank gap (the user's mock), then the bottom rule last.
-    assert!(row(&buf, 10, 60).trim().is_empty(), "trailing gap");
-    assert!(row(&buf, 11, 60).starts_with('─'), "bottom rule");
+    // The bottom rule closes straight under the name (the user's mock).
+    assert!(row(&buf, 9, 60).starts_with('─'), "bottom rule");
 }
 
 #[test]
@@ -68,8 +71,10 @@ fn model_list_keeps_the_selection_centered_not_pinned_to_an_edge() {
     let picker = model_picker(models, 15, "x");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // The list spans rows 4..14 — top(0) gap(1) search(2) gap(3) then 10 rows.
-    let list: Vec<String> = (4..14).map(|y| row(&buf, y, 60)).collect();
+    // The list spans rows 3..13 — top(0) search(1) gap(2) then 10 rows.
+    let list: Vec<String> = (LIST_ROW..LIST_ROW + 10)
+        .map(|y| row(&buf, y, 60))
+        .collect();
     // The highlight lands on the middle row of the window (max/2), carrying
     // the `→` marker — centered, not jammed against the bottom edge.
     let middle = &list[MODEL_MENU_MAX_ROWS as usize / 2];
@@ -96,30 +101,31 @@ fn model_picker_shows_a_loading_placeholder() {
     assert_eq!(picker.status, ModelLoad::Loading);
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let list = row(&buf, 4, 60);
+    let list = row(&buf, LIST_ROW, 60);
     assert!(list.contains("Loading models…"), "{list:?}");
 }
 
 #[test]
-fn model_picker_placeholder_collapses_to_a_single_trailing_gap() {
+fn model_picker_placeholder_closes_the_frame() {
     // A placeholder state (loading / error / no match) has no counter or
-    // model-name to show, so those detail rows collapse: exactly one blank
-    // gap sits between the placeholder and the bottom rule — not the four
-    // trailing blanks the counter/gap/name/gap layout leaves for a real
-    // model. Size the buffer to the picker's natural height so the Min(0)
-    // list can't expand into the gap.
+    // model-name to show, so those detail rows don't exist at all: the
+    // placeholder sits flush on the bottom rule — not over the blank rows
+    // the counter/gap/name layout spends on a real model. Size the buffer to
+    // the picker's natural height so the Min(0) list can't expand.
     let picker = ModelPicker {
         active_id: "x".into(),
         ..ModelPicker::default()
     };
     assert_eq!(picker.status, ModelLoad::Loading);
-    // 6 collapsed chrome rows + 1 placeholder list row = 7.
-    let mut buf = buffer(60, 7);
+    // 4 chrome rows (rule, search, gap, rule) + 1 placeholder list row = 5.
+    let mut buf = buffer(60, 5);
     render_model_picker(buf.area, &mut buf, &picker);
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, 4, 60).contains("Loading models…"), "list row");
-    assert!(row(&buf, 5, 60).trim().is_empty(), "single trailing gap");
-    assert!(row(&buf, 6, 60).starts_with('─'), "bottom rule");
+    assert!(
+        row(&buf, LIST_ROW, 60).contains("Loading models…"),
+        "list row"
+    );
+    assert!(row(&buf, LIST_ROW + 1, 60).starts_with('─'), "bottom rule");
 }
 
 #[test]
@@ -131,9 +137,9 @@ fn model_picker_shows_an_error_placeholder_in_red() {
     };
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let list = row(&buf, 4, 60);
+    let list = row(&buf, LIST_ROW, 60);
     assert!(list.contains("Error: 401 bad key"), "{list:?}");
-    assert_eq!(buf[(2, 4)].fg, error_color());
+    assert_eq!(buf[(2, LIST_ROW)].fg, error_color());
 }
 
 #[test]
@@ -142,7 +148,7 @@ fn model_picker_shows_no_match_when_the_query_filters_everything() {
     picker.query = "zzzz".into();
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    assert!(row(&buf, 4, 60).contains("No matching models"));
+    assert!(row(&buf, LIST_ROW, 60).contains("No matching models"));
 }
 
 #[test]
@@ -155,7 +161,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     picker.pending = 1;
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let loading = row(&buf, 4, 60);
+    let loading = row(&buf, LIST_ROW, 60);
     assert!(loading.contains("Loading models…"), "{loading:?}");
     assert!(!loading.contains("No matching models"), "{loading:?}");
 
@@ -163,7 +169,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     picker.pending = 0;
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let settled = row(&buf, 4, 60);
+    let settled = row(&buf, LIST_ROW, 60);
     assert!(settled.contains("No matching models"), "{settled:?}");
 }
 
@@ -242,7 +248,7 @@ fn a_cut_model_id_ends_with_an_ellipsis() {
     let picker = model_picker(models, 0, "x");
     let mut buf = buffer(40, 14);
     render_model_picker(buf.area, &mut buf, &picker);
-    let first = row(&buf, 4, 40);
+    let first = row(&buf, LIST_ROW, 40);
     assert!(
         first.contains('…') && first.contains("[openrouter]"),
         "the id marks its cut and the tag keeps its seat: {first:?}"

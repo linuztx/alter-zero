@@ -405,9 +405,9 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
 /// **No `❯` filter and no counter.** Two rows are a question, not a list to
 /// search, and the page exists so the row's Enter can ask it rather than
 /// silently opening one flow and hiding the other. Built as blocks like the
-/// sign-in page, so the shape is rule, gap, title, gap, rows, gap, hint, gap,
-/// rule — the shape the user asked for, and the one `smoke.sh` Phase 119
-/// reads back.
+/// sign-in page, so the shape is rule, title, gap, rows, gap, hint, rule —
+/// the shape the user asked for, and the one `smoke.sh` Phase 119 reads
+/// back.
 fn signin_method_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     let name = onboarding
         .chosen_subscription()
@@ -436,22 +436,23 @@ fn signin_method_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<
     )
 }
 
-/// A framed `/login` page built from content **blocks**: top rule, gap, each
-/// non-empty block separated by exactly one blank row, gap, bottom rule.
+/// A framed `/login` page built from content **blocks**: top rule, each
+/// non-empty block separated by exactly one blank row, bottom rule — the
+/// first block flush under the top rule and the last flush on the bottom one
+/// (`docs/view-flow.md` *The frame*).
 ///
 /// An empty block contributes nothing at all, which is what lets a page grow
 /// and shrink without leaving a band of blanks behind — the sign-in page
 /// before its code has arrived, the key page of a provider the file describes
 /// in no words.
 fn login_page(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![model_rule(width), Line::default()];
+    let mut lines = vec![model_rule(width)];
     for (i, block) in blocks.into_iter().filter(|b| !b.is_empty()).enumerate() {
         if i > 0 {
             lines.push(Line::default());
         }
         lines.extend(block);
     }
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }
@@ -488,9 +489,8 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
     model_linked_rows(&text, model_meta_color(), width)
 }
 
-/// A `/login` list page: top rule, gap, the `❯` filter, gap, the windowed
-/// list, a `(n/total)` counter, gap, the step's dim hint rows, gap, bottom
-/// rule.
+/// A `/login` list page: top rule, the `❯` filter, gap, the windowed list, a
+/// `(n/total)` counter, gap, the step's dim hint rows, bottom rule.
 ///
 /// **No title.** The two lists below the root used to repeat the method row
 /// that opened them (`Use a subscription` / `Use an API key`) as a cyan
@@ -499,7 +499,7 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
 /// with a running turn. All three lists are one shape now, and the root never
 /// had one to begin with: there its two rows *are* the question.
 fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![model_rule(width), Line::default()];
+    let mut lines = vec![model_rule(width)];
     lines.push(login_prompt_line(Line::from(onboarding.query.clone())));
     lines.push(Line::default());
     lines.extend(login_list_lines(onboarding, width));
@@ -533,7 +533,6 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
     // `…`-cut at a narrow width costs nothing the path row above it doesn't
     // already say.
     lines.push(model_placeholder_row(hint, model_meta_color(), width));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }
@@ -557,7 +556,7 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
             Some(device) => device_page_lines(device, width),
             // Unreachable in practice (the step and the page open together),
             // but a torn-down page must never paint a frameless void.
-            None => vec![model_rule(width), Line::default(), model_rule(width)],
+            None => vec![model_rule(width), model_rule(width)],
         },
         KeyStep::Key => {
             let chosen = onboarding.chosen_provider();

@@ -144,7 +144,8 @@ fn preview_line(spinner: Spinner, elapsed: Duration, width: u16) -> Line<'static
 /// The whole framed page as lines: a top rule, the `❯` search line, the
 /// style rows (each wearing its own live spinner), the `(n/total)` counter,
 /// the **live status-line preview**, the highlighted style's description,
-/// the key hint, and a bottom rule — blank-gapped like its family. What
+/// the key hint, and a bottom rule — blank-gapped like its family, flush
+/// against both rules (`docs/view-flow.md` *The frame*). What
 /// [`render_spinner_picker`] paints (bottom-anchored) and
 /// [`spinner_menu_rows`] counts, so the reserved height and the painted rows
 /// can never disagree (`docs/view-flow.md`). Empty when the picker is closed.
@@ -167,12 +168,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.spinner);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(spinner_list_lines(&rows, selected, elapsed, width));
     match highlighted {
         // A real selection: the counter, the live preview and the
@@ -198,7 +194,6 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         model_meta_color(),
         width,
     ));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

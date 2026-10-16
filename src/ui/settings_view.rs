@@ -105,11 +105,12 @@ fn settings_counter_line(rows: &[SettingRow], selected: usize) -> Line<'static> 
 
 /// The whole framed page as lines: a top rule, the `❯` search line, the
 /// windowed setting rows, the `(n/total)` counter, the highlighted row's
-/// description, the key hint, and a bottom rule — blank-gapped exactly as the
-/// retired internal `Layout` stacked them. What [`render_settings`] paints
-/// (bottom-anchored) and [`settings_rows`] counts, so the reserved height and
-/// the painted rows can never disagree — the `/mcp` family's rule
-/// (`docs/view-flow.md`). Empty when the menu is closed.
+/// description, the key hint, and a bottom rule — one blank row between
+/// blocks, none just inside either rule (`docs/view-flow.md` *The frame*).
+/// What [`render_settings`] paints (bottom-anchored) and [`settings_rows`]
+/// counts, so the reserved height and the painted rows can never disagree —
+/// the `/mcp` family's rule (`docs/view-flow.md`). Empty when the menu is
+/// closed.
 pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(picker) = app.settings_picker.as_ref() else {
         return Vec::new();
@@ -122,12 +123,7 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(picker.query.clone()),
     ]);
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(settings_list_lines(&rows, selected, width));
     match highlighted {
         // A real row: the counter and the description name what it does —
@@ -155,7 +151,6 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         model_meta_color(),
         width,
     ));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

@@ -3486,6 +3486,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   three of those four places, is the wrong change — and `fit_cells` must keep
   agreeing with `ratatui_image`'s own `Resize::Fit` to the cell, which its
   differential test is there to keep true.
+- **A framed inline page's rules are its padding** (`docs/view-flow.md` *The
+  frame*). Every composer-replacing page — picker, menu, `/login` page, the ↓
+  band, the permission and ask modals — opens on its first content row
+  directly under the top rule and closes on its last directly over the bottom
+  rule; blank rows only separate blocks *inside* a page. A new page goes into
+  `framed_pages` in `ui/tests/view_flow.rs`, whose family test pins this, and
+  a cursor seat that depends on a row moving with the content is found in the
+  built page, never counted from a frame edge.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt

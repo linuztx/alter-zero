@@ -164,7 +164,8 @@ fn preview_lines(theme: Theme, width: u16) -> Vec<Line<'static>> {
 /// The whole framed page as lines: a top rule, the `❯` search line, the
 /// theme rows (each wearing its own swatch), the `(n/total)` counter, the
 /// **real-cell preview** in the highlighted theme, that theme's description,
-/// the key hint, and a bottom rule — blank-gapped like its family. What
+/// the key hint, and a bottom rule — blank-gapped like its family, flush
+/// against both rules (`docs/view-flow.md` *The frame*). What
 /// [`render_theme_picker`] paints (bottom-anchored) and [`theme_menu_rows`]
 /// counts, so the reserved height and the painted rows can never disagree
 /// (`docs/view-flow.md`). Empty when the picker is closed.
@@ -186,12 +187,7 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.theme);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(theme_list_lines(&rows, selected, width));
     match highlighted {
         // A real selection: the counter, the preview and the description sit
@@ -213,7 +209,6 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         None => lines.push(Line::default()),
     }
     lines.push(model_placeholder_row(THEME_HINT, model_meta_color(), width));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

@@ -113,7 +113,7 @@ fn the_current_chip_lights_on_the_selection_background() {
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
     let lines = ask_lines(&app, 80);
-    let chip_line = &lines[2];
+    let chip_line = &lines[1];
     let current = chip_line
         .spans
         .iter()

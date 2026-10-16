@@ -284,7 +284,6 @@ placeholders (`SubagentConfig::briefing_for`).
 
 ```
 ──────────────────────────────────────────────────────────────────
-
   Secrets
   Credentials the agent uses by placeholder. The values stay out of
   the conversation, the screen and the model's context.
@@ -294,7 +293,6 @@ placeholders (`SubagentConfig::briefing_for`).
     + Add a secret
 
   Enter edit · n new · c copy placeholder · d delete · Esc close
-
 ──────────────────────────────────────────────────────────────────
 ```
 
