@@ -68,13 +68,53 @@ fn a_file_prompt_is_framed_by_rules_around_a_dashed_body() {
 }
 
 #[test]
+fn every_prompt_hugs_its_frame() {
+    // The title straight under the opening rule, the hint row straight over
+    // the closing one — for every kind of request, and while Tab's amend
+    // field stands in for the options.
+    let mut described = request(PermissionKind::Bash, "rm -rf build", "");
+    described.detail = Some("Clear the build directory".to_string());
+    let mut session = request(PermissionKind::Session, "bash_1", "y⏎");
+    session.detail = Some("./configure.sh".to_string());
+    let mut amending = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
+    amending.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    for (what, app) in [
+        (
+            "a write",
+            app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY)),
+        ),
+        (
+            "an edit",
+            app_with(request(PermissionKind::Edit, "script.py", EDIT_BODY)),
+        ),
+        (
+            "a command",
+            app_with(request(PermissionKind::Bash, "ls", "")),
+        ),
+        ("a described command", app_with(described)),
+        (
+            "an MCP call",
+            app_with(request(
+                PermissionKind::Mcp,
+                "mcp__deepwiki__ask_question",
+                "question: \"why?\"",
+            )),
+        ),
+        ("a session's input", app_with(session)),
+        ("the amend field", amending),
+    ] {
+        assert_frame_hugs_content(what, &permission_lines(&app, 70, 40));
+    }
+}
+
+#[test]
 fn the_title_names_the_action_and_the_row_below_it_the_file() {
     let app = app_with(request(PermissionKind::Write, "src/hello.py", WRITE_BODY));
     let lines = rows(&app, 60, 40);
-    assert_eq!(lines[2].trim(), "Create file");
-    assert_eq!(lines[3].trim(), "src/hello.py", "the path, as given");
+    assert_eq!(lines[1].trim(), "Create file", "straight under the rule");
+    assert_eq!(lines[2].trim(), "src/hello.py", "the path, as given");
     let app = app_with(request(PermissionKind::Edit, "script.py", EDIT_BODY));
-    assert_eq!(rows(&app, 60, 40)[2].trim(), "Edit file");
+    assert_eq!(rows(&app, 60, 40)[1].trim(), "Edit file");
 }
 
 #[test]
@@ -84,17 +124,17 @@ fn the_title_is_coloured_and_a_subagent_request_says_who_asked() {
     let app = app_with(req);
     let lines = permission_lines(&app, 80, 40);
     assert_eq!(
-        plain(&lines[2]).trim(),
+        plain(&lines[1]).trim(),
         "Create file · from the general-purpose agent"
     );
     // The action itself is the accent colour; the attribution is dim.
-    let title = lines[2]
+    let title = lines[1]
         .spans
         .iter()
         .find(|s| s.content.contains("Create file"))
         .expect("the title span");
     assert_eq!(title.style.fg, Some(permission_title_color()));
-    let attribution = lines[2]
+    let attribution = lines[1]
         .spans
         .iter()
         .find(|s| s.content.contains("general-purpose"))
@@ -149,7 +189,7 @@ fn a_command_prompt_shows_the_command_its_description_and_the_notice() {
     req.detail = Some("Execute the Python script with empty input".to_string());
     let app = app_with(req);
     let lines = rows(&app, 70, 40);
-    assert_eq!(lines[2].trim(), "Bash command");
+    assert_eq!(lines[1].trim(), "Bash command");
     assert!(
         !lines.iter().any(|l| l.starts_with('╌')),
         "a command has no framed body: {lines:?}"
@@ -192,18 +232,17 @@ fn a_command_with_no_description_skips_that_row() {
 
 #[test]
 fn the_hint_row_offers_ctrl_e_only_for_a_command() {
-    // …on the third-from-last row: hint, blank, rule.
+    // …on the second-from-last row: the hint, straight over the rule.
     let app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
     let lines = rows(&app, 70, 40);
     assert_eq!(
-        lines[lines.len() - 3].trim(),
+        lines[lines.len() - 2].trim(),
         "Esc to cancel · Tab to amend"
     );
-    assert_eq!(lines[lines.len() - 2], "");
     let app = app_with(request(PermissionKind::Bash, "ls", ""));
     let lines = rows(&app, 70, 40);
     assert_eq!(
-        lines[lines.len() - 3].trim(),
+        lines[lines.len() - 2].trim(),
         "Esc to cancel · Tab to amend · ctrl+e to explain"
     );
 }
@@ -271,7 +310,7 @@ fn amending_replaces_the_options_with_the_composer_and_swaps_the_hint() {
         "the typed feedback shows on the composer row: {lines:?}"
     );
     assert_eq!(
-        lines[lines.len() - 3].trim(),
+        lines[lines.len() - 2].trim(),
         "Enter to reject with this feedback · Esc to go back"
     );
 }
@@ -1298,9 +1337,9 @@ fn the_target_row_reads_by_the_cells_path_rule() {
     ));
     app.set_path_display(paths.clone());
     let lines = rows(&app, 60, 40);
-    assert_eq!(lines[2].trim(), "Create file");
+    assert_eq!(lines[1].trim(), "Create file");
     assert_eq!(
-        lines[3].trim(),
+        lines[2].trim(),
         "~/hello.py",
         "the target shortens: {lines:?}"
     );
@@ -1310,10 +1349,10 @@ fn the_target_row_reads_by_the_cells_path_rule() {
         EDIT_BODY,
     ));
     app.set_path_display(paths.clone());
-    assert_eq!(rows(&app, 60, 40)[3].trim(), "script.py");
+    assert_eq!(rows(&app, 60, 40)[2].trim(), "script.py");
     let mut app = app_with(request(PermissionKind::Write, "/tmp/x.py", WRITE_BODY));
     app.set_path_display(paths);
-    assert_eq!(rows(&app, 60, 40)[3].trim(), "/tmp/x.py");
+    assert_eq!(rows(&app, 60, 40)[2].trim(), "/tmp/x.py");
 }
 
 #[test]

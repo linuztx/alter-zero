@@ -186,12 +186,7 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.theme);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(theme_list_lines(&rows, selected, width));
     match highlighted {
         // A real selection: the counter, the preview and the description sit
@@ -213,7 +208,6 @@ pub(super) fn theme_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         None => lines.push(Line::default()),
     }
     lines.push(model_placeholder_row(THEME_HINT, model_meta_color(), width));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

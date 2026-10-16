@@ -189,7 +189,8 @@ fn network_rows(entry: &DonationAddress, width: u16) -> Vec<Line<'static>> {
 /// The whole framed page as lines: a top rule, the gradient title, the dim
 /// blurb, one labelled box per address, the amber caution, the key hint,
 /// and a bottom rule — built as **blocks** joined by exactly one blank row
-/// (the `/login` page rule), so no two blank rows ever stack. What
+/// (the `/login` page rule), so no two blank rows ever stack and none hugs
+/// either rule (`docs/view-flow.md` *The frame hugs its content*). What
 /// [`render_donate_picker`] paints (bottom-anchored) and `donate_menu_rows`
 /// counts, so the reserved height and the painted rows can never disagree
 /// (`docs/view-flow.md`). Empty when the page is closed.
@@ -220,14 +221,13 @@ pub fn donate_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         width,
     )]);
 
-    let mut lines = vec![model_rule(width), Line::default()];
+    let mut lines = vec![model_rule(width)];
     for (i, block) in blocks.into_iter().filter(|b| !b.is_empty()).enumerate() {
         if i > 0 {
             lines.push(Line::default());
         }
         lines.extend(block);
     }
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

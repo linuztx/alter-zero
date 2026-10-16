@@ -24,7 +24,7 @@ while [ $i -lt 900 ]; do
 	sleep 0.05
 done
 EOS
-# 18 rows: shorter than the details page (26 rows at this width), so the top
+# 18 rows: shorter than the details page (24 rows at this width), so the top
 # rule, the title and the whole field block are what the anchor skips.
 launch "$S105" 100 18
 # A committed cell above the band, so the close can be checked to leave the

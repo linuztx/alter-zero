@@ -243,12 +243,13 @@ prompt — the shape the user asked for. It is `App::model_picker: Option<ModelP
 (not a `View`), owned in `on_key` like the Ctrl+R search, and special-cased in
 `ui::render_live` / `ui::live_height` / `ui::cursor_position`.
 
-Layout (headerless — top rule, a blank, the airy codex-style body, a blank, then
-the bottom rule — the shape of the user's mock):
+Layout (headerless — the top rule, the airy codex-style body, then the bottom
+rule, with no blank row hugging either rule: the shape of the user's mock,
+tightened by two rows when the frame stopped padding itself,
+`docs/view-flow.md` *The frame hugs its content*):
 
 ```
 ────────────────────────────────────────────────
-
   ❯ cla                                                  (search prompt, cyan '❯')
 
 → anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
@@ -257,7 +258,6 @@ the bottom rule — the shape of the user's mock):
   (3/12)   ·   loading more…                             (position/total + load status, dim)
 
   Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
-
 ────────────────────────────────────────────────
 ```
 
@@ -361,12 +361,13 @@ the bottom rule — the shape of the user's mock):
   the `❯` search line sits directly under the top rule; the selection marker is `→`.
 - The counter + `Model Name:` rows show **only when a real model is highlighted**.
   A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
-  `No matching models`) has no counter or name, so those rows collapse to a single
-  gap above the bottom rule — the box hugs the placeholder instead of leaving four
-  blank rows (`model_has_detail`, branched inside the `model_view_lines` builder —
-  the picker is a content-driven framed body now, its height the built line
-  count, painted bottom-anchored with the skipped top flowing into scrollback
-  like every framed view; `docs/view-flow.md`). The `/login` provider step
+  `No matching models`) has no counter or name, so those rows collapse away and
+  the placeholder closes the page against the bottom rule — the box hugs the
+  placeholder instead of leaving a band of blank rows (`model_has_detail`,
+  branched inside the `model_view_lines` builder — the picker is a
+  content-driven framed body now, its height the built line count, painted
+  bottom-anchored with the skipped top flowing into scrollback like every
+  framed view; `docs/view-flow.md`). The `/login` provider step
   follows the same rule: with no provider matched its counter takes no row, so
   one gap carries `No matching providers` to the hint.
 
@@ -389,7 +390,6 @@ in place; unlike it, it is a **two-step** flow.
 
 ```
 ────────────────────────────────────────────────
-
   ❯ agent                                                (filter, cyan '❯')
 
 → Agent Zero API · ✔ configured                          (selected '→'; green ✔ = a key resolves)
@@ -397,7 +397,6 @@ in place; unlike it, it is a **two-step** flow.
   (1/2)                                                  (position/total, dim)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
-
 ────────────────────────────────────────────────
 ```
 
@@ -405,7 +404,6 @@ in place; unlike it, it is a **two-step** flow.
 
 ```
 ────────────────────────────────────────────────
-
   Enter your OpenRouter API key                          (periwinkle #96a0d5, names the provider)
 
   One key for hundreds of models from every major        (the file's `description`, wrapped)
@@ -416,7 +414,6 @@ in place; unlike it, it is a **two-step** flow.
   ❯ ••••••••••••••••••••                                 (masked field, cyan '❯')
 
   Enter to save · Esc to go back                         (dim hint)
-
 ────────────────────────────────────────────────
 ```
 
@@ -454,9 +451,9 @@ in place; unlike it, it is a **two-step** flow.
   heading (`Use a subscription` / `Use an API key`); it said nothing the rows
   and the hint below them don't, and it cost every row two lines of a region
   already sharing the terminal with a running turn. All three lists are one
-  shape now — rule, gap, `❯` filter — and the root never had one: there the
-  two rows *are* the question. The method step is also the one list with no
-  `(n/total)` counter.
+  shape now — the rule, then the `❯` filter straight under it — and the root
+  never had one: there the two rows *are* the question. The method step is
+  also the one list with no `(n/total)` counter.
 - **The remaining titles wear the pages' one title dress** — bold, washed in
   the active theme's banner gradient (`ui::header::page_title_line`,
   `docs/theme.md`) — the sign-in page's `Sign in to {provider}` and the key

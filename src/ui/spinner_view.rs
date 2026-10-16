@@ -167,12 +167,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.spinner);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(spinner_list_lines(&rows, selected, elapsed, width));
     match highlighted {
         // A real selection: the counter, the live preview and the
@@ -198,7 +193,6 @@ pub(super) fn spinner_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         model_meta_color(),
         width,
     ));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

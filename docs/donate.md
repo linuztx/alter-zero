@@ -38,7 +38,6 @@ caution could not cover, fails the build rather than the donation.
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   ♥ Support Alter Zero
 
   Free and open source, developed in the open. If it earns a place in
@@ -66,7 +65,6 @@ caution could not cover, fails the build rather than the donation.
   transfer on any other network cannot be recovered.
 
   ↑↓ navigate  enter/c copy address  esc close
-
 ────────────────────────────────────────────────────────────────────────
 ```
 

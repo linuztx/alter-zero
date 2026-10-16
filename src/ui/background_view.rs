@@ -55,11 +55,7 @@ fn bg_list_row(shell: &BackgroundShell, selected: bool, width: u16) -> Line<'sta
 /// the picker rules. See `docs/background.md`.
 fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
     let shells = app.background();
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        bg_title_line(BG_TITLE, width),
-    ];
+    let mut lines = vec![model_rule(width), bg_title_line(BG_TITLE, width)];
     if shells.is_empty() {
         lines.push(Line::default());
         lines.push(bg_dim_line(BG_EMPTY, width));
@@ -85,7 +81,6 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::default());
         lines.push(bg_dim_line(BG_LIST_HINTS, width));
     }
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }
@@ -114,7 +109,6 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     };
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         bg_title_line(BG_DETAILS_TITLE, width),
         Line::default(),
         field(BG_FIELD_STATUS, BG_STATUS_RUNNING),
@@ -190,7 +184,6 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     lines.push(bg_dim_line(&format!("Showing {shown} line{plural}"), width));
     lines.push(Line::default());
     lines.push(bg_dim_line(BG_DETAILS_HINTS, width));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

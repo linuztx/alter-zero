@@ -1186,7 +1186,7 @@ pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
 pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 
 /// Where the device page's **hidden** cursor parks — the frame's first content
-/// row, the title.
+/// row, the title, straight under the top rule (`docs/view-flow.md`).
 ///
 /// The caret is invisible here ([`cursor_visible`]), but a terminal with a
 /// cursor-trail animation (kitty and kin) still animates toward wherever it is
@@ -1195,7 +1195,7 @@ pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 /// box is neither — anything the emulator paints at the cursor lands on the
 /// one thing the page exists to be read from, and the box's row moves when the
 /// page grows from the waiting shape to the full one.
-pub(super) const DEVICE_CURSOR_ROW: u16 = 2;
+pub(super) const DEVICE_CURSOR_ROW: u16 = 1;
 
 /// The dim hint under the provider list, prefixing the real `.env` path
 /// (`onboarding.env_path`) so it names where the key actually lands.
@@ -1273,9 +1273,10 @@ pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change 
 pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
 
 /// The row (within the menu's framed area) the `❯` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_settings`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
+/// rule (0), search (1): no blank row hugs the rule (`docs/view-flow.md`).
+/// Shared by [`render_settings`] and [`cursor_position`] so the cursor lands
+/// on the query.
+pub(super) const SETTINGS_SEARCH_ROW: u16 = 1;
 
 // --- the inline /skills menu (docs/skills.md). Deliberately the /settings
 // menu's twin rather than a new shape: it reuses that menu's frame, its
@@ -1329,10 +1330,10 @@ pub(super) const MASCOT_HINT: &str = "Type to search · Enter to choose · Esc t
 pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
 
 /// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_mascot_picker` and
+/// top rule (0), search (1). Shared by `render_mascot_picker` and
 /// [`cursor_position`](super::layout::cursor_position) so the caret lands on
 /// the line drawn.
-pub(super) const MASCOT_SEARCH_ROW: u16 = 2;
+pub(super) const MASCOT_SEARCH_ROW: u16 = 1;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the eight-mascot catalog never actually windows today).
@@ -1351,10 +1352,10 @@ pub(super) const SPINNER_HINT: &str = "Type to search · Enter to choose · Esc 
 pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
 
 /// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_spinner_picker` and
+/// top rule (0), search (1). Shared by `render_spinner_picker` and
 /// [`cursor_position`](super::layout::cursor_position) so the caret lands on
 /// the line drawn.
-pub(super) const SPINNER_SEARCH_ROW: u16 = 2;
+pub(super) const SPINNER_SEARCH_ROW: u16 = 1;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the nine-style catalog never actually windows today).
@@ -1379,10 +1380,10 @@ pub(super) const THEME_HINT: &str = "Type to search · Enter to choose · Esc to
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
 
 /// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_theme_picker` and
+/// top rule (0), search (1). Shared by `render_theme_picker` and
 /// [`cursor_position`](super::layout::cursor_position) so the caret lands on
 /// the line drawn.
-pub(super) const THEME_SEARCH_ROW: u16 = 2;
+pub(super) const THEME_SEARCH_ROW: u16 = 1;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the eleven-theme catalog windows by one row).
@@ -2532,9 +2533,10 @@ pub(super) const AGENT_HINT_AGENT_DONE: &[(&str, &str)] =
     &[("Enter", " to view"), ("x", " to clear")];
 
 /// The row (within the picker's framed area) the `>` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const MODEL_SEARCH_ROW: u16 = 2;
+/// rule (0), search (1): no blank row hugs the rule (`docs/view-flow.md`).
+/// Shared by [`render_model_picker`] and [`cursor_position`] so the cursor
+/// lands on the query.
+pub(super) const MODEL_SEARCH_ROW: u16 = 1;
 
 // --- the inline tool-permission prompt (docs/permissions.md) ---
 
@@ -2616,11 +2618,12 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 ];
 
 /// Rows between the last option/amend row and the bottom of the prompt (gap,
-/// hint, gap, rule) — how [`cursor_position`] seats the cursor on the
-/// highlighted option (or in the amend field) from the region's bottom edge
-/// without re-deriving the body. `permission_lines` pads a capped prompt
-/// *above* the question to keep that block flush against this tail.
-pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;
+/// hint, rule — no blank row hugs the rule, `docs/view-flow.md`) — how
+/// [`cursor_position`] seats the cursor on the highlighted option (or in the
+/// amend field) from the region's bottom edge without re-deriving the body.
+/// `permission_lines` pads a capped prompt *above* the question to keep that
+/// block flush against this tail.
+pub(super) const PERMISSION_TAIL_ROWS: u16 = 3;
 
 /// The most rows one option label may wrap to before it caps with a `…` —
 /// a long "don't ask again" rule (an exact command) wraps instead of hiding

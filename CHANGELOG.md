@@ -29,6 +29,16 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Inline pages no longer pad their frame with blank rows.** Every page
+  that opens in place of the input box used to leave an empty row under its
+  top rule and another over its bottom rule. That covers `/model`, `/login`,
+  `/settings`, `/theme`, `/mascot`, `/spinner`, `/skills`, `/hooks`, `/mcp`,
+  `/trust`, `/secrets`, `/export`, `/donate`, the ↓ shell manager, the
+  permission prompt and the `AskUserQuestion` modal. Those two rows are gone:
+  the search line or title now sits right under the top rule and the hint
+  right over the bottom one, so each page gives two rows back to the
+  conversation above it. The blank rows between a page's sections stay
+  (`docs/view-flow.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or

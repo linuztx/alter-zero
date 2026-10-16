@@ -131,8 +131,7 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     // Nothing matched means there is no count, no banner to preview and no
     // description — so those three slots collapse to ONE blank gap instead
     // of a band of empty rows (the `/model` picker's placeholder rule). The
-    // whole page is rule, blank, search, blank, placeholder, blank, hint,
-    // blank, rule.
+    // whole page is rule, search, blank, placeholder, blank, hint, rule.
     let mut app = open_app();
     app.mascot_picker.as_mut().expect("open").query = "zzz".to_string();
     let texts: Vec<String> = texts(&app, 80)
@@ -140,23 +139,37 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
         .map(|t| t.trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 9, "the collapsed page is 9 rows: {texts:?}");
+    assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert!(texts[2].contains('❯'), "the search line: {texts:?}");
-    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[1].contains('❯'), "the search line: {texts:?}");
+    assert_eq!(texts[2], "", "{texts:?}");
     assert!(
-        texts[4].contains("No matching mascots"),
+        texts[3].contains("No matching mascots"),
         "the placeholder: {texts:?}"
     );
-    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[6].contains("Type to search"), "the hint: {texts:?}");
-    assert_eq!(texts[7], "", "{texts:?}");
-    assert!(is_rule(&texts[8]), "{texts:?}");
+    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[5].contains("Type to search"), "the hint: {texts:?}");
+    assert!(is_rule(&texts[6]), "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains("/6)")),
         "no counter over an empty list: {texts:?}"
     );
+}
+
+#[test]
+fn every_page_hugs_its_frame() {
+    // The search line straight under the opening rule, the key hint
+    // straight over the closing one, whatever the search shows.
+    let mut app = open_app();
+    for query in ["", "cr", "zzz"] {
+        let picker = app.mascot_picker.as_mut().expect("open");
+        picker.query = query.to_string();
+        picker.selected = 0;
+        assert_frame_hugs_content(
+            &format!("the picker searching {query:?}"),
+            &mascot_view_lines(&app, 80),
+        );
+    }
 }
 
 #[test]

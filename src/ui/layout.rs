@@ -500,8 +500,8 @@ fn anchored_view_row(page_rows: u16, body: Rect, row: u16) -> u16 {
 
 /// Whether the picker shows its counter + model-name detail rows below the
 /// list — only when a real model is listed (Ready with at least one match).
-/// The placeholder states have a blank counter and name, so those rows collapse
-/// to a single trailing gap.
+/// The placeholder states have a blank counter and name, so those rows
+/// collapse away and the placeholder closes the page.
 pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
     picker.status == ModelLoad::Ready && !picker.matches().is_empty()
 }
@@ -1044,7 +1044,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // A permission prompt seats the cursor on the row it is asking about: the
     // **highlighted option**, or Tab's amend field when that has replaced the
     // options. Both blocks sit a fixed [`PERMISSION_TAIL_ROWS`] above the
-    // region's bottom (gap, hint, gap, rule) — `permission_lines` pads a capped
+    // region's bottom (gap, hint, rule) — `permission_lines` pads a capped
     // prompt above the question to keep them there — so the cursor is found
     // from that edge without re-deriving the body. The column is the same for
     // both (past the inset and the `❯ ` marker), so ↑/↓ walk the cursor
@@ -1089,7 +1089,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, y);
     }
     // The inline `/model` picker parks the cursor at the end of its `>` search
-    // line (see `model_view_lines`' stack: top rule, gap, search) — inside the
+    // line (see `model_view_lines`' stack: top rule, search) — inside the
     // picker's own frame, which the streaming strip above it has pushed down
     // ([`view_split`], the same split the paint uses) and the bottom anchor
     // may have shifted up ([`anchored_view_row`]).
@@ -1200,13 +1200,14 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return menu_marker_seat(&lines, area);
     }
     // The `/mcp` manager seats on its `❯` too — except its auth page,
-    // whose `URL >` paste field seats the caret at the typed text's end
-    // (found from the region's bottom: the field sits a fixed 4 rows up —
-    // its row, the blank, the return note, the blank, the rule — plus the
-    // `Checking…` row while a submission runs). See `docs/mcp.md`.
+    // whose `URL >` paste field seats the caret at the typed text's end, on
+    // the field's row **found** in the page the paint builds
+    // (`view_prompt_row`'s rule): the notes under the field wrap with the
+    // width, so a row counted up from the region's bottom landed under the
+    // field on a narrow terminal. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
+        let lines = super::mcp_view::mcp_view_lines(app, area.width);
         if menu.page == crate::app::McpPage::Auth {
-            let extra = if menu.auth.submitted { 1 } else { 0 };
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)
@@ -1214,10 +1215,13 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                         cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
                     ));
             let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-            let y = area.y + area.height.saturating_sub(5 + extra);
-            return (x, y);
+            let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+            let [_, body] = view_split(area, rows);
+            let field =
+                super::model_view::view_row_of(&lines, super::theme::MCP_AUTH_PROMPT).unwrap_or(0);
+            let row = anchored_view_row(rows, body, field);
+            return (x, view_cursor_y(area, body, row));
         }
-        let lines = super::mcp_view::mcp_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
     // The ↓ background manager band has no text entry at all — park the

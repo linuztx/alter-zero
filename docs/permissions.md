@@ -12,7 +12,6 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
   ⎿  Waiting…
 
 ────────────────────────────────────────────────────────────────────────
-
  Create file
  hello.py
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
@@ -27,7 +26,6 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
    3. No
 
  Esc to cancel · Tab to amend
-
 ────────────────────────────────────────────────────────────────────────
 ```
 
@@ -922,7 +920,8 @@ one column past the `❯` marker, tracking ↑/↓ — so its return starts from
 meaningful row rather than wherever the last scroll left it (and a terminal
 that ignores the hide still looks right). Both seats, the option row and the
 amend field, are found from the region's bottom edge, `PERMISSION_TAIL_ROWS` up
-(gap, hint, gap, rule), so the cursor never has to re-derive the body. The
+(gap, hint, rule — no blank row hugs the closing rule, `docs/view-flow.md`
+*The frame hugs its content*), so the cursor never has to re-derive the body. The
 tail block closes the page, so the bottom anchor keeps it flush against the
 closing rule at every body size — a flowing page and a fitting one seat the
 cursor identically.

@@ -211,9 +211,11 @@ fn skills_count_line(menu: &SkillsMenu, width: u16) -> Line<'static> {
 /// count line, and the session-off note when it applies), the `❯` search
 /// line, the windowed skill rows, the `(n/total)` counter, the highlighted
 /// skill's description, the key hint, and a bottom rule — one blank row
-/// between each block, never two. What [`render_skills_menu`] paints
-/// (bottom-anchored) and [`skills_menu_rows`] counts, so the two can never
-/// disagree (`docs/view-flow.md`). Empty when the menu is closed.
+/// between each block, never two, and none hugging either rule
+/// (`docs/view-flow.md` *The frame hugs its content*). What
+/// [`render_skills_menu`] paints (bottom-anchored) and [`skills_menu_rows`]
+/// counts, so the two can never disagree (`docs/view-flow.md`). Empty when
+/// the menu is closed.
 pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = app.skills_menu.as_ref() else {
         return Vec::new();
@@ -228,7 +230,6 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         super::header::page_title_line(SKILLS_TITLE, width),
         skills_count_line(menu, width),
     ];
@@ -279,7 +280,6 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         model_meta_color(),
         width,
     ));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

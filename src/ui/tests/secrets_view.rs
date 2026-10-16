@@ -64,6 +64,30 @@ fn row_with<'a>(texts: &'a [String], needle: &str) -> &'a str {
 }
 
 #[test]
+fn every_page_hugs_its_frame() {
+    // The title straight under the opening rule, the hint — or the delete
+    // question standing in for it — straight over the closing one, on the
+    // list and on the form alike.
+    let mut confirming = open_with(&[("TOKEN", "")]);
+    press(&mut confirming, KeyCode::Char('d'));
+    let mut editing = open_with(&[("TOKEN", "The staging key")]);
+    press(&mut editing, KeyCode::Enter);
+    let mut refused = form_with("TOKEN", "abc");
+    press(&mut refused, KeyCode::Tab);
+    press(&mut refused, KeyCode::Enter);
+    for (what, app) in [
+        ("an empty list", open_with(&[])),
+        ("a list", open_with(&[("TOKEN", "The staging key")])),
+        ("the delete question", confirming),
+        ("a new secret's form", form_with("TOKEN", VALUE)),
+        ("an edit's form", editing),
+        ("a refused form", refused),
+    ] {
+        assert_frame_hugs_content(what, &secrets_view_lines(&app, 80));
+    }
+}
+
+#[test]
 fn a_closed_page_builds_nothing() {
     assert!(secrets_view_lines(&with_session(), 80).is_empty());
     assert_eq!(secrets_picker_height(&with_session(), 80, 200), None);

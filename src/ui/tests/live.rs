@@ -659,7 +659,7 @@ fn render_live_shows_the_model_picker_when_open() {
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
     assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
     assert!(
-        row(&buf, 4, 60).contains("anthropic/claude-3-haiku"),
+        row(&buf, 3, 60).contains("anthropic/claude-3-haiku"),
         "a model row"
     );
 }

@@ -109,11 +109,48 @@ fn the_modal_frames_the_page_with_rules_chips_question_options_and_hints() {
 }
 
 #[test]
+fn every_page_hugs_its_frame() {
+    // The chip strip straight under the opening rule, the hint row straight
+    // over the closing one — a lone question, a set of them, the preview
+    // layout, an open entry field, the review page, and with the idle
+    // clock's chip riding the closing rule.
+    let with = |questions: Vec<AskQuestion>| {
+        let mut app = App::new();
+        open(&mut app, questions);
+        app
+    };
+    let mut entry = with(vec![coffee_question()]);
+    entry.on_key(key(KeyCode::Char('4'))); // the Other row
+    let mut notes = with(vec![preview_question()]);
+    notes.on_key(key(KeyCode::Char('n')));
+    let mut review = with(vec![coffee_question(), topics_question()]);
+    review.on_key(key(KeyCode::Char('2'))); // Latte → advance
+    review.on_key(key(KeyCode::Right)); // → Submit page
+    let mut timed = with(vec![coffee_question()]);
+    timed.set_ask_remaining(Some(std::time::Duration::from_secs(581)));
+    for (what, app) in [
+        ("a lone question", with(vec![coffee_question()])),
+        (
+            "a set of questions",
+            with(vec![coffee_question(), topics_question()]),
+        ),
+        ("the preview layout", with(vec![preview_question()])),
+        ("an open Other entry", entry),
+        ("an open notes field", notes),
+        ("the review page", review),
+        ("a counting-down question", timed),
+    ] {
+        assert_frame_hugs_content(what, &ask_lines(&app, 80));
+    }
+}
+
+#[test]
 fn the_current_chip_lights_on_the_selection_background() {
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
     let lines = ask_lines(&app, 80);
-    let chip_line = &lines[2];
+    // The chip strip opens the page, straight under the rule.
+    let chip_line = &lines[1];
     let current = chip_line
         .spans
         .iter()

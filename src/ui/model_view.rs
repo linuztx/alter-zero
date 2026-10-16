@@ -307,9 +307,16 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 /// same way. Reading the row back out of the very page the paint builds is
 /// `menu_marker_seat`'s rule, and it cannot drift from what is on screen.
 pub(super) fn view_prompt_row(lines: &[Line<'static>]) -> Option<u16> {
+    view_row_of(lines, MODEL_PROMPT)
+}
+
+/// The row of a framed page's `lines` carrying a span that reads exactly
+/// `prompt` — [`view_prompt_row`] for a field whose prompt is not the `❯`,
+/// like the `/mcp` auth page's `URL >`. `None` on a page without one.
+pub(super) fn view_row_of(lines: &[Line<'static>], prompt: &str) -> Option<u16> {
     lines
         .iter()
-        .position(|line| line.spans.iter().any(|s| s.content == MODEL_PROMPT))
+        .position(|line| line.spans.iter().any(|s| s.content == prompt))
         .and_then(|row| u16::try_from(row).ok())
 }
 
@@ -323,11 +330,13 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 }
 
 /// The whole framed page as lines — the shape of the user's mock: a top rule,
-/// the `❯` search line, the scrolling model list (each row `→ id [provider]
-/// ✓`), and — when a real model is highlighted — the `(n/total)` counter and
-/// the `Model Name:` line above the bottom rule (a placeholder page collapses
-/// them to a single gap). Headerless (the "Showing models…" banner was
-/// dropped). What [`render_model_picker`] paints (bottom-anchored) and
+/// the `❯` search line straight under it, the scrolling model list (each row
+/// `→ id [provider] ✓`), and — when a real model is highlighted — the
+/// `(n/total)` counter and the `Model Name:` line straight over the bottom
+/// rule (a placeholder page has neither, so the placeholder closes it). No
+/// blank row hugs either rule (`docs/view-flow.md` *The frame hugs its
+/// content*). Headerless (the "Showing models…" banner was dropped). What
+/// [`render_model_picker`] paints (bottom-anchored) and
 /// `layout::model_picker_rows` counts, so the reserved height and the painted
 /// rows can never disagree (`docs/view-flow.md`).
 pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
@@ -336,23 +345,15 @@ pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'st
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        Line::default(),
-    ];
+    let mut lines = vec![model_rule(width), search_line, Line::default()];
     lines.extend(model_list_lines(picker, width));
+    // A placeholder (loading / error / needs-login / no match) has no counter
+    // and no name to show, so those rows collapse away entirely.
     if model_has_detail(picker) {
         lines.push(model_counter_line(picker, width));
         lines.push(Line::default());
         lines.push(model_name_line(picker, width));
         lines.extend(model_error_lines(picker, width));
-        lines.push(Line::default());
-    } else {
-        // A placeholder (loading / error / needs-login / no match): the blank
-        // counter + name collapse to a single gap above the bottom rule.
-        lines.push(Line::default());
     }
     lines.push(model_rule(width));
     lines

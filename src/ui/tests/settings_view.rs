@@ -10,11 +10,11 @@ use crate::ui::theme::{
     STATUS_ROWS, model_selected_color, settings_value_color, settings_value_off_color,
 };
 
-/// The fixed rows framing the menu: top rule, gap, search, gap (4 above
-/// the list), then counter, gap, description, gap, hint, gap, bottom rule
-/// (7 below) — pinned here so a builder change that adds or drops a chrome
-/// row fails a height test (`settings_view_lines`).
-const SETTINGS_CHROME_ROWS: u16 = 11;
+/// The fixed rows framing the menu: top rule, search, gap (3 above the
+/// list), then counter, gap, description, gap, hint, bottom rule (6 below)
+/// — pinned here so a builder change that adds or drops a chrome row fails
+/// a height test (`settings_view_lines`).
+const SETTINGS_CHROME_ROWS: u16 = 9;
 
 /// How many setting rows the menu actually shows: every one, until there are
 /// more than the window holds — past [`SETTINGS_MENU_MAX_ROWS`] the list
@@ -48,17 +48,16 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
     let buf = render(&app, 78);
     let last = buf.area.height - 1;
     assert!(row(&buf, 0, 78).starts_with('─'), "top rule");
-    assert!(row(&buf, 1, 78).trim().is_empty(), "gap, no header banner");
+    assert_eq!(SETTINGS_SEARCH_ROW, 1, "no header banner, no padding row");
     assert!(
         row(&buf, SETTINGS_SEARCH_ROW, 78).contains('❯'),
         "the search line"
     );
     assert!(row(&buf, last, 78).starts_with('─'), "bottom rule");
-    assert!(row(&buf, last - 1, 78).trim().is_empty(), "trailing gap");
     assert!(
-        row(&buf, last - 2, 78).contains(SETTINGS_HINT),
-        "the key hint sits just above the trailing gap: {:?}",
-        row(&buf, last - 2, 78)
+        row(&buf, last - 1, 78).contains(SETTINGS_HINT),
+        "the key hint sits straight over the bottom rule: {:?}",
+        row(&buf, last - 1, 78)
     );
 }
 
@@ -115,15 +114,15 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
 fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     let app = settings_app();
     let buf = render(&app, 78);
-    // The list starts at row 4: top(0) gap(1) search(2) gap(3).
-    let first = row(&buf, 4, 78);
+    // The list starts at row 3: top(0) search(1) gap(2).
+    let first = row(&buf, 3, 78);
     assert!(first.starts_with("→ Hide thinking"), "{first:?}");
     assert!(first.contains("false"), "{first:?}");
-    let second = row(&buf, 5, 78);
+    let second = row(&buf, 4, 78);
     assert!(second.starts_with("  Show images"), "{second:?}");
     assert!(second.contains("true"), "{second:?}");
     // The selected row's marker takes the picker family's cyan accent.
-    assert_eq!(buf[(0, 4)].fg, model_selected_color());
+    assert_eq!(buf[(0, 3)].fg, model_selected_color());
 }
 
 #[test]
@@ -140,12 +139,12 @@ fn the_values_line_up_in_a_column() {
             .expect("the row has a value")
     };
     assert_eq!(
-        value_col(4, 'f'),
-        value_col(5, 't'),
+        value_col(3, 'f'),
+        value_col(4, 't'),
         "the value column is shared"
     );
     assert_eq!(
-        value_col(4, 'f'),
+        value_col(3, 'f'),
         // marker (2) + the widest label ("Auto-resize images", 18) + the gap (3).
         2 + 18 + 3,
         "sized off the widest visible label"
@@ -157,13 +156,13 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
     // A glance down the column should show what is actually doing something.
     let app = settings_app();
     let buf = render(&app, 78);
-    let line = row(&buf, 4, 78);
+    let line = row(&buf, 3, 78);
     let at = u16::try_from(line.find("false").unwrap()).unwrap();
-    assert_eq!(buf[(at, 4)].fg, settings_value_off_color(), "false is dim");
-    let line = row(&buf, 5, 78);
+    assert_eq!(buf[(at, 3)].fg, settings_value_off_color(), "false is dim");
+    let line = row(&buf, 4, 78);
     let at = u16::try_from(line.find("true").unwrap()).unwrap();
     assert_eq!(
-        buf[(at, 5)].fg,
+        buf[(at, 4)].fg,
         settings_value_color(),
         "a live value is not"
     );
@@ -176,12 +175,12 @@ fn the_counter_and_description_track_the_selection() {
     let buf = render(&app, 78);
     let rows = visible_rows();
     let total = SettingKey::ALL.len();
-    // counter = 4 (list start) + the rows actually drawn; the count it shows
+    // counter = 3 (list start) + the rows actually drawn; the count it shows
     // is the whole list, not the window.
-    let counter = row(&buf, 4 + rows, 78);
+    let counter = row(&buf, 3 + rows, 78);
     assert!(counter.contains(&format!("(2/{total})")), "{counter:?}");
     // description = counter + gap + 1.
-    let description = row(&buf, 4 + rows + 2, 78);
+    let description = row(&buf, 3 + rows + 2, 78);
     assert!(
         description.contains(SettingKey::ShowImages.description()),
         "{description:?}"
@@ -200,9 +199,9 @@ fn the_search_query_shows_after_the_prompt() {
     assert_eq!(buf[(2, SETTINGS_SEARCH_ROW)].fg, model_selected_color());
     // …and the list narrowed to the one match.
     assert!(
-        row(&buf, 4, 78).contains("Temperature"),
+        row(&buf, 3, 78).contains("Temperature"),
         "{:?}",
-        row(&buf, 4, 78)
+        row(&buf, 3, 78)
     );
 }
 
@@ -213,12 +212,12 @@ fn a_search_matching_nothing_shows_a_placeholder_and_a_blank_counter() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    assert!(row(&buf, 4, 78).contains("No matching settings"));
-    assert!(row(&buf, 5, 78).trim().is_empty(), "no counter to show");
+    assert!(row(&buf, 3, 78).contains("No matching settings"));
+    assert!(row(&buf, 4, 78).trim().is_empty(), "no counter to show");
     // The frame is intact — the hint and rules still sit where they belong.
     let last = buf.area.height - 1;
     assert!(row(&buf, last, 78).starts_with('─'));
-    assert!(row(&buf, last - 2, 78).contains(SETTINGS_HINT));
+    assert!(row(&buf, last - 1, 78).contains(SETTINGS_HINT));
 }
 
 #[test]
@@ -235,7 +234,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();
     let checkpoints = (0..all)
-        .map(|i| row(&buf, 4 + u16::try_from(i).unwrap(), 78))
+        .map(|i| row(&buf, 3 + u16::try_from(i).unwrap(), 78))
         .find(|line| line.contains("Checkpoints"))
         .expect("the row is listed");
     assert!(
@@ -331,8 +330,8 @@ fn a_squeezed_settings_menu_is_bottom_anchored() {
 fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     // Nothing matched means there is no count and no description, so those
     // slots collapse to ONE blank gap instead of a band of empty rows (the
-    // `/model` picker's placeholder rule). The whole page is rule, blank,
-    // search, blank, placeholder, blank, hint, blank, rule.
+    // `/model` picker's placeholder rule). The whole page is rule, search,
+    // blank, placeholder, blank, hint, rule.
     let mut app = App::new();
     app.open_settings();
     app.settings_picker.as_mut().expect("open").query = "zzz".to_string();
@@ -341,16 +340,29 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 9, "the collapsed page is 9 rows: {texts:?}");
+    assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert_eq!(texts[1], "", "{texts:?}");
-    assert!(texts[2].contains('❯'), "{texts:?}");
-    assert_eq!(texts[3], "", "{texts:?}");
-    assert!(texts[4].contains("No matching settings"), "{texts:?}");
-    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[6].contains("Type to search"), "{texts:?}");
-    assert_eq!(texts[7], "", "{texts:?}");
-    assert!(is_rule(&texts[8]), "{texts:?}");
+    assert!(texts[1].contains('❯'), "{texts:?}");
+    assert_eq!(texts[2], "", "{texts:?}");
+    assert!(texts[3].contains("No matching settings"), "{texts:?}");
+    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[5].contains("Type to search"), "{texts:?}");
+    assert!(is_rule(&texts[6]), "{texts:?}");
+}
+
+#[test]
+fn every_settings_page_hugs_its_frame() {
+    // The search line straight under the opening rule, the key hint
+    // straight over the closing one — a real selection, a narrowed search
+    // and a search matching nothing alike.
+    let mut app = settings_app();
+    for query in ["", "tool", "zzz"] {
+        app.settings_picker.as_mut().expect("open").query = query.to_string();
+        assert_frame_hugs_content(
+            &format!("the menu searching {query:?}"),
+            &crate::ui::settings_view::settings_view_lines(&app, 78),
+        );
+    }
 }
 
 #[test]
@@ -430,8 +442,8 @@ fn a_never_ask_timeout_is_dimmed_like_any_off_value() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    let line = row(&buf, 4, 78);
+    let line = row(&buf, 3, 78);
     assert!(line.contains("Ask timeout"), "{line:?}");
     let at = u16::try_from(line.find("never").expect("the value")).unwrap();
-    assert_eq!(buf[(at, 4)].fg, settings_value_off_color(), "never is dim");
+    assert_eq!(buf[(at, 3)].fg, settings_value_off_color(), "never is dim");
 }

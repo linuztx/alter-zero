@@ -11,7 +11,6 @@ per change.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → Hide thinking           false
@@ -28,7 +27,6 @@ per change.
   Hide the model's chain-of-thought…
 
   Type to search · Enter/Space to change · Esc to cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -151,16 +149,17 @@ what the session is actually doing.
 The layout is the `/model` picker's plus one hint row:
 
 ```
-rule · gap · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · gap · rule
+rule · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · rule
 ```
 
 A search that matches **nothing** has no count and nothing to describe, so
-those slots collapse to a single gap — `rule · gap · ❯ search · gap ·
-No matching settings · gap · hint · gap · rule` — instead of painting four
+those slots collapse to a single gap — `rule · ❯ search · gap ·
+No matching settings · gap · hint · rule` — instead of painting four
 blank rows mid-frame (the `/model` picker's `model_has_detail` rule, shared
-now by `/mascot`, `/skills` and `/login`).
+now by `/mascot`, `/skills` and `/login`). No blank row hugs either rule
+(`docs/view-flow.md` *The frame hugs its content*).
 
-— eleven fixed chrome rows around a list capped at
+— nine fixed chrome rows around a list capped at
 `SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
 selection stays centred; the whole page is one line builder
 (`settings_view_lines` — the `/mcp` family's shape, its height the built line

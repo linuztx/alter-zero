@@ -121,6 +121,42 @@ pub(super) fn row(buf: &Buffer, y: u16, width: u16) -> String {
     (0..width).map(|x| buf[(x, y)].symbol()).collect()
 }
 
+/// Assert that a framed inline view's whole page — `page`, top rule to
+/// bottom rule — spends no row on padding inside its frame: content starts
+/// on the row under the opening rule and ends on the row over the closing
+/// one. Every composer-replacing view shares the terminal with the
+/// conversation above it, so a blank row hugging a rule is a row of the
+/// conversation lost for nothing (`docs/view-flow.md` *The frame hugs its
+/// content*). `what` names the page in a failure.
+#[track_caller]
+pub(super) fn assert_frame_hugs_content(what: &str, page: &[Line<'_>]) {
+    let texts: Vec<String> = page
+        .iter()
+        .map(|line| plain(line).trim_end().to_string())
+        .collect();
+    assert!(
+        texts.len() >= 3,
+        "{what}: a rule, content, a rule: {texts:?}"
+    );
+    let last = texts.len() - 1;
+    assert!(
+        texts[0].starts_with('─'),
+        "{what} opens on its rule: {texts:?}"
+    );
+    assert!(
+        texts[last].starts_with('─'),
+        "{what} closes on its rule: {texts:?}"
+    );
+    assert!(
+        !texts[1].is_empty(),
+        "{what} pads its opening rule with a blank row: {texts:?}"
+    );
+    assert!(
+        !texts[last - 1].is_empty(),
+        "{what} pads its closing rule with a blank row: {texts:?}"
+    );
+}
+
 /// A queued text batch with no attachments — the queue tests' usual shape.
 pub(super) fn batch(texts: &[&str]) -> QueuedTurn {
     QueuedTurn::Messages {

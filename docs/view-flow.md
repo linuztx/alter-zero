@@ -83,6 +83,41 @@ The flow's tail contribution is capped like every rebuild write
 (`RESIZE_REFLOW_MAX_ROWS`, keeping the rows nearest the region) so a
 pathological page can't turn one navigation into an unbounded write.
 
+## The frame hugs its content
+
+Every framed inline view — the pickers, the menus, the pages, the ↓ manager
+band and both modals — is a top rule, its content and a bottom rule, and
+nothing else: no blank row under the opening rule and none over the closing
+one. The rules *are* the frame's edge, so a padding row inside them says
+nothing a rule does not already say, and on a view that shares the terminal
+with the conversation above it, it is a row of that conversation pushed
+into scrollback for nothing — two per page, on every page (the reported
+waste: the `/model` picker opened on a blank row and closed on another).
+Blank rows still separate the blocks *inside* a page — the search line from
+the list, the list's counter from its detail, a description from the hint —
+because there they say where one thing ends and the next begins.
+
+```
+────────────────────────────────────────────
+  ❯ cla
+                                             (blocks keep their gaps…)
+→ anthropic/claude-3-haiku [openrouter]
+  claude-opus-4-8-fast [a0_venice] ✓
+  (1/12)
+
+  Model Name: Anthropic: Claude 3 Haiku
+────────────────────────────────────────────  (…but nothing hugs a rule)
+```
+
+The cursor seats count from that edge: a picker's `❯` search line is the
+page's row 1 (`MODEL_SEARCH_ROW` and its siblings), a `/login` page's first
+content row is row 1 (`DEVICE_CURSOR_ROW`), and a permission prompt's
+options sit `PERMISSION_TAIL_ROWS` — gap, hint, rule — above the region's
+bottom. The `/mcp` auth page's `URL >` field is **found** in the page the
+paint builds rather than counted from the bottom, since the notes under it
+wrap. Each view's tests walk its states through one shared assertion
+(`assert_frame_hugs_content`), so a page that pads a rule fails its suite.
+
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
@@ -139,9 +174,9 @@ pathological page can't turn one navigation into an unbounded write.
   the value it had when the page was committed until something re-signs the
   flow — stale, where it used to be *nowhere* — while the page still on
   screen keeps tailing, unchanged, exactly as it was. Which rows those are is
-  a matter of how short the terminal is: the page is 26 rows, so 24 rows
+  a matter of how short the terminal is: the page is 24 rows, so 23 rows
   flows the top rule alone and 18 flows the whole field block; the output box
-  only starts flowing below 15. A details view whose shell has gone renders
+  only starts flowing at 15. A details view whose shell has gone renders
   the *list* (`background_view_lines`' defensive fallback), so it signs like
   one.
 - **Flow (frozen) + bottom anchor**: the **streaming strip** itself

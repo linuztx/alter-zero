@@ -234,7 +234,9 @@ struct AskBuild {
 }
 
 /// Build the whole modal at `width`: rule → chip strip → the current page →
-/// hints → rule. Pure and total — an app without an open modal builds empty.
+/// hints → rule, with no blank row hugging either rule (`docs/view-flow.md`
+/// *The frame hugs its content*). Pure and total — an app without an open
+/// modal builds empty.
 fn ask_build(app: &App, width: u16) -> AskBuild {
     let Some(prompt) = app.ask() else {
         return AskBuild {
@@ -243,9 +245,7 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
             marker: None,
         };
     };
-    let mut lines = vec![rule(width), Line::default()];
-    lines.push(chip_strip(prompt, width));
-    lines.push(Line::default());
+    let mut lines = vec![rule(width), chip_strip(prompt, width), Line::default()];
     let mut cursor = None;
     let mut marker = None;
     if prompt.on_submit_tab() {
@@ -277,7 +277,6 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
     }
     lines.push(Line::default());
     lines.push(hint_row(&hints(prompt)));
-    lines.push(Line::default());
     lines.push(closing_rule(width, prompt.remaining));
     AskBuild {
         lines,

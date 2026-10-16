@@ -305,7 +305,8 @@ fn form_blocks(form: &SecretForm, width: u16) -> Vec<Block> {
 
 /// The whole framed page and the form's caret: a top rule, the blocks
 /// joined by exactly one blank row (the `/login` page rule, so no two blank
-/// rows ever stack), a bottom rule. Empty when the page is closed.
+/// rows ever stack and none hugs either rule — `docs/view-flow.md`), a
+/// bottom rule. Empty when the page is closed.
 pub(super) fn secrets_build(app: &App, width: u16) -> SecretsBuild {
     let Some(page) = app.secrets_page.as_ref() else {
         return SecretsBuild {
@@ -317,7 +318,7 @@ pub(super) fn secrets_build(app: &App, width: u16) -> SecretsBuild {
         Some(form) => form_blocks(form, width),
         None => list_blocks(app.secret_metas(), page, width),
     };
-    let mut lines = vec![model_rule(width), Line::default()];
+    let mut lines = vec![model_rule(width)];
     let mut cursor = None;
     for (i, (block, seat)) in blocks.into_iter().filter(|b| !b.0.is_empty()).enumerate() {
         if i > 0 {
@@ -328,7 +329,6 @@ pub(super) fn secrets_build(app: &App, width: u16) -> SecretsBuild {
         }
         lines.extend(block);
     }
-    lines.push(Line::default());
     lines.push(model_rule(width));
     SecretsBuild { lines, cursor }
 }

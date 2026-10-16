@@ -411,7 +411,7 @@ fn the_details_pages_flowed_top_freezes_while_the_shell_ticks() {
     // signs the **shell it describes** instead: the rows committed above the
     // region freeze there, which is what scrollback holds anyway.
     let mut app = tall_background_app();
-    let (width, height) = (60u16, 20u16);
+    let (width, height) = (60u16, 19u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
         .expect("overflows")
         .lines
@@ -479,9 +479,9 @@ fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
         );
     }
     app.open_background_view();
-    let (width, height) = (60u16, 6u16);
+    let (width, height) = (60u16, 5u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
-        .expect("the list overflows a 6-row terminal")
+        .expect("the list overflows a 5-row terminal")
         .lines
         .iter()
         .map(plain)

@@ -19,7 +19,6 @@ pick is the whole point of the page.
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   Export conversation
 
   The whole transcript as plain text — every message and every tool
@@ -31,7 +30,6 @@ pick is the whole point of the page.
   Copies the transcript to the system clipboard.
 
   ↑↓ navigate  enter select  esc close
-
 ────────────────────────────────────────────────────────────────────────
 ```
 
