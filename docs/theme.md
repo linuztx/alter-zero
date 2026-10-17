@@ -186,7 +186,6 @@ columns over this catalog — the preview sits **beside** the list:
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
-
   ❯
 
   ❯ mocha       ●●●●● ✓    Catppuccin Mocha
@@ -203,7 +202,6 @@ columns over this catalog — the preview sits **beside** the list:
                              greet("Alter Zero")  # Hello, Alter Zero
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
-
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -212,7 +210,6 @@ the end of the catalog, so the overflow row is above the window):
 
 ```
 ──────────────────────────────────────────────────────────────
-
   ❯
 
   ↑ 1 more above
@@ -236,7 +233,6 @@ the end of the catalog, so the overflow row is above the window):
     greet("Alter Zero")  # Hello, Alter Zero
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to…
-
 ──────────────────────────────────────────────────────────────
 ```
 
@@ -316,6 +312,15 @@ navigation. Then the things a theme picker exists for:
   folded onto its own spans before it is placed (`fold_line_style`), and the
   composed row carries no line style of its own
   (`the_bubble_ground_stays_in_the_preview_column`).
+- **One layout, three pickers.** The `/mascot` (`docs/mascot.md`) and
+  `/spinner` (`docs/spinner.md`) pickers lay their previews out the same
+  way, through the same pieces in `ui::model_view`: `marked_row_head` (the
+  `/mcp` row's indent, marker and name), `overflow_list` (the `↑`/`↓` rows),
+  `caption_lines` (the bold title over the dim subtitle) and
+  `PreviewLayout` (the list column, the gap and the preview's narrowest
+  column, deciding beside or stacked; its `body` folds every preview row's
+  line style). Each picker supplies only its rows, its preview and its
+  three widths.
 
 The sample is the same shape for every theme, so the page height never
 depends on the selection — and the page is **still** (nothing on it ticks),
@@ -521,8 +526,9 @@ the saved theme.
 - `ui::theme_view` — `theme_picker_height`, `render_theme_picker`, and the
   crate-internal page builder `theme_view_lines(app, width, height)` (its
   length is the reserved height, `docs/view-flow.md`), which lays the
-  preview beside the list or under it (`preview_beside`, over
-  `THEME_PREVIEW_GAP` and `THEME_PREVIEW_MIN_COLS`) and builds the compact
+  preview beside the list or under it (`model_view::PreviewLayout`, over
+  `THEME_PREVIEW_GAP` and `THEME_PREVIEW_MIN_COLS`, the layout `/mascot` and
+  `/spinner` share) and builds the compact
   page (`model_view::compact_page` — `COMPACT_LIST_ROWS` rows between the
   overflow slots, and the rungs under it down to the search line) when the
   whole one is taller than `height` (`first_page_that_fits`).

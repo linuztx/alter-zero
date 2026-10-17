@@ -34,12 +34,12 @@
 //! unusable exactly where it was squeezed.
 
 use super::model_view::{
-    compact_page, first_page_that_fits, list_window, model_overflow_row, model_placeholder_row,
-    model_rule, placeholder_window,
+    PreviewLayout, capitalized, caption_lines, compact_page, first_page_that_fits, list_window,
+    marked_row_head, model_placeholder_row, model_rule, overflow_list, placeholder_window,
 };
 use super::palette::{palette_of, with_theme};
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, ellipsize};
+use super::wrap::{clamp_spans, cols, spans_cols};
 use super::*;
 
 use crate::app::{Theme, ThemeRow};
@@ -70,34 +70,15 @@ fn name_col() -> usize {
 }
 
 /// One theme row in the `/mcp` list's shape:
-/// `{indent}{❯ }{name}{pad}{swatches}{ ✓}` — the selected row's [`HOOKS_MARKER`]
-/// and name in the active accent (the name bold), every other row keeping the
-/// marker's width blank so the names line up under it; the swatches wear the
-/// row's own palette, and the session's current theme carries the `/model`
-/// picker's green ✓.
+/// `{indent}{❯ }{name}{pad}{swatches}{ ✓}` ([`marked_row_head`]) — the
+/// selected row's [`HOOKS_MARKER`] and name in the active accent (the name
+/// bold), every other row keeping the marker's width blank so the names line
+/// up under it; the swatches wear the row's own palette, and the session's
+/// current theme carries the `/model` picker's green ✓.
 fn theme_row(row: &ThemeRow, selected: bool) -> Line<'static> {
-    let (marker, marker_style, name_style) = if selected {
-        (
-            HOOKS_MARKER.to_string(),
-            Style::new().fg(model_selected_color()),
-            Style::new()
-                .fg(model_selected_color())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            " ".repeat(cols(HOOKS_MARKER)),
-            Style::default(),
-            Style::new().fg(model_id_color()),
-        )
-    };
     let name = row.theme.name();
-    let mut spans = vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(marker, marker_style),
-        Span::styled(name.to_string(), name_style),
-        Span::raw(" ".repeat(name_col().saturating_sub(cols(name)))),
-    ];
+    let mut spans = marked_row_head(name, selected);
+    spans.push(Span::raw(" ".repeat(name_col().saturating_sub(cols(name)))));
     spans.extend(swatch_spans(row.theme));
     if row.active {
         spans.push(Span::styled(
@@ -122,27 +103,31 @@ fn list_cols() -> usize {
                 },
                 true,
             );
-            row.spans.iter().map(|s| cols(&s.content)).sum::<usize>()
+            spans_cols(&row.spans)
         })
         .max()
         .unwrap_or(0)
 }
 
-/// Whether the preview sits **beside** the list at `width`: the list
-/// column, [`THEME_PREVIEW_GAP`] and the sample's unwrapped width
-/// ([`THEME_PREVIEW_MIN_COLS`]) all fit. Under that it stacks under the
-/// list.
-fn preview_beside(width: u16) -> bool {
-    usize::from(width) >= list_cols() + THEME_PREVIEW_GAP + THEME_PREVIEW_MIN_COLS
+/// How the page lays its preview out ([`PreviewLayout`]): beside the list
+/// once the terminal has room for the list column, [`THEME_PREVIEW_GAP`]
+/// and the sample's unwrapped width ([`THEME_PREVIEW_MIN_COLS`]), stacked
+/// under it otherwise.
+fn layout() -> PreviewLayout {
+    PreviewLayout {
+        list_cols: list_cols(),
+        gap: THEME_PREVIEW_GAP,
+        min_cols: THEME_PREVIEW_MIN_COLS,
+    }
 }
 
-/// The list column in the `/mcp` list's shape: a `↑ N more above` row only
-/// when rows are scrolled off the top, the window of rows
-/// ([`centered_window`] at [`THEME_MENU_MAX_ROWS`], the selection riding the
-/// middle), and a `↓ N more below` row only when rows are below. Over this
-/// catalog one side is always hidden, so the column is one height at every
-/// selection. The overflow rows are `…`-cut to `overflow_width`, the rows to
-/// `width`.
+/// The list column in the `/mcp` list's shape ([`overflow_list`]): a
+/// `↑ N more above` row only when rows are scrolled off the top, the window
+/// of rows ([`centered_window`] at [`THEME_MENU_MAX_ROWS`], the selection
+/// riding the middle), and a `↓ N more below` row only when rows are below.
+/// Over this catalog one side is always hidden, so the column is one height
+/// at every selection. The overflow rows are `…`-cut to `overflow_width`,
+/// the rows to `width`.
 fn list_lines(
     rows: &[ThemeRow],
     selected: usize,
@@ -151,25 +136,7 @@ fn list_lines(
 ) -> Vec<Line<'static>> {
     let (above, window, below) =
         window_lines(rows, selected, usize::from(THEME_MENU_MAX_ROWS), width);
-    let mut lines = Vec::new();
-    if above > 0 {
-        lines.push(model_overflow_row(
-            HOOKS_UP_MARKER,
-            above,
-            "above",
-            overflow_width,
-        ));
-    }
-    lines.extend(window);
-    if below > 0 {
-        lines.push(model_overflow_row(
-            HOOKS_DOWN_MARKER,
-            below,
-            "below",
-            overflow_width,
-        ));
-    }
-    lines
+    overflow_list(above, window, below, overflow_width)
 }
 
 /// The window of `rows` that keeps the selection in view — `max` rows,
@@ -218,20 +185,6 @@ fn sample_edit() -> ToolCall {
     }
 }
 
-/// `line` with its own style folded onto its spans (the way ratatui patches
-/// it at paint time), and the line itself unstyled — so a row can be laid
-/// beside, or inset behind, other content without its ground (the user
-/// bubble's) painting that content too.
-fn fold_line_style(line: Line<'static>) -> Line<'static> {
-    let style = line.style;
-    Line::from(
-        line.spans
-            .into_iter()
-            .map(|span| Span::styled(span.content, style.patch(span.style)))
-            .collect::<Vec<_>>(),
-    )
-}
-
 /// What a theme's description says past its title, as a subtitle —
 /// `Catppuccin Mocha — the darkest flavour, and the default` reads `The
 /// darkest flavour, and the default`: the title and its dash dropped (the
@@ -243,33 +196,15 @@ fn subtitle(theme: Theme) -> String {
         .strip_prefix(theme.title())
         .and_then(|rest| rest.strip_prefix(" — "))
         .unwrap_or(description);
-    let mut chars = rest.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+    capitalized(rest)
 }
 
-/// The caption over the preview — codex's bold-title-over-dim-subtitle
-/// header, naming the theme the sample wears: its title in bold, and under
-/// it its [`subtitle`] in the frame's dim. Two rows rather than one
-/// `Title — description` row, so the caption reads whole in the preview
-/// column of a standard terminal; each row is still `…`-cut to `width`
-/// rather than wrapped, so the preview is one shape for every theme. Like
-/// the rest of the frame it wears the **active** theme.
-fn caption_lines(theme: Theme, width: usize) -> [Line<'static>; 2] {
-    let bold = Style::new().add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(model_meta_color());
-    [
-        Line::from(Span::styled(ellipsize(theme.title(), width), bold)),
-        Line::from(Span::styled(ellipsize(&subtitle(theme), width), dim)),
-    ]
-}
-
-/// The preview for `theme` at `width`: the caption, a gap, then the sample
-/// conversation's three cells rendered under `theme` by the conversation's
-/// own builders. The scope ends before the surrounding page is built, so the
-/// frame, the rows, the caption and the hint keep the **active** theme —
-/// only the sample wears the highlighted one.
+/// The preview for `theme` at `width`: the caption ([`caption_lines`] — the
+/// theme's title in bold over its [`subtitle`] in the frame's dim), a gap,
+/// then the sample conversation's three cells rendered under `theme` by the
+/// conversation's own builders. The scope ends before the surrounding page
+/// is built, so the frame, the rows, the caption and the hint keep the
+/// **active** theme — only the sample wears the highlighted one.
 fn preview_lines(theme: Theme, width: u16) -> Vec<Line<'static>> {
     let width = width.max(1);
     let cells = with_theme(theme, || {
@@ -278,68 +213,28 @@ fn preview_lines(theme: Theme, width: u16) -> Vec<Line<'static>> {
         lines.extend(message_lines(Role::Assistant, THEME_PREVIEW_REPLY, width));
         lines
     });
-    let mut lines = Vec::from(caption_lines(theme, usize::from(width)));
+    let mut lines = Vec::from(caption_lines(
+        theme.title(),
+        &subtitle(theme),
+        usize::from(width),
+    ));
     lines.push(Line::default());
-    lines.extend(cells.into_iter().map(fold_line_style));
+    lines.extend(cells);
     lines
-}
-
-/// Lay `right` beside `left`, row by row: each left row padded out to
-/// `left_cols` columns, `gap` blank columns, then the right row. A column
-/// that runs out leaves its side of the row blank, and a row with nothing on
-/// its right carries no trailing padding.
-fn beside(
-    left: Vec<Line<'static>>,
-    left_cols: usize,
-    gap: usize,
-    right: Vec<Line<'static>>,
-) -> Vec<Line<'static>> {
-    let rows = left.len().max(right.len());
-    let mut left = left.into_iter();
-    let mut right = right.into_iter();
-    (0..rows)
-        .map(|_| {
-            let mut spans = left.next().map(|line| line.spans).unwrap_or_default();
-            let right = right.next().map(|line| line.spans).unwrap_or_default();
-            if right.iter().any(|s| !s.content.is_empty()) {
-                let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
-                spans.push(Span::raw(" ".repeat(left_cols.saturating_sub(used) + gap)));
-                spans.extend(right);
-            }
-            Line::from(spans)
-        })
-        .collect()
 }
 
 /// The whole page's body — what sits between the search line and the hint:
 /// a gap, the list column ([`list_lines`]) and the **real-cell preview** in
 /// the highlighted theme under its caption — beside the list when the
-/// terminal has the room ([`preview_beside`]), under it after a gap when it
-/// doesn't — and the gap over the hint.
+/// terminal has the room, under it after a gap when it doesn't
+/// ([`PreviewLayout::body`]) — and the gap over the hint.
 fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     let theme = rows[selected].theme;
-    let mut lines = vec![Line::default()];
-    if preview_beside(width) {
-        // Beside the list the overflow rows live in the list column, so the
-        // preview's rows never move as the window scrolls.
-        let list_width = list_cols();
-        let overflow_width = u16::try_from(list_width).unwrap_or(width);
-        let list = list_lines(rows, selected, width, overflow_width);
-        let room = usize::from(width) - list_width - THEME_PREVIEW_GAP;
-        let preview = preview_lines(theme, u16::try_from(room).unwrap_or(width));
-        lines.extend(beside(list, list_width, THEME_PREVIEW_GAP, preview));
-    } else {
-        lines.extend(list_lines(rows, selected, width, width));
-        lines.push(Line::default());
-        let inner = width.saturating_sub(cols(MODEL_INDENT) as u16);
-        lines.extend(preview_lines(theme, inner).into_iter().map(|line| {
-            let mut spans = vec![Span::raw(MODEL_INDENT)];
-            spans.extend(line.spans);
-            Line::from(spans)
-        }));
-    }
-    lines.push(Line::default());
-    lines
+    layout().body(
+        width,
+        &|overflow_width| list_lines(rows, selected, width, overflow_width),
+        &|preview_width| preview_lines(theme, preview_width),
+    )
 }
 
 /// The framed page as lines: a top rule, the `❯` search line straight under

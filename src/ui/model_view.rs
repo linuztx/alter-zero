@@ -114,6 +114,191 @@ pub(super) fn model_compact_list(
     lines
 }
 
+/// The head of one list row in the **`/mcp` list's shape**: the family's
+/// indent, then the accent [`HOOKS_MARKER`] and the name in bold accent on
+/// the selected row, or the marker's width left blank and the name in the
+/// muted ink on every other row, so the names line up under the marker. The
+/// previewed pickers (`/theme`, `/mascot`, `/spinner`) open every row with
+/// it.
+pub(super) fn marked_row_head(name: &str, selected: bool) -> Vec<Span<'static>> {
+    let (marker, marker_style, name_style) = if selected {
+        (
+            HOOKS_MARKER.to_string(),
+            Style::new().fg(model_selected_color()),
+            Style::new()
+                .fg(model_selected_color())
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            " ".repeat(cols(HOOKS_MARKER)),
+            Style::default(),
+            Style::new().fg(model_id_color()),
+        )
+    };
+    vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(marker, marker_style),
+        Span::styled(name.to_string(), name_style),
+    ]
+}
+
+/// A list column in the `/mcp` list's shape: a dim `↑ N more above` row over
+/// `window` only when rows are hidden above it, and a dim `↓ N more below`
+/// row under it only when rows are hidden below, each `…`-cut to `width`.
+pub(super) fn overflow_list(
+    above: usize,
+    window: Vec<Line<'static>>,
+    below: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if above > 0 {
+        lines.push(model_overflow_row(HOOKS_UP_MARKER, above, "above", width));
+    }
+    lines.extend(window);
+    if below > 0 {
+        lines.push(model_overflow_row(HOOKS_DOWN_MARKER, below, "below", width));
+    }
+    lines
+}
+
+/// `text` with its first letter upper-cased: `crest` reads `Crest`.
+pub(super) fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The caption over a previewed picker's preview: codex's header, a bold
+/// title over a dim subtitle, naming what the preview shows. Two rows rather
+/// than one `Title — subtitle` row, so the caption reads whole in the
+/// preview column of a standard terminal. Each row is still `…`-cut to
+/// `width` rather than wrapped, so the preview is one shape whatever is
+/// highlighted.
+pub(super) fn caption_lines(title: &str, subtitle: &str, width: usize) -> [Line<'static>; 2] {
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(model_meta_color());
+    [
+        Line::from(Span::styled(ellipsize(title, width), bold)),
+        Line::from(Span::styled(ellipsize(subtitle, width), dim)),
+    ]
+}
+
+/// How a picker that previews its highlighted entry lays the preview out.
+/// This is codex's theme picker, shared by `/theme`, `/mascot` and
+/// `/spinner`. The list sits on the left, and the preview sits **beside**
+/// it once the terminal has room for the list column, the gap and the
+/// preview's narrowest column. Otherwise the preview is **stacked** under
+/// the list (`docs/theme.md`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PreviewLayout {
+    /// The list column's width: the widest row the catalog can paint. A
+    /// constant of the catalog, so the preview beside it starts on one
+    /// column whatever is selected or searched.
+    pub list_cols: usize,
+    /// Blank columns between the list column and the preview beside it.
+    pub gap: usize,
+    /// The narrowest preview column laid out beside the list: the room the
+    /// preview needs to read whole.
+    pub min_cols: usize,
+}
+
+impl PreviewLayout {
+    /// Whether the preview sits beside the list at `width`: the list column,
+    /// the gap and the preview's narrowest column all fit.
+    pub fn fits_beside(self, width: u16) -> bool {
+        usize::from(width) >= self.list_cols + self.gap + self.min_cols
+    }
+
+    /// The whole page's body, between the search line and the hint. It is a
+    /// gap, then the list column and the preview, then the gap over the
+    /// hint. `list` builds the list column and is handed the width its
+    /// overflow rows are cut to; `preview` builds the preview and is handed
+    /// its column's width. The two sit side by side when
+    /// [`fits_beside`](Self::fits_beside), else the preview goes under the
+    /// list after a gap, inset by [`MODEL_INDENT`]. Every preview row has its
+    /// line style folded onto its spans first, so a ground (the user
+    /// bubble's) paints its own column and never the list beside it.
+    pub fn body(
+        self,
+        width: u16,
+        list: &dyn Fn(u16) -> Vec<Line<'static>>,
+        preview: &dyn Fn(u16) -> Vec<Line<'static>>,
+    ) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::default()];
+        if self.fits_beside(width) {
+            // Beside the list the overflow rows live in the list column, so
+            // the preview's rows never move as the window scrolls.
+            let overflow_width = u16::try_from(self.list_cols).unwrap_or(width);
+            let room = usize::from(width) - self.list_cols - self.gap;
+            let preview = preview(u16::try_from(room).unwrap_or(width))
+                .into_iter()
+                .map(fold_line_style)
+                .collect();
+            lines.extend(lay_beside(
+                list(overflow_width),
+                self.list_cols,
+                self.gap,
+                preview,
+            ));
+        } else {
+            lines.extend(list(width));
+            lines.push(Line::default());
+            let inner = width.saturating_sub(cols(MODEL_INDENT) as u16);
+            lines.extend(preview(inner).into_iter().map(|line| {
+                let mut spans = vec![Span::raw(MODEL_INDENT)];
+                spans.extend(fold_line_style(line).spans);
+                Line::from(spans)
+            }));
+        }
+        lines.push(Line::default());
+        lines
+    }
+}
+
+/// `line` with its own style folded onto its spans (the way ratatui patches
+/// it at paint time), and the line itself unstyled, so a row can be laid
+/// beside, or inset behind, other content without its ground painting that
+/// content too.
+fn fold_line_style(line: Line<'static>) -> Line<'static> {
+    let style = line.style;
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content, style.patch(span.style)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Lay `right` beside `left`, row by row: each left row padded out to
+/// `left_cols` columns, `gap` blank columns, then the right row. A column
+/// that runs out leaves its side of the row blank, and a row with nothing on
+/// its right carries no trailing padding.
+fn lay_beside(
+    left: Vec<Line<'static>>,
+    left_cols: usize,
+    gap: usize,
+    right: Vec<Line<'static>>,
+) -> Vec<Line<'static>> {
+    let rows = left.len().max(right.len());
+    let mut left = left.into_iter();
+    let mut right = right.into_iter();
+    (0..rows)
+        .map(|_| {
+            let mut spans = left.next().map(|line| line.spans).unwrap_or_default();
+            let right = right.next().map(|line| line.spans).unwrap_or_default();
+            if right.iter().any(|s| !s.content.is_empty()) {
+                let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+                spans.push(Span::raw(" ".repeat(left_cols.saturating_sub(used) + gap)));
+                spans.extend(right);
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// What one rung of a compact page keeps (`COMPACT_RUNGS`): the frame's
 /// rules, the overflow slots, how many rows of the list, and the tail. The
 /// `❯` search line is on every rung.

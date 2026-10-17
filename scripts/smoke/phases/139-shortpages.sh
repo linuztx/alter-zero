@@ -11,8 +11,9 @@ smoke_begin
 # row Enter would act on was off screen. Each picker now sheds what its
 # choices don't need and keeps the search line, three rows between the ↑/↓
 # overflow slots, and the hint — /donate and /secrets their highlighted entry,
-# and the AskUserQuestion modal its question (docs/ask.md). Drive each one on
-# a 12-row pane. Counts are matched loosely where a catalog grows with each
+# and the AskUserQuestion modal its question (docs/ask.md) — or, like
+# /mascot laid beside its preview, fits whole. Drive each one on a 12-row
+# pane. Counts are matched loosely where a catalog grows with each
 # new feature, which must not fail this phase instead of that feature's own.
 S139="${S}_shortpages"
 # Eight secrets for /secrets to window (docs/secrets.md).
@@ -50,25 +51,29 @@ expect_has "$short_settings_walk" -E '^  ↓ [0-9]+ more below$' "/settings lost
 tmux send-keys -t "$S139" Escape
 sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /settings back to the composer"
-# /mascot and /spinner: their live previews yield with the counter and the
-# description, and three rows stay between the slots.
+# /mascot: laid beside the list, its whole page is twelve rows, so a 12-row
+# pane shows all of it — every mascot, the caption and the banner preview —
+# and nothing is windowed (docs/mascot.md).
 submit "$S139" "/mascot"
 short_mascot="$(wait_pane 5 "$S139" -F "Enter to choose")"
 echo "==== Phase 139: /mascot on 12 rows ===="
 printf '%s\n' "$short_mascot"
 expect_has "$short_mascot" -E '^  ❯ *$' "/mascot lost its search line on 12 rows"
-expect_has "$short_mascot" -E '^→ crest' "/mascot lost its highlighted row on 12 rows"
-expect_has "$short_mascot" -E '^  ↓ [0-9]+ more below$' "/mascot does not name the rows under its window"
-expect_lacks "$short_mascot" -E '\([0-9]+/[0-9]+\)' "/mascot still shows its counter on 12 rows"
-expect_lacks "$short_mascot" -F "crested hatchling" "/mascot still shows its description on 12 rows"
+expect_has "$short_mascot" -E '^  ❯ crest ✓ +Crest *$' "/mascot lost its highlighted row, or the caption beside it, on 12 rows"
+expect_has "$short_mascot" -E '^    gem ' "/mascot does not list every mascot on 12 rows"
+expect_has "$short_mascot" -F "crested hatchling" "/mascot lost its caption on 12 rows"
+expect_has "$short_mascot" -F "▙▄▙▄▟▄▟" "/mascot lost its banner preview on 12 rows"
+expect_lacks "$short_mascot" -F " more below" "/mascot windows a list that fits on 12 rows"
 tmux send-keys -t "$S139" Escape
 sleep 0.4
+# /spinner: laid beside the list its whole page is fifteen rows, so on 12 the
+# live preview yields, and three styles stay between the slots.
 submit "$S139" "/spinner"
 short_spinner="$(wait_pane 5 "$S139" -F "Enter to choose")"
 echo "==== Phase 139: /spinner on 12 rows ===="
 printf '%s\n' "$short_spinner"
 expect_has "$short_spinner" -E '^  ❯ *$' "/spinner lost its search line on 12 rows"
-expect_has "$short_spinner" -E '^→ gravity' "/spinner lost its highlighted row on 12 rows"
+expect_has "$short_spinner" -E '^  ❯ gravity' "/spinner lost its highlighted row on 12 rows"
 expect_has "$short_spinner" -E '^  ↓ [0-9]+ more below$' "/spinner does not name the rows under its window"
 expect_lacks "$short_spinner" -F "Working" "/spinner still shows its live preview on 12 rows"
 tmux send-keys -t "$S139" Escape
@@ -218,8 +223,8 @@ caret_on_search_line "/theme matching nothing on 7 rows" "$tiny_nomatch" "zzz"
 tmux send-keys -t "$S139T" Escape # clears the search
 sleep 0.3
 close_picker /theme
-for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:→ crest:Enter to choose" \
-	"/spinner:→ gravity:Enter to choose" "/skills:→ alpha:Enter/Space to enable"; do
+for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:❯ crest:Enter to choose" \
+	"/spinner:❯ gravity:Enter to choose" "/skills:→ alpha:Enter/Space to enable"; do
 	cmd="${picker%%:*}"
 	rest="${picker#*:}"
 	row="${rest%%:*}"

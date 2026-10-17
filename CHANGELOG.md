@@ -51,6 +51,16 @@ release heading when a version is cut.
   left out and the list shows three themes at a time, so the search line,
   the theme names and the hint stay on screen instead of scrolling away
   above the preview (`docs/theme.md`).
+- **`/mascot` and `/spinner` lay their previews out the way `/theme` does.**
+  The banner preview in `/mascot` and the live status line in `/spinner` now
+  sit to the right of the list on a standard terminal (56 columns or wider
+  for `/mascot`, 72 for `/spinner`) and stack under it on a narrower one.
+  Both lists read like `/theme`'s: `❯` marks the highlighted entry, the
+  `(n/total)` counter is gone, the preview opens on the entry's name in bold
+  over its description, and the hint starts with `↑/↓ to navigate`. Laid
+  side by side, `/mascot` fits in twelve rows and `/spinner` in fifteen.
+  Three spinner descriptions were shortened so every one reads whole beside
+  the list on an 80-column terminal (`docs/mascot.md`, `docs/spinner.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or

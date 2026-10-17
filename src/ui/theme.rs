@@ -1320,29 +1320,46 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
-// --- the inline /mascot picker (docs/mascot.md). The /settings menu's twin
-// again: it reuses the family's frame, marker, prompt and colours, adding
-// only its own words — the page's centre is the live banner preview, drawn
-// by the header's own builder so it can never disagree with the real thing. ---
+// --- the inline /mascot picker (docs/mascot.md). The /theme picker's
+// layout over the mascot catalog: the family's frame and `❯` search line,
+// the rows in the `/mcp` list's shape, and the live banner preview, drawn by
+// the header's own builder so it can never disagree with the real thing,
+// laid BESIDE the list once the terminal has the room and stacked under it
+// when it doesn't. ---
 
-/// The key hint pinned under the preview — the picker's whole grammar.
-pub(super) const MASCOT_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation like the `/theme` picker's.
+pub(super) const MASCOT_HINT: &str = THEME_HINT;
 
 /// The list placeholder when the search matches no mascot.
 pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
 
 /// The cap on the picker's visible list rows (the settings window's size —
-/// the eight-mascot catalog never actually windows today).
+/// the six-mascot catalog never actually windows today).
 pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-// --- the inline /spinner picker (docs/spinner.md). The /mascot picker's frame
-// — the MODEL_* accents, the same hint grammar — over the spinner-style
-// catalog, plus a name column that leaves room for each row's live spinner.
-// The styles' own frames and colours sit with the status indicator's consts
-// below (`SPINNER_*_FRAMES`). ---
+/// Columns between the list column and the preview beside it — the
+/// `/theme` picker's gap.
+pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
-/// The key hint pinned under the preview — the picker's whole grammar.
-pub(super) const SPINNER_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+/// The narrowest preview column the side-by-side page lays out: the banner
+/// keeps its art beside its title and its `/login /model /resume` hint (36
+/// columns) and every caption reads whole (37), with a little room left for
+/// the cwd row, which the banner `…`-cuts as it always has. A terminal with
+/// less than the list, the gap and this stacks the preview under the list.
+pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
+
+// --- the inline /spinner picker (docs/spinner.md). The /theme picker's
+// layout over the spinner-style catalog: the family's frame and `❯` search
+// line, the rows in the `/mcp` list's shape with a name column that leaves
+// room for each row's live spinner, and the live status-line preview laid
+// BESIDE the list once the terminal has the room and stacked under it when
+// it doesn't. The styles' own frames and colours sit with the status
+// indicator's consts below (`SPINNER_*_FRAMES`). ---
+
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation like the `/theme` picker's.
+pub(super) const SPINNER_HINT: &str = THEME_HINT;
 
 /// The list placeholder when the search matches no style.
 pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
@@ -1351,9 +1368,20 @@ pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
 /// the nine-style catalog never actually windows today).
 pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-/// Columns between the widest visible style name and the spinner column, so
-/// the live spinners line up down the list.
+/// Columns between the widest style name in the catalog and the spinner
+/// column, so the live spinners line up down the list.
 pub(super) const SPINNER_MENU_GAP: usize = 3;
+
+/// Columns between the list column and the preview beside it — the
+/// `/theme` picker's gap.
+pub(super) const SPINNER_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
+
+/// The narrowest preview column the side-by-side page lays out: the sample
+/// status line reads whole with a minute on its clock (`Working… (1m 5s ·
+/// esc to interrupt)` behind the eight-cell track), the `/theme` sample's
+/// width. A terminal with less than the list, the gap and this stacks the
+/// preview under the list.
+pub(super) const SPINNER_PREVIEW_MIN_COLS: usize = THEME_PREVIEW_MIN_COLS;
 
 // --- The inline `/theme` picker (docs/theme.md). codex's theme picker in
 // this TUI's dress: the family's frame and `❯` search line over one row per

@@ -87,16 +87,18 @@ impl Spinner {
         }
     }
 
-    /// The one-line description shown under the picker's preview.
+    /// The one-line description the picker's preview caption shows under
+    /// the style's name — short enough to read whole in the preview column
+    /// of a standard 80-column terminal.
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
             Self::Comet => "A comet sweeping between two dim walls",
-            Self::Gravity => "A ball hopping along the track, bouncing off both walls",
-            Self::Wave => "A wave rolling down the track, reflecting off the walls",
+            Self::Gravity => "A ball hopping along the track, wall to wall",
+            Self::Wave => "A wave rolling down the track and back again",
             Self::Sparkle => "A spark blooming into a star in the banner's cyan",
             Self::Dots => "The classic braille dots, circling",
-            Self::Blocks => "The mascot's own block glyphs, turning in its gradient",
+            Self::Blocks => "The mascot's block glyphs, turning in its gradient",
             Self::Pulse => "One dot breathing dim to bright, like a running tool",
             Self::Bars => "A bar rising and falling like a level meter",
             Self::Line => "The classic spinning line, in any font",

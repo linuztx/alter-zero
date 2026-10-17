@@ -30,51 +30,104 @@ column across the art block's width.
 
 ## The `/mascot` picker
 
+On a terminal with room for the list, a gap and the banner — 56 columns over
+this catalog — the preview sits **beside** the list, the `/theme` picker's
+layout (`docs/theme.md`):
+
 ```
-────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────
   ❯
-  → crest ✓
+
+  ❯ crest ✓     Crest
+    bloom       A crested hatchling flaring its frill
+    sprout
+    twin         ▙▄▙▄▟▄▟   Alter Zero (v0.14.0)
+    skiter      ▝▜▄███▄▛▘  ~/alter-zero
+    gem           ▘▘ ▝▝    /login   /model   /resume
+
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────
+```
+
+On a narrower one the same preview stacks under the list:
+
+```
+──────────────────────────────────────────────────────
+  ❯
+
+  ❯ crest ✓
     bloom
     sprout
-    …
-  (1/6)
+    twin
+    skiter
+    gem
 
-   ▙▄▙▄▟▄▟   Alter Zero (v0.1.0)
-  ▝▜▄███▄▛▘  ~/inline-tui
+  Crest
+  A crested hatchling flaring its frill
+
+   ▙▄▙▄▟▄▟   Alter Zero (v0.14.0)
+  ▝▜▄███▄▛▘  ~/alter-zero
     ▘▘ ▝▝    /login   /model   /resume
 
-  A crested hatchling flaring its frill
-  Type to search · Enter to choose · Esc to cancel
-────────────────────────────────────────────────────────────────
+  ↑/↓ to navigate · Type to search · Enter to choose …
+──────────────────────────────────────────────────────
 ```
 
-Deliberately the `/settings` menu's twin — same inline frame, same `❯`
-type-to-search (matching names *and* descriptions), same `→` marker with the
-cyan selection, same `(n/total)` counter and dim hint — plus the one thing no
-sibling has: a **live banner preview** in the page's centre. The preview is
-built by the *same* `ui::header` builder the startup banner uses
-(`header_lines_for(app, mascot, width)`), inset two columns, so what the
-picker shows and what Enter produces can never disagree — the cwd, the
-version, the hint and the gradient all preview exactly. The slot is padded to
-the tallest banner any mascot would draw at that width, so the frame can
-never jump as ↑/↓ move — today's catalog is uniform, but the padding is what
-keeps that true of any mascot added later (the `/settings` always-emit rule). The `→ {name}` rows carry the `/model` picker's green `✓`
-on the session's current mascot, and the open seats the highlight on it.
+Deliberately the `/theme` picker's layout — the same inline frame and `❯`
+type-to-search (matching names *and* descriptions), the rows in the **`/mcp`
+list's shape** (the accent `❯` and the bold name on the selection, every
+other row indented under it; dim `↑ N more above` / `↓ N more below` rows
+name whatever a window hides, in place of an `(n/total)` counter, though six
+mascots never window in the ten-row list), and a hint led by the navigation
+— around the one thing a mascot picker exists for: a **live banner
+preview**. It is built by the *same* `ui::header` builder the startup banner
+uses (`header_lines_for(app, mascot, width)`, at the preview column's width),
+so what the picker shows and what Enter produces can never disagree — the
+cwd, the version, the hint and the gradient all preview exactly. Over it
+sits `/theme`'s caption: the mascot's name as a bold title (`Crest`) over
+its description in the frame's dim.
+
+- **Beside the list on a wide terminal, under it on a narrow one.** The
+  preview sits beside the list once the terminal has room for the list
+  column (the widest row the catalog can paint, 12 columns), then
+  `MASCOT_PREVIEW_GAP` (4, the `/theme` gap), then `MASCOT_PREVIEW_MIN_COLS`
+  (40: the banner keeps its art beside its title and its `/login /model
+  /resume` hint, 36 columns, and every caption reads whole, 37). That is 56
+  columns, so every standard terminal gets it. Under that the preview stacks
+  under the list after a gap, inset two columns. There is one breakpoint, and
+  at it the banner still seats its art and every caption reads whole
+  (`the_layout_switches_once_and_beside_the_list_the_banner_keeps_its_art`).
+  The list column is a constant of the catalog, so neither ↑/↓ nor a search
+  moves the preview sideways
+  (`the_preview_column_holds_still_as_the_list_moves_and_filters`).
+- **The frame never jumps.** The banner slot is padded to the tallest banner
+  any mascot would draw at that width. Today's catalog is uniform, but the
+  padding is what keeps that true of any mascot added later (the `/settings`
+  always-emit rule). The `❯ {name}` rows carry the `/model` picker's green
+  `✓` on the session's current mascot, and the open seats the highlight on
+  it.
+- **One layout, three pickers.** `ui::model_view::PreviewLayout` lays the
+  preview beside or under the list for `/theme`, `/mascot` and `/spinner`
+  alike, over the shared row head (`marked_row_head`), overflow rows
+  (`overflow_list`) and caption (`caption_lines`).
+
+Laid side by side the page is twelve rows against the stacked page's
+nineteen, so it fits a 12-row terminal whole.
 
 A search that matches **nothing** collapses to its essentials — the
-placeholder, one blank gap, the hint — because there is no count, no banner
-to preview and no description to show, and painting those slots as empty
-rows left a band of blank lines mid-frame. It is the `/model` picker's
-placeholder rule (`model_has_detail`), and the page is then exactly:
+placeholder, one blank gap, the hint — because there is no list, no caption
+and no banner to preview, and painting those slots as empty rows left a band
+of blank lines mid-frame. It is the `/model` picker's placeholder rule
+(`model_has_detail`), and the page is then exactly:
 
 ```
-────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────
   ❯ ?
 
   No matching mascots
 
-  Type to search · Enter to choose · Esc to cancel
-────────────────────────────────────────────────────────────────
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────
 ```
 
 Keys: ↑/↓ move, **wrapping at the ends** (the shared `wrap_step` grammar
@@ -86,22 +139,22 @@ pastes are swallowed (nothing anyone pastes is a mascot name). It works
 **mid-turn** like `/settings` — it only replaces the composer, and the
 streaming strip keeps its rows above it.
 
-On a terminal too short for the page — it is nineteen rows — the picker
-builds the family's **compact** page instead (`docs/view-flow.md` *A page
-that sheds rows before it flows*): the banner preview, the description and
-the counter yield, and three mascots sit between the reserved overflow
-slots, so the search line, the highlighted mascot and the hint stay on
-screen.
+On a terminal too short for the page (twelve rows beside the list,
+nineteen stacked) the picker builds the family's **compact** page instead
+(`docs/view-flow.md` *A page that sheds rows before it flows*): the preview
+yields, caption and banner together, and three mascots sit between the
+reserved overflow slots, so the search line, the highlighted mascot and the
+hint stay on screen.
 
 ```
 ──────────────────────────────────────────────────────────
   ❯
 
-→ crest ✓
-  bloom
-  sprout
+  ❯ crest ✓
+    bloom
+    sprout
   ↓ 3 more below
-  Type to search · Enter to choose · Esc to cancel
+  ↑/↓ to navigate · Type to search · Enter to choose · Es…
 ──────────────────────────────────────────────────────────
 ```
 
@@ -181,7 +234,9 @@ a project.
   `choice_for`, `adopt`, `record`, over the `last` + `projects` fields.
 - `ui::mascot_view` — `mascot_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `mascot_picker_height`,
-  `render_mascot_picker`; `ui::header::header_lines_for` renders the preview.
+  `render_mascot_picker`; `ui::header::header_lines_for` renders the preview,
+  and `ui::model_view::PreviewLayout` (over `MASCOT_PREVIEW_GAP` and
+  `MASCOT_PREVIEW_MIN_COLS`) lays it beside the list or under it.
 - `tui::mascot::Session::select_mascot`, `tui::config::{mascot_json_path,
   adopt_look, save_look}`.
 
@@ -196,15 +251,25 @@ a project.
   `/mascot` command opening the picker, and the whole key grammar (filter,
   the wrapping ↑/↓ against the clamping jump keys, Enter/Space select,
   Esc/Ctrl+C, owns-every-key).
-- `ui/tests/mascot_view.rs` — the framed page (rules, search, rows, counter,
-  preview, description, hint), the preview following the selection, the
-  stable slot height, the active ✓, the no-match placeholder, width safety,
-  the height contract, and flow eligibility.
+- `ui/tests/mascot_view.rs` — the framed page (rules, search, rows,
+  captioned preview, hint, no counter) at a wide and a narrow width, the
+  `/mcp` list's marker and indent, the preview beside the list on one column
+  (an 80-column terminal included) and stacked under it after a gap on a
+  narrow one, the one breakpoint with the banner's art and every caption
+  kept at it, the preview column holding still through ↑/↓ and searches, the
+  caption's bold title over its dim description and every caption whole at
+  80 columns, the preview following the selection, the stable height, the
+  active ✓ and its seat, the no-match placeholder, no stacked blanks, width
+  safety, the height contract; the compact page (its shape, the window
+  riding the selection, the whole page back once it fits, the cursor on its
+  search line) and the rungs under it down to the search line, nothing
+  flowing at any height.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
-- `scripts/smoke.sh` Phase 139 — the compact page on a 12-row terminal, and
-  the search line on 7.
+- `scripts/smoke.sh` Phase 139 — the side-by-side page fitting a 12-row
+  terminal whole, and the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:
-  open from the palette, preview follows ↓, filtered Enter switches the
+  open from the palette with the preview beside the list on 80 columns, the
+  marker, caption and preview following ↓, filtered Enter switches the
   banner, the toast confirms, and a **second process against the same config
   home launches with the switched mascot** (persistence).
 - `scripts/smoke.sh` Phase 114 — the per-directory rule end to end, for

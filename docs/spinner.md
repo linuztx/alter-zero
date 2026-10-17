@@ -111,39 +111,67 @@ dense already, and a synthesized bold blurs them), and every other style is
 
 ## The `/spinner` picker
 
+On a terminal with room for the list, a gap and the sample status line — 72
+columns over this catalog — the preview sits **beside** the list, the
+`/theme` picker's layout (`docs/theme.md`):
+
 ```
-────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────
   ❯
-    comet    (●•·   )
-  → gravity  ⣀⣘⣃⣀⣀⣀⣀⣀ ✓
-    wave     ⠔⠉⠉⠑⠤⣀⣀⡠
-    sparkle  ✶
-    dots     ⠹
-    blocks   ▛
-    pulse    ●
-    bars     ▅
-    line     /
-  (2/9)
 
-  ⣀⣘⣃⣀⣀⣀⣀⣀ Working… (4s · esc to interrupt)
+    comet     (●•·   )      Gravity
+  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
+    wave      ⠔⠉⠉⠑⠤⣀⣀⡠
+    sparkle   ·             ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
+    dots      ⠋
+    blocks    ▙
+    pulse     ●
+    bars      ▁
+    line      |
 
-  A ball hopping along the track, bouncing off both walls
-  Type to search · Enter to choose · Esc to cancel
-────────────────────────────────────────────────────────────────
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────
 ```
 
-Deliberately the `/mascot` picker's twin — same inline frame, same `❯`
+On a narrower one the same preview stacks under the list:
+
+```
+────────────────────────────────────────────────────────────
+  ❯
+
+    comet     (●•·   )
+  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓
+    wave      ⠔⠉⠉⠑⠤⣀⣀⡠
+    …
+    line      |
+
+  Gravity
+  A ball hopping along the track, wall to wall
+
+  ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
+
+  ↑/↓ to navigate · Type to search · Enter to choose · Esc …
+────────────────────────────────────────────────────────────
+```
+
+Deliberately the `/theme` picker's layout — the same inline frame and `❯`
 type-to-search (matching names *and* descriptions, so `braille` finds
-`dots`), same `→` marker with the cyan selection, same `(n/total)` counter,
-description row and dim hint — plus the thing a spinner picker exists for:
-the page is **live**.
+`dots`), the rows in the **`/mcp` list's shape** (the accent `❯` and the
+bold name on the selection, every other row indented under it; dim `↑ N
+more above` / `↓ N more below` rows name whatever a window hides, in place of
+an `(n/total)` counter, though nine styles never window in the ten-row
+list), `/theme`'s caption over the preview (the style's name as a bold title
+over its description in the frame's dim), and a hint led by the navigation
+— plus the thing a spinner picker exists for: the page is **live**.
 
 - **Every row wears its own spinner.** The name column is sized to the
-  widest visible name plus `SPINNER_MENU_GAP`, and after it each row draws
-  its style's frame through the same `spinner_spans` the status line uses, so
-  the nine styles compare at a glance, all turning at once. The session's
-  current style carries the `/model` picker's green `✓` after its spinner,
-  and the open seats the highlight on it.
+  widest name in the **whole catalog** plus `SPINNER_MENU_GAP` — never just
+  the listed rows', so a search moves neither the spinners nor the preview
+  beside them — and after it each row draws its style's frame through the
+  same `spinner_spans` the status line uses, so the nine styles compare at a
+  glance, all turning at once. The session's current style carries the
+  `/model` picker's green `✓` after its spinner, and the open seats the
+  highlight on it.
 - **The highlighted style previews as a whole status line** — a sample
   `TurnStatus` (a first turn's: the first status verb, no tokens yet, the
   verb walking on every 30 s like a real turn's — `docs/status-indicator.md`)
@@ -155,6 +183,22 @@ the page is **live**.
   a turn that just began, not a clock that has been running since launch —
   and the spinner's motion and the verb's shimmer take their phase from that
   same value exactly as a real turn's do.
+- **Beside the list on a wide terminal, under it on a narrow one.** The
+  preview sits beside the list once the terminal has room for the list
+  column (the widest row the catalog can paint, 24 columns, since the comet
+  and the two tracks are eight cells wide), then `SPINNER_PREVIEW_GAP` (4,
+  the `/theme` gap), then `SPINNER_PREVIEW_MIN_COLS` (44, the `/theme`
+  sample's width: room for the sample line with a minute on its clock).
+  That is 72 columns, so a standard 80-column terminal gets it, with a
+  52-column preview column. Every description is short enough to read whole
+  there: three were cut off at 80 columns when they first moved beside the
+  list, so they were shortened
+  (`a_standard_terminal_shows_every_caption_whole`). Under that the preview
+  stacks under the list after a gap, inset two columns. There is one
+  breakpoint, and the sample reads whole at it. The list column is a
+  constant of the catalog, so neither ↑/↓ nor a search nor a tick moves the
+  preview sideways. The layout is `ui::model_view::PreviewLayout`, the one
+  `/theme` and `/mascot` lay their previews out with.
 - **It animates with no turn running.** `App::wants_animation_frames` is
   true while the picker is open, so the draw tick re-arms the 32 ms clock
   chain (codex's status-widget cadence) exactly as an active turn or the ↓
@@ -165,12 +209,13 @@ the page is **live**.
   comet and the two tracks are eight cells, the rest one) but every style is
   exactly one row, so neither the selection nor the clock changes the page
   height — the `/settings` always-emit rule, pinned by
-  `the_page_height_is_stable_across_selections_and_ticks`.
+  `the_page_height_is_stable_across_selections_and_ticks`. Laid side by
+  side the page is fifteen rows against the stacked page's twenty.
 
 A search that matches **nothing** collapses to its essentials — the
 placeholder (`No matching spinners`), one blank gap, the hint — because
-there is no count, no preview and no description to show; the `/mascot`
-picker's rule, from the `/model` picker's `model_has_detail`.
+there is no list, no caption and no preview to show; the `/mascot` picker's
+rule, from the `/model` picker's `model_has_detail`.
 
 Keys: ↑/↓ move, **wrapping at the ends** (the shared `wrap_step` grammar);
 PageUp/PageDown/Home/End jump (clamping); printable keys filter (Backspace
@@ -186,19 +231,20 @@ only replaces the composer, and the streaming strip keeps its rows above it
 — which for this picker is the point, since the strip's status row is what
 a switch changes, on the very next frame.
 
-On a terminal too short for the page — it is twenty rows — the picker
-builds the family's **compact** page instead (`docs/view-flow.md` *A page
-that sheds rows before it flows*): the live preview line, the description
-and the counter yield, and three styles sit between the reserved overflow
-slots, each still wearing its own live spinner, so the search line, the
-highlighted style and the hint stay on screen where bottom-anchoring the
-whole page flowed them into scrollback. The glyph column is sized off every
-listed style, not the three in view, so it holds still as the window
-scrolls. On a terminal shorter still the compact page sheds what is left one
-row at a time and never its search line (`docs/view-flow.md` *Below the
-compact page*) — the `↑`/`↓` pair, the rules, the rows down to the
-highlighted style, the hint — so the page fits at every height and never
-flows; were it to, it would differ from its family in one way, below.
+On a terminal too short for the page (fifteen rows beside the list, twenty
+stacked) the picker builds the family's **compact** page instead
+(`docs/view-flow.md` *A page that sheds rows before it flows*): the live
+preview yields, caption and status line together, and three styles sit
+between the reserved overflow slots, each still wearing its own live
+spinner, so the search line, the highlighted style and the hint stay on
+screen where bottom-anchoring the whole page flowed them into scrollback.
+The glyph column is sized off the whole catalog, not the three in view, so
+it holds still as the window scrolls. On a terminal shorter still the
+compact page sheds what is left one row at a time and never its search line
+(`docs/view-flow.md` *Below the compact page*) — the `↑`/`↓` pair, the
+rules, the rows down to the highlighted style, the hint — so the page fits
+at every height and never flows; were it to, it would differ from its family
+in one way, below.
 
 ### The flow is signed on the selection, not the rows
 
@@ -297,7 +343,9 @@ wears it.
   (`gravity`) case.
 - `ui::spinner_view` — `spinner_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `spinner_picker_height`,
-  `render_spinner_picker`.
+  `render_spinner_picker`; `ui::model_view::PreviewLayout` (over
+  `SPINNER_PREVIEW_GAP` and `SPINNER_PREVIEW_MIN_COLS`) lays the preview
+  beside the list or under it.
 - `ui::status::Track` (private) — the eight-cell braille canvas the two
   tracks draw on; `ui::wrap::{breath, ping_pong, hop}` — the motion curves
   (`pulse`; the tracks).
@@ -326,18 +374,26 @@ wears it.
   gradient over a dim floor; the wave's two dots per cell, its motion, its
   seamless reversal and time-symmetric crawl, its gradient wash; and
   `render_live` wearing the session's style.
-- `ui/tests/spinner_view.rs` — the framed page (rules, search, rows, counter,
-  preview, description, hint), every row's live glyph (the tracks included),
-  the rows and preview ticking with the clock, the preview following the
-  selection, the stable height across selections *and* ticks, the active ✓
-  and its seat, the no-match collapse, no stacked blanks, width safety, the
-  height contract, flow eligibility, and the tick-stable / keystroke-sensitive
-  flow signature.
+- `ui/tests/spinner_view.rs` — the framed page (rules, search, rows,
+  captioned preview, hint, no counter) at a wide and a narrow width, the
+  `/mcp` list's marker and indent, every row's live glyph (the tracks
+  included), the preview beside the list on one column (an 80-column
+  terminal included) and stacked under it after a gap on a narrow one, the
+  one breakpoint with the sample whole at it, the preview and glyph columns
+  holding still through ↑/↓ and searches, the caption's bold title over its
+  dim description and every caption whole at 80 columns, the rows and
+  preview ticking with the clock, the preview following the selection, the
+  stable height across selections *and* ticks, the active ✓ and its seat,
+  the no-match collapse, no stacked blanks, width safety, the height
+  contract, flow eligibility, and the tick-stable / keystroke-sensitive flow
+  signature; the compact page and the rungs under it down to the search
+  line.
 - `scripts/smoke.sh` Phase 139 — the compact page on a 12-row terminal, and
   the search line on 7.
 - `scripts/smoke.sh` Phase 110 — the picker end to end in a real terminal:
   open from the palette seated on the default gravity (its ✓ on a fresh
-  config home), the live rows (the ball on its floor, the wave's
+  config home) with the preview beside the list on 90 columns, the live rows
+  (the ball on its floor, the wave's
   braille cells) and the track previewing, ↑ moving the preview onto the
   comet, that preview turning between two captures with
   no turn running, a filtered
