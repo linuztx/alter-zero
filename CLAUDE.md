@@ -3035,7 +3035,11 @@ folds into the round's **drafts** (`app::ToolDrafts`, `docs/write-streaming.md`)
 a `write`'s arguments are decoded as they stream (`app::ArgsScanner`) and the
 strip shows the file being written — `● Write({path})` over a `Writing N
 lines…` corner and the **newest** ten numbered, highlighted rows while the
-content arrives (`highlight::LineCache` colouring it incrementally), the
+content arrives (`highlight::LineCache` colouring it incrementally — and
+keeping the colours of **only** the first and newest ten lines,
+`LineCache::windowed`, since a line's segments run ~50 times its text and
+glibc keeps what the process once used; only Ctrl+O and `/export`, which show
+every line, fill a whole-file cache, `docs/memory.md`), the
 **first** ten over the `… +N lines` hint once it has, the committed cell's own
 peek, which a queued `Write` keeps under its `Waiting…`; the piece that opens
 the preview flushes the streaming text first (invariant 4), a subagent's write

@@ -200,6 +200,31 @@ draft owns it behind a `RefCell` that the render path fills, the textarea's wrap
 cache pattern, so the cache lives exactly as long as the draft. The language or
 code theme changing, or the path arriving after the content, rebuilds it once.
 
+**What the cache keeps.** Every line is highlighted, but the strip's cell only
+ever *shows* its first or newest lines: the head and tail walks take at most
+`FILE_PEEK_LINES` source lines from their end, since every line is at least one
+row, and each walk stops once its budget is full rather than reading a line it
+cannot show. So the draft keeps two caches. The **peek** cache
+(`LineCache::windowed(FILE_PEEK_LINES)`, through `ToolDraft::highlighted_peek`)
+holds the segments of only the first and newest ten lines, plus the unfinished
+one. It still highlights every line in order, because the grammar's state has to
+pass through the middle, but lets the middle's segments go. The **whole** cache
+(`ToolDraft::highlighted_whole`) keeps every line, and is filled only when a view
+that shows every line asks: the Ctrl+O transcript or `/export`. It goes with the
+draft at the turn's end.
+
+This matters because a line's segments are about fifty times its text: a
+`String` and a style per token. Keeping every line cost ~0.93 KB a line, about 19
+times the file, for as long as the call was live, and glibc keeps what a process
+has once used, so one 2,000-line write left the app ~2.3 MB bigger for the rest of
+the session. The peek holds the decoded file plus about twenty lines: 147 KB for
+the same write instead of 1.86 MB. `ui::tests::file_cell`'s
+`the_cells_rows_are_the_ctrl_o_views_rows` pins the peek's rows to the whole
+view's, styles included. `tests/write_preview_memory.rs` gates the resident growth
+of a streaming 5,000-line write at four copies of the file. It measures one copy,
+where the every-line cache's resident cost was about twenty-seven
+(`docs/memory.md`).
+
 ## Where it sits in the strip
 
 `preview_lines`/`preview_rows` share a branch: the previews come after a live

@@ -459,6 +459,53 @@ may grow neither the resident set nor the peak by more than 2 MB — and
 
 [`AttachmentStamp`]: ../src/images/attachment.rs
 
+## The streaming `write` cell kept every line's colours
+
+The live `Write` cell (`docs/write-streaming.md`) colours the file as the model
+writes it, and its cache kept the segments of **every** line it had
+highlighted: a `String` and a style per token, about fifty times the line's
+text. Counted with a global allocator over the real `App` and the live-region
+renderer, the preview held this much while one write streamed:
+
+| file | before | after |
+| --- | --- | --- |
+| 300 lines, 14.5 KB | 281 KB | 35 KB |
+| 800 lines, 39 KB | 761 KB | 83 KB |
+| 2,000 lines, 99 KB | 1,859 KB | 147 KB |
+| 5,000 lines, 251 KB | 4,656 KB | 275 KB |
+
+All of it was freed at the turn's end, so nothing leaked. But glibc keeps what
+a process has once used, so the largest file a session previewed set its size
+for good. This was measured end to end: release builds of the commit before the
+preview (`317316a`), the preview as merged (`f77d92d`) and the fix, driving a
+stand-in provider under tmux. The reading after each turn is the process's
+**private** memory, its heap plus anonymous mappings from `/proc/PID/smaps`,
+averaged over two runs. The rest of `VmRSS` is the binary's own file-backed
+pages, which differ by up to a megabyte between a freshly built binary and an
+older one, whatever the code does:
+
+| after | no preview | every line kept | first and newest only |
+| --- | --- | --- | --- |
+| one 300-line write, 4th turn | 10.2 MB | 10.4 MB | 10.2 MB |
+| one 2,000-line write, 1st turn | 9.0 MB | 11.3 MB | 9.3 MB |
+| one 2,000-line write, 4th turn | 12.7 MB | 15.3 MB | 12.7 MB |
+| three 800-line writes in a round, 3rd turn | 15.9 MB | 18.0 MB | 16.2 MB |
+
+The growth per turn is the same on all three, because that growth is the
+conversation's own history (each committed write's cell, arguments and
+transcript rows), which predates the preview.
+
+**The fix** keeps what the cell can show rather than what it has seen. Every
+line is still highlighted once, in order, since the grammar's state has to pass
+through the middle to colour the newest line. But the strip's cache,
+`LineCache::windowed`, keeps the segments of only the first and newest ten
+lines, which is all the cell's head and tail can show. The whole file is
+coloured into a second cache only when a view that shows every line asks for
+it: Ctrl+O or `/export`. That leaves the decoded file and about twenty lines.
+`tests/write_preview_memory.rs` gates the resident growth of a streaming
+5,000-line write at four copies of the file. It measures one, where the old
+cache's resident cost was about twenty-seven.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
@@ -484,3 +531,8 @@ request is serialized from the messages by reference on every wire, and the
 body leaves the process through a pipe of small chunks rather than as a buffer
 (`llm::body::streamed_request`). A block that size, asked for every turn on a
 fresh thread, is a block glibc will keep in some arena sooner or later.
+
+And a fourth for anything rendered as it streams: **keep what the view can
+show, not everything it has seen.** A cache sized to the input rather than to
+its window is a cache sized by the largest input the session ever met, for the
+rest of the session.
