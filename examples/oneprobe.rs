@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use alter_zero::highlight::{CodeTheme, Highlighter};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: oneprobe <rows.txt> [lang]");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: oneprobe <rows.txt> [lang]");
     let lang = std::env::args().nth(2).unwrap_or_else(|| "svelte".into());
 
     let mut text = String::new();
@@ -26,7 +28,11 @@ fn main() {
             hl = Highlighter::new(Some(&lang), CodeTheme::default());
             continue;
         }
-        eprintln!("LINE {i} bytes={} :: {}", row.len(), &row.chars().take(60).collect::<String>());
+        eprintln!(
+            "LINE {i} bytes={} :: {}",
+            row.len(),
+            &row.chars().take(60).collect::<String>()
+        );
         let _ = std::io::Write::flush(&mut std::io::stderr());
         let t = Instant::now();
         let _ = hl.line(row);

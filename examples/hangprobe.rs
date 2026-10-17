@@ -1,4 +1,3 @@
-
 //! Hang probe: replay every file-cell in a rollout through the real
 //! `highlight::Highlighter`, line by line (exactly as `file_cell_lines` does).
 //! Prints each (event, line, lang, bytes) to stderr *before* highlighting it,
@@ -64,7 +63,10 @@ fn main() {
         ev_idx += 1;
         let payload = &v["payload"];
         let name = payload.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if !matches!(name, "Read" | "Write" | "Edit" | "Update" | "Create" | "New") {
+        if !matches!(
+            name,
+            "Read" | "Write" | "Edit" | "Update" | "Create" | "New"
+        ) {
             continue;
         }
         let args = payload.get("args").and_then(|a| a.as_str()).unwrap_or("");
