@@ -5,7 +5,10 @@
 //! the description. It renders from [`App`] rather than from a picker struct,
 //! because the rows *are* the live session state ([`App::setting_rows`]).
 
-use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
+use super::model_view::{
+    Description, compact_page, first_page_that_fits, list_window, model_description_rows,
+    model_placeholder_row, model_rule, placeholder_window,
+};
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
 use super::*;
@@ -59,108 +62,154 @@ fn is_off_value(value: &str) -> bool {
     SETTINGS_OFF_VALUES.contains(&value)
 }
 
-/// The widest visible label, so [`settings_row`] can align the value column.
-fn label_column(rows: &[&SettingRow]) -> usize {
+/// The widest label among `rows`, so [`settings_row`] can align the value
+/// column.
+fn label_column(rows: &[SettingRow]) -> usize {
     rows.iter().map(|r| cols(r.label)).max().unwrap_or(0)
 }
 
-/// The menu's list lines: the rows windowed ([`centered_window`]) to keep the
-/// selection **centered** and capped at [`SETTINGS_MENU_MAX_ROWS`], or a single
-/// placeholder when the search matches nothing.
-fn settings_list_lines(rows: &[SettingRow], selected: usize, width: u16) -> Vec<Line<'static>> {
-    if rows.is_empty() {
-        return vec![model_placeholder_row(
-            SETTINGS_NO_MATCH,
-            model_meta_color(),
-            width,
-        )];
-    }
-    let max = SETTINGS_MENU_MAX_ROWS as usize;
-    let selected = selected.min(rows.len() - 1);
-    let offset = centered_window(rows.len(), selected, max);
-    let visible: Vec<&SettingRow> = rows.iter().skip(offset).take(max).collect();
-    let label_width = label_column(&visible);
-    visible
+/// The window of `rows` that keeps the selection in view — `max` rows,
+/// [`list_window`] riding the selection on the middle one — as how many rows
+/// it hides above, its rows (the selected one marked) and how many it hides
+/// below. The value column is sized off **every** listed row, not just the
+/// ones in view, so it holds still as ↑/↓ scroll the window. `rows` is never
+/// empty here.
+fn settings_window(
+    rows: &[SettingRow],
+    selected: usize,
+    max: usize,
+    width: u16,
+) -> (usize, Vec<Line<'static>>, usize) {
+    let (above, range, below) = list_window(rows.len(), selected, max);
+    let label_width = label_column(rows);
+    let lines = rows[range.clone()]
         .iter()
-        .enumerate()
-        .map(|(i, row)| settings_row(row, offset + i == selected, label_width, width))
-        .collect()
+        .zip(range)
+        .map(|(row, i)| settings_row(row, i == selected, label_width, width))
+        .collect();
+    (above, lines, below)
 }
 
-/// The `(selected+1/total)` counter under the list, or a blank line when the
-/// search matched nothing.
-fn settings_counter_line(rows: &[SettingRow], selected: usize) -> Line<'static> {
-    if rows.is_empty() {
-        return Line::default();
-    }
-    let selected = selected.min(rows.len() - 1);
+/// The `(selected+1/total)` counter under the whole page's list.
+fn settings_counter_line(selected: usize, total: usize) -> Line<'static> {
     Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
-            format!("({}/{})", selected + 1, rows.len()),
+            format!("({}/{total})", selected + 1),
             Style::new().fg(model_meta_color()),
         ),
     ])
 }
 
-/// The whole framed page as lines: a top rule, the `❯` search line, the
-/// windowed setting rows, the `(n/total)` counter, the highlighted row's
-/// description, the key hint, and a bottom rule — one blank row between the
-/// blocks and none hugging either rule (`docs/view-flow.md` *The frame hugs
-/// its content*). What [`render_settings`] paints (bottom-anchored) and
+/// The whole page's body — what sits between the search line and the hint:
+/// a gap, the rows ([`settings_window`] at [`SETTINGS_MENU_MAX_ROWS`]), the
+/// `(n/total)` counter, and the highlighted row's description between gaps,
+/// laid out by `description` — wrapped whole when the terminal has the room,
+/// since the description is why the row exists (type-to-search even matches
+/// on it).
+fn settings_whole_body(
+    rows: &[SettingRow],
+    selected: usize,
+    description: Description,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let (_, window, _) =
+        settings_window(rows, selected, usize::from(SETTINGS_MENU_MAX_ROWS), width);
+    let mut lines = vec![Line::default()];
+    lines.extend(window);
+    lines.push(settings_counter_line(selected, rows.len()));
+    lines.push(Line::default());
+    lines.extend(model_description_rows(
+        rows[selected].description,
+        description,
+        width,
+    ));
+    lines.push(Line::default());
+    lines
+}
+
+/// The framed page as lines — a top rule, the `❯` search line, a body, the
+/// key hint, and a bottom rule, one blank row between each block and none
+/// hugging either rule (`docs/view-flow.md` *The frame hugs its content*) —
+/// the first of three pages that fits `height` rows
+/// ([`first_page_that_fits`]):
+///
+/// 1. the **whole** page: the windowed setting rows, the `(n/total)`
+///    counter and the highlighted row's description wrapped whole;
+/// 2. the whole page with the description **cut to one row**, which is one
+///    height at every selection, so a terminal at the edge never flips
+///    between the whole and the compact page as ↑/↓ cross a long one;
+/// 3. the **compact** page ([`compact_page`]): the description and the
+///    counter yield, and three rows of the list stay between the search
+///    line and the hint — and on a terminal shorter still the overflow
+///    slots, the rules and the rows yield one by one, never the search line
+///    (`docs/view-flow.md`).
+///
+/// What [`render_settings`] paints and
 /// [`settings_rows`] counts, so the reserved height and the painted rows can
-/// never disagree — the `/mcp` family's rule (`docs/view-flow.md`). Empty
-/// when the menu is closed.
-pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+/// never disagree. `height` is the terminal's, or the region already
+/// reserved for the page, which builds the same page. A search that matched
+/// nothing has no count and nothing to describe, so its page collapses to
+/// the placeholder between single gaps — the `/model` picker's placeholder
+/// rule — and sheds the same way, keeping what was typed. Empty when the
+/// menu is closed.
+pub(super) fn settings_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
     let Some(picker) = app.settings_picker.as_ref() else {
         return Vec::new();
     };
     let rows = app.setting_rows();
-    let selected = picker.selected;
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
         Span::raw(picker.query.clone()),
     ]);
-    let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
-    let mut lines = vec![model_rule(width), search_line, Line::default()];
-    lines.extend(settings_list_lines(&rows, selected, width));
-    match highlighted {
-        // A real row: the counter and the description name what it does —
-        // the description **wrapped**, not clipped: it is why the row exists
-        // (type-to-search even matches on it), and the page's height is the
-        // built line count, so the continuation rows are free.
-        Some(row) => {
-            lines.push(settings_counter_line(&rows, selected));
-            lines.push(Line::default());
-            lines.extend(model_wrapped_rows(
-                row.description,
-                model_meta_color(),
-                width,
-            ));
-            lines.push(Line::default());
-        }
-        // Nothing matched: there is no count and nothing to describe, so the
-        // two slots collapse to ONE blank gap carrying the placeholder to the
-        // hint — the `/model` picker's placeholder rule. Painting them as
-        // empty rows opened a band of blank lines mid-frame.
-        None => lines.push(Line::default()),
+    let hint = model_placeholder_row(SETTINGS_HINT, model_meta_color(), width);
+    let page = |body: Vec<Line<'static>>| {
+        let mut lines = vec![model_rule(width), search_line.clone()];
+        lines.extend(body);
+        lines.extend([hint.clone(), model_rule(width)]);
+        lines
+    };
+    if rows.is_empty() {
+        let block = [model_placeholder_row(
+            SETTINGS_NO_MATCH,
+            model_meta_color(),
+            width,
+        )];
+        return compact_page(
+            height,
+            &search_line,
+            &|max| placeholder_window(&block, max),
+            &[hint],
+            width,
+        );
     }
-    lines.push(model_placeholder_row(
-        SETTINGS_HINT,
-        model_meta_color(),
-        width,
-    ));
-    lines.push(model_rule(width));
-    lines
+    let selected = picker.selected.min(rows.len() - 1);
+    let whole = |description| settings_whole_body(&rows, selected, description, width);
+    first_page_that_fits(
+        height,
+        &[
+            &|| page(whole(Description::Wrapped)),
+            &|| page(whole(Description::OneRow)),
+            &|| {
+                compact_page(
+                    height,
+                    &search_line,
+                    &|max| settings_window(&rows, selected, max, width),
+                    std::slice::from_ref(&hint),
+                    width,
+                )
+            },
+        ],
+    )
 }
 
 /// The rows the menu's own frame occupies — the built page's line count
 /// ([`settings_view_lines`]), so the height and the paint agree by
 /// construction. What [`settings_height`] reserves under the strip, and what
 /// [`render_live`] hands [`render_settings`].
-pub(super) fn settings_rows(app: &App, width: u16) -> u16 {
-    u16::try_from(settings_view_lines(app, width).len()).unwrap_or(u16::MAX)
+pub(super) fn settings_rows(app: &App, width: u16, height: u16) -> u16 {
+    u16::try_from(settings_view_lines(app, width, height).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/settings` menu is open, or `None`
@@ -177,7 +226,7 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     Some(super::layout::view_height(
         app,
         width,
-        settings_rows(app, width),
+        settings_rows(app, width, term_height),
         term_height,
     ))
 }
@@ -185,10 +234,15 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// Render the **inline** `/settings` menu into the live region, in place of the
 /// composer: a top rule, the `❯` search line, the setting rows (`→ {label}
 /// {value}`), a `(n/total)` counter, the highlighted setting's description, the
-/// key hint, and a bottom rule — bottom-anchored, so a squeezed area keeps the
-/// whole list, the hint and the closing rule on screen while the skipped top
-/// flows into scrollback (`docs/view-flow.md`). Pure — `render_live` paints
+/// key hint, and a bottom rule; or, in an area too short for that, the
+/// compact page, which sheds its own rows down to the search line in an area
+/// shorter still. The page is built for the area's height, so it always fits
+/// and nothing flows (`docs/view-flow.md`). Pure — `render_live` paints
 /// this. See `docs/settings.md`.
 pub fn render_settings(area: Rect, buf: &mut Buffer, app: &App) {
-    super::view_flow::render_framed_tail(area, buf, settings_view_lines(app, area.width));
+    super::view_flow::render_framed_tail(
+        area,
+        buf,
+        settings_view_lines(app, area.width, area.height),
+    );
 }

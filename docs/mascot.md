@@ -84,9 +84,35 @@ clears the query first, then closes; Ctrl+C closes. The picker owns every key wh
 the top of `App::on_key`, before the composer's global Ctrl+C/Ctrl+O), and
 pastes are swallowed (nothing anyone pastes is a mascot name). It works
 **mid-turn** like `/settings` — it only replaces the composer, and the
-streaming strip keeps its rows above it. On a short terminal the page
-bottom-anchors and flows its top into scrollback like its whole family
-(`docs/view-flow.md`).
+streaming strip keeps its rows above it.
+
+On a terminal too short for the page — it is nineteen rows — the picker
+builds the family's **compact** page instead (`docs/view-flow.md` *A page
+that sheds rows before it flows*): the banner preview, the description and
+the counter yield, and three mascots sit between the reserved overflow
+slots, so the search line, the highlighted mascot and the hint stay on
+screen.
+
+```
+──────────────────────────────────────────────────────────
+  ❯
+
+→ crest ✓
+  bloom
+  sprout
+  ↓ 3 more below
+  Type to search · Enter to choose · Esc to cancel
+──────────────────────────────────────────────────────────
+```
+
+Bottom-anchoring the whole page there kept the preview and flowed the search
+line and the highlighted mascot into scrollback. `mascot_view_lines(app,
+width, height)` builds the first page that fits (`first_page_that_fits`),
+and on a terminal shorter than the compact page that page sheds what is left
+one row at a time and never its search line (`docs/view-flow.md` *Below the
+compact page*) — the `↑`/`↓` pair, the rules, the rows down to the
+highlighted mascot, the hint — so nothing flows at any height, and the
+cursor's seat finds the search line in the built page (`view_prompt_row`).
 
 ## Applying a selection
 
@@ -175,6 +201,8 @@ a project.
   stable slot height, the active ✓, the no-match placeholder, width safety,
   the height contract, and flow eligibility.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
+- `scripts/smoke.sh` Phase 139 — the compact page on a 12-row terminal, and
+  the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:
   open from the palette, preview follows ↓, filtered Enter switches the
   banner, the toast confirms, and a **second process against the same config

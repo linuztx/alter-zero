@@ -11,8 +11,14 @@ fn open_app() -> App {
     app
 }
 
+/// A terminal tall enough for the whole page.
+const TALL: u16 = 200;
+
 fn texts(app: &App, width: u16) -> Vec<String> {
-    spinner_view_lines(app, width).iter().map(plain).collect()
+    spinner_view_lines(app, width, TALL)
+        .iter()
+        .map(plain)
+        .collect()
 }
 
 /// The page's row for `name` — the list row that opens with the marker or
@@ -38,7 +44,7 @@ fn preview(texts: &[String]) -> &String {
 
 #[test]
 fn closed_builds_nothing() {
-    assert!(spinner_view_lines(&with_session(), 80).is_empty());
+    assert!(spinner_view_lines(&with_session(), 80, TALL).is_empty());
     assert_eq!(spinner_picker_height(&with_session(), 80, 200), None);
 }
 
@@ -183,11 +189,11 @@ fn the_page_height_is_stable_across_selections_and_ticks() {
     // never in height: moving the selection or advancing the clock must not
     // move the frame (the /settings always-emit rule).
     let mut app = open_app();
-    let h0 = spinner_view_lines(&app, 80).len();
+    let h0 = spinner_view_lines(&app, 80, TALL).len();
     for i in 1..Spinner::ALL.len() {
         app.spinner_picker.as_mut().expect("open").selected = i;
         assert_eq!(
-            spinner_view_lines(&app, 80).len(),
+            spinner_view_lines(&app, 80, TALL).len(),
             h0,
             "selection {i} changed the page height"
         );
@@ -195,7 +201,7 @@ fn the_page_height_is_stable_across_selections_and_ticks() {
     for ms in [40u64, 333, 999, 12_345] {
         app.set_pulse(Duration::from_millis(ms));
         assert_eq!(
-            spinner_view_lines(&app, 80).len(),
+            spinner_view_lines(&app, 80, TALL).len(),
             h0,
             "the clock at {ms} ms changed the page height"
         );
@@ -262,7 +268,7 @@ fn every_page_hugs_its_frame() {
         picker.selected = 0;
         assert_frame_hugs_content(
             &format!("the picker searching {query:?}"),
-            &spinner_view_lines(&app, 80),
+            &spinner_view_lines(&app, 80, TALL),
         );
     }
 }
@@ -293,7 +299,7 @@ fn the_page_never_exceeds_the_width() {
     for width in [24u16, 40, 60, 80, 120] {
         for i in 0..Spinner::ALL.len() {
             app.spinner_picker.as_mut().expect("open").selected = i;
-            for line in spinner_view_lines(&app, width) {
+            for line in spinner_view_lines(&app, width, TALL) {
                 assert!(
                     crate::ui::wrap::cols(&plain(&line)) <= width as usize,
                     "width {width} selection {i}: {:?} overflows",
@@ -307,8 +313,8 @@ fn the_page_never_exceeds_the_width() {
 #[test]
 fn height_is_the_line_count_clamped_to_the_terminal() {
     let app = open_app();
-    let lines = spinner_view_lines(&app, 80).len() as u16;
-    assert_eq!(spinner_menu_rows(&app, 80), lines);
+    let lines = spinner_view_lines(&app, 80, TALL).len() as u16;
+    assert_eq!(spinner_menu_rows(&app, 80, TALL), lines);
     assert_eq!(
         spinner_picker_height(&app, 80, 200),
         Some(lines),
@@ -316,36 +322,171 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
     );
     assert_eq!(
         spinner_picker_height(&app, 80, 10),
-        Some(10),
-        "clamped to a short terminal"
+        Some(9),
+        "a short terminal gets the page that fits it — the compact one"
     );
 }
 
 #[test]
-fn the_picker_flows_like_its_family() {
+fn the_picker_never_flows_its_page() {
     let app = open_app();
-    let page = spinner_view_lines(&app, 80).len();
-    let flow = crate::ui::view_flow(&app, 80, 10, 1000).expect("flows on a 10-row terminal");
-    assert_eq!(flow.lines.len(), page - 10, "the skipped top flows");
+    for height in (1..=12).chain([TALL]) {
+        assert!(
+            crate::ui::view_flow(&app, 80, height, 1000).is_none(),
+            "{height} rows: a rung fits"
+        );
+    }
 }
 
 #[test]
-fn a_tick_never_resigns_the_flow_but_a_keystroke_does() {
-    // The page animates at the 32 ms cadence, so it signs the SELECTION and
-    // the query — the ↓ manager's details-page rule — never its rows: a
-    // frame advancing the spinners must not purge-rebuild the screen, while
-    // a keystroke that moves the highlight re-flows the page.
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+fn a_tick_never_churns_the_page() {
+    // The page animates at the 32 ms cadence. A page that flowed would have
+    // to sign its selection rather than its rows so a frame never
+    // purge-rebuilt the screen (it still does — `FlowSign::Frozen`); the
+    // rungs make the question moot, since the page fits at every height and
+    // holds its height through a tick.
     let mut app = open_app();
-    let (width, height) = (80u16, 10u16);
-    let before = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    app.set_pulse(Duration::from_millis(480));
-    let ticked = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_eq!(before, ticked, "a tick must not churn a purge rebuild");
-    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let moved = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_ne!(before, moved, "moving the highlight re-signs the flow");
-    app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    let typed = crate::ui::view_flow_signature(&app, width, height, 1000).expect("overflows");
-    assert_ne!(moved, typed, "typing into the search re-signs the flow");
+    for height in (1..=12).chain([TALL]) {
+        let before = page_at(&app, 80, height).len();
+        app.set_pulse(Duration::from_millis(480));
+        assert_eq!(page_at(&app, 80, height).len(), before, "{height} rows");
+        assert!(
+            crate::ui::view_flow(&app, 80, height, 1000).is_none(),
+            "{height} rows"
+        );
+    }
+}
+
+// --- the compact page: a short terminal keeps the choices on screen ---
+
+/// The page on a terminal `height` rows tall, as trimmed plain rows.
+fn page_at(app: &App, width: u16, height: u16) -> Vec<String> {
+    spinner_view_lines(app, width, height)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+fn select(app: &mut App, i: usize) {
+    app.spinner_picker.as_mut().expect("open").selected = i;
+}
+
+/// The display column the row's glyph starts at, for the list row naming
+/// `name`.
+fn glyph_col(texts: &[String], name: &str) -> usize {
+    let row = row_for(texts, name);
+    let after = row.find(name).expect("the name") + name.len();
+    let glyph = row[after..].trim_start();
+    crate::ui::wrap::cols(row) - crate::ui::wrap::cols(glyph)
+}
+
+fn is_rule(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c == '─')
+}
+
+#[test]
+fn a_short_terminal_keeps_the_spinner_choices_on_screen() {
+    // The whole page is 20 rows; on 12 its preview and description kept the
+    // screen while the search line and the highlighted style flowed away.
+    let app = open_app();
+    assert_eq!(page_at(&app, 80, TALL).len(), 20, "the whole page");
+    let texts = page_at(&app, 80, 12);
+    assert_eq!(texts.len(), 9, "the compact page: {texts:#?}");
+    assert!(is_rule(&texts[0]), "{texts:#?}");
+    assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[2], "", "nothing above comet: {texts:#?}");
+    assert!(texts[3].starts_with("  comet"), "{texts:#?}");
+    assert!(
+        texts[4].starts_with("→ gravity"),
+        "the open seats on it: {texts:#?}"
+    );
+    assert!(texts[5].starts_with("  wave"), "{texts:#?}");
+    assert_eq!(texts[6], "  ↓ 6 more below", "{texts:#?}");
+    assert!(texts[7].contains("Enter to choose"), "{texts:#?}");
+    assert!(is_rule(&texts[8]), "{texts:#?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("(2/9)")),
+        "no counter: {texts:#?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("Working")),
+        "no preview: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_compact_spinner_window_rides_the_selection_and_holds_still() {
+    // The glyph column is sized off every listed style, so it holds still as
+    // the three rows in view change.
+    let mut app = open_app();
+    let col = glyph_col(&page_at(&app, 80, 12), "gravity");
+    for i in 0..Spinner::ALL.len() {
+        select(&mut app, i);
+        let texts = page_at(&app, 80, 12);
+        assert_eq!(texts.len(), 9, "selection {i} moved the frame");
+        let name = Spinner::ALL[i].name();
+        assert_eq!(
+            glyph_col(&texts, name),
+            col,
+            "selection {i} moved the glyphs: {texts:#?}"
+        );
+    }
+    select(&mut app, 5); // blocks
+    let texts = page_at(&app, 80, 12);
+    assert_eq!(texts[2], "  ↑ 4 more above", "{texts:#?}");
+    assert!(texts[4].starts_with("→ blocks"), "{texts:#?}");
+    assert_eq!(texts[6], "  ↓ 2 more below", "{texts:#?}");
+}
+
+#[test]
+fn the_whole_spinner_page_returns_once_it_fits() {
+    let app = open_app();
+    let whole = u16::try_from(page_at(&app, 80, TALL).len()).expect("rows");
+    let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Working"));
+    assert!(
+        has_preview(&page_at(&app, 80, whole)),
+        "whole at its own height"
+    );
+    assert!(
+        !has_preview(&page_at(&app, 80, whole - 1)),
+        "compact a row short"
+    );
+}
+
+#[test]
+fn the_cursor_sits_on_the_compact_spinner_search_line() {
+    let app = open_app();
+    let height = spinner_picker_height(&app, 80, 12).expect("open");
+    assert_eq!(height, 9, "the compact page");
+    let area = Rect::new(0, 1, 80, height);
+    let (_, y) = crate::ui::cursor_position(area, &app);
+    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
+    assert!(
+        crate::ui::view_flow(&app, 80, 12, 1000).is_none(),
+        "nothing flows"
+    );
+}
+
+// --- a terminal shorter than the compact page keeps the search line ---
+
+#[test]
+fn a_tiny_terminal_keeps_the_spinner_search_line() {
+    let app = open_app();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "",
+        "→ gravity",
+        "Enter to choose",
+    );
+    for height in 1..=10 {
+        assert_caret_on_search_line(&app, &page_at(&app, 80, height), 80, "");
+    }
+    let mut app = open_app();
+    app.spinner_picker.as_mut().expect("open").query = "zzz".to_string();
+    assert_sheds_to_its_search_line(
+        |height| page_at(&app, 80, height),
+        "zzz",
+        "No matching spinners",
+        "Enter to choose",
+    );
 }

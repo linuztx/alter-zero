@@ -455,6 +455,94 @@ pub(super) fn host_choice() -> ProviderChoice {
     }
 }
 
+/// The row a search-line picker's `❯` search line sits on in its whole and
+/// compact pages — top rule (0), search (1): no blank row hugs the rule
+/// (`docs/view-flow.md` *The frame hugs its content*). A shorter terminal's
+/// rungs move it up (`compact_page`), which is why the boundary finds it in
+/// the built page rather than pinning it.
+pub(super) const SEARCH_ROW: u16 = 1;
+
+/// A search-line picker on short terminals (`docs/view-flow.md` *A page that
+/// sheds rows before it flows*): from thirty rows down to one its page —
+/// `page(height)`, plain rows, the whole page on the taller ones — fits,
+/// keeps its `❯` search line carrying `query`, the `highlighted` row from
+/// two rows up and the `hint` from three, never stacks two blank rows, and
+/// never lets a blank row hug a rule it keeps (`docs/view-flow.md` *The
+/// frame hugs its content*). Bottom-anchored, the compact page flowed its
+/// search line into scrollback on eight rows, and its highlighted row on
+/// six.
+pub(super) fn assert_sheds_to_its_search_line(
+    page: impl Fn(u16) -> Vec<String>,
+    query: &str,
+    highlighted: &str,
+    hint: &str,
+) {
+    let search = format!("  ❯ {query}");
+    let search = search.trim_end();
+    for height in 1..=30_u16 {
+        let texts: Vec<String> = page(height)
+            .iter()
+            .map(|t| t.trim_end().to_string())
+            .collect();
+        assert!(
+            texts.len() <= usize::from(height),
+            "{height} rows: the page fits: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == search),
+            "{height} rows: the search line {search:?} stays: {texts:#?}"
+        );
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t.contains(highlighted)),
+                "{height} rows: {highlighted:?} stays: {texts:#?}"
+            );
+        }
+        if height >= 3 {
+            assert!(
+                texts.iter().any(|t| t.contains(hint)),
+                "{height} rows: {hint:?} stays: {texts:#?}"
+            );
+        }
+        assert!(
+            texts
+                .windows(2)
+                .all(|pair| !(pair[0].is_empty() && pair[1].is_empty())),
+            "{height} rows: two blank rows stack: {texts:#?}"
+        );
+        let hugs = |rule: Option<&String>, next: Option<&String>| {
+            !(rule.is_some_and(|t| t.starts_with('─')) && next.is_some_and(String::is_empty))
+        };
+        assert!(
+            hugs(texts.first(), texts.get(1)),
+            "{height} rows: a blank row hugs the top rule: {texts:#?}"
+        );
+        assert!(
+            hugs(texts.last(), texts.iter().rev().nth(1)),
+            "{height} rows: a blank row hugs the bottom rule: {texts:#?}"
+        );
+    }
+}
+
+/// The caret of a search-line picker `app` whose page on this terminal is
+/// `page` (plain rows) — painted in a region of the page's own height — sits
+/// on the search line, after `query`, never clamped onto a row of the list.
+pub(super) fn assert_caret_on_search_line(app: &App, page: &[String], width: u16, query: &str) {
+    let search = format!("  ❯ {query}");
+    let row = page
+        .iter()
+        .position(|t| t.trim_end() == search.trim_end())
+        .unwrap_or_else(|| panic!("the search line: {page:#?}"));
+    let area = Rect::new(0, 0, width, u16::try_from(page.len()).expect("rows"));
+    let col = u16::try_from(4 + crate::ui::wrap::cols(query)).expect("cols");
+    assert_eq!(
+        cursor_position(area, app),
+        (col, u16::try_from(row).expect("row")),
+        "{} rows: {page:#?}",
+        page.len()
+    );
+}
+
 /// The `/login` flow parked on its root (the method step).
 pub(super) fn login_app() -> App {
     let mut app = App::new();

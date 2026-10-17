@@ -124,10 +124,37 @@ form pasted into it:
   width asserting no two blank rows ever stack.
 
 The page is **still** — nothing on it ticks — so its scrollback flow is
-signed on its rows like the `/mascot` picker's, and on a short terminal it
-bottom-anchors and flows its top into scrollback like every framed view
-(`docs/view-flow.md`): the hint and the closing rule stay on screen, the
-title scrolls up where the terminal's own scrolling reads it.
+signed on its rows like the `/mascot` picker's.
+
+## A terminal too short for every box
+
+Three boxes and their captions make the whole page about thirty rows.
+Bottom-anchored on a shorter terminal, it kept the last addresses and the
+caution and flowed the first ones off the top — the highlighted address, the
+one Enter copies, among them. So the builder takes the rows it may have and
+builds the first page that fits them (`docs/view-flow.md` *A page that sheds
+rows before it flows*):
+
+1. the whole page, every address boxed;
+2. an **accordion**: the addresses the highlight is not on collapse to their
+   label rows, and the highlighted one keeps its box and its networks
+   caption open under its own label — the list keeps its order, so ↑/↓ moves
+   the open box from row to row;
+3. that accordion without the title and the blurb;
+4. the highlighted address **alone** — its label, box and networks — its
+   numbered label (`2. ETH  Ethereum`) saying where it stands among the
+   others. The compact pages' `↑ N more above` / `↓ N more below` slots
+   (`model_compact_list`) would sit straight under the top rule here and
+   hug it blank at the first address — the padding row the frame never
+   keeps (`docs/view-flow.md` *The frame hugs its content*) — and an `↑`
+   slot that came and went with the selection would move the frame, so
+   this page has none.
+
+The caution and the hint stay on every page: the one says which networks a
+coin may go over, the other how to copy it. Only a terminal shorter than the
+last page bottom-anchors it and flows its top into scrollback like every
+framed view; on 12 rows the lone address fits whole, its label straight
+under the top rule. `smoke.sh` Phase 139 opens the page on 12 rows.
 
 ## Keys
 

@@ -10,7 +10,7 @@ use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::layout::live_layout;
 use crate::ui::theme::{
     GAP_ROWS, HOOKS_DETAIL_HINT, INPUT_CHROME_ROWS, LIVE_MIN_HEIGHT, MCP_LIST_HINT, MENU_MAX_ROWS,
-    MODEL_INDENT, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TRUST_HINT,
+    MODEL_INDENT, STATUS_GAP_ROWS, STATUS_ROWS, TRUST_HINT,
 };
 use crate::ui::wrap::cols;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -491,8 +491,9 @@ fn model_picker_height_covers_the_chrome_plus_list() {
     app.set_models(three_models());
     // 7 chrome rows + 3 list rows.
     assert_eq!(model_picker_height(&app, 74, 40), Some(10));
-    // Clamped to the terminal height.
-    assert_eq!(model_picker_height(&app, 74, 8), Some(8));
+    // A terminal shorter than the page gets the rung that fits it
+    // (`compact_page`): on 8 rows, the 7-row page without the overflow pair.
+    assert_eq!(model_picker_height(&app, 74, 8), Some(7));
     // A placeholder state (still loading — no models) drops the counter +
     // name detail rows: 4 collapsed chrome + 1 placeholder row = 5.
     app.open_model_picker("a");
@@ -616,7 +617,7 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
         "the picker's top rule sits {picker} rows up from the bottom: {rows:?}"
     );
     assert!(
-        rows[usize::from(h - picker) + usize::from(MODEL_SEARCH_ROW)].contains('❯'),
+        rows[usize::from(h - picker) + usize::from(SEARCH_ROW)].contains('❯'),
         "…so its search line is on screen: {rows:?}"
     );
     assert!(
@@ -1096,25 +1097,6 @@ fn a_menu_whose_marker_scrolled_off_seats_on_the_painted_hint_before_the_corner(
         cursor_position(area, &app),
         (width - 1, 0),
         "the corner is the last resort"
-    );
-}
-
-#[test]
-fn the_picker_cursor_seat_subtracts_the_bottom_anchor_skip() {
-    // A /settings page one row taller than the region paints from its second
-    // row (view_body_skip = 1), so the `❯` search line sits one row higher on
-    // screen than its page row — and the hardware cursor must sit on the
-    // painted line, not one below it (docs/view-flow.md).
-    let mut app = App::new();
-    app.open_settings();
-    let width = 78u16;
-    let page = crate::ui::settings_height(&app, width, 200).expect("open");
-    let area = Rect::new(0, 0, width, page - 1);
-    let (_, y) = cursor_position(area, &app);
-    assert_eq!(
-        y,
-        crate::ui::theme::SETTINGS_SEARCH_ROW - 1,
-        "the seat follows the anchored paint"
     );
 }
 

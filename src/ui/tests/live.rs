@@ -3,7 +3,7 @@
 use super::*;
 use crate::ui::live::{preview_lines, preview_tool_lines};
 use crate::ui::theme::{
-    INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
+    INPUT_CHROME_ROWS, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
     TOOL_BACKGROUND_HINT_DELAY, TOOL_PULSE_PERIOD, footer_focus_bg, footer_focus_fg,
     tool_running_color,
 };
@@ -657,7 +657,7 @@ fn render_live_shows_the_model_picker_when_open() {
     // The picker stands in for the composer: top rule, then the `❯` search
     // line (headerless), then the model rows.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
+    assert!(row(&buf, SEARCH_ROW, 60).contains('❯'), "search line");
     assert!(
         row(&buf, 3, 60).contains("anthropic/claude-3-haiku"),
         "a model row"

@@ -13,7 +13,10 @@
 //! lines alone cannot answer.
 
 use super::layout::text_field_width;
-use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
+use super::model_view::{
+    first_page_that_fits, list_window, model_compact_list, model_placeholder_row, model_rule,
+    model_wrapped_rows,
+};
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize};
 use super::*;
@@ -78,23 +81,33 @@ fn list_row(meta: &SecretMeta, selected: bool, name_col: usize, width: u16) -> L
     clamp_spans(spans, width as usize)
 }
 
-/// The list's blocks: the title and blurb, the rows (or what an empty store
-/// says, over its add row), and the hint — or, while a delete waits for its
-/// second `d`, the red question in its place.
-fn list_blocks(metas: &[SecretMeta], page: &SecretsPage, width: u16) -> Vec<Block> {
+/// The list page's parts: the header (the title and the blurb), what an
+/// empty store says (nothing when there are secrets), the rows — one per
+/// secret, then the add row — and the tail: the hint, or, while a delete
+/// waits for its second `d`, the red question in its place.
+struct ListParts {
+    head: Vec<Line<'static>>,
+    empty: Vec<Line<'static>>,
+    rows: Vec<Line<'static>>,
+    tail: Vec<Line<'static>>,
+}
+
+fn list_parts(metas: &[SecretMeta], page: &SecretsPage, width: u16) -> ListParts {
     let accent = Style::new().fg(model_selected_color());
     let dim = model_meta_color();
-    let mut blocks: Vec<Block> = Vec::new();
     let mut head = vec![title_line(SECRETS_TITLE, width)];
     head.extend(model_wrapped_rows(SECRETS_BLURB, dim, width));
-    blocks.push((head, None));
-    if metas.is_empty() {
-        blocks.push((model_wrapped_rows(SECRETS_EMPTY, dim, width), None));
-    }
+    let empty = if metas.is_empty() {
+        model_wrapped_rows(SECRETS_EMPTY, dim, width)
+    } else {
+        Vec::new()
+    };
     let fixed = cols(MODEL_INDENT)
         + cols(HOOKS_MARKER)
         + 2 * cols(SECRETS_COLUMN_GAP)
         + cols(SECRETS_LIST_MASK);
+    // Sized off every secret, so the masks hold one column while a window
+    // scrolls over the list.
     let widest = metas
         .iter()
         .map(|meta| cols(&placeholder(&meta.name)))
@@ -122,14 +135,81 @@ fn list_blocks(metas: &[SecretMeta], page: &SecretsPage, width: u16) -> Vec<Bloc
         ],
         width as usize,
     ));
-    blocks.push((rows, None));
-    let hint = match &page.confirm_delete {
+    let tail = match &page.confirm_delete {
         Some(name) => model_wrapped_rows(&secrets_delete_question(name), error_color(), width),
         None if adding => vec![model_placeholder_row(SECRETS_ADD_HINT, dim, width)],
         None => vec![model_placeholder_row(SECRETS_LIST_HINT, dim, width)],
     };
-    blocks.push((hint, None));
-    blocks
+    ListParts {
+        head,
+        empty,
+        rows,
+        tail,
+    }
+}
+
+/// The list page as lines — the first that fits `height` rows
+/// ([`first_page_that_fits`]):
+///
+/// 1. the **whole** page: the header, every secret's row and the add row,
+///    the hint;
+/// 2. the header over a [`COMPACT_LIST_ROWS`]-row window of the list riding
+///    the selection between the reserved ↑/↓ overflow slots
+///    ([`model_compact_list`]), each slot standing in for the blank row
+///    the whole page puts there;
+/// 3. that window without the header and without the slots, which would
+///    sit straight under the top rule and hug it blank while nothing is
+///    hidden above (`docs/view-flow.md` *The frame hugs its content*): the
+///    window and the hint as the page's blocks, one height at every
+///    selection.
+///
+/// The list shrinks before the header goes — codex's order, the other
+/// pickers' (`docs/view-flow.md` *A page that sheds rows before it flows*).
+/// An empty store has nothing to window — its add row is the only row — so
+/// its short page is the whole one without the header, the empty note
+/// saying what a secret is for on its own. The hint stays on every page.
+fn list_lines(
+    metas: &[SecretMeta],
+    page: &SecretsPage,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
+    let parts = list_parts(metas, page, width);
+    let whole = |headed: bool| {
+        let mut blocks: Vec<Block> = Vec::new();
+        if headed {
+            blocks.push((parts.head.clone(), None));
+        }
+        blocks.push((parts.empty.clone(), None));
+        blocks.push((parts.rows.clone(), None));
+        blocks.push((parts.tail.clone(), None));
+        framed(blocks, width).lines
+    };
+    if metas.is_empty() {
+        return first_page_that_fits(height, &[&|| whole(true), &|| whole(false)]);
+    }
+    let selected = page.selected.min(parts.rows.len() - 1);
+    let compact = |headed: bool| {
+        let (above, range, below) =
+            list_window(parts.rows.len(), selected, usize::from(COMPACT_LIST_ROWS));
+        let window = parts.rows[range].to_vec();
+        if !headed {
+            // Straight under the top rule a reserved `↑` slot would hug it
+            // blank, so without the header the slots go as a pair: the
+            // window and the tail as the page's own blocks.
+            return framed(vec![(window, None), (parts.tail.clone(), None)], width).lines;
+        }
+        let mut lines = vec![model_rule(width)];
+        lines.extend(parts.head.iter().cloned());
+        lines.extend(model_compact_list(above, window, below, width));
+        lines.extend(parts.tail.iter().cloned());
+        lines.push(model_rule(width));
+        lines
+    };
+    first_page_that_fits(
+        height,
+        &[&|| whole(true), &|| compact(true), &|| compact(false)],
+    )
 }
 
 /// A form row: the `❯` marker and the label in the accent on the focused
@@ -303,21 +383,12 @@ fn form_blocks(form: &SecretForm, width: u16) -> Vec<Block> {
     blocks
 }
 
-/// The whole framed page and the form's caret: a top rule, the blocks
-/// joined by exactly one blank row (the `/login` page rule, so no two blank
-/// rows ever stack and none hugs either rule — `docs/view-flow.md`), a
-/// bottom rule. Empty when the page is closed.
-pub(super) fn secrets_build(app: &App, width: u16) -> SecretsBuild {
-    let Some(page) = app.secrets_page.as_ref() else {
-        return SecretsBuild {
-            lines: Vec::new(),
-            cursor: None,
-        };
-    };
-    let blocks = match &page.form {
-        Some(form) => form_blocks(form, width),
-        None => list_blocks(app.secret_metas(), page, width),
-    };
+/// `blocks` framed: a top rule, the blocks joined by exactly one blank row
+/// (the `/login` page rule, so no two blank rows ever stack and none hugs
+/// either rule — `docs/view-flow.md` — an empty block is skipped), a bottom
+/// rule; and the caret's seat in the result, when one of the blocks holds
+/// it.
+fn framed(blocks: Vec<Block>, width: u16) -> SecretsBuild {
     let mut lines = vec![model_rule(width)];
     let mut cursor = None;
     for (i, (block, seat)) in blocks.into_iter().filter(|b| !b.0.is_empty()).enumerate() {
@@ -333,18 +404,39 @@ pub(super) fn secrets_build(app: &App, width: u16) -> SecretsBuild {
     SecretsBuild { lines, cursor }
 }
 
+/// The framed page and the form's caret — the form ([`form_blocks`],
+/// [`framed`]), or the list's first page that fits `height` rows
+/// ([`list_lines`]). `height` is the terminal's, or the region already
+/// reserved for the page, which builds the same page. Empty when the page
+/// is closed.
+pub(super) fn secrets_build(app: &App, width: u16, height: u16) -> SecretsBuild {
+    let Some(page) = app.secrets_page.as_ref() else {
+        return SecretsBuild {
+            lines: Vec::new(),
+            cursor: None,
+        };
+    };
+    match &page.form {
+        Some(form) => framed(form_blocks(form, width), width),
+        None => SecretsBuild {
+            lines: list_lines(app.secret_metas(), page, width, height),
+            cursor: None,
+        },
+    }
+}
+
 /// The page as lines (`secrets_build`'s) — what [`render_secrets_picker`]
 /// paints (bottom-anchored), what `secrets_menu_rows` counts and what flows
 /// (`docs/view-flow.md`), so the reserved height and the painted rows can
 /// never disagree. Empty when the page is closed.
 #[must_use]
-pub fn secrets_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    secrets_build(app, width).lines
+pub fn secrets_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
+    secrets_build(app, width, height).lines
 }
 
 /// The rows the page's own frame occupies — the built page's line count.
-pub(super) fn secrets_menu_rows(app: &App, width: u16) -> u16 {
-    u16::try_from(secrets_view_lines(app, width).len()).unwrap_or(u16::MAX)
+pub(super) fn secrets_menu_rows(app: &App, width: u16, height: u16) -> u16 {
+    u16::try_from(secrets_view_lines(app, width, height).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/secrets` page is open, or `None`
@@ -357,7 +449,7 @@ pub fn secrets_picker_height(app: &App, width: u16, term_height: u16) -> Option<
     Some(super::layout::view_height(
         app,
         width,
-        secrets_menu_rows(app, width),
+        secrets_menu_rows(app, width, term_height),
         term_height,
     ))
 }
@@ -367,5 +459,9 @@ pub fn secrets_picker_height(app: &App, width: u16, term_height: u16) -> Option<
 /// hint and the closing rule on screen while the skipped top flows into
 /// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this.
 pub fn render_secrets_picker(area: Rect, buf: &mut Buffer, app: &App) {
-    super::view_flow::render_framed_tail(area, buf, secrets_view_lines(app, area.width));
+    super::view_flow::render_framed_tail(
+        area,
+        buf,
+        secrets_view_lines(app, area.width, area.height),
+    );
 }

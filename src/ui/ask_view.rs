@@ -6,15 +6,18 @@
 //! ([`ask_build`]) produces every row **and** the hardware cursor's seat, and
 //! [`ask_height`] reserves those rows clamped to the terminal, so the
 //! reserved height, the painted rows, and the cursor can never drift apart.
-//! A page taller than the terminal paints bottom-anchored and flows its
-//! skipped top into real scrollback like every framed view
-//! (`docs/view-flow.md`).
+//! On a terminal too short for the whole page the builder sheds what the
+//! choice doesn't need first — the descriptions, then the rows outside a
+//! window around the selection, then the chip strip — and only a page
+//! taller than even that paints bottom-anchored and flows its skipped top
+//! into real scrollback like every framed view (`docs/view-flow.md`).
 
 use crate::app::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 use crate::ask::{AskOption, AskQuestion};
 
+use super::model_view::list_window;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols, wrap_output};
+use super::wrap::{cols, ellipsize, truncate_cols, wrap_output};
 use super::*;
 
 /// A full-width rule in the input box's border colour — the modal's frame
@@ -227,55 +230,183 @@ fn option_label_spans(
 /// What the modal builds: every row of the region; while an entry field is
 /// live, the cursor's `(row, col)` inside those rows; and the highlighted
 /// `❯` row's index (`marker`), the hidden cursor's resting seat.
+#[derive(Default)]
 struct AskBuild {
     lines: Vec<Line<'static>>,
     cursor: Option<(usize, usize)>,
     marker: Option<usize>,
 }
 
-/// Build the whole modal at `width`: rule → chip strip → the current page →
-/// hints → rule, with no blank row hugging either rule (`docs/view-flow.md`
-/// *The frame hugs its content*). Pure and total — an app without an open
-/// modal builds empty.
-fn ask_build(app: &App, width: u16) -> AskBuild {
-    let Some(prompt) = app.ask() else {
-        return AskBuild {
-            lines: Vec::new(),
-            cursor: None,
-            marker: None,
-        };
+/// How a question page lays out its options' descriptions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Descriptions {
+    /// Wrapped whole — the whole page's layout.
+    Wrapped,
+    /// Cut to one `…`-ended row each, so the page is one height whatever
+    /// the descriptions say.
+    OneRow,
+    /// Left out.
+    Hidden,
+}
+
+/// What a page keeps — one rung of the ladder a terminal too short for the
+/// whole page walks down (`docs/view-flow.md` *A page that sheds rows before
+/// it flows*, `docs/ask.md`).
+#[derive(Clone, Copy, Debug)]
+struct Fit {
+    /// Whether the chip strip of question tabs shows.
+    chips: bool,
+    /// The plain layout's descriptions.
+    descriptions: Descriptions,
+    /// The plain layout's window: at most this many rows between the ↑/↓
+    /// overflow slots, or every row.
+    window: Option<u16>,
+    /// The side-by-side layout's dim `Notes: press n to add notes` line —
+    /// typed notes and the live field show whatever this says.
+    notes_hint: bool,
+    /// Whether the side-by-side layout's panel is cut to the option
+    /// column's height.
+    panel_capped: bool,
+}
+
+impl Fit {
+    /// The whole page.
+    const WHOLE: Self = Self {
+        chips: true,
+        descriptions: Descriptions::Wrapped,
+        window: None,
+        notes_hint: true,
+        panel_capped: false,
     };
-    let mut lines = vec![rule(width), chip_strip(prompt, width), Line::default()];
+}
+
+/// A plain question page's rungs: the descriptions cut to one row, then
+/// left out; then the rows windowed around the selection — the compact
+/// pages' window — and last the chip strip. codex's order: what the choice
+/// doesn't need yields first, the tabs and at least one row stay longest.
+const LIST_FITS: [Fit; 5] = [
+    Fit::WHOLE,
+    Fit {
+        descriptions: Descriptions::OneRow,
+        ..Fit::WHOLE
+    },
+    Fit {
+        descriptions: Descriptions::Hidden,
+        ..Fit::WHOLE
+    },
+    Fit {
+        descriptions: Descriptions::Hidden,
+        window: Some(COMPACT_LIST_ROWS),
+        ..Fit::WHOLE
+    },
+    Fit {
+        chips: false,
+        descriptions: Descriptions::Hidden,
+        window: Some(COMPACT_LIST_ROWS),
+        ..Fit::WHOLE
+    },
+];
+
+/// A side-by-side question page's rungs: the dim notes line first (the hint
+/// still offers `n`), then the panel cut to the option column, then the
+/// chip strip. The options are at most a handful of rows, so they never
+/// window here.
+const PREVIEW_FITS: [Fit; 4] = [
+    Fit::WHOLE,
+    Fit {
+        notes_hint: false,
+        ..Fit::WHOLE
+    },
+    Fit {
+        notes_hint: false,
+        panel_capped: true,
+        ..Fit::WHOLE
+    },
+    Fit {
+        chips: false,
+        notes_hint: false,
+        panel_capped: true,
+        ..Fit::WHOLE
+    },
+];
+
+/// Build the modal at `width` — the first rung of its page's ladder whose
+/// rows fit `height` ([`LIST_FITS`], [`PREVIEW_FITS`]; the review page has
+/// only the whole page, its choices already at the bottom where the anchor
+/// keeps them), else the last rung, which the paint bottom-anchors. `height`
+/// is the terminal's, or the region already reserved for the modal, which
+/// builds the same page. Pure and total — an app without an open modal
+/// builds empty.
+fn ask_build(app: &App, width: u16, height: u16) -> AskBuild {
+    let Some(prompt) = app.ask() else {
+        return AskBuild::default();
+    };
+    let fits: &[Fit] = if prompt.on_submit_tab() {
+        &[Fit::WHOLE]
+    } else if prompt
+        .current_question()
+        .is_some_and(AskQuestion::has_previews)
+    {
+        &PREVIEW_FITS
+    } else {
+        &LIST_FITS
+    };
+    let mut build = AskBuild::default();
+    for fit in fits {
+        build = ask_page(app, prompt, width, *fit);
+        if build.lines.len() <= usize::from(height) {
+            break;
+        }
+    }
+    build
+}
+
+/// One page of the modal at `width`, keeping what `fit` keeps: rule → chip
+/// strip → the current page → hints → rule, with no blank row hugging
+/// either rule (`docs/view-flow.md` *The frame hugs its content*).
+fn ask_page(app: &App, prompt: &AskPrompt, width: u16, fit: Fit) -> AskBuild {
+    let mut lines = vec![rule(width)];
+    if fit.chips {
+        lines.push(chip_strip(prompt, width));
+        lines.push(Line::default());
+    }
     let mut cursor = None;
     let mut marker = None;
     if prompt.on_submit_tab() {
         build_review_page(prompt, width, &mut lines, &mut marker);
+        lines.push(Line::default());
     } else if let Some(question) = prompt.current_question() {
         lines.extend(text_rows(&question.question, Color::Reset, width));
-        lines.push(Line::default());
         if question.has_previews() {
+            lines.push(Line::default());
             build_preview_page(
                 app,
                 prompt,
                 question,
                 width,
+                fit,
                 &mut lines,
                 &mut cursor,
                 &mut marker,
             );
+            lines.push(Line::default());
         } else {
+            // The list brings its own gaps: blank rows, or the overflow
+            // slots standing in for them.
             build_list_page(
                 app,
                 prompt,
                 question,
                 width,
+                fit,
                 &mut lines,
                 &mut cursor,
                 &mut marker,
             );
         }
+    } else {
+        lines.push(Line::default());
     }
-    lines.push(Line::default());
     lines.push(hint_row(&hints(prompt)));
     lines.push(closing_rule(width, prompt.remaining));
     AskBuild {
@@ -318,17 +449,75 @@ fn hints(prompt: &AskPrompt) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+/// One row of a plain question page: its lines, the caret's `(row, col)`
+/// inside them while it is the live entry field, and whether it is the
+/// highlighted row (its first line wears the `❯`).
+struct RowBlock {
+    lines: Vec<Line<'static>>,
+    cursor: Option<(usize, usize)>,
+    selected: bool,
+}
+
+/// A compact page's reserved overflow slot at the modal's inset: `↑ N more
+/// above` / `↓ N more below` in the dim description ink when `hidden` rows
+/// lie that way, else the blank row the page wants there anyway — so the
+/// page is one height at every selection.
+fn overflow_slot(arrow: &str, hidden: usize, direction: &str) -> Line<'static> {
+    if hidden == 0 {
+        return Line::default();
+    }
+    Line::from(vec![
+        Span::raw(ASK_INDENT),
+        Span::styled(
+            format!("{arrow}{hidden} more {direction}"),
+            Style::new().fg(ask_desc_color()),
+        ),
+    ])
+}
+
 /// A question page in the plain (no-preview) layout: every row full-width,
-/// each option's dim description under its label.
+/// each option's dim description under its label as `fit` lays it out,
+/// between two gaps — or, when `fit` windows the rows, the window around the
+/// selection between the overflow slots standing in for those gaps.
+#[allow(clippy::too_many_arguments)] // one page, the builder's whole state
 fn build_list_page(
     app: &App,
     prompt: &AskPrompt,
     question: &AskQuestion,
     width: u16,
+    fit: Fit,
     lines: &mut Vec<Line<'static>>,
     cursor: &mut Option<(usize, usize)>,
     marker: &mut Option<usize>,
 ) {
+    let blocks = list_row_blocks(app, prompt, question, width, fit.descriptions);
+    let selected = prompt.row.min(blocks.len().saturating_sub(1));
+    let (above, range, below) = match fit.window {
+        Some(max) => list_window(blocks.len(), selected, usize::from(max)),
+        None => (0, 0..blocks.len(), 0),
+    };
+    lines.push(overflow_slot(HOOKS_UP_MARKER, above, "above"));
+    for block in &blocks[range] {
+        if block.selected {
+            *marker = Some(lines.len());
+        }
+        if let Some((row, col)) = block.cursor {
+            *cursor = Some((lines.len() + row, col));
+        }
+        lines.extend(block.lines.iter().cloned());
+    }
+    lines.push(overflow_slot(HOOKS_DOWN_MARKER, below, "below"));
+}
+
+/// Every row of a plain question page, one [`RowBlock`] each, the options'
+/// descriptions laid out by `descriptions`.
+fn list_row_blocks(
+    app: &App,
+    prompt: &AskPrompt,
+    question: &AskQuestion,
+    width: u16,
+    descriptions: Descriptions,
+) -> Vec<RowBlock> {
     let state = &prompt.answers[prompt.tab];
     let desc_indent = " ".repeat(
         content_col()
@@ -339,14 +528,15 @@ fn build_list_page(
             },
     );
     let room = (width as usize).saturating_sub(content_col()).max(1);
+    let mut blocks = Vec::new();
     for (at, row) in ask_rows(question).iter().enumerate() {
         let selected = prompt.row == at;
-        if selected {
-            // The highlighted row's first line — where the `❯` paints, and
-            // where the hidden cursor rests.
-            *marker = Some(lines.len());
-        }
         let number = ask_row_number(question, *row);
+        let mut block = RowBlock {
+            lines: Vec::new(),
+            cursor: None,
+            selected,
+        };
         match *row {
             AskRow::Option(i) => {
                 let picked = state.selected.contains(&i);
@@ -357,12 +547,20 @@ fn build_list_page(
                     picked,
                     selected,
                 ));
-                lines.push(Line::from(spans));
+                block.lines.push(Line::from(spans));
                 let description = question.options[i].description.trim();
                 if !description.is_empty() {
                     let desc_room = (width as usize).saturating_sub(cols(&desc_indent)).max(1);
-                    for text in wrap_output(description, desc_room as u16) {
-                        lines.push(Line::from(vec![
+                    let rows = match descriptions {
+                        Descriptions::Wrapped => wrap_output(description, desc_room as u16),
+                        Descriptions::OneRow => vec![ellipsize(
+                            &description.split_whitespace().collect::<Vec<_>>().join(" "),
+                            desc_room,
+                        )],
+                        Descriptions::Hidden => Vec::new(),
+                    };
+                    for text in rows {
+                        block.lines.push(Line::from(vec![
                             Span::raw(desc_indent.clone()),
                             Span::styled(text, Style::new().fg(ask_desc_color())),
                         ]));
@@ -370,10 +568,16 @@ fn build_list_page(
                 }
             }
             AskRow::Other => {
-                let at_line = lines.len();
-                lines.extend(other_rows(
-                    app, prompt, question, state, selected, room, at_line, cursor,
-                ));
+                block.lines = other_rows(
+                    app,
+                    prompt,
+                    question,
+                    state,
+                    selected,
+                    room,
+                    0,
+                    &mut block.cursor,
+                );
             }
             AskRow::Confirm => {
                 let mut spans = row_prefix(selected, None);
@@ -385,7 +589,7 @@ fn build_list_page(
                         Style::default()
                     },
                 ));
-                lines.push(Line::from(spans));
+                block.lines.push(Line::from(spans));
             }
             AskRow::Chat => {
                 let mut spans = row_prefix(selected, number);
@@ -397,10 +601,12 @@ fn build_list_page(
                         Style::default()
                     },
                 ));
-                lines.push(Line::from(spans));
+                block.lines.push(Line::from(spans));
             }
         }
+        blocks.push(block);
     }
+    blocks
 }
 
 /// A multi-line text flattened for a one-row display (an accepted Other
@@ -480,13 +686,16 @@ fn other_rows(
 
 /// A question page in the **side-by-side** layout (any option carries a
 /// preview): the option rows on the left, the focused option's preview in a
-/// bordered panel on the right, the notes line beneath the panel, and the
-/// `Chat about this` row below.
+/// bordered panel on the right — cut to the option column's height when
+/// `fit` caps it — the notes line beneath the panel (the dim hint only when
+/// `fit` keeps it), and the `Chat about this` row below.
+#[allow(clippy::too_many_arguments)] // one page, the builder's whole state
 fn build_preview_page(
     app: &App,
     prompt: &AskPrompt,
     question: &AskQuestion,
     width: u16,
+    fit: Fit,
     lines: &mut Vec<Line<'static>>,
     cursor: &mut Option<(usize, usize)>,
     marker: &mut Option<usize>,
@@ -540,10 +749,6 @@ fn build_preview_page(
                 .is_some_and(|o| o.preview.is_some())
         })
         .or_else(|| question.options.iter().position(|o| o.preview.is_some()));
-    let panel = shown
-        .and_then(|i| question.options[i].preview.as_deref())
-        .map(|preview| panel_lines(preview, panel_width))
-        .unwrap_or_default();
     // The left column, one or more **visual** rows per logical row: the Other
     // entry wraps to the column while it is edited (Shift+Enter newlines, a
     // pasted placeholder), everything else stays a single row. The cursor is
@@ -599,6 +804,17 @@ fn build_preview_page(
             AskRow::Chat => {}
         }
     }
+    // The panel's rows: every preview row it may show, or — capped — no
+    // taller than the option column (never under one content row).
+    let max_rows = if fit.panel_capped {
+        left.len().max(3) - 2
+    } else {
+        ASK_PREVIEW_MAX_ROWS
+    };
+    let panel = shown
+        .and_then(|i| question.options[i].preview.as_deref())
+        .map(|preview| panel_lines(preview, panel_width, max_rows))
+        .unwrap_or_default();
     let zip_start = lines.len();
     if let Some((vrow, col)) = pending_cursor {
         *cursor = Some((zip_start + vrow, col));
@@ -624,8 +840,45 @@ fn build_preview_page(
     }
     // The notes block under the panel, at the panel's column (the reference
     // layout): the typed notes, the live entry field — the composer's wrapped
-    // rows, continuations aligned under the text — or the dim hint.
+    // rows, continuations aligned under the text — or the dim hint, which a
+    // short page leaves to the key hint that offers `n` too.
+    let notes_typed = prompt.input_mode == AskInput::Notes || !state.notes.trim().is_empty();
+    if notes_typed || fit.notes_hint {
+        lines.push(Line::default());
+        notes_rows(app, prompt, state, width, panel_x, lines, cursor);
+    }
+    // The Chat row, full-width below.
     lines.push(Line::default());
+    if let Some(at) = rows.iter().position(|row| *row == AskRow::Chat) {
+        let selected = prompt.row == at;
+        if selected {
+            *marker = Some(lines.len());
+        }
+        let mut spans = row_prefix(selected, ask_row_number(question, AskRow::Chat));
+        spans.push(Span::styled(
+            ASK_CHAT_LABEL.to_string(),
+            if selected {
+                Style::new().fg(permission_selected_color())
+            } else {
+                Style::default()
+            },
+        ));
+        lines.push(Line::from(spans));
+    }
+}
+
+/// The side-by-side page's notes rows at the panel's column `panel_x`: the
+/// live entry field (the caret seated in it), the typed notes, or the dim
+/// hint.
+fn notes_rows(
+    app: &App,
+    prompt: &AskPrompt,
+    state: &AskAnswerState,
+    width: u16,
+    panel_x: usize,
+    lines: &mut Vec<Line<'static>>,
+    cursor: &mut Option<(usize, usize)>,
+) {
     let notes_pad = " ".repeat(panel_x);
     let notes_room = (width as usize)
         .saturating_sub(panel_x + cols(ASK_NOTES_LABEL))
@@ -666,24 +919,6 @@ fn build_preview_page(
             Span::raw(truncate_cols(&flat(&state.notes), notes_room).to_string()),
         ]));
     }
-    // The Chat row, full-width below.
-    lines.push(Line::default());
-    if let Some(at) = rows.iter().position(|row| *row == AskRow::Chat) {
-        let selected = prompt.row == at;
-        if selected {
-            *marker = Some(lines.len());
-        }
-        let mut spans = row_prefix(selected, ask_row_number(question, AskRow::Chat));
-        spans.push(Span::styled(
-            ASK_CHAT_LABEL.to_string(),
-            if selected {
-                Style::new().fg(permission_selected_color())
-            } else {
-                Style::default()
-            },
-        ));
-        lines.push(Line::from(spans));
-    }
 }
 
 /// Clip a span run to `max` display columns.
@@ -709,7 +944,7 @@ fn clip_spans(spans: &mut Vec<Span<'static>>, max: usize) {
 /// The preview panel's bordered rows at `width` columns (border included):
 /// each row is a span run — dim `│ ` edges around the content — ready to be
 /// appended after a left-column row.
-fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
+fn panel_lines(preview: &str, width: usize, max_rows: usize) -> Vec<Vec<Span<'static>>> {
     let dim = Style::new().fg(ask_preview_color());
     if width < 6 {
         return Vec::new();
@@ -720,7 +955,7 @@ fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
         format!("┌{}┐", "─".repeat(width - 2)),
         dim,
     )]);
-    for line in preview.split('\n').take(ASK_PREVIEW_MAX_ROWS) {
+    for line in preview.split('\n').take(max_rows.min(ASK_PREVIEW_MAX_ROWS)) {
         let text = truncate_cols(&super::assistant::expand_code_tabs(line), inner).to_string();
         let pad = inner.saturating_sub(cols(&text));
         rows.push(vec![
@@ -854,17 +1089,19 @@ fn build_review_page(
     }
 }
 
-/// Every row of the open ask modal at `width` — the **whole** page, top rule
-/// to bottom rule; empty when no modal is open. The page is never cut here:
-/// the paint bottom-anchors it into the region ([`render_ask`]) so the
-/// interactive tail (options, hints, closing rule) stays on screen, and a
-/// page taller than the terminal **flows** its skipped top into the
-/// terminal's real scrollback like every framed view (`view_flow`,
-/// `docs/view-flow.md`) — the retired top-drop clamp put the chip strip, the
-/// question and the first options in no buffer at all on a short terminal.
+/// Every row of the open ask modal at `width`, top rule to bottom rule — the
+/// first page that fits `height` rows, most complete first (`docs/ask.md`):
+/// a short terminal sheds the options' descriptions, then the rows outside
+/// a window around the selection, then the chip strip, so the question, the
+/// highlighted row and the hint stay on screen. Empty when no modal is open.
+/// The page is never cut here: the paint bottom-anchors it into the region
+/// ([`render_ask`]), and a page taller than the terminal **flows** its
+/// skipped top into the terminal's real scrollback like every framed view
+/// (`view_flow`, `docs/view-flow.md`) — the retired top-drop clamp put the
+/// chip strip, the question and the first options in no buffer at all.
 #[must_use]
-pub fn ask_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    ask_build(app, width).lines
+pub fn ask_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
+    ask_build(app, width, height).lines
 }
 
 /// The inline live-region height when the ask modal is open, or `None` when
@@ -874,7 +1111,7 @@ pub fn ask_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 #[must_use]
 pub fn ask_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.ask()?;
-    let rows = ask_lines(app, width).len() as u16;
+    let rows = u16::try_from(ask_lines(app, width, term_height).len()).unwrap_or(u16::MAX);
     Some(rows.min(term_height.max(1)))
 }
 
@@ -888,7 +1125,7 @@ pub fn ask_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// page (the caller's far-corner fallback, the menus' rule).
 #[must_use]
 pub(super) fn ask_cursor(app: &App, width: u16, term_height: u16) -> Option<(u16, u16)> {
-    let build = ask_build(app, width);
+    let build = ask_build(app, width, term_height);
     let marker_col = cols(ASK_INDENT) + cols(PERMISSION_MARKER);
     let (row, col) = build.cursor.or(build.marker.map(|row| (row, marker_col)))?;
     // The paint bottom-anchors the page (`docs/view-flow.md`), so the seat
@@ -908,5 +1145,5 @@ pub(super) fn ask_cursor(app: &App, width: u16, term_height: u16) -> Option<(u16
 /// (`docs/view-flow.md`). Pure — [`render_live`] calls this in place of the
 /// composer, and the region is sized from the same builder ([`ask_height`]).
 pub fn render_ask(area: Rect, buf: &mut Buffer, app: &App) {
-    super::view_flow::render_framed_tail(area, buf, ask_lines(app, area.width));
+    super::view_flow::render_framed_tail(area, buf, ask_lines(app, area.width, area.height));
 }

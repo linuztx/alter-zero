@@ -695,6 +695,86 @@ Two notes the `/settings` menu has no need of:
   `No skills found. Add one at:` over `~/.claude/skills/<name>/SKILL.md` — since
   "why isn't my skill here?" is the only question an empty list ever raises.
 
+### A terminal too short for the page
+
+The whole page is eleven rows of chrome plus the rows and the description:
+eighteen for six skills. A shorter terminal gets a **compact** page instead —
+the `/theme` picker's (`docs/theme.md`), over this list — and codex's order of
+what yields: *"optional gaps and previews yield first"*, while a header stays
+for as long as it fits (`selection_picker_layout.rs`). Here the description
+yields first — cut to one row on a terminal just short of the wrapped one,
+then gone with the `(n/total)` counter:
+
+```
+──────────────────────────────────────────────────────────
+  Skills
+  6 skills · 6 enabled
+
+  ❯
+  ↑ 1 more above
+  dataviz         ✔ enabled
+→ haiku-writer    ✔ enabled
+  jina-reader     ✔ enabled
+  ↓ 2 more below
+  Type to search · Enter/Space to enable/disable · Esc to…
+──────────────────────────────────────────────────────────
+```
+
+and on a terminal too short for that too, the header follows them — the
+title, the count and the session-off note together, since the note is part
+of the header:
+
+```
+──────────────────────────────────────────────────────────
+  ❯
+  ↑ 1 more above
+  dataviz         ✔ enabled
+→ haiku-writer    ✔ enabled
+  jina-reader     ✔ enabled
+  ↓ 2 more below
+  Type to search · Enter/Space to enable/disable · Esc to…
+──────────────────────────────────────────────────────────
+```
+
+The search line, `COMPACT_LIST_ROWS` (3, the whole family's compact window)
+rows and the hint always stay. Before this the page bottom-anchored on a short
+terminal like every framed view, which kept the description, the hint and the
+bottom of the list on screen and flowed the search line and the top of the
+list into scrollback — so the row Enter would toggle could be off screen
+(`a_short_terminal_keeps_the_skill_choices_on_screen`). The overflow rows are
+codex's reserved arrow slots, as on `/theme`: the `↑` directly under the
+search line, the `↓` directly over the hint, each blank when nothing is hidden
+that way, so the page is one height at every selection; and the value column
+is sized off **every** listed row rather than the three in view, so it holds
+still as ↑/↓ scroll the window
+(`the_compact_page_holds_still_across_selections`). A list with nothing to
+choose from — a search matching nothing, an empty catalog — has no window to
+compact, so only its header yields.
+
+The choice is the page builder's: `skills_view_lines` takes the rows the page
+may have and builds the first of four pages that fits them
+(`first_page_that_fits`) — whole, whole with the description cut to one row,
+compact with the header, compact without it. The cut step is there because
+descriptions wrap to different heights: the whole page's height moves with
+the selection, so a terminal at the edge, deciding on that height alone,
+flipped between the whole and the compact page as ↑/↓ crossed a long
+description. Cut to one row it is one height at every selection, and the
+list shrinks only on a terminal too short for that
+(`a_long_description_is_cut_to_one_row_before_the_list_shrinks`). Those rows
+are the terminal's (a
+composer-replacing view keeps its rows and the streaming strip above it gives
+way, `view_split`), and every reader of the page — the reserved height, the
+paint, the cursor seat, the flow — passes either that height or the region
+already reserved for the page, which always builds the same page. The cursor
+seat already finds the search line in the built page (`view_prompt_row`), so
+it follows the header away for free. On a terminal shorter still the compact
+page sheds what is left one row at a time and never its search line
+(`docs/view-flow.md` *Below the compact page*) — the `↑`/`↓` pair, the
+rules, the rows down to the highlighted skill, the hint — so the page
+fits at every height and nothing flows; an empty list puts its placeholder
+in the list's place and sheds the same way. `smoke.sh` Phase 77b drives all
+three pages and a toggle on the compact one, Phase 139 the menu on 7 rows.
+
 ### What a toggle changes
 
 Disabling has to hold in **two** places, and does:

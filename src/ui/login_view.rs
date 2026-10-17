@@ -5,7 +5,10 @@
 
 use crate::app::ProviderChoice;
 
-use super::model_view::{model_linked_rows, model_placeholder_row, model_rule, model_wrapped_rows};
+use super::model_view::{
+    compact_page, first_page_that_fits, list_window, model_linked_rows, model_placeholder_row,
+    model_rule, model_wrapped_rows, placeholder_window,
+};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
 use super::*;
@@ -111,15 +114,11 @@ fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Li
     Line::from(spans)
 }
 
-/// The rows of whichever list the current step shows, windowed
-/// ([`centered_window`]) to keep the selection **centered** and capped at
-/// [`LOGIN_MENU_MAX_ROWS`], or a single placeholder when the filter matches
-/// nothing. Its length is what the page height counts, so the reserved and the
-/// painted rows agree.
-fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    // (name, status) per row — one shape for all three lists. The method rows
-    // report **no** status: they are the question, not an answer.
-    let rows: Vec<(String, Option<bool>)> = match onboarding.step {
+/// The (name, status) of every row the current step's list offers — one
+/// shape for all three lists. The method rows report **no** status: they are
+/// the question, not an answer.
+fn login_rows(onboarding: &KeyOnboarding) -> Vec<(String, Option<bool>)> {
+    match onboarding.step {
         KeyStep::Method => onboarding
             .method_matches()
             .into_iter()
@@ -135,7 +134,35 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
             .into_iter()
             .map(|p| (p.name.clone(), Some(p.configured)))
             .collect(),
-    };
+    }
+}
+
+/// The window of `rows` that keeps the selection in view — `max` rows,
+/// [`list_window`] riding the selection on the middle one — as how many rows
+/// it hides above, its rows (the selected one marked) and how many it hides
+/// below. `rows` is never empty here.
+fn login_window(
+    rows: &[(String, Option<bool>)],
+    selected: usize,
+    max: usize,
+    width: u16,
+) -> (usize, Vec<Line<'static>>, usize) {
+    let selected = selected.min(rows.len() - 1);
+    let (above, range, below) = list_window(rows.len(), selected, max);
+    let lines = rows[range.clone()]
+        .iter()
+        .zip(range)
+        .map(|((name, status), i)| login_row(name, *status, i == selected, width))
+        .collect();
+    (above, lines, below)
+}
+
+/// The rows of whichever list the current step shows, windowed to keep the
+/// selection **centered** and capped at [`LOGIN_MENU_MAX_ROWS`], or a single
+/// placeholder when the filter matches nothing. Its length is what the page
+/// height counts, so the reserved and the painted rows agree.
+fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+    let rows = login_rows(onboarding);
     if rows.is_empty() {
         let placeholder = match onboarding.step {
             KeyStep::Method => LOGIN_NO_METHOD_MATCH,
@@ -148,15 +175,13 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
             width,
         )];
     }
-    let max = LOGIN_MENU_MAX_ROWS as usize;
-    let selected = onboarding.selected.min(rows.len() - 1);
-    let offset = centered_window(rows.len(), selected, max);
-    rows.iter()
-        .enumerate()
-        .skip(offset)
-        .take(max)
-        .map(|(i, (name, status))| login_row(name, *status, i == selected, width))
-        .collect()
+    let (_, lines, _) = login_window(
+        &rows,
+        onboarding.selected,
+        usize::from(LOGIN_MENU_MAX_ROWS),
+        width,
+    );
+    lines
 }
 
 /// How many rows the current list step offers — the `(n/total)` counter's total.
@@ -490,7 +515,13 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
 
 /// A `/login` list page: top rule, the `❯` filter, gap, the windowed list, a
 /// `(n/total)` counter, gap, the step's dim hint rows, bottom rule — no blank
-/// row hugs either rule (`docs/view-flow.md`).
+/// row hugs either rule (`docs/view-flow.md` *The frame hugs its content*) —
+/// or, on a terminal too short for that, the family's **compact**
+/// page: three rows of the list between the reserved overflow slots
+/// ([`model_compact_list`]), the counter and the where-keys-are-saved note
+/// yielding, so the filter, the highlighted row and the key hint stay on
+/// screen (`docs/view-flow.md` *A page that sheds rows before it flows*). A
+/// list the filter emptied has nothing to compact.
 ///
 /// **No title.** The two lists below the root used to repeat the method row
 /// that opened them (`Use a subscription` / `Use an API key`) as a cyan
@@ -498,43 +529,69 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
 /// cost every row two lines of a region that is already sharing the terminal
 /// with a running turn. All three lists are one shape now, and the root never
 /// had one to begin with: there its two rows *are* the question.
-fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![model_rule(width)];
-    lines.push(login_prompt_line(Line::from(onboarding.query.clone())));
-    lines.push(Line::default());
-    lines.extend(login_list_lines(onboarding, width));
-    // The counter takes a row only when something is selectable; with nothing
-    // matched it collapsed to a blank line stacked on the gap below it (the
-    // `/model` picker's placeholder rule). The method step never shows one —
-    // it is a fixed two-row question, and "(1/2)" under it says nothing the
-    // rows don't.
-    if onboarding.step != KeyStep::Method && login_list_len(onboarding) > 0 {
-        lines.push(login_counter_line(onboarding));
-    }
-    lines.push(Line::default());
-    // Wrapped, not clipped: the `.env` path — where the secret is stored — is
-    // the tail, so it was the first thing a narrow terminal lost. It sits below
-    // the cursor's search row, so nothing moves above.
-    if onboarding.step == KeyStep::Provider {
-        lines.extend(model_wrapped_rows(
-            &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
-            model_meta_color(),
-            width,
-        ));
-    }
+fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<Line<'static>> {
     let hint = match onboarding.step {
         KeyStep::Method => LOGIN_METHOD_HINT,
         KeyStep::Subscription => LOGIN_SUBSCRIPTION_HINT,
         _ => LOGIN_PROVIDER_HINT,
     };
+    let filter = login_prompt_line(Line::from(onboarding.query.clone()));
     // Placed, not wrapped: `wrap_text` is the *message* wrapper and collapses
     // runs of whitespace, which is exactly the double space separating one
     // `{key} {thing}` pair from the next. A hint is short and fixed, so an
     // `…`-cut at a narrow width costs nothing the path row above it doesn't
     // already say.
-    lines.push(model_placeholder_row(hint, model_meta_color(), width));
-    lines.push(model_rule(width));
-    lines
+    let hint = model_placeholder_row(hint, model_meta_color(), width);
+    let page = |body: Vec<Line<'static>>, note: Vec<Line<'static>>| {
+        let mut lines = vec![model_rule(width), filter.clone()];
+        lines.extend(body);
+        lines.extend(note);
+        lines.push(hint.clone());
+        lines.push(model_rule(width));
+        lines
+    };
+    let whole = || {
+        let mut body = vec![Line::default()];
+        body.extend(login_list_lines(onboarding, width));
+        // The counter takes a row only when something is selectable; with
+        // nothing matched it collapsed to a blank line stacked on the gap
+        // below it (the `/model` picker's placeholder rule). The method step
+        // never shows one — it is a fixed two-row question, and "(1/2)"
+        // under it says nothing the rows don't.
+        if onboarding.step != KeyStep::Method && login_list_len(onboarding) > 0 {
+            body.push(login_counter_line(onboarding));
+        }
+        body.push(Line::default());
+        // Wrapped, not clipped: the `.env` path — where the secret is stored
+        // — is the tail, so it was the first thing a narrow terminal lost. It
+        // sits below the cursor's search row, so nothing moves above.
+        let note = if onboarding.step == KeyStep::Provider {
+            model_wrapped_rows(
+                &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
+                model_meta_color(),
+                width,
+            )
+        } else {
+            Vec::new()
+        };
+        page(body, note)
+    };
+    let rows = login_rows(onboarding);
+    // A filter matching nothing puts its placeholder in the list's place.
+    let block = if rows.is_empty() {
+        login_list_lines(onboarding, width)
+    } else {
+        Vec::new()
+    };
+    let window = |max| {
+        if rows.is_empty() {
+            placeholder_window(&block, max)
+        } else {
+            login_window(&rows, onboarding.selected, max, width)
+        }
+    };
+    let compact = || compact_page(height, &filter, &window, std::slice::from_ref(&hint), width);
+    first_page_that_fits(height, &[&whole, &compact])
 }
 
 /// The whole framed page as lines, per step — the three lists share
@@ -546,10 +603,14 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>>
 /// back` hint. What [`render_key_onboarding`] paints (bottom-anchored) and
 /// `layout::key_onboarding_rows` counts, so the reserved height and the
 /// painted rows can never disagree (`docs/view-flow.md`).
-pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+pub(super) fn key_onboarding_lines(
+    onboarding: &KeyOnboarding,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
     match onboarding.step {
         KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
-            list_page_lines(onboarding, width)
+            list_page_lines(onboarding, width, height)
         }
         KeyStep::SigninMethod => signin_method_page_lines(onboarding, width),
         KeyStep::Device => match &onboarding.device {
@@ -593,5 +654,9 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
 /// — bottom-anchored like every framed view (`docs/view-flow.md`). Pure —
 /// `render_live` paints this. See `docs/llm.md` and `docs/copilot.md`.
 pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
-    super::view_flow::render_framed_tail(area, buf, key_onboarding_lines(onboarding, area.width));
+    super::view_flow::render_framed_tail(
+        area,
+        buf,
+        key_onboarding_lines(onboarding, area.width, area.height),
+    );
 }
