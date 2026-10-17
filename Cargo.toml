@@ -247,3 +247,17 @@ opt-level = 3
 # LTO and the cross-unit inlining that comes with it.
 [profile.release]
 incremental = true
+
+# TEMP (local verification only): vendored syntect 5.3.0 with PR #709's two
+# fixes ported — parser infinite loop on cyclical grammar includes (the svelte
+# `/**` hang).
+
+# The parser can spin forever on a grammar with cyclical includes (the Svelte
+# grammar bat ships has them: `style-common` → `style-lang-attribute` →
+# `style-lang-decider-*` → `style-common`). Resuming a session whose transcript
+# holds a Svelte diff then wedges the TUI at 100% CPU on a five-byte line.
+# syntect PR #709 fixes it, but it is unmerged and targets master (whose
+# `parse_line` API differs); `vendor/syntect` is v5.3.0 with those two hunks
+# applied. Drop this patch once #709 ships in a release.
+[patch.crates-io]
+syntect = { path = "vendor/syntect" }
