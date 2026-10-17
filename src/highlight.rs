@@ -41,6 +41,7 @@
 //! Mocha, codex's dark default and this crate's since the syntect port.
 
 use ratatui::style::{Color, Modifier, Style};
+use std::collections::VecDeque;
 use std::sync::{LazyLock, OnceLock};
 use syntect::highlighting::{
     Color as SynColor, FontStyle, HighlightIterator, HighlightState, Highlighter as SynHighlighter,
@@ -433,6 +434,15 @@ pub fn highlight(lines: &[&str], lang: Option<&str>, code: CodeTheme) -> Vec<Vec
 /// a text ending at a line break has no unfinished line. Tabs are expanded to
 /// `tab_width` spaces **before** highlighting, the order the committed file
 /// cell uses, so the two colour a line alike.
+///
+/// What it **keeps** is its own choice: every line ([`LineCache::default`])
+/// or, [`windowed`](LineCache::windowed), only the first and newest lines a
+/// peek can show. A line's segments run about fifty times its text — a
+/// `String` and a style per token — so a 2,000-line file coloured whole is
+/// ~1.9 MB, held for as long as the call is live, and glibc keeps what a
+/// process has once used. Every line is still highlighted once, in order:
+/// the grammar's state has to pass through the middle to colour the newest
+/// line right; only the segments in between are let go (`docs/memory.md`).
 #[derive(Clone, Default)]
 pub struct LineCache {
     /// What the cached lines were highlighted for: the language and the code
@@ -440,8 +450,17 @@ pub struct LineCache {
     key: Option<(Option<String>, CodeTheme, usize)>,
     /// The highlighter's state after the cached complete lines.
     state: Option<Highlighter>,
-    /// Each complete line's segments, in order.
+    /// How many complete lines it keeps at each end of the text — `None`
+    /// keeps every line.
+    window: Option<usize>,
+    /// Complete lines' segments, in order: every one, or under a window the
+    /// first `window`.
     lines: Vec<Vec<Seg>>,
+    /// Under a window, the newest complete lines past the first `window`, at
+    /// most `window` of them, oldest first.
+    tail: VecDeque<Vec<Seg>>,
+    /// How many complete lines the text has — kept or not.
+    complete: usize,
     /// Bytes of the text the complete lines cover, their line breaks
     /// included.
     consumed: usize,
@@ -455,7 +474,9 @@ impl std::fmt::Debug for LineCache {
         // The highlighter's state is syntect's; the shape is what matters.
         f.debug_struct("LineCache")
             .field("key", &self.key)
-            .field("lines", &self.lines.len())
+            .field("window", &self.window)
+            .field("complete", &self.complete)
+            .field("retained", &self.retained())
             .field("consumed", &self.consumed)
             .field("partial", &self.partial.is_some())
             .finish_non_exhaustive()
@@ -463,6 +484,17 @@ impl std::fmt::Debug for LineCache {
 }
 
 impl LineCache {
+    /// A cache that keeps the segments of only the first and the newest
+    /// `lines` complete lines — what a peek of `lines` rows can show, from
+    /// either end — and of the unfinished last line.
+    #[must_use]
+    pub fn windowed(lines: usize) -> Self {
+        Self {
+            window: Some(lines),
+            ..Self::default()
+        }
+    }
+
     /// Bring the cache up to `text`, highlighted as `lang` under `code` with
     /// tabs expanded to `tab_width` spaces. `text` is expected to **extend**
     /// the text the cache last saw — a streamed value only ever grows — so
@@ -478,6 +510,7 @@ impl LineCache {
             *self = Self {
                 key: Some(key),
                 state: Some(Highlighter::new(lang, code)),
+                window: self.window,
                 ..Self::default()
             };
         }
@@ -494,7 +527,17 @@ impl LineCache {
         };
         while let Some(at) = text[self.consumed..].find('\n') {
             let line = &text[self.consumed..self.consumed + at];
-            self.lines.push(state.line(&expand(line)));
+            let segs = state.line(&expand(line));
+            match self.window {
+                Some(window) if self.lines.len() >= window => {
+                    self.tail.push_back(segs);
+                    if self.tail.len() > window {
+                        self.tail.pop_front();
+                    }
+                }
+                _ => self.lines.push(segs),
+            }
+            self.complete += 1;
             self.consumed += at + 1;
             self.partial = None;
         }
@@ -510,10 +553,39 @@ impl LineCache {
         }
     }
 
-    /// The complete lines' segments, in order.
+    /// Line `at`'s segments, counted from 0: a complete line the cache keeps,
+    /// or the unfinished last line — `None` past the end, and for a line a
+    /// window let go.
     #[must_use]
-    pub fn lines(&self) -> &[Vec<Seg>] {
-        &self.lines
+    pub fn line(&self, at: usize) -> Option<&[Seg]> {
+        if let Some(line) = self.lines.get(at) {
+            return Some(line);
+        }
+        if at < self.complete {
+            let first = self.complete - self.tail.len();
+            return at
+                .checked_sub(first)
+                .and_then(|i| self.tail.get(i))
+                .map(Vec::as_slice);
+        }
+        if at == self.complete {
+            return self.partial();
+        }
+        None
+    }
+
+    /// How many complete lines it keeps at each end of the text — `None`
+    /// when it keeps every line.
+    #[must_use]
+    pub const fn window(&self) -> Option<usize> {
+        self.window
+    }
+
+    /// How many complete lines' segments it holds — every line, or a
+    /// window's first and newest. What it costs, in lines.
+    #[must_use]
+    pub fn retained(&self) -> usize {
+        self.lines.len() + self.tail.len()
     }
 
     /// The unfinished last line's segments — `None` when the text is empty or
@@ -527,7 +599,7 @@ impl LineCache {
     /// the complete ones and the unfinished one.
     #[must_use]
     pub fn line_count(&self) -> usize {
-        self.lines.len() + usize::from(self.partial.is_some())
+        self.complete + usize::from(self.partial.is_some())
     }
 }
 
@@ -856,6 +928,95 @@ mod tests {
         (lines, partial)
     }
 
+    /// Every complete line the cache keeps, by number — `None` where a
+    /// window let it go.
+    fn kept(cache: &LineCache) -> Vec<Option<Vec<Seg>>> {
+        let complete = cache.line_count() - usize::from(cache.partial().is_some());
+        (0..complete)
+            .map(|at| cache.line(at).map(<[Seg]>::to_vec))
+            .collect()
+    }
+
+    /// Every complete line of a cache that keeps them all.
+    fn complete(cache: &LineCache) -> Vec<Vec<Seg>> {
+        kept(cache)
+            .into_iter()
+            .map(|line| line.expect("a cache without a window keeps every line"))
+            .collect()
+    }
+
+    #[test]
+    fn a_windowed_line_cache_keeps_only_its_first_and_newest_lines() {
+        // What a peek can show is its first and newest lines; every line in
+        // between is highlighted once, to carry the grammar along, and let
+        // go (docs/write-streaming.md).
+        let text: String = (1..=100).map(|i| format!("x_{i} = {i}\n")).collect();
+        let mut cache = LineCache::windowed(3);
+        cache.update(&text, Some("python"), CodeTheme::default(), 4);
+        assert_eq!(cache.line_count(), 100);
+        let held: Vec<usize> = (0..100).filter(|&at| cache.line(at).is_some()).collect();
+        assert_eq!(held, [0, 1, 2, 97, 98, 99]);
+        assert_eq!(cache.retained(), 6, "nothing else is held");
+        assert_eq!(cache.line(100), None, "the text ends at a line break");
+        cache.update(
+            &format!("{text}y = "),
+            Some("python"),
+            CodeTheme::default(),
+            4,
+        );
+        assert_eq!(
+            cache.line(100).map(joined).as_deref(),
+            Some("y = "),
+            "the unfinished line comes after the newest"
+        );
+        assert_eq!(cache.retained(), 6);
+    }
+
+    #[test]
+    fn a_windowed_line_cache_colours_what_it_keeps_exactly_as_the_whole_text() {
+        // A docstring opened in the first lines and closed in the newest: a
+        // window that let the grammar's state go with the lines would colour
+        // the newest as code.
+        let mut text = String::from("def f():\n    \"\"\"Doc\n");
+        for i in 0..30 {
+            text.push_str(&format!("    still doc {i}\n"));
+        }
+        text.push_str("    \"\"\"\n\treturn 1  # done\n");
+        let mut cache = LineCache::windowed(2);
+        for (at, _) in text.char_indices().skip(1).chain([(text.len(), ' ')]) {
+            let prefix = &text[..at];
+            cache.update(prefix, Some("python"), CodeTheme::default(), 4);
+            let (lines, partial) = whole(prefix, Some("python"));
+            for (i, line) in lines.iter().enumerate() {
+                let edge = i < 2 || i + 2 >= lines.len();
+                assert_eq!(
+                    cache.line(i).map(<[Seg]>::to_vec),
+                    edge.then(|| line.clone()),
+                    "line {i} of {prefix:?}"
+                );
+            }
+            assert_eq!(
+                cache.partial(),
+                partial.as_deref(),
+                "partial line of {prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_windowed_line_cache_stays_a_window_through_a_rebuild() {
+        // The path naming the language can arrive after the content: the
+        // rebuild re-reads the whole text, and still keeps only the window.
+        let text: String = (1..=50).map(|i| format!("v{i} = \"s\"\n")).collect();
+        let mut cache = LineCache::windowed(2);
+        cache.update(&text, None, CodeTheme::default(), 4);
+        cache.update(&text, Some("python"), CodeTheme::default(), 4);
+        assert_eq!(cache.retained(), 4);
+        let (lines, _) = whole(&text, Some("python"));
+        assert_eq!(cache.line(0).map(<[Seg]>::to_vec), Some(lines[0].clone()));
+        assert_eq!(cache.line(49).map(<[Seg]>::to_vec), Some(lines[49].clone()));
+    }
+
     #[test]
     fn a_line_cache_fed_a_growing_text_matches_highlighting_it_whole() {
         // A docstring spanning lines: a cache that restarted its highlighter
@@ -866,7 +1027,7 @@ mod tests {
             let prefix = &text[..at];
             cache.update(prefix, Some("python"), CodeTheme::default(), 4);
             let (lines, partial) = whole(prefix, Some("python"));
-            assert_eq!(cache.lines(), &lines[..], "complete lines of {prefix:?}");
+            assert_eq!(complete(&cache), lines, "complete lines of {prefix:?}");
             assert_eq!(
                 cache.partial(),
                 partial.as_deref(),
@@ -879,7 +1040,7 @@ mod tests {
     fn a_line_cache_highlights_each_complete_line_once() {
         let mut cache = LineCache::default();
         cache.update("a = 1\nb = 2\n", Some("python"), CodeTheme::default(), 4);
-        let first = cache.lines()[0].clone();
+        let first = complete(&cache)[0].clone();
         // Growing the text re-reads nothing it has already highlighted.
         cache.update(
             "a = 1\nb = 2\nc = ",
@@ -887,8 +1048,8 @@ mod tests {
             CodeTheme::default(),
             4,
         );
-        assert_eq!(cache.lines().len(), 2);
-        assert_eq!(cache.lines()[0], first);
+        assert_eq!(complete(&cache).len(), 2);
+        assert_eq!(complete(&cache)[0], first);
         assert_eq!(joined(cache.partial().expect("a partial line")), "c = ");
     }
 
@@ -897,22 +1058,22 @@ mod tests {
         let text = "x = \"s\"\n";
         let mut cache = LineCache::default();
         cache.update(text, None, CodeTheme::default(), 4);
-        assert_eq!(cache.lines(), &whole(text, None).0[..]);
+        assert_eq!(complete(&cache), whole(text, None).0);
         cache.update(text, Some("python"), CodeTheme::default(), 4);
-        assert_eq!(cache.lines(), &whole(text, Some("python")).0[..]);
+        assert_eq!(complete(&cache), whole(text, Some("python")).0);
         cache.update(text, Some("python"), CodeTheme::Dracula, 4);
         let mut dracula = Highlighter::new(Some("python"), CodeTheme::Dracula);
-        assert_eq!(cache.lines(), &[dracula.line("x = \"s\"")][..]);
+        assert_eq!(complete(&cache), [dracula.line("x = \"s\"")]);
         cache.update("y\n", Some("python"), CodeTheme::Dracula, 4);
-        assert_eq!(cache.lines().len(), 1);
-        assert_eq!(joined(&cache.lines()[0]), "y");
+        assert_eq!(complete(&cache).len(), 1);
+        assert_eq!(joined(&complete(&cache)[0]), "y");
     }
 
     #[test]
     fn a_line_cache_expands_tabs_and_drops_carriage_returns() {
         let mut cache = LineCache::default();
         cache.update("\tone\r\ntwo\r", None, CodeTheme::default(), 4);
-        assert_eq!(joined(&cache.lines()[0]), "    one");
+        assert_eq!(joined(&complete(&cache)[0]), "    one");
         assert_eq!(joined(cache.partial().expect("a partial line")), "two");
         assert_eq!(cache.line_count(), 2);
     }

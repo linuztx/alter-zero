@@ -225,6 +225,33 @@ fn a_piece_naming_write_opens_a_preview_that_decodes_as_the_rest_streams() {
 }
 
 #[test]
+fn a_streaming_write_colours_only_the_lines_its_cell_can_show() {
+    // The strip's cell shows the first and newest lines, so that is all the
+    // draft's peek keeps coloured — a line's segments run ~50 times its text
+    // (docs/memory.md). The whole file is coloured only when a view asks for
+    // every line: Ctrl+O, `/export`.
+    let content: String = (1..=500).map(|i| format!("v{i} = {i}\n")).collect();
+    let encoded = serde_json::to_string(&content).expect("a string encodes");
+    let mut drafts = ToolDrafts::default();
+    drafts.push(&piece(
+        0,
+        "write",
+        &format!(
+            r#"{{"path":"a.py","content":{}"#,
+            &encoded[..encoded.len() - 1]
+        ),
+    ));
+    let draft = drafts.previews().next().expect("a preview");
+    let code = crate::highlight::CodeTheme::default();
+    let peek = draft.highlighted_peek(Some("python"), code, 4, 10);
+    assert_eq!(peek.line_count(), 500);
+    assert_eq!(peek.retained(), 20, "the first ten and the newest ten");
+    drop(peek);
+    let whole = draft.highlighted_whole(Some("python"), code, 4);
+    assert_eq!(whole.retained(), 500);
+}
+
+#[test]
 fn a_call_to_any_other_tool_is_tracked_but_never_previewed() {
     let mut drafts = ToolDrafts::default();
     assert!(!drafts.push(&piece(0, "bash", r#"{"command":"ls"}"#)));

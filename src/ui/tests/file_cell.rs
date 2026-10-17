@@ -5,6 +5,7 @@ use super::*;
 use crate::app::{ToolDraft, ToolDrafts};
 use crate::stream::ToolCallFragment;
 use crate::ui::file_cell::draft_cell_lines;
+use crate::ui::theme::FILE_PEEK_LINES;
 
 const WIDTH: u16 = 80;
 
@@ -244,6 +245,57 @@ fn a_queued_write_keeps_its_head_under_waiting() {
     );
     assert_eq!(plain(&lines[1]), "  ⎿  Waiting…");
     assert_eq!(lines[2..], committed[2..]);
+}
+
+/// A long docstring and then code: a peek that lost the grammar's state
+/// between its first and newest lines would colour the code as a string.
+fn docstring_then_code() -> String {
+    let mut text = String::from("def f():\n    \"\"\"Doc\n");
+    for i in 0..60 {
+        text.push_str(&format!("    still doc {i}\n"));
+    }
+    text.push_str("    \"\"\"\n");
+    for i in 0..20 {
+        text.push_str(&format!("    value_{i} = compute({i})  # step {i}\n"));
+    }
+    text
+}
+
+#[test]
+fn the_cells_rows_are_the_ctrl_o_views_rows() {
+    // The strip colours only the lines its cell shows (docs/memory.md); the
+    // rows it shows must be exactly the Ctrl+O view's — which colours every
+    // line — for the same lines, styles and all.
+    let body = |lines: &[Line<'static>]| lines[2..].to_vec();
+    let content = docstring_then_code();
+    let open = drafts_with("a.py", &content, false);
+    let whole = body(&draft_cell_lines(
+        draft(&open),
+        None,
+        None,
+        WIDTH,
+        &PathDisplay::VERBATIM,
+        true,
+    ));
+    let tail = body(&streaming_cell(draft(&open)));
+    assert_eq!(tail.len(), FILE_PEEK_LINES);
+    assert_eq!(tail, whole[whole.len() - tail.len()..], "the newest rows");
+
+    let closed = drafts_with("a.py", &content, true);
+    let whole = body(&draft_cell_lines(
+        draft(&closed),
+        None,
+        None,
+        WIDTH,
+        &PathDisplay::VERBATIM,
+        true,
+    ));
+    let mut head = body(&streaming_cell(draft(&closed)));
+    assert!(
+        plain(&head.pop().expect("the hint")).contains("ctrl+o to expand"),
+        "the head closes on the hint"
+    );
+    assert_eq!(head, whole[..head.len()], "the first rows");
 }
 
 #[test]

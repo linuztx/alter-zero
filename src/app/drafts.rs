@@ -359,14 +359,25 @@ pub struct ToolDraft {
     highlight: HighlightSlot,
 }
 
-/// A draft's render cache: its content highlighted incrementally
-/// ([`LineCache`]), **filled by the render path** behind a `RefCell` — the
-/// textarea's wrap-cache pattern — so the cache lives exactly as long as the
+/// A draft's render caches: its content highlighted incrementally
+/// ([`LineCache`]), **filled by the render path** behind `RefCell`s — the
+/// textarea's wrap-cache pattern — so the caches live exactly as long as the
 /// draft and the state it describes stays plain data. Not part of the draft's
 /// identity: two drafts that agree on everything else are equal whatever
 /// their caches hold, and a clone carries the colours already worked out.
+///
+/// Two, because two kinds of view read the content. The strip's cell shows a
+/// **peek** — its first and newest lines — and its cache keeps only those
+/// ([`LineCache::windowed`]): a line's segments run ~50 times its text, so a
+/// 2,000-line file coloured whole was ~1.9 MB held for the call's life, and
+/// glibc keeps what a process has once used (`docs/memory.md`). The Ctrl+O
+/// transcript and `/export` show **every** line; their cache starts empty and
+/// is filled only when one of them asks.
 #[derive(Default, Clone)]
-struct HighlightSlot(RefCell<LineCache>);
+struct HighlightSlot {
+    peek: RefCell<LineCache>,
+    whole: RefCell<LineCache>,
+}
 
 impl PartialEq for HighlightSlot {
     fn eq(&self, _other: &Self) -> bool {
@@ -424,22 +435,45 @@ impl ToolDraft {
     }
 
     /// The content so far, syntax-highlighted as `lang` under the `code`
-    /// theme with tabs expanded to `tab_width` spaces — what the cell's
-    /// numbered body is built from. Brought up to date on the way out, which
-    /// costs the lines completed since the last call and nothing more
+    /// theme with tabs expanded to `tab_width` spaces, keeping the colours of
+    /// only its first and newest `lines` lines — what the strip's cell shows,
+    /// from either end. Brought up to date on the way out, which costs the
+    /// lines completed since the last call and nothing more
     /// ([`LineCache::update`]): the content only ever grows.
     #[must_use]
-    pub fn highlighted(
+    pub fn highlighted_peek(
+        &self,
+        lang: Option<&str>,
+        code: CodeTheme,
+        tab_width: usize,
+        lines: usize,
+    ) -> Ref<'_, LineCache> {
+        {
+            let mut peek = self.highlight.peek.borrow_mut();
+            if peek.window() != Some(lines) {
+                *peek = LineCache::windowed(lines);
+            }
+            peek.update(self.content(), lang, code, tab_width);
+        }
+        self.highlight.peek.borrow()
+    }
+
+    /// The content so far highlighted like
+    /// [`highlighted_peek`](Self::highlighted_peek), keeping **every** line —
+    /// for the views that show the whole file (Ctrl+O, `/export`). Filled the
+    /// first time one asks, brought up to date incrementally after.
+    #[must_use]
+    pub fn highlighted_whole(
         &self,
         lang: Option<&str>,
         code: CodeTheme,
         tab_width: usize,
     ) -> Ref<'_, LineCache> {
         self.highlight
-            .0
+            .whole
             .borrow_mut()
             .update(self.content(), lang, code, tab_width);
-        self.highlight.0.borrow()
+        self.highlight.whole.borrow()
     }
 }
 

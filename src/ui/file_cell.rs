@@ -726,7 +726,15 @@ pub(super) fn draft_cell_lines(
     };
     let mut lines = tool_header_lines(tool, width, !whole, pulse, paths);
     let lang = draft.path().and_then(file_cell_lang);
-    let cache = draft.highlighted(lang, super::palette::palette().code, CODE_TAB_WIDTH);
+    let code = super::palette::palette().code;
+    // The peek walks below take at most FILE_PEEK_LINES source lines from
+    // either end — every line is at least one row — so its cache keeps
+    // just those; only the whole view colours every line (docs/memory.md).
+    let cache = if window == DraftWindow::Whole {
+        draft.highlighted_whole(lang, code, CODE_TAB_WIDTH)
+    } else {
+        draft.highlighted_peek(lang, code, CODE_TAB_WIDTH, FILE_PEEK_LINES)
+    };
     let total = cache.line_count();
     let corner = match (queued.map(|tool| tool.status), total) {
         (Some(ToolStatus::Waiting), _) => TOOL_WAITING.to_string(),
@@ -741,12 +749,9 @@ pub(super) fn draft_cell_lines(
     // One source line's display rows — the complete lines from the cache,
     // the one still arriving from its peek on a clone of the highlighter.
     let rows_of = |at: usize| -> Vec<Line<'static>> {
-        let segs = cache
-            .lines()
-            .get(at)
-            .map(Vec::as_slice)
-            .or_else(|| cache.partial())
-            .unwrap_or_default();
+        let segs = cache.line(at);
+        debug_assert!(segs.is_some(), "line {at} of {total} is not kept");
+        let segs = segs.unwrap_or_default();
         let gutter = format!("{:>digits$}", at + 1);
         numbered_row_lines(
             &gutter,
@@ -770,6 +775,11 @@ pub(super) fn draft_cell_lines(
             let mut used = 0usize;
             let mut shown = 0usize;
             for at in 0..total {
+                // A full budget fits no further line: stop before reading
+                // one the peek's cache does not keep.
+                if used >= FILE_PEEK_LINES {
+                    break;
+                }
                 let rows = rows_of(at);
                 if used + rows.len() > FILE_PEEK_LINES && used > 0 {
                     break;
@@ -788,6 +798,9 @@ pub(super) fn draft_cell_lines(
             let mut used = 0usize;
             let mut window: Vec<Vec<Line<'static>>> = Vec::new();
             for at in (0..total).rev() {
+                if used >= FILE_PEEK_LINES {
+                    break;
+                }
                 let rows = rows_of(at);
                 if used + rows.len() > FILE_PEEK_LINES && used > 0 {
                     break;
