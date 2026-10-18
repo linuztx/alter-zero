@@ -11,7 +11,8 @@ on a background worker, saves it into the session's **paste folder** —
 `{config_home}/image-cache/{session}/N.{ext}`, numbered in paste order (a
 verbatim copy when the clipboard already holds an encoded picture or a pasted
 file is in an accepted format, a PNG otherwise) — and drops a compact
-`[Image #N]` placeholder into the composer. The real file path is remembered
+`[Image #N]` placeholder into the composer. On macOS use **Ctrl+V, not
+Cmd+V**: the chord never reaches the program (*Cmd+V (macOS)*, below). The real file path is remembered
 off to the side and handed to the backend, alongside the message text, when
 the turn is sent — and the model is **told** it: on the wire the placeholder
 reads `[Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png]`, so
@@ -126,8 +127,170 @@ path — a configured display is left entirely to the steps below.
    (a screenshot on macOS or Windows, where the OS hands over pixels — and
    Linux when step 0 found nothing); rebuild an `image::RgbaImage` and
    PNG-encode it **straight into its file** through a `BufWriter` — not
-   into a growing in-memory vector copied to disk afterwards. `Err("no image
-   on the clipboard")` when no path yields an image.
+   into a growing in-memory vector copied to disk afterwards.
+4. **macOS: AppKit's own coercion** (`clipboard/macos.rs`), when step 3
+   refuses. See *The 16-bit TIFF* below. It is a fallback and not a first
+   step because the picture it rescues is the one arboard *cannot* read: a
+   `public.png` copy and an 8-bit TIFF already succeed at step 3, since
+   `NSPasteboard` re-encodes a PNG owner's picture to TIFF on demand. Only
+   the 16-bit shape reaches here.
+
+Either way a paste that yields no picture at all is refused with
+[`NO_IMAGE_ON_CLIPBOARD`](../src/clipboard.rs), which names the two shapes
+that look like an image and are not — a *file* copy, a web page's selection —
+and the way around it a display-less Linux session already gets: save the
+picture and ask for its path.
+
+## The 16-bit TIFF (macOS)
+
+Every screenshot taken with ⇧⌘4 lands on the pasteboard as a **`public.tiff`**,
+and `NSImage.tiffRepresentation` writes **16 bits per channel** by default
+(`bitsPerSample = 16,16,16,16`, `sampleFormat = 3`, measured with `tiffinfo`
+on this machine). arboard's macOS backend asks the pasteboard for that TIFF
+and hands it to the `image` crate, whose TIFF decoder refuses the shape
+(`Unhandled TIFF sample format 3 for 16 bits`) — so `get_image()` answers
+`Err(ConversionFailure)` for the most ordinary macOS screenshot there is.
+Step 3 turned every error into `None`, and the paste reported **`no image on
+the clipboard`** for a clipboard holding a perfectly good picture. Reported
+against codex, which has the same shape of bug
+([openai/codex#17050](https://github.com/openai/codex/issues/17050)).
+
+`clipboard::macos::coerce_into` asks **AppKit itself** to hand the same
+picture over as PNG — the coercion a ⌘V into Preview performs:
+
+```
+the clipboard as «class PNGf»     (via /usr/bin/osascript -e, path in argv)
+```
+
+`-1700` ("can't make … into the expected type") is the answer for a clipboard
+holding no picture — a text copy, a file copy (arboard's `file_list()` handles
+those first) — and reads as "not this path", not as a failure. Anything else
+is surfaced. The destination is a hidden **staging file inside the paste
+folder**, re-numbered through the same `store_image`/`keep_numbered` path every
+other paste takes, with `set eof fp to 0` before the write so a shorter picture
+never inherits a longer file's tail; a refused conversion deletes it.
+
+### Metadata is stripped, not carried
+
+**The coercion copies the pasteboard's metadata along with its pixels.** This
+was measured, not assumed: a TIFF carrying `ImageDescription`, `Artist` and
+`Software` tags goes in, and AppKit's `«class PNGf»` hands back a PNG
+containing
+
+- an **`eXIf`** chunk holding those same TIFF tags, and
+- an **`iTXt`** chunk holding an XMP packet that names them *again* —
+  `dc:description`, `dc:creator`, `xmp:CreatorTool`.
+
+For a photo, the same route carries the camera, the lens and — with location
+services on — **GPS coordinates**. For a window screenshot it can carry the
+window title and the app that took it. And a pasted picture is not sent once:
+`attachment_data_url` base64s that exact file into **every later request** of
+the conversation (`docs/context.md`), so a location tag pasted in turn one
+reaches the provider on turn twenty.
+
+So `clipboard::macos::strip_metadata` **decodes the PNG and re-encodes it from
+the pixels** before it takes a number. What survives is `IHDR`, a fresh
+`IDAT` and `IEND` — no `eXIf`, `iTXt`, `tEXt`, `zTXt` or ICC profile. Measured
+on the four-tag TIFF the boundary test builds: 1215 bytes → **169 bytes**,
+with every marker gone and the pixels untouched.
+
+A decode-and-re-encode rather than a chunk filter, deliberately: a filter has
+to enumerate every metadata chunk this AppKit and every future one might write,
+and the ones nested inside others; the `image` decoder already ignores all of
+them, so re-encoding cannot leave one behind. The cost is one decode of a
+picture about to be handed to a model anyway, on a worker thread, behind a
+~150 ms subprocess.
+
+Scope, so the rule is not mistaken for overreach:
+
+- This applies to **the copy a paste creates**, which is ours. The `read`
+  tool's path is *the user's own file*: it is sent as it is (or downscaled by
+  `/settings` → **Auto-resize images**, which re-encodes and so drops metadata
+  too — a side effect, not a promise).
+- A pasted **file** copied in Finder is copied verbatim (`image_from_files`),
+  metadata and all. That is the user handing us a file they already own by
+  name; the paste folder's copy is what gets re-sent.
+- No other paste path can carry metadata: a Linux stream copies the owner's
+  PNG bytes verbatim (X11 `image/png` screenshots carry no EXIF), and the
+  raw-RGBA fallback builds a PNG from pixels alone.
+
+`tests/clipboard_macos.rs` pins it: the four-tag TIFF above is put on the real
+pasteboard, and the test requires every marker *and* both chunk names to be
+absent from the stored file, with the 8×8 pixels intact.
+
+**Why a subprocess and not AppKit directly**: the conversion needs`NSBitmapImageRep::representationUsingType:properties:`, which
+`objc2-app-kit` marks `unsafe`, and this crate sets `unsafe_code = "forbid"`
+(`Cargo.toml`). `osascript` is a first-party macOS binary that already speaks
+AppKit, so the crate stays unsafe-free and gains no dependency. Measured cost
+on this machine: ~150 ms for a 200×120 picture, on the **failure** path only,
+already off the event loop on a worker thread. Claude Code's `imagePaste.ts`
+takes the same route. If that cost ever matters, the replacement is a small
+audited `objc2` wrapper — not a widened `unsafe_code`.
+
+**`tests/clipboard_macos.rs`** (ignored by default, like the Linux one) pins
+both halves against the real pasteboard: a 16-bit TIFF screenshot pastes to
+`1.png` with no staging file left behind, and a text clipboard refuses with the
+message above. Run it on a Mac with
+`cargo test --test clipboard_macos -- --ignored --test-threads=1`.
+
+## Where a macOS paste cannot run
+
+Linux refuses a paste in a session naming no display (`require_display`, above).
+macOS has no `DISPLAY`, and its gate is a different one — asked **before**
+arboard or `osascript` is constructed, for the same reason:
+
+**The window server.** `launchctl managername` answers `Aqua` for a logged-in
+desktop, `Background` for a daemon or an `ssh` login, `LoginWindow` for the
+lock screen. Only the first has a pasteboard: `NSPasteboard.generalPasteboard`
+answers NULL in the others. `macos::require_gui_session` asks, and refuses with
+
+```
+Failed to paste image: no desktop clipboard in this session (it is not a GUI
+login, so `NSPasteboard` has nothing to read). Save the image file where this
+session can reach it, then ask Alter Zero to read its path
+```
+
+The rule itself is pure — `is_desktop_session(name)` and
+`judge_session(Option<&str>)` — so it is unit-tested without touching the real
+session. **An unaskable host allows the paste**: `launchctl` is in `/bin` on
+every macOS, and a failure to run it must not refuse a paste that would work;
+the read then answers with whatever it runs into.
+
+**TCC automation.** Even in a GUI session, macOS gates one app reading
+another's pasteboard behind *Automation*, under System Settings → Privacy &
+Security → Automation. The first paste from a terminal that was never granted
+it fails with `-1743` (`errAEEventNotPermitted`), and the prompt appears only
+for a GUI session — so an `ssh` login (or a session whose prompt was dismissed)
+gets the raw refusal with nothing to act on. `macos::refusal_for` translates
+it:
+
+```
+Failed to paste image: macOS has not allowed this terminal to read the
+clipboard. Allow it in System Settings → Privacy & Security → Automation, then
+try again — or save the image file where this session can reach it and ask
+Alter Zero to read its path
+```
+
+Every other `osascript` failure keeps AppleScript's own wording, which is more
+specific than anything this code could invent. `-1700` ("can't make … into the
+expected type") is *not* a failure: it is the ordinary answer for a clipboard
+holding no picture, and it falls through to the "no image" refusal.
+
+## Cmd+V (macOS)
+
+**Cmd+V does not work, and no code change makes it work.** The chord belongs
+to the terminal emulator's own Paste menu, which consumes it before the
+program sees a key at all and then — if the clipboard holds no text — sends
+nothing. Kitty's keyboard protocol *can* report `SUPER`, but no terminal maps
+Cmd+V onto it. The binding is **Ctrl+V** (or Ctrl+Alt+V), as on every other
+platform.
+
+What *is* bound, for the terminals that do forward `SUPER` (a kitty-protocol
+Super mapping, or one that translates Cmd to Alt), is
+`KeyModifiers::SUPER` in the same arm — so the chord resolves to
+`Action::PasteImage` instead of falling through to the character arm and
+typing a stray `v`. The character arm excludes `SUPER` for the same reason.
+
 4. Either way the bytes land in the paste folder as its next number —
    `1.png`, `2.jpg`, … — whose path is returned: always **our own copy**,
    never the user's original (the discard cleanup deletes what this returns);

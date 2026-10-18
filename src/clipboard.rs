@@ -46,6 +46,9 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 /// The most bytes a clipboard image may stream into its file before the
 /// paste is refused — a bound on the *file*, since the streaming paths never
 /// hold the picture in memory (the `SHELL_OUTPUT_MAX_BYTES` posture: an owner
@@ -257,6 +260,14 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
         std::env::var_os("WAYLAND_DISPLAY").as_deref(),
     )?;
 
+    // macOS has no `DISPLAY`; its gate is the window server. A daemon or an
+    // `ssh` login never entered one, and `NSPasteboard` answers NULL there —
+    // so ask first, for the same reason Linux does: the refusal can then say
+    // what is wrong instead of reporting whatever the backend ran into
+    // (`macos::require_gui_session`).
+    #[cfg(target_os = "macos")]
+    macos::require_gui_session()?;
+
     // Linux first, and before arboard is so much as constructed (each
     // construction is an X11 connection and a serving thread, torn down again
     // at the end): the owner offers a screenshot as `image/png` already — the
@@ -283,10 +294,32 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
     }
 
     // Raw image bytes (e.g. a screenshot) — rebuild and PNG-encode.
-    let image = clipboard_raw_image(&mut clipboard)
-        .ok_or_else(|| "no image on the clipboard".to_string())?;
-    encode_png_into(dir, &image)
+    match clipboard_raw_image(&mut clipboard) {
+        Some(image) => encode_png_into(dir, &image),
+        // macOS: arboard's read refuses the pasteboard's default picture shape
+        // (a 16-bit TIFF, every ⇧⌘4 screenshot), so before telling the user
+        // there is no image, ask AppKit to hand the same picture over as PNG
+        // (`macos`). `Ok(None)` means the pasteboard really held none.
+        #[cfg(target_os = "macos")]
+        None => match macos::coerce_into(dir) {
+            Ok(Some(path)) => Ok(path),
+            Ok(None) => Err(NO_IMAGE_ON_CLIPBOARD.to_string()),
+            Err(StreamError::TooLarge(reason) | StreamError::Failed(reason)) => Err(reason),
+        },
+        #[cfg(not(target_os = "macos"))]
+        None => Err(NO_IMAGE_ON_CLIPBOARD.to_string()),
+    }
 }
+
+/// What a paste says when the clipboard genuinely holds no picture — a text or
+/// file copy, an empty clipboard. It names what was *tried* so the answer is
+/// actionable: the two shapes that look like an image and are not (a file, a
+/// web page's `public.html`) are called out, and the escape hatch is the same
+/// one a display-less Linux session gets — put the picture on disk and ask for
+/// its path (`docs/image-paste.md`).
+pub const NO_IMAGE_ON_CLIPBOARD: &str = "no image on the clipboard — copy a picture itself \
+     (not a file, and not a web page's selection), or save it and ask Alter Zero to read its \
+     path";
 
 /// Why a Linux paste is refused in a session that names no display, and what
 /// to do instead. It names both variables because the fix is to forward one
