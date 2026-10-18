@@ -458,6 +458,87 @@ fn the_auth_page_shows_the_url_and_paste_field() {
 }
 
 #[test]
+fn every_page_hugs_its_frame() {
+    // The page's headline straight under the opening rule, its hint — or the
+    // auth page's closing note — straight over the closing one, at every
+    // stop of the walk.
+    let mut empty = App::new();
+    empty.open_mcp_menu(vec![]);
+    let mut server = mcp_app();
+    server.on_key(key(KeyCode::Enter)); // linear's detail
+    let mut failed = App::new();
+    failed.open_mcp_menu(vec![snapshot(
+        "broken",
+        McpScope::User,
+        McpServerStatus::Failed("connection refused".to_string()),
+    )]);
+    failed.on_key(key(KeyCode::Enter));
+    let mut tools = mcp_app();
+    tools.on_key(key(KeyCode::Down));
+    tools.on_key(key(KeyCode::Enter));
+    tools.on_key(key(KeyCode::Enter)); // View tools
+    let auth = |url: bool, submitted: bool| {
+        let mut app = mcp_app();
+        app.on_key(key(KeyCode::Enter)); // linear
+        app.on_key(key(KeyCode::Enter)); // Authenticate
+        if url {
+            app.set_mcp_auth_url("linear", "https://as.test/authorize?client_id=c1");
+        }
+        app.mcp_menu.as_mut().unwrap().auth.submitted = submitted;
+        app
+    };
+    for (what, app) in [
+        ("the server list", mcp_app()),
+        ("an empty list", empty),
+        ("a server's detail", server),
+        ("a failed server's detail", failed),
+        ("a server's tools", tools),
+        ("a tool's detail", tool_detail_app()),
+        ("the auth page waiting for its URL", auth(false, false)),
+        ("the auth page with its URL", auth(true, false)),
+        ("the auth page checking a pasted URL", auth(true, true)),
+    ] {
+        for width in [40u16, 100] {
+            assert_frame_hugs_content(
+                &format!("{what} at width {width}"),
+                &mcp_view_lines(&app, width),
+            );
+        }
+    }
+}
+
+#[test]
+fn the_auth_caret_sits_on_the_url_field_at_any_width() {
+    // The `URL >` field is the one typed row on the page, and its caret is
+    // found in the page the paint builds rather than counted up from the
+    // bottom: the notes under it wrap on a narrow terminal, and a counted
+    // seat landed on the blank row under the field there.
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app.set_mcp_auth_url("linear", "https://as.test/authorize?client_id=c1");
+    app.on_key(key(KeyCode::Char('h')));
+    app.on_key(key(KeyCode::Char('i')));
+    for submitted in [false, true] {
+        app.mcp_menu.as_mut().unwrap().auth.submitted = submitted;
+        for width in [40u16, 100] {
+            let lines = mcp_view_lines(&app, width);
+            let field = lines
+                .iter()
+                .position(|line| plain(line).contains("URL > hi"))
+                .expect("the URL field");
+            let area = Rect::new(0, 0, width, lines.len() as u16);
+            // indent(2) + `URL > `(6) + "hi"(2) = 10.
+            assert_eq!(
+                crate::ui::cursor_position(area, &app),
+                (10, field as u16),
+                "the caret ends the typed text (submitted {submitted}, width {width})"
+            );
+        }
+    }
+}
+
+#[test]
 fn height_agrees_with_the_built_lines_and_none_when_closed() {
     let mut app = mcp_app();
     let height = crate::ui::mcp_menu_height(&app, 100, 60).expect("open menu has a height");

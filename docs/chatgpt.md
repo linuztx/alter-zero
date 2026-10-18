@@ -212,18 +212,17 @@ Two, and the row asks which before it opens either.
 
 A subscription row used to open one page. ChatGPT Codex has two, so Enter on
 its row opens a **choice** first (`KeyStep::SigninMethod`) — the shape asked
-for, verbatim:
+for, less the blank rows that once hugged its rules (`docs/view-flow.md`
+*The frame hugs its content*):
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   Select ChatGPT Codex login method:
 
 → Browser login (default)
   Device code login (headless)
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 

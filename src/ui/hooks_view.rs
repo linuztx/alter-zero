@@ -174,7 +174,6 @@ fn hook_noun(n: usize) -> String {
 fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(HOOKS_TITLE, width),
         dim_line(
             &format!("{} configured", hook_noun(menu.overview.total())),
@@ -223,7 +222,6 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
     lines.extend([
         Line::default(),
         dim_line(HOOKS_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines
@@ -246,7 +244,7 @@ fn described_level_lines(
     selected: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![model_rule(width), Line::default(), title_line(title, width)];
+    let mut lines = vec![model_rule(width), title_line(title, width)];
     lines.extend(dim_wrapped(description, width));
     lines.push(Line::default());
     let hint = if rows.is_empty() {
@@ -256,12 +254,7 @@ fn described_level_lines(
         lines.extend(list_lines(rows, selected, width));
         HOOKS_HINT
     };
-    lines.extend([
-        Line::default(),
-        dim_line(hint, width),
-        Line::default(),
-        model_rule(width),
-    ]);
+    lines.extend([Line::default(), dim_line(hint, width), model_rule(width)]);
     lines
 }
 
@@ -363,14 +356,13 @@ fn detail_lines(
 ) -> Vec<Line<'static>> {
     let Some(hook) = event.hooks_at(matcher).into_iter().nth(hook) else {
         // Defensive — the state machine only builds live indices.
-        return vec![model_rule(width), Line::default(), model_rule(width)];
+        return vec![model_rule(width), model_rule(width)];
     };
     let hook = hook.clone();
     let value = Style::new().fg(ai_color());
     let dim = Style::new().fg(model_meta_color());
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(HOOKS_DETAIL_TITLE, width),
         Line::default(),
         field_line("Event:", event.event.name(), value, width),
@@ -435,7 +427,6 @@ fn detail_lines(
     lines.extend([
         Line::default(),
         dim_line(HOOKS_DETAIL_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines

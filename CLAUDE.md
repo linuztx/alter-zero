@@ -325,20 +325,29 @@ session-context footer in `docs/footer.md`; the **startup banner** (the
 gradient mascot beside the bold `Alter Zero (v…)` title, the dim cwd, and the
 cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
-switches it (the `/settings` family's frame over the six-mascot catalog
-with a **live banner preview** rendered by the header's own builder, the
+switches it (the `/theme` picker's layout over the six-mascot catalog — the
+rows in the `/mcp` list's shape, a bold-name-over-dim-description caption,
+and a **live banner preview** rendered by the header's own builder, laid
+**beside** the list from 56 columns and stacked under it below that, the
+three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
+short for that page, the family's compact one, the preview yielding
+(`docs/view-flow.md`) — the
 choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
 the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
-chooses the status line's **spinner style** (the `/mascot` picker's twin over
-a nine-style catalog — `comet` (the list's first row, and the status line's
+chooses the status line's **spinner style** (the `/theme` picker's layout,
+like `/mascot`, over a nine-style catalog — `comet` (the list's first row, and the status line's
 look before there was a catalog), the braille-track `gravity`
 ball (**the default**) and `wave`, `sparkle`, `dots`, `blocks`, `pulse`, `bars`, `line` —
 whose page is **live**: every
 row wears its own spinner and the highlighted style previews as a whole
 sample status line through `ui::styled_status_line`, the strip's own
-renderer, animated off the injected frame clock with no turn running
+renderer, under its caption and **beside** the list from 72 columns (every
+description short enough to read whole in an 80-column terminal's preview
+column), animated off the injected frame clock with no turn running
 (`App::wants_animation_frames`) and its flow signed on the selection rather
-than its rows so a frame never churns a purge rebuild; the choice persisted
+than its rows so a frame never churns a purge rebuild, its compact page on a
+short terminal keeping three live rows between the reserved slots with the
+glyph column sized off the whole catalog; the choice persisted
 **per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
@@ -392,12 +401,38 @@ system per entry: the four Catppuccin flavours with **Mocha the default**
 `onedark` — the TUI's original chrome value for value, over Atom's One Dark
 code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
-follows the terminal's theme. The `/spinner` picker's frame over that
-catalog, every row wearing a five-`●` swatch of its own palette, the
-highlighted theme previewed on **real cells** — a user bubble, an `Edit`
-diff cell, a reply with a code line, built by `message_lines`/`tool_lines`
-with the theme scoped active around them (`ui::with_theme`) so the preview
-and the conversation can never disagree — a still page signed on its rows.
+follows the terminal's theme. codex's theme picker in the family's frame:
+the catalog in the **`/mcp` list's shape** (the accent `❯` on the
+selection, the other rows indented under it, a ten-row centred window whose
+hidden rows dim `↑ N more above` / `↓ N more below` rows name, the hint led
+by `↑/↓ to navigate`), every row wearing a five-`●` swatch of its own
+palette, the highlighted theme previewed on **real cells** — a user bubble,
+an `Edit` diff cell, a reply with a code line, built by
+`message_lines`/`tool_lines` with the theme scoped active around them
+(`ui::with_theme`) so the preview and the conversation can never disagree —
+under codex's bold-title-over-dim-subtitle caption, laid **beside** the
+list once the terminal has room for the catalog-sized list column, a
+four-column gap and the sample unwrapped (`THEME_PREVIEW_MIN_COLS`, 71
+columns in all; under that it stacks under the list), each preview row's
+line style folded onto its spans so the bubble's ground never paints the
+list — a still page signed on its rows; and on a terminal too short for that
+page, a **compact** one instead (`theme_view_lines(app, width, height)`
+choosing by the rows it may have): codex's short panel, where the preview
+yields first — the search line, a `COMPACT_LIST_ROWS` (3, the family's one
+compact window) window of the list between codex's reserved `↑`/`↓` slots
+(directly under the search line and over the hint, blank when nothing is
+hidden that way, so it is one height at every selection), the hint — since
+bottom-anchoring the whole page there kept only the preview on screen and
+flowed the theme names into scrollback; and on a terminal shorter still that
+compact page — which hugs its rules like every framed page, nine rows —
+sheds the rest one row at a time — the `↑`/`↓` pair, the top rule, the rows
+down to the highlighted one, the bottom rule, the hint — and never its
+search line (`model_view::compact_page`'s eight rungs, every search-line
+picker's: bottom-anchoring the compact page had flowed the search line, and
+the caret with it, into scrollback); the family rule, and its shared
+pieces (`model_view::first_page_that_fits`, `compact_page`,
+`placeholder_window`), are `docs/view-flow.md` *A page that sheds rows
+before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
 **active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
@@ -431,7 +466,13 @@ over a network listed under its address, and Enter/`c`/a digit
 copies the highlighted address through `/copy`'s clipboard path with a
 `Copied the BTC address to clipboard` toast while the page stays open; the
 catalog is the const `app::DONATION_ADDRESSES`, never a file, and the
-page is still, so it flows signed on its rows) in `docs/donate.md`; the
+page is still, so it flows signed on its rows; on a terminal too short for
+every box the addresses the highlight is not on collapse to their label
+rows — an accordion, the highlighted one keeping its box and its networks
+under its own label — before the title and the blurb go, and then the
+highlighted address stands alone between the ↑/↓ overflow slots, the
+caution and the hint staying on every page, `docs/view-flow.md` *A page
+that sheds rows before it flows*) in `docs/donate.md`; the
 **`/export` page** (`docs/export.md`: `/copy`'s sibling over the **whole**
 conversation — the `/donate` page's shape, a read-only composer-replacing
 two-row page, `❯ 1. Copy to clipboard` over `2. Save to file`, the
@@ -1755,7 +1796,13 @@ warning whenever the submission would be partial, then `● question` over the
 **green** `→ answer` for the **answered questions only** — an unanswered one
 is omitted; its ☐ chip and the warning already say so —
 `❯ 1. Submit answers / 2. Cancel`) whose empty submission walks to the first
-unanswered question instead of submitting nothing; Esc anywhere **declines**
+unanswered question instead of submitting nothing; on a terminal too short
+for the whole page a question sheds rows before it flows (`ask_lines` takes
+the height — the descriptions cut to one row then left out, then the rows
+windowed three at a time between the ↑/↓ overflow slots, the chip strip
+last; a preview question drops its dim notes line, then cuts the panel to
+the option column, then the chips), so the question, the highlighted row
+and the hint stay on screen; Esc anywhere **declines**
 (the turn continues: red `User declined to answer questions` cell over the
 `· question (options)` rows, the model reading the stop-and-wait result and
 reacting in the same turn — never a forced interrupt); a submission resolves
@@ -2003,7 +2050,20 @@ the same shape now: each render is one **line builder**
 `skills_view_lines`, the retired internal `Layout` stacks), its height the
 built line count so the reserved rows and the painted rows can never
 disagree, flow-eligible like the menus (their top-of-frame `❯` search line
-re-flows per keystroke, since a keystroke re-signs the flow); the
+re-flows per keystroke, since a keystroke re-signs the flow) — and, with
+`/theme`, `/mascot` and `/spinner`, height-aware: on a terminal too short for
+the whole page each builds the family's compact page instead (the first page
+that fits, `model_view::first_page_that_fits` — description, preview and
+counter yield, then a header, and a `COMPACT_LIST_ROWS` window sits between
+reserved `↑`/`↓` slots, `model_compact_list`; `/model`, having no hint row,
+keeps its `Model Name:` line in the hint's place; below the compact page the
+rungs of `model_view::compact_page` shed down to the search line alone, a
+placeholder — no match, still loading — standing in the list's place, so
+these pickers never flow on any terminal and their caret seats on the search
+line found in the built page (`view_prompt_row`), never a pinned row;
+`docs/view-flow.md` *A page that sheds rows before it flows*, `smoke.sh`
+Phase 139), so the search line and the highlighted row stay on screen rather
+than flowing away; the
 boundary keeps the flowed rows' signature (`Session::flowed_view`) and
 answers any mismatch — navigation, resize, close — with the standard purge
 rebuild (`repaint_conversation`/`repaint_agent_view` append the flow to the
@@ -2204,7 +2264,21 @@ built page — `view_prompt_row` — and never over an empty catalog, where that
 row is unavailable and its advice refused) and an empty list that **names the
 roots** (`No skills found. Add one at:` over
 `~/.claude/skills/<name>/SKILL.md`), since "why isn't my skill here?" is an
-empty list's only question. A toggle
+empty list's only question. On a terminal too short for that page it builds
+a **compact** one instead — the `/theme` picker's, codex's order of what
+yields (`skills_view_lines(app, width, height)` taking the first page that
+fits): the description goes first — cut to one row on a terminal just
+short of the wrapped one (`Description::OneRow`, since a wrapped description
+moves the page's height with the selection and the page used to flip between
+whole and compact as ↑/↓ crossed a long one), then gone with the counter —
+then the header (title, count and note together), leaving the search line, a
+`COMPACT_LIST_ROWS` (3) window between the reserved `↑`/`↓` slots
+(`model_compact_list`, the compact pages' shared body) and the hint, with
+the value column sized off
+every listed row so it holds still as the window scrolls, since
+bottom-anchoring the whole page flowed the search line and the top of the
+list into scrollback and could hide the row Enter would toggle; a list with
+nothing to choose drops only its header. A toggle
 holds in **two** places — the skill leaves the `<system-reminder>` listing
 *and* `SkillRegistry::find` refuses it, so a model that remembers the name
 from an earlier turn gets the recoverable "unknown skill" rather than
@@ -2224,7 +2298,8 @@ from everything-on, and a disabled name not installed here **kept** rather
 than pruned since the same file serves a checkout elsewhere), because skill
 relevance is project-specific while the `/settings` **Skills** row is
 already the session-wide switch; `smoke.sh` Phase 77 drives the palette
-entry, the rows, a toggle and its persistence across a restart); and the **Ctrl+O
+entry, the rows, a toggle and its persistence across a restart, Phase 77b the
+compact pages on 14 and 11 rows); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
@@ -2374,7 +2449,12 @@ every phase with `ALTER_ZERO_TELEMETRY=0` and Phase 115 drives the whole loop
 against a local stub)
 of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
 highlighted row's description, and a `Type to search · Enter/Space to change ·
-Esc to cancel` hint; every value **cycles** — there is no free-text field, so
+Esc to cancel` hint — on a terminal too short for that page, the family's
+**compact** page instead (`settings_view_lines(app, width, height)`, the
+first page that fits: a long description cut to one row, then the description
+and the counter gone and a `COMPACT_LIST_ROWS` window between the reserved
+`↑`/`↓` slots, the value column sized off every listed row so it holds still,
+`docs/view-flow.md`, `smoke.sh` Phase 139); every value **cycles** — there is no free-text field, so
 Enter and Space mean the same thing on every row and Space never reaches the
 type-to-search (which matches the label *and* the description, so `agents.md`
 finds **Project docs**). The pure model is `settings::SessionSettings` +
@@ -3289,9 +3369,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`settings_value_color()` for a live value, `settings_value_off_color()` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
-  `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_SEARCH_ROW` cursor seat the
-  `settings_view_lines` builder and `cursor_position` share (the page height
-  is the built line count — `docs/view-flow.md`) — see `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
+  and `SETTINGS_MENU_MAX_ROWS` — the cursor seated on the search line
+  `cursor_position` finds in the page `settings_view_lines` builds
+  (`view_prompt_row`, since a short terminal's rungs move it up), the page
+  height the built line count — `docs/view-flow.md` — see
+  `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
   rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
   `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the
@@ -3490,6 +3572,17 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   three of those four places, is the wrong change — and `fit_cells` must keep
   agreeing with `ratatui_image`'s own `Resize::Fit` to the cell, which its
   differential test is there to keep true.
+- **A framed inline view hugs its rules** (`docs/view-flow.md` *The frame hugs
+  its content*). A composer-replacing page is its top rule, its content and
+  its bottom rule: the first row of content sits straight under the opening
+  rule and the last straight over the closing one, with blank rows only
+  *between* sections. A new view's tests walk its states through
+  `assert_frame_hugs_content` — a height-aware page at every height, since
+  each rung of a short terminal's ladder is a framed page too — and a cursor
+  seat counted from either rule counts no padding row. A reserved overflow
+  slot is no exception: one that would sit straight under a rule (the
+  `/secrets` window without its header, `/donate`'s lone address) goes,
+  with its pair, rather than hug the rule blank.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt

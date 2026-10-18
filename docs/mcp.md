@@ -699,7 +699,6 @@ Both pages, annotated:
 
 ```text
 ────────────────────────────────────────────────────────────────
-
   Context7 MCP Server              ← cyan, name capitalised
 
   Status:           ✔ connected    ← label white, ✔ green, words white
@@ -709,9 +708,7 @@ Both pages, annotated:
   Config location:  ~/.alter-…     ← label white, value dim
   Capabilities:     prompts, res…  ← label white, value WHITE
   Tools:            2 tools        ← label white, value dim
-
 ────────────────────────────────────────────────────────────────
-
   ask_question                     ← cyan
   deepwiki                         ← dim
 
@@ -727,7 +724,6 @@ Both pages, annotated:
       - GitHub repository or list… ← dim (a continuation carries no name)
 
   Esc to go back                   ← dim
-
 ────────────────────────────────────────────────────────────────
 ```
 

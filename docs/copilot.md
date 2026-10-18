@@ -33,14 +33,12 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → Use a subscription
   Use an API key
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -52,7 +50,6 @@ would say nothing they don't. Type-to-filter works here like every list step
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → GitHub Copilot · ✔ configured
@@ -60,7 +57,6 @@ would say nothing they don't. Type-to-filter works here like every list step
   (1/2)
 
   ↑↓ navigate  enter sign in  esc back
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -83,7 +79,6 @@ All three lists open straight onto their filter now.
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   Sign in to GitHub Copilot
 
   Visit https://github.com/login/device            (dim — the code is the
@@ -96,7 +91,6 @@ All three lists open straight onto their filter now.
   Waiting for approval… · expires in 14:11
 
   c copy code  esc cancel
-
 ────────────────────────────────────────────────────────────────────────
 ```
 
@@ -105,13 +99,11 @@ open for content that does not exist yet:
 
 ```
 ────────────────────────────────────────────────────────────────────────
-
   Sign in to GitHub Copilot
 
   Requesting a code…
 
   c copy code  esc cancel
-
 ────────────────────────────────────────────────────────────────────────
 ```
 
@@ -130,8 +122,10 @@ open for content that does not exist yet:
   before that there is no URL to name and no code to box — and reserving their
   rows anyway left a band of blanks under the title while the page did the one
   thing it says it is doing. Waiting for the code is therefore just title, gap,
-  status, gap, hint (`no_device_page_ever_stacks_two_blank_rows`, the list
-  pages' own rule applied to the page whose content genuinely comes and goes).
+  status, gap, hint between the rules, none of them padded
+  (`no_device_page_ever_stacks_two_blank_rows`, the list pages' own rule
+  applied to the page whose content genuinely comes and goes, and
+  `docs/view-flow.md` *The frame hugs its content*).
 - `c` copies the code through `/copy`'s own clipboard path (arboard with the
   OSC 52 fallback, `docs/copy.md`); only the confirmation differs, because
   "Copied last message" would be a lie here.

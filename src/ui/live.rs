@@ -615,21 +615,27 @@ pub fn render_live_with_preview(
     // reported bug; the ↓ manager band's rule — `docs/llm.md`,
     // `docs/background.md`). `model_picker_height` reserves the same sum.
     if let Some(picker) = &app.model_picker {
-        let [strip, body] = view_split(area, model_picker_rows(picker, area.width));
+        let [strip, body] = view_split(area, model_picker_rows(picker, area.width, area.height));
         render_strip_above(strip, buf, app, stream_preview);
         render_model_picker(body, buf, picker);
         return;
     }
     // The inline `/login` onboarding flow sits under the same strip.
     if let Some(onboarding) = &app.key_onboarding {
-        let [strip, body] = view_split(area, key_onboarding_rows(onboarding, area.width));
+        let [strip, body] = view_split(
+            area,
+            key_onboarding_rows(onboarding, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_key_onboarding(body, buf, onboarding);
         return;
     }
     // …and so does the inline `/settings` menu. See `docs/settings.md`.
     if app.settings_picker.is_some() {
-        let [strip, body] = view_split(area, super::settings_view::settings_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::settings_view::settings_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_settings(body, buf, app);
         return;
@@ -637,7 +643,10 @@ pub fn render_live_with_preview(
     // …and the inline `/mascot` picker, the `/settings` menu's twin. See
     // `docs/mascot.md`.
     if app.mascot_picker.is_some() {
-        let [strip, body] = view_split(area, super::mascot_view::mascot_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::mascot_view::mascot_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_mascot_picker(body, buf, app);
         return;
@@ -648,24 +657,31 @@ pub fn render_live_with_preview(
     if app.spinner_picker.is_some() {
         let [strip, body] = view_split(
             area,
-            super::spinner_view::spinner_menu_rows(app, area.width),
+            super::spinner_view::spinner_menu_rows(app, area.width, area.height),
         );
         render_strip_above(strip, buf, app, stream_preview);
         render_spinner_picker(body, buf, app);
         return;
     }
-    // …and the inline `/theme` picker, the `/spinner` picker's twin. See
+    // …and the inline `/theme` picker, codex's theme picker in the family's
+    // frame (its preview beside the list on a wide terminal). See
     // `docs/theme.md`.
     if app.theme_picker.is_some() {
-        let [strip, body] = view_split(area, super::theme_view::theme_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::theme_view::theme_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_theme_picker(body, buf, app);
         return;
     }
-    // …and the inline `/skills` menu, the `/settings` menu's twin. See
-    // `docs/skills.md`.
+    // …and the inline `/skills` menu, the `/settings` menu's twin (its
+    // compact page on a short terminal). See `docs/skills.md`.
     if app.skills_menu.is_some() {
-        let [strip, body] = view_split(area, super::skills_view::skills_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::skills_view::skills_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_skills_menu(body, buf, app);
         return;
@@ -683,7 +699,10 @@ pub fn render_live_with_preview(
     // …and the read-only `/donate` page, its sibling — the same built-line
     // body. See `docs/donate.md`.
     if app.donate_picker.is_some() {
-        let [strip, body] = view_split(area, super::donate_view::donate_menu_rows(app, area.width));
+        let [strip, body] = view_split(
+            area,
+            super::donate_view::donate_menu_rows(app, area.width, area.height),
+        );
         render_strip_above(strip, buf, app, stream_preview);
         render_donate_picker(body, buf, app);
         return;
@@ -693,7 +712,7 @@ pub fn render_live_with_preview(
     if app.secrets_page.is_some() {
         let [strip, body] = view_split(
             area,
-            super::secrets_view::secrets_menu_rows(app, area.width),
+            super::secrets_view::secrets_menu_rows(app, area.width, area.height),
         );
         render_strip_above(strip, buf, app, stream_preview);
         render_secrets_picker(body, buf, app);

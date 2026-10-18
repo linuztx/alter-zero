@@ -1186,7 +1186,7 @@ pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
 pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 
 /// Where the device page's **hidden** cursor parks — the frame's first content
-/// row, the title.
+/// row, the title, straight under the top rule (`docs/view-flow.md`).
 ///
 /// The caret is invisible here ([`cursor_visible`]), but a terminal with a
 /// cursor-trail animation (kitty and kin) still animates toward wherever it is
@@ -1195,7 +1195,7 @@ pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 /// box is neither — anything the emulator paints at the cursor lands on the
 /// one thing the page exists to be read from, and the box's row moves when the
 /// page grows from the waiting shape to the full one.
-pub(super) const DEVICE_CURSOR_ROW: u16 = 2;
+pub(super) const DEVICE_CURSOR_ROW: u16 = 1;
 
 /// The dim hint under the provider list, prefixing the real `.env` path
 /// (`onboarding.env_path`) so it names where the key actually lands.
@@ -1239,6 +1239,14 @@ pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 /// to keep the selection **centered**, like the `/model` list.
 pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 10;
 
+/// The list rows a **compact** page shows — the page a picker builds instead
+/// of its whole one on a terminal too short for that. codex's minimum result
+/// rows (`selection_picker_layout.rs`): what is optional yields first — a
+/// description, a preview, the counter, then a header — so the search line,
+/// these rows and the hint stay on screen. One size for the whole family, so
+/// every short page reads the same (`docs/view-flow.md`).
+pub(super) const COMPACT_LIST_ROWS: u16 = 3;
+
 /// Columns between the longest visible label and the value column, so the
 /// values line up in a block (the palette's `MENU_DESC_COL` idea, sized to the
 /// visible rows rather than pinned).
@@ -1271,11 +1279,6 @@ pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change 
 
 /// The list placeholder when the search matches no setting.
 pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
-
-/// The row (within the menu's framed area) the `❯` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_settings`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
 
 // --- the inline /skills menu (docs/skills.md). Deliberately the /settings
 // menu's twin rather than a new shape: it reuses that menu's frame, its
@@ -1317,80 +1320,107 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
-// --- the inline /mascot picker (docs/mascot.md). The /settings menu's twin
-// again: it reuses the family's frame, marker, prompt and colours, adding
-// only its own words — the page's centre is the live banner preview, drawn
-// by the header's own builder so it can never disagree with the real thing. ---
+// --- the inline /mascot picker (docs/mascot.md). The /theme picker's
+// layout over the mascot catalog: the family's frame and `❯` search line,
+// the rows in the `/mcp` list's shape, and the live banner preview, drawn by
+// the header's own builder so it can never disagree with the real thing,
+// laid BESIDE the list once the terminal has the room and stacked under it
+// when it doesn't. ---
 
-/// The key hint pinned under the preview — the picker's whole grammar.
-pub(super) const MASCOT_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation like the `/theme` picker's.
+pub(super) const MASCOT_HINT: &str = THEME_HINT;
 
 /// The list placeholder when the search matches no mascot.
 pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
 
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_mascot_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const MASCOT_SEARCH_ROW: u16 = 2;
-
 /// The cap on the picker's visible list rows (the settings window's size —
-/// the eight-mascot catalog never actually windows today).
+/// the six-mascot catalog never actually windows today).
 pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-// --- the inline /spinner picker (docs/spinner.md). The /mascot picker's frame
-// — the MODEL_* accents, the same hint grammar — over the spinner-style
-// catalog, plus a name column that leaves room for each row's live spinner.
-// The styles' own frames and colours sit with the status indicator's consts
-// below (`SPINNER_*_FRAMES`). ---
+/// Columns between the list column and the preview beside it — the
+/// `/theme` picker's gap.
+pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
-/// The key hint pinned under the preview — the picker's whole grammar.
-pub(super) const SPINNER_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+/// The narrowest preview column the side-by-side page lays out: the banner
+/// keeps its art beside its title and its `/login /model /resume` hint (36
+/// columns) and every caption reads whole (37), with a little room left for
+/// the cwd row, which the banner `…`-cuts as it always has. A terminal with
+/// less than the list, the gap and this stacks the preview under the list.
+pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
+
+// --- the inline /spinner picker (docs/spinner.md). The /theme picker's
+// layout over the spinner-style catalog: the family's frame and `❯` search
+// line, the rows in the `/mcp` list's shape with a name column that leaves
+// room for each row's live spinner, and the live status-line preview laid
+// BESIDE the list once the terminal has the room and stacked under it when
+// it doesn't. The styles' own frames and colours sit with the status
+// indicator's consts below (`SPINNER_*_FRAMES`). ---
+
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation like the `/theme` picker's.
+pub(super) const SPINNER_HINT: &str = THEME_HINT;
 
 /// The list placeholder when the search matches no style.
 pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
-
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_spinner_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const SPINNER_SEARCH_ROW: u16 = 2;
 
 /// The cap on the picker's visible list rows (the settings window's size —
 /// the nine-style catalog never actually windows today).
 pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-/// Columns between the widest visible style name and the spinner column, so
-/// the live spinners line up down the list.
+/// Columns between the widest style name in the catalog and the spinner
+/// column, so the live spinners line up down the list.
 pub(super) const SPINNER_MENU_GAP: usize = 3;
 
-// --- The inline `/theme` picker (docs/theme.md). The `/spinner` picker's
-// frame — its search line, its `→` marker, its counter, description and hint
-// — over one row per colour theme, each wearing a swatch of its own accents,
-// and a preview built from REAL cells (a user bubble, an `Edit` diff cell, an
-// assistant reply with a code block) rendered under the highlighted theme
-// through the conversation's own builders. The palettes themselves live in
-// `ui::palette`; only the picker's words and geometry are here. ---
+/// Columns between the list column and the preview beside it — the
+/// `/theme` picker's gap.
+pub(super) const SPINNER_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
-/// The key hint pinned under the description — the picker's whole grammar.
-pub(super) const THEME_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+/// The narrowest preview column the side-by-side page lays out: the sample
+/// status line reads whole with a minute on its clock (`Working… (1m 5s ·
+/// esc to interrupt)` behind the eight-cell track), the `/theme` sample's
+/// width. A terminal with less than the list, the gap and this stacks the
+/// preview under the list.
+pub(super) const SPINNER_PREVIEW_MIN_COLS: usize = THEME_PREVIEW_MIN_COLS;
+
+// --- The inline `/theme` picker (docs/theme.md). codex's theme picker in
+// this TUI's dress: the family's frame and `❯` search line over one row per
+// colour theme in the `/mcp` list's shape (the `HOOKS_MARKER` `❯` on the
+// selection, the dim `↑ N more above` / `↓ N more below` rows), each row
+// wearing a swatch of its own accents, and a preview built from REAL cells (a
+// user bubble, an `Edit` diff cell, an assistant reply with a code block)
+// rendered under the highlighted theme through the conversation's own
+// builders — laid BESIDE the list once the terminal has the room, stacked
+// under it when it doesn't. The palettes themselves live in `ui::palette`;
+// only the picker's words and geometry are here. ---
+
+/// The key hint pinned under the list and its preview — the picker's whole
+/// grammar, led by the navigation the `/mcp` list's hint leads with.
+pub(super) const THEME_HINT: &str =
+    "↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel";
 
 /// The list placeholder when the search matches no theme.
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
 
-/// The row (within the picker's framed area) the `❯` search line sits on —
-/// top rule (0), gap (1), search (2). Shared by `render_theme_picker` and
-/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
-/// the line drawn.
-pub(super) const THEME_SEARCH_ROW: u16 = 2;
-
 /// The cap on the picker's visible list rows (the settings window's size —
-/// the eleven-theme catalog windows by one row).
+/// the eleven-theme catalog windows by one row, which an overflow row
+/// names). The ten rows and that row stand about as tall as the preview
+/// beside them, so the side-by-side block is balanced.
 pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
-/// Columns between the widest visible theme name and the swatch column, so
-/// the swatches line up down the list.
+/// Columns between the widest theme name in the catalog and the swatch
+/// column, so the swatches line up down the list.
 pub(super) const THEME_MENU_GAP: usize = 3;
+
+/// Columns between the list column and the preview beside it — codex's
+/// side gap plus its panel inset.
+pub(super) const THEME_PREVIEW_GAP: usize = 4;
+
+/// The narrowest preview column the side-by-side page lays out (codex's
+/// `WIDE_PREVIEW_MIN_WIDTH`): the room the sample needs unwrapped, so the
+/// block keeps its height at every width that gets it. A terminal with less
+/// than the list, the gap and this stacks the preview under the list.
+pub(super) const THEME_PREVIEW_MIN_COLS: usize = 44;
 
 /// One swatch cell — a row wears five, in its own theme's accent, link,
 /// success, warning and error colours, so the palettes compare at a glance
@@ -2531,11 +2561,6 @@ pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("
 pub(super) const AGENT_HINT_AGENT_DONE: &[(&str, &str)] =
     &[("Enter", " to view"), ("x", " to clear")];
 
-/// The row (within the picker's framed area) the `>` search line sits on — top
-/// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
-/// [`cursor_position`] so the cursor lands on the query.
-pub(super) const MODEL_SEARCH_ROW: u16 = 2;
-
 // --- the inline tool-permission prompt (docs/permissions.md) ---
 
 /// The prompt's outer frame: a full-width rule above and below, in the input
@@ -2616,11 +2641,12 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 ];
 
 /// Rows between the last option/amend row and the bottom of the prompt (gap,
-/// hint, gap, rule) — how [`cursor_position`] seats the cursor on the
-/// highlighted option (or in the amend field) from the region's bottom edge
-/// without re-deriving the body. `permission_lines` pads a capped prompt
-/// *above* the question to keep that block flush against this tail.
-pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;
+/// hint, rule — no blank row hugs the rule, `docs/view-flow.md`) — how
+/// [`cursor_position`] seats the cursor on the highlighted option (or in the
+/// amend field) from the region's bottom edge without re-deriving the body.
+/// `permission_lines` pads a capped prompt *above* the question to keep that
+/// block flush against this tail.
+pub(super) const PERMISSION_TAIL_ROWS: u16 = 3;
 
 /// The most rows one option label may wrap to before it caps with a `…` —
 /// a long "don't ask again" rule (an exact command) wraps instead of hiding

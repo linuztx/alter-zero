@@ -67,13 +67,41 @@ fn the_manager_empty_state_says_no_tasks_running() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts[2], "  Background");
-    assert_eq!(texts[4], "  No tasks currently running");
-    assert_eq!(texts[6], "  ↑/↓ to select · Enter to view · Esc to close");
+    assert_eq!(texts[1], "  Background");
+    assert_eq!(texts[3], "  No tasks currently running");
+    assert_eq!(texts[5], "  ↑/↓ to select · Enter to view · Esc to close");
     assert!(
         !texts.iter().any(|l| l.contains("x to stop")),
         "nothing to stop in the empty state: {texts:?}"
     );
+}
+
+#[test]
+fn both_pages_hug_their_frame() {
+    // The title straight under the opening rule, the key hints straight
+    // over the closing one — on the list, its empty state, and a shell's
+    // details.
+    let mut list = App::new();
+    list.bg_started("bash_1", "ping x.com", None, true, None);
+    list.open_background_view();
+    let mut details = App::new();
+    details.bg_started("bash_1", "ping x.com", None, true, None);
+    details.bg_output("bash_1", "64 bytes from x.com\n");
+    details.open_background_view();
+    details.background_view = Some(BackgroundView::Details {
+        id: "bash_1".to_string(),
+    });
+    let mut empty = App::new();
+    empty.bg_started("bash_1", "ping x.com", None, true, None);
+    empty.bg_exited("bash_1", Some(0), false);
+    empty.open_background_view();
+    for (what, app) in [
+        ("the shell list", list),
+        ("a shell's details", details),
+        ("the empty list", empty),
+    ] {
+        assert_frame_hugs_content(what, &background_view_lines(&app, 60));
+    }
 }
 
 #[test]
@@ -104,9 +132,9 @@ fn both_page_titles_wear_the_menus_title_dress() {
     });
     let details = background_view_lines(&app, 60);
     for (lines, title) in [(&list, "Background"), (&details, "Shell details")] {
-        assert_eq!(plain(&lines[2]).trim(), title);
+        assert_eq!(plain(&lines[1]).trim(), title);
         assert!(
-            wears_the_title_dress(&lines[2]),
+            wears_the_title_dress(&lines[1]),
             "{title} wears the title dress the other menus' titles do"
         );
     }

@@ -194,7 +194,8 @@ fn the_page_never_exceeds_the_width() {
 fn no_page_ever_stacks_two_blank_rows() {
     for width in [30u16, 80] {
         for selected in 0..2 {
-            let texts: Vec<String> = texts(&open_at(selected), width)
+            let app = open_at(selected);
+            let texts: Vec<String> = texts(&app, width)
                 .iter()
                 .map(|t| t.trim_end().to_string())
                 .collect();
@@ -204,11 +205,11 @@ fn no_page_ever_stacks_two_blank_rows() {
                     "width {width} selection {selected} stacked two blank rows: {texts:?}"
                 );
             }
-            assert_eq!(texts[1], "", "one gap under the top rule: {texts:?}");
-            assert_eq!(
-                texts[texts.len() - 2],
-                "",
-                "one gap over the bottom rule: {texts:?}"
+            // …and none hugs a rule either: the title opens the frame and
+            // the hint closes it.
+            assert_frame_hugs_content(
+                &format!("width {width} selection {selected}"),
+                &export_view_lines(&app, width),
             );
         }
     }

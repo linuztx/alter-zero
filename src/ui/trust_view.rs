@@ -118,7 +118,6 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let TrustMenu { review, selected } = menu;
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         super::header::page_title_line(&format!("{TRUST_TITLE} — {}", review.root), width),
     ];
     let (status, status_color) = if review.trusted {
@@ -198,12 +197,7 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     } else {
         TRUST_HINT
     };
-    lines.extend([
-        Line::default(),
-        dim_line(hint, width),
-        Line::default(),
-        model_rule(width),
-    ]);
+    lines.extend([Line::default(), dim_line(hint, width), model_rule(width)]);
     lines
 }
 

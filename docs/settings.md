@@ -11,7 +11,6 @@ per change.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-
   ❯
 
 → Hide thinking           false
@@ -28,7 +27,6 @@ per change.
   Hide the model's chain-of-thought…
 
   Type to search · Enter/Space to change · Esc to cancel
-
 ────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -151,16 +149,17 @@ what the session is actually doing.
 The layout is the `/model` picker's plus one hint row:
 
 ```
-rule · gap · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · gap · rule
+rule · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · rule
 ```
 
 A search that matches **nothing** has no count and nothing to describe, so
-those slots collapse to a single gap — `rule · gap · ❯ search · gap ·
-No matching settings · gap · hint · gap · rule` — instead of painting four
+those slots collapse to a single gap — `rule · ❯ search · gap ·
+No matching settings · gap · hint · rule` — instead of painting four
 blank rows mid-frame (the `/model` picker's `model_has_detail` rule, shared
-now by `/mascot`, `/skills` and `/login`).
+now by `/mascot`, `/skills` and `/login`). No blank row hugs either rule
+(`docs/view-flow.md` *The frame hugs its content*).
 
-— eleven fixed chrome rows around a list capped at
+— nine fixed chrome rows around a list capped at
 `SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
 selection stays centred; the whole page is one line builder
 (`settings_view_lines` — the `/mcp` family's shape, its height the built line
@@ -168,6 +167,54 @@ count, painted bottom-anchored with the skipped top flowing into scrollback,
 `docs/view-flow.md`). Unlike `/model` the chrome never collapses: there is
 always at least one setting, and a search that matches nothing still shows its
 placeholder in the same frame.
+
+### A terminal too short for the page
+
+The whole page is twenty-one rows or more, and bottom-anchoring it on a
+shorter terminal kept the description and the hint while the search line and
+the highlighted row flowed into scrollback — on twelve rows the row Enter
+would change was off screen. So `settings_view_lines` takes the rows the page
+may have and builds the first of three pages that fits them
+(`first_page_that_fits`, the family rule in `docs/view-flow.md` *A page that
+sheds rows before it flows*):
+
+1. the whole page;
+2. the whole page with the description cut to one row
+   (`Description::OneRow`) — several descriptions wrap to two rows on an
+   80-column terminal, so the whole page's height moves with the selection,
+   and a terminal at the edge, deciding on that height alone, flipped
+   between the whole and the compact page as ↑/↓ passed one;
+3. the compact page, the `/theme` and `/skills` one row for row:
+
+```
+──────────────────────────────────────────────────────────
+  ❯
+  ↑ 5 more above
+  Tools                true
+→ Permission mode      manual
+  Checkpoints          false
+  ↓ 10 more below
+  Type to search · Enter/Space to change · Esc to cancel
+──────────────────────────────────────────────────────────
+```
+
+The description and the counter yield, and a `COMPACT_LIST_ROWS` (3) window
+sits between the reserved overflow slots (`model_compact_list`), each blank
+when nothing is hidden that way, so the page is nine rows at every
+selection — no blank row hugs either rule (`docs/view-flow.md` *The frame
+hugs its content*). The value column is sized off every listed setting rather than
+the rows in view, so it holds still as the window scrolls — it used to shift
+on the whole page too, whenever ↑/↓ scrolled `Auto-resize images` in or out
+of the ten rows shown.
+
+On a terminal shorter still the compact page sheds what is left one row at a
+time and never its search line (`docs/view-flow.md` *Below the compact
+page*): the `↑`/`↓` pair, the top rule, the rows down to the highlighted
+setting, the bottom rule and the hint. Bottom-anchored instead, the compact
+page flowed the search line into scrollback, and then the highlighted
+setting. The rungs move the search line up, so the cursor's seat finds it in
+the built page (`view_prompt_row`) rather than pinning it to row 1; a search
+matching nothing sheds the same way, keeping what was typed.
 
 ### Keys
 
@@ -322,4 +369,5 @@ backend rebuild, the checkpoint flip, the file write — is covered by
 `scripts/smoke.sh` Phase 67, which opens the menu, searches, cycles a value, and
 checks the toast and the collapsed composer; Phase 109 drives the per-directory
 half (a knob cycled in one directory, the defaults in the next, both against
-one config home).
+one config home); Phase 139 opens it on a 12-row terminal and walks its compact
+page.
