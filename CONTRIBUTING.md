@@ -155,13 +155,20 @@ Read them before touching the loop, `term.rs`, or the wrap/markdown renderers.
 
 ## Testing
 
-`cargo test` runs the unit tests (around 3,900, in `#[cfg(test)]` modules beside
+`cargo test` runs the unit tests (around 5,300, in `#[cfg(test)]` modules beside
 the code they cover) plus the integration tests in `tests/` that are not
 `#[ignore]`d. It is offline and deterministic — keep it that way.
 
+[`AGENTS.md`](AGENTS.md) maps a change to the smallest check that can fail, with
+measured times — run that per edit and the full suite once at the end. It also
+lists the baseline failures this platform starts with, so a red run is not
+mistaken for a regression.
+
 | Suite | How | Run it when |
 | --- | --- | --- |
-| Unit + integration | `cargo test` | always |
+| One module | `cargo test --lib app::tests::login` | after every edit (sub-second warm) |
+| All unit tests | `cargo test --lib` | once, before you call the change done |
+| Unit + integration | `cargo test` | the seam you touched spans crates (it rebuilds 22 test binaries, ~2 min) |
 | Smoke suite | `cargo build && scripts/smoke.sh` | you changed `src/tui/`, `term.rs`, or anything you can only see on screen |
 | Live provider tests | `OPENROUTER_API_KEY=… cargo test --test live_openrouter -- --ignored --nocapture` | you changed a provider, a wire format, or the context assembly |
 | Memory gates | `cargo test --test image_turn_memory`, `--test model_parse_memory`, `--test image_paste_memory` | you changed anything that allocates per turn, per request or per picture |
