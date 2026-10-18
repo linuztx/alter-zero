@@ -57,6 +57,8 @@ multi-minute full rebuild — don't, unless the user asks.
 | `src/llm/mcp*`, the `mcp` CLI | `cargo test --test mcp_cli` |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`image_turn_memory`, `model_parse_memory`, `image_paste_memory`, `write_preview_memory`) |
 | `providers.toml`, `src/llm/config.rs` | `cargo test --lib llm::config` — it pins the shipped provider set and the `snake_case` spellings |
+| `scripts/smoke/lib.sh`, `scripts/smoke.sh` (the phase readers or the selector) | `bash scripts/smoke/selftest.sh` — under a second, no app, no tmux |
+| `scripts/smoke/phases/`, screen behaviour | `cargo build && scripts/smoke.sh <ids>` — by **id**, and widen only if you must |
 | `scripts/`, `install.sh`, `npm/`, `telemetry/`, `docker/`, `aur/` | that subtree's own suite (see [`CONTRIBUTING.md`](CONTRIBUTING.md) *Testing*) — not `cargo test` |
 | `prompts/`, `docs/`, `CHANGELOG.md` | nothing; prose has no gate |
 
@@ -104,7 +106,7 @@ you diagnose anything.
 | `ps … sid` | supported | **no `sid` keyword** — one test can never pass here |
 | tests that exist | 5,389 | **5,354** in `--lib` — 35 are `cfg(target_os = "linux")`, and 10 live in `src/tui/` (bin-only, never in `--lib`) |
 | `scripts/smoke.sh` | bash 5 from the distro | needs **bash 4+**; macOS `/bin/bash` is 3.2 and dies |
-| `--list`, phase titles/tags | works | **BSD `sed` breaks both** (see below) |
+| `--list`, phase titles/tags | works | works — the readers were BSD-`sed`-broken once; `selftest.sh` now pins them |
 | `timeout`, `nproc`, `grep -P` | present | **absent** (`smoke.sh` already falls back to `sysctl -n hw.ncpu`) |
 | a stale incremental link | rare | **`Undefined symbols: … (.llvm.…)`** after a branch switch |
 | `cargo doc --no-deps --lib` | clean | **fails on `origin/main`**: `src/pty/spawn.rs` links `super::probe::group_program`, which is `cfg(target_os = "linux")` |
@@ -163,20 +165,12 @@ Other platform notes:
   `declare: -A: invalid option` and `TOTAL: unbound variable` — not a phase
   failure. Homebrew's bash is on `PATH` here, so `scripts/smoke.sh` works; if it
   ever stops, `bash --version` is the first thing to check.
-- **`scripts/smoke.sh --list`, title selection and the `serial` tag are broken
-  on BSD `sed`** — `smoke_phase_title` and `smoke_phase_tags` both fail there.
-  Two real consequences, not cosmetic:
-  - **A multi-word title query quietly widens to an OR.** With the title empty
-    the selector matches the slug only, so `scripts/smoke.sh "the first turn"`
-    also selects `111b theme` (`the` ⊂ `theme`). It runs phase 1 *and* the theme
-    phase, which looks like an unrelated failure.
-  - **`121-slowstream` loses its `serial` tag**, so a timing-sensitive phase is
-    scheduled into the parallel pool where a loaded machine can skew it.
-
-  Select by **id** (`scripts/smoke.sh 9`) or a distinctive slug word
-  (`scripts/smoke.sh quit`), and check `--list` before trusting a multi-word
-  query. Running a phase file directly is unaffected:
-  `bash scripts/smoke/phases/009-quit.sh`.
+- **The smoke suite's own tests are `bash scripts/smoke/selftest.sh`** — the
+  phase readers and the selector, over fixture headers, in under a second. Run
+  it after touching `scripts/smoke/lib.sh` or `scripts/smoke.sh`; CI runs it
+  before the phases. It exists because those readers fail *silently*: they
+  decide which phases a query runs, so a reader that returns nothing runs the
+  wrong suite rather than failing.
 - **`cargo doc --no-deps --lib` fails on macOS, on `origin/main`, for a reason
   that is not yours.** `src/pty/spawn.rs` links `[`super::probe::group_program`]`
   and that function is `cfg(target_os = "linux")`, so off Linux the intra-doc

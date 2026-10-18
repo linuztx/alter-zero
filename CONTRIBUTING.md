@@ -170,6 +170,7 @@ mistaken for a regression.
 | All unit tests | `cargo test --lib` | once, before you call the change done |
 | Unit + integration | `cargo test` | the seam you touched spans crates (it rebuilds 22 test binaries, ~2 min) |
 | Smoke suite | `cargo build && scripts/smoke.sh` | you changed `src/tui/`, `term.rs`, or anything you can only see on screen |
+| Smoke suite's own tests | `bash scripts/smoke/selftest.sh` | you changed `scripts/smoke/lib.sh` or `scripts/smoke.sh` — the phase readers and the selector, in under a second |
 | Live provider tests | `OPENROUTER_API_KEY=… cargo test --test live_openrouter -- --ignored --nocapture` | you changed a provider, a wire format, or the context assembly |
 | Memory gates | `cargo test --test image_turn_memory`, `--test model_parse_memory`, `--test image_paste_memory` | you changed anything that allocates per turn, per request or per picture |
 | Telemetry collector | `(cd telemetry && node --test)` | you changed `telemetry/` |
@@ -198,6 +199,12 @@ from the file, so nothing registers anywhere.
 [`docs/smoke.md`](docs/smoke.md) has the helper vocabulary, the phase contract
 and the rules that keep a phase from being flaky. The one to internalise:
 **poll for the state, never fixed-sleep and hope.**
+
+The suite's own machinery is tests too: `bash scripts/smoke/selftest.sh` covers
+the phase readers (`smoke_phase_title`, `smoke_phase_tags`, …) and the query
+selector over fixture headers. Those readers decide *which* phases a query
+runs, so one that returns nothing runs the wrong suite instead of failing —
+which is exactly what a BSD-`sed` incompatibility did until it was caught.
 
 Each phase gets its own tmux server, config home, sessions root, `$HOME` and temp
 tree, and sanitizes the environment (every `*_API_KEY`, every `ALTER_ZERO_*`,
