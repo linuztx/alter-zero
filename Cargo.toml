@@ -238,7 +238,8 @@ opt-level = 3
 # first build ~10% slower, a larger `target/`, and nothing measurable at
 # runtime (`perf_probe`'s whole-render column stays within ±3% of the plain
 # build). It applies to this crate only — cargo never compiles registry
-# dependencies incrementally — so the dependency units are byte-for-byte what
+# dependencies incrementally, and the one path dependency, the vendored
+# `syntect`, opts out below — so the dependency units are byte-for-byte what
 # they were. A build that wants the plain layout (a packaged release, CI)
 # opts out on the command line:
 # `cargo build --release --config profile.release.incremental=false`.
@@ -247,6 +248,13 @@ opt-level = 3
 # LTO and the cross-unit inlining that comes with it.
 [profile.release]
 incremental = true
+
+# `incremental` reaches path dependencies too, so without this the vendored
+# syntect (`[patch.crates-io]` below) would be the one dependency a local
+# release build compiles incrementally: 256 codegen units instead of 16, which
+# measured ~5% slower highlighting than the registry crate it stands in for.
+[profile.release.package.syntect]
+incremental = false
 
 # TEMP (local verification only): vendored syntect 5.3.0 with PR #709's two
 # fixes ported — parser infinite loop on cyclical grammar includes (the svelte
