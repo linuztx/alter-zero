@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**[`AGENTS.md`](AGENTS.md) governs what you run and when.** Read it before your
+first edit: it maps a change to the smallest check that can fail, so the loop is
+`cargo test --lib <module>::` (sub-second warm) rather than `cargo test` or the
+whole smoke suite after every edit. It also lists this machine's baseline
+failures — 6 on macOS with `setsid` on `PATH`, 46 without it — which are not
+regressions.
+
 ## Commands
 
 ```bash
@@ -43,10 +50,12 @@ docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
 + `cargo clippy --all-targets -- -D warnings` + `cargo test` + `cargo doc
---no-deps --lib` all clean. The doc build is part of the gate because the crate
-denies warnings, which promotes a broken intra-doc link to an error: a public
-item's docs may not link to a private one, so moving an item between modules (or
-narrowing its visibility) breaks the links that pointed at it. When that happens
+--no-deps --lib` all clean. It is the **end** of a change, not the loop — see
+[`AGENTS.md`](AGENTS.md) for the per-change matrix below it. The doc build is
+part of the gate because the crate denies warnings, which promotes a broken
+intra-doc link to an error: a public item's docs may not link to a private one,
+so moving an item between modules (or narrowing its visibility) breaks the links
+that pointed at it. When that happens
 the fix is to qualify the path if the target is still public
 (`[`x`]` → `` [`x`](App::x) ``), else demote the link to a plain code span
 (`[`x`]` → `` `x` ``) so the prose still names it.
