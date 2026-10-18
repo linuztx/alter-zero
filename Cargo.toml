@@ -256,16 +256,14 @@ incremental = true
 [profile.release.package.syntect]
 incremental = false
 
-# TEMP (local verification only): vendored syntect 5.3.0 with PR #709's two
-# fixes ported — parser infinite loop on cyclical grammar includes (the svelte
-# `/**` hang).
-
-# The parser can spin forever on a grammar with cyclical includes (the Svelte
-# grammar bat ships has them: `style-common` → `style-lang-attribute` →
-# `style-lang-decider-*` → `style-common`). Resuming a session whose transcript
-# holds a Svelte diff then wedges the TUI at 100% CPU on a five-byte line.
-# syntect PR #709 fixes it, but it is unmerged and targets master (whose
-# `parse_line` API differs); `vendor/syntect` is v5.3.0 with those two hunks
-# applied. Drop this patch once #709 ships in a release.
+# syntect 5.3.0's parser can loop forever on a line where the grammar keeps
+# matching without consuming anything, in a way its own loop check (a
+# non-consuming pop at the depth of the push before it) misses. A block comment
+# spanning lines inside a Svelte `{…}` expression is enough, and highlighting
+# runs on the UI loop, so the TUI froze at 100% CPU. `vendor/syntect` is 5.3.0
+# with the fix from syntect PR #709, which is unmerged and targets master,
+# whose `parse_line` returns a different type. Drop this patch, `vendor/` and
+# the override above once a syntect release carries the fix
+# (`vendor/README.md`).
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }

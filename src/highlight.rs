@@ -652,48 +652,32 @@ mod tests {
     }
 
     #[test]
-    fn a_cyclical_grammar_does_not_spin_the_parser() {
-        // The Svelte grammar bat ships has cyclical includes
-        // (`style-common` → `style-lang-attribute` → `style-lang-decider-*` →
-        // `style-common`), and syntect's include walk pushed onto its context
-        // stack with no cycle check, so `MatchIter` grew forever. Resuming a
-        // session whose transcript held a Svelte diff then pinned a core at
-        // 100% on a five-byte line (`  /**`) — the TUI never took input again.
-        // syntect PR #709 fixes the cycle *and* the non-consuming-set loop;
-        // this pins the fix against `vendor/syntect`.
-        //
-        // The whole 81-line prefix matters: the wedge needs the lexer state the
-        // earlier lines build. Run it on a detached thread so a regression (an
-        // infinite loop) fails the test instead of hanging the suite.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let src = include_str!("highlight/svelte_cycle.txt");
-            // `\u{0}GAP` marks a hunk gap, where `file_cell_lines` resets the
-            // highlighter (the lexer re-synchronizes); the batch `highlight`
-            // helper does not, and without the reset the state never reaches
-            // the wedge.
-            let mut hl = Highlighter::new(Some("svelte"), CodeTheme::default());
-            let start = std::time::Instant::now();
-            let mut n = 0usize;
-            for line in src.split('\n') {
-                if line == "\u{0}GAP" {
-                    hl = Highlighter::new(Some("svelte"), CodeTheme::default());
-                    continue;
-                }
-                let _ = hl.line(line);
-                n += 1;
-            }
-            let _ = tx.send((n, start.elapsed()));
-        });
-        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            Ok((n, elapsed)) => {
-                assert!(n >= 80, "the whole prefix renders, got {n}");
-                assert!(
-                    elapsed < std::time::Duration::from_secs(2),
-                    "the svelte prefix should parse in well under a frame budget, took {elapsed:?}"
-                );
-            }
-            Err(_) => panic!("the parser spun on a cyclical svelte grammar"),
+    fn matches_that_never_advance_do_not_spin_the_parser() {
+        // syntect 5.3.0 never returns from `parse_line` on these lines: the
+        // grammar keeps matching lookaheads that consume nothing (a `set`, or
+        // a push and a pop at different depths), and syntect's own loop check
+        // only catches a non-consuming pop at the depth of the push before it.
+        // Highlighting runs on the UI loop, so a Svelte file cell or a fenced
+        // block in a reply froze the TUI at 100% CPU — on `--resume`, before
+        // the first keystroke. `vendor/syntect` steps a character on after 32
+        // such matches (`vendor/README.md`). Each case runs on a thread of its
+        // own, so a regression fails here instead of hanging the suite.
+        const CASES: [(&str, &[&str]); 2] = [
+            // A block comment spanning lines inside a template expression.
+            ("svelte", &["<p>{count /* first", "   second */}</p>"]),
+            // A line from Sublime's Scala syntax tests.
+            ("scala", &[":s@/"]),
+        ];
+        for (lang, lines) in CASES {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(highlight(lines, Some(lang), CodeTheme::default()));
+            });
+            let rendered = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("the parser spun on {lang} {lines:?}"));
+            let text: Vec<String> = rendered.iter().map(|segs| joined(segs)).collect();
+            assert_eq!(text, lines, "{lang}: every line still renders whole");
         }
     }
 
