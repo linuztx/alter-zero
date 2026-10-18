@@ -652,6 +652,36 @@ mod tests {
     }
 
     #[test]
+    fn matches_that_never_advance_do_not_spin_the_parser() {
+        // syntect 5.3.0 never returns from `parse_line` on these lines: the
+        // grammar keeps matching lookaheads that consume nothing (a `set`, or
+        // a push and a pop at different depths), and syntect's own loop check
+        // only catches a non-consuming pop at the depth of the push before it.
+        // Highlighting runs on the UI loop, so a Svelte file cell or a fenced
+        // block in a reply froze the TUI at 100% CPU — on `--resume`, before
+        // the first keystroke. `vendor/syntect` steps a character on after 32
+        // such matches (`vendor/README.md`). Each case runs on a thread of its
+        // own, so a regression fails here instead of hanging the suite.
+        const CASES: [(&str, &[&str]); 2] = [
+            // A block comment spanning lines inside a template expression.
+            ("svelte", &["<p>{count /* first", "   second */}</p>"]),
+            // A line from Sublime's Scala syntax tests.
+            ("scala", &[":s@/"]),
+        ];
+        for (lang, lines) in CASES {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(highlight(lines, Some(lang), CodeTheme::default()));
+            });
+            let rendered = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("the parser spun on {lang} {lines:?}"));
+            let text: Vec<String> = rendered.iter().map(|segs| joined(segs)).collect();
+            assert_eq!(text, lines, "{lang}: every line still renders whole");
+        }
+    }
+
+    #[test]
     fn segments_concatenate_back_to_the_source_line() {
         for line in [
             "def guessing_game():",

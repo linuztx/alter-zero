@@ -158,6 +158,13 @@ release heading when a version is cut.
 - **A long line of unclosed `[` or `![` no longer stalls a reply.** Link
   brackets are paired once per line instead of once per opener, so a 25 KB
   line of them renders in milliseconds rather than over a second.
+- **Some Svelte and Scala code no longer freezes the app.** syntect's parser
+  could loop forever on a line its grammar kept matching without moving on (a
+  block comment spanning lines inside a Svelte `{…}` expression was enough),
+  and since highlighting runs on the UI loop, the TUI pinned a core and
+  stopped reading keys, before the first keystroke when resuming a session
+  that showed such a file. syntect is vendored with the fix until a release
+  carries it (`vendor/README.md`).
 
 ## [0.14.0] - 2026-10-14
 
