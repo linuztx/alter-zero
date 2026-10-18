@@ -57,7 +57,8 @@ impl Mascot {
         }
     }
 
-    /// The one-line description shown under the picker's preview.
+    /// The one-line description the picker's preview caption shows under
+    /// the mascot's name, over its banner.
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {

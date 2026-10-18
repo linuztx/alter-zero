@@ -284,7 +284,6 @@ placeholders (`SubagentConfig::briefing_for`).
 
 ```
 ──────────────────────────────────────────────────────────────────
-
   Secrets
   Credentials the agent uses by placeholder. The values stay out of
   the conversation, the screen and the model's context.
@@ -294,7 +293,6 @@ placeholders (`SubagentConfig::briefing_for`).
     + Add a secret
 
   Enter edit · n new · c copy placeholder · d delete · Esc close
-
 ──────────────────────────────────────────────────────────────────
 ```
 
@@ -338,6 +336,25 @@ is routed to the focused field before the composer's catch-all, which would
 otherwise put a pasted value into the hidden draft. It works mid-turn: a
 save rebinds the next tool call at once (the registry is shared) and the
 reminder at the next turn.
+
+The list lists every secret, so a long one is taller than a short terminal,
+and bottom-anchoring it flowed the title and the first secrets — the
+highlighted one among them — off the top. So the list takes the rows it may
+have and builds the first page that fits them (`docs/view-flow.md` *A page
+that sheds rows before it flows*): the whole list; then the header over a
+three-row window of the list riding the selection, between the `↑ N more
+above` and `↓ N more below` slots, each slot standing in for the blank row
+the whole page puts there; then that window without the title and the blurb
+— and without the slots, since the `↑` one would then sit straight under
+the top rule and hug it blank while nothing is hidden above
+(`docs/view-flow.md` *The frame hugs its content*), the window and the hint
+the page's two blocks.
+The masks stay in one column as the window scrolls, since the column is
+sized off every secret. An empty store has only its add row, so its short
+page just drops the header and lets the empty note say what a secret is
+for. The hint stays on every page, and the form needs none of this: its
+focused field already sits near the bottom, where anchoring keeps it.
+`smoke.sh` Phase 139 opens the list on 12 rows.
 
 ## Persistence
 

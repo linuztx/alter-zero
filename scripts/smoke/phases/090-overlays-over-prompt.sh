@@ -125,9 +125,11 @@ po_round_trip() { # session, rows, cue, label, seat(flush | floating)
 # 44 rows: the whole conversation and the prompt fit with rows to spare, so the
 # region floats — nothing has scrolled one-way, and the return must not start.
 po_round_trip "${S}_permoverlay" 44 "permission demo please" "region floating" floating
-# 30 rows: everything still fits the page, but the region now reaches the
-# screen bottom — the seat a mis-timed return strands above a blank band.
-po_round_trip "${S}_permoverlayfit" 30 "permission demo please" "page fits, flush" flush
+# 28 rows: everything still fits the page, but the region now reaches the
+# screen bottom — the seat a mis-timed return strands above a blank band. The
+# conversation and the prompt come to 29 rows, so the region's growth scrolls
+# one row of chat one-way into scrollback on the way there.
+po_round_trip "${S}_permoverlayfit" 28 "permission demo please" "page fits, flush" flush
 # 18 rows: the page is taller than the terminal, so its top FLOWS into real
 # scrollback (docs/view-flow.md) — the geometry the close's purge rebuild
 # exists for, and the only one that exercises the flow signature across the

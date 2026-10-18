@@ -500,8 +500,8 @@ fn anchored_view_row(page_rows: u16, body: Rect, row: u16) -> u16 {
 
 /// Whether the picker shows its counter + model-name detail rows below the
 /// list — only when a real model is listed (Ready with at least one match).
-/// The placeholder states have a blank counter and name, so those rows collapse
-/// to a single trailing gap.
+/// The placeholder states have a blank counter and name, so those rows
+/// collapse away and the placeholder closes the page.
 pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
     picker.status == ModelLoad::Ready && !picker.matches().is_empty()
 }
@@ -510,8 +510,9 @@ pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
 /// count (`model_view_lines`), so the height and the paint agree by
 /// construction (`docs/view-flow.md`). What [`model_picker_height`] reserves
 /// under the strip, and what [`render_live`] hands [`render_model_picker`].
-pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16) -> u16 {
-    u16::try_from(super::model_view::model_view_lines(picker, width).len()).unwrap_or(u16::MAX)
+pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16, height: u16) -> u16 {
+    u16::try_from(super::model_view::model_view_lines(picker, width, height).len())
+        .unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/model` picker is open, or `None`
@@ -528,7 +529,7 @@ pub fn model_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
     Some(view_height(
         app,
         width,
-        model_picker_rows(picker, width),
+        model_picker_rows(picker, width, term_height),
         term_height,
     ))
 }
@@ -567,8 +568,8 @@ pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option
 /// count (`key_onboarding_lines`): the provider step grows with its list, the
 /// key step is a fixed height. What [`key_onboarding_height`] reserves under
 /// the strip, and what [`render_live`] hands [`render_key_onboarding`].
-pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding, width: u16) -> u16 {
-    u16::try_from(super::login_view::key_onboarding_lines(onboarding, width).len())
+pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding, width: u16, height: u16) -> u16 {
+    u16::try_from(super::login_view::key_onboarding_lines(onboarding, width, height).len())
         .unwrap_or(u16::MAX)
 }
 
@@ -583,7 +584,7 @@ pub fn key_onboarding_height(app: &App, width: u16, term_height: u16) -> Option<
     Some(view_height(
         app,
         width,
-        key_onboarding_rows(onboarding, width),
+        key_onboarding_rows(onboarding, width, term_height),
         term_height,
     ))
 }
@@ -1044,7 +1045,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // A permission prompt seats the cursor on the row it is asking about: the
     // **highlighted option**, or Tab's amend field when that has replaced the
     // options. Both blocks sit a fixed [`PERMISSION_TAIL_ROWS`] above the
-    // region's bottom (gap, hint, gap, rule) — `permission_lines` pads a capped
+    // region's bottom (gap, hint, rule) — `permission_lines` pads a capped
     // prompt above the question to keep them there — so the cursor is found
     // from that edge without re-deriving the body. The column is the same for
     // both (past the inset and the `❯ ` marker), so ↑/↓ walk the cursor
@@ -1088,70 +1089,51 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                 .min(usize::from(area.width.saturating_sub(1))) as u16);
         return (x, y);
     }
-    // The inline `/model` picker parks the cursor at the end of its `>` search
-    // line (see `model_view_lines`' stack: top rule, gap, search) — inside the
-    // picker's own frame, which the streaming strip above it has pushed down
-    // ([`view_split`], the same split the paint uses) and the bottom anchor
-    // may have shifted up ([`anchored_view_row`]).
-    if let Some(picker) = &app.model_picker {
-        let rows = model_picker_rows(picker, area.width);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, MODEL_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/settings` menu parks the cursor at the end of its `❯`
-    // search line, exactly like the `/model` picker (docs/settings.md).
-    if let Some(picker) = &app.settings_picker {
-        let rows = super::settings_view::settings_rows(app, area.width);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, SETTINGS_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/mascot` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/settings` menu (docs/mascot.md).
-    if let Some(picker) = &app.mascot_picker {
-        let rows = super::mascot_view::mascot_menu_rows(app, area.width);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, MASCOT_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/spinner` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/mascot` picker (docs/spinner.md).
-    if let Some(picker) = &app.spinner_picker {
-        let rows = super::spinner_view::spinner_menu_rows(app, area.width);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, SPINNER_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/theme` picker parks the cursor at the end of its `❯`
-    // search line, exactly like the `/spinner` picker (docs/theme.md).
-    if let Some(picker) = &app.theme_picker {
-        let rows = super::theme_view::theme_menu_rows(app, area.width);
-        let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
-        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let row = anchored_view_row(rows, body, THEME_SEARCH_ROW);
-        return (x, view_cursor_y(area, body, row));
-    }
-    // The inline `/skills` menu parks the cursor at the end of its `❯` search
-    // line, like the `/settings` menu (docs/skills.md) — but the line sits
-    // under the page's header, whose session-off note wraps with the width,
-    // so its row is found in the page the paint builds (`view_prompt_row`,
-    // `/login`'s rule) rather than pinned. Built once, read twice: the
-    // page's height and that row.
-    if let Some(menu) = &app.skills_menu {
-        let lines = super::skills_view::skills_view_lines(app, area.width);
+    // The search-line pickers park the cursor at the end of their `❯` search
+    // line — inside the picker's own frame, which the streaming strip above
+    // it has pushed down ([`view_split`], the same split the paint uses).
+    // The line's row is found in the very page the paint builds
+    // (`view_prompt_row`, `/login`'s rule), never pinned: a short terminal's
+    // compact page drops the rule above it (`compact_page`), and the
+    // `/skills` header over it wraps with the width. Built once, read twice:
+    // the page's height and that row.
+    let search_line = if let Some(picker) = &app.model_picker {
+        Some((
+            super::model_view::model_view_lines(picker, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.settings_picker {
+        Some((
+            super::settings_view::settings_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.mascot_picker {
+        Some((
+            super::mascot_view::mascot_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.spinner_picker {
+        Some((
+            super::spinner_view::spinner_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else if let Some(picker) = &app.theme_picker {
+        Some((
+            super::theme_view::theme_view_lines(app, area.width, area.height),
+            picker.query.as_str(),
+        ))
+    } else {
+        app.skills_menu.as_ref().map(|menu| {
+            (
+                super::skills_view::skills_view_lines(app, area.width, area.height),
+                menu.query.as_str(),
+            )
+        })
+    };
+    if let Some((lines, query)) = search_line {
         let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let [_, body] = view_split(area, rows);
-        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
         let search = super::model_view::view_prompt_row(&lines).unwrap_or(0);
         let row = anchored_view_row(rows, body, search);
@@ -1172,7 +1154,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The read-only `/donate` page seats on its highlighted `❯` the same way
     // (docs/donate.md).
     if app.donate_picker.is_some() {
-        let lines = super::donate_view::donate_view_lines(app, area.width);
+        let lines = super::donate_view::donate_view_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
     // …and the read-only `/export` page, its sibling (docs/export.md).
@@ -1185,7 +1167,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the builder reports — three fields make "the row with the `❯`" a
     // question the lines alone cannot answer (docs/secrets.md).
     if app.secrets_page.is_some() {
-        let build = super::secrets_view::secrets_build(app, area.width);
+        let build = super::secrets_view::secrets_build(app, area.width, area.height);
         let Some((col, row)) = build.cursor else {
             return menu_marker_seat(&build.lines, area);
         };
@@ -1200,13 +1182,14 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return menu_marker_seat(&lines, area);
     }
     // The `/mcp` manager seats on its `❯` too — except its auth page,
-    // whose `URL >` paste field seats the caret at the typed text's end
-    // (found from the region's bottom: the field sits a fixed 4 rows up —
-    // its row, the blank, the return note, the blank, the rule — plus the
-    // `Checking…` row while a submission runs). See `docs/mcp.md`.
+    // whose `URL >` paste field seats the caret at the typed text's end, on
+    // the field's row **found** in the page the paint builds
+    // (`view_prompt_row`'s rule): the notes under the field wrap with the
+    // width, so a row counted up from the region's bottom landed under the
+    // field on a narrow terminal. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
+        let lines = super::mcp_view::mcp_view_lines(app, area.width);
         if menu.page == crate::app::McpPage::Auth {
-            let extra = if menu.auth.submitted { 1 } else { 0 };
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)
@@ -1214,10 +1197,13 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                         cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
                     ));
             let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-            let y = area.y + area.height.saturating_sub(5 + extra);
-            return (x, y);
+            let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+            let [_, body] = view_split(area, rows);
+            let field =
+                super::model_view::view_row_of(&lines, super::theme::MCP_AUTH_PROMPT).unwrap_or(0);
+            let row = anchored_view_row(rows, body, field);
+            return (x, view_cursor_y(area, body, row));
         }
-        let lines = super::mcp_view::mcp_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
     // The ↓ background manager band has no text entry at all — park the
@@ -1237,7 +1223,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         // provider's description block above it is as tall as the terminal is
         // narrow), so the seat is found in the very page the paint builds
         // rather than counted alongside it (`view_prompt_row`).
-        let lines = super::login_view::key_onboarding_lines(onboarding, area.width);
+        let lines = super::login_view::key_onboarding_lines(onboarding, area.width, area.height);
         let prompt = super::model_view::view_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
             // The device page has no field at all, nor has the sign-in method

@@ -4,10 +4,11 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/spinner` picker (docs/spinner.md). The `/mascot`
-# picker's frame over the status line's spinner styles, LIVE: every row wears
-# its own spinner and the highlighted style previews as a whole status line,
-# both ticking with NO turn running (the open picker re-arms the animation
+# the `/spinner` picker (docs/spinner.md). The `/theme`
+# picker's layout over the status line's spinner styles, LIVE: every row
+# wears its own spinner and the highlighted style previews as a whole status
+# line beside the list on this 90-column pane, both ticking with NO turn
+# running (the open picker re-arms the animation
 # chain); Enter persists to {config}/spinner.json and confirms with a toast;
 # the very next turn's status line opens with the new style; and a second
 # process against the same config home LAUNCHES with it. The startup delay is
@@ -29,15 +30,20 @@ sleep 0.5
 spin_open="$(tmux capture-pane -t "$S110" -p)"
 echo "==== Phase 110: the picker open (gravity — the default — highlighted, every row live) ===="
 printf '%s\n' "$spin_open"
-for expect in "→ gravity" "comet" "wave" "sparkle" "dots" "blocks" "pulse" "bars" "line" "(2/9)" \
-	"Working…" "esc to interrupt" "A ball hopping along the track" \
-	"Type to search · Enter to choose · Esc to cancel"; do
+for expect in "❯ gravity" "comet" "wave" "sparkle" "dots" "blocks" "pulse" "bars" "line" \
+	"Gravity" "Working…" "esc to interrupt" "A ball hopping along the track" \
+	"↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel"; do
 	expect_has "$spin_open" -F "$expect" "the open picker is missing '$expect'"
 done
+expect_lacks "$spin_open" -F "(2/9)" "the picker still shows a counter"
 # A fresh config home has no `spinner.json`, so this is the catalog's default
 # (docs/spinner.md): the open seats on gravity and gravity wears the ✓.
-if ! printf '%s\n' "$spin_open" | grep -F "→ gravity" | grep -qF "✓"; then
+if ! printf '%s\n' "$spin_open" | grep -F "❯ gravity" | grep -qF "✓"; then
 	fail "the default style (gravity) does not wear the ✓ on a fresh config home"
+fi
+# Beside the list: the caption's title shares the first row.
+if ! printf '%s\n' "$spin_open" | grep -E "(^| )comet " | grep -qF "Gravity"; then
+	fail "the preview is not laid beside the list on 90 columns"
 fi
 # The comet's frame — a `(` wall, the `●` head, a `)` wall — shows on its own
 # row; the preview wears the highlighted gravity track instead (checked below).
@@ -54,8 +60,8 @@ fi
 braille_cells() {
 	printf '%s' "$1" | LC_ALL=C grep -oE $'\xe2[\xa0-\xa3][\x80-\xbf]' | wc -l
 }
-# (the highlighted row carries the `→ ` marker in place of its indent, so
-# the name is matched after a space rather than at the line's start)
+# (every row sits behind the indent and the `❯ ` marker or its blank width,
+# so the name is matched after a space rather than at the line's start)
 spin_gravity_row="$(printf '%s\n' "$spin_open" | grep -E "(^| )gravity ")"
 spin_wave_row="$(printf '%s\n' "$spin_open" | grep -E "(^| )wave ")"
 if [ "$(braille_cells "$spin_gravity_row")" -ne 8 ]; then
@@ -83,7 +89,7 @@ sleep 0.4
 spin_comet="$(tmux capture-pane -t "$S110" -p)"
 echo "==== Phase 110: ↑ previews comet ===="
 printf '%s\n' "$spin_comet"
-expect_has "$spin_comet" -F "(1/9)" "the counter did not follow the selection"
+expect_has "$spin_comet" -F "❯ comet" "the marker did not follow the selection"
 expect_has "$spin_comet" -F "A comet sweeping between two dim walls" "the description did not follow the selection"
 if ! printf '%s\n' "$spin_comet" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
 	fail "the preview does not wear the comet after ↑"
@@ -106,7 +112,8 @@ fi
 tmux send-keys -t "$S110" -l "braille"
 sleep 0.3
 spin_filtered="$(tmux capture-pane -t "$S110" -p)"
-expect_has "$spin_filtered" -F "(1/1)" "'braille' did not narrow the list to the dots style"
+expect_has "$spin_filtered" -F "❯ dots" "'braille' did not narrow the list to the dots style"
+expect_lacks "$spin_filtered" -E "(^| )(comet|gravity|wave|line) " "'braille' left other styles listed"
 tmux send-keys -t "$S110" Enter
 sleep 0.6
 spin_after="$(tmux capture-pane -t "$S110" -p)"
@@ -141,8 +148,8 @@ sleep 0.5
 spin_relaunch="$(tmux capture-pane -t "$S110" -p)"
 echo "==== Phase 110: a fresh launch keeps the saved style ===="
 printf '%s\n' "$spin_relaunch"
-expect_has "$spin_relaunch" -F "(5/9)" "the saved style did not seat the highlight on dots after a relaunch"
-if ! printf '%s\n' "$spin_relaunch" | grep -F "→ dots" | grep -qF "✓"; then
+expect_has "$spin_relaunch" -F "❯ dots" "the saved style did not seat the highlight on dots after a relaunch"
+if ! printf '%s\n' "$spin_relaunch" | grep -F "❯ dots" | grep -qF "✓"; then
 	fail "the saved style does not wear the ✓ after a relaunch"
 fi
 tmux kill-session -t "$S110" 2>/dev/null

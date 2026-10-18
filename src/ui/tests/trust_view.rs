@@ -99,6 +99,21 @@ fn an_unparseable_file_shows_its_error_instead_of_items() {
 }
 
 #[test]
+fn every_review_hugs_its_frame() {
+    // The title straight under the opening rule, the hint straight over the
+    // closing one — over a review with files and over the empty state.
+    let mut empty = App::new();
+    empty.open_trust_menu(TrustReview {
+        root: "~/repo".to_string(),
+        trusted: false,
+        files: Vec::new(),
+    });
+    for (what, app) in [("a review", trust_app()), ("the empty state", empty)] {
+        assert_frame_hugs_content(what, &trust_view_lines(&app, 100));
+    }
+}
+
+#[test]
 fn the_empty_state_names_where_project_config_lives() {
     let mut app = App::new();
     app.open_trust_menu(TrustReview {

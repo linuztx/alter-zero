@@ -89,7 +89,7 @@ sleep 0.5
 lk_b_spin="$(tmux capture-pane -t "$S114" -p)"
 echo "==== Phase 114: the second directory's /spinner picker (dots ✓) ===="
 printf '%s\n' "$lk_b_spin"
-if ! printf '%s\n' "$lk_b_spin" | grep -F "→ dots" | grep -qF "✓"; then
+if ! printf '%s\n' "$lk_b_spin" | grep -F "❯ dots" | grep -qF "✓"; then
 	fail "a new directory did not start from the last spinner (dots)"
 fi
 tmux send-keys -t "$S114" Escape
@@ -123,7 +123,7 @@ sleep 0.5
 lk_a_spin="$(tmux capture-pane -t "$S114" -p)"
 echo "==== Phase 114: the first directory's /spinner picker (dots ✓, not line) ===="
 printf '%s\n' "$lk_a_spin"
-if ! printf '%s\n' "$lk_a_spin" | grep -F "→ dots" | grep -qF "✓"; then
+if ! printf '%s\n' "$lk_a_spin" | grep -F "❯ dots" | grep -qF "✓"; then
 	fail "the first directory lost its own spinner (dots)"
 fi
 tmux send-keys -t "$S114" Escape

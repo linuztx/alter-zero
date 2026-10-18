@@ -83,6 +83,132 @@ The flow's tail contribution is capped like every rebuild write
 (`RESIZE_REFLOW_MAX_ROWS`, keeping the rows nearest the region) so a
 pathological page can't turn one navigation into an unbounded write.
 
+## The frame hugs its content
+
+Every framed inline view — the pickers, the menus, the pages, the ↓ manager
+band and both modals — is a top rule, its content and a bottom rule, and
+nothing else: no blank row under the opening rule and none over the closing
+one. The rules *are* the frame's edge, so a padding row inside them says
+nothing a rule does not already say, and on a view that shares the terminal
+with the conversation above it, it is a row of that conversation pushed
+into scrollback for nothing — two per page, on every page (the reported
+waste: the `/model` picker opened on a blank row and closed on another).
+Blank rows still separate the blocks *inside* a page — the search line from
+the list, the list's counter from its detail, a description from the hint —
+because there they say where one thing ends and the next begins.
+
+```
+────────────────────────────────────────────
+  ❯ cla
+                                             (blocks keep their gaps…)
+→ anthropic/claude-3-haiku [openrouter]
+  claude-opus-4-8-fast [a0_venice] ✓
+  (1/12)
+
+  Model Name: Anthropic: Claude 3 Haiku
+────────────────────────────────────────────  (…but nothing hugs a rule)
+```
+
+The cursor seats count from that edge: a picker's `❯` search line is the
+page's row 1 on a page with room for it — found in the built page
+(`view_prompt_row`) rather than pinned, since a short terminal's rungs move
+it (*Below the compact page*) — a `/login` page's first content row is row
+1 (`DEVICE_CURSOR_ROW`), and a permission prompt's
+options sit `PERMISSION_TAIL_ROWS` — gap, hint, rule — above the region's
+bottom. The `/mcp` auth page's `URL >` field is **found** in the page the
+paint builds rather than counted from the bottom, since the notes under it
+wrap. Each view's tests walk its states through one shared assertion
+(`assert_frame_hugs_content`), so a page that pads a rule fails its suite.
+
+## A page that sheds rows before it flows: the compact pages
+
+Bottom-anchoring keeps a page's *tail* on screen, which is the right thing
+for a page whose choices sit at the bottom — the permission prompt's options,
+`/trust`'s two rows. A picker is the other shape: its `❯` search line and the
+highlighted row sit near the **top**, under the page's header, and its
+description or preview sits below the list. Anchored on a short terminal,
+such a page kept the description and the hint and flowed the search line and
+the top of the list into scrollback — the row Enter would act on was
+reachable only by scrolling the terminal up.
+
+So a picker's builder takes the rows it may have and builds the **first page
+that fits** them (`model_view::first_page_that_fits`), trying the most
+complete first, and what yields is what the choices don't need, in codex's
+order (`selection_picker_layout.rs`: *"optional gaps and previews yield
+first; headers, tabs, search, and at least one result remain visible"*):
+
+1. a long description is cut to one row (`Description::OneRow`), where the
+   page has one — a wrapped description moves the page's height with the
+   selection, and a page deciding on that height alone flipped between its
+   whole and its compact layout as ↑/↓ crossed a long one;
+2. the description, a preview and the `(n/total)` counter go, and the list
+   becomes a `COMPACT_LIST_ROWS` (3) window between two reserved overflow
+   slots (`model_compact_list`): codex's arrow rows, the `↑ N more above`
+   directly under the search line and the `↓ N more below` directly over the
+   hint, each blank when nothing is hidden that way, so the frame is one
+   height at every selection and a blank slot is the gap the page wants
+   there anyway — which is also why a slot never meets a rule: a page with
+   nothing of its own between the top rule and its list (`/secrets` without
+   its header, `/donate`'s lone address) keeps no slots, since a blank one
+   there would be exactly the padding row *The frame hugs its content*
+   forbids;
+3. a header goes last.
+
+The height comes from two places: the reserved height and the flow pass the
+terminal's, while the paint and the cursor seat pass the region already
+reserved for the page — at least the chosen page's height and at most the
+terminal's — and a builder that takes the first page that fits picks the
+same page from either.
+
+### Below the compact page: the search line never goes
+
+A page that has no rung left bottom-anchors, and bottom-anchoring a picker's
+compact page did to it what it had done to the whole page: on a terminal a
+row or two shorter than it the search line flowed into scrollback — and the
+hardware cursor, which cannot sit on a scrollback row, clamped onto a theme
+or a setting at the body's top — and two rows shorter the highlighted row
+went with it. So the search-line pickers (`/theme`, `/skills`, `/settings`,
+`/mascot`, `/spinner`, `/model` and `/login`'s lists) don't stop at the
+compact page. It is the first of eight rungs (`model_view::compact_page`),
+each a row shorter than the last but where the overflow pair goes, which is
+two rows at once:
+
+| rows | what the page keeps |
+| ---- | ------------------- |
+| 9 | rule, search, `↑`, three rows, `↓`, hint, rule — the compact page, hugging both rules like every page |
+| 7 | the `↑`/`↓` pair goes — codex reserves its arrow rows only beside three rows of results |
+| 6 | the top rule goes: a page this short fills the terminal, so nothing on screen is above it to set apart, and the search line opens the screen |
+| 5, 4 | the rows go, three to two to one — the highlighted one |
+| 3 | the bottom rule goes |
+| 2 | the hint goes |
+| 1 | the highlighted row goes, leaving the search line |
+
+So on any terminal at least a row tall the page fits, nothing of it flows,
+and the caret sits on the search line after the query — found in the built
+page (`view_prompt_row`), never pinned to row 1, since the rungs move it
+up. `/model`, which has no hint row, keeps its `Model Name:` line in the
+hint's place, so the same rungs apply. A page with nothing to choose from —
+a search matching nothing, a list still loading, an empty catalog — puts
+its placeholder in the list's place (`placeholder_window`: whole while the
+page keeps three rows, its first rows after) and sheds the same way, so what
+was typed stays on screen above the placeholder; a page with nothing under
+its list (`/model`'s placeholder) closes on the placeholder, leaving off the
+blank `↓` slot that would hug its bottom rule.
+
+The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
+(`docs/skills.md`), `/settings` (`docs/settings.md`), `/mascot`
+(`docs/mascot.md`), `/spinner` (`docs/spinner.md`), `/model` and `/login`'s
+lists (`docs/llm.md`), the `/secrets` list (`docs/secrets.md`), and
+`/donate`, whose list is of boxes rather than rows, so it collapses before
+it windows — an accordion first, the addresses the highlight is not on
+folded to their label rows while the highlighted one keeps its box, then
+the highlighted address alone, its numbered label saying where it stands
+(`docs/donate.md`). The `AskUserQuestion` modal walks the same kind of
+ladder (`docs/ask.md`): its options' descriptions yield, then its rows
+window around the selection, and its chip strip of question tabs goes last,
+codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
+12-row terminal, and the search-line pickers on 7 rows too.
+
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
@@ -95,14 +221,15 @@ pathological page can't turn one navigation into an unbounded write.
   precedence: a view flows only while it is the one actually painted (an ask
   or permission modal covers everything below it).
 
-  The pickers' one wrinkle: their `❯` search line sits in the page **top**,
-  so on a terminal shorter than their page it is part of the flow. That
-  stays correct because a keystroke changes the flowed rows and re-signs the
-  flow — the purge rebuild re-flows the typed query with the page — while
-  the hardware cursor, which cannot sit on a scrollback row, clamps at the
-  body top (`anchored_view_row`, the seat's skip subtraction). Their pages
-  are bounded by construction (windowed lists, ~15–18 rows), so this regime
-  only exists on terminals shorter than that.
+  The search-line pickers stay eligible but never actually flow: their `❯`
+  search line sits in the page **top**, where a flow would take it into
+  scrollback, so their builders shed rows down to the search line instead
+  (*Below the compact page* above) and every page fits the terminal. They
+  stay eligible so that a builder that ever overshot would still flow its
+  top rather than drop it into no buffer; the hardware cursor would then
+  clamp at the body top (`anchored_view_row`, the seat's skip subtraction),
+  as it still does for the `/login` key step, whose field sits at the foot
+  of its page where the anchor keeps it.
 - **Flow + bottom anchor, with a context rule**: the tool-permission prompt
   (`docs/permissions.md`). Its body — the numbered write/diff, the command —
   shows **whole** now (the retired cap hid the middle behind a `… +N lines`
@@ -139,9 +266,9 @@ pathological page can't turn one navigation into an unbounded write.
   the value it had when the page was committed until something re-signs the
   flow — stale, where it used to be *nowhere* — while the page still on
   screen keeps tailing, unchanged, exactly as it was. Which rows those are is
-  a matter of how short the terminal is: the page is 26 rows, so 24 rows
+  a matter of how short the terminal is: the page is 24 rows, so 23 rows
   flows the top rule alone and 18 flows the whole field block; the output box
-  only starts flowing below 15. A details view whose shell has gone renders
+  only starts flowing at 15. A details view whose shell has gone renders
   the *list* (`background_view_lines`' defensive fallback), so it signs like
   one.
 - **Flow (frozen) + bottom anchor**: the **streaming strip** itself

@@ -243,12 +243,13 @@ prompt — the shape the user asked for. It is `App::model_picker: Option<ModelP
 (not a `View`), owned in `on_key` like the Ctrl+R search, and special-cased in
 `ui::render_live` / `ui::live_height` / `ui::cursor_position`.
 
-Layout (headerless — top rule, a blank, the airy codex-style body, a blank, then
-the bottom rule — the shape of the user's mock):
+Layout (headerless — the top rule, the airy codex-style body, then the bottom
+rule, with no blank row hugging either rule: the shape of the user's mock,
+tightened by two rows when the frame stopped padding itself,
+`docs/view-flow.md` *The frame hugs its content*):
 
 ```
 ────────────────────────────────────────────────
-
   ❯ cla                                                  (search prompt, cyan '❯')
 
 → anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
@@ -257,7 +258,6 @@ the bottom rule — the shape of the user's mock):
   (3/12)   ·   loading more…                             (position/total + load status, dim)
 
   Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
-
 ────────────────────────────────────────────────
 ```
 
@@ -361,14 +361,45 @@ the bottom rule — the shape of the user's mock):
   the `❯` search line sits directly under the top rule; the selection marker is `→`.
 - The counter + `Model Name:` rows show **only when a real model is highlighted**.
   A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
-  `No matching models`) has no counter or name, so those rows collapse to a single
-  gap above the bottom rule — the box hugs the placeholder instead of leaving four
-  blank rows (`model_has_detail`, branched inside the `model_view_lines` builder —
-  the picker is a content-driven framed body now, its height the built line
-  count, painted bottom-anchored with the skipped top flowing into scrollback
-  like every framed view; `docs/view-flow.md`). The `/login` provider step
+  `No matching models`) has no counter or name, so those rows collapse away and
+  the placeholder closes the page against the bottom rule — the box hugs the
+  placeholder instead of leaving a band of blank rows (`model_has_detail`,
+  branched inside the `model_view_lines` builder — the picker is a
+  content-driven framed body now, its height the built line count, painted
+  bottom-anchored with the skipped top flowing into scrollback like every
+  framed view; `docs/view-flow.md`). The `/login` provider step
   follows the same rule: with no provider matched its counter takes no row, so
   one gap carries `No matching providers` to the hint.
+- On a terminal too short for the page (seventeen rows with ten models listed),
+  `model_view_lines(picker, width, height)` builds the family's **compact**
+  page instead (`docs/view-flow.md` *A page that sheds rows before it flows*):
+  three models between the reserved `↑ N more above` / `↓ N more below`
+  slots, the counter and the failed providers' rows yielding. The picker has
+  no hint row, so the compact page keeps the highlighted model's `Model Name:`
+  line where its siblings keep their hint — the same nine-row shape:
+
+  ```
+  ────────────────────────────────────────────────
+    ❯
+
+  → stub/model-00 [stub]
+    stub/model-01 [stub]
+    stub/model-02 [stub]
+    ↓ 9 more below
+    Model Name: Stub: Model 0
+  ────────────────────────────────────────────────
+  ```
+
+  Bottom-anchoring the whole page there flowed the search line and the
+  highlighted model into scrollback. On a terminal shorter still the compact
+  page sheds what is left one row at a time and never its search line
+  (`docs/view-flow.md` *Below the compact page*) — the `↑`/`↓` pair, the
+  rules, the rows down to the highlighted model, the name line —
+  and a placeholder page (loading, an error, no match) puts its placeholder
+  in the list's place and sheds the same way, keeping what was typed; the
+  cursor's seat finds the search line in the built page (`view_prompt_row`).
+  `smoke.sh` Phase 139 opens the picker over a stub provider's twelve models
+  on a 12-row terminal and on 7.
 
 ### Styling
 
@@ -389,7 +420,6 @@ in place; unlike it, it is a **two-step** flow.
 
 ```
 ────────────────────────────────────────────────
-
   ❯ agent                                                (filter, cyan '❯')
 
 → Agent Zero API · ✔ configured                          (selected '→'; green ✔ = a key resolves)
@@ -397,7 +427,6 @@ in place; unlike it, it is a **two-step** flow.
   (1/2)                                                  (position/total, dim)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
-
 ────────────────────────────────────────────────
 ```
 
@@ -405,7 +434,6 @@ in place; unlike it, it is a **two-step** flow.
 
 ```
 ────────────────────────────────────────────────
-
   Enter your OpenRouter API key                          (periwinkle #96a0d5, names the provider)
 
   One key for hundreds of models from every major        (the file's `description`, wrapped)
@@ -416,7 +444,6 @@ in place; unlike it, it is a **two-step** flow.
   ❯ ••••••••••••••••••••                                 (masked field, cyan '❯')
 
   Enter to save · Esc to go back                         (dim hint)
-
 ────────────────────────────────────────────────
 ```
 
@@ -454,9 +481,9 @@ in place; unlike it, it is a **two-step** flow.
   heading (`Use a subscription` / `Use an API key`); it said nothing the rows
   and the hint below them don't, and it cost every row two lines of a region
   already sharing the terminal with a running turn. All three lists are one
-  shape now — rule, gap, `❯` filter — and the root never had one: there the
-  two rows *are* the question. The method step is also the one list with no
-  `(n/total)` counter.
+  shape now — the rule, then the `❯` filter straight under it — and the root
+  never had one: there the two rows *are* the question. The method step is
+  also the one list with no `(n/total)` counter.
 - **The remaining titles wear the pages' one title dress** — bold, washed in
   the active theme's banner gradient (`ui::header::page_title_line`,
   `docs/theme.md`) — the sign-in page's `Sign in to {provider}` and the key
@@ -507,6 +534,19 @@ in place; unlike it, it is a **two-step** flow.
   back out of the page the paint just built (`view_prompt_row`, the
   `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
   drift from it.
+- The three list steps (the method root, the subscriptions, the providers)
+  share one page builder, and on a terminal too short for it they build the
+  family's **compact** page (`docs/view-flow.md`): the filter, three rows
+  between the reserved overflow slots and the key hint, the counter and the
+  `Keys are saved to` note yielding. The provider list is fifteen rows with
+  the built-in catalog, and bottom-anchoring it on twelve flowed the filter
+  and the highlighted provider into scrollback; the root's two rows are the
+  same page either way. On a terminal shorter still the compact page sheds
+  what is left one row at a time and never its filter line (`docs/view-flow.md`
+  *Below the compact page*), a filter matching nothing putting its
+  placeholder in the list's place. The key step and the sign-in pages keep
+  their one shape — their field or their wait sits at the bottom, which the
+  anchor already keeps on screen.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a

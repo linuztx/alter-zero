@@ -150,7 +150,6 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
 fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(MCP_TITLE, width),
         dim_line(&count_noun(menu.servers.len(), "server"), width),
         Line::default(),
@@ -203,7 +202,6 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
     lines.extend([
         Line::default(),
         dim_line(MCP_LIST_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines
@@ -361,7 +359,6 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     let state = Style::new().fg(mcp_detail_state_color());
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(
             // A config key is lower-case by convention, which reads as a
             // typo once it opens a sentence; everywhere the name is an
@@ -457,7 +454,6 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     lines.extend([
         Line::default(),
         dim_line(MCP_SERVER_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines
@@ -467,7 +463,6 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
 fn tools_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(&format!("Tools for {}", server.name), width),
         dim_line(&count_noun(server.tools.len(), "tool"), width),
         Line::default(),
@@ -517,7 +512,6 @@ fn tools_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Li
     lines.extend([
         Line::default(),
         dim_line(MCP_SERVER_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines
@@ -530,13 +524,12 @@ fn tool_lines_page(
     width: u16,
 ) -> Vec<Line<'static>> {
     let Some(tool) = server.tools.get(tool_index) else {
-        return vec![model_rule(width), Line::default(), model_rule(width)];
+        return vec![model_rule(width), model_rule(width)];
     };
     let label = Style::new().fg(mcp_detail_label_color());
     let dim = Style::new().fg(mcp_detail_value_color());
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(&tool.name, width),
         dim_line(&server.name, width),
         Line::default(),
@@ -608,7 +601,6 @@ fn tool_lines_page(
     lines.extend([
         Line::default(),
         dim_line(HOOKS_DETAIL_HINT, width),
-        Line::default(),
         model_rule(width),
     ]);
     lines
@@ -619,7 +611,6 @@ fn tool_lines_page(
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
-        Line::default(),
         title_line(&format!("Authenticating with {}…", server.name), width),
         Line::default(),
     ];
@@ -668,7 +659,6 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     lines.push(Line::default());
     // Wrapped: "Press Esc to go back" is the note's actionable tail.
     lines.extend(dim_wrapped(MCP_AUTH_RETURN_NOTE, width));
-    lines.push(Line::default());
     lines.push(model_rule(width));
     lines
 }

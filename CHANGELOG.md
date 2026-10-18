@@ -29,13 +29,87 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Inline pages no longer pad their frame with blank rows.** Every page
+  that opens in place of the input box used to leave an empty row under its
+  top rule and another over its bottom rule. That covers `/model`, `/login`,
+  `/settings`, `/theme`, `/mascot`, `/spinner`, `/skills`, `/hooks`, `/mcp`,
+  `/trust`, `/secrets`, `/export`, `/donate`, the ↓ shell manager, the
+  permission prompt and the `AskUserQuestion` modal. Those two rows are gone:
+  the search line or title now sits right under the top rule and the hint
+  right over the bottom one, so each page gives two rows back to the
+  conversation above it. The blank rows between a page's sections stay
+  (`docs/view-flow.md`).
+- **`/theme` shows its preview beside the list, the way codex does.** On a
+  terminal 71 columns or wider, the sample conversation now sits to the
+  right of the theme list instead of under it, so the whole picker fits in
+  eighteen rows; a narrower terminal still stacks it under the list. The list
+  reads like `/mcp`'s: `❯` marks the highlighted theme, and a dim `↓ 1 more
+  below` or `↑ 1 more above` row says what is scrolled out of view, in
+  place of the `(1/11)` counter. The preview opens on the theme's name in
+  bold over a short description, and the hint now starts with `↑/↓ to
+  navigate`. On a terminal too short for the whole picker, the preview is
+  left out and the list shows three themes at a time, so the search line,
+  the theme names and the hint stay on screen instead of scrolling away
+  above the preview (`docs/theme.md`).
+- **`/mascot` and `/spinner` lay their previews out the way `/theme` does.**
+  The banner preview in `/mascot` and the live status line in `/spinner` now
+  sit to the right of the list on a standard terminal (56 columns or wider
+  for `/mascot`, 72 for `/spinner`) and stack under it on a narrower one.
+  Both lists read like `/theme`'s: `❯` marks the highlighted entry, the
+  `(n/total)` counter is gone, the preview opens on the entry's name in bold
+  over its description, and the hint starts with `↑/↓ to navigate`. Laid
+  side by side, `/mascot` fits in twelve rows and `/spinner` in fifteen.
+  Three spinner descriptions were shortened so every one reads whole beside
+  the list on an 80-column terminal (`docs/mascot.md`, `docs/spinner.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or
   `◯ disabled`, so the ones that are on stand out down the list. The count is
   of the installed skills, not the search results. The note saying skills are
   off for the session now sits under the count instead of between the search
-  line and the list (`docs/skills.md`).
+  line and the list. On a terminal too short for the whole menu, a long
+  description is first cut to one row, then left out (and on a shorter
+  terminal the heading too) while the list shows three skills at a time, so
+  the search line, the skill you are on and the hint stay on screen instead
+  of scrolling away, and the menu no longer jumps between the two layouts as
+  you move past a long description (`docs/skills.md`).
+- **`/settings`, `/mascot`, `/spinner`, `/model` and `/login` keep what you
+  are choosing visible on a short terminal.** Each needs fifteen to twenty
+  rows; on fewer, the row you had highlighted and the search line used to
+  scroll off the top. Now what the choice doesn't need goes first — a long
+  `/settings` description is cut to one row, then the descriptions, the
+  counter, the `/mascot` and `/spinner` previews and `/login`'s note about
+  where keys are saved are left out — and the list shows three rows at a
+  time, with `↑ N more above` and `↓ N more below` rows naming the rest, so
+  the search line, the highlighted row and the hint always stay on screen.
+  `/model` keeps the highlighted model's full name under the list. The
+  `/settings` values and the `/spinner` glyphs stay lined up in one column
+  as you scroll (`docs/view-flow.md`).
+- **`/donate` and `/secrets` keep the highlighted entry on screen on a short
+  terminal.** On `/donate`, the addresses you are not on fold down to their
+  one-line labels while the highlighted one keeps its box and its networks,
+  then the title goes, and on a shorter terminal still the highlighted
+  address shows alone under its numbered label; the caution and the hint
+  stay. A long `/secrets` list shows three secrets at a time around the
+  highlighted one, with rows naming how many more are above and below, then
+  drops its title and, on the smallest terminal, those rows too
+  (`docs/donate.md`, `docs/secrets.md`).
+- **The agent's multiple-choice questions keep the question on screen on a
+  short terminal.** The question used to scroll off the top, often with
+  the first options. Now the option descriptions are shortened and then
+  left out, the options show three at a time around the highlighted one,
+  and the row of question tabs goes last, so the question, the option you
+  are on and the keys stay visible. A question with code previews drops
+  the notes line and shortens the preview first (`docs/ask.md`).
+- **The pickers keep their search line on a very short terminal.** Below
+  about nine rows, `/theme`, `/skills`, `/settings`, `/mascot`, `/spinner`,
+  `/model` and `/login` used to scroll the search line off the top, and with
+  it what you had typed and the cursor, and then the highlighted row. Now
+  they give up the `↑`/`↓ N more` rows, the borders and then list rows one
+  at a time instead, so the search line stays at the top with the
+  highlighted row and the keys under it, down to the smallest terminal. A
+  search that matches nothing keeps what you typed on screen the same way
+  (`docs/view-flow.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`

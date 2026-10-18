@@ -119,11 +119,15 @@ pub struct ViewFlow {
 /// chips, options and entry fields change only on a keystroke, which
 /// re-signs the flow — the picker-search rule); the permission prompt's
 /// builder needs `term_height` for its keep-context decision (a ticking
-/// agent tree rides only a page that fits — never the flow); a picker's
-/// search line sits in the page top, and a keystroke re-signs the flow so
-/// the typed query re-flows with it. The ↓ background manager flows too — it
-/// and the `/spinner` picker are the two pages that tick between keystrokes,
-/// so they are the two signed [`FlowSign::Frozen`] rather than on their rows.
+/// agent tree rides only a page that fits — never the flow); the
+/// search-line pickers build the first page that fits the terminal, their
+/// compact rungs shedding down to the search line alone
+/// (`model_view::compact_page`), so on any terminal at least a row tall
+/// their page never flows — they stay eligible so a builder that ever
+/// overshot would still flow rather than drop rows into no buffer. The ↓
+/// background manager flows too — it and the `/spinner` picker are the two
+/// pages that tick between keystrokes, so they are the two signed
+/// [`FlowSign::Frozen`] rather than on their rows.
 ///
 /// Each branch returns the page **with** what its flow is signed on, so a
 /// view cannot acquire a flow without stating which changes to it matter.
@@ -133,7 +137,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // used to put the chip strip, the question and the first options in
         // no buffer at all on a short terminal.
         return Some(FlowPage::framed(
-            super::ask_view::ask_lines(app, width),
+            super::ask_view::ask_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -145,25 +149,25 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if let Some(picker) = &app.model_picker {
         return Some(FlowPage::framed(
-            super::model_view::model_view_lines(picker, width),
+            super::model_view::model_view_lines(picker, width, term_height),
             term_height,
         ));
     }
     if let Some(onboarding) = &app.key_onboarding {
         return Some(FlowPage::framed(
-            super::login_view::key_onboarding_lines(onboarding, width),
+            super::login_view::key_onboarding_lines(onboarding, width, term_height),
             term_height,
         ));
     }
     if app.settings_picker.is_some() {
         return Some(FlowPage::framed(
-            super::settings_view::settings_view_lines(app, width),
+            super::settings_view::settings_view_lines(app, width, term_height),
             term_height,
         ));
     }
     if app.mascot_picker.is_some() {
         return Some(FlowPage::framed(
-            super::mascot_view::mascot_view_lines(app, width),
+            super::mascot_view::mascot_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -172,7 +176,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // finished cells, nothing on it ticks — so it signs its rows like
         // the `/mascot` picker (`docs/theme.md`).
         return Some(FlowPage::framed(
-            super::theme_view::theme_view_lines(app, width),
+            super::theme_view::theme_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -182,21 +186,21 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // the 32 ms cadence an open picker keeps running
         // (`App::wants_animation_frames`) — so, like the manager's details
         // page, it signs the **selection and the query** rather than its
-        // rows: a frame never churns a purge rebuild, while a keystroke that
-        // moves the highlight or edits the search re-flows the page
-        // (`docs/spinner.md`).
+        // rows: were its page ever to flow, a frame would never churn a
+        // purge rebuild, while a keystroke that moves the highlight or edits
+        // the search would re-flow it (`docs/spinner.md`).
         let mut hasher = DefaultHasher::new();
         picker.selected.hash(&mut hasher);
         picker.query.hash(&mut hasher);
         return Some(FlowPage {
-            lines: super::spinner_view::spinner_view_lines(app, width),
+            lines: super::spinner_view::spinner_view_lines(app, width, term_height),
             sign: FlowSign::Frozen(hasher.finish()),
             painted: term_height.max(1),
         });
     }
     if app.skills_menu.is_some() {
         return Some(FlowPage::framed(
-            super::skills_view::skills_view_lines(app, width),
+            super::skills_view::skills_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -210,7 +214,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // The `/donate` page is still — nothing on it ticks — so it signs
         // its rows like the `/hooks` menu (`docs/donate.md`).
         return Some(FlowPage::framed(
-            super::donate_view::donate_view_lines(app, width),
+            super::donate_view::donate_view_lines(app, width, term_height),
             term_height,
         ));
     }
@@ -219,7 +223,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // rows like `/donate` — and its values are masked in those rows
         // before they can flow (`docs/secrets.md`).
         return Some(FlowPage::framed(
-            super::secrets_view::secrets_view_lines(app, width),
+            super::secrets_view::secrets_view_lines(app, width, term_height),
             term_height,
         ));
     }

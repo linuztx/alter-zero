@@ -166,45 +166,35 @@ fn the_flow_keeps_its_newest_rows_under_the_cap() {
 }
 
 #[test]
-fn a_picker_taller_than_the_terminal_flows_like_the_menus() {
-    // The windowed pickers are framed bodies too (docs/view-flow.md): on a
-    // terminal shorter than their page the skipped top flows, and their spot
-    // in the precedence chain sits ahead of the browsing menus — a /settings
-    // menu open over an /mcp one is the painted view, so it is the one that
-    // flows.
+fn a_picker_sheds_rows_where_a_menu_flows() {
+    // The search-line pickers are framed bodies too (docs/view-flow.md), but
+    // a terminal shorter than their compact page gets a smaller rung, down
+    // to the search line alone, so their pages never flow. Their spot in the
+    // precedence chain still sits ahead of the browsing menus: a /settings
+    // menu open over an /mcp one is the painted view, so the /mcp page that
+    // flows on its own flows nothing then.
+    let width = 78u16;
     let mut app = App::new();
     app.open_settings();
-    let width = 78u16;
-    let page = crate::ui::settings_height(&app, width, 200).expect("open");
-    let height = page - 3;
-    let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
-    assert_eq!(flow.lines.len(), 3, "exactly the skipped top rows flow");
-    let top: Vec<String> = flow.lines.iter().map(plain).collect();
+    for height in 1..=12 {
+        assert!(
+            view_flow(&app, width, height, NO_CAP).is_none(),
+            "{height} rows: a rung fits"
+        );
+    }
+    let height = 3;
+    let mut mcp = App::new();
+    mcp.open_mcp_menu(Vec::new());
     assert!(
-        top[0].starts_with("──"),
-        "the flow starts at the page top (the opening rule): {top:?}"
+        view_flow(&mcp, width, height, NO_CAP).is_some(),
+        "the /mcp page flows on its own"
     );
-    assert!(
-        top.iter().any(|r| r.contains('❯')),
-        "the search line is in the flowed top, re-flowed per keystroke: {top:?}"
-    );
-
-    // Typing re-signs the flow (the search line lives in it).
-    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
-    let mut typed = App::new();
-    typed.open_settings();
-    typed.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    let after = view_flow_signature(&typed, width, height, NO_CAP).expect("still overflows");
-    assert_ne!(before, after, "the typed query re-signs the flow");
-
-    // Precedence: the picker wins over a simultaneously-open menu.
     let mut both = App::new();
     both.open_mcp_menu(Vec::new());
     both.open_settings();
-    let flow = view_flow(&both, width, height, NO_CAP).expect("the settings page flows");
     assert!(
-        flow.lines.iter().map(plain).any(|r| r.contains('❯')),
-        "the flowed rows are the settings page's, not the mcp list's"
+        view_flow(&both, width, height, NO_CAP).is_none(),
+        "the settings page is the painted one, and it fits"
     );
 }
 
@@ -284,12 +274,14 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     // The ask modal is the permission prompt's sibling here too
     // (docs/view-flow.md): a page taller than the terminal used to drop its
     // top rows — the chip strip, the question, the first options — into no
-    // buffer at all (the reported "small terminal hides the texts"). Now the
-    // skipped top flows into real scrollback, where the terminal's own
-    // scrolling reads it, and the painted tail keeps the interactive rows.
+    // buffer at all (the reported "small terminal hides the texts"). The page
+    // sheds what the choice doesn't need first (docs/ask.md); shorter than
+    // even its smallest page, the skipped top flows into real scrollback,
+    // where the terminal's own scrolling reads it, and the painted tail keeps
+    // the interactive rows.
     let app = tall_ask_app();
-    let (width, height) = (60u16, 12u16);
-    let lines = crate::ui::ask_lines(&app, width);
+    let (width, height) = (60u16, 7u16);
+    let lines = crate::ui::ask_lines(&app, width, height);
     assert!(lines.len() > usize::from(height), "the page overflows");
     let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
     let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
@@ -301,10 +293,6 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     assert!(
         flowed[0].starts_with('─'),
         "the flow opens at the page's top rule: {flowed:?}"
-    );
-    assert!(
-        flowed.iter().any(|r| r.contains("Long list")),
-        "the chip strip rides the flow: {flowed:?}"
     );
     assert!(
         flowed.iter().any(|r| r.contains("Which of these")),
@@ -319,7 +307,7 @@ fn a_screen_tall_ask_modal_flows_its_top() {
     // Stepping between two rows inside the painted tail holds the flowed
     // top's signature — no purge rebuild for a tail-only ↑/↓ (the
     // permission prompt's rule). ↑ wraps to Chat, ↑ again to the Other row;
-    // both sit in the tail, and the first ↑ took the `❯` out of the flow.
+    // both sit in the window's tail, under the same flowed top.
     let mut app = tall_ask_app();
     app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let a = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
@@ -411,7 +399,7 @@ fn the_details_pages_flowed_top_freezes_while_the_shell_ticks() {
     // signs the **shell it describes** instead: the rows committed above the
     // region freeze there, which is what scrollback holds anyway.
     let mut app = tall_background_app();
-    let (width, height) = (60u16, 20u16);
+    let (width, height) = (60u16, 19u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
         .expect("overflows")
         .lines
@@ -479,9 +467,9 @@ fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
         );
     }
     app.open_background_view();
-    let (width, height) = (60u16, 6u16);
+    let (width, height) = (60u16, 5u16);
     let flowed: Vec<String> = view_flow(&app, width, height, NO_CAP)
-        .expect("the list overflows a 6-row terminal")
+        .expect("the list overflows a 5-row terminal")
         .lines
         .iter()
         .map(plain)

@@ -2,15 +2,15 @@
 
 use super::*;
 
-/// The `/login` key step's whole page: top rule, gap, prompt, gap, input,
-/// gap, hint, gap, bottom rule — pinned here so a builder change that adds
-/// or drops a row fails a height test (`key_onboarding_lines`).
-const LOGIN_KEY_ROWS: u16 = 9;
+/// The `/login` key step's whole page: top rule, prompt, gap, input, gap,
+/// hint, bottom rule — pinned here so a builder change that adds or drops a
+/// row fails a height test (`key_onboarding_lines`).
+const LOGIN_KEY_ROWS: u16 = 7;
 use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::layout::live_layout;
 use crate::ui::theme::{
     GAP_ROWS, HOOKS_DETAIL_HINT, INPUT_CHROME_ROWS, LIVE_MIN_HEIGHT, MCP_LIST_HINT, MENU_MAX_ROWS,
-    MODEL_INDENT, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS, TRUST_HINT,
+    MODEL_INDENT, STATUS_GAP_ROWS, STATUS_ROWS, TRUST_HINT,
 };
 use crate::ui::wrap::cols;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -480,8 +480,8 @@ fn all_failed_picker_height_covers_each_error_row() {
     app.begin_model_load(2);
     app.add_model_error("OpenRouter", "HTTP 500");
     app.add_model_error("Agent Zero API", "HTTP 401");
-    // Collapsed chrome (6) + 2 error rows = 8.
-    assert_eq!(model_picker_height(&app, 74, 40), Some(8));
+    // Collapsed chrome (4) + 2 error rows = 6.
+    assert_eq!(model_picker_height(&app, 74, 40), Some(6));
 }
 
 #[test]
@@ -489,14 +489,15 @@ fn model_picker_height_covers_the_chrome_plus_list() {
     let mut app = App::new();
     app.open_model_picker("a");
     app.set_models(three_models());
-    // 9 chrome rows + 3 list rows.
-    assert_eq!(model_picker_height(&app, 74, 40), Some(12));
-    // Clamped to the terminal height.
-    assert_eq!(model_picker_height(&app, 74, 8), Some(8));
+    // 7 chrome rows + 3 list rows.
+    assert_eq!(model_picker_height(&app, 74, 40), Some(10));
+    // A terminal shorter than the page gets the rung that fits it
+    // (`compact_page`): on 8 rows, the 7-row page without the overflow pair.
+    assert_eq!(model_picker_height(&app, 74, 8), Some(7));
     // A placeholder state (still loading — no models) drops the counter +
-    // name detail rows: 6 collapsed chrome + 1 placeholder row = 7.
+    // name detail rows: 4 collapsed chrome + 1 placeholder row = 5.
     app.open_model_picker("a");
-    assert_eq!(model_picker_height(&app, 74, 40), Some(7));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(5));
     // None when the picker is closed.
     app.close_model_picker();
     assert_eq!(model_picker_height(&app, 74, 40), None);
@@ -505,9 +506,9 @@ fn model_picker_height_covers_the_chrome_plus_list() {
 #[test]
 fn key_onboarding_height_covers_both_steps() {
     let mut app = login_app_provider();
-    // Provider step: 10 chrome (the two hint rows included; no title) + 2
+    // Provider step: 8 chrome (the two hint rows included; no title) + 2
     // provider rows.
-    assert_eq!(key_onboarding_height(&app, 74, 40), Some(12));
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(10));
     // Clamped to the terminal height.
     assert_eq!(key_onboarding_height(&app, 74, 6), Some(6));
     // Key step: a fixed height.
@@ -537,10 +538,10 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     let preview = preview_rows(&app, 74);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
-    // 9 chrome rows + 3 list rows, over the strip.
+    // 7 chrome rows + 3 list rows, over the strip.
     assert_eq!(
         model_picker_height(&app, 74, 40),
-        Some(strip + 12),
+        Some(strip + 10),
         "the picker keeps the streaming strip above its own frame"
     );
     // A queued follow-up and a toast ride the strip too — the same rows the
@@ -549,7 +550,7 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     app.show_toast("Switched model to kimi-k3", ToastKind::Info);
     let extra = queued_rows(&app, 74) + toast_rows(&app);
     assert!(extra > 0);
-    assert_eq!(model_picker_height(&app, 74, 40), Some(strip + extra + 12));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(strip + extra + 10));
     // Clamped to the terminal height like every region.
     assert_eq!(model_picker_height(&app, 74, 8), Some(8));
     // Idle again (turn over, tool resolved, toast/queue gone), the picker is
@@ -559,7 +560,7 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     app.end_tool("done", true);
     app.finish_stream();
     app.end_turn(1);
-    assert_eq!(model_picker_height(&app, 74, 40), Some(12));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(10));
 }
 
 #[test]
@@ -572,8 +573,8 @@ fn the_login_flow_reserves_the_strip_above_it() {
     let preview = preview_rows(&app, 74);
     assert_eq!(preview, 1, "a streaming reply previews its last row");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
-    // Provider step: 10 chrome + 2 provider rows, over the strip.
-    assert_eq!(key_onboarding_height(&app, 74, 40), Some(strip + 12));
+    // Provider step: 8 chrome + 2 provider rows, over the strip.
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(strip + 10));
     // The key step is a fixed height — over the same strip.
     app.key_onboarding.as_mut().unwrap().step = KeyStep::Key;
     assert_eq!(
@@ -599,8 +600,8 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
     app.start_tool("Bash", "sleep 100", None);
     app.open_model_picker("a");
     app.set_models(three_models());
-    let picker = 12; // 9 chrome + 3 list rows
-    let term = 16; // shorter than the strip (4) + picker (12) would want…
+    let picker = 10; // 7 chrome + 3 list rows
+    let term = 14; // shorter than the strip (4) + picker (10) would want…
     app.queued.push_back(batch(&["a queued follow-up"]));
     assert!(
         model_picker_height(&app, 60, 40).unwrap() > term,
@@ -616,7 +617,7 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
         "the picker's top rule sits {picker} rows up from the bottom: {rows:?}"
     );
     assert!(
-        rows[usize::from(h - picker) + usize::from(MODEL_SEARCH_ROW)].contains('❯'),
+        rows[usize::from(h - picker) + usize::from(SEARCH_ROW)].contains('❯'),
         "…so its search line is on screen: {rows:?}"
     );
     assert!(
@@ -686,23 +687,21 @@ fn the_manager_list_shows_title_count_rows_and_hints() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     assert_eq!(texts[0], "─".repeat(74), "top rule");
-    assert_eq!(texts[1], "");
-    assert_eq!(texts[2], "  Background");
-    assert_eq!(texts[3], "  3 active shells");
-    assert_eq!(texts[4], "");
-    assert_eq!(texts[5], "  ❯ ping -c 100 x.com (running)");
-    assert_eq!(texts[6], "    ping -c 100 facebook.com (running)");
-    assert_eq!(texts[7], "    ping -c 100 google.com (running)");
-    assert_eq!(texts[8], "");
+    assert_eq!(texts[1], "  Background");
+    assert_eq!(texts[2], "  3 active shells");
+    assert_eq!(texts[3], "");
+    assert_eq!(texts[4], "  ❯ ping -c 100 x.com (running)");
+    assert_eq!(texts[5], "    ping -c 100 facebook.com (running)");
+    assert_eq!(texts[6], "    ping -c 100 google.com (running)");
+    assert_eq!(texts[7], "");
     assert_eq!(
-        texts[9],
+        texts[8],
         "  ↑/↓ to select · Enter to view · x to stop · Esc to close"
     );
-    assert_eq!(texts[10], "");
-    assert_eq!(texts[11], "─".repeat(74), "bottom rule");
-    assert_eq!(texts.len(), 12);
+    assert_eq!(texts[9], "─".repeat(74), "bottom rule");
+    assert_eq!(texts.len(), 10);
     // The height helper reserves exactly the painted rows.
-    assert_eq!(background_view_height(&app, 74, 40), Some(12));
+    assert_eq!(background_view_height(&app, 74, 40), Some(10));
 }
 
 #[test]
@@ -720,25 +719,26 @@ fn the_manager_details_page_shows_fields_and_the_output_box() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts[2], "  Shell details");
-    assert_eq!(texts[4], "  Status:   running");
-    assert_eq!(texts[5], "  Runtime:  3s");
-    assert_eq!(texts[6], "  Command:  ping -c 120 x.com");
-    assert_eq!(texts[8], "  Output:");
-    assert!(texts[9].starts_with("  ╭") && texts[9].ends_with('╮'));
+    assert_eq!(texts[1], "  Shell details");
+    assert_eq!(texts[3], "  Status:   running");
+    assert_eq!(texts[4], "  Runtime:  3s");
+    assert_eq!(texts[5], "  Command:  ping -c 120 x.com");
+    assert_eq!(texts[7], "  Output:");
+    assert!(texts[8].starts_with("  ╭") && texts[8].ends_with('╮'));
     // The box tails the LAST rows: seq=3..=12 fill its 10 interior rows.
     assert!(
-        texts[10].contains("seq=3"),
+        texts[9].contains("seq=3"),
         "tails the newest lines: {texts:?}"
     );
-    assert!(texts[19].contains("seq=12"));
-    assert!(texts[20].starts_with("  ╰") && texts[20].ends_with('╯'));
-    assert_eq!(texts[21], "  Showing 10 lines");
-    assert_eq!(texts[22], "");
+    assert!(texts[18].contains("seq=12"));
+    assert!(texts[19].starts_with("  ╰") && texts[19].ends_with('╯'));
+    assert_eq!(texts[20], "  Showing 10 lines");
+    assert_eq!(texts[21], "");
     assert_eq!(
-        texts[23],
+        texts[22],
         "  ← to go back · Esc/Enter/Space to close · x to stop"
     );
+    assert_eq!(texts[23], "─".repeat(74), "the hints close the page");
     assert_eq!(
         background_view_height(&app, 74, 40),
         Some(texts.len() as u16)
@@ -1097,25 +1097,6 @@ fn a_menu_whose_marker_scrolled_off_seats_on_the_painted_hint_before_the_corner(
         cursor_position(area, &app),
         (width - 1, 0),
         "the corner is the last resort"
-    );
-}
-
-#[test]
-fn the_picker_cursor_seat_subtracts_the_bottom_anchor_skip() {
-    // A /settings page one row taller than the region paints from its second
-    // row (view_body_skip = 1), so the `❯` search line sits one row higher on
-    // screen than its page row — and the hardware cursor must sit on the
-    // painted line, not one below it (docs/view-flow.md).
-    let mut app = App::new();
-    app.open_settings();
-    let width = 78u16;
-    let page = crate::ui::settings_height(&app, width, 200).expect("open");
-    let area = Rect::new(0, 0, width, page - 1);
-    let (_, y) = cursor_position(area, &app);
-    assert_eq!(
-        y,
-        crate::ui::theme::SETTINGS_SEARCH_ROW - 1,
-        "the seat follows the anchored paint"
     );
 }
 
