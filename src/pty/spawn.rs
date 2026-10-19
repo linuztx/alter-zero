@@ -302,7 +302,8 @@ impl InputQueue {
 }
 
 /// The name of the terminal's **foreground program** — the program at the
-/// bottom of its foreground process group ([`super::probe::group_program`]):
+/// bottom of its foreground process group (`super::probe::group_program`, which
+/// is Linux-only, like the `/proc` read behind it):
 /// a shell at its prompt, the job it started, or the command a shell runs.
 /// `None` where no process table says (off Linux), or the terminal is gone.
 /// What decides how text reaches the program (`super::keys::Reader`).
