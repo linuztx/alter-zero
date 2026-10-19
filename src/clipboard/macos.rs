@@ -108,79 +108,33 @@ fn coerce_png(path: &Path) -> Result<(), String> {
 /// Convert whatever picture the pasteboard holds into the paste folder `dir`
 /// as its next number, or `Ok(None)` when it holds none. See the module docs.
 ///
-/// The bytes go **into a staging file inside the folder** — AppKit writes to a
-/// real path, and the staging file is `create_dir_all`'d and hidden by
-/// [`super::staging_file`] — then take their number through
-/// [`super::keep_numbered`], so the folder's numbering, the header check and
-/// the "a refused paste leaves nothing behind" rule are the same ones every
-/// other paste path uses.
+/// AppKit writes to a real path, so its PNG lands in a hidden **staging file
+/// inside the folder** ([`super::staging_file`]) — and that file never takes
+/// a number itself. **What the paste keeps is a copy with the metadata
+/// stripped**, and that is a privacy requirement, not a preference:
+/// `«class PNGf»` copies the pasteboard's metadata along with its pixels — a
+/// TIFF's `ImageDescription`, `Artist` and `Software` tags land in the PNG's
+/// `eXIf` chunk, and AppKit synthesises an `iTXt` XMP packet carrying them
+/// again as `dc:description`, `dc:creator` and `xmp:CreatorTool` (measured —
+/// `tests/clipboard_macos.rs` checks AppKit still does). A photo's camera and
+/// location tags ride the same way, and the picture is then `base64`d into
+/// **every later request** of the conversation (`docs/context.md`).
 ///
-/// **The picture is re-encoded on the way in, and that is a privacy
-/// requirement, not a preference.** `«class PNGf»` copies the pasteboard's
-/// metadata along with its pixels: a TIFF's `ImageDescription`, `Artist` and
-/// `Software` tags land in the PNG's `eXIf` chunk, and AppKit synthesises an
-/// `iTXt` XMP packet carrying them again as `dc:description`, `dc:creator`
-/// and `xmp:CreatorTool` (measured — see [`strip_metadata`] and
-/// `tests/clipboard_macos.rs`). A screenshot's camera and location tags ride
-/// the same way. That picture is then `base64`d into **every later request**
-/// of the conversation (`docs/context.md`), so whatever the pasteboard knew
-/// about where the picture came from would reach the model on every turn.
-/// Decoding to pixels and encoding a fresh PNG drops every ancillary chunk —
-/// `eXIf`, `iTXt`, `tEXt`, `zTXt`, ICC — and keeps only what the pixels need.
+/// [`super::store_png_without_metadata`] makes that copy chunk by chunk,
+/// keeping only the ones that draw the picture — never decoding it — through
+/// the same `store_image` every other paste takes, so it is capped,
+/// header-checked and numbered like them. AppKit's file goes when this
+/// returns, whichever way the paste ended.
 pub(super) fn coerce_into(dir: &Path) -> Result<Option<PathBuf>, StreamError> {
-    let tmp = super::staging_file(dir, "png").map_err(StreamError::Failed)?;
-    let path = tmp.path().to_path_buf();
-    // The handle stays open: AppKit writes to the same inode through its own
-    // file descriptor, so the bytes are already ours when it exits — no
-    // second write, no copy through a buffer.
-    match coerce_png(&path) {
+    let converted = super::staging_file(dir, "png").map_err(StreamError::Failed)?;
+    match coerce_png(converted.path()) {
         Ok(()) => {}
-        // `-1700`: no picture on the pasteboard. Dropping `tmp` deletes the
-        // empty staging file.
+        // `-1700`: no picture on the pasteboard.
         Err(reason) if reason.is_empty() => return Ok(None),
         Err(reason) => return Err(StreamError::Failed(reason)),
     }
-    // AppKit wrote a PNG, but a paste must not take a number on trust: the
-    // header has to parse, exactly as a streamed or encoded paste requires —
-    // and the decode below is where the metadata comes off.
-    if let Err(e) = strip_metadata(&path) {
-        return Err(StreamError::Failed(e));
-    }
-    super::keep_numbered(tmp, dir, "png")
+    super::store_png_without_metadata(dir, converted.path(), super::CLIPBOARD_IMAGE_MAX_BYTES)
         .map(Some)
-        .map_err(StreamError::Failed)
-}
-
-/// Rewrite the PNG at `path` from its **pixels**, dropping every ancillary
-/// chunk AppKit copied over from the pasteboard — `eXIf` (EXIF/TIFF tags: GPS,
-/// camera, `Artist`, `Software`), `iTXt` (the XMP packet), `tEXt`/`zTXt`, and
-/// the ICC profile. What survives is `IHDR`, the fresh `IDAT` and `IEND`: the
-/// same picture, and nothing about where it came from.
-///
-/// A decode-and-re-encode rather than a chunk filter on purpose. A filter has
-/// to know every metadata chunk a future AppKit might write and any it nests
-/// inside others; the decoder in `image` already ignores all of them, so
-/// re-encoding cannot leave one behind. The cost is one extra decode of a
-/// picture we are about to hand to a model anyway, on a worker thread, after
-/// a ~150 ms subprocess — measured at 1215 → 169 bytes for a 16×16, and the
-/// same order as the PNG encode every other paste path already pays.
-fn strip_metadata(path: &Path) -> Result<(), String> {
-    let clean = image::open(path)
-        .map_err(|e| format!("the converted clipboard image did not parse: {e}"))?;
-    let tmp = super::staging_file(path.parent().unwrap_or_else(|| Path::new(".")), "png")?;
-    {
-        let mut out = std::io::BufWriter::new(tmp.as_file());
-        clean
-            .write_to(&mut out, image::ImageFormat::Png)
-            .map_err(|e| format!("could not re-encode the clipboard image: {e}"))?;
-        std::io::Write::flush(&mut out)
-            .map_err(|e| format!("could not write the clipboard image: {e}"))?;
-    }
-    // Replace in place: the caller still owns `path`'s staging file and
-    // renumbers it, so the *stripped* bytes are the ones that take a number.
-    tmp.persist(path)
-        .map(|_| ())
-        .map_err(|e| format!("could not save the clipboard image: {}", e.error))
 }
 
 #[cfg(test)]
