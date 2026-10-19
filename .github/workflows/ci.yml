@@ -128,7 +128,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: debug
-      - run: cargo test --lib clipboard::
+      - run: "cargo test --lib clipboard::"
       - run: cargo test --test clipboard_macos -- --ignored --test-threads=1
 
   release-tooling:
