@@ -35,6 +35,7 @@ sleep 0.7
 skillseed_menu="$(tmux capture-pane -t "$S102" -p)"
 echo "==== Phase 102: /skills on the first launch ===="
 printf '%s\n' "$skillseed_menu"
+expect_has "$skillseed_menu" -F "flaredantic" "the first launch's /skills does not list flaredantic"
 expect_has "$skillseed_menu" -F "skill-creator" "the first launch's /skills does not list skill-creator"
 expect_has "$skillseed_menu" -F "yt-dlp" "the first launch's /skills does not list yt-dlp"
 expect_has "$skillseed_menu" -F "web-search" "the first launch's /skills does not list web-search"
@@ -56,6 +57,11 @@ fi
 if ! grep -q "^name: yt-dlp" "$SK_CFG/skills/yt-dlp/SKILL.md" 2>/dev/null; then
 	fail "the first launch did not seed yt-dlp/SKILL.md"
 fi
+for seeded in SKILL.md reference.md; do
+	if ! cmp -s "$SMOKE_ROOT/prompts/skills/flaredantic/$seeded" "$SK_CFG/skills/flaredantic/$seeded"; then
+		fail "the first launch did not seed the authored flaredantic/$seeded"
+	fi
+done
 # web-search's body runs the scripts seeded beside it, so they have to land
 # too, and as programs that start from there: three of them import
 # mcp_http.py from their own directory. `--help` touches no network.
@@ -85,6 +91,8 @@ fi
 # every restart.
 printf '%s\n' "---" "name: skill-creator" "description: MINE-NOT-YOURS." "---" >"$SK_CFG/skills/skill-creator/SKILL.md"
 printf '%s\n' "---" "name: yt-dlp" "description: MY-MEDIA-WORKFLOW." "---" >"$SK_CFG/skills/yt-dlp/SKILL.md"
+printf '%s\n' "---" "name: flaredantic" "description: MY-TUNNEL-WORKFLOW." "---" >"$SK_CFG/skills/flaredantic/SKILL.md"
+rm -f "$SK_CFG/skills/flaredantic/reference.md"
 rm -f "$SK_CFG/skills/skill-creator/reference.md"
 rm -f "$SK_WEB/scripts/mcp_http.py"
 tmux new-session -d -s "$S102" -x 100 -y 24 "$APP_SK"
@@ -100,6 +108,12 @@ if ! grep -q "MY-MEDIA-WORKFLOW" "$SK_CFG/skills/yt-dlp/SKILL.md" 2>/dev/null; t
 fi
 if [ ! -f "$SK_CFG/skills/skill-creator/reference.md" ]; then
 	fail "a deleted built-in file did not come back on the next launch"
+fi
+if ! grep -q "MY-TUNNEL-WORKFLOW" "$SK_CFG/skills/flaredantic/SKILL.md" 2>/dev/null; then
+	fail "the relaunch clobbered an edited flaredantic/SKILL.md"
+fi
+if ! cmp -s "$SMOKE_ROOT/prompts/skills/flaredantic/reference.md" "$SK_CFG/skills/flaredantic/reference.md"; then
+	fail "a deleted flaredantic/reference.md did not come back on the next launch"
 fi
 if [ ! -f "$SK_WEB/scripts/mcp_http.py" ]; then
 	fail "a deleted web-search script did not come back on the next launch"

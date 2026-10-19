@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Added
 
+- **`flaredantic` joins the built-in skills.** Share localhost or test webhooks
+  with the external `flare` CLI: Cloudflare HTTP by default, deliberate Serveo
+  TCP, or Microsoft with anonymous-access and existing-port checks. The editable
+  `SKILL.md` and reference guide public-exposure checks, tracked sessions,
+  local/public verification and cleanup. No native tool or dependency is added,
+  and loading the skill runs no commands or tunnels. Existing edits
+  survive, project skills take precedence, and `ALTER_ZERO_SKILLS_DIR` overrides
+  receive no built-ins.
+
 - **A file streams into its `Write` cell while the model writes it.** The
   cell used to appear only once the model had finished generating the whole
   call, so a long file meant a long wait with nothing but the token count
