@@ -386,8 +386,12 @@ which Ctrl+V reads the clipboard from.
 - **Your own providers** (`docs/user-providers.md`). The shipped providers are
   embedded; a user's `~/.alter-zero/providers.toml` is laid over them block by
   block — a new id adds a provider, a shipped id is patched key by key — and
-  re-read whenever `/login` or `/model` opens. Every problem in it is a red
-  toast that costs only its own block, never a silently missing provider.
+  re-read whenever `/login` or `/model` opens. A re-read never takes the
+  running model's provider away: a file that can't be used keeps the whole
+  table, and one without a usable definition of the provider in use keeps
+  that one's, since every rebuild resolves it again. Every problem in it is a
+  red toast, raised again at each of those opens, that costs only its own
+  block, never a silently missing provider.
   `ALTER_ZERO_PROVIDERS_FILE` names a file that stands alone, and a
   `providers.toml` in the working directory is never read, since a checkout
   must not be able to point a stored key at a host of its choosing.

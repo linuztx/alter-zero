@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use alter_zero::app::{KeyKind, Look, LookFile, ProviderChoice, SigninKind, SubscriptionChoice};
 use alter_zero::checkpoint;
+use alter_zero::llm::config::Provider;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
     Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
@@ -33,6 +34,7 @@ use alter_zero::permission::{PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
 use alter_zero::settings::{SessionSettings, SettingKey, SettingsFile};
 use alter_zero::stream;
+use alter_zero::ui;
 
 use super::host::{self, local_date, os_context, user_context};
 
@@ -55,16 +57,19 @@ pub(crate) fn user_providers_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("providers.toml"))
 }
 
-/// Load the provider table, and what was wrong with the file it came from —
-/// one row per problem, each led by the file's name, for the toast that says
-/// so (`docs/user-providers.md`):
+/// Read the provider table, and what was wrong with the file it came from —
+/// one row per problem, each led by the file (`~`-relative), for the toast
+/// that says so (`docs/user-providers.md`):
 ///
 /// - `ALTER_ZERO_PROVIDERS_FILE` names a file that stands **alone**: its
 ///   providers and none of the built-ins, which is what keeps a smoke run
-///   hermetic. One that cannot be read leaves the built-ins in force.
+///   hermetic.
 /// - Otherwise the built-in providers with the user's own
 ///   [`user_providers_path`] laid over them: new ids added, shipped ones
 ///   patched key by key. No such file is the normal case, and no issue.
+///
+/// `in_use` is a running session's provider, kept when a re-read no longer
+/// gives a usable definition of it — `ProvidersFile::with_user_layer`'s rule.
 ///
 /// Never `./providers.toml`. The working directory is a checkout the user may
 /// not have written, and a provider block there could send a stored key to a
@@ -72,49 +77,59 @@ pub(crate) fn user_providers_path() -> Option<PathBuf> {
 /// lists models unasked. That is the risk the `/trust` gate exists for
 /// (`docs/project-config.md`), so the file is read from the config home only.
 ///
+/// # Errors
+/// Why the file could not be used at all — unreadable, not TOML, no table of
+/// providers — led by the file. What stands instead is the caller's:
+/// [`startup_providers`] at launch, the session's own table on a re-read.
+///
 /// Boundary code — env + filesystem; the layering is
 /// `ProvidersFile::with_user_layer`'s.
-pub(crate) fn load_providers() -> (ProvidersFile, Vec<String>) {
-    if let Some(path) =
-        std::env::var_os("ALTER_ZERO_PROVIDERS_FILE").filter(|path| !path.is_empty())
-    {
-        let path = PathBuf::from(path);
-        return match std::fs::read_to_string(&path) {
-            Ok(text) => issues_in(&path, ProvidersFile::standalone(&text)),
-            Err(err) => (ProvidersFile::builtin(), vec![unreadable(&path, &err)]),
-        };
-    }
-    let Some(path) = user_providers_path() else {
-        return (ProvidersFile::builtin(), Vec::new());
+pub(crate) fn load_providers(
+    home: Option<&Path>,
+    in_use: Option<(&str, &Provider)>,
+) -> Result<(ProvidersFile, Vec<String>), String> {
+    let standalone = std::env::var_os("ALTER_ZERO_PROVIDERS_FILE").filter(|path| !path.is_empty());
+    let Some(path) = standalone
+        .clone()
+        .map(PathBuf::from)
+        .or_else(user_providers_path)
+    else {
+        // No config home: no file of the user's own to lay over the
+        // built-ins.
+        return ProvidersFile::with_user_layer("", in_use);
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => issues_in(&path, ProvidersFile::with_user_layer(&text)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => (ProvidersFile::builtin(), Vec::new()),
-        Err(err) => (ProvidersFile::builtin(), vec![unreadable(&path, &err)]),
+    let shown = ui::display_cwd(&path, home);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        // Most sessions have no file of their own: the built-ins, nothing
+        // said — and a file deleted mid-session is no file.
+        Err(err) if err.kind() == io::ErrorKind::NotFound && standalone.is_none() => String::new(),
+        Err(err) => return Err(format!("{shown}: {err}")),
+    };
+    let read = if standalone.is_some() {
+        ProvidersFile::standalone(&text, in_use)
+    } else {
+        ProvidersFile::with_user_layer(&text, in_use)
+    };
+    match read {
+        Ok((table, issues)) => {
+            let issues = issues
+                .into_iter()
+                .map(|issue| format!("{shown}: {issue}"))
+                .collect();
+            Ok((table, issues))
+        }
+        Err(reason) => Err(format!("{shown}: {reason}")),
     }
 }
 
-/// Lead each of a loaded file's issues with the file's name, so the toast says
-/// which file it is about.
-fn issues_in(
-    path: &Path,
-    (file, issues): (ProvidersFile, Vec<String>),
-) -> (ProvidersFile, Vec<String>) {
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let issues = issues
-        .into_iter()
-        .map(|issue| format!("{name}: {issue}"))
-        .collect();
-    (file, issues)
-}
-
-/// The issue a provider file that could not be read at all raises — its whole
-/// path, since which file was meant is the question it answers.
-fn unreadable(path: &Path, err: &io::Error) -> String {
-    format!("{}: {err} — using the built-in providers", path.display())
+/// The provider table a session starts on — [`load_providers`]'s, or the
+/// built-ins when the file can't be used at all, its row saying so.
+pub(crate) fn startup_providers(home: Option<&Path>) -> (ProvidersFile, Vec<String>) {
+    load_providers(home, None).unwrap_or_else(|reason| {
+        let issue = format!("{reason} — using the built-in providers");
+        (ProvidersFile::builtin(), vec![issue])
+    })
 }
 
 /// The environment variable a provider's API key is read from (its `api_key_env`
@@ -256,7 +271,7 @@ pub(crate) fn all_provider_choices(
 fn choices_where(
     providers: &ProvidersFile,
     env_file: &EnvFile,
-    keep: impl Fn(&alter_zero::llm::config::Provider) -> bool,
+    keep: impl Fn(&Provider) -> bool,
 ) -> Vec<ProviderChoice> {
     providers
         .ids()
@@ -285,8 +300,7 @@ fn choices_where(
             // local LM Studio or vLLM server a user described in their own
             // file — is configured by that description alone
             // (`docs/user-providers.md`).
-            let defined =
-                provider.is_some_and(alter_zero::llm::config::Provider::configured_by_definition);
+            let defined = provider.is_some_and(Provider::configured_by_definition);
             let configured = keyed || pointed_at || defined;
             // What `/login` asks for, and what its Enter saves: the host
             // for a host-configured provider, the key for everyone else.

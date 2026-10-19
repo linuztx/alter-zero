@@ -577,8 +577,9 @@ impl<'t> Session<'t> {
         // Last of the config reports, so it is the one left showing: a
         // provider the user wrote that did not load is the likeliest to
         // leave the session on a model it was not meant to run
-        // (docs/user-providers.md).
-        let provider_issues = session.models.provider_issues().to_vec();
+        // (docs/user-providers.md). A later toast can still cover it, which
+        // is why `/login` and `/model` say it again whenever they open.
+        let provider_issues = session.models.take_provider_issues();
         session.report_provider_issues(&provider_issues);
         let picker = session.apply_startup(startup);
         // The capability probe for whatever model the session ended up on —

@@ -67,9 +67,12 @@ pub(crate) struct ModelSession {
     /// (`docs/user-providers.md`). Re-read whenever `/login` or `/model`
     /// opens, so a provider added mid-session is there without a restart.
     providers: ProvidersFile,
-    /// What was wrong with the provider file at the last report — so a file
-    /// that is still broken the same way is said once, not at every open.
+    /// What the startup read found wrong with the provider file, held for
+    /// bootstrap's toast ([`Self::take_provider_issues`]).
     provider_issues: Vec<String>,
+    /// `$HOME`, so a re-read names the provider file `~`-relative the way
+    /// the startup read does.
+    home: Option<std::path::PathBuf>,
     /// The `.env` key store the `/login` flow writes, and its path. Keys live
     /// in this map rather than the process env — `set_var` is `unsafe`, which
     /// this crate forbids.
@@ -239,7 +242,7 @@ impl ModelSession {
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
     ) -> Self {
-        let (providers, provider_issues) = config::load_providers();
+        let (providers, provider_issues) = config::startup_providers(home);
         // The persistent API-key store: `.env` in the config home (or
         // `ALTER_ZERO_ENV_FILE`), written by the `/login` flow and consulted
         // during key resolution (a real process env var still wins).
@@ -480,6 +483,7 @@ impl ModelSession {
         Self {
             providers,
             provider_issues,
+            home: home.map(Path::to_path_buf),
             env_path_display: ui::display_cwd(&env_file_path, home),
             env_file,
             env_file_path,
@@ -595,10 +599,10 @@ impl ModelSession {
         &self.env_path_display
     }
 
-    /// What was wrong with the provider file the table was loaded from — the
-    /// startup report's rows (`docs/user-providers.md`).
-    pub(crate) fn provider_issues(&self) -> &[String] {
-        &self.provider_issues
+    /// What the startup read found wrong with the provider file, for
+    /// bootstrap's toast — taken once (`docs/user-providers.md`).
+    pub(crate) fn take_provider_issues(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.provider_issues)
     }
 
     /// Re-read the provider table, so the page about to open is built from
@@ -607,19 +611,30 @@ impl ModelSession {
     ///
     /// The live backend is untouched: it was built from a resolved config and
     /// keeps streaming on it. Only what reads the table next — the page, a
-    /// pick from it, a later rebuild — sees the change, and a rebuild whose
-    /// provider has since left the file keeps the backend it has.
+    /// pick from it, a later rebuild — sees the change. A file saved
+    /// half-edited must not take the running model's provider with it, since
+    /// every rebuild (a `/settings` knob, Ctrl+T) resolves it again and one
+    /// gone from the table is a rebuild skipped without a word: a file that
+    /// can't be used at all leaves the whole table as it was, and one that
+    /// can keeps the active provider's definition whenever it no longer
+    /// gives a usable one.
     ///
-    /// Returns the file's issues only when they differ from the last ones
-    /// reported, so a file still broken the same way is said once.
+    /// Returns everything wrong with the file, every time: a problem said
+    /// once at startup is easily lost under the next toast, and the moment
+    /// someone opens the page their provider is missing from is the moment
+    /// to say it again.
     pub(crate) fn reload_providers(&mut self) -> Vec<String> {
-        let (providers, issues) = config::load_providers();
-        self.providers = providers;
-        if issues == self.provider_issues {
-            return Vec::new();
+        let in_use = self
+            .active_provider
+            .as_deref()
+            .and_then(|id| Some((id, self.providers.get(id)?)));
+        match config::load_providers(self.home.as_deref(), in_use) {
+            Ok((providers, issues)) => {
+                self.providers = providers;
+                issues
+            }
+            Err(reason) => vec![format!("{reason} — keeping the providers already loaded")],
         }
-        self.provider_issues.clone_from(&issues);
-        issues
     }
 
     /// The environment variable a provider's key is read from — the "run
@@ -1805,8 +1820,8 @@ impl Session<'_> {
     }
 
     /// Re-read the provider file before a page built from it opens —
-    /// `/login`'s lists and `/model`'s fetch — and say what is newly wrong
-    /// with it (`docs/user-providers.md`).
+    /// `/login`'s lists and `/model`'s fetch — and say what is wrong with it
+    /// (`docs/user-providers.md`).
     pub(crate) fn reload_providers(&mut self) {
         let issues = self.models.reload_providers();
         self.report_provider_issues(&issues);

@@ -138,10 +138,10 @@ pub enum WireApi {
 /// provider-specific extras without breaking the parse.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Provider {
-    /// Human-readable label shown in the picker footer / logs. Required of
-    /// every provider the app loads — but defaulted in the parse, so a block
-    /// without one still reads and its loader can say what is missing rather
-    /// than fail the whole file (`docs/user-providers.md`).
+    /// Human-readable label shown in `/login`, the picker footer and logs.
+    /// Optional in a user's file: a block that names none is called by its
+    /// id, so a local server can be its base and nothing else
+    /// (`docs/user-providers.md`). Every shipped block names one.
     #[serde(default)]
     pub name: String,
     /// How this provider authenticates — a pasted key by default.
@@ -326,39 +326,54 @@ impl ProvidersFile {
     ///
     /// A problem costs only the block it is in: that block is skipped (or the
     /// shipped provider it patched is kept as shipped) and the rest of the
-    /// file still loads. A file that does not parse at all leaves the
-    /// built-ins alone in force.
-    #[must_use]
-    pub fn with_user_layer(text: &str) -> (Self, Vec<String>) {
-        Self::layered(&builtin_blocks(), text)
+    /// file still loads.
+    ///
+    /// `in_use` is the provider a running session is on, by id, with the
+    /// definition its backend was built from — `None` as a session starts.
+    /// When the file no longer gives a usable definition of it (its block
+    /// can't be used, or is gone), that definition stays in the table: every
+    /// later rebuild of the running model resolves its provider again, and a
+    /// half-saved edit must neither strand it nor quietly change what it
+    /// talks to. A usable edit of it applies.
+    ///
+    /// # Errors
+    /// Why the file could not be read at all — it is not TOML, or its
+    /// `providers` is not a table — as one row. Nothing in it is used, and
+    /// what stands instead is the caller's to decide: the built-ins as a
+    /// session starts, the session's own table on a re-read.
+    pub fn with_user_layer(
+        text: &str,
+        in_use: Option<(&str, &Provider)>,
+    ) -> Result<(Self, Vec<String>), String> {
+        Self::layered(&builtin_blocks(), text, in_use)
     }
 
     /// A provider file standing **alone** — only its providers, none of the
     /// built-ins (`ALTER_ZERO_PROVIDERS_FILE`, which is what keeps a smoke run
     /// from fetching every shipped provider beside its stub). Its blocks are
-    /// checked as [`Self::with_user_layer`] checks a layer's; a file that does
-    /// not parse at all leaves the built-ins in force instead of nothing.
-    #[must_use]
-    pub fn standalone(text: &str) -> (Self, Vec<String>) {
-        Self::layered(&toml::Table::new(), text)
+    /// checked, and `in_use` kept, as [`Self::with_user_layer`] does.
+    ///
+    /// # Errors
+    /// As [`Self::with_user_layer`]'s.
+    pub fn standalone(
+        text: &str,
+        in_use: Option<(&str, &Provider)>,
+    ) -> Result<(Self, Vec<String>), String> {
+        Self::layered(&toml::Table::new(), text, in_use)
     }
 
     /// `text`'s blocks laid over `base` (shipped blocks as written, by id).
-    fn layered(base: &toml::Table, text: &str) -> (Self, Vec<String>) {
-        let mut layer: toml::Table = match toml::from_str(text) {
-            Ok(layer) => layer,
-            Err(err) => {
-                let issue = format!("{} — {UNLOADED_FILE}", syntax_issue(text, &err));
-                return (Self::builtin(), vec![issue]);
-            }
-        };
+    fn layered(
+        base: &toml::Table,
+        text: &str,
+        in_use: Option<(&str, &Provider)>,
+    ) -> Result<(Self, Vec<String>), String> {
+        let mut layer: toml::Table =
+            toml::from_str(text).map_err(|err| syntax_issue(text, &err))?;
         let blocks = match layer.remove("providers") {
             None => toml::Table::new(),
             Some(toml::Value::Table(blocks)) => blocks,
-            Some(_) => {
-                let issue = format!("providers is not a table — {UNLOADED_FILE}");
-                return (Self::builtin(), vec![issue]);
-            }
+            Some(_) => return Err("providers is not a table".to_string()),
         };
         // Whatever sits beside `providers` is read by nothing — most often a
         // provider written without its `providers.` prefix, or a table of
@@ -385,11 +400,31 @@ impl ProvidersFile {
             .collect();
         for (id, block) in blocks {
             let shipped = base.get(&id).and_then(toml::Value::as_table);
-            if let Some(provider) = layer_block(&id, shipped, block, &mut issues) {
-                providers.insert(id, provider);
+            let kept = in_use.filter(|(in_use, _)| *in_use == id);
+            // What becomes of a block that cannot be used.
+            let dropped = match (kept, shipped) {
+                (Some(_), _) => KEPT_IN_USE,
+                (None, Some(_)) => "kept the built-in",
+                (None, None) => "skipped",
+            };
+            match layer_block(&id, shipped, block, dropped, &mut issues) {
+                Some(provider) => {
+                    providers.insert(id, provider);
+                }
+                None => {
+                    if let Some((_, provider)) = kept {
+                        providers.insert(id, provider.clone());
+                    }
+                }
             }
         }
-        (Self { providers }, issues)
+        if let Some((id, provider)) = in_use
+            && !providers.contains_key(id)
+        {
+            issues.push(format!("providers.{id} is not in the file — {KEPT_IN_USE}"));
+            providers.insert(id.to_string(), provider.clone());
+        }
+        Ok((Self { providers }, issues))
     }
 
     /// Provider ids in deterministic (alphabetical) order.
@@ -471,10 +506,6 @@ impl ProvidersFile {
     }
 }
 
-/// What a file that cannot be read at all comes to: the shipped providers,
-/// none of its own.
-const UNLOADED_FILE: &str = "using the built-in providers";
-
 /// The shipped file's `[providers.*]` blocks as written — what a user's own
 /// blocks are merged into, key by key, before either is read as a
 /// [`Provider`].
@@ -489,21 +520,16 @@ fn builtin_blocks() -> toml::Table {
 
 /// One block of a user's file, merged over the shipped block of the same id
 /// when there is one and read as a [`Provider`] — or `None`, the reason
-/// pushed onto `issues`. Warnings (a key nothing reads, a scheme or wire
-/// format this build doesn't know) are pushed too, but cost the block
-/// nothing.
+/// pushed onto `issues`, ending on `dropped`: what becomes of a block that
+/// cannot be used. Warnings (a key nothing reads, a scheme or wire format
+/// this build doesn't know) are pushed too, but cost the block nothing.
 fn layer_block(
     id: &str,
     shipped: Option<&toml::Table>,
     block: toml::Value,
+    dropped: &str,
     issues: &mut Vec<String>,
 ) -> Option<Provider> {
-    // What becomes of a block that cannot be used.
-    let dropped = if shipped.is_some() {
-        "kept the built-in"
-    } else {
-        "skipped"
-    };
     let toml::Value::Table(block) = block else {
         issues.push(format!("providers.{id} is not a table — {dropped}"));
         return None;
@@ -520,7 +546,7 @@ fn layer_block(
             .map(str::to_string)
     };
     let (auth, wire) = (spelled("auth"), spelled("wire_api"));
-    let provider: Provider = match toml::Value::Table(merged).try_into() {
+    let mut provider: Provider = match toml::Value::Table(merged).try_into() {
         Ok(provider) => provider,
         Err(err) => {
             issues.push(format!(
@@ -530,6 +556,11 @@ fn layer_block(
             return None;
         }
     };
+    // A local server can be its base and nothing else: the id is the label
+    // a `/login` row and the footer need.
+    if provider.name.trim().is_empty() {
+        provider.name = id.to_string();
+    }
     issues.extend(provider.unread.keys().map(|key| unread_key_issue(id, key)));
     if provider.auth == AuthScheme::ApiKey
         && let Some(auth) = auth.filter(|auth| auth != "api_key")
@@ -554,10 +585,6 @@ fn layer_block(
                 format!("providers.{id}.drop_params cannot drop {field:?} — every request needs it")
             }),
     );
-    if provider.name.trim().is_empty() {
-        issues.push(format!("providers.{id} has no name — {dropped}"));
-        return None;
-    }
     let base = provider.kwargs.api_base.trim();
     if base.is_empty() && provider.api_base_env.is_none() {
         issues.push(format!(
@@ -621,6 +648,11 @@ fn unread_key_issue(id: &str, key: &str) -> String {
 /// The fix a `model` key is told, in a block or beside them: the model is
 /// the picker's to choose (or `ALTER_ZERO_MODEL`'s), never the file's.
 const MODEL_FIX: &str = " — choose a model with /model";
+
+/// What becomes of the running session's provider when a re-read can't give
+/// a usable definition of it ([`ProvidersFile::with_user_layer`]'s `in_use`):
+/// the definition its backend was built from stays.
+const KEPT_IN_USE: &str = "kept the one in use";
 
 /// Does `url` name the scheme every non-Ollama wire needs?
 fn is_http_url(url: &str) -> bool {
@@ -1639,9 +1671,15 @@ api_key_url = "https://console.groq.com/keys"
 api_base = "https://api.groq.com/openai/v1"
 "#;
 
+    /// A user's file laid over the built-ins as a session starting up reads
+    /// it — one that parses, which is every test's but the refusals'.
+    fn layer(text: &str) -> (ProvidersFile, Vec<String>) {
+        ProvidersFile::with_user_layer(text, None).expect("a TOML document with a providers table")
+    }
+
     #[test]
     fn a_user_file_adds_its_providers_beside_the_builtins() {
-        let (file, issues) = ProvidersFile::with_user_layer(GROQ);
+        let (file, issues) = layer(GROQ);
         assert_eq!(issues, Vec::<String>::new());
         let groq = file
             .get("groq")
@@ -1680,7 +1718,7 @@ api_base = "https://api.groq.com/openai/v1"
     #[test]
     fn an_empty_or_comment_only_user_file_is_the_builtin_table() {
         for text in ["", "# nothing here yet\n"] {
-            let (file, issues) = ProvidersFile::with_user_layer(text);
+            let (file, issues) = layer(text);
             assert_eq!(issues, Vec::<String>::new());
             assert_eq!(file.ids(), ProvidersFile::builtin().ids());
         }
@@ -1688,7 +1726,7 @@ api_base = "https://api.groq.com/openai/v1"
 
     #[test]
     fn a_user_block_naming_a_shipped_provider_patches_only_what_it_sets() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.openrouter.extra_headers]
 X-Team = "research"
@@ -1728,7 +1766,7 @@ enable_web_search = "auto"
 
     #[test]
     fn a_user_value_replaces_the_shipped_one_and_leaves_the_rest() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.openrouter]
 name = "OpenRouter (work)"
@@ -1750,37 +1788,36 @@ api_base = "https://proxy.example/v1"
     }
 
     #[test]
-    fn a_user_file_that_does_not_parse_leaves_the_builtins_and_says_where() {
+    fn a_user_file_that_does_not_parse_is_refused_whole_and_says_where() {
+        // Nothing in it is read, and what stands instead is the caller's to
+        // say — the built-ins at startup, the session's own table when a
+        // half-saved file is re-read — so the reason names no fallback.
         let text = "[providers.groq]\nname = \"Groq\"\napi_base https://x\n";
-        let (file, issues) = ProvidersFile::with_user_layer(text);
-        assert_eq!(file.ids(), ProvidersFile::builtin().ids());
-        assert_eq!(issues.len(), 1, "{issues:?}");
-        assert!(issues[0].starts_with("line 3, column "), "{issues:?}");
-        assert!(
-            issues[0].ends_with(" — using the built-in providers"),
-            "{issues:?}"
-        );
-        assert!(!issues[0].contains('\n'), "one row: {issues:?}");
+        let reason = ProvidersFile::with_user_layer(text, None).expect_err("not TOML");
+        assert!(reason.starts_with("line 3, column "), "{reason}");
+        assert!(!reason.contains('\n'), "one row: {reason:?}");
+        assert!(!reason.contains(" — "), "no fallback named: {reason}");
     }
 
     #[test]
-    fn a_new_provider_without_a_name_is_skipped_and_said() {
-        let (file, issues) = ProvidersFile::with_user_layer(
-            "[providers.groq.kwargs]\napi_base = \"https://api.groq.com/openai/v1\"\n",
-        );
-        assert!(file.get("groq").is_none());
-        assert_eq!(issues, ["providers.groq has no name — skipped"]);
+    fn a_provider_without_a_name_is_called_by_its_id() {
+        // A local server can be its base and nothing else: the id is the
+        // label a `/login` row and the footer need.
+        let (file, issues) =
+            layer("[providers.lmstudio.kwargs]\napi_base = \"http://localhost:1234/v1\"\n");
+        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(file.get("lmstudio").unwrap().name, "lmstudio");
         // A blank one is no name either.
-        let (file, issues) = ProvidersFile::with_user_layer(
-            "[providers.groq]\nname = \"  \"\n[providers.groq.kwargs]\napi_base = \"https://x/v1\"\n",
+        let (file, issues) = layer(
+            "[providers.lmstudio]\nname = \"  \"\n[providers.lmstudio.kwargs]\napi_base = \"http://localhost:1234/v1\"\n",
         );
-        assert!(file.get("groq").is_none());
-        assert_eq!(issues, ["providers.groq has no name — skipped"]);
+        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(file.get("lmstudio").unwrap().name, "lmstudio");
     }
 
     #[test]
     fn a_new_provider_without_a_chat_base_is_skipped_and_said() {
-        let (file, issues) = ProvidersFile::with_user_layer("[providers.groq]\nname = \"Groq\"\n");
+        let (file, issues) = layer("[providers.groq]\nname = \"Groq\"\n");
         assert!(file.get("groq").is_none());
         assert_eq!(
             issues,
@@ -1792,9 +1829,8 @@ api_base = "https://proxy.example/v1"
     fn a_host_variable_stands_in_for_the_chat_base() {
         // A provider whose base only the environment names is complete: the
         // boundary resolves the variable the way it resolves `OLLAMA_HOST`.
-        let (file, issues) = ProvidersFile::with_user_layer(
-            "[providers.lab]\nname = \"Lab\"\napi_base_env = \"LAB_HOST\"\n",
-        );
+        let (file, issues) =
+            layer("[providers.lab]\nname = \"Lab\"\napi_base_env = \"LAB_HOST\"\n");
         assert_eq!(issues, Vec::<String>::new());
         assert!(file.get("lab").is_some());
     }
@@ -1807,7 +1843,7 @@ api_base = "https://proxy.example/v1"
             let text = format!(
                 "[providers.groq]\nname = \"Groq\"\n{key} = \"https://api.groq.com/openai/v1\"\n"
             );
-            let (file, issues) = ProvidersFile::with_user_layer(&text);
+            let (file, issues) = layer(&text);
             assert!(file.get("groq").is_none());
             assert_eq!(
                 issues,
@@ -1824,7 +1860,7 @@ api_base = "https://proxy.example/v1"
 
     #[test]
     fn an_unknown_key_is_said_and_the_provider_still_loads() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.groq]
 name = "Groq"
@@ -1869,7 +1905,7 @@ api_base = "https://api.groq.com/openai/v1"
             let text = format!(
                 "[providers.groq]\nname = \"Groq\"\n{line}\n[providers.groq.kwargs]\napi_base = \"https://api.groq.com/openai/v1\"\n"
             );
-            let (file, issues) = ProvidersFile::with_user_layer(&text);
+            let (file, issues) = layer(&text);
             assert!(file.get("groq").is_some(), "{line}");
             assert_eq!(issues, [expected]);
             // A key pasted into the file is never echoed back.
@@ -1889,7 +1925,7 @@ extra_headers = "not a table"
 api_base = "https://broken.example/v1"
 {GROQ}"#
         );
-        let (file, issues) = ProvidersFile::with_user_layer(&text);
+        let (file, issues) = layer(&text);
         assert!(file.get("broken").is_none());
         assert!(file.get("groq").is_some(), "the next block still loads");
         assert_eq!(issues.len(), 1, "{issues:?}");
@@ -1904,8 +1940,7 @@ api_base = "https://broken.example/v1"
 
     #[test]
     fn a_broken_patch_keeps_the_shipped_provider() {
-        let (file, issues) =
-            ProvidersFile::with_user_layer("[providers.openrouter]\nextra_headers = \"x\"\n");
+        let (file, issues) = layer("[providers.openrouter]\nextra_headers = \"x\"\n");
         let builtin = ProvidersFile::builtin();
         let openrouter = file.get("openrouter").expect("kept");
         assert_eq!(
@@ -1922,14 +1957,14 @@ api_base = "https://broken.example/v1"
 
     #[test]
     fn a_block_that_is_not_a_table_is_said() {
-        let (file, issues) = ProvidersFile::with_user_layer("[providers]\ngroq = \"x\"\n");
+        let (file, issues) = layer("[providers]\ngroq = \"x\"\n");
         assert!(file.get("groq").is_none());
         assert_eq!(issues, ["providers.groq is not a table — skipped"]);
     }
 
     #[test]
     fn a_base_with_no_http_scheme_is_skipped_and_said() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "[providers.groq]\nname = \"Groq\"\n[providers.groq.kwargs]\napi_base = \"api.groq.com/openai/v1\"\n",
         );
         assert!(file.get("groq").is_none());
@@ -1939,7 +1974,7 @@ api_base = "https://broken.example/v1"
                 "providers.groq.kwargs.api_base \"api.groq.com/openai/v1\" is not an http(s) URL — skipped"
             ]
         );
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "[providers.groq]\nname = \"Groq\"\napi_model_base = \"models.example\"\n[providers.groq.kwargs]\napi_base = \"https://x/v1\"\n",
         );
         assert!(file.get("groq").is_none());
@@ -1952,7 +1987,7 @@ api_base = "https://broken.example/v1"
     #[test]
     fn an_ollama_host_needs_no_scheme() {
         // Ollama's own grammar (`docs/ollama.md`): `gpu-box:11434` is a host.
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "[providers.gpu]\nname = \"GPU box\"\nwire_api = \"ollama\"\nauth = \"optional_key\"\n[providers.gpu.kwargs]\napi_base = \"gpu-box:11434\"\n",
         );
         assert_eq!(issues, Vec::<String>::new());
@@ -1964,7 +1999,7 @@ api_base = "https://broken.example/v1"
         // Both still degrade to the default (a file from a newer build must
         // parse), but a user's own typo is said rather than silently becoming
         // a pasted-key chat-completions provider.
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.groq]
 name = "Groq"
@@ -1989,7 +2024,7 @@ api_base = "https://api.groq.com/openai/v1"
 
     #[test]
     fn the_defaults_own_spellings_are_not_unknown() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "[providers.groq]\nname = \"Groq\"\nauth = \"api_key\"\nwire_api = \"chat\"\n[providers.groq.kwargs]\napi_base = \"https://x/v1\"\n",
         );
         assert_eq!(issues, Vec::<String>::new());
@@ -1998,7 +2033,7 @@ api_base = "https://api.groq.com/openai/v1"
 
     #[test]
     fn a_provider_written_without_the_providers_prefix_is_told_where_it_goes() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "model = \"x\"\n[groq]\nname = \"Groq\"\n[groq.kwargs]\napi_base = \"https://api.groq.com/openai/v1\"\n",
         );
         assert!(file.get("groq").is_none());
@@ -2020,7 +2055,7 @@ api_base = "https://api.groq.com/openai/v1"
             let text = format!(
                 "[{table}.groq]\nname = \"Groq\"\n[{table}.groq.kwargs]\napi_base = \"https://x/v1\"\n"
             );
-            let (file, issues) = ProvidersFile::with_user_layer(&text);
+            let (file, issues) = layer(&text);
             assert!(file.get("groq").is_none());
             assert_eq!(
                 issues,
@@ -2032,24 +2067,22 @@ api_base = "https://api.groq.com/openai/v1"
     }
 
     #[test]
-    fn a_providers_key_that_is_not_a_table_leaves_the_builtins() {
-        let (file, issues) = ProvidersFile::with_user_layer("providers = 3\n");
-        assert_eq!(file.ids(), ProvidersFile::builtin().ids());
-        assert_eq!(
-            issues,
-            ["providers is not a table — using the built-in providers"]
-        );
+    fn a_providers_key_that_is_not_a_table_is_refused_whole() {
+        let reason = ProvidersFile::with_user_layer("providers = 3\n", None)
+            .expect_err("no table of providers");
+        assert_eq!(reason, "providers is not a table");
     }
 
     #[test]
     fn a_standalone_file_is_the_whole_table() {
         // `ALTER_ZERO_PROVIDERS_FILE`'s "only these" — what keeps a smoke run
         // from listing every shipped provider beside its stub.
-        let (file, issues) = ProvidersFile::standalone(GROQ);
+        let (file, issues) = ProvidersFile::standalone(GROQ, None).unwrap();
         assert_eq!(issues, Vec::<String>::new());
         assert_eq!(file.ids(), ["groq"]);
         // Its blocks are checked like a layer's.
-        let (file, issues) = ProvidersFile::standalone("[providers.groq]\nname = \"Groq\"\n");
+        let (file, issues) =
+            ProvidersFile::standalone("[providers.groq]\nname = \"Groq\"\n", None).unwrap();
         assert!(file.ids().is_empty());
         assert_eq!(
             issues,
@@ -2058,14 +2091,118 @@ api_base = "https://api.groq.com/openai/v1"
     }
 
     #[test]
-    fn a_standalone_file_that_does_not_parse_falls_back_to_the_builtins() {
-        let (file, issues) = ProvidersFile::standalone("this is not = = toml");
-        assert_eq!(file.ids(), ProvidersFile::builtin().ids());
+    fn a_standalone_file_that_does_not_parse_is_refused_whole() {
+        let reason = ProvidersFile::standalone("this is not = = toml", None).expect_err("not TOML");
+        assert!(reason.starts_with("line 1, column "), "{reason}");
+    }
+
+    // --- a re-read under a running session (docs/user-providers.md) ---
+
+    #[test]
+    fn a_reread_keeps_the_provider_in_use_when_its_block_cannot_be_used() {
+        // A file saved half-edited is re-read the moment `/login` or `/model`
+        // opens. The running model's backend was built from the definition it
+        // had, and every later rebuild — a `/settings` knob, Ctrl+T — resolves
+        // the provider again: one gone from the table is a rebuild skipped
+        // without a word, a setting shown as applied and never sent.
+        let (before, _) = layer(GROQ);
+        let in_use = before.get("groq").unwrap();
+        let half_edited = GROQ.replace("https://api.groq.com/openai/v1", "api.groq");
+        let (file, issues) =
+            ProvidersFile::with_user_layer(&half_edited, Some(("groq", in_use))).unwrap();
+        assert_eq!(
+            file.get("groq").expect("kept").kwargs.api_base,
+            "https://api.groq.com/openai/v1"
+        );
+        assert_eq!(
+            issues,
+            [
+                "providers.groq.kwargs.api_base \"api.groq\" is not an http(s) URL — kept the one in use"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reread_keeps_the_provider_in_use_when_its_block_is_gone() {
+        let (before, _) = layer(GROQ);
+        let in_use = before.get("groq").unwrap();
+        let (file, issues) = ProvidersFile::with_user_layer("", Some(("groq", in_use))).unwrap();
+        assert_eq!(file.get("groq").expect("kept").name, "Groq");
+        assert_eq!(
+            issues,
+            ["providers.groq is not in the file — kept the one in use"]
+        );
+        // A standalone file keeps it the same way.
+        let (file, issues) = ProvidersFile::standalone("", Some(("groq", in_use))).unwrap();
+        assert_eq!(file.ids(), ["groq"]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+    }
+
+    #[test]
+    fn a_reread_keeps_a_patched_builtin_in_use_rather_than_the_shipped_one() {
+        // OpenRouter routed through a proxy, then the patch broken mid-edit:
+        // falling back to the shipped block would send the running model's
+        // next request around the proxy without a word.
+        let (before, _) =
+            layer("[providers.openrouter.kwargs]\napi_base = \"https://proxy.example/v1\"\n");
+        let in_use = before.get("openrouter").unwrap();
+        let (file, issues) = ProvidersFile::with_user_layer(
+            "[providers.openrouter]\nextra_headers = \"x\"\n",
+            Some(("openrouter", in_use)),
+        )
+        .unwrap();
+        assert_eq!(
+            file.get("openrouter").unwrap().kwargs.api_base,
+            "https://proxy.example/v1"
+        );
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(
-            issues[0].ends_with(" — using the built-in providers"),
+            issues[0].starts_with("providers.openrouter: "),
             "{issues:?}"
         );
+        assert!(issues[0].ends_with(" — kept the one in use"), "{issues:?}");
+    }
+
+    #[test]
+    fn a_reread_takes_a_usable_edit_of_the_provider_in_use() {
+        // Keeping is for a block that can't be used: a changed one that can
+        // is the point of re-reading, and applies from the next rebuild.
+        let (before, _) = layer(GROQ);
+        let in_use = before.get("groq").unwrap();
+        let moved = GROQ.replace("https://api.groq.com/openai/v1", "https://proxy.example/v1");
+        let (file, issues) =
+            ProvidersFile::with_user_layer(&moved, Some(("groq", in_use))).unwrap();
+        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(
+            file.get("groq").unwrap().kwargs.api_base,
+            "https://proxy.example/v1"
+        );
+        // A patch taken out is the shipped provider again: the file says so.
+        let (before, _) =
+            layer("[providers.openrouter.kwargs]\napi_base = \"https://proxy.example/v1\"\n");
+        let in_use = before.get("openrouter").unwrap();
+        let (file, issues) =
+            ProvidersFile::with_user_layer("", Some(("openrouter", in_use))).unwrap();
+        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(
+            file.get("openrouter").unwrap().kwargs.api_base,
+            "https://openrouter.ai/api/v1"
+        );
+    }
+
+    #[test]
+    fn a_reread_keeps_only_the_provider_in_use() {
+        // The rest of a re-read is a startup's: a provider taken out of the
+        // file leaves `/login`, and one that can't be used is skipped.
+        let text = format!(
+            "{GROQ}\n[providers.other]\nname = \"Other\"\n[providers.other.kwargs]\napi_base = \"https://other.example/v1\"\n"
+        );
+        let (before, _) = layer(&text);
+        let in_use = before.get("groq").unwrap();
+        let (file, issues) = ProvidersFile::with_user_layer(GROQ, Some(("groq", in_use))).unwrap();
+        assert_eq!(issues, Vec::<String>::new());
+        assert!(file.get("other").is_none());
+        assert!(file.get("groq").is_some());
     }
 
     #[test]
@@ -2073,7 +2210,7 @@ api_base = "https://api.groq.com/openai/v1"
         // A local LM Studio / llama.cpp / vLLM server takes no key and has no
         // host variable to resolve: the file pointing at it is the
         // configuration, so `/model` lists it without a trip through `/login`.
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.lmstudio]
 name = "LM Studio"
@@ -2112,7 +2249,7 @@ api_base = "http://localhost:1234/v1"
         // a strict server answers a field it does not know with an error
         // (Mistral's "Extra inputs are not permitted"). TOML has no null, so
         // a kwarg can replace such a field but never remove it.
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             r#"
 [providers.mistral]
 name = "Mistral"
@@ -2158,7 +2295,7 @@ api_base = "https://api.mistral.ai/v1"
 
     #[test]
     fn dropping_a_field_every_request_needs_is_said() {
-        let (file, issues) = ProvidersFile::with_user_layer(
+        let (file, issues) = layer(
             "[providers.x]\nname = \"X\"\ndrop_params = [\"stream\", \"prompt_cache_key\"]\n[providers.x.kwargs]\napi_base = \"https://x/v1\"\n",
         );
         assert!(

@@ -747,12 +747,21 @@ replaces) — every problem worded as one toast row (a syntax error's line, a
 key `Provider::unread` caught through its `#[serde(flatten)]` field with the
 fix for `base_url`/`api_base`/`env_key`/`headers`/`api_key`/`model`, a table
 of providers under another name (`[provider.groq]`), an unknown
-`auth`/`wire_api` value, no name, no chat base, a non-http base) that costs
-only its block (`— skipped`, or `— kept the built-in` for a patch), toasted
-at startup and again — only when the set changed — whenever `/login` or
-`/model` opens, both of which **re-read the file**
-(`ModelSession::reload_providers`), so a provider the agent writes
-mid-session is a row at once; `ALTER_ZERO_PROVIDERS_FILE` stands **alone**
+`auth`/`wire_api` value, no chat base, a non-http base; a block with no
+`name` is called by its id) that costs only its block (`— skipped`, or
+`— kept the built-in` for a patch), each row led by the file `~`-relative,
+toasted at startup and again **every time** `/login` or `/model` opens
+(a startup toast is easily covered by the next), both of which **re-read
+the file** (`ModelSession::reload_providers`), so a provider the agent
+writes mid-session is a row at once — and a re-read never takes the
+running model's provider away, since every rebuild (a `/settings` knob,
+Ctrl+T, `/fast`, the probe) resolves it again and a missing one was a
+rebuild skipped without a word: a file that can't be used at all (an `Err`
+from `with_user_layer`, the caller choosing what stands — the built-ins at
+launch, the session's own table on a re-read) keeps the whole table, and
+one that no longer gives a usable definition of the provider in use keeps
+that one's (`in_use`, `— kept the one in use`);
+`ALTER_ZERO_PROVIDERS_FILE` stands **alone**
 (`ProvidersFile::standalone`, the smoke suite's hermetic stubs);
 `./providers.toml` is **never** read (a checkout could point a stored key at
 its own host before the first frame — the `/trust` concern); a keyless

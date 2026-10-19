@@ -8,7 +8,8 @@
 # one naming a provider here changes only the keys it sets.
 #
 # A shipped provider is a [providers.<id>] block below.
-#   - `name` is required — the human-readable label.
+#   - `name` is the human-readable label. Every block here sets one; a block
+#     in your own file that doesn't is called by its id.
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
 #   - Everything under `kwargs` is passed through to the client as-is, so nested

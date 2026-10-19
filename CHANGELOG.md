@@ -46,21 +46,26 @@ release heading when a version is cut.
   adds a provider, and a block that names a built-in one changes only the
   settings it lists, such as one more header on OpenRouter or Venice's web
   search. `/login` and `/model` re-read the file when they open, so a
-  provider you add (or ask the agent to add) is there without a restart. A
-  local server that takes no key is listed as soon as it is described, and a
-  new `drop_params` setting takes out request fields a strict server refuses,
-  such as `prompt_cache_key` (`docs/user-providers.md`).
+  provider you add (or ask the agent to add) is there without a restart.
+  A file saved half-edited never takes away the model you are using: the
+  session keeps the providers it already had, and the provider in use keeps
+  the settings it was running on, so a `/settings` change or Ctrl+T still
+  reaches it. A provider needs no more than its address (without a `name`
+  it is listed by its id), a local server that takes no key is listed as
+  soon as it is described, and a new `drop_params` setting takes out request
+  fields a strict server refuses, such as `prompt_cache_key`
+  (`docs/user-providers.md`).
 
 ### Changed
 
 - **A mistake in your `providers.toml` is reported instead of ignored.** A
   file that didn't parse used to be skipped without a word, leaving the
   built-in providers and no sign of yours. Now each problem shows as a red
-  notice at startup and when `/login` or `/model` opens, naming the line or
-  the setting. The most common slips name their fix: `base_url`, or an
-  `api_base` outside `[providers.<id>.kwargs]`, points at where the address
-  goes, and an `api_key` written into the file points at `/login`. A problem
-  in one provider no longer costs the others.
+  notice at startup and again every time `/login` or `/model` opens, naming
+  the file and the line or the setting. The most common slips name their
+  fix: `base_url`, or an `api_base` outside `[providers.<id>.kwargs]`, points
+  at where the address goes, and an `api_key` written into the file points
+  at `/login`. A problem in one provider no longer costs the others.
 - **A `providers.toml` in the directory you launch in is no longer read.** It
   replaced your providers whenever you started the app there, so a cloned
   repository could carry one that sent a stored API key to a server of its
