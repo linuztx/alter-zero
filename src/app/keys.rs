@@ -433,11 +433,20 @@ impl App {
             // pastes an image from the system clipboard. The decision is pure; the
             // loop performs the clipboard I/O (`crate::clipboard`) and calls
             // `attach_image` on success. See docs/image-paste.md.
+            //
+            // SUPER is in the mask too, for macOS's Cmd+V. It does **not** make
+            // Cmd+V work there — a terminal consumes that chord for its own
+            // Paste menu long before we see it, and a screenshot has no text to
+            // arrive as a bracketed paste — but a terminal that *does* forward
+            // it (kitty-protocol with a Super mapping, or a terminal that
+            // treats Cmd as Alt) would otherwise insert a literal `v` into the
+            // draft, because the character arm below only excludes
+            // CONTROL|ALT. Binding it costs nothing and removes a way to type a
+            // stray letter by accident.
             KeyCode::Char(c)
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && c.eq_ignore_ascii_case(&'v') =>
+                if key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) && c.eq_ignore_ascii_case(&'v') =>
             {
                 Action::PasteImage
             }
@@ -659,10 +668,12 @@ impl App {
             // combos are not text, so they are ignored here. An insert that
             // leaves the text starting with `!` is absorbed into shell mode
             // (sync_shell_mode — codex's bash-mode sync after every edit).
+            // SUPER is excluded for the same reason: whatever a terminal
+            // forwards of Cmd+X is a command chord, never a character to type.
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();

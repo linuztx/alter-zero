@@ -159,7 +159,14 @@ fn a_clipboard_with_no_picture_is_reported_as_before() {
     let _owner = Owner::serve(None, None).expect("own the selection");
     let err =
         alter_zero::clipboard::read_clipboard_image(store.path()).expect_err("nothing to paste");
-    assert_eq!(err, "no image on the clipboard");
+    // The exact wording lives in one place (`NO_IMAGE_ON_CLIPBOARD`), so a
+    // change to what a user reads cannot leave a stale copy here — and the
+    // refusal still has to say the two things it is there for.
+    assert_eq!(err, alter_zero::clipboard::NO_IMAGE_ON_CLIPBOARD);
+    assert!(
+        err.contains("read its path"),
+        "names the way around it: {err}"
+    );
     assert_eq!(
         std::fs::read_dir(store.path()).expect("list").count(),
         0,

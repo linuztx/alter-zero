@@ -46,6 +46,9 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 /// The most bytes a clipboard image may stream into its file before the
 /// paste is refused — a bound on the *file*, since the streaming paths never
 /// hold the picture in memory (the `SHELL_OUTPUT_MAX_BYTES` posture: an owner
@@ -257,6 +260,14 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
         std::env::var_os("WAYLAND_DISPLAY").as_deref(),
     )?;
 
+    // macOS has no `DISPLAY`; its gate is the window server. A daemon or an
+    // `ssh` login never entered one, and `NSPasteboard` answers NULL there —
+    // so ask first, for the same reason Linux does: the refusal can then say
+    // what is wrong instead of reporting whatever the backend ran into
+    // (`macos::require_gui_session`).
+    #[cfg(target_os = "macos")]
+    macos::require_gui_session()?;
+
     // Linux first, and before arboard is so much as constructed (each
     // construction is an X11 connection and a serving thread, torn down again
     // at the end): the owner offers a screenshot as `image/png` already — the
@@ -283,10 +294,33 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
     }
 
     // Raw image bytes (e.g. a screenshot) — rebuild and PNG-encode.
-    let image = clipboard_raw_image(&mut clipboard)
-        .ok_or_else(|| "no image on the clipboard".to_string())?;
-    encode_png_into(dir, &image)
+    match clipboard_raw_image(&mut clipboard) {
+        Some(image) => encode_png_into(dir, &image),
+        // macOS: arboard's read refuses the pasteboard's default picture shape
+        // (a 16-bit floating-point TIFF, what a ⌃⇧⌘4 screenshot plants), so
+        // before telling the user there is no image, ask AppKit to hand the
+        // same picture over as PNG (`macos`). `Ok(None)` means the pasteboard
+        // really held none.
+        #[cfg(target_os = "macos")]
+        None => match macos::coerce_into(dir) {
+            Ok(Some(path)) => Ok(path),
+            Ok(None) => Err(NO_IMAGE_ON_CLIPBOARD.to_string()),
+            Err(StreamError::TooLarge(reason) | StreamError::Failed(reason)) => Err(reason),
+        },
+        #[cfg(not(target_os = "macos"))]
+        None => Err(NO_IMAGE_ON_CLIPBOARD.to_string()),
+    }
 }
+
+/// What a paste says when the clipboard genuinely holds no picture — a text or
+/// file copy, an empty clipboard. It names what was *tried* so the answer is
+/// actionable: the two shapes that look like an image and are not (a file, a
+/// web page's `public.html`) are called out, and the escape hatch is the same
+/// one a display-less Linux session gets — put the picture on disk and ask for
+/// its path (`docs/image-paste.md`).
+pub const NO_IMAGE_ON_CLIPBOARD: &str = "no image on the clipboard — copy a picture itself \
+     (not a file, and not a web page's selection), or save it and ask Alter Zero to read its \
+     path";
 
 /// Why a Linux paste is refused in a session that names no display, and what
 /// to do instead. It names both variables because the fix is to forward one
@@ -458,6 +492,99 @@ fn keep_numbered(tmp: tempfile::NamedTempFile, dir: &Path, ext: &str) -> Result<
         "could not find a free number for the image in {}",
         dir.display()
     ))
+}
+
+/// The eight bytes every PNG opens with.
+#[cfg(any(target_os = "macos", test))]
+const PNG_SIGNATURE: [u8; 8] = *b"\x89PNG\r\n\x1a\n";
+
+/// The chunks [`strip_png_metadata`] keeps: the four critical ones, and
+/// `tRNS`, the transparency a palette or greyscale picture needs to be drawn
+/// right. They are everything a decoder draws from; the rest of a PNG
+/// describes the picture rather than being it.
+#[cfg(any(target_os = "macos", test))]
+const PNG_PICTURE_CHUNKS: [[u8; 4]; 5] = [*b"IHDR", *b"PLTE", *b"tRNS", *b"IDAT", *b"IEND"];
+
+/// Copy the PNG on `source` into `out` keeping only the chunks that draw the
+/// picture ([`PNG_PICTURE_CHUNKS`]), and return the bytes written.
+///
+/// Every other chunk is skipped unread: `eXIf` (EXIF — GPS, camera, `Artist`,
+/// `Software`), `iTXt`/`tEXt`/`zTXt` (XMP and text), `iCCP` (an ICC profile,
+/// whose description can name the display), and any chunk this code has
+/// never heard of. An allowlist, so a chunk a future encoder invents is
+/// dropped rather than kept; and PNG chunks do not nest, so there is nowhere
+/// else for metadata to hide. Bytes after `IEND` go too.
+///
+/// The kept chunks are copied **verbatim**, CRCs and all, so the pixels
+/// arrive byte for byte with their depth and compression untouched, and the
+/// picture is never decoded: memory is a buffer or two whatever it weighs
+/// (`docs/memory.md`).
+///
+/// `Err` for anything that is not a whole PNG — no signature, a first chunk
+/// that is not `IHDR`, a length past the format's 2³¹ − 1, a chunk cut short,
+/// no `IEND` — and for a write `out` refuses, so a [`CappedWriter`] past its
+/// cap stops the copy. Pure over the reader and the writer.
+#[cfg(any(target_os = "macos", test))]
+fn strip_png_metadata(source: &mut impl Read, out: &mut dyn Write) -> Result<u64, String> {
+    let not_png = |why: &str| format!("the converted image is not a whole PNG: {why}");
+    let copy_failed = |e: io::Error| format!("could not copy the image: {e}");
+    let mut signature = [0; 8];
+    if source.read_exact(&mut signature).is_err() || signature != PNG_SIGNATURE {
+        return Err(not_png("no PNG signature"));
+    }
+    out.write_all(&signature).map_err(copy_failed)?;
+    let mut written = PNG_SIGNATURE.len() as u64;
+    let mut first = true;
+    loop {
+        let mut header = [0; 8];
+        source
+            .read_exact(&mut header)
+            .map_err(|_| not_png("it ends before its IEND chunk"))?;
+        let [l0, l1, l2, l3, k0, k1, k2, k3] = header;
+        let length = u32::from_be_bytes([l0, l1, l2, l3]);
+        let kind = [k0, k1, k2, k3];
+        if length > 0x7FFF_FFFF {
+            return Err(not_png("a chunk is longer than the format allows"));
+        }
+        if first && kind != *b"IHDR" {
+            return Err(not_png("its first chunk is not IHDR"));
+        }
+        first = false;
+        // The chunk's data and the four-byte CRC after it.
+        let body = u64::from(length) + 4;
+        let mut chunk = source.by_ref().take(body);
+        let moved = if PNG_PICTURE_CHUNKS.contains(&kind) {
+            out.write_all(&header).map_err(copy_failed)?;
+            let copied = io::copy(&mut chunk, &mut *out).map_err(copy_failed)?;
+            written += header.len() as u64 + copied;
+            copied
+        } else {
+            io::copy(&mut chunk, &mut io::sink()).map_err(copy_failed)?
+        };
+        if moved < body {
+            return Err(not_png("a chunk is cut short"));
+        }
+        if kind == *b"IEND" {
+            return Ok(written);
+        }
+    }
+}
+
+/// Store the PNG at `path` in the paste folder `dir` as its next number with
+/// its metadata stripped ([`strip_png_metadata`]) — the macOS conversion's
+/// way in (`macos::coerce_into`, `docs/image-paste.md`). Through
+/// [`store_image`], so the copy is capped at `max`, header-checked and
+/// numbered like every other paste, and a refused one leaves nothing in the
+/// folder; `path` itself is the caller's to delete.
+#[cfg(any(target_os = "macos", test))]
+fn store_png_without_metadata(dir: &Path, path: &Path, max: u64) -> Result<PathBuf, StreamError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| StreamError::Failed(format!("could not open the converted image: {e}")))?;
+    let mut source = io::BufReader::new(file);
+    store_image(dir, "png", max, |out| {
+        strip_png_metadata(&mut source, out).map(Some)
+    })?
+    .ok_or_else(|| StreamError::Failed("the converted image held no picture".to_string()))
 }
 
 /// Save the first usable image among `files` into the paste folder `dir`, or
@@ -1124,6 +1251,256 @@ mod tests {
         let back = image::open(&path).unwrap().into_rgba8();
         assert_eq!(back.dimensions(), (5, 4));
         assert_eq!(back.into_raw(), original.into_raw());
+    }
+
+    // ===== the macOS conversion's metadata strip (docs/image-paste.md) =====
+
+    /// What every metadata chunk [`png_with`] writes carries, so a test can
+    /// look for it in the bytes. The zlib-wrapped chunks store it
+    /// uncompressed, so a search that misses it means it is gone.
+    const SECRET: &[u8] = b"SECRET-37.7749N-122.4194W";
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// `data` as a zlib stream of one stored (uncompressed) block.
+    fn zlib_stored(data: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(data.len()).unwrap();
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in data {
+            a = (a + u32::from(byte)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        [
+            &[0x78, 0x01, 0x01][..],
+            &len.to_le_bytes(),
+            &(!len).to_le_bytes(),
+            data,
+            &((b << 16) | a).to_be_bytes(),
+        ]
+        .concat()
+    }
+
+    /// One chunk of every kind the strip must drop — the ICC profile, EXIF,
+    /// the XMP packet, plain and compressed text, and a private chunk no
+    /// decoder has heard of — each carrying [`SECRET`].
+    fn metadata_chunks() -> Vec<([u8; 4], Vec<u8>)> {
+        let xmp = [
+            b"<x:xmpmeta><dc:creator>".as_slice(),
+            SECRET,
+            b"</dc:creator></x:xmpmeta>",
+        ];
+        vec![
+            (
+                *b"iCCP",
+                [b"ICC Profile\0\0".as_slice(), &zlib_stored(SECRET)].concat(),
+            ),
+            (*b"eXIf", [b"MM\0*\0\0\0\x08".as_slice(), SECRET].concat()),
+            (
+                *b"iTXt",
+                [&b"XML:com.adobe.xmp\0\0\0\0\0"[..], &xmp.concat()].concat(),
+            ),
+            (*b"tEXt", [b"Software\0".as_slice(), SECRET].concat()),
+            (
+                *b"zTXt",
+                [b"Comment\0\0".as_slice(), &zlib_stored(SECRET)].concat(),
+            ),
+            (*b"prVt", SECRET.to_vec()),
+        ]
+    }
+
+    /// A PNG of `pixels` — with `palette`'s `PLTE` and `tRNS` when given —
+    /// and, when `metadata`, every chunk of [`metadata_chunks`] between its
+    /// header and its image data, plus one more `tEXt` after the data. The
+    /// encoder is deterministic, so the same picture with and without them
+    /// differs by exactly those chunks: stripping one must give the other.
+    fn png_with(
+        (width, height): (u32, u32),
+        (color, depth): (png::ColorType, png::BitDepth),
+        palette: Option<(&[u8], &[u8])>,
+        pixels: &[u8],
+        metadata: bool,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(color);
+        encoder.set_depth(depth);
+        if let Some((plte, trns)) = palette {
+            encoder.set_palette(plte);
+            encoder.set_trns(trns);
+        }
+        let mut writer = encoder.write_header().unwrap();
+        if metadata {
+            for (kind, data) in metadata_chunks() {
+                writer
+                    .write_chunk(png::chunk::ChunkType(kind), &data)
+                    .unwrap();
+            }
+        }
+        writer.write_image_data(pixels).unwrap();
+        if metadata {
+            let comment = [b"Comment\0".as_slice(), SECRET].concat();
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"tEXt"), &comment)
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        out
+    }
+
+    const RGBA8: (png::ColorType, png::BitDepth) = (png::ColorType::Rgba, png::BitDepth::Eight);
+
+    /// A 4×3 picture's RGBA bytes, 8 bits a sample.
+    fn rgba8_pixels() -> Vec<u8> {
+        (0..4 * 3 * 4).map(|i| (i * 21 % 256) as u8).collect()
+    }
+
+    /// [`strip_png_metadata`] over `png` in memory, its count checked.
+    fn strip(png: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        let written = strip_png_metadata(&mut &png[..], &mut out)?;
+        assert_eq!(written, out.len() as u64, "the count is what was written");
+        Ok(out)
+    }
+
+    #[test]
+    fn the_strip_keeps_only_the_chunks_that_draw_the_picture() {
+        let dirty = png_with((4, 3), RGBA8, None, &rgba8_pixels(), true);
+        assert!(contains(&dirty, SECRET), "the fixture carries its metadata");
+        let stripped = strip(&dirty).expect("a whole PNG");
+        assert!(!contains(&stripped, SECRET), "no metadata survives");
+        // The picture's own chunks come through verbatim — CRCs, compression
+        // and all — so the strip is exactly the picture without the rest.
+        assert_eq!(
+            stripped,
+            png_with((4, 3), RGBA8, None, &rgba8_pixels(), false)
+        );
+        let back = image::load_from_memory(&stripped).expect("still a PNG");
+        assert_eq!(back.into_rgba8().into_raw(), rgba8_pixels());
+    }
+
+    #[test]
+    fn a_png_with_nothing_to_strip_comes_through_byte_for_byte() {
+        let clean = png_with((4, 3), RGBA8, None, &rgba8_pixels(), false);
+        assert_eq!(strip(&clean).unwrap(), clean);
+    }
+
+    #[test]
+    fn a_sixteen_bit_picture_keeps_its_depth() {
+        // AppKit's PNG of a 16-bit TIFF may well be 16-bit itself: the strip
+        // never decodes, so the samples come through as they are.
+        let shape = (png::ColorType::Rgba, png::BitDepth::Sixteen);
+        let pixels: Vec<u8> = (0..4 * 3 * 8).map(|i| (i * 37 % 256) as u8).collect();
+        let stripped = strip(&png_with((4, 3), shape, None, &pixels, true)).unwrap();
+        assert_eq!(stripped, png_with((4, 3), shape, None, &pixels, false));
+        assert!(matches!(
+            image::load_from_memory(&stripped).unwrap(),
+            image::DynamicImage::ImageRgba16(_)
+        ));
+    }
+
+    #[test]
+    fn a_palette_picture_keeps_its_palette_and_transparency() {
+        // PLTE and tRNS are the picture, not a description of it: red at
+        // half alpha, then opaque green.
+        let shape = (png::ColorType::Indexed, png::BitDepth::Eight);
+        let palette = (&[255, 0, 0, 0, 255, 0][..], &[128][..]);
+        let pixels = [0, 1, 1, 0];
+        let stripped = strip(&png_with((2, 2), shape, Some(palette), &pixels, true)).unwrap();
+        assert_eq!(
+            stripped,
+            png_with((2, 2), shape, Some(palette), &pixels, false)
+        );
+        let back = image::load_from_memory(&stripped).unwrap().into_rgba8();
+        assert_eq!(back.get_pixel(0, 0).0, [255, 0, 0, 128]);
+        assert_eq!(back.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn bytes_after_the_end_of_the_picture_are_dropped() {
+        let clean = png_with((4, 3), RGBA8, None, &rgba8_pixels(), false);
+        assert_eq!(strip(&[&clean[..], SECRET].concat()).unwrap(), clean);
+    }
+
+    #[test]
+    fn the_strip_refuses_anything_but_a_whole_png() {
+        let clean = png_with((4, 3), RGBA8, None, &rgba8_pixels(), false);
+        let dirty = png_with((4, 3), RGBA8, None, &rgba8_pixels(), true);
+        let signature = &clean[..8];
+        // Signature (8) + IHDR (25): what follows starts at the image data.
+        let no_header = [signature, &clean[33..]].concat();
+        let too_long = [signature, &0x8000_0000_u32.to_be_bytes(), b"IHDR"].concat();
+        for (what, bytes) in [
+            ("nothing", &b""[..]),
+            ("a GIF", &b"GIF89a\x01\x00\x01\x00"[..]),
+            ("a bare signature", signature),
+            ("a first chunk that is not IHDR", &no_header),
+            ("a chunk longer than the format allows", &too_long),
+            (
+                "a picture cut inside its image data",
+                &clean[..clean.len() - 20],
+            ),
+            ("a picture cut inside a chunk it drops", &dirty[..60]),
+            ("a picture with no IEND", &clean[..clean.len() - 12]),
+        ] {
+            assert!(strip(bytes).is_err(), "{what} is refused");
+        }
+    }
+
+    #[test]
+    fn a_converted_png_is_stored_stripped_as_the_folders_next_number() {
+        // The macOS conversion's way in: AppKit's PNG, metadata and all, is
+        // the source, and what takes the number is the stripped copy.
+        let store = store();
+        let source = tempfile::tempdir().unwrap();
+        let converted = source.path().join("appkit.png");
+        std::fs::write(
+            &converted,
+            png_with((4, 3), RGBA8, None, &rgba8_pixels(), true),
+        )
+        .unwrap();
+        let path = store_png_without_metadata(store.path(), &converted, 1 << 20).expect("stored");
+        assert_eq!(path, store.path().join("1.png"));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            png_with((4, 3), RGBA8, None, &rgba8_pixels(), false)
+        );
+        assert_eq!(names(store.path()), ["1.png"], "no staging file is left");
+    }
+
+    #[test]
+    fn a_conversion_that_is_not_a_png_is_refused_and_leaves_nothing() {
+        let store = store();
+        let source = tempfile::tempdir().unwrap();
+        let converted = source.path().join("appkit.png");
+        std::fs::write(&converted, b"definitely not a png").unwrap();
+        assert!(matches!(
+            store_png_without_metadata(store.path(), &converted, 1 << 20),
+            Err(StreamError::Failed(_))
+        ));
+        assert!(names(store.path()).is_empty());
+    }
+
+    #[test]
+    fn a_conversion_past_the_byte_cap_is_refused_as_too_large() {
+        // The cap every other paste path keeps: a refusal the caller can
+        // tell apart, with nothing left in the folder.
+        let store = store();
+        let source = tempfile::tempdir().unwrap();
+        let converted = source.path().join("appkit.png");
+        std::fs::write(
+            &converted,
+            png_with((4, 3), RGBA8, None, &rgba8_pixels(), false),
+        )
+        .unwrap();
+        assert!(matches!(
+            store_png_without_metadata(store.path(), &converted, 16),
+            Err(StreamError::TooLarge(_))
+        ));
+        assert!(names(store.path()).is_empty());
     }
 
     #[test]

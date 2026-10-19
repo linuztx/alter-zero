@@ -301,6 +301,31 @@ fn ctrl_alt_v_also_requests_an_image_paste() {
 }
 
 #[test]
+fn cmd_v_requests_an_image_paste_rather_than_typing_a_v() {
+    // macOS's Cmd+V does not reach us through a terminal (it is the
+    // emulator's own Paste menu, `docs/image-paste.md`), but a terminal that
+    // forwards SUPER anyway must not turn it into a literal `v` in the draft —
+    // the character arm excludes SUPER for exactly this reason.
+    let mut app = App::new();
+    let key = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER);
+    assert_eq!(app.on_key(key), Action::PasteImage);
+    assert_eq!(app.input.text(), "", "the chord types nothing");
+}
+
+#[test]
+fn cmd_shift_v_also_requests_an_image_paste() {
+    // Cmd+Shift+V is the "paste and match style" chord some terminals map; it
+    // is the same intent and must not insert a capital `V` either.
+    let mut app = App::new();
+    let key = KeyEvent::new(
+        KeyCode::Char('V'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
+    );
+    assert_eq!(app.on_key(key), Action::PasteImage);
+    assert_eq!(app.input.text(), "", "the chord types nothing");
+}
+
+#[test]
 fn attach_image_inserts_a_placeholder_and_records_the_path() {
     let mut app = App::new();
     app.attach_image(PathBuf::from("/tmp/a.png"));
