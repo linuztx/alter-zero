@@ -129,13 +129,18 @@ path — a configured display is left entirely to the steps below.
    PNG-encode it **straight into its file** through a `BufWriter` — not
    into a growing in-memory vector copied to disk afterwards.
 4. **macOS: AppKit's own coercion** (`clipboard/macos.rs`), when step 3
-   refuses. See *The 16-bit TIFF* below. It is a fallback and not a first
-   step because the picture it rescues is the one arboard *cannot* read: a
-   `public.png` copy and an 8-bit TIFF already succeed at step 3, since
-   `NSPasteboard` re-encodes a PNG owner's picture to TIFF on demand. Only
-   the 16-bit shape reaches here.
+   refuses. See *The 16-bit TIFF (macOS)* below. It is a fallback and not a
+   first step because the picture it rescues is the one arboard *cannot*
+   read: a `public.png` copy and an 8-bit TIFF already succeed at step 3,
+   since `NSPasteboard` re-encodes a PNG owner's picture to TIFF on demand.
+   Only the 16-bit floating-point shape reaches here.
+5. Either way the bytes land in the paste folder as its next number —
+   `1.png`, `2.jpg`, … — whose path is returned: always **our own copy**,
+   never the user's original (the discard cleanup deletes what this returns);
+   the backend reads the file (the TUI never base64-encodes it — codex
+   parity). *Where a paste is saved* below has the folder and the numbering.
 
-Either way a paste that yields no picture at all is refused with
+A paste that yields no picture at all is refused with
 [`NO_IMAGE_ON_CLIPBOARD`](../src/clipboard.rs), which names the two shapes
 that look like an image and are not — a *file* copy, a web page's selection —
 and the way around it a display-less Linux session already gets: save the
@@ -143,8 +148,9 @@ picture and ask for its path.
 
 ## The 16-bit TIFF (macOS)
 
-Every screenshot taken with ⇧⌘4 lands on the pasteboard as a **`public.tiff`**,
-and `NSImage.tiffRepresentation` writes **16 bits per channel** by default
+A screenshot copied to the clipboard (⌃⇧⌘4 — ⇧⌘4 alone saves it to a file)
+lands on the pasteboard as a **`public.tiff`**, and
+`NSImage.tiffRepresentation` writes **16 bits per channel** by default
 (`bitsPerSample = 16,16,16,16`, `sampleFormat = 3`, measured with `tiffinfo`
 on this machine). arboard's macOS backend asks the pasteboard for that TIFF
 and hands it to the `image` crate, whose TIFF decoder refuses the shape
@@ -166,9 +172,10 @@ the clipboard as «class PNGf»     (via /usr/bin/osascript -e, path in argv)
 holding no picture — a text copy, a file copy (arboard's `file_list()` handles
 those first) — and reads as "not this path", not as a failure. Anything else
 is surfaced. The destination is a hidden **staging file inside the paste
-folder**, re-numbered through the same `store_image`/`keep_numbered` path every
-other paste takes, with `set eof fp to 0` before the write so a shorter picture
-never inherits a longer file's tail; a refused conversion deletes it.
+folder**, written with `set eof fp to 0` first so a shorter picture never
+inherits a longer file's tail. That file never takes a number itself: the
+paste keeps a copy of it with the metadata stripped (below), and the staging
+file is deleted however the paste ends.
 
 ### Metadata is stripped, not carried
 
@@ -188,37 +195,60 @@ window title and the app that took it. And a pasted picture is not sent once:
 the conversation (`docs/context.md`), so a location tag pasted in turn one
 reaches the provider on turn twenty.
 
-So `clipboard::macos::strip_metadata` **decodes the PNG and re-encodes it from
-the pixels** before it takes a number. What survives is `IHDR`, a fresh
-`IDAT` and `IEND` — no `eXIf`, `iTXt`, `tEXt`, `zTXt` or ICC profile. Measured
-on the four-tag TIFF the boundary test builds: 1215 bytes → **169 bytes**,
-with every marker gone and the pixels untouched.
+So the paste never keeps AppKit's file. `clipboard::store_png_without_metadata`
+copies it into the paste folder **chunk by chunk, keeping only the five that
+draw the picture** — `IHDR`, `PLTE`, `tRNS`, `IDAT`, `IEND`
+(`strip_png_metadata`) — and skips every other chunk unread: `eXIf`, `iTXt`,
+`tEXt`, `zTXt`, the `iCCP` profile (whose description can name the display),
+and any chunk this code has never heard of. It is an allowlist rather than a
+list of what to remove, so a chunk a future AppKit invents is dropped, not
+kept; and PNG chunks do not nest — every one, metadata included, is a sibling
+at the top level — so there is nowhere else for metadata to hide.
 
-A decode-and-re-encode rather than a chunk filter, deliberately: a filter has
-to enumerate every metadata chunk this AppKit and every future one might write,
-and the ones nested inside others; the `image` decoder already ignores all of
-them, so re-encoding cannot leave one behind. The cost is one decode of a
-picture about to be handed to a model anyway, on a worker thread, behind a
-~150 ms subprocess.
+The kept chunks are copied **verbatim**, CRCs and all, so the pixels arrive
+byte for byte with the depth and compression AppKit chose, and the picture is
+never decoded: a buffer or two in hand whatever it weighs, where a decode and
+re-encode would hold the whole bitmap — 8 bytes a pixel for a 16-bit
+screenshot, tens of megabytes on a Retina display — only to write most of it
+back out (`docs/memory.md` has why that matters here). The copy goes through
+the same `store_image` every other paste takes, so it is capped at
+`CLIPBOARD_IMAGE_MAX_BYTES`, header-checked and numbered like them. The one
+thing given up is the colour profile: a wide-gamut screenshot's colours are
+read as sRGB — what the raw-RGBA path (step 3) has always done, having no
+profile to keep.
 
-Scope, so the rule is not mistaken for overreach:
+Scope, so the rule is not mistaken for overreach — or for more than it is:
 
-- This applies to **the copy a paste creates**, which is ours. The `read`
-  tool's path is *the user's own file*: it is sent as it is (or downscaled by
-  `/settings` → **Auto-resize images**, which re-encodes and so drops metadata
-  too — a side effect, not a promise).
+- This applies to **the copy the AppKit conversion creates**, which is ours.
+  The `read` tool's path is *the user's own file*: it is sent as it is (or
+  downscaled by `/settings` → **Auto-resize images**, which re-encodes and so
+  drops metadata too — a side effect, not a promise).
 - A pasted **file** copied in Finder is copied verbatim (`image_from_files`),
   metadata and all. That is the user handing us a file they already own by
   name; the paste folder's copy is what gets re-sent.
-- No other paste path can carry metadata: a Linux stream copies the owner's
-  PNG bytes verbatim (X11 `image/png` screenshots carry no EXIF), and the
-  raw-RGBA fallback builds a PNG from pixels alone.
+- The raw-RGBA fallback (step 3) builds its PNG from pixels alone, so it
+  carries nothing.
+- A **Linux** stream (step 0) is *not* stripped: it copies the owner's
+  `image/png`, `jpeg`, `gif` or `webp` bytes verbatim — that is the point of
+  streaming it — so whatever the owner wrote into them rides along, a PNG's
+  text chunks or a JPEG's EXIF. `tests/clipboard_linux.rs` serves a PNG with
+  a text chunk precisely because it must arrive unchanged.
 
-`tests/clipboard_macos.rs` pins it: the four-tag TIFF above is put on the real
-pasteboard, and the test requires every marker *and* both chunk names to be
-absent from the stored file, with the 8×8 pixels intact.
+The rule is unit-tested headless in `clipboard.rs`, which is what the Linux
+gate runs, over PNGs carrying every chunk above: the stripped copy must be
+byte-identical to the same picture encoded without them, 16-bit and palette
+pictures included, and anything short of a whole PNG is refused with nothing
+left in the folder. `tests/clipboard_macos.rs` then checks it end to end on
+the real pasteboard: a 16-bit floating-point TIFF carrying `ImageDescription`,
+`Artist` and `Software` — the shape arboard refuses, so only this fallback can
+paste it — must paste with none of the three, no `eXIf` and no XMP packet in
+the stored file, and the 8×8 picture intact. A control runs AppKit's own
+conversion of the same pasteboard first and requires the tags to be *there*:
+without it the test could not tell the strip from a conversion that dropped
+them by itself.
 
-**Why a subprocess and not AppKit directly**: the conversion needs`NSBitmapImageRep::representationUsingType:properties:`, which
+**Why a subprocess and not AppKit directly**: the conversion needs
+`NSBitmapImageRep::representationUsingType:properties:`, which
 `objc2-app-kit` marks `unsafe`, and this crate sets `unsafe_code = "forbid"`
 (`Cargo.toml`). `osascript` is a first-party macOS binary that already speaks
 AppKit, so the crate stays unsafe-free and gains no dependency. Measured cost
@@ -228,10 +258,15 @@ takes the same route. If that cost ever matters, the replacement is a small
 audited `objc2` wrapper — not a widened `unsafe_code`.
 
 **`tests/clipboard_macos.rs`** (ignored by default, like the Linux one) pins
-both halves against the real pasteboard: a 16-bit TIFF screenshot pastes to
+both halves against the real pasteboard: a 16-bit floating-point TIFF built by
+the test — never one whose depth the machine's display decides — pastes to
 `1.png` with no staging file left behind, and a text clipboard refuses with the
 message above. Run it on a Mac with
-`cargo test --test clipboard_macos -- --ignored --test-threads=1`.
+`cargo test --test clipboard_macos -- --ignored --test-threads=1`. CI runs it
+on `macos-latest` (the *clipboard (macOS pasteboard)* job), where a test that
+cannot reach the pasteboard **fails** rather than skipping (`CI` is set), so a
+green job means every paste really ran; the same job runs the `clipboard::`
+unit tests, since `macos.rs`'s own never compile on the Linux gate.
 
 ## Where a macOS paste cannot run
 
@@ -290,12 +325,6 @@ Super mapping, or one that translates Cmd to Alt), is
 `KeyModifiers::SUPER` in the same arm — so the chord resolves to
 `Action::PasteImage` instead of falling through to the character arm and
 typing a stray `v`. The character arm excludes `SUPER` for the same reason.
-
-4. Either way the bytes land in the paste folder as its next number —
-   `1.png`, `2.jpg`, … — whose path is returned: always **our own copy**,
-   never the user's original (the discard cleanup deletes what this returns);
-   the backend reads the file (the TUI never base64-encodes it — codex
-   parity). The next section has the folder and the numbering.
 
 ## Where a paste is saved
 
@@ -588,6 +617,13 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   past the cap is refused and leaves the folder empty), plus the streamed
   `encode_png_into` round-tripping pixels exactly. `tests/image_paste_memory.rs`
   gates what each stage may cost the resident set (`docs/memory.md`).
+- `clipboard.rs` unit-tests the macOS conversion's metadata strip headless:
+  `strip_png_metadata` keeps exactly `IHDR`/`PLTE`/`tRNS`/`IDAT`/`IEND` — the
+  stripped copy byte-identical to the same picture encoded without its
+  `iCCP`, `eXIf`, XMP, `tEXt`, `zTXt` and private chunks, 16-bit and palette
+  pictures included, bytes after `IEND` dropped — and refuses anything short
+  of a whole PNG; `store_png_without_metadata` numbers the stripped copy,
+  refuses junk and a copy past the cap, and leaves nothing behind either way.
 - `tests/clipboard_linux.rs` (ignored by default — it needs an X server):
   the read itself, against a real one. `tests/support/x11_owner.rs` is a
   minimal selection owner that serves one encoded payload the way a
@@ -598,13 +634,22 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   level and carries a text chunk, so no decode-and-re-encode could reproduce
   it: byte equality is proof the bytes were streamed. An owner that has only
   a JPEG (and declines `image/png`) must land its bytes verbatim as `1.jpg`,
-  and an owner with no picture at all must fail with the message the red
-  notice always carried and leave the folder empty. Run it under a virtual
-  server:
+  and an owner with no picture at all must fail with `NO_IMAGE_ON_CLIPBOARD`
+  and leave the folder empty. CI runs it under `Xvfb` (the *clipboard (X11)*
+  job); by hand:
 
   ```
   Xvfb :99 & DISPLAY=:99 cargo test --test clipboard_linux -- --ignored
   ```
+- `tests/clipboard_macos.rs` (ignored by default — it needs a GUI session):
+  the macOS read against the real pasteboard. A hand-built 16-bit
+  floating-point TIFF pastes through the AppKit fallback, its tags never
+  reach the stored file (against a control proving AppKit's conversion still
+  carries them), and a text clipboard refuses with `NO_IMAGE_ON_CLIPBOARD`.
+  `clipboard/macos.rs` unit-tests its pure halves: the session rule
+  (`judge_session`, `is_desktop_session`), the refusals' wording, and the
+  script's shape (its path in `argv`, `set eof fp to 0`, a balanced `try`).
+  Both run in CI's *clipboard (macOS pasteboard)* job.
 
 ## Measuring
 

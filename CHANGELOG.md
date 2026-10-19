@@ -142,24 +142,25 @@ release heading when a version is cut.
 
 ### Fixed
 
-- **Ctrl+V pastes a screenshot on macOS.** Every screenshot taken with ⇧⌘4
-  lands on the pasteboard as a 16-bit TIFF, and the TIFF decoder behind the
-  clipboard read refuses that shape, so the paste reported `no image on the
-  clipboard` for a clipboard holding a perfectly good picture. The read now
-  falls back to AppKit's own coercion (`the clipboard as «class PNGf»`), which
-  turns any picture on the pasteboard into a PNG whatever flavour the app that
-  copied it chose. Cmd+V still does not work and cannot — the chord belongs to
-  the terminal's own Paste menu — so the binding is Ctrl+V, and a terminal
-  that does forward Cmd+V now pastes instead of typing a stray `v`
-  (`docs/image-paste.md`).
+- **Ctrl+V pastes a screenshot on macOS.** A screenshot copied to the
+  clipboard (⌃⇧⌘4) lands on the pasteboard as a 16-bit floating-point TIFF,
+  and the TIFF decoder behind the clipboard read refuses that shape, so the
+  paste reported `no image on the clipboard` for a clipboard holding a
+  perfectly good picture. The read now falls back to AppKit's own coercion
+  (`the clipboard as «class PNGf»`), which turns any picture on the
+  pasteboard into a PNG whatever flavour the app that copied it chose. Cmd+V
+  still does not work and cannot — the chord belongs to the terminal's own
+  Paste menu — so the binding is Ctrl+V, and a terminal that does forward
+  Cmd+V now pastes instead of typing a stray `v` (`docs/image-paste.md`).
 - **A pasted picture no longer carries its metadata to the model.** AppKit's
   coercion copies the pasteboard picture's tags along: a TIFF's
   ImageDescription, `Artist` and `Software` land in the PNG's `eXIf` chunk and
   again in an XMP packet, and a photo's GPS and camera tags ride the same way.
   A pasted picture is re-sent with every later turn, so that would have
   reached the provider on every turn of the conversation. The paste now
-  re-encodes its copy from the pixels, keeping the picture and dropping
-  `eXIf`, `iTXt`, `tEXt`, `zTXt` and the ICC profile. The tool that reads a
+  keeps only the chunks that draw the picture — its pixels copied byte for
+  byte, never decoded — and drops the rest: `eXIf`, `iTXt`, `tEXt`, `zTXt`,
+  the ICC profile and any chunk it does not recognise. The tool that reads a
   file you name still sends it as it is (`docs/image-paste.md`).
 - **A macOS paste says why it cannot run, instead of failing obscurely.** A
   session that never entered the window server — a daemon, an `ssh` login — has
@@ -173,7 +174,7 @@ release heading when a version is cut.
   names the two shapes that look like an image and are not — a *file* copy,
   and a web page's selection — and the way around it: save the picture and ask
   Alter Zero to read its path (`docs/image-paste.md`).
- With
+- **`/skills` no longer says skills are off when none are installed.** With
   no skills found, the page told you to turn them on in `/settings`, where
   that row can't be switched on until a skill exists. It now shows only where
   to add one (`docs/skills.md`).
