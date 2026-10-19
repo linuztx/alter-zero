@@ -106,12 +106,14 @@ to manage keys programmatically). From the environment,
 `ALTER_ZERO_PROVIDER=venice` with `VENICE_API_KEY` exported launches on it
 directly (`ALTER_ZERO_MODEL` names the model, else `/model` picks one).
 
-Every other Venice knob rides the same table: a user's own copy of
-`providers.toml` (`~/.alter-zero/providers.toml`, or `ALTER_ZERO_PROVIDERS_FILE`)
-can add `enable_web_search = "auto"`, `strip_thinking_response = true` or a
-`character_slug` under `[providers.venice.kwargs.venice_parameters]`, and the
-table round-trips into the body untouched — the mode's `disable_thinking`
-sync preserves the other keys.
+Every other Venice knob rides the same table, and needs no copy of the
+shipped file: a block in the user's own `~/.alter-zero/providers.toml`
+patches the shipped one key by key (`docs/user-providers.md`), so
+`enable_web_search = "auto"`, `strip_thinking_response = true` or a
+`character_slug` under `[providers.venice.kwargs.venice_parameters]` lands
+beside the shipped `include_venice_system_prompt = false`, and the table
+round-trips into the body untouched — the mode's `disable_thinking` sync
+preserves the other keys.
 
 ## Testing
 

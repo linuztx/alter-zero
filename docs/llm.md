@@ -26,7 +26,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | --- | --- | --- |
 | `llm/mod.rs` | `ChatMessage`, module glue, `LlmError`/`Result` | mostly |
 | `llm/cache.rs` | prompt-cache request shaping — which models need explicit `cache_control` breakpoints, and the wire-JSON rewrite that places them (`docs/prompt-caching.md`) | **pure** |
-| `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
+| `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, the user's own file laid over the built-ins with every problem in it worded for a toast (`docs/user-providers.md`), `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
 | `llm/copilot.rs` | GitHub Copilot: the device flow's wire shapes and poll verdict, the OAuth→bearer exchange every request resolves through, and the request identity its API insists on (`docs/copilot.md`) | split |
 | `llm/cline.rs` | Cline's account sign-in: the WorkOS device flow's shapes and verdicts, the register/refresh envelope, the `workos:` bearer spelling, the freshness rule (pure); the flow's HTTP calls, the access-token cache and the rotation write-back (`docs/cline.md`) | split |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
@@ -132,7 +132,7 @@ stream + `ThinkingEnd` (when the response text resumes), driving the existing
 
 ## Configuration and the dummy toggle
 
-`providers.toml` (repo root by default) declares the providers; see the file's own
+`providers.toml` (the repo root's, embedded as the built-ins) declares the providers; see the file's own
 comments for the block shape. Two of its keys change how a provider is *reached*
 rather than what it is called, and both degrade to their default on a value this
 build doesn't know: `auth` decides which `/login` list the provider appears in
@@ -143,12 +143,18 @@ Chat Completions, Responses, Messages or native-Ollama shape
 (`docs/chatgpt.md`, `docs/claude.md`, `docs/ollama.md`). They are
 deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
-environment variable that replaces the base (Ollama's `OLLAMA_HOST`). Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
-→ `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
-shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `venice`,
-Venice's own API behind it, `docs/venice.md`; `openrouter`; `github_copilot`;
-`chatgpt_codex`; `anthropic` and `anthropic_console`; `cline` and `cline_pass`
-(`docs/cline.md`); `ollama` and `ollama_cloud`).
+environment variable that replaces the base (Ollama's `OLLAMA_HOST`). The
+table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
+and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
+`github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
+`cline` and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`), with
+the user's own `~/.alter-zero/providers.toml` **laid over** them: a block with
+a new id adds a provider, one naming a shipped provider changes only the keys
+it sets, and every problem in the file is a toast rather than a silence
+(`docs/user-providers.md`). `ALTER_ZERO_PROVIDERS_FILE` instead names a file
+that stands **alone**, none of the built-ins beside it. A `providers.toml` in
+the working directory is never read: a checkout could otherwise point a
+stored key at a host of its choosing.
 
 The active backend is chosen at startup — from env, then the **persisted
 selection** (`~/.alter-zero/config.json`, written by `/model` — **this working
@@ -166,7 +172,8 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_MODEL` | active model id | saved selection, then unset → dummy |
 | `ALTER_ZERO_API_KEY` | generic API key (fallback) | unset |
 | `<PROVIDER>_API_KEY` | per-provider key, e.g. `OPENROUTER_API_KEY` | unset |
-| `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
+| `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`, and the user's own `providers.toml`) | `~/.alter-zero` |
+| `ALTER_ZERO_PROVIDERS_FILE` | a provider file that stands **alone** — only its providers, none of the built-ins (`docs/user-providers.md`) | the built-ins + `{config_home}/providers.toml` |
 | `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server ChatGPT Codex's browser and device-code sign-ins talk to — a fork's own, or the smoke suite's local stub (`docs/chatgpt.md`) | `https://auth.openai.com` |
 | `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
@@ -200,6 +207,10 @@ so it can never kill the TUI) and created on first write:
   file's own shape). A directory you launch in for the first time takes the
   last selection and pins it as its own, so a switch made here stays here
   (`docs/per-directory-state.md`).
+
+Beside them sits one file the app reads and never writes: **`providers.toml`**,
+the user's own providers, laid over the shipped ones and re-read whenever
+`/login` or `/model` opens (`docs/user-providers.md`).
 
 ### Where a key comes from: `.env` persistence
 

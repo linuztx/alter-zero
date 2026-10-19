@@ -574,6 +574,12 @@ impl<'t> Session<'t> {
         session.report_mcp_errors();
         session.report_trust_state(trust_error);
         session.report_secrets_error(secrets_error);
+        // Last of the config reports, so it is the one left showing: a
+        // provider the user wrote that did not load is the likeliest to
+        // leave the session on a model it was not meant to run
+        // (docs/user-providers.md).
+        let provider_issues = session.models.provider_issues().to_vec();
+        session.report_provider_issues(&provider_issues);
         let picker = session.apply_startup(startup);
         // The capability probe for whatever model the session ended up on —
         // the directory's entry, or a resumed conversation's own.

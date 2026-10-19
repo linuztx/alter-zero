@@ -216,6 +216,7 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     if !options.is_empty() {
         fields.insert("options".to_string(), Value::Object(options));
     }
+    cfg.drop_refused(&mut fields);
     Request {
         fields,
         messages: messages_of(messages),
@@ -1059,6 +1060,18 @@ mod tests {
         let payload = build_payload(&cfg, &[], &[text("user", "hi")]);
         assert_eq!(payload["options"]["num_ctx"], 32_768);
         assert_eq!(payload["options"]["temperature"], 0.5);
+    }
+
+    #[test]
+    fn a_provider_drops_the_fields_its_server_refuses_here_too() {
+        // `drop_params` is the provider's, whatever its wire
+        // (docs/user-providers.md).
+        let mut cfg = cfg();
+        cfg.thinking = Some(ThinkingMode::On);
+        cfg.drop_params = vec!["think".to_string()];
+        let payload = build_payload(&cfg, &[], &[text("user", "hi")]);
+        assert!(payload.get("think").is_none(), "{payload}");
+        assert_eq!(payload["stream"], true);
     }
 
     #[test]

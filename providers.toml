@@ -1,6 +1,13 @@
 # LLM provider definitions (docs/llm.md).
 #
-# Add a new provider by adding a [providers.<id>] block below.
+# These are the providers the app ships with; this file is embedded in the
+# binary. To add one of your own — any OpenAI-compatible API, or a local
+# server such as LM Studio, llama.cpp or vLLM — don't copy this file: write the
+# block in ~/.alter-zero/providers.toml, which is laid over these
+# (docs/user-providers.md). A block there with a new id adds a provider, and
+# one naming a provider here changes only the keys it sets.
+#
+# A shipped provider is a [providers.<id>] block below.
 #   - `name` is required — the human-readable label.
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
@@ -25,6 +32,9 @@
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
 #     docs/ollama.md).
+#   - `drop_params` (optional) lists top-level request fields the provider's
+#     server refuses (`prompt_cache_key`, `stream_options`, …), taken out of
+#     every request after everything else is set (docs/user-providers.md).
 #
 # The active provider/model is chosen with `ALTER_ZERO_PROVIDER` /
 # `ALTER_ZERO_MODEL`, or interactively with the `/model` picker, and persists to
@@ -37,8 +47,9 @@
 # them (anthropic/…, qwen/… ids), sends a per-session `prompt_cache_key`
 # (plus `session_id` on OpenRouter bases) for cache affinity, and asks every
 # stream for its final usage frame (`stream_options.include_usage` — the token
-# tally snaps to it). Since kwargs merge over the base payload, a provider
-# whose shim rejects `stream_options` can override it from its kwargs table.
+# tally snaps to it). A provider whose server rejects `stream_options` or
+# `prompt_cache_key` names it in `drop_params`: kwargs merge over the base
+# payload, so they can change such a field, but TOML has no null to remove it.
 
 [providers.a0_venice]
 name = "Agent Zero API"

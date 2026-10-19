@@ -31,6 +31,13 @@ What the project layer reads:
 | `{root}/.alter-zero/mcp.json`   | project MCP servers — **new**               | first-name-wins, ahead of `.mcp.json`        |
 | `{root}/.mcp.json`              | Claude-Code-compat MCP servers (existing)   | first-name-wins, after `.alter-zero/mcp.json` |
 
+Not among them: a `providers.toml`. A provider block in a checkout could
+point a stored key at a host of the checkout's choosing, and unlike a hook it
+would do so before anything could be reviewed — the startup capability probe
+lists the active provider's models unasked — so provider files are read from
+the user's config home only (`docs/user-providers.md`). The app used to read
+one from the working directory; it no longer does.
+
 ## The trust gate
 
 `docs/hooks.md` deferred project hooks for exactly one reason: **cloning a

@@ -36,7 +36,37 @@ release heading when a version is cut.
   whole file as it streams. This works with every provider, in a subagent's
   session view, and in the offline demo (`docs/write-streaming.md`).
 
+- **Add providers of your own in `~/.alter-zero/providers.toml`.** Any
+  service with an OpenAI-compatible API, or a local server such as LM
+  Studio, llama.cpp or vLLM, can be added with a few lines in your own
+  providers file, and it shows up in `/login` and `/model` beside the
+  built-in providers. Your file used to replace the built-in list entirely,
+  so adding one provider meant copying the whole shipped file, which then
+  never picked up a fix or a new provider again. Now a block with a new name
+  adds a provider, and a block that names a built-in one changes only the
+  settings it lists, such as one more header on OpenRouter or Venice's web
+  search. `/login` and `/model` re-read the file when they open, so a
+  provider you add (or ask the agent to add) is there without a restart. A
+  local server that takes no key is listed as soon as it is described, and a
+  new `drop_params` setting takes out request fields a strict server refuses,
+  such as `prompt_cache_key` (`docs/user-providers.md`).
+
 ### Changed
+
+- **A mistake in your `providers.toml` is reported instead of ignored.** A
+  file that didn't parse used to be skipped without a word, leaving the
+  built-in providers and no sign of yours. Now each problem shows as a red
+  notice at startup and when `/login` or `/model` opens, naming the line or
+  the setting. The most common slips name their fix: `base_url`, or an
+  `api_base` outside `[providers.<id>.kwargs]`, points at where the address
+  goes, and an `api_key` written into the file points at `/login`. A problem
+  in one provider no longer costs the others.
+- **A `providers.toml` in the directory you launch in is no longer read.** It
+  replaced your providers whenever you started the app there, so a cloned
+  repository could carry one that sent a stored API key to a server of its
+  choosing. Your providers live in `~/.alter-zero/providers.toml`, which now
+  also moves with `ALTER_ZERO_CONFIG_DIR`, and `ALTER_ZERO_PROVIDERS_FILE`
+  still names a file to use on its own.
 
 - **Inline pages no longer pad their frame with blank rows.** Every page
   that opens in place of the input box used to leave an empty row under its
@@ -151,6 +181,13 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **`/model` lists Together AI's models.** Together answers its model list
+  with a bare JSON array instead of the usual `{"data": …}` wrapper, which
+  failed the whole listing, so a Together provider showed as unavailable
+  with nothing to pick. Both shapes are read now. The context window is also
+  read from `max_model_len` (vLLM) and `max_context_length` (Mistral, LM
+  Studio), so those servers' models get the footer's context gauge and
+  automatic compaction.
 - **Ctrl+V pastes a screenshot on macOS.** A screenshot copied to the
   clipboard (⌃⇧⌘4) lands on the pasteboard as a 16-bit floating-point TIFF,
   and the TIFF decoder behind the clipboard read refuses that shape, so the

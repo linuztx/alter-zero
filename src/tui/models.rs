@@ -62,8 +62,14 @@ type Thinking = (ReasoningSupport, ThinkingMode);
 
 /// The reply backend plus the configuration that chose it.
 pub(crate) struct ModelSession {
-    /// The provider table (`providers.toml` or the built-in default).
+    /// The provider table: the built-ins with the user's own `providers.toml`
+    /// laid over them, or `ALTER_ZERO_PROVIDERS_FILE` alone
+    /// (`docs/user-providers.md`). Re-read whenever `/login` or `/model`
+    /// opens, so a provider added mid-session is there without a restart.
     providers: ProvidersFile,
+    /// What was wrong with the provider file at the last report — so a file
+    /// that is still broken the same way is said once, not at every open.
+    provider_issues: Vec<String>,
     /// The `.env` key store the `/login` flow writes, and its path. Keys live
     /// in this map rather than the process env — `set_var` is `unsafe`, which
     /// this crate forbids.
@@ -233,7 +239,7 @@ impl ModelSession {
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
     ) -> Self {
-        let providers = config::load_providers();
+        let (providers, provider_issues) = config::load_providers();
         // The persistent API-key store: `.env` in the config home (or
         // `ALTER_ZERO_ENV_FILE`), written by the `/login` flow and consulted
         // during key resolution (a real process env var still wins).
@@ -473,6 +479,7 @@ impl ModelSession {
         });
         Self {
             providers,
+            provider_issues,
             env_path_display: ui::display_cwd(&env_file_path, home),
             env_file,
             env_file_path,
@@ -586,6 +593,33 @@ impl ModelSession {
     /// The `~`-relative `.env` path the `/login` hint names.
     pub(crate) fn env_path_display(&self) -> &str {
         &self.env_path_display
+    }
+
+    /// What was wrong with the provider file the table was loaded from — the
+    /// startup report's rows (`docs/user-providers.md`).
+    pub(crate) fn provider_issues(&self) -> &[String] {
+        &self.provider_issues
+    }
+
+    /// Re-read the provider table, so the page about to open is built from
+    /// the file as it is now — a provider written mid-session, by hand or by
+    /// the agent itself, is there without a restart (`docs/user-providers.md`).
+    ///
+    /// The live backend is untouched: it was built from a resolved config and
+    /// keeps streaming on it. Only what reads the table next — the page, a
+    /// pick from it, a later rebuild — sees the change, and a rebuild whose
+    /// provider has since left the file keeps the backend it has.
+    ///
+    /// Returns the file's issues only when they differ from the last ones
+    /// reported, so a file still broken the same way is said once.
+    pub(crate) fn reload_providers(&mut self) -> Vec<String> {
+        let (providers, issues) = config::load_providers();
+        self.providers = providers;
+        if issues == self.provider_issues {
+            return Vec::new();
+        }
+        self.provider_issues.clone_from(&issues);
+        issues
     }
 
     /// The environment variable a provider's key is read from — the "run
@@ -1752,12 +1786,40 @@ impl Session<'_> {
         });
     }
 
+    /// Say that the provider file had problems — the skills toast's rule
+    /// (`docs/user-providers.md`): a provider the user wrote that silently
+    /// never appears makes "my provider isn't in /login" and "I typo'd the
+    /// file" read as two unrelated problems. One row names the first issue;
+    /// the rest are counted.
+    pub(crate) fn report_provider_issues(&mut self, issues: &[String]) {
+        let Some(first) = issues.first() else {
+            return;
+        };
+        let more = issues.len() - 1;
+        let tail = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        self.toast(format!("{first}{tail}"), ToastKind::Error);
+    }
+
+    /// Re-read the provider file before a page built from it opens —
+    /// `/login`'s lists and `/model`'s fetch — and say what is newly wrong
+    /// with it (`docs/user-providers.md`).
+    pub(crate) fn reload_providers(&mut self) {
+        let issues = self.models.reload_providers();
+        self.report_provider_issues(&issues);
+    }
+
     /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it
     /// replaces the composer — no alternate screen) and fetch every configured
     /// provider's list off-thread in parallel; the picker shows each as it lands
     /// and merges them into one list. With none configured, skip the fetch and
-    /// point the user at `/login` instead.
+    /// point the user at `/login` instead. The provider file is re-read first,
+    /// so a provider added since startup is fetched too.
     pub(crate) fn open_model_picker(&mut self) {
+        self.reload_providers();
         let current = self.models.active_model().to_string();
         self.app.open_model_picker(current);
         if let Some(provider) = self.models.active_provider() {
