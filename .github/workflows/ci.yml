@@ -113,11 +113,12 @@ jobs:
 
   clipboard-macos:
     # The macOS pasteboard read against the **real** pasteboard
-    # (docs/image-paste.md): the 16-bit TIFF a ⇧⌘4 screenshot plants, the
-    # metadata AppKit's coercion would otherwise copy, and the refusal a text
-    # clipboard earns. `tests/clipboard_macos.rs` skips itself on a runner with
-    # no GUI session, so a pass here says the pasteboard was reachable — the
-    # `launchctl managername` gate the code itself applies.
+    # (docs/image-paste.md): the 16-bit floating-point TIFF a ⌃⇧⌘4 screenshot
+    # plants, the metadata AppKit's coercion would otherwise copy, and the
+    # refusal a text clipboard earns. `tests/clipboard_macos.rs` fails rather
+    # than skips when `CI` is set, so a pass here means every paste really ran.
+    # The `clipboard::` unit tests run first: `clipboard/macos.rs`'s own are
+    # macOS-only, so the Linux gate never compiles them.
     name: clipboard (macOS pasteboard)
     runs-on: macos-latest
     steps:
@@ -127,6 +128,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: debug
+      - run: cargo test --lib clipboard::
       - run: cargo test --test clipboard_macos -- --ignored --test-threads=1
 
   release-tooling:
