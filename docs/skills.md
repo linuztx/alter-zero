@@ -107,8 +107,8 @@ there is nothing here that executes on discovery.
 
 ### Built-in skills
 
-Four skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
-**`web-search`** and **`yt-dlp`**. All use the same seed and discovery path
+Five skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
+**`web-search`**, **`yt-dlp`** and **`flaredantic`**. All use the same seed and discovery path
 described below.
 
 #### `skill-creator`
@@ -349,6 +349,34 @@ not be logged or copied into the download directory. It does not claim to
 bypass DRM or access controls. Like the other built-ins, its seeded copy is
 editable, project skills can shadow it, `/skills` can disable it, and an
 `ALTER_ZERO_SKILLS_DIR` override is never seeded.
+
+#### `flaredantic`
+
+**`flaredantic`** guides public localhost shares, webhooks and TCP forwarding
+with Flaredantic's external `flare` CLI. Its `SKILL.md` and `reference.md` under
+`prompts/skills/flaredantic/` cover provider caveats, Python integration and
+troubleshooting. Cloudflare is the HTTP default; raw TCP deliberately uses
+Serveo (`--tcp` forces it), whose allocated public port may differ from the
+local port. Microsoft is an explicit choice: it hosts with `--allow-anonymous`,
+so provider login is not visitor authentication, and an existing tunnel ID may
+expose other ports. Check its port inventory before hosting; the CLI cannot
+select a fresh ID.
+
+The agent checks the intended listener and safe local route, then reviews
+public-exposure risks (debug/admin endpoints, secrets and private data) before
+launch. Sensitive exposure needs explicit confirmation and protection; HTTPS
+alone is not app authentication. Keep the tunnel in a tracked session, capture
+the actual endpoint, and compare a safe public probe with the local response
+before calling it live. Cleanup sends Ctrl+C to that session and verifies the
+exact wrapper and child have stopped, not a global process kill. Microsoft
+shutdown leaves cloud-side resources; deleting them needs separate intent.
+
+This is a temporary share from a running machine, not deployment. The skill
+adds **no native tool or dependency**, does not bundle or install `flare`, and
+loading it executes nothing and starts no tunnel. Later CLI calls use the
+ordinary shell permission gate. Its seeded files preserve edits, deleted files
+return next launch, project skills take precedence, `/skills` disables it, and
+an `ALTER_ZERO_SKILLS_DIR` override receives no built-ins.
 
 ### The walk re-runs every turn
 
@@ -877,7 +905,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | Where | What |
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
-| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` (`SKILL.md` + `reference.md`), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
+| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
 | `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |

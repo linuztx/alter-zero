@@ -2120,7 +2120,7 @@ unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
 `skills`, and `~/.claude/skills`, first root winning a name
 (`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). **Four skills ship in the binary** — `jina-reader` (public webpages and PDFs
+naming it, never silence). **Five skills ship in the binary** — `jina-reader` (public webpages and PDFs
 through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),
 `web-search` (four standard-library Python scripts seeded beside its
 `SKILL.md` under `scripts/` and run with `python3` — written without the
@@ -2139,7 +2139,11 @@ word for word, every result and page printed whole, nothing on stderr but
 errors, no `__pycache__` written into the skill's folder, and the scripts'
 unit tests left unseeded beside them),
 `yt-dlp` (authorized media downloads using the separately installed CLI, no
-native tool or download on load), and `skill-creator`,
+native tool or download on load), `flaredantic` (`SKILL.md` + `reference.md`
+for public localhost tunnels via the external `flare` CLI, Cloudflare for HTTP
+by default, deliberate Serveo TCP or Microsoft with anonymous-access and
+existing-port checks; tracked sessions, local/public verification and exact-process
+cleanup, no native tool/dependency or execution on load), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
 description that triggers, how to update one without clobbering it), because
 the format is *ours*: a model asked for "a skill" without it writes a lone

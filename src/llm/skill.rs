@@ -21,15 +21,24 @@ use crate::skills::{
 ///
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
 /// teaches public webpage and PDF retrieval; `web-search` searches the web
-/// with its own scripts; `yt-dlp` teaches media downloads through the
-/// external CLI (`docs/skills.md`). A skill is a *directory*, so extra files
+/// with its own scripts; `yt-dlp` teaches media downloads and `flaredantic`
+/// teaches public localhost sharing through external CLIs (`docs/skills.md`).
+/// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
 /// [`seed_builtin_skills`] writes exactly these, so what a session discovers
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
 /// once it is there.
-const BUILTIN_SKILL_FILES: [(&str, &str); 10] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
+    (
+        "flaredantic/SKILL.md",
+        include_str!("../../prompts/skills/flaredantic/SKILL.md"),
+    ),
+    (
+        "flaredantic/reference.md",
+        include_str!("../../prompts/skills/flaredantic/reference.md"),
+    ),
     (
         "jina-reader/SKILL.md",
         include_str!("../../prompts/skills/jina-reader/SKILL.md"),
@@ -1060,6 +1069,90 @@ mod tests {
     }
 
     // ===== built-in skills (docs/skills.md) =====
+
+    #[test]
+    fn seeded_flaredantic_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("flaredantic"), "{listing}");
+        assert!(listing.contains("localhost"), "{listing}");
+        assert!(!listing.contains("--timeout 60"), "body stays on demand");
+
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"flaredantic"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        assert!(body.contains(&format!(
+            "Base directory for this skill: {}",
+            root.join("flaredantic").display()
+        )));
+        assert!(body.contains("reference.md"));
+        assert!(body.contains("flare --port 8080 --tunnel cloudflare --timeout 60 --verbose"));
+        assert!(
+            body.contains(
+                "HTTPS at the public endpoint does not supply application authentication"
+            )
+        );
+        assert!(body.contains("Do not start a public tunnel as a documentation test"));
+        let reference = std::fs::read_to_string(root.join("flaredantic/reference.md"))
+            .expect("seeded reference");
+        assert!(reference.contains("from flaredantic import FlareConfig, FlareTunnel"));
+        assert!(reference.contains("--allow-anonymous"));
+    }
+
+    #[test]
+    fn flaredantic_seed_preserves_edits_and_restores_each_deleted_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let dir = root.join("flaredantic");
+        let skill = dir.join(SKILL_FILE_NAME);
+        let reference = dir.join("reference.md");
+        assert!(skill.is_file(), "Flaredantic must be seeded");
+        let original_skill = std::fs::read_to_string(&skill).expect("skill");
+        let original_reference = std::fs::read_to_string(&reference).expect("reference");
+        write_skill(
+            &root,
+            "flaredantic",
+            &skill_md("Mine.", "custom tunnel workflow"),
+        );
+        std::fs::write(&reference, "custom reference").expect("edit reference");
+        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(
+            std::fs::read_to_string(&skill)
+                .expect("read")
+                .contains("custom tunnel workflow")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&reference).expect("read"),
+            "custom reference"
+        );
+        std::fs::remove_file(&reference).expect("delete reference");
+        assert!(seed_builtin_skills(&root).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&reference).expect("restored"),
+            original_reference
+        );
+        assert!(
+            std::fs::read_to_string(&skill)
+                .expect("read")
+                .contains("custom tunnel workflow")
+        );
+        std::fs::remove_file(&skill).expect("delete skill");
+        assert!(seed_builtin_skills(&root).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("restored"),
+            original_skill
+        );
+    }
 
     #[test]
     fn seeded_jina_reader_is_listed_and_loads_on_demand() {

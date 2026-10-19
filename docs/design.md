@@ -500,7 +500,7 @@ which Ctrl+V reads the clipboard from.
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
 - **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`,
-  `jina-reader`, `web-search` and `yt-dlp` ship embedded and seed absent files
+  `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and seed absent files
   in the personal root before discovery. Existing files are never overwritten,
   project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
   Jina Reader adds curl-based public web/PDF retrieval instructions;
@@ -508,8 +508,11 @@ which Ctrl+V reads the clipboard from.
   `SKILL.md`, searching keyless through Exa's, Parallel's and Tavily's hosted
   MCP servers and through Jina Reader on DuckDuckGo, Yahoo, Wikipedia,
   GitHub, arXiv and Hacker News; `yt-dlp` guides the external media CLI (not
-  bundled). None adds a native tool or runs on load; shell
-  permissions and privacy checks still apply.
+  bundled); `flaredantic` guides public tunnels through the external `flare`
+  CLI, with Cloudflare HTTP by default, deliberate Serveo TCP or Microsoft
+  anonymous hosting with port-inventory checks, tracked sessions, verification
+  and cleanup. None adds a native tool/dependency or runs on load; shell
+  permissions and public-exposure/privacy checks still apply.
 - **Skill bodies load once per agent context** (`docs/skills.md`): the tool
   enforces its short load-once guidance at runtime. `LoadedSkills` is seeded
   from that agent's incoming skill call/result pairs, identifies successful
