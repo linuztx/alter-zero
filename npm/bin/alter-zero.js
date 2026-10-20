@@ -240,11 +240,18 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
     execve.call(process, binary, [COMMAND, ...args], process.env);
     return; // not reached: this process is the binary now
   }
-  const child = spawn(binary, args, { stdio: 'inherit', argv0: COMMAND });
+  // Install the handlers before spawn: a fast child can announce readiness
+  // before spawn returns, and its caller can immediately signal us.
+  let child;
+  const pendingSignals = [];
   // What a process manager or a closing terminal sends to this process;
   // without a listener, Node would die of it and leave the binary running.
   const relayed = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
   const relay = (signal) => {
+    if (!child) {
+      pendingSignals.push(signal);
+      return;
+    }
     try {
       child.kill(signal);
     } catch (_) {
@@ -252,6 +259,8 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
     }
   };
   for (const signal of relayed) process.on(signal, relay);
+  child = spawn(binary, args, { stdio: 'inherit', argv0: COMMAND });
+  for (const signal of pendingSignals) relay(signal);
   child.on('error', (err) => fail(`could not run ${binary}: ${err.message}\n`));
   child.on('exit', (code, signal) => {
     for (const s of relayed) process.removeListener(s, relay);
