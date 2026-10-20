@@ -19,6 +19,12 @@ release heading when a version is cut.
   handlers were installed, leaving the child running. The handlers are now
   installed before spawning, including for `SIGQUIT`.
 
+- **Ctrl+O leaves one blank row after a thought.** When a model's reasoning
+  ended on blank lines, the transcript showed three blank rows between the
+  expanded thought and the next cell, and reasoning that opened on a blank
+  line lost its `⎿` corner. Blank lines at the start and end of a thought are
+  no longer drawn; the breaks between its paragraphs stay.
+
 ## [0.15.0] - 2026-10-20
 
 ### Added

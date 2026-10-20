@@ -147,17 +147,28 @@ pub(super) fn reasoning_live_full_lines(text: &str, width: u16) -> Vec<Line<'sta
 /// paragraph breaks — the un-windowed body both pager views render.
 /// [`wrap_output`] preserves spaces and breaks at words, like a tool's
 /// expanded output.
+///
+/// Only the blank lines *between* paragraphs are breaks. A model's reasoning
+/// often opens and closes on blank lines (`<think>\n…\n\n</think>`), and
+/// those are dropped: an opening one would push the `⎿` corner off the first
+/// row of thought, and closing ones would stack on the one spacer the
+/// transcript puts after every item.
 fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
     let inner = body_width(width);
     let mut rows: Vec<Line<'static>> = Vec::new();
     for source in text.split('\n') {
         if source.trim().is_empty() {
-            rows.push(Line::default());
+            if !rows.is_empty() {
+                rows.push(Line::default());
+            }
             continue;
         }
         for row in wrap_output(source, inner) {
             rows.push(body_row(rows.len(), row));
         }
+    }
+    while rows.last().is_some_and(|row| row.spans.is_empty()) {
+        rows.pop();
     }
     rows
 }
