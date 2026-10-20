@@ -112,6 +112,7 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     for (k, v) in &cfg.extra_body {
         fields.insert(k.clone(), v.clone());
     }
+    cfg.drop_refused(&mut fields);
     Request {
         fields,
         system,
@@ -862,6 +863,21 @@ mod tests {
         assert_eq!(payload["messages"][0]["role"], "user");
         assert_eq!(payload["messages"][0]["content"][0]["type"], "text");
         assert_eq!(payload["messages"][0]["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn a_provider_drops_the_fields_its_server_refuses_here_too() {
+        // `drop_params` is the provider's, whatever its wire
+        // (docs/user-providers.md) — a proxy in front of the Messages API
+        // may refuse a field like any chat shim.
+        let mut cfg = cfg();
+        cfg.extra_body
+            .insert("metadata".to_string(), json!({"user_id": "u"}));
+        cfg.drop_params = vec!["metadata".to_string()];
+        let tools = crate::llm::tools::tool_specs();
+        let payload = build_payload(&cfg, &tools, &[text("user", "hi")]);
+        assert!(payload.get("metadata").is_none(), "{payload}");
+        assert!(payload.get("tools").is_some(), "only the named field goes");
     }
 
     #[test]

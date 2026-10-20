@@ -78,14 +78,25 @@ struct ModelsResponse<'a> {
 /// one, OpenAI does not) falls back to the id.
 ///
 /// # Errors
-/// Returns a decode error when the body isn't the expected envelope.
+/// Returns a decode error when the body is neither the envelope nor a bare
+/// array of records.
 pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
-    let parsed: ModelsResponse =
-        serde_json::from_str(body).map_err(|e| LlmError::Decode(e.to_string()))?;
-    let records = if parsed.data.is_empty() {
-        &parsed.models
+    let decode = |e: serde_json::Error| LlmError::Decode(e.to_string());
+    // Most servers wrap the records in an envelope; Together AI answers with
+    // the bare array (`docs/user-providers.md`). Either way the records stay
+    // borrowed slices, read one at a time below.
+    let bare: Vec<&serde_json::value::RawValue>;
+    let parsed: ModelsResponse;
+    let records: &[&serde_json::value::RawValue] = if body.trim_start().starts_with('[') {
+        bare = serde_json::from_str(body).map_err(decode)?;
+        &bare
     } else {
-        &parsed.data
+        parsed = serde_json::from_str(body).map_err(decode)?;
+        if parsed.data.is_empty() {
+            &parsed.models
+        } else {
+            &parsed.data
+        }
     };
     let mut out: Vec<ModelEntry> = records
         .iter()
@@ -531,6 +542,9 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
 /// shapes (per record, like the vision sniff):
 ///
 /// - **OpenRouter** (and most aggregators): a top-level `context_length`.
+/// - **Self-hosted servers**: vLLM's `max_model_len`, and Mistral's (or LM
+///   Studio's) `max_context_length` — what a user's own OpenAI-compatible
+///   provider most often names it (`docs/user-providers.md`).
 /// - **Venice**: `model_spec.availableContextTokens`.
 /// - **GitHub Copilot**: `capabilities.limits.max_prompt_tokens`, falling back
 ///   to `max_context_window_tokens` (`docs/copilot.md`).
@@ -541,6 +555,11 @@ fn context_window_of(record: &serde_json::Value) -> Option<u64> {
     let raw = record
         .get("context_length")
         .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            ["max_model_len", "max_context_length"]
+                .iter()
+                .find_map(|key| record.get(key)?.as_u64())
+        })
         .or_else(|| {
             // Anthropic names the window `max_input_tokens` — there is no
             // `context_length` and no `context_window` on this list at all,
@@ -1181,6 +1200,55 @@ mod tests {
         // A zero/negative length is meaningless — treat as unknown.
         let zero = r#"{"data":[{"id":"m","context_length":0}]}"#;
         assert_eq!(parse_models(zero, "p").unwrap()[0].context, None);
+    }
+
+    #[test]
+    fn the_window_spellings_self_hosted_servers_use_are_read() {
+        // A user's own OpenAI-compatible provider (docs/user-providers.md)
+        // gets its gauge and auto-compaction from whatever the server names:
+        // vLLM's `max_model_len`, Mistral's (and LM Studio's)
+        // `max_context_length`.
+        let vllm = r#"{"object":"list","data":[{"id":"Qwen/Qwen2.5-7B-Instruct",
+            "object":"model","owned_by":"vllm","max_model_len":32768}]}"#;
+        assert_eq!(parse_models(vllm, "vllm").unwrap()[0].context, Some(32_768));
+        let mistral = r#"{"object":"list","data":[{"id":"mistral-medium-2505",
+            "object":"model","max_context_length":131072}]}"#;
+        assert_eq!(
+            parse_models(mistral, "mistral").unwrap()[0].context,
+            Some(131_072)
+        );
+        // A window the record names twice is the conventional field's.
+        let both = r#"{"data":[{"id":"m","context_length":8192,"max_model_len":4096}]}"#;
+        assert_eq!(parse_models(both, "p").unwrap()[0].context, Some(8192));
+    }
+
+    #[test]
+    fn a_listing_that_is_a_bare_array_reads_like_the_envelope() {
+        // Together AI answers `/models` with the records themselves, no
+        // `{"data": …}` around them — which used to fail the whole listing
+        // as a decode error, leaving the provider with no models to pick.
+        let body = r#"[
+            {"id":"meta-llama/Llama-3.3-70B-Instruct-Turbo","object":"model","type":"chat",
+             "display_name":"Llama 3.3 70B Instruct Turbo","context_length":131072},
+            {"id":"deepseek-ai/DeepSeek-V3"},
+            {"object":"model"}
+        ]"#;
+        let models = parse_models(body, "together").unwrap();
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            [
+                "deepseek-ai/DeepSeek-V3",
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+            ],
+            "sorted, and the id-less record skipped as in an envelope"
+        );
+        assert_eq!(models[1].display_name, "Llama 3.3 70B Instruct Turbo");
+        assert_eq!(models[1].context, Some(131_072));
+        assert_eq!(models[1].provider, "together");
+        // Leading whitespace is still an array, and an empty one is no models.
+        assert!(parse_models("  \n[]", "together").unwrap().is_empty());
+        // Anything else is still a decode error.
+        assert!(parse_models("\"models\"", "p").is_err());
     }
 
     // --- the ChatGPT backend's own record shape (docs/chatgpt.md) ---

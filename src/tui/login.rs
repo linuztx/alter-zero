@@ -19,8 +19,10 @@ impl Session<'_> {
     /// `/login` (`docs/llm.md`): open the inline onboarding, its two lists
     /// built from the provider file — the subscriptions signed in to, and the
     /// providers keyed — each row's ✓ reflecting real key resolution. The hint
-    /// names the real `.env` path.
+    /// names the real `.env` path. The file is re-read first, so a provider
+    /// added to it since startup is a row already (`docs/user-providers.md`).
     pub(crate) fn open_key_onboarding(&mut self) {
+        self.reload_providers();
         let providers = self.models.provider_choices();
         let subscriptions = self.models.subscription_choices();
         let env_path = self.models.env_path_display().to_string();

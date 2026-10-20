@@ -187,8 +187,9 @@ impl OpenAiClient {
         fields.insert("stream".to_string(), json!(true));
         // Both shipped providers honour the standard OpenAI switch and
         // answer with a final usage frame (cache detail included). A
-        // provider whose shim chokes can override it from its kwargs —
-        // the extra_body merge below wins over this base.
+        // provider whose shim chokes takes it out with `drop_params`
+        // (`drop_refused`, last below) — a kwarg can change it but, TOML
+        // having no null, never remove it.
         fields.insert("stream_options".to_string(), json!({"include_usage": true}));
         // An explicit-caching model (anthropic/qwen via an OpenRouter-style
         // aggregator) only caches marked blocks: mark a copy of the messages
@@ -262,30 +263,30 @@ impl OpenAiClient {
                 if let Some(effort) = super::reasoning::effort_label(mode) {
                     fields.insert("reasoning_effort".to_string(), json!(effort));
                 }
-                return ChatRequest {
-                    model: Cow::Borrowed(&self.cfg.model),
-                    messages,
-                    fields,
-                };
-            }
-            if let Some(body) = super::reasoning::reasoning_body(mode) {
-                fields.insert("reasoning".to_string(), body);
-            }
-            // Venice ignores `reasoning.enabled` — `venice_parameters.
-            // disable_thinking` is the toggle it honours. A provider carrying
-            // a venice_parameters table (the Venice-family marker) gets it
-            // synced to the mode, other table keys preserved; providers
-            // without the table (OpenRouter) keep a clean payload.
-            if let Some(venice) = fields
-                .get_mut("venice_parameters")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                venice.insert(
-                    "disable_thinking".to_string(),
-                    json!(mode == super::reasoning::ThinkingMode::Off),
-                );
+            } else {
+                if let Some(body) = super::reasoning::reasoning_body(mode) {
+                    fields.insert("reasoning".to_string(), body);
+                }
+                // Venice ignores `reasoning.enabled` — `venice_parameters.
+                // disable_thinking` is the toggle it honours. A provider
+                // carrying a venice_parameters table (the Venice-family
+                // marker) gets it synced to the mode, other table keys
+                // preserved; providers without the table (OpenRouter) keep a
+                // clean payload.
+                if let Some(venice) = fields
+                    .get_mut("venice_parameters")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    venice.insert(
+                        "disable_thinking".to_string(),
+                        json!(mode == super::reasoning::ThinkingMode::Off),
+                    );
+                }
             }
         }
+        // Last, so a field the server refuses leaves whatever put it there
+        // (`docs/user-providers.md`).
+        self.cfg.drop_refused(&mut fields);
         ChatRequest {
             model: Cow::Borrowed(&self.cfg.model),
             messages,
@@ -1703,6 +1704,46 @@ mod tests {
         let p =
             OpenAiClient::new(ModelConfig::fallback()).build_payload(&[ChatMessage::user("hi")]);
         assert_eq!(p["stream_options"], json!({"include_usage": true}));
+    }
+
+    #[test]
+    fn a_provider_drops_the_request_fields_its_server_refuses() {
+        // `drop_params` (docs/user-providers.md): a strict server refuses a
+        // field every request carries, and a kwarg can only replace it — so
+        // the named fields come out last, after the kwargs and the thinking
+        // mode have had their say. `stream` stays whatever the list says.
+        use crate::llm::{ReasoningEffort, ThinkingMode};
+        let mut cfg = ModelConfig::fallback();
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        cfg.thinking = Some(ThinkingMode::Effort(ReasoningEffort::High));
+        cfg.extra_body
+            .insert("safe_prompt".to_string(), json!(false));
+        cfg.drop_params = [
+            "prompt_cache_key",
+            "stream_options",
+            "reasoning",
+            "safe_prompt",
+            "stream",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let p = OpenAiClient::new(cfg.clone()).build_payload(&[ChatMessage::user("hi")]);
+        for dropped in [
+            "prompt_cache_key",
+            "stream_options",
+            "reasoning",
+            "safe_prompt",
+        ] {
+            assert!(p.get(dropped).is_none(), "{dropped} was sent: {p}");
+        }
+        assert_eq!(p["stream"], json!(true));
+        assert_eq!(p["model"], json!("gpt-4o-mini"));
+        assert_eq!(p["messages"][0]["content"], json!("hi"));
+        // GitHub Copilot's spelling of the mode takes the same exit.
+        cfg.auth = super::super::AuthScheme::GithubCopilot;
+        cfg.drop_params = vec!["reasoning_effort".to_string()];
+        let copilot = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert!(copilot.get("reasoning_effort").is_none(), "{copilot}");
     }
 
     #[test]

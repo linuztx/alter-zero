@@ -89,6 +89,7 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     for (k, v) in &cfg.extra_body {
         fields.insert(k.clone(), v.clone());
     }
+    cfg.drop_refused(&mut fields);
     Request { fields, input }
 }
 
@@ -704,6 +705,18 @@ mod tests {
         assert!(flat[0].get("function").is_none(), "and never nested");
         assert!(flat[0]["parameters"].is_object());
         assert_eq!(flat[0]["strict"], json!(false));
+    }
+
+    #[test]
+    fn a_provider_drops_the_fields_its_server_refuses_here_too() {
+        // `drop_params` is the provider's, whatever its wire
+        // (docs/user-providers.md).
+        let mut cfg = ModelConfig::fallback();
+        cfg.cache_key = Some("k".to_string());
+        cfg.drop_params = vec!["prompt_cache_key".to_string(), "model".to_string()];
+        let payload = build_payload(&cfg, &[], &[user("hi")]);
+        assert!(payload.get("prompt_cache_key").is_none(), "{payload}");
+        assert_eq!(payload["model"], json!("gpt-4o-mini"), "never dropped");
     }
 
     #[test]

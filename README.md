@@ -176,6 +176,24 @@ Connect to a supported subscription service, API provider, or local model server
 
 The footer shows your active model, thinking mode, speed tier and context usage. **Ctrl+T** cycles the model's supported reasoning levels, a ChatGPT model that lists speed tiers gets a command per tier (**`/fast`**, `/ultrafast`) that switches it to that processing (faster replies at increased plan usage), vision support is checked before sending images, and requests support prompt caching where the provider allows it.
 
+<details>
+<summary><strong>Add a provider of your own</strong></summary>
+
+Any service with an OpenAI-compatible API, or a local server such as LM Studio, llama.cpp or vLLM, can be added in `~/.alter-zero/providers.toml`. The file adds to the providers above rather than replacing them:
+
+```toml
+[providers.groq]
+name = "Groq"
+api_key_url = "https://console.groq.com/keys"
+
+[providers.groq.kwargs]
+api_base = "https://api.groq.com/openai/v1"
+```
+
+Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a model with `/model`. Both re-read the file, so there's no need to restart. A block that names a built-in provider changes only the keys it sets. [`docs/user-providers.md`](docs/user-providers.md) covers every key, local servers that need no key, and what each error message means.
+
+</details>
+
 ## Features
 
 ### Follow the work as it happens

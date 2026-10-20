@@ -62,8 +62,17 @@ type Thinking = (ReasoningSupport, ThinkingMode);
 
 /// The reply backend plus the configuration that chose it.
 pub(crate) struct ModelSession {
-    /// The provider table (`providers.toml` or the built-in default).
+    /// The provider table: the built-ins with the user's own `providers.toml`
+    /// laid over them, or `ALTER_ZERO_PROVIDERS_FILE` alone
+    /// (`docs/user-providers.md`). Re-read whenever `/login` or `/model`
+    /// opens, so a provider added mid-session is there without a restart.
     providers: ProvidersFile,
+    /// What the startup read found wrong with the provider file, held for
+    /// bootstrap's toast ([`Self::take_provider_issues`]).
+    provider_issues: Vec<String>,
+    /// `$HOME`, so a re-read names the provider file `~`-relative the way
+    /// the startup read does.
+    home: Option<std::path::PathBuf>,
     /// The `.env` key store the `/login` flow writes, and its path. Keys live
     /// in this map rather than the process env — `set_var` is `unsafe`, which
     /// this crate forbids.
@@ -233,7 +242,7 @@ impl ModelSession {
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
     ) -> Self {
-        let providers = config::load_providers();
+        let (providers, provider_issues) = config::startup_providers(home);
         // The persistent API-key store: `.env` in the config home (or
         // `ALTER_ZERO_ENV_FILE`), written by the `/login` flow and consulted
         // during key resolution (a real process env var still wins).
@@ -473,6 +482,8 @@ impl ModelSession {
         });
         Self {
             providers,
+            provider_issues,
+            home: home.map(Path::to_path_buf),
             env_path_display: ui::display_cwd(&env_file_path, home),
             env_file,
             env_file_path,
@@ -586,6 +597,44 @@ impl ModelSession {
     /// The `~`-relative `.env` path the `/login` hint names.
     pub(crate) fn env_path_display(&self) -> &str {
         &self.env_path_display
+    }
+
+    /// What the startup read found wrong with the provider file, for
+    /// bootstrap's toast — taken once (`docs/user-providers.md`).
+    pub(crate) fn take_provider_issues(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.provider_issues)
+    }
+
+    /// Re-read the provider table, so the page about to open is built from
+    /// the file as it is now — a provider written mid-session, by hand or by
+    /// the agent itself, is there without a restart (`docs/user-providers.md`).
+    ///
+    /// The live backend is untouched: it was built from a resolved config and
+    /// keeps streaming on it. Only what reads the table next — the page, a
+    /// pick from it, a later rebuild — sees the change. A file saved
+    /// half-edited must not take the running model's provider with it, since
+    /// every rebuild (a `/settings` knob, Ctrl+T) resolves it again and one
+    /// gone from the table is a rebuild skipped without a word: a file that
+    /// can't be used at all leaves the whole table as it was, and one that
+    /// can keeps the active provider's definition whenever it no longer
+    /// gives a usable one.
+    ///
+    /// Returns everything wrong with the file, every time: a problem said
+    /// once at startup is easily lost under the next toast, and the moment
+    /// someone opens the page their provider is missing from is the moment
+    /// to say it again.
+    pub(crate) fn reload_providers(&mut self) -> Vec<String> {
+        let in_use = self
+            .active_provider
+            .as_deref()
+            .and_then(|id| Some((id, self.providers.get(id)?)));
+        match config::load_providers(self.home.as_deref(), in_use) {
+            Ok((providers, issues)) => {
+                self.providers = providers;
+                issues
+            }
+            Err(reason) => vec![format!("{reason} — keeping the providers already loaded")],
+        }
     }
 
     /// The environment variable a provider's key is read from — the "run
@@ -1752,12 +1801,40 @@ impl Session<'_> {
         });
     }
 
+    /// Say that the provider file had problems — the skills toast's rule
+    /// (`docs/user-providers.md`): a provider the user wrote that silently
+    /// never appears makes "my provider isn't in /login" and "I typo'd the
+    /// file" read as two unrelated problems. One row names the first issue;
+    /// the rest are counted.
+    pub(crate) fn report_provider_issues(&mut self, issues: &[String]) {
+        let Some(first) = issues.first() else {
+            return;
+        };
+        let more = issues.len() - 1;
+        let tail = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        self.toast(format!("{first}{tail}"), ToastKind::Error);
+    }
+
+    /// Re-read the provider file before a page built from it opens —
+    /// `/login`'s lists and `/model`'s fetch — and say what is wrong with it
+    /// (`docs/user-providers.md`).
+    pub(crate) fn reload_providers(&mut self) {
+        let issues = self.models.reload_providers();
+        self.report_provider_issues(&issues);
+    }
+
     /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it
     /// replaces the composer — no alternate screen) and fetch every configured
     /// provider's list off-thread in parallel; the picker shows each as it lands
     /// and merges them into one list. With none configured, skip the fetch and
-    /// point the user at `/login` instead.
+    /// point the user at `/login` instead. The provider file is re-read first,
+    /// so a provider added since startup is fetched too.
     pub(crate) fn open_model_picker(&mut self) {
+        self.reload_providers();
         let current = self.models.active_model().to_string();
         self.app.open_model_picker(current);
         if let Some(provider) = self.models.active_provider() {

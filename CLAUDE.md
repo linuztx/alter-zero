@@ -738,7 +738,41 @@ report the whole prompt on a cache hit), and the machine-shaped refusals —
 server not running, model not pulled, `does not support tools/thinking`, an
 image on a blind model — rewritten into what to do. `tests/live_ollama.rs`
 drives it against a real server; `smoke.sh` unsets `OLLAMA_HOST` beside its
-key scrub for hermeticity; the **Ctrl+T thinking-mode
+key scrub for hermeticity; the **user's own providers**
+(`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
+the embedded shipped table rather than replacing it —
+`ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a
+provider and a shipped id is patched key by key (tables merge, anything else
+replaces) — every problem worded as one toast row (a syntax error's line, a
+key `Provider::unread` caught through its `#[serde(flatten)]` field with the
+fix for `base_url`/`api_base`/`env_key`/`headers`/`api_key`/`model`, a table
+of providers under another name (`[provider.groq]`), an unknown
+`auth`/`wire_api` value, no chat base, a non-http base; a block with no
+`name` is called by its id) that costs only its block (`— skipped`, or
+`— kept the built-in` for a patch), each row led by the file `~`-relative,
+toasted at startup and again **every time** `/login` or `/model` opens
+(a startup toast is easily covered by the next), both of which **re-read
+the file** (`ModelSession::reload_providers`), so a provider the agent
+writes mid-session is a row at once — and a re-read never takes the
+running model's provider away, since every rebuild (a `/settings` knob,
+Ctrl+T, `/fast`, the probe) resolves it again and a missing one was a
+rebuild skipped without a word: a file that can't be used at all (an `Err`
+from `with_user_layer`, the caller choosing what stands — the built-ins at
+launch, the session's own table on a re-read) keeps the whole table, and
+one that no longer gives a usable definition of the provider in use keeps
+that one's (`in_use`, `— kept the one in use`);
+`ALTER_ZERO_PROVIDERS_FILE` stands **alone**
+(`ProvidersFile::standalone`, the smoke suite's hermetic stubs);
+`./providers.toml` is **never** read (a checkout could point a stored key at
+its own host before the first frame — the `/trust` concern); a keyless
+provider naming no host variable is configured by its block alone
+(`Provider::configured_by_definition` — LM Studio, llama.cpp, vLLM; no
+shipped provider qualifies); `drop_params` takes request fields a strict
+server refuses out of every wire's body last (`ModelConfig::drop_refused`,
+never `model`/`stream`), since TOML has no null for a kwarg to remove one;
+and the listing reads a bare-array `/models` (Together) and the
+`max_model_len`/`max_context_length` window spellings; `smoke.sh` Phase 140;
+the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`

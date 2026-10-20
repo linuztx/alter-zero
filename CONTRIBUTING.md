@@ -19,7 +19,7 @@ paid for.
 | **Fix a bug** | Start with the failing test that reproduces it, then the fix. Small, obvious fixes need no discussion first. |
 | **Add a feature** | Open an issue and agree a design before you write it — see [Design before implementing](#design-before-implementing). |
 | **Improve the docs** | A `docs/` page that no longer matches the code is a bug. So is a `CHANGELOG.md` entry that does not say what a user will notice. |
-| **Add a model provider** | Usually a `[providers.<id>]` block in [`providers.toml`](providers.toml) — the file's own header documents every key. A provider with a new authentication shape or wire format is a feature: agree it first ([`docs/llm.md`](docs/llm.md)). |
+| **Add a model provider** | Usually a `[providers.<id>]` block in [`providers.toml`](providers.toml) — the file's own header documents every key. For your own use alone, the same block in `~/.alter-zero/providers.toml` needs no change here ([`docs/user-providers.md`](docs/user-providers.md)). A provider with a new authentication shape or wire format is a feature: agree it first ([`docs/llm.md`](docs/llm.md)). |
 
 ## Getting set up
 

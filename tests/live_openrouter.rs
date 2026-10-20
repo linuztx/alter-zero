@@ -57,6 +57,7 @@ fn backend_with(model: String, thinking: Option<ThinkingMode>, vision: Option<bo
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     LlmBackend::with_system_prompt(
         cfg,
@@ -211,6 +212,7 @@ fn live_anthropic_prompt_cache_writes_then_reads() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     cfg.temperature = Some(0.0);
     // Tools off: a deterministic single round per turn, so each turn is
@@ -684,6 +686,7 @@ fn live_environment_context_reaches_the_model() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
@@ -759,6 +762,7 @@ fn live_scratchpad_context_reaches_the_model() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
@@ -813,6 +817,7 @@ fn scratchpad_targets(scratchpad: &std::path::Path, cwd: &str, task: &str) -> Ve
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     // The production prompt, assembled exactly as the boundary assembles it.
     let system = augment_with_scratchpad(
@@ -919,6 +924,7 @@ fn live_scratchpad_write_runs_without_a_permission_prompt() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let system = augment_with_scratchpad(
         "You are Alter Zero an autonomous AI agent running in terminal UI",
@@ -2380,6 +2386,7 @@ fn live_classifier() -> alter_zero::llm::classifier::SafetyClassifier {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     alter_zero::llm::classifier::SafetyClassifier::new(&cfg)
 }
@@ -2628,6 +2635,7 @@ fn live_tools_setting_decides_whether_the_model_is_offered_any() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let prompt = "Use the bash tool exactly once to run exactly: echo tools_marker \
                   Then reply with just the marker it printed.";
@@ -2695,6 +2703,7 @@ fn live_error_retry_setting_bounds_the_attempts() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let retries_for = |max: u32| {
         let backend = LlmBackend::configure(unreachable.clone(), None, false).with_max_retries(max);
@@ -2760,6 +2769,7 @@ fn live_temperature_setting_rides_the_request() {
             service_tier: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
+            drop_params: Vec::new(),
         };
         let backend = LlmBackend::configure(cfg, None, false);
         let prompt = "Reply with exactly: OK";
@@ -2813,6 +2823,7 @@ fn live_max_tool_calls_bounds_a_parallel_batch() {
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     const CAP: usize = 3;
     let backend = LlmBackend::configure(cfg, None, true).with_max_tool_calls(CAP);
@@ -3382,6 +3393,7 @@ fn skill_backend_and_context(
         service_tier: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
+        drop_params: Vec::new(),
     };
     let backend = LlmBackend::configure(
         cfg,

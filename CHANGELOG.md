@@ -36,8 +36,27 @@ release heading when a version is cut.
   whole file as it streams. This works with every provider, in a subagent's
   session view, and in the offline demo (`docs/write-streaming.md`).
 
+- **Add providers of your own in `~/.alter-zero/providers.toml`.** Any
+  OpenAI-compatible API, including a model server on your own machine, can
+  be added with a few lines, and it shows up in `/login` and `/model` beside
+  the built-in providers. The file adds to the built-in list instead of
+  replacing it, and a block that names a built-in provider changes only the
+  settings it lists. `/login` and `/model` re-read the file when they open,
+  so a provider you add is there without a restart, and a file saved
+  half-edited never takes away the model you are using
+  (`docs/user-providers.md`).
+
 ### Changed
 
+- **A mistake in your `providers.toml` is reported instead of ignored.** A
+  file that didn't parse used to be skipped without a word. Now each problem
+  shows as a red notice naming the file and the line or setting, at startup
+  and whenever `/login` or `/model` opens, and a problem in one provider no
+  longer costs the others.
+- **A `providers.toml` in the directory you launch in is no longer read.** A
+  cloned repository could carry one that sent a stored API key to a server
+  of its choosing. Your providers live in `~/.alter-zero/providers.toml`,
+  which now also moves with `ALTER_ZERO_CONFIG_DIR`.
 - **Inline pages no longer pad their frame with blank rows.** Every page
   that opens in place of the input box used to leave an empty row under its
   top rule and another over its bottom rule. That covers `/model`, `/login`,
