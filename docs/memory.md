@@ -506,6 +506,81 @@ it: Ctrl+O or `/export`. That leaves the decoded file and about twenty lines.
 5,000-line write at four copies of the file. It measures one, where the old
 cache's resident cost was about twenty-seven.
 
+## Code-generation transcripts and rewrite diffs
+
+The retained Ctrl+O transcript was the largest avoidable growing display
+allocation found in a task-manager generation replay. Every committed tool
+result was pre-rendered into expanded ratatui rows: each syntax run held a
+separate string and a full style, even while the overlay was closed. Keeping
+the warm cache is necessary for fast opens (`docs/tool-view-performance.md`).
+
+The cache now keeps one UTF-8 text slab, an interned style table and encoded
+span lengths/indexes. The pager borrows text for only its visible rows. It
+still highlights each committed item once, retains every recorded row,
+preserves line alignment and image/link carriers, and restyles backtrack
+selection without highlighting again. Full owned rows remain available for
+explicit callers, including export; ordinary pager draws never build them.
+
+In `tests/transcript_memory.rs`, warming twelve 800-line TypeScript writes
+grew resident memory **11.2 MB before, 2.1 MB after**. This includes the app's
+existing numbered-output cap, which the change leaves intact. The regression
+test first failed on the old representation, then passed on the compact one.
+Round-trip tests preserve every span/line property, and buffer comparisons
+exercise themes, Unicode, short/narrow terminals, scrolling and backtracking.
+
+The rewrite path had another substantial temporary allocation:
+`llm::tools::diff_lines` filled up to a million `usize` LCS scores in a vector
+per old line, about **8 MB** on 64-bit systems. The matching budget implies
+that a score is at most 1,000, so a flat `u16` table holds the same scores in
+at most **2 MB**, with the zero boundary implicit. Empty middles allocate no
+table. Prefix/suffix trimming, remove-on-tie choices, counts and the existing
+large-diff fallback are unchanged. An exhaustive small-input oracle and a
+full-budget match test compare exact `DiffLine` output to the original
+algorithm. The isolated peak regression measured **8.5 MB before, 2.1 MB
+after** and requires a budget-sized diff to stay below 4 MiB.
+
+### Repeating the real CLI workload without a model key
+
+Build a release binary, then run:
+
+```sh
+python3 scripts/codegen_mem.py target/release/alter-zero --lines 5000 --turns 4
+```
+
+The Linux/tmux harness starts an isolated loopback Chat Completions provider
+that streams TSX, CSS and JSON writes in fragments, then drives the real
+binary through repeated generation turns. It verifies every generated file
+byte-for-byte, opens Ctrl+O and Ctrl+D, resizes both directions, and clears
+the conversation. `--output work/codegen.json` saves RSS, anonymous/file
+resident memory and sampled high-water readings. No generated application is
+started. Automatic compaction is disabled in the fixture to retain the whole
+stress history; normal application defaults are unchanged.
+
+Matched release builds of pristine `main` (`e98680d`, v0.15.0) and this change,
+on Linux x86_64 with glibc, after four generation turns:
+
+| TSX lines per turn, plus CSS/JSON | before RSS | after RSS | reduction |
+| --- | --- | --- | --- |
+| 800 | 38.85 MiB | 35.17 MiB | 9.5% |
+| 2,000 | 44.76 MiB | 40.46 MiB | 9.6% |
+| 5,000, two-run mean | 57.40 MiB | 52.00 MiB | 9.4% |
+
+For the 5,000-line case, the mean after opening Ctrl+D was **64.04 → 53.78
+MiB** (16.0% less); after `/clear`, **58.15 → 47.34 MiB** (18.6% less).
+All eight runs verified generated files, request counts, both overlays,
+resizing and clear. Final Ctrl+O opens were observed within 7–33 ms, including
+tmux command/capture overhead. The allocator varies between runs: the two
+baseline large-workload readings after generation were 60.53 and 54.26 MiB,
+versus 50.98 and 53.02 MiB after the change. The means are a comparison of
+these trials, not a guarantee for every session. Saved JSON includes the
+binary's SHA-256 so future comparisons can identify the exact executable.
+
+This is a deterministic replay of the allocation paths, not the output of a
+particular live model. Fixed costs such as the grammar database, tokenizer
+and HTTP/TLS state remain, and raw conversation history still grows as work
+is recorded. A single item's temporary expanded rows and the allocator's
+retained pages can also affect RSS, so the reduction varies with the session.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a

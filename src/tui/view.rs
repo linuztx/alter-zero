@@ -274,10 +274,10 @@ impl Session<'_> {
             screen.height,
         );
         self.app.settle_tool_scroll(max);
-        let lines = self.transcript.lines(&self.app, screen.width);
         let app = &self.app;
+        let transcript = &mut self.transcript;
         self.term
-            .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, lines))
+            .draw_overlay(|area, buf| transcript.render(area, buf, app))
     }
 
     /// Render the full-screen `/resume` session picker onto the alternate screen

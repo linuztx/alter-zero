@@ -70,7 +70,7 @@ incremental build (the `StreamRender` pattern, applied to the overlay):
   the backtrack preview may reverse. `transcript_build` itself is now a thin
   "fresh cache, refreshed once" wrapper, so the cached and from-scratch
   renders share one code path and can never drift.
-- **Frozen prefix.** `lines[..frozen_rows]` holds the banner chrome plus every
+- **Frozen prefix.** The first `frozen_rows` cached rows hold the banner chrome plus every
   committed item, each rendered exactly once. Soundness comes from
   `App::history_generation`: committed items are immutable and history only
   ever grows, and every non-append mutation — `/clear`, a `/resume` load, a
@@ -92,8 +92,32 @@ incremental build (the `StreamRender` pattern, applied to the overlay):
   byte-identical to what a from-scratch build styles — never a re-render.
 - **Retained across closes.** The overlay exit no longer frees the cache: the
   frozen prefix is exactly what makes the next open instant. Memory is the
-  rendered transcript of the current conversation (the same order as `history`
-  itself); a generation bump drops it wholesale.
+  compact rendered transcript of the current conversation (the same order as
+  `history` itself); a generation bump drops it wholesale.
+
+### Compact rows preserve the warm cache
+
+Retaining expanded ratatui rows made each highlighted token a separate text
+allocation plus a full `Style`. A code-heavy session kept thousands of those
+objects even with the overlay closed. `ui::cached_lines::CachedLines` now packs
+each rendered item's text into a shared UTF-8 slab and interns repeated styles.
+Span lengths and style indexes use lossless base-128 `usize` encodings; row
+offsets permit direct access to any viewport without scanning earlier rows.
+Empty spans, row alignment, line styles and invisible image/link carriers all
+round-trip exactly. Backtrack selection changes the row's style index.
+
+`TranscriptCache::render` expands only the visible window, borrowing its text
+from the slab. Opening, scrolling and reopening keep the same pre-warmed
+prefix and require no highlighting. The public `lines` accessor still serves
+callers that explicitly need a complete owned transcript; the interactive
+pager never materializes it and drops an earlier compatibility view when it
+paints. A new commit or cache invalidation drops that owned view too.
+
+Rebuilding the transcript on demand would save closed-overlay storage but
+restore the slow first open described above. Keeping compact rendered rows
+preserves that performance guarantee. Rendering one history item still uses
+temporary expanded rows, so one enormous item can affect allocator high-water
+memory; the change primarily removes the accumulation across items.
 
 ### 3. The cache is pre-warmed at the boundary (`TranscriptCache::warm`)
 

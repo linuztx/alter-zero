@@ -14,6 +14,13 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Code generation retains less RAM.** The warm Ctrl+O transcript packs its
+  text and styles and expands only visible rows, preserving complete output,
+  syntax colours and fast opens. File rewrites use a 2 MB diff table in place
+  of the former roughly 8 MB table, with identical matching and tie choices.
+  An offline CLI stress probe and memory regression tests cover both paths
+  (`docs/memory.md`).
+
 - **The npm launcher's fallback catches signals before starting the binary.**
   A signal sent as a fast child started could kill the launcher before its
   handlers were installed, leaving the child running. The handlers are now
