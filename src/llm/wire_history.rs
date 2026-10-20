@@ -66,7 +66,7 @@ fn retained_bytes(messages: &[ChatMessage]) -> usize {
                 .saturating_add(call.id.len())
                 .saturating_add(call.kind.len())
                 .saturating_add(call.function.name.len())
-                .saturating_add(call.function.arguments.len())
+                .saturating_add(call.function.arguments.retained_bytes())
         })
     })
 }
@@ -581,5 +581,21 @@ mod tests {
         assert!(!history.messages.is_empty());
         history.remember(&[ChatMessage::user("x".repeat(MAX_RETAINED_BYTES + 1))]);
         assert!(history.messages.is_empty());
+    }
+
+    #[test]
+    fn retained_tool_arguments_charge_their_spare_capacity() {
+        let mut arguments = String::with_capacity(MAX_RETAINED_BYTES + 1);
+        arguments.push_str("{}");
+        let request = vec![ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCallSpec::function("call_1", "write", arguments)],
+        )];
+        let mut history = WireHistory::default();
+        history.remember(&request);
+        assert!(
+            history.messages.is_empty(),
+            "sharing a short JSON string must not retain an over-budget buffer"
+        );
     }
 }

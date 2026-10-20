@@ -106,6 +106,12 @@ offsets permit direct access to any viewport without scanning earlier rows.
 Empty spans, row alignment, line styles and invisible image/link carriers all
 round-trip exactly. Backtrack selection changes the row's style index.
 
+Rows and spans count their references to interned styles. Removing the live
+tail or changing selection releases unused trailing style entries, so repeated
+refreshes do not accumulate unique link/image carriers. Unused middle entries
+keep their IDs while later styles remain in use; buffer capacities are retained
+for reuse. This adds one reference count per interned style, not per span.
+
 `TranscriptCache::render` expands only the visible window, borrowing its text
 from the slab. Opening, scrolling and reopening keep the same pre-warmed
 prefix and require no highlighting. The public `lines` accessor still serves

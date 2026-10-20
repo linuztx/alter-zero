@@ -18,6 +18,9 @@ pub(super) struct CachedLines {
     spans: Vec<u8>,
     rows: Vec<CachedLine>,
     styles: Vec<Style>,
+    /// References from rows and spans. Tail removal can release unused
+    /// styles without changing the ids of entries that are still in use.
+    style_refs: Vec<usize>,
     style_ids: HashMap<Style, usize>,
 }
 
@@ -40,13 +43,28 @@ impl CachedLines {
     }
 
     fn intern_style(&mut self, style: Style) -> usize {
-        if let Some(&id) = self.style_ids.get(&style) {
-            return id;
-        }
-        let id = self.styles.len();
-        self.styles.push(style);
-        self.style_ids.insert(style, id);
+        let id = if let Some(&id) = self.style_ids.get(&style) {
+            id
+        } else {
+            let id = self.styles.len();
+            self.styles.push(style);
+            self.style_refs.push(0);
+            self.style_ids.insert(style, id);
+            id
+        };
+        self.style_refs[id] += 1;
         id
+    }
+
+    /// A live tail may introduce unique link/image carriers on each refresh.
+    /// Drop its unused style suffix; leave middle slots in place while later
+    /// ids are referenced, so every retained span keeps the same meaning.
+    fn release_unused_styles(&mut self) {
+        while self.style_refs.last() == Some(&0) {
+            let style = self.styles.pop().expect("one style per reference count");
+            self.style_refs.pop();
+            self.style_ids.remove(&style);
+        }
     }
 
     pub(super) fn extend(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
@@ -73,9 +91,19 @@ impl CachedLines {
         }
         let span_end = len.checked_sub(1).map_or(0, |i| self.rows[i].end);
         let text_end = len.checked_sub(1).map_or(0, |i| self.rows[i].text_end);
+        for row in &self.rows[len..] {
+            self.style_refs[row.style] -= 1;
+        }
+        let mut cursor = span_end;
+        while cursor < self.spans.len() {
+            let _len = read_index(&self.spans, &mut cursor);
+            let style = read_index(&self.spans, &mut cursor);
+            self.style_refs[style] -= 1;
+        }
         self.text.truncate(text_end);
         self.spans.truncate(span_end);
         self.rows.truncate(len);
+        self.release_unused_styles();
     }
 
     /// Expand just this window, borrowing every span's text from the slab.
@@ -130,10 +158,13 @@ impl CachedLines {
     /// expanded rows. Shared span styles remain untouched.
     pub(super) fn set_reversed(&mut self, range: Range<usize>, reversed: bool) {
         for i in range {
-            let mut style = self.styles[self.rows[i].style];
+            let previous = self.rows[i].style;
+            let mut style = self.styles[previous];
             style.add_modifier.set(Modifier::REVERSED, reversed);
             self.rows[i].style = self.intern_style(style);
+            self.style_refs[previous] -= 1;
         }
+        self.release_unused_styles();
     }
 
     #[cfg(test)]
@@ -143,6 +174,7 @@ impl CachedLines {
             + self.spans.capacity()
             + self.rows.capacity() * size_of::<CachedLine>()
             + self.styles.capacity() * size_of::<Style>()
+            + self.style_refs.capacity() * size_of::<usize>()
             // Include a control byte per bucket and conservatively count
             // the map at twice its usable capacity for unoccupied buckets.
             + self.style_ids.capacity() * (size_of::<(Style, usize)>() + 1) * 2
@@ -267,6 +299,83 @@ mod tests {
         }
         cache.set_reversed(1..3, false);
         assert_eq!(cache.range(0..3), expected);
+    }
+
+    #[test]
+    fn discarded_live_tails_release_unique_link_and_image_styles() {
+        let frozen = fixture();
+        let mut cache = CachedLines::default();
+        cache.extend(frozen.clone());
+        let baseline_styles = cache.styles.len();
+        let baseline_bytes = cache.retained_bytes();
+        for id in 1..2_000u16 {
+            let carrier = if id % 2 == 0 { 0x80 } else { 0x01 };
+            let style =
+                Style::new().underline_color(Color::Rgb(carrier, (id >> 8) as u8, id as u8));
+            cache.extend([Line::from(vec![
+                Span::styled("你好 👩‍💻", style),
+                Span::styled("", style),
+            ])
+            .style(style)]);
+            // Repeated assignment of the same selection state must not lose
+            // the references shared by this row and its two spans.
+            cache.set_reversed(3..4, true);
+            cache.set_reversed(3..4, true);
+            cache.set_reversed(3..4, false);
+            cache.set_reversed(3..4, false);
+            cache.truncate(3);
+        }
+        assert_eq!(cache.range(0..3), frozen);
+        assert_eq!(
+            cache.styles.len(),
+            baseline_styles,
+            "discarded live tails left {} stale styles",
+            cache.styles.len() - baseline_styles
+        );
+        assert_eq!(cache.style_ids.len(), baseline_styles);
+        assert!(cache.retained_bytes() < baseline_bytes + 2_048);
+    }
+
+    #[test]
+    fn a_zero_reference_middle_style_keeps_its_id_when_reused() {
+        let row_style = Style::new().fg(Color::Green);
+        let row = Line::from("你好").style(row_style);
+        let mut cache = CachedLines::default();
+        cache.extend([row.clone()]);
+        let original_id = cache.style_ids[&row_style];
+        cache.set_reversed(0..1, true);
+        // The original row style now has no references, but a later style
+        // remains in use. Its slot cannot be removed or shift other ids.
+        assert_eq!(cache.style_ids[&row_style], original_id);
+        cache.extend([Line::from(Span::styled("shared", row_style)).style(row_style)]);
+        assert_eq!(cache.style_ids[&row_style], original_id);
+        cache.set_reversed(0..1, false);
+        cache.truncate(1);
+        assert_eq!(cache.range(0..1), [row]);
+        cache.truncate(0);
+        assert!(cache.styles.is_empty());
+        assert!(cache.style_ids.is_empty());
+        cache.extend(fixture());
+        assert_eq!(cache.range(0..3), fixture());
+    }
+
+    #[test]
+    fn truncation_releases_styles_with_multibyte_varint_ids_and_lengths() {
+        let frozen = fixture();
+        let mut cache = CachedLines::default();
+        cache.extend(frozen.clone());
+        let baseline_styles = cache.styles.len();
+        let tail = (0..300u16).map(|id| {
+            let style = Style::new().underline_color(Color::Rgb(0x80, (id >> 8) as u8, id as u8));
+            Line::from(Span::styled("界👩‍💻".repeat(100), style)).style(style)
+        });
+        cache.extend(tail);
+        assert!(cache.styles.len() > 128);
+        cache.truncate(frozen.len());
+        assert_eq!(cache.range(0..frozen.len()), frozen);
+        assert_eq!(cache.styles.len(), baseline_styles);
+        cache.extend([Line::from("replacement 👩‍💻")]);
+        assert_eq!(cache.range(3..4), [Line::from("replacement 👩‍💻")]);
     }
 
     #[test]

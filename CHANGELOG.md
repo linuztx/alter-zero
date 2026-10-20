@@ -18,7 +18,9 @@ release heading when a version is cut.
   text and styles and expands only visible rows, preserving complete output,
   syntax colours and fast opens. File rewrites use a 2 MB diff table in place
   of the former roughly 8 MB table, with identical matching and tie choices.
-  An offline CLI stress probe and memory regression tests cover both paths
+  Request snapshots share immutable tool arguments instead of copying generated
+  source, and refreshing the live transcript releases discarded style entries.
+  An offline CLI stress probe and memory regression tests cover these paths
   (`docs/memory.md`).
 
 - **The npm launcher's fallback catches signals before starting the binary.**
