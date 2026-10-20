@@ -458,11 +458,14 @@ describe('the launcher', { skip: HOST === null && 'no platform package for this 
 // The fallback for a Node without process.execve: the binary runs as a
 // child, and the launcher relays signals and mirrors how it ended.
 describe('the spawn fallback', { skip: HOST === null && 'no platform package for this machine' }, () => {
-  const harness = (install) => {
+  const harness = (install, signalDuringSpawn = false) => {
     const file = path.join(install.root, 'harness.js');
+    const spawn = signalDuringSpawn
+      ? `, spawn: (...args) => { const child = require('child_process').spawn(...args); process.kill(process.pid, 'SIGQUIT'); return child; }`
+      : '';
     fs.writeFileSync(
       file,
-      `require(${JSON.stringify(install.entry)}).launch(${JSON.stringify(install.bin)}, process.argv.slice(2), { execve: null });\n`,
+      `require(${JSON.stringify(install.entry)}).launch(${JSON.stringify(install.bin)}, process.argv.slice(2), { execve: null${spawn} });\n`,
     );
     return file;
   };
@@ -519,6 +522,13 @@ describe('the spawn fallback', { skip: HOST === null && 'no platform package for
     const [code, signal] = await new Promise((resolve) => child.on('exit', (...end) => resolve(end)));
     assert.equal(signal, null, 'the launcher waited for the binary rather than leaving it running');
     assert.equal(code, 128 + os.constants.signals.SIGQUIT);
+  });
+
+  test('catches SIGQUIT even while the child is being spawned', () => {
+    const install = fakeInstall({ binary: '#!/bin/sh\nexec sleep 1\n' });
+    const result = run(harness(install, true), []);
+    assert.equal(result.signal, null, 'the launcher must catch SIGQUIT before spawning');
+    assert.equal(result.status, 128 + os.constants.signals.SIGQUIT);
   });
 
   test('explains a binary it could not start, and exits 1', () => {

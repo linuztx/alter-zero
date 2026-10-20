@@ -12,6 +12,13 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The npm launcher's fallback catches signals before starting the binary.**
+  A signal sent as a fast child started could kill the launcher before its
+  handlers were installed, leaving the child running. The handlers are now
+  installed before spawning, including for `SIGQUIT`.
+
 ## [0.15.0] - 2026-10-20
 
 ### Added
