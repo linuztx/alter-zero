@@ -170,7 +170,13 @@ which Ctrl+V reads the clipboard from.
   message is never hidden — `docs/queue.md`), scrollable (↑/↓ PgUp/PgDn,
   Home/End jump). It **opens
   pinned to the bottom** and tail-follows new content as it streams in (scroll up
-  to read back; scrolling to the bottom re-engages following). It is the
+  to read back; scrolling to the bottom re-engages following). Committed rows
+  stay pre-warmed in compact storage: one text slab, interned styles and
+  encoded span lengths. Refreshing the live tail releases unused trailing
+  styles while preserving the IDs of retained spans. The pager expands only
+  its visible rows, preserving instant opens and complete output while
+  reducing retained memory
+  (`docs/memory.md`, `docs/tool-view-performance.md`). It is the
   expanded counterpart of the inline view (where tools are collapsed): each tool's
   full output hangs under the same `⎿` gutter as the inline peek — a backend tool
   keeps its `● name(args)` header over it, a `!` shell cell stays headerless — with

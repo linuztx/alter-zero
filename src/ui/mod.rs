@@ -40,6 +40,7 @@ mod agent;
 mod ask_view;
 mod assistant;
 mod background_view;
+mod cached_lines;
 mod classifier_view;
 mod context_view;
 mod conversation;

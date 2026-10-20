@@ -46,6 +46,7 @@ pub mod skill;
 pub mod subagent;
 pub mod task;
 pub mod thinking;
+mod tool_arguments;
 pub mod tools;
 mod wire_history;
 
@@ -59,6 +60,7 @@ pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
 pub use service_tier::{STANDARD_LABEL, ServiceTier, SpeedState};
 pub use settings::{ModelSelection, Settings, SpeedSettings, ThinkingSettings, env_outranks};
+pub use tool_arguments::ToolArguments;
 
 /// One message in a chat-completion request.
 ///
@@ -95,7 +97,7 @@ pub struct ToolCallSpec {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct FunctionCall {
     pub name: String,
-    pub arguments: String,
+    pub arguments: ToolArguments,
 }
 
 impl ToolCallSpec {
@@ -111,7 +113,7 @@ impl ToolCallSpec {
             kind: "function".to_string(),
             function: FunctionCall {
                 name: name.into(),
-                arguments: arguments.into(),
+                arguments: ToolArguments::from(arguments.into()),
             },
         }
     }
@@ -534,6 +536,68 @@ mod tests {
                     "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}
                 }]
             })
+        );
+    }
+
+    #[test]
+    fn cloning_a_message_shares_its_verbatim_tool_arguments() {
+        let arguments = r#" { "path": "猫.tsx", "content": "a\n\"b\"\\c" } "#;
+        let message = ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCallSpec::function("call_write", "write", arguments)],
+        );
+        let copy = message.clone();
+        let original = &message.tool_calls[0].function.arguments;
+        let cloned = &copy.tool_calls[0].function.arguments;
+        assert_eq!(original.as_str(), arguments);
+        assert_eq!(cloned.as_str(), arguments);
+        assert_eq!(
+            original.as_ptr(),
+            cloned.as_ptr(),
+            "request snapshots must share the generated source allocation"
+        );
+    }
+
+    #[test]
+    fn tool_arguments_serialize_with_the_original_json_bytes() {
+        let arguments = r#" { "path": "猫.tsx", "content": "a\n\"b\"\\c" } "#;
+        let message = ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCallSpec::function("call_write", "write", arguments)],
+        );
+        assert_eq!(
+            serde_json::to_string(&message).expect("message serializes"),
+            r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_write","type":"function","function":{"name":"write","arguments":" { \"path\": \"猫.tsx\", \"content\": \"a\\n\\\"b\\\"\\\\c\" } "}}]}"#,
+        );
+    }
+
+    #[test]
+    fn the_retained_wire_prefix_reuses_its_tool_arguments_allocation() {
+        let arguments = r#" { "path": "猫.tsx", "content": "a\n\"b\"\\c" } "#;
+        let request = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![ToolCallSpec::function("provider_call", "write", arguments)],
+            ),
+            ChatMessage::tool_result("provider_call", "written"),
+        ];
+        let original = request[0].tool_calls[0].function.arguments.as_ptr();
+        let mut history = wire_history::WireHistory::default();
+        history.remember(&request);
+        let mut reconstructed = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![ToolCallSpec::function("replayed_call", "write", arguments)],
+            ),
+            ChatMessage::tool_result("replayed_call", "written"),
+            ChatMessage::user("continue"),
+        ];
+        history.restore(&mut reconstructed);
+        assert_eq!(reconstructed[0].tool_calls[0].id, "provider_call");
+        assert_eq!(
+            reconstructed[0].tool_calls[0].function.arguments.as_ptr(),
+            original,
+            "remembering the wire prefix must share its source bytes"
         );
     }
 

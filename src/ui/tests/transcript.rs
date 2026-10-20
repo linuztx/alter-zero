@@ -2,6 +2,7 @@
 //! (`docs/tool-view-performance.md`, `docs/backtrack.md`).
 
 use super::*;
+use crate::app::Theme;
 use crate::ui::theme::{
     QUEUED_INDENT, TOOL_VIEW_FOOTER_ROWS, TOOL_VIEW_TITLE, TOOL_VIEW_TITLE_ROWS, timestamp_color,
 };
@@ -330,6 +331,72 @@ fn transcript_cache_warm_prebuilds_so_the_open_renders_nothing() {
     assert_eq!(cache.item_renders, rendered, "warm skips a width change");
     // …the next real access (the overlay opening at the new width) pays it.
     assert_eq!(cache.lines(&app, 40), transcript_lines(&app, 40).as_slice());
+}
+
+#[test]
+fn compact_transcript_paints_every_viewport_without_expanding_history() {
+    let mut app = transcript_fixture();
+    app.begin_stream();
+    app.start_tool("Write", "tasks.tsx", None);
+    let code = "const task = <button title=\"你好 👩‍💻\">Done</button>;\n".repeat(80);
+    app.end_tool(&crate::llm::tools::write_report("tasks.tsx", &code), true);
+    app.push_chunk("A [link](https://example.com) and **a live reply**.");
+    let mut cache = TranscriptCache::new();
+    for theme in [Theme::default(), Theme::Ansi, Theme::Dracula] {
+        with_theme(theme, || {
+            for width in [1, 17, 80, 120] {
+                cache.warm(&app, width);
+                let lines = transcript_lines(&app, width);
+                for height in [1, 3, 4, 12, 40] {
+                    for scroll in [0, 5, lines.len() / 2, usize::MAX] {
+                        app.tool_scroll = scroll;
+                        let mut expected = buffer(width, height);
+                        render_tool_view(expected.area, &mut expected, &app, &lines);
+                        let mut actual = buffer(width, height);
+                        cache.render(actual.area, &mut actual, &app);
+                        assert_eq!(actual, expected, "{width}x{height}, scroll {scroll}");
+                        assert!(cache.expanded.is_none(), "paging keeps only compact rows");
+                    }
+                }
+            }
+        });
+    }
+    cache.warm(&app, 120);
+    let rendered = cache.item_renders;
+    let mut actual = buffer(120, 40);
+    cache.render(actual.area, &mut actual, &app);
+    assert_eq!(
+        cache.item_renders, rendered,
+        "scrolling keeps the warm prefix"
+    );
+}
+
+#[test]
+fn compact_transcript_backtrack_and_owned_access_keep_the_same_rows() {
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    // A compatibility caller can still request every independently owned row.
+    cache.lines(&app, 80);
+    assert!(cache.expanded.is_some());
+    for selected in [Some(0), None] {
+        app.backtrack.selected = selected;
+        let mut expected = buffer(80, 24);
+        render_tool_view(
+            expected.area,
+            &mut expected,
+            &app,
+            &transcript_lines(&app, 80),
+        );
+        let mut actual = buffer(80, 24);
+        cache.render(actual.area, &mut actual, &app);
+        assert_eq!(actual, expected);
+        assert!(cache.expanded.is_none(), "the pager releases owned rows");
+    }
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80));
+    app.record_user_message("appended after owned access");
+    cache.warm(&app, 80);
+    assert!(cache.expanded.is_none(), "a commit invalidates owned rows");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80));
 }
 
 #[test]

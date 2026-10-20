@@ -2215,7 +2215,7 @@ pub struct Diff {
     pub removed: usize,
 }
 
-/// The most LCS-table cells [`diff_lines`] will allocate (~8 MB of `usize`s).
+/// The most LCS-table cells [`diff_lines`] will allocate (2 MB of `u16`s).
 /// The common prefix/suffix are trimmed first, so a typical edit — however
 /// large the file — only needs the table for its changed middle; a middle
 /// whose old×new line product exceeds this budget is rendered as a plain
@@ -2223,6 +2223,10 @@ pub struct Diff {
 /// 30k-line file (a lockfile, a generated bundle) allocates an O(n×m) table
 /// in the gigabytes and can OOM-abort the whole TUI.
 const DIFF_LCS_MAX_CELLS: usize = 1_000_000;
+
+// Every score is at most min(old lines, new lines). The cell budget bounds
+// that minimum at 1,000 today; a future budget may not outgrow the score type.
+const _: () = assert!(DIFF_LCS_MAX_CELLS <= (u16::MAX as usize) * (u16::MAX as usize));
 
 /// Compute a line-level diff of `old` → `new` via a longest-common-subsequence
 /// match, so unchanged lines are shared context and only the real changes are
@@ -2256,8 +2260,8 @@ pub fn diff_lines(old: &str, new: &str) -> Diff {
     let am = &a[prefix..a.len() - suffix];
     let bm = &b[prefix..b.len() - suffix];
     let (mut added, mut removed) = (0usize, 0usize);
-    if am.len().saturating_mul(bm.len()) > DIFF_LCS_MAX_CELLS {
-        // Past the budget: a plain replacement block, no shared-context search.
+    if am.is_empty() || bm.is_empty() || am.len().saturating_mul(bm.len()) > DIFF_LCS_MAX_CELLS {
+        // No possible matches, or past the budget: a plain replacement block.
         for l in am {
             lines.push(DiffLine::Remove(l.to_string()));
             removed += 1;
@@ -2267,15 +2271,21 @@ pub fn diff_lines(old: &str, new: &str) -> Diff {
             added += 1;
         }
     } else {
-        // LCS table (lengths) over the changed middle only.
+        // LCS lengths over the changed middle only. Two-byte scores suffice
+        // under the cell budget; one flat allocation avoids a heap block per
+        // old line. Boundary zeros are implicit, so even a 1×1M middle stays
+        // within the same 1M cells instead of allocating a second million.
         let (n, m) = (am.len(), bm.len());
-        let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+        let mut lcs = vec![0u16; n * m];
+        let score = |table: &[u16], i: usize, j: usize| {
+            if i < n && j < m { table[i * m + j] } else { 0 }
+        };
         for i in (0..n).rev() {
             for j in (0..m).rev() {
-                lcs[i][j] = if am[i] == bm[j] {
-                    lcs[i + 1][j + 1] + 1
+                lcs[i * m + j] = if am[i] == bm[j] {
+                    score(&lcs, i + 1, j + 1) + 1
                 } else {
-                    lcs[i + 1][j].max(lcs[i][j + 1])
+                    score(&lcs, i + 1, j).max(score(&lcs, i, j + 1))
                 };
             }
         }
@@ -2286,7 +2296,7 @@ pub fn diff_lines(old: &str, new: &str) -> Diff {
                 lines.push(DiffLine::Context(am[i].to_string()));
                 i += 1;
                 j += 1;
-            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            } else if score(&lcs, i + 1, j) >= score(&lcs, i, j + 1) {
                 lines.push(DiffLine::Remove(am[i].to_string()));
                 removed += 1;
                 i += 1;
@@ -3547,6 +3557,164 @@ mod tests {
         let d = diff_lines("same\ntext", "same\ntext");
         assert_eq!((d.added, d.removed), (0, 0));
         assert!(d.lines.iter().all(|l| matches!(l, DiffLine::Context(_))));
+    }
+
+    /// The original usize-per-cell algorithm, retained here as an oracle for
+    /// the exact line choices, including repeated lines and remove-on-tie.
+    fn reference_diff(old: &str, new: &str) -> Diff {
+        let a: Vec<&str> = old.lines().collect();
+        let b: Vec<&str> = new.lines().collect();
+        let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let suffix = a[prefix..]
+            .iter()
+            .rev()
+            .zip(b[prefix..].iter().rev())
+            .take_while(|(x, y)| x == y)
+            .count();
+        let am = &a[prefix..a.len() - suffix];
+        let bm = &b[prefix..b.len() - suffix];
+        let (n, m) = (am.len(), bm.len());
+        let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i][j] = if am[i] == bm[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let mut lines: Vec<DiffLine> = a[..prefix]
+            .iter()
+            .map(|line| DiffLine::Context(line.to_string()))
+            .collect();
+        let (mut i, mut j, mut added, mut removed) = (0, 0, 0, 0);
+        while i < n && j < m {
+            if am[i] == bm[j] {
+                lines.push(DiffLine::Context(am[i].to_string()));
+                i += 1;
+                j += 1;
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                lines.push(DiffLine::Remove(am[i].to_string()));
+                removed += 1;
+                i += 1;
+            } else {
+                lines.push(DiffLine::Add(bm[j].to_string()));
+                added += 1;
+                j += 1;
+            }
+        }
+        for line in &am[i..] {
+            lines.push(DiffLine::Remove(line.to_string()));
+            removed += 1;
+        }
+        for line in &bm[j..] {
+            lines.push(DiffLine::Add(line.to_string()));
+            added += 1;
+        }
+        lines.extend(
+            a[a.len() - suffix..]
+                .iter()
+                .map(|line| DiffLine::Context(line.to_string())),
+        );
+        Diff {
+            lines,
+            added,
+            removed,
+        }
+    }
+
+    #[test]
+    fn compact_line_diff_matches_the_original_choices_exhaustively() {
+        let mut corpus: Vec<String> = vec![String::new()];
+        for len in 1..=4 {
+            for mut pattern in 0..3usize.pow(len) {
+                let mut lines = Vec::new();
+                for _ in 0..len {
+                    lines.push(["a", "b", ""][pattern % 3]);
+                    pattern /= 3;
+                }
+                corpus.push(lines.join("\n"));
+            }
+        }
+        corpus.extend([
+            "same\na\nb\na\nend\n".to_string(),
+            "same\nb\na\nb\nend\n".to_string(),
+            "你好\r\n👩‍💻\r\n".to_string(),
+            "👩‍💻\n你好\n".to_string(),
+        ]);
+        for old in &corpus {
+            for new in &corpus {
+                assert_eq!(
+                    diff_lines(old, new),
+                    reference_diff(old, new),
+                    "{old:?} → {new:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_budget_diff_keeps_long_matches_and_boundary_choices() {
+        let middle = "common\n".repeat(998);
+        let old = format!("old first\n{middle}old last\n");
+        let new = format!("new first\n{middle}new last\n");
+        let diff = diff_lines(&old, &new);
+        assert_eq!(diff, reference_diff(&old, &new));
+        assert_eq!((diff.added, diff.removed), (2, 2));
+        assert_eq!(
+            diff.lines
+                .iter()
+                .filter(|line| matches!(line, DiffLine::Context(_)))
+                .count(),
+            998
+        );
+    }
+
+    #[test]
+    fn a_budget_sized_line_diff_uses_less_than_four_megabytes() {
+        // RSS/HWM are process-wide: re-run only this test in its own process,
+        // without the library suite's other tests allocating beside it.
+        const PROBE: &str = "ALTER_ZERO_DIFF_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let result = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "llm::tools::tests::a_budget_sized_line_diff_uses_less_than_four_megabytes",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .expect("run isolated memory test");
+            assert!(
+                result.status.success(),
+                "isolated diff probe failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        let peak = || -> Option<usize> {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            let kb = status
+                .lines()
+                .find_map(|line| line.strip_prefix("VmHWM:"))?;
+            Some(kb.split_whitespace().next()?.parse::<usize>().ok()? * 1024)
+        };
+        let Some(before) = peak() else {
+            eprintln!("no /proc — skipping the diff memory probe");
+            return;
+        };
+        let old: String = (0..1000).map(|i| format!("old {i}\n")).collect();
+        let new: String = (0..1000).map(|i| format!("new {i}\n")).collect();
+        let diff = diff_lines(&old, &new);
+        let growth = peak().expect("peak resident set").saturating_sub(before);
+        assert_eq!((diff.added, diff.removed), (1000, 1000));
+        eprintln!("diff peak growth: {growth} bytes");
+        assert!(
+            growth < 4 * 1024 * 1024,
+            "a budget-sized diff grew peak RSS by {growth} bytes — its LCS table should use two-byte cells"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! See `docs/tool-view-performance.md`.
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
+use super::cached_lines::CachedLines;
 use super::conversation::is_shell_header;
 use super::file_cell::draft_cell_lines;
 use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
@@ -51,7 +52,7 @@ pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
 fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<usize>>) {
     let mut cache = TranscriptCache::new();
     cache.refresh(app, width);
-    (std::mem::take(&mut cache.lines), cache.selection)
+    (cache.rows.owned_range(0..cache.rows.len()), cache.selection)
 }
 
 /// One history item's transcript rows — the message (or the tool's *expanded*
@@ -205,7 +206,7 @@ pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize 
 /// Committed history items are immutable and history only ever grows — every
 /// other mutation (a `/clear`, a `/resume` load, a backtrack truncation, an
 /// interrupt-undo pop) bumps [`App::history_generation`]. That makes
-/// `(generation, width)` pin the **frozen prefix** exactly: `lines[..frozen_rows]`
+/// `(generation, width)` pin the **frozen prefix** exactly: the first `frozen_rows`
 /// holds the banner chrome plus every committed item, rendered once
 /// (`transcript_item_lines`); each refresh truncates the volatile live tail
 /// (in-progress reply, live tool queue, queued backlog) off the end and
@@ -213,7 +214,8 @@ pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize 
 /// *inside* the frozen prefix — is applied as an in-place style diff
 /// (`Self::restyle_selection`), never a re-render. A cheap `TranscriptSig`
 /// short-circuits the refresh entirely while nothing changed, so a scroll
-/// keypress is O(viewport).
+/// keypress is O(viewport). Rows live in compact text/style storage; only the
+/// visible viewport expands into ratatui lines when the pager paints.
 ///
 /// [`warm`]: Self::warm
 #[derive(Default)]
@@ -223,12 +225,16 @@ pub struct TranscriptCache {
     /// chrome above them). `None` until the first build.
     pub(super) key: Option<FrozenKey>,
     sig: Option<TranscriptSig>,
-    /// The full transcript: the frozen prefix (`..frozen_rows`) + the live tail.
-    pub(super) lines: Vec<Line<'static>>,
-    /// Rows of banner chrome at the top of `lines` (the empty-transcript
+    /// The full transcript, compacted after rendering each item. The pager
+    /// expands only its visible window; text and styles are stored once.
+    rows: CachedLines,
+    /// Materialized only by the explicit whole-transcript `lines` accessor.
+    /// The interactive pager never fills this compatibility view.
+    pub(super) expanded: Option<Vec<Line<'static>>>,
+    /// Rows of banner chrome at the top of `rows` (the empty-transcript
     /// placeholder keys on "nothing beyond the banner").
     chrome_rows: usize,
-    /// End of the frozen prefix in `lines`; the live tail is rebuilt above it.
+    /// End of the frozen prefix in `rows`; the live tail is rebuilt above it.
     frozen_rows: usize,
     /// Per rendered history item: its row count (for selection offsets) and,
     /// for a user message, the reversible message-row span of the backtrack
@@ -379,6 +385,7 @@ impl TranscriptCache {
             return;
         }
         if self.ensure_frozen(app, width) {
+            self.expanded = None;
             // The tail was truncated off (or the prefix reset): the next
             // refresh must rebuild it even if the volatile signature matches.
             self.sig = None;
@@ -388,7 +395,7 @@ impl TranscriptCache {
     /// Bring the frozen prefix up to date with `app.history` at `width`:
     /// reset it when the [`FrozenKey`] mismatches, then render and append any
     /// items not yet cached. Returns whether anything changed; when it did,
-    /// `lines` holds **only** chrome + frozen items (the live tail was
+    /// `rows` holds **only** chrome + frozen items (the live tail was
     /// truncated off) and the caller must rebuild the tail.
     fn ensure_frozen(&mut self, app: &App, width: u16) -> bool {
         let key_matches = self.key.as_ref().is_some_and(|k| {
@@ -407,16 +414,17 @@ impl TranscriptCache {
             // The header banner tops the transcript exactly as it tops the
             // inline conversation (docs/header.md) — the overlay mirrors the
             // real scrollback, so Ctrl+O never hides it.
-            self.lines = header_lines(app, width);
-            self.lines.push(Line::default());
-            self.chrome_rows = self.lines.len();
+            self.rows.clear();
+            self.rows.extend(header_lines(app, width));
+            self.rows.extend([Line::default()]);
+            self.chrome_rows = self.rows.len();
             self.frozen_rows = self.chrome_rows;
             self.items.clear();
             self.reversed = None;
         } else if self.items.len() == app.history.len() {
             return false;
         } else {
-            self.lines.truncate(self.frozen_rows);
+            self.rows.truncate(self.frozen_rows);
         }
         // Append the not-yet-rendered items (all of them after a reset). The
         // generation guarantees the cached prefix is a prefix of `history`.
@@ -427,7 +435,7 @@ impl TranscriptCache {
                 user_rows,
             });
             self.frozen_rows += rows.len();
-            self.lines.extend(rows);
+            self.rows.extend(rows);
             #[cfg(test)]
             {
                 self.item_renders += 1;
@@ -457,14 +465,10 @@ impl TranscriptCache {
         });
         if self.reversed != target {
             if let Some(old) = self.reversed.take() {
-                for line in &mut self.lines[old] {
-                    line.style.add_modifier.remove(Modifier::REVERSED);
-                }
+                self.rows.set_reversed(old, false);
             }
             if let Some(new) = target.clone() {
-                for line in &mut self.lines[new] {
-                    line.style.add_modifier.insert(Modifier::REVERSED);
-                }
+                self.rows.set_reversed(new, true);
             }
             self.reversed = target.clone();
         }
@@ -482,15 +486,15 @@ impl TranscriptCache {
         if let Some(text) = app.streaming_text()
             && !text.is_empty()
         {
-            self.lines
+            self.rows
                 .extend(message_lines(Role::Assistant, text, width));
-            self.lines.push(Line::default());
+            self.rows.extend([Line::default()]);
         }
         // An open thinking phase, whole (the pager has no row budget, unlike
         // the strip's windowed block) — docs/thinking-stream.md.
         if let Some(text) = app.reasoning() {
-            self.lines.extend(reasoning_live_full_lines(text, width));
-            self.lines.push(Line::default());
+            self.rows.extend(reasoning_live_full_lines(text, width));
+            self.rows.extend([Line::default()]);
         }
         // The live agent group's members expand as their own `● Agent(…)`
         // cells — activity live — before the tool queue, mirroring the strip's
@@ -498,30 +502,30 @@ impl TranscriptCache {
         if let Some(live) = app.agent_group() {
             for id in &live.ids {
                 if let Some(run) = app.agent(id) {
-                    self.lines.extend(agent_cell_lines(
+                    self.rows.extend(agent_cell_lines(
                         &AgentCellView::of_run(run),
                         width,
                         app.path_display(),
                     ));
-                    self.lines.push(Line::default());
+                    self.rows.extend([Line::default()]);
                 }
             }
         }
-        self.lines.extend(live_call_full_lines(
+        self.rows.extend(live_call_full_lines(
             app.tool_queue(),
             app.tool_drafts(),
             width,
             app.path_display(),
         ));
         if !app.queued.is_empty() || !app.steered.is_empty() {
-            self.lines.extend(queued_lines(app, width));
-            self.lines.push(Line::default());
+            self.rows.extend(queued_lines(app, width));
+            self.rows.extend([Line::default()]);
         }
-        if self.lines.len() == self.chrome_rows {
-            self.lines.push(Line::from(Span::styled(
+        if self.rows.len() == self.chrome_rows {
+            self.rows.extend([Line::from(Span::styled(
                 TOOL_VIEW_EMPTY.to_string(),
                 Style::new().fg(tool_dim_color()),
-            )));
+            ))]);
         }
     }
 
@@ -533,9 +537,10 @@ impl TranscriptCache {
         if self.sig.as_ref() == Some(&sig) {
             return;
         }
+        self.expanded = None;
         if !self.ensure_frozen(app, width) {
             // Only the volatile tail changed: drop it, keep the frozen prefix.
-            self.lines.truncate(self.frozen_rows);
+            self.rows.truncate(self.frozen_rows);
         }
         self.restyle_selection(app);
         self.build_tail(app, width);
@@ -546,16 +551,33 @@ impl TranscriptCache {
         }
     }
 
-    /// The cached transcript rows, rebuilding first only if stale.
+    /// The complete, owned transcript rows, rebuilding first only if stale.
+    /// Call [`Self::render`] to paint a pager without materializing every row.
     pub fn lines(&mut self, app: &App, width: u16) -> &[Line<'static>] {
         self.refresh(app, width);
-        &self.lines
+        self.expanded
+            .get_or_insert_with(|| self.rows.owned_range(0..self.rows.len()))
+    }
+
+    /// Paint the pager from compact rows, expanding only its visible window.
+    /// Warming and scrolling retain the full transcript without holding a
+    /// `String` and a complete `Style` for each highlighted token.
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, app: &App) {
+        self.refresh(app, area.width);
+        // A caller may previously have requested all owned rows with `lines`.
+        // The pager needs only a window, so release that compatibility view.
+        self.expanded = None;
+        let count = self.rows.len();
+        let body_rows = tool_view_body_rows(area.height);
+        let scroll = app.tool_scroll.min(count.saturating_sub(body_rows));
+        let end = scroll.saturating_add(body_rows).min(count);
+        render_tool_view_window(area, buf, app, count, self.rows.range(scroll..end));
     }
 
     /// The cached row count (for the scroll clamp) — no borrow held.
     pub fn line_count(&mut self, app: &App, width: u16) -> usize {
         self.refresh(app, width);
-        self.lines.len()
+        self.rows.len()
     }
 
     /// The cached backtrack-preview selection range, rebuilding first if stale.
@@ -708,6 +730,21 @@ pub(super) fn rule_with_label(width: u16, label: &str) -> Line<'static> {
 /// past its end, then the percentage separator and the dim key-hint rows.
 /// Pure — `term.rs` paints this onto the overlay.
 pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
+    let body_rows = tool_view_body_rows(area.height);
+    let scroll = app.tool_scroll.min(lines.len().saturating_sub(body_rows));
+    let visible = lines.iter().skip(scroll).take(body_rows).cloned().collect();
+    render_tool_view_window(area, buf, app, lines.len(), visible);
+}
+
+/// The shared pager chrome and body painter. The compact cache supplies a
+/// borrowed viewport; the standalone renderer supplies owned rows.
+fn render_tool_view_window(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    line_count: usize,
+    mut visible: Vec<Line<'_>>,
+) {
     let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
         Constraint::Length(TOOL_VIEW_TITLE_ROWS),
         Constraint::Min(0),
@@ -718,16 +755,9 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'
 
     Paragraph::new(tool_view_header(area.width)).render(title_area, buf);
 
-    // `lines` is prebuilt (by the caller's `TranscriptCache`) at `area.width` —
-    // the vertical split above keeps the full width, so `body_area.width` matches.
-    let max = lines.len().saturating_sub(body_area.height as usize);
+    // The caller builds rows at the full width, which this split preserves.
+    let max = line_count.saturating_sub(body_area.height as usize);
     let scroll = app.tool_scroll.min(max);
-    let mut visible: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(body_area.height as usize)
-        .cloned()
-        .collect();
     while (visible.len() as u16) < body_area.height {
         visible.push(Line::from(TOOL_VIEW_FILL));
     }

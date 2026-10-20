@@ -506,6 +506,143 @@ it: Ctrl+O or `/export`. That leaves the decoded file and about twenty lines.
 5,000-line write at four copies of the file. It measures one, where the old
 cache's resident cost was about twenty-seven.
 
+## Code-generation transcripts and rewrite diffs
+
+The retained Ctrl+O transcript was the largest avoidable growing display
+allocation found in a task-manager generation replay. Every committed tool
+result was pre-rendered into expanded ratatui rows: each syntax run held a
+separate string and a full style, even while the overlay was closed. Keeping
+the warm cache is necessary for fast opens (`docs/tool-view-performance.md`).
+
+The cache now keeps one UTF-8 text slab, an interned style table and encoded
+span lengths/indexes. The pager borrows text for only its visible rows. It
+still highlights each committed item once, retains every recorded row,
+preserves line alignment and image/link carriers, and restyles backtrack
+selection without highlighting again. Full owned rows remain available for
+explicit callers, including export; ordinary pager draws never build them.
+
+Refreshing the live tail now decrements the style references held by removed
+rows and spans, then releases unused trailing styles. This prevents unique
+link/image carriers from accumulating on every refresh. Selection changes
+balance those references too. Retained span IDs and buffer capacity policy
+stay unchanged; unused middle slots remain until later styles are released.
+A failing-first churn test left 3,998 stale styles after 1,999 refreshes before
+the fix, and none afterward. Unicode, empty spans and multibyte style IDs
+round-trip through truncation and append.
+
+In `tests/transcript_memory.rs`, warming twelve 800-line TypeScript writes
+grew resident memory **11.2 MB before, 2.1 MB after**. This includes the app's
+existing numbered-output cap, which the change leaves intact. The regression
+test first failed on the old representation, then passed on the compact one.
+Round-trip tests preserve every span/line property, and buffer comparisons
+exercise themes, Unicode, short/narrow terminals, scrolling and backtracking.
+
+The rewrite path had another substantial temporary allocation:
+`llm::tools::diff_lines` filled up to a million `usize` LCS scores in a vector
+per old line, about **8 MB** on 64-bit systems. The matching budget implies
+that a score is at most 1,000, so a flat `u16` table holds the same scores in
+at most **2 MB**, with the zero boundary implicit. Empty middles allocate no
+table. Prefix/suffix trimming, remove-on-tie choices, counts and the existing
+large-diff fallback are unchanged. An exhaustive small-input oracle and a
+full-budget match test compare exact `DiffLine` output to the original
+algorithm. The isolated peak regression measured **8.5 MB before, 2.1 MB
+after** and requires a budget-sized diff to stay below 4 MiB.
+
+### Share generated arguments across request snapshots
+
+A `write` tool call contains the complete generated file in its JSON arguments.
+Cloning the conversation for a request round, retained wire prefix or prompt
+cache markers used to copy that source each time. `llm::ToolArguments` now
+holds an immutable `Arc<String>`: moving an owned string preserves its buffer,
+and cloning a message shares it. Serialization preserves the original JSON
+text, including whitespace and escape spelling. The retained wire-prefix
+budget charges the string's capacity and shared-allocation metadata, so a
+short argument with an oversized buffer cannot bypass the existing 8 MiB cap.
+
+`tests/tool_arguments_memory.rs` keeps four snapshots of a 6 MiB write alive
+in an isolated process. The test first failed with **24.0 MiB** of additional
+RSS, then passed with **0 bytes** of measured growth. Unit tests check shared
+allocation identity, exact serialized bytes and wire-prefix reuse. This is
+the removed duplication in that controlled case; whole-process RSS also
+depends on rendering and allocator reuse.
+
+For library callers, `FunctionCall.arguments` is now `ToolArguments` instead
+of `String`. `ToolCallSpec::function` accepts the same inputs as before. Manual
+field initializers can use `arguments: source.into()`; read through `as_str()`
+or produce an independent string with `to_string()`.
+
+These two additions selectively port the useful changes from
+`perf/reduce-post-generation-ram` (`342bac9`): shared arguments and style
+reference cleanup. The compact varint rows, borrowed viewport rendering,
+implicit-border diff table and existing buffer growth remain in place.
+
+### Repeating the real CLI workload without a model key
+
+Build a release binary, then run:
+
+```sh
+python3 scripts/codegen_mem.py target/release/alter-zero --lines 5000 --turns 4
+```
+
+The Linux/tmux harness starts an isolated loopback Chat Completions provider
+that streams TSX, CSS and JSON writes in fragments, then drives the real
+binary through repeated generation turns. It verifies every generated file
+byte-for-byte, opens Ctrl+O and Ctrl+D, resizes both directions, and clears
+the conversation. `--output work/codegen.json` saves RSS, anonymous/file
+resident memory and sampled high-water readings. No generated application is
+started. Automatic compaction is disabled in the fixture to retain the whole
+stress history; normal application defaults are unchanged.
+
+Matched release builds of pristine `main` (`e98680d`, v0.15.0) and the initial
+compact-cache/diff change (`774ff7c`), on Linux x86_64 with glibc, after four
+generation turns:
+
+| TSX lines per turn, plus CSS/JSON | before RSS | after RSS | reduction |
+| --- | --- | --- | --- |
+| 800 | 38.85 MiB | 35.17 MiB | 9.5% |
+| 2,000 | 44.76 MiB | 40.46 MiB | 9.6% |
+| 5,000, two-run mean | 57.40 MiB | 52.00 MiB | 9.4% |
+
+For the 5,000-line case, the mean after opening Ctrl+D was **64.04 → 53.78
+MiB** (16.0% less); after `/clear`, **58.15 → 47.34 MiB** (18.6% less).
+All eight runs verified generated files, request counts, both overlays,
+resizing and clear. Final Ctrl+O opens were observed within 7–33 ms, including
+tmux command/capture overhead. The allocator varies between runs: the two
+baseline large-workload readings after generation were 60.53 and 54.26 MiB,
+versus 50.98 and 53.02 MiB after the change. The means are a comparison of
+these trials, not a guarantee for every session. Saved JSON includes the
+binary's SHA-256 so future comparisons can identify the exact executable.
+
+The selective shared-arguments/style-cleanup follow-up was measured separately
+against `774ff7c`, with those first improvements already present. Both builds
+use the same v0.15.0 base. Two trials per build and workload gave:
+
+| Retained RSS, two-run mean | before follow-up | combined | reduction |
+| --- | --- | --- | --- |
+| 5,000-line TSX plus CSS/JSON, four turns | 58.23 MiB | 49.34 MiB | 15.3% |
+| 13-file dense generation, four turns | 59.89 MiB | 52.44 MiB | 12.4% |
+| Dense generation after export | 61.94 MiB | 55.35 MiB | 10.6% |
+| Dense generation after clear | 59.87 MiB | 53.28 MiB | 11.0% |
+
+The dense fixture is `scripts/task_mem.py` from `342bac9`, with 600 lines,
+eight components and 563,299 generated bytes per turn. Its peak RSS mean fell
+from 103.57 to 96.47 MiB. All eight runs verified generated file bytes,
+overlays, resize and clear; the dense runs also checked verbatim tool context
+and transcript export. A scratch extension of `codegen_mem.py` checked all
+prior generated paths and contents in every request too. Export's retained
+increment stayed between 0.55 and 3.65 MiB across both builds.
+
+The large TSX readings ranged from 52.64–63.82 MiB before to 47.71–50.96 MiB
+combined. These trials show additional savings in the tested workloads, with
+the same allocator variation described above; they do not predict an exact
+RSS for a live model's task-manager implementation.
+
+This is a deterministic replay of the allocation paths, not the output of a
+particular live model. Fixed costs such as the grammar database, tokenizer
+and HTTP/TLS state remain, and raw conversation history still grows as work
+is recorded. A single item's temporary expanded rows and the allocator's
+retained pages can also affect RSS, so the reduction varies with the session.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
