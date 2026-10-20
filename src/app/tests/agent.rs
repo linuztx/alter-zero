@@ -506,6 +506,7 @@ fn agent_notice_texts_humanize_the_runtime() {
         result: "done".into(),
         timestamp: String::new(),
         user_messages: Vec::new(),
+        resumed: false,
     };
     assert_eq!(
         notice.headline(),
@@ -1558,6 +1559,7 @@ fn the_notice_lists_each_user_message_under_the_outcome() {
         result: "31°C".into(),
         timestamp: String::new(),
         user_messages: vec!["also check Manila".into(), "two\nlines".into()],
+        resumed: false,
     };
     assert_eq!(
         notice.context_text(),
@@ -1567,5 +1569,201 @@ fn the_notice_lists_each_user_message_under_the_outcome() {
          - also check Manila\n\
          - two\n  lines\n\
          Final response:\n31°C"
+    );
+}
+
+// --- A settled agent the user starts again (`docs/agent-tools.md`) ---
+
+/// A lone foreground agent that failed inside the lead's turn, its group
+/// already resolved with the failure — where the lead goes on without it.
+fn failed_foreground_agent() -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false)[..1]);
+    app.set_agent_runtime("a1", std::time::Duration::from_secs(42));
+    assert!(
+        app.apply_agent_event("a1", &StreamEvent::Error("502 Bad Gateway".into()))
+            .is_none(),
+        "its group's result carries the failure"
+    );
+    app.finish_agent_group(
+        false,
+        &[AgentCallDone {
+            id: "a1".into(),
+            output: "[agent failed: 502 Bad Gateway]".into(),
+            ok: false,
+        }],
+    );
+    app
+}
+
+#[test]
+fn a_user_message_that_resumes_a_failed_agent_tells_the_lead_at_once() {
+    // The reported gap: the lead read `[agent failed: …]` and went on, then
+    // the user messaged the agent in its session view and it took its task
+    // up again — and the lead heard nothing until that run ended, so it went
+    // on believing the agent had failed. The message that brings a settled
+    // agent back owes the lead a notice when the run starts.
+    let mut app = failed_foreground_agent();
+    let notice = app
+        .agent_chat("a1", "the gateway is back, carry on")
+        .expect("a settled agent the user resumed owes the lead a notice");
+    assert!(notice.resumed);
+    assert_eq!(notice.id, "a1");
+    assert_eq!(
+        notice.status,
+        crate::agents::AgentStatus::Failed,
+        "how the run before it ended — what the lead last heard"
+    );
+    assert_eq!(notice.user_messages, ["the gateway is back, carry on"]);
+    assert_eq!(
+        notice.headline(),
+        "Agent \"Fetch Warsaw weather\" was resumed by user"
+    );
+    let text = notice.context_text();
+    assert!(
+        text.starts_with(
+            "[background agent] Agent \"Fetch Warsaw weather\" (a1) is running again: \
+             the user resumed it after it failed."
+        ),
+        "{text}"
+    );
+    assert!(text.contains("- the gateway is back, carry on"), "{text}");
+    assert!(!text.contains("Final response"), "no answer yet: {text}");
+    assert_eq!(
+        app.agent("a1").expect("on the roster").status,
+        crate::agents::AgentStatus::Running,
+        "the continuation runs"
+    );
+}
+
+#[test]
+fn a_resume_the_lead_still_waits_on_is_carried_by_its_group() {
+    // A member of a foreground group still waiting: the lead's wait loop
+    // takes the resumed run's answer as the member's result, naming the
+    // user's message itself — a notice would tell it twice.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event("a1", &StreamEvent::Error("502 Bad Gateway".into()));
+    assert!(app.agent_chat("a1", "carry on").is_none());
+    assert_eq!(
+        app.agent("a1").expect("on the roster").status,
+        crate::agents::AgentStatus::Running,
+        "the run still starts"
+    );
+}
+
+#[test]
+fn a_message_landing_after_the_agent_settled_tells_the_lead_it_resumed() {
+    // Typed while the agent wrote its last reply: queued, unread when the run
+    // settled, and the agent's own thread starts the next run with it
+    // (docs/queue.md). The lead heard the agent finish, so it must hear that
+    // the user started it again.
+    let mut app = launched_background_agents();
+    app.queue_agent_chat("a1", "also check Manila");
+    let finished = app
+        .apply_agent_event("a1", &StreamEvent::StreamDone)
+        .expect("a background settle owes a notice");
+    assert!(!finished.resumed);
+    let notice = app
+        .apply_agent_event(
+            "a1",
+            &StreamEvent::Steered {
+                text: "also check Manila".into(),
+            },
+        )
+        .expect("the user's message started it again");
+    assert!(notice.resumed);
+    assert_eq!(notice.status, crate::agents::AgentStatus::Done);
+    assert_eq!(notice.user_messages, ["also check Manila"]);
+    assert!(
+        notice.context_text().contains("after it finished."),
+        "{}",
+        notice.context_text()
+    );
+}
+
+#[test]
+fn the_leads_own_resume_owes_it_no_resume_notice() {
+    // `agentsend` started the run: the lead knows.
+    let mut app = launched_background_agents();
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.resume_agent("a1", "Fetch Warsaw weather", "general-purpose", "p");
+    assert!(
+        app.apply_agent_event(
+            "a1",
+            &StreamEvent::Steered {
+                text: "and tomorrow?".into(),
+            },
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn a_chat_with_an_agent_still_at_work_owes_no_resume_notice() {
+    // Nothing settled, so the lead's picture — the agent working on its task
+    // — still holds; the answer's notice names the message.
+    let mut app = launched_background_agents();
+    assert!(app.agent_chat("a1", "also check Manila").is_none());
+}
+
+#[test]
+fn a_resume_leaves_the_recorded_group_entry_as_its_last_run_ended() {
+    // The Ctrl+O cell keeps the outcome the lead read until the resumed run
+    // reports its own: a resume is no outcome.
+    let mut app = failed_foreground_agent();
+    let notice = app.agent_chat("a1", "carry on").expect("owed");
+    let generation = app.history_generation();
+    app.settle_agent_completion(&notice);
+    assert_eq!(app.history_generation(), generation, "nothing to re-render");
+    let Some(HistoryItem::AgentGroup(group)) = app
+        .history
+        .iter()
+        .find(|item| matches!(item, HistoryItem::AgentGroup(_)))
+    else {
+        panic!("group recorded");
+    };
+    assert_eq!(group.agents[0].status, crate::agents::AgentStatus::Failed);
+    assert_eq!(group.agents[0].secs, 42);
+}
+
+#[test]
+fn a_resume_notice_says_the_agent_works_again_and_quotes_the_user() {
+    let notice = |status| crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Build the frontend".into(),
+        status,
+        secs: 0,
+        result: String::new(),
+        timestamp: String::new(),
+        user_messages: vec!["the API key is set now".into()],
+        resumed: true,
+    };
+    assert_eq!(
+        notice(crate::agents::AgentStatus::Failed).context_text(),
+        "[background agent] Agent \"Build the frontend\" (a1) is running again: the \
+         user resumed it after it failed. It continues its own conversation, and you \
+         will be notified with its final response when it finishes. Leave its task to \
+         it — don't redo the work or launch another agent for it; if you need its \
+         result to go on, agentoutput with `wait` blocks until it finishes.\n\
+         The user messaged this agent directly in its session view — these came from \
+         the user, not from you:\n\
+         - the API key is set now"
+    );
+    for (status, after) in [
+        (crate::agents::AgentStatus::Done, "after it finished."),
+        (
+            crate::agents::AgentStatus::Interrupted,
+            "after it was stopped.",
+        ),
+    ] {
+        let text = notice(status).context_text();
+        assert!(text.contains(after), "{text}");
+    }
+    assert_eq!(
+        notice(crate::agents::AgentStatus::Done).headline(),
+        "Agent \"Build the frontend\" was resumed by user"
     );
 }

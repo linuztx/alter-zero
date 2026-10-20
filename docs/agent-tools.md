@@ -188,6 +188,62 @@ the user's, and a continuation the user started is recorded as theirs by
 notice's list is kept in the rollout (`user_messages`, omitted when empty),
 so a resumed session replays the same note.
 
+### A resume is news when it starts
+
+A message that brings a **settled** agent back — one that had finished,
+failed or been stopped — used to reach the lead only through that run's
+completion notice, and until then the lead went on believing what it last
+heard. The reported case: a foreground agent building a frontend hit an
+error, the lead read `[agent failed: …]` and carried on without it, and the
+user messaged the agent in its session view — which took its task up again
+while the lead, knowing nothing of it, was free to redo the same work or
+launch a replacement. So the message that starts the run is announced **when
+it starts**:
+
+```text
+[background agent] Agent "Build the frontend" (a7k2m9x4q) is running again: the user resumed it after it failed. It continues its own conversation, and you will be notified with its final response when it finishes. Leave its task to it — don't redo the work or launch another agent for it; if you need its result to go on, agentoutput with `wait` blocks until it finishes.
+The user messaged this agent directly in its session view — these came from the user, not from you:
+- the API key is set now, carry on
+```
+
+It is an `AgentNotice` with `resumed` set — the shell notice's `waiting`
+twin, a notice that reports no end: `status` is how the run before it had
+ended (what the lead last heard), `user_messages` the message that resumed
+it, and its cell reads `● Agent "Build the frontend" was resumed by user` in
+the system notices' cyan. It travels the completion notices' way — on the
+board tagged with the agent, its cell held until the lead reads it at a round
+boundary, recorded at once when the lead is idle — with one difference: it is
+posted as no model-launched note (`BackgroundRegistry::post_agent_resume_notice`),
+so it starts **no follow-up turn** of its own. There is nothing to answer
+yet; the run's completion notice, still owed for the user's message, brings
+that turn, and its context then carries both. It changes nothing on the
+recorded group entry (`App::settle_agent_completion` skips it): the Ctrl+O
+cell keeps the outcome the lead read until the run reports its own.
+
+Both ways a user's message reaches a settled agent count: a chat continuation
+started from its session view — Enter, or a Tab follow-up dispatched at its
+settle (`App::agent_chat`) — and a message queued while it wrote its last
+reply, which its own thread continues with (the `Steered` that reopens a
+settled run, folded by `App::apply_agent_event`). None is owed for the lead's
+own `agentsend`, which it knows of; for a member of a foreground group the
+lead still waits on, whose result carries the resumed run and names the
+message; or for a message to an agent still at work, which the lead never
+believed had ended — its completion notice names the message.
+
+The roster must have seen the last run end for any of this to hold, and the
+registry can be a step ahead of it: a Tab follow-up dispatches from the draw
+tick, which may run before the agent channel's branch folds the settle, and
+an `agentoutput` waiter's held end is released only as the new run begins
+(`begin_continuation`). An entry still reading as running would take the
+message without reopening, settle under the new run when the old end
+arrived, and drop every event of the run that followed — its answer and its
+notice with it. So when the registry answers `Started`, `Session::agent_chat`
+first drains the agent channel, where the old run's end already waits.
+
+`smoke.sh` Phase 130 has the user message the demo agent once it has
+finished, and checks that the resume cell lands ahead of the answer's and
+that the lead's Ctrl+D context carries the note.
+
 ## Retention
 
 A settled agent's registry slot used to be dropped with its roster row, 30

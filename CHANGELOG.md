@@ -14,6 +14,19 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **The main agent hears when you bring a subagent back.** Messaging a
+  subagent that had failed, finished or been stopped starts it working
+  again, but the main agent only learned of it once that run ended — until
+  then it went on believing the agent had failed, free to redo its work or
+  launch a replacement. It is now told the moment your message starts the
+  run: the agent is running again at your request, with your message quoted,
+  and its answer still arrives as a notice when it finishes. The conversation
+  shows it as `Agent "…" was resumed by user`. A message reaching an agent
+  the instant its run ended — a Tab follow-up, or one sent while the main
+  agent waited on it — could also start the next run before the app saw the
+  last one end, hiding everything the new run did and keeping its answer from
+  the main agent; the app now takes that end in first (`docs/agent-tools.md`).
+
 - **Code generation retains less RAM.** The warm Ctrl+O transcript packs its
   text and styles and expands only visible rows, preserving complete output,
   syntax colours and fast opens. File rewrites use a 2 MB diff table in place

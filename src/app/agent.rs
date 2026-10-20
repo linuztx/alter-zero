@@ -82,6 +82,11 @@ impl AgentGroup {
 /// `was stopped by user` / `failed` (red) — the background-shell notice's
 /// agent twin. The `result` rides the item for the model's context (the
 /// final response) but is never rendered. See `docs/agent-tool.md`.
+///
+/// One kind reports no end ([`resumed`](Self::resumed)): the user's message
+/// started a settled agent again — `● Agent "{description}" was resumed by
+/// user` (cyan) — so the lead stops believing it is over
+/// (`docs/agent-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentNotice {
     pub id: String,
@@ -99,6 +104,13 @@ pub struct AgentNotice {
     /// note so the lead knows the conversation was the user's
     /// (`docs/agent-tools.md`).
     pub user_messages: Vec<String>,
+    /// The agent did **not** settle: the user's message started it again
+    /// after its run had ended (`docs/agent-tools.md`) — the shell notice's
+    /// [`waiting`](super::BackgroundNotice::waiting) twin, a notice that
+    /// reports no end. `status` is then how that run had ended — what the
+    /// lead last heard — `user_messages` the message that resumed it, and
+    /// `secs`/`result` say nothing.
+    pub resumed: bool,
 }
 
 impl AgentNotice {
@@ -113,6 +125,9 @@ impl AgentNotice {
     /// [`format_elapsed`] contract every runtime display shares.
     #[must_use]
     pub fn headline(&self) -> String {
+        if self.resumed {
+            return format!("Agent \"{}\" was resumed by user", self.description);
+        }
         match self.status {
             AgentStatus::Interrupted => {
                 format!("Agent \"{}\" was stopped by user", self.description)
@@ -132,6 +147,9 @@ impl AgentNotice {
     /// pattern, `docs/background.md`).
     #[must_use]
     pub fn context_text(&self) -> String {
+        if self.resumed {
+            return self.resumed_text();
+        }
         let outcome = match self.status {
             AgentStatus::Interrupted => "was stopped by the user".to_string(),
             AgentStatus::Failed => "failed".to_string(),
@@ -155,6 +173,47 @@ impl AgentNotice {
         text.push_str("Final response:\n");
         text.push_str(body);
         text
+    }
+
+    /// The note of a [`resumed`](Self::resumed) agent: it is working again,
+    /// on the user's word, over the outcome the lead last heard — and the
+    /// task is its, so the lead neither redoes the work nor launches a
+    /// replacement (`docs/agent-tools.md`).
+    fn resumed_text(&self) -> String {
+        let after = match self.status {
+            AgentStatus::Failed => "failed",
+            AgentStatus::Interrupted => "was stopped",
+            _ => "finished",
+        };
+        let mut text = format!(
+            "[background agent] Agent \"{}\" ({}) is running again: the user resumed it \
+             after it {after}. It continues its own conversation, and you will be notified \
+             with its final response when it finishes. Leave its task to it — don't redo \
+             the work or launch another agent for it; if you need its result to go on, \
+             agentoutput with `wait` blocks until it finishes.",
+            self.description, self.id,
+        );
+        if let Some(note) = crate::agents::user_messages_note(&self.user_messages) {
+            text.push('\n');
+            text.push_str(&note);
+        }
+        text
+    }
+}
+
+/// The notice that the user's message started `agent` again after its run
+/// had ended `after` (see [`AgentNotice::resumed`]) — read once the message
+/// is on the run, so the notice quotes it.
+fn resumed_notice(agent: &AgentRun, after: AgentStatus, timestamp: String) -> AgentNotice {
+    AgentNotice {
+        id: agent.id.clone(),
+        description: agent.description.clone(),
+        status: after,
+        secs: 0,
+        result: String::new(),
+        timestamp,
+        user_messages: agent.user_messages.clone(),
+        resumed: true,
     }
 }
 
@@ -346,14 +405,28 @@ impl App {
     /// loop posts/defers them); `None` otherwise. A foreground agent's
     /// settling is carried by its group's resolution instead. Unknown ids
     /// are dropped (a chunk racing a sweep).
+    ///
+    /// The other notice an event can owe is a [`resumed`](AgentNotice::resumed)
+    /// one: a message the **user** queued while the run was ending reaches a
+    /// settled run (`StreamEvent::Steered` — the continuation its own thread
+    /// starts, `docs/queue.md`) and starts it again, which the lead, having
+    /// heard it end, must hear too — unless it still waits on it in a live
+    /// group, whose result carries the run (`docs/agent-tools.md`).
     pub fn apply_agent_event(&mut self, id: &str, event: &StreamEvent) -> Option<AgentNotice> {
         let stamp = self.now_stamp();
         let in_live_group = self.in_live_agent_group(id);
         let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
+        let before = agent.status;
         let settled = agent.apply(event);
         self.agents_generation += 1;
         if !settled {
-            return None;
+            // Reopened, and by the user's message: only theirs is counted
+            // into `user_messages` (the lead's `agentsend` arrives unqueued).
+            let resumed = before.is_final()
+                && !agent.status.is_final()
+                && !agent.user_messages.is_empty()
+                && !in_live_group;
+            return resumed.then(|| resumed_notice(agent, before, stamp));
         }
         let owed = owes_notice(agent, in_live_group);
         let notice = AgentNotice {
@@ -368,6 +441,7 @@ impl App {
                 .unwrap_or_default(),
             timestamp: stamp,
             user_messages: agent.user_messages.clone(),
+            resumed: false,
         };
         owed.then_some(notice)
     }
@@ -555,6 +629,7 @@ impl App {
             result: String::new(),
             timestamp: stamp,
             user_messages: agent.user_messages.clone(),
+            resumed: false,
         });
         self.agents_generation += 1;
         self.withdraw_agent_permissions(id);
@@ -705,6 +780,7 @@ impl App {
             result: String::new(),
             timestamp: stamp,
             user_messages: agent.user_messages.clone(),
+            resumed: false,
         };
         self.agents_generation += 1;
         self.settle_agent_completion(&notice);
@@ -763,7 +839,12 @@ impl App {
     /// the final state — the one sanctioned mutation of a committed item,
     /// paid for with a generation bump (full cache re-render). The
     /// model-facing `output` is untouched (the wire history stays faithful).
+    /// A [`resumed`](AgentNotice::resumed) notice reports no outcome, so the
+    /// entry keeps the last one until the run reports its own.
     pub fn settle_agent_completion(&mut self, notice: &AgentNotice) {
+        if notice.resumed {
+            return;
+        }
         let run = self.agents.iter().find(|agent| agent.id == notice.id);
         let mut changed = false;
         for item in &mut self.history {
@@ -1039,15 +1120,25 @@ impl App {
     /// notice naming the message ([`AgentRun::user_messages`]) — even for a
     /// foreground agent, whose group resolved before this conversation began
     /// and so cannot carry it (`docs/agent-tools.md`).
-    pub fn agent_chat(&mut self, id: &str, text: &str) {
-        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
-            if agent.status.is_final() {
-                agent.reopen();
-            }
-            agent.push_user_message(text);
-            agent.user_messages.push(text.to_string());
-            self.agents_generation += 1;
+    ///
+    /// And the start itself is news when the agent had **settled**: the lead
+    /// last heard it end — finished, failed, stopped — and would otherwise go
+    /// on believing so until this run reports, free to redo the agent's work
+    /// meanwhile. The [`resumed`](AgentNotice::resumed) notice that tells it
+    /// otherwise comes back for the loop to post; none while the lead still
+    /// waits on the agent in a live group, whose result carries the run.
+    pub fn agent_chat(&mut self, id: &str, text: &str) -> Option<AgentNotice> {
+        let stamp = self.now_stamp();
+        let in_live_group = self.in_live_agent_group(id);
+        let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
+        let before = agent.status;
+        if before.is_final() {
+            agent.reopen();
         }
+        agent.push_user_message(text);
+        agent.user_messages.push(text.to_string());
+        self.agents_generation += 1;
+        (before.is_final() && !in_live_group).then(|| resumed_notice(agent, before, stamp))
     }
 
     /// Should ↓ open the roster selection? Mirrors

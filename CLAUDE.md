@@ -1431,7 +1431,10 @@ stop is final, the lead's own `agentkill` resumable), `agentoutput
 tool uses)` over one `Name(args)` line per call — lifetime numbers, each
 read message marked `— message received —` (a message the *user* typed
 into its session view quoted instead, and named as the user's in the
-lead's notice and foreground result), the final response once
+lead's notice and foreground result — and one that starts a **settled**
+agent again announced to the lead at once, a cyan `was resumed by user`
+`AgentNotice::resumed` that owes no follow-up turn, so the lead stops
+acting on "the agent failed"), the final response once
 settled — and with `wait` blocks, its cell tailing each new call as a
 command cell (`COMMAND_TOOL_NAMES`), Ctrl+B ending the wait, `agentkill`
 stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder

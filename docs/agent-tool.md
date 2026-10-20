@@ -127,7 +127,10 @@ with zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 `failed` (red) — held with the board note's number and settled where the lead
 reads it, exactly as shell notices are (`App::take_delivered_agent_notice` on
 `StreamEvent::NoticeDelivered`, else at the turn's end beside
-`settle_bg_completions` — `docs/background.md` *Where a notice lands*).
+`settle_bg_completions` — `docs/background.md` *Where a notice lands*). One
+more rides the same path without reporting an end: `was resumed by user`
+(cyan), the lead's word that the user's message started a settled agent
+again (`docs/agent-tools.md` *A resume is news when it starts*).
 
 ## App state
 

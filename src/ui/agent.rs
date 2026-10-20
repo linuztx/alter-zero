@@ -382,9 +382,14 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// a clean finish, red for a stop/failure — over the one-line headline
 /// (`Agent "{description}" finished · 35s`). The final response the notice
 /// carries is context-only, never rendered. See `docs/agent-tool.md`.
+///
+/// A resume — the user started a settled agent again — is neither, so it
+/// wears the system notices' cyan (`docs/agent-tools.md`).
 #[must_use]
 pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<Line<'static>> {
-    let color = if notice.ok() {
+    let color = if notice.resumed {
+        system_color()
+    } else if notice.ok() {
         bg_notice_ok_color()
     } else {
         bg_notice_fail_color()

@@ -1299,6 +1299,17 @@ impl BackgroundRegistry {
         inner.push_notice(context, true, Some(agent.to_string()), None)
     }
 
+    /// Post the note that the user started settled agent `agent` again
+    /// (`docs/agent-tools.md`): tagged with it like a completion, so a report
+    /// of its answer takes it back with the rest, but owing **no** automatic
+    /// follow-up turn — there is nothing to answer until the run's own
+    /// completion notice, which brings one. Returns the note's
+    /// [`seq`](PendingNotice::seq).
+    pub fn post_agent_resume_notice(&self, context: String, agent: &str) -> u64 {
+        let mut inner = self.inner.lock().expect("registry lock");
+        inner.push_notice(context, false, Some(agent.to_string()), None)
+    }
+
     /// Post the note of session `id`'s exit — the event loop, as it handles
     /// the `Exited` event no call observed — tagged with the session, so a
     /// companion call that reports the exit first takes it back
@@ -2376,6 +2387,29 @@ mod tests {
             reg.take_pending_notices().is_empty(),
             "a take drains the board — nothing is delivered twice"
         );
+    }
+
+    #[test]
+    fn an_agents_resume_note_starts_no_follow_up_turn_of_its_own() {
+        // The user started a settled agent again (docs/agent-tools.md): the
+        // lead must hear it, but there is nothing to answer yet — the run's
+        // completion notice is what warrants a turn. Tagged with the agent
+        // all the same, so a report of its answer takes it back with the rest.
+        let (reg, _rx) = registry();
+        let seq = reg.post_agent_resume_notice("[background agent] resumed".into(), "a1");
+        assert_eq!(
+            reg.take_pending_notices(),
+            vec![PendingNotice {
+                seq,
+                context: "[background agent] resumed".into(),
+                from_model: false,
+                agent: Some("a1".into()),
+                shell: None,
+            }]
+        );
+        let seq = reg.post_agent_resume_notice("[background agent] resumed".into(), "a1");
+        assert!(reg.retract_agent_notice("a1"));
+        assert!(reg.take_retracted(seq));
     }
 
     #[test]
