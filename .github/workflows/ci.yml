@@ -60,6 +60,15 @@ jobs:
         with:
           shared-key: debug
       - run: sudo apt-get update && sudo apt-get install -y tmux
+      # Before the phases: the readers that decide WHICH phases a query runs are
+      # pure text, and a regression in them does not fail loudly — it runs the
+      # wrong selection. macOS's BSD `sed` rejected the `{…;p}` form, so
+      # `smoke_phase_title` returned nothing and every query fell back to the
+      # file-name slug alone (141 of 144 phases unreachable by a prose word),
+      # while `121-slowstream` lost the `serial` tag that keeps it out of the
+      # parallel pool. Seconds to run, and platform-independent by construction.
+      - name: The phase readers and the selector
+        run: bash scripts/smoke/selftest.sh
       - run: cargo build
       - name: Run every phase, one worker per core
         # The suite's default of twice the core count is sized for a

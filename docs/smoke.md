@@ -14,6 +14,7 @@ suite defines its own environment").
 ```
 scripts/smoke.sh              the runner: discovery, scheduling, logs, summary
 scripts/smoke/lib.sh          the fixture + vocabulary every phase sources
+scripts/smoke/selftest.sh     the readers' and the selector's own tests
 scripts/smoke/phases/         one file per phase: NNN-slug.sh
   001-first-turn.sh
   005-bottom.sh
@@ -55,7 +56,18 @@ scripts/smoke.sh --list                  # phases, tags, last durations
 scripts/smoke.sh -v                      # every phase's whole log
 scripts/smoke.sh target/release/alter-zero
 bash scripts/smoke/phases/055-permission.sh   # ONE phase, output live
+bash scripts/smoke/selftest.sh                # the readers + selector, no app, no tmux
 ```
+
+`--list` and every selection go through the phase readers in `lib.sh`
+(`smoke_phase_id`, `smoke_phase_slug`, `smoke_phase_title`,
+`smoke_phase_tags`) and the selector built on them. Those are the suite's own
+weak point: a reader that returns nothing does not fail, it selects the wrong
+phases — a BSD-`sed` incompatibility in the `title` and `tags` readers left
+every query matching the file-name slug alone, and took `serial` off the one
+phase that needs it. `scripts/smoke/selftest.sh` pins them over fixture
+headers in under a second; CI runs it before the phases. Touch `lib.sh` or
+`smoke.sh` and run it.
 
 The runner prints one line per phase as it finishes — `ok`/`FAIL`, the
 counter, id, slug and duration — and on a failure the phase's `FAIL:` lines
