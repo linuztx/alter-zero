@@ -221,6 +221,10 @@ The port keeps the project's pure-core / boundary split.
   checked into the codebase):` heading inside the `<system-reminder>` in
   the Ctrl+D view before any turn, `/init` submits the bundled prompt as
   the user message, and a mid-turn `/init` is rejected with the busy toast.
+  Every other phase runs from this repository's checkout, whose own
+  `AGENTS.md` would lead its context, so `scripts/smoke/lib.sh` exports
+  `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0` for the suite and Phase 52 unsets it
+  for its temp project.
 - `context::tests` — the block as the leading user entry, its merge with a
   first user message, the listings inside the same block behind the
   instructions, its presence in front of the compacted shape, neither/blank

@@ -66,8 +66,9 @@ weak point: a reader that returns nothing does not fail, it selects the wrong
 phases — a BSD-`sed` incompatibility in the `title` and `tags` readers left
 every query matching the file-name slug alone, and took `serial` off the one
 phase that needs it. `scripts/smoke/selftest.sh` pins them over fixture
-headers in under a second; CI runs it before the phases. Touch `lib.sh` or
-`smoke.sh` and run it.
+headers in under a second. CI runs it before the phases under GNU `sed`, which
+accepts the readers' old form, and again in a macOS job under BSD `sed`, the
+one that rejected it. Touch `lib.sh` or `smoke.sh` and run it.
 
 The runner prints one line per phase as it finishes — `ok`/`FAIL`, the
 counter, id, slug and duration — and on a failure the phase's `FAIL:` lines
@@ -116,9 +117,10 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
 - **`$TMPDIR` pointed into the tree**, so a bare `mktemp -d` — and the app's
   own scratchpad — land inside it;
 - the sanitized environment (`smoke_sanitize_env`: every `*_API_KEY`, every
-  `ALTER_ZERO_*`, `OLLAMA_HOST`, `NO_COLOR`, the display variables), run
-  before the phase's first launch, so a phase run on its own is as hermetic
-  as one run by the suite.
+  `ALTER_ZERO_*`, `OLLAMA_HOST`, `NO_COLOR`, the display variables unset;
+  telemetry, the update check, the spinner tips and the project's `AGENTS.md`
+  exported off), run before the phase's first launch, so a phase run on its
+  own is as hermetic as one run by the suite.
 
 That isolation is what makes the parallel runner *correct* rather than
 merely fast: the phases were already independent scenarios on separate
