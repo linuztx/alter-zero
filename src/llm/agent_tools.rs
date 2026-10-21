@@ -246,9 +246,11 @@ fn report(snapshot: &crate::agents::AgentSnapshot, ended_by_user: bool) -> Strin
 }
 
 /// `agentkill`: the lead's stop — the agent's report, where it got to, as
-/// the result. One already settled is left as it was.
+/// the result. One already settled is left as it was. The board goes with
+/// the stop: the report is the run's end, so a note still announcing that
+/// the user started the run is taken back ([`AgentRegistry::stop`]).
 fn kill(ctx: &AgentToolContext<'_>, id: &str) -> ToolOutcome {
-    let Some(stop) = ctx.registry.stop(id) else {
+    let Some(stop) = ctx.registry.stop(id, ctx.background) else {
         return unknown_agent(ctx.registry, id);
     };
     let Some(snapshot) = ctx.registry.snapshot(id) else {
@@ -425,7 +427,7 @@ mod tests {
         // takes a moment to return, and the send resumes it once it has.
         let (registry, _rx) = registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
-        let _ = registry.stop(&id);
+        let _ = registry.stop(&id, None);
         let finisher = {
             let registry = registry.clone();
             let id = id.clone();
@@ -672,6 +674,86 @@ mod tests {
             background.take_pending_notices().is_empty(),
             "off the board"
         );
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    /// A failed agent the user brought back with "continue with React" while
+    /// the lead was mid-round — the note that it runs again posted, unread.
+    fn resumed_by_user() -> (AgentRegistry, String, BackgroundRegistry, u64) {
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.finish(&id, Err("refused".into()), vec![ChatMessage::user("p")]);
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.note_user_message(&id, "continue with React");
+        let seq = registry
+            .post_resume_notice(&id, &background, "running again".into())
+            .expect("the run is going");
+        (registry, id, background, seq)
+    }
+
+    #[test]
+    fn a_look_at_the_resumed_runs_end_takes_back_the_note_that_it_runs() {
+        // The resumed run ends and the lead looks before the loop has handled
+        // the settle: the report hands it the answer, so the note that the
+        // agent runs again must not reach it after (docs/agent-tools.md *A
+        // resume is news when it starts*).
+        let (registry, id, background, seq) = resumed_by_user();
+        registry.settle(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        assert!(
+            outcome.output.ends_with("Frontend created."),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+        assert_eq!(
+            registry.post_notice(&id, &background, Some("note".into())),
+            crate::agents::NoticePost::Covered
+        );
+    }
+
+    #[test]
+    fn agentkill_takes_back_the_note_that_the_user_resumed_the_run() {
+        // The lead stops the agent before reading the note: the stop's report
+        // is the run's end — the user's message marked in it — and no notice
+        // follows a stop the lead made, so "running again, you will be
+        // notified" must not reach it after (docs/agent-tools.md).
+        let (registry, id, background, seq) = resumed_by_user();
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(tools::AGENT_KILL_TOOL, serde_json::json!({"agent_id": id})),
+        );
+        assert!(
+            outcome.output.starts_with("Stopped (agent"),
+            "{}",
+            outcome.output
+        );
+        assert!(
+            outcome
+                .output
+                .contains("— message from the user: continue with React —"),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
         assert!(background.take_retracted(seq), "and its cell is not owed");
     }
 

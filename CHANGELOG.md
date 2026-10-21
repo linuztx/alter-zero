@@ -21,7 +21,10 @@ release heading when a version is cut.
   launch a replacement. It is now told the moment your message starts the
   run: the agent is running again at your request, with your message quoted,
   and its answer still arrives as a notice when it finishes. The conversation
-  shows it as `Agent "…" was resumed by user`. A message reaching an agent
+  shows it as `Agent "…" was resumed by user`. If the main agent learns how
+  that run ended before it reads the note — from `agentoutput`, or by
+  stopping the agent with `agentkill` — the note is dropped, so it is never
+  told the agent is running after it has stopped. A message reaching an agent
   the instant its run ended — a Tab follow-up, or one sent while the main
   agent waited on it — could also start the next run before the app saw the
   last one end, hiding everything the new run did and keeping its answer from

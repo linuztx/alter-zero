@@ -234,11 +234,11 @@ impl Session<'_> {
                     }
                 }
             }
-        } else if let Some(notice) = &settled {
+        } else if let Some(notice) = settled.take() {
             // A scripted run's settle — or the user's queued message starting
             // a settled agent again, which the lead hears too
             // (docs/agent-tools.md).
-            seq = Some(self.post_agent_note(notice, id));
+            self.hold_agent_note(notice, id);
         }
         // Held until the lead reads the note (`StreamEvent::NoticeDelivered`),
         // so its cell lands where the lead heard it (docs/background.md).
@@ -258,18 +258,25 @@ impl Session<'_> {
     }
 
     /// Put `notice` on the shared board for the lead, tagged with agent `id`
-    /// so a report of its answer can take it back. A completion is a note
-    /// whose unread presence at a turn's end starts the follow-up turn; a
-    /// [`resumed`](AgentNotice::resumed) one is not — the run it announces
-    /// has nothing to answer yet, and its own completion notice brings that
-    /// turn (docs/agent-tools.md). Returns the note's number, which its held
-    /// cell settles by.
-    fn post_agent_note(&self, notice: &AgentNotice, id: &str) -> u64 {
+    /// so a report of its answer can take it back, and hold its cell until
+    /// the lead reads it (docs/background.md *Where a notice lands*). A
+    /// completion is a note whose unread presence at a turn's end starts the
+    /// follow-up turn; a [`resumed`](AgentNotice::resumed) one is not — the
+    /// run it announces has nothing to answer yet, and its own completion
+    /// notice brings that turn — and the registry posts it only while that
+    /// run is going: one already over, or stopped by the lead, owes neither
+    /// the note nor its cell (docs/agent-tools.md *A resume is news when it
+    /// starts*).
+    fn hold_agent_note(&mut self, notice: AgentNotice, id: &str) {
         let context = notice.context_text();
-        if notice.resumed {
-            self.registry.post_agent_resume_notice(context, id)
+        let posted = if notice.resumed {
+            self.agent_registry
+                .post_resume_notice(id, &self.registry, context)
         } else {
-            self.registry.post_agent_notice(context, id)
+            Some(self.registry.post_agent_notice(context, id))
+        };
+        if let Some(seq) = posted {
+            self.app.defer_agent_notice(notice, Some(seq));
         }
     }
 
@@ -609,8 +616,7 @@ impl Session<'_> {
                         // its: an `agentoutput` that reports the stop first
                         // takes the note back (docs/agent-tools.md *One
                         // notice per answer*).
-                        let seq = self.post_agent_note(&notice, id);
-                        self.app.defer_agent_notice(notice, Some(seq));
+                        self.hold_agent_note(notice, id);
                         if !self.app.turn_active() {
                             self.dispatch_after_turn();
                         }
@@ -700,8 +706,7 @@ impl Session<'_> {
                     .or_insert_with(Instant::now);
                 self.agent_expiry.remove(id);
                 if let Some(notice) = resumed {
-                    let seq = self.post_agent_note(&notice, id);
-                    self.app.defer_agent_notice(notice, Some(seq));
+                    self.hold_agent_note(notice, id);
                 }
                 // Idle: settle what is held now — the resume, which starts no
                 // turn of its own, and any end the drain folded — as the

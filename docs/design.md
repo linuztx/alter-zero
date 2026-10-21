@@ -652,7 +652,8 @@ which Ctrl+V reads the clipboard from.
   reported), `agentkill` stops it resumably, `agentlist` lists them; settled
   agents stay resumable past their roster rows (the newest 16), and one the
   user's own message starts again is announced to the lead as it starts, so
-  the lead never goes on believing it failed or finished.
+  the lead never goes on believing it failed or finished — the note dropped
+  unread if the lead hears how that run ended first.
 - **Subagent definitions** (`docs/subagents.md`): which `subagent_type`s exist
   is authored, not compiled in — `agents/*.md` files of YAML frontmatter
   (`name`, `description`, `model`, `tools`) over a body that replaces the

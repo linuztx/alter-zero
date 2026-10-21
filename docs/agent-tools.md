@@ -214,14 +214,36 @@ twin, a notice that reports no end: `status` is how the run before it had
 ended (what the lead last heard), `user_messages` the message that resumed
 it, and its cell reads `● Agent "Build the frontend" was resumed by user` in
 the system notices' cyan. It travels the completion notices' way — on the
-board tagged with the agent, its cell held until the lead reads it at a round
-boundary, recorded at once when the lead is idle — with one difference: it is
-posted as no model-launched note (`BackgroundRegistry::post_agent_resume_notice`),
-so it starts **no follow-up turn** of its own. There is nothing to answer
-yet; the run's completion notice, still owed for the user's message, brings
-that turn, and its context then carries both. It changes nothing on the
-recorded group entry (`App::settle_agent_completion` skips it): the Ctrl+O
-cell keeps the outcome the lead read until the run reports its own.
+board, its cell held until the lead reads it at a round boundary, recorded
+at once when the lead is idle — with two differences. It is posted as no
+model-launched note (`BackgroundRegistry::post_agent_resume_notice`), so it
+starts **no follow-up turn** of its own: there is nothing to answer yet; the
+run's completion notice, still owed for the user's message, brings that
+turn, and its context then carries both. And it is tagged apart from the
+agent's completions (`PendingNotice::resumed`, beside `agent`), since it goes
+stale on a different event (below). It changes nothing on the recorded group
+entry (`App::settle_agent_completion` skips it): the Ctrl+O cell keeps the
+outcome the lead read until the run reports its own.
+
+The note is news only until the lead hears how that run ended, and two of
+the lead's own calls can tell it first, while the note still waits for the
+round boundary: an `agentoutput` report of the settled run, and `agentkill`,
+whose report is the run's end and after which no notice comes. Read after
+either, the note would say the agent runs and that a notice will follow. So
+both take it back unread, its held cell dropped with it
+(`BackgroundRegistry::retract_agent_resume_notice`):
+`AgentRegistry::report_settled` whichever way the run's completion stood
+(*One notice per answer*), and `AgentRegistry::stop` — the lead's stop — in
+the same locked step. A report that read the run from **before** the user
+started it again is the exception: it takes back the completion it read and
+leaves the note, which is about a run the lead has not heard of. The
+registry tells the two apart under its own lock (is the run still over?),
+and the loop posts the note under that lock too
+(`AgentRegistry::post_resume_notice`, only while the run it announces is
+going), so a report, a stop and the post never cross. A run that ended
+before its note could be posted owes none: its completion notice names the
+user's messages as well, and the report of a stop the lead made first marks
+them (`— message from the user: … —`).
 
 Both ways a user's message reaches a settled agent count: a chat continuation
 started from its session view — Enter, or a Tab follow-up dispatched at its
@@ -248,9 +270,12 @@ against a stub provider: the subagent's request is refused, the lead goes
 on with its turn, the user messages the failed agent back to work from its
 session view, and the lead's very next request carries the note — right
 after the result of the call it was making when the user spoke — while the
-cell lands below that call's. Phase 130 covers the idle lead: the user
-messages the offline demo's agent once it has finished, and the resume cell
-lands ahead of the answer's.
+cell lands below that call's. Phase 142 runs the same case with the lead's
+held round answering `agentkill` on the agent the user just brought back:
+its next request carries the kill's report — the user's message marked in
+it — and no note, and no resume cell commits. Phase 130 covers the idle
+lead: the user messages the offline demo's agent once it has finished, and
+the resume cell lands ahead of the answer's.
 
 ## Retention
 
@@ -317,6 +342,9 @@ both under the registry lock, so the two never cross:
   mark kept per agent could not tell the two apart;
 - the lead already took it: the report is a re-read, and the cell records
   the note it read.
+
+Whichever it is, a note still saying that the user started the run goes too
+(*A resume is news when it starts*).
 
 The edge left: a notice cell that committed at a mid-turn boundary before
 the report took its untaken note back stays in the history, so later turns'

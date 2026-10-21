@@ -1434,7 +1434,10 @@ into its session view quoted instead, and named as the user's in the
 lead's notice and foreground result — and one that starts a **settled**
 agent again announced to the lead at once, a cyan `was resumed by user`
 `AgentNotice::resumed` that owes no follow-up turn, so the lead stops
-acting on "the agent failed"), the final response once
+acting on "the agent failed" — tagged `PendingNotice::resumed` apart from
+the completions, posted only while that run is going and taken back unread
+once a report of its end or the lead's own `agentkill` hands the lead the
+run's end, all under the registry lock), the final response once
 settled — and with `wait` blocks, its cell tailing each new call as a
 command cell (`COMMAND_TOOL_NAMES`), Ctrl+B ending the wait, `agentkill`
 stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder
