@@ -110,6 +110,12 @@ smoke_sanitize_env() {
 	# long would find in the strip it asserts on. Off for the suite; the
 	# tips phase (125) turns them back on for its own launches.
 	export ALTER_ZERO_TIPS=0
+	# The project's AGENTS.md (docs/project-doc.md) leads every context the
+	# app builds, and the suite runs from a real checkout that has one: its
+	# text fills the top of every Ctrl+D view and pushes off the page the rows
+	# a phase reads there. Off for the suite; the /init phase (52) turns it
+	# back on for its own temp project.
+	export ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0
 }
 
 # ---------------------------------------------------------------------------
@@ -135,10 +141,15 @@ smoke_phase_slug() { # file → "permissions"
 smoke_phase_title() { # file → the text after "# Phase N — " on the first such line
 	# (An alternation, not a bracket: under a byte-wise C locale a bracket
 	# matches one BYTE of the three-byte em dash.)
-	sed -n -E '1,20{s/^# Phase [0-9]+[a-z]? (—|-) (.*)$/\2/p}' "$1" | head -1
+	#
+	# `p;}` rather than `p}`: BSD/macOS `sed` rejects the bare form with
+	# "bad flag in substitute command" and the reader then returns nothing —
+	# which silently takes the title away from every phase and leaves a query
+	# able to match only the file-name slug. Same for the tags below.
+	sed -n -E '1,20{s/^# Phase [0-9]+[a-z]? (—|-) (.*)$/\2/p;}' "$1" | head -1
 }
 smoke_phase_tags() { # file → "serial" (space-separated tags, possibly empty)
-	sed -n -E '1,20{s/^# smoke: tags=(.*)$/\1/p}' "$1" | head -1 | tr ',' ' '
+	sed -n -E '1,20{s/^# smoke: tags=(.*)$/\1/p;}' "$1" | head -1 | tr ',' ' '
 }
 
 # ---------------------------------------------------------------------------
