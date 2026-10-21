@@ -90,6 +90,70 @@ fn the_transcript_expands_the_whole_chain_of_thought() {
 }
 
 #[test]
+fn the_expansion_drops_the_thoughts_blank_edges_but_keeps_its_paragraph_breaks() {
+    // A model's reasoning often opens and closes on blank lines
+    // (`<think>\n…\n\n</think>`). Those are not paragraph breaks: the opening
+    // one pushed the `⎿` corner off the first row of thought, and the closing
+    // ones stacked on the spacer the transcript puts after every item. The
+    // blank line *between* two paragraphs stays.
+    let reasoning = thought("\n\nfirst thought\n\nsecond thought\n\n \n", 40, 12);
+    let text: Vec<String> = reasoning_full_lines(&reasoning, 40)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        text,
+        [
+            "Thought for 40s · 12 tokens",
+            "  ⎿  first thought",
+            "",
+            "     second thought",
+        ]
+    );
+}
+
+#[test]
+fn an_open_phase_in_the_transcript_drops_its_blank_edges_too() {
+    // The live expansion shares the body: a phase whose newest delta closed a
+    // paragraph shows no blank row under it until the next paragraph starts.
+    let text: Vec<String> = reasoning_live_full_lines("\nweighing options\n\n", 60)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(text, ["● Thinking…", "  ⎿  weighing options"]);
+}
+
+#[test]
+fn a_thought_closing_on_blank_lines_sits_one_blank_row_above_the_next_cell() {
+    // The reported Ctrl+O screen: the thought ended on `\n\n`, and the pager
+    // put three blank rows between its last line and the `● Bash(…)` under
+    // it, where every other pair of cells has one.
+    let mut app = App::new();
+    app.begin_stream();
+    app.begin_reasoning();
+    app.push_thinking(
+        "I need to find the current NVDA stock price, so I'll try fetching it \
+         from a finance data source to verify the number before answering.\n\n",
+    );
+    app.finish_reasoning(0);
+    app.start_tool("Bash", "curl -s -m 20 https://example.com", None);
+    app.end_tool("{}", true);
+    let texts: Vec<String> = transcript_lines(&app, 87)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let bash = texts
+        .iter()
+        .position(|t| t.starts_with("● Bash("))
+        .expect("the call is in the transcript");
+    assert_eq!(texts[bash - 1], "", "one spacer above the call: {texts:?}");
+    assert!(
+        texts[bash - 2].ends_with("before answering."),
+        "and the thought's last line right above it: {texts:?}"
+    );
+}
+
+#[test]
 fn the_transcript_label_is_the_same_dim_line_with_no_background() {
     // A thought looks like the same thing wherever you meet it: the settled
     // line wears exactly what the inline one wears, minus the expand hint.

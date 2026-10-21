@@ -175,6 +175,12 @@ Esc/error mid-phase.
 `ui::reasoning_full_lines` is the Ctrl+O expansion — the same dim line
 **without** the `(ctrl+o to expand)` hint (this *is* the expansion) over the
 whole text in the `⎿` gutter, the model's own paragraph breaks preserved.
+Only the breaks *between* paragraphs, though: reasoning often opens and
+closes on blank lines (`<think>\n…\n\n</think>`), and those edges are
+dropped. An opening one pushed the `⎿` corner off the first row of thought,
+and closing ones stacked on the one spacer the transcript puts after every
+item — three blank rows between a thought and the cell under it, where every
+other pair of cells has one.
 
 **Ctrl+O mid-think** shows the phase too, whole rather than windowed
 (`ui::reasoning_live_full_lines` — the same `● Thinking…` header over the same
