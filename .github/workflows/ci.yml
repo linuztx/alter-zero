@@ -62,11 +62,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       # Before the phases: the readers that decide WHICH phases a query runs are
       # pure text, and a regression in them does not fail loudly — it runs the
-      # wrong selection. macOS's BSD `sed` rejected the `{…;p}` form, so
-      # `smoke_phase_title` returned nothing and every query fell back to the
-      # file-name slug alone (141 of 144 phases unreachable by a prose word),
-      # while `121-slowstream` lost the `serial` tag that keeps it out of the
-      # parallel pool. Seconds to run, and platform-independent by construction.
+      # wrong selection. macOS's BSD `sed` rejected their old `{s/…/p}` form (no
+      # `;` before the `}`), so `smoke_phase_title` returned nothing and every
+      # query fell back to the file-name slug alone, while `121-slowstream` lost
+      # the `serial` tag that keeps it out of the parallel pool. GNU sed accepts
+      # both forms, so this run guards the selector; `smoke-readers-bsd` below
+      # runs the same tests under BSD sed.
       - name: The phase readers and the selector
         run: bash scripts/smoke/selftest.sh
       - run: cargo build
@@ -92,6 +93,26 @@ jobs:
             target/smoke/logs-parallel
           if-no-files-found: ignore
           retention-days: 7
+
+  smoke-readers-bsd:
+    # The smoke suite's phase readers and selector (scripts/smoke/selftest.sh)
+    # under macOS's BSD `sed`, which refuses scripts GNU sed accepts — the
+    # readers' old `{s/…/p}` form among them. The smoke job runs the same
+    # tests under GNU sed, where that regression passes, so this is the run
+    # that can see it. No toolchain: bash, sed and grep read fixture headers.
+    name: smoke readers (BSD sed)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The phase readers and the selector, under BSD sed
+        # Fail rather than pass vacuously if an image ever puts GNU sed first.
+        run: |
+          if sed --version >/dev/null 2>&1; then
+            echo "::error::GNU sed is first on PATH; this job needs the system's BSD sed"
+            exit 1
+          fi
+          bash -c 'echo "bash $BASH_VERSION"'
+          bash scripts/smoke/selftest.sh
 
   clipboard-linux:
     # The Linux clipboard read against a **real** X server (docs/image-paste.md).
