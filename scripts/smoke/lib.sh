@@ -110,6 +110,12 @@ smoke_sanitize_env() {
 	# long would find in the strip it asserts on. Off for the suite; the
 	# tips phase (125) turns them back on for its own launches.
 	export ALTER_ZERO_TIPS=0
+	# The project's AGENTS.md (docs/project-doc.md) leads every context the
+	# app builds, and the suite runs from a real checkout that has one: its
+	# text fills the top of every Ctrl+D view and pushes off the page the rows
+	# a phase reads there. Off for the suite; the /init phase (52) turns it
+	# back on for its own temp project.
+	export ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0
 }
 
 # ---------------------------------------------------------------------------
