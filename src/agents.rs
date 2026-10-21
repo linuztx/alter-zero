@@ -1354,6 +1354,9 @@ pub enum AgentEvent {
         id: String,
         event: StreamEvent,
         observed: bool,
+        /// The run that settled — what its notice is owed for
+        /// ([`AgentRegistry::post_notice`]).
+        run: u64,
     },
     /// The **lead** stopped this agent (`agentkill`): its loop is cancelled,
     /// and a cancelled loop sends nothing of its own, so this is the roster's
@@ -1406,6 +1409,9 @@ pub struct AgentSnapshot {
     /// Where each message it read arrived, and whether the user sent it, in
     /// order ([`AGENT_FOLLOW_UP_MARK`]).
     pub follow_ups: Vec<FollowUp>,
+    /// The run this snapshot describes — the one a report of it covers
+    /// ([`AgentRegistry::report_settled`]).
+    pub run: u64,
 }
 
 /// What stopping an agent found ([`AgentRegistry::kill`],
@@ -1525,6 +1531,11 @@ struct AgentSlot {
     /// messages *this* run answered are the ones after it
     /// ([`AgentRegistry::user_messages`]).
     run_follow_ups: usize,
+    /// Which run is current: 0 for the launch, one more per continuation
+    /// ([`restart`](Self::restart)) — what a settle, a report and a notice
+    /// name, since a report covers one run (`docs/agent-tools.md` *One
+    /// notice per answer*).
+    run: u64,
     /// When its current run started; `None` once settled, the run's length
     /// then added to `active`, the time its finished runs took.
     run_started: Option<Instant>,
@@ -1540,10 +1551,12 @@ struct AgentSlot {
     /// outcome it carries.
     held: Option<StreamEvent>,
     held_observed: bool,
-    /// Completion notices sent on the channel **unobserved** that the loop
-    /// has not posted yet — what an `agentoutput` report cancels when it
-    /// gets there first ([`AgentRegistry::report_settled`]).
-    notices_owed: usize,
+    /// The runs whose terminal events went out **unobserved** and whose
+    /// completion notices the loop has not posted yet — what a report of
+    /// one of them cancels when it gets there first
+    /// ([`AgentRegistry::report_settled`]). By run, since a report covers
+    /// only the run it read.
+    notices_owed: Vec<u64>,
     /// Its final response text (present once `done`, unless it failed).
     result: Option<String>,
     /// Its failure message (present once `done` when the run errored).
@@ -1609,6 +1622,7 @@ impl AgentSlot {
             tool_uses: self.calls.len(),
             calls: self.calls.clone(),
             follow_ups: self.follow_ups.clone(),
+            run: self.run,
         }
     }
 
@@ -1627,6 +1641,7 @@ impl AgentSlot {
         self.run_started = Some(Instant::now());
         self.settled = None;
         self.run_follow_ups = self.follow_ups.len();
+        self.run += 1;
         cancel
     }
 
@@ -1840,12 +1855,13 @@ impl AgentRegistry {
         {
             let observed = std::mem::take(&mut slot.held_observed);
             if !observed {
-                slot.notices_owed += 1;
+                slot.notices_owed.push(slot.run);
             }
             let _ = self.events.send(AgentEvent::Settled {
                 id: id.to_string(),
                 event,
                 observed,
+                run: slot.run,
             });
         }
         Some(snapshot)
@@ -1857,11 +1873,12 @@ impl AgentRegistry {
     fn release_held(&self, id: &str, slot: &mut AgentSlot) {
         if let Some(event) = slot.held.take() {
             slot.held_observed = false;
-            slot.notices_owed += 1;
+            slot.notices_owed.push(slot.run);
             let _ = self.events.send(AgentEvent::Settled {
                 id: id.to_string(),
                 event,
                 observed: false,
+                run: slot.run,
             });
         }
     }
@@ -1946,11 +1963,12 @@ impl AgentRegistry {
                 if slot.waiters > 0 {
                     slot.held = Some(event);
                 } else {
-                    slot.notices_owed += 1;
+                    slot.notices_owed.push(slot.run);
                     let _ = self.events.send(AgentEvent::Settled {
                         id: id.to_string(),
                         event,
                         observed: false,
+                        run: slot.run,
                     });
                 }
             }
@@ -2342,15 +2360,24 @@ impl AgentRegistry {
         Some(pending.remove(index).text)
     }
 
-    /// An `agentoutput` call handed the lead `id`'s settled outcome
+    /// An `agentoutput` call handed the lead the outcome of `id`'s run `run`
     /// (`docs/agent-tools.md` *One notice per answer*): the completion
     /// notice saying the same must not reach it too. Not posted yet — the
     /// loop's [`post_notice`](Self::post_notice) is told to skip it; posted
     /// and still on `board` — taken back, the board remembering its number
     /// so the cell the loop holds for it is dropped too
-    /// ([`BackgroundRegistry::take_retracted`]); already taken by the lead —
-    /// nothing to do, this was a re-read. Under the registry lock, as the
-    /// loop's post is, so the two can never cross.
+    /// ([`BackgroundRegistry::take_retracted`]), as is any other note of the
+    /// run's end posted meanwhile (the user's stop); already taken by the
+    /// lead — nothing to do, this was a re-read. Under the registry lock, as
+    /// the loop's post is, so the two can never cross.
+    ///
+    /// Only that run's: an earlier run's completion still unread on `board`
+    /// says what the report does not — the user's message can start the
+    /// next run the instant one ends, and a wait then reports the run after
+    /// — so it is taken off the board and **returned**, oldest first, for
+    /// the report to carry rather than lost or delivered after the newer
+    /// answer. (One the loop has not posted yet stays owed, and reaches the
+    /// lead as a notice.)
     ///
     /// The note that the user started the run, still unread, goes too —
     /// whichever way the completion stood — since read after the answer it
@@ -2359,28 +2386,35 @@ impl AgentRegistry {
     /// of (`docs/agent-tools.md` *A resume is news when it starts*).
     ///
     /// [`BackgroundRegistry::take_retracted`]: crate::background::BackgroundRegistry::take_retracted
-    pub fn report_settled(&self, id: &str, board: Option<&crate::background::BackgroundRegistry>) {
+    #[must_use]
+    pub fn report_settled(
+        &self,
+        id: &str,
+        run: u64,
+        board: Option<&crate::background::BackgroundRegistry>,
+    ) -> Vec<String> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let Some(slot) = inner.slots.get_mut(id) else {
-            return;
+            return Vec::new();
         };
         if slot.done
             && let Some(board) = board
         {
             board.retract_agent_resume_notice(id);
         }
-        if slot.notices_owed > 0 {
-            slot.notices_owed -= 1;
-            return;
+        if let Some(at) = slot.notices_owed.iter().position(|owed| *owed == run) {
+            slot.notices_owed.remove(at);
         }
-        if let Some(board) = board {
-            board.retract_agent_notice(id);
-        }
+        let Some(board) = board else {
+            return Vec::new();
+        };
+        board.retract_agent_notice(id, run);
+        board.take_earlier_agent_notices(id, run)
     }
 
-    /// The loop handled one of `id`'s **unobserved** settles: post its
-    /// completion notice on `board` when it owes one (`context`) — unless a
-    /// report already handed the lead that answer
+    /// The loop handled the **unobserved** settle of `id`'s run `run`: post
+    /// its completion notice on `board` when it owes one (`context`), tagged
+    /// with the run — unless a report already handed the lead that answer
     /// ([`report_settled`](Self::report_settled)). Called for every such
     /// settle, a notice owed or not, so each one is accounted for once.
     /// [`NoticePost::Covered`] when a report covered it: no notice cell is
@@ -2389,17 +2423,33 @@ impl AgentRegistry {
     pub fn post_notice(
         &self,
         id: &str,
+        run: u64,
         board: &crate::background::BackgroundRegistry,
         context: Option<String>,
     ) -> NoticePost {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
-            if slot.notices_owed == 0 {
+            let Some(at) = slot.notices_owed.iter().position(|owed| *owed == run) else {
                 return NoticePost::Covered;
-            }
-            slot.notices_owed -= 1;
+            };
+            slot.notices_owed.remove(at);
         }
-        NoticePost::Posted(context.map(|context| board.post_agent_notice(context, id)))
+        NoticePost::Posted(context.map(|context| board.post_agent_notice(context, id, Some(run))))
+    }
+
+    /// Post a completion notice of `id`'s current run that no settle owes —
+    /// a scripted run's end, or the user's stop — on `board`, tagged with
+    /// that run so a report of it takes the note back like any other
+    /// ([`report_settled`](Self::report_settled)). Its board number.
+    pub fn post_completion_notice(
+        &self,
+        id: &str,
+        board: &crate::background::BackgroundRegistry,
+        context: String,
+    ) -> u64 {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        let run = inner.slots.get(id).map(|slot| slot.run);
+        board.post_agent_notice(context, id, run)
     }
 
     /// Post the note that the user started `id` again (`context`) on `board`
@@ -2420,7 +2470,7 @@ impl AgentRegistry {
     ) -> Option<u64> {
         let inner = self.inner.lock().expect("agent registry poisoned");
         let slot = inner.slots.get(id)?;
-        (!slot.done).then(|| board.post_agent_resume_notice(context, id))
+        (!slot.done).then(|| board.post_agent_resume_notice(context, id, slot.run))
     }
 
     /// Can this agent take a **new turn** right now — settled, not stopped,
@@ -4293,6 +4343,7 @@ mod tests {
                 id: id.clone(),
                 event: StreamEvent::StreamDone,
                 observed: false,
+                run: 0,
             }]
         );
     }
@@ -4319,6 +4370,7 @@ mod tests {
                 id: id.clone(),
                 event: StreamEvent::StreamDone,
                 observed: true,
+                run: 0,
             }]
         );
     }
@@ -4343,6 +4395,7 @@ mod tests {
                 id,
                 event: StreamEvent::Error("boom".into()),
                 observed: false,
+                run: 0,
             }]
         );
     }
@@ -4368,6 +4421,7 @@ mod tests {
                 id,
                 event: StreamEvent::StreamDone,
                 observed: false,
+                run: 0,
             }]
         );
         assert!(!registry.begin_wait("nope"), "nothing to wait on");
@@ -4880,9 +4934,9 @@ mod tests {
         // the loop must not post it (docs/agent-tools.md *One notice per
         // answer*).
         let (registry, id, board) = settled_with_notice();
-        registry.report_settled(&id, Some(&board));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert_eq!(
-            registry.post_notice(&id, &board, Some("note".into())),
+            registry.post_notice(&id, 0, &board, Some("note".into())),
             NoticePost::Covered
         );
         assert!(board.take_pending_notices().is_empty());
@@ -4891,8 +4945,8 @@ mod tests {
     #[test]
     fn a_report_retracts_a_posted_notice_the_lead_has_not_taken() {
         let (registry, id, board) = settled_with_notice();
-        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
-        registry.report_settled(&id, Some(&board));
+        let seq = posted(registry.post_notice(&id, 0, &board, Some("note".into())));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(board.take_pending_notices().is_empty(), "off the board");
         assert!(board.take_retracted(seq), "its cell is not owed either");
         assert!(!board.take_retracted(seq), "once");
@@ -4901,9 +4955,9 @@ mod tests {
     #[test]
     fn a_report_after_the_lead_took_the_notice_is_a_re_read() {
         let (registry, id, board) = settled_with_notice();
-        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
+        let seq = posted(registry.post_notice(&id, 0, &board, Some("note".into())));
         assert_eq!(board.take_pending_notices().len(), 1, "the lead read it");
-        registry.report_settled(&id, Some(&board));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(!board.take_retracted(seq), "the cell records what it read");
     }
 
@@ -4911,8 +4965,8 @@ mod tests {
     fn a_report_retracts_only_its_own_agents_notice() {
         let (registry, id, board) = settled_with_notice();
         board.post_notice("a shell finished".into(), true);
-        posted(registry.post_notice(&id, &board, Some("note".into())));
-        registry.report_settled(&id, Some(&board));
+        posted(registry.post_notice(&id, 0, &board, Some("note".into())));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         let left = board.take_pending_notices();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].context, "a shell finished");
@@ -4925,7 +4979,7 @@ mod tests {
         // report retracts.
         let (registry, id, board) = settled_with_notice();
         assert_eq!(
-            registry.post_notice(&id, &board, None),
+            registry.post_notice(&id, 0, &board, None),
             NoticePost::Posted(None)
         );
         assert!(matches!(
@@ -4938,8 +4992,8 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        let seq = posted(registry.post_notice(&id, &board, Some("note".into())));
-        registry.report_settled(&id, Some(&board));
+        let seq = posted(registry.post_notice(&id, 1, &board, Some("note".into())));
+        assert!(registry.report_settled(&id, 1, Some(&board)).is_empty());
         assert!(board.take_pending_notices().is_empty());
         assert!(board.take_retracted(seq));
     }
@@ -4952,8 +5006,8 @@ mod tests {
         // taken back and the second keep its cell — which a mark kept per
         // agent could not tell apart.
         let (registry, id, board) = settled_with_notice();
-        let first = posted(registry.post_notice(&id, &board, Some("first".into())));
-        registry.report_settled(&id, Some(&board));
+        let first = posted(registry.post_notice(&id, 0, &board, Some("first".into())));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(matches!(
             registry.resume(&id, "again"),
             Resume::Continue { .. }
@@ -4964,7 +5018,7 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        let second = posted(registry.post_notice(&id, &board, Some("second".into())));
+        let second = posted(registry.post_notice(&id, 1, &board, Some("second".into())));
         assert!(board.take_retracted(first), "the first stays taken back");
         assert!(!board.take_retracted(second), "the second keeps its cell");
     }
@@ -4985,7 +5039,7 @@ mod tests {
         let _ = registry.end_wait(&id, true);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let board = crate::background::BackgroundRegistry::new(tx, std::env::temp_dir());
-        registry.report_settled(&id, Some(&board));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(board.take_pending_notices().is_empty());
     }
 
@@ -4999,7 +5053,7 @@ mod tests {
         u64,
     ) {
         let (registry, id, board) = settled_with_notice();
-        posted(registry.post_notice(&id, &board, Some("finished".into())));
+        posted(registry.post_notice(&id, 0, &board, Some("finished".into())));
         assert_eq!(board.take_pending_notices().len(), 1, "the lead read it");
         let _ = registry
             .begin_continuation(&id)
@@ -5051,11 +5105,11 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        registry.report_settled(&id, Some(&board));
+        assert!(registry.report_settled(&id, 1, Some(&board)).is_empty());
         assert!(board.take_pending_notices().is_empty(), "off the board");
         assert!(board.take_retracted(resume), "its cell is not owed either");
         assert_eq!(
-            registry.post_notice(&id, &board, Some("second".into())),
+            registry.post_notice(&id, 1, &board, Some("second".into())),
             NoticePost::Covered
         );
     }
@@ -5069,8 +5123,8 @@ mod tests {
             vec![ChatMessage::user("p")],
             Some(StreamEvent::StreamDone),
         );
-        let completion = posted(registry.post_notice(&id, &board, Some("second".into())));
-        registry.report_settled(&id, Some(&board));
+        let completion = posted(registry.post_notice(&id, 1, &board, Some("second".into())));
+        assert!(registry.report_settled(&id, 1, Some(&board)).is_empty());
         assert!(board.take_pending_notices().is_empty());
         assert!(board.take_retracted(resume));
         assert!(board.take_retracted(completion));
@@ -5083,12 +5137,12 @@ mod tests {
         // taken back, but the note that the agent runs again is about a run
         // the lead has not heard of.
         let (registry, id, board) = settled_with_notice();
-        let read = posted(registry.post_notice(&id, &board, Some("finished".into())));
+        let read = posted(registry.post_notice(&id, 0, &board, Some("finished".into())));
         let _ = registry.begin_continuation(&id).expect("settled");
         let resume = registry
             .post_resume_notice(&id, &board, "running again".into())
             .expect("going");
-        registry.report_settled(&id, Some(&board));
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(board.take_retracted(read), "the answer it reported");
         let left = board.take_pending_notices();
         assert_eq!(left.len(), 1, "{left:?}");
@@ -5103,7 +5157,7 @@ mod tests {
         // in a completion the lead has not read, which says what the stop's
         // report does not.
         let (registry, id, board) = settled_with_notice();
-        let earlier = posted(registry.post_notice(&id, &board, Some("finished".into())));
+        let earlier = posted(registry.post_notice(&id, 0, &board, Some("finished".into())));
         let _ = registry.begin_continuation(&id).expect("settled");
         let resume = registry
             .post_resume_notice(&id, &board, "running again".into())
@@ -5134,10 +5188,176 @@ mod tests {
         assert!(board.take_retracted(resume));
         assert!(
             matches!(
-                registry.post_notice(&id, &board, Some("second".into())),
+                registry.post_notice(&id, 1, &board, Some("second".into())),
                 NoticePost::Posted(Some(_))
             ),
             "the run's completion is still owed"
+        );
+    }
+
+    #[test]
+    fn each_continuation_is_a_new_run_and_its_settle_names_it() {
+        // A report covers one run, so what it accounts for is counted by run:
+        // the launch is run 0, each continuation the next (docs/agent-tools.md
+        // *One notice per answer*).
+        let (registry, mut rx) = watched_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert_eq!(registry.snapshot(&id).unwrap().run, 0);
+        registry.settle(
+            &id,
+            Ok("first".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert!(matches!(
+            registry.resume(&id, "more"),
+            Resume::Continue { .. }
+        ));
+        assert_eq!(registry.snapshot(&id).unwrap().run, 1);
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let runs: Vec<u64> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentEvent::Settled { run, .. } => Some(run),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(runs, [0, 1]);
+        let _ = registry.begin_continuation(&id).expect("settled");
+        assert_eq!(
+            registry.snapshot(&id).unwrap().run,
+            2,
+            "a chat continuation is a run too"
+        );
+    }
+
+    #[test]
+    fn a_report_cancels_only_its_own_runs_unposted_notice() {
+        // Two runs ended unobserved and the loop has posted neither notice: a
+        // report of the second cancels the second's, never the first's.
+        let (registry, id, board) = settled_with_notice();
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert!(
+            registry.report_settled(&id, 1, Some(&board)).is_empty(),
+            "nothing earlier was posted to hand back"
+        );
+        assert!(
+            matches!(
+                registry.post_notice(&id, 0, &board, Some("first".into())),
+                NoticePost::Posted(Some(_))
+            ),
+            "the first run's answer is still owed"
+        );
+        assert_eq!(
+            registry.post_notice(&id, 1, &board, Some("second".into())),
+            NoticePost::Covered
+        );
+    }
+
+    #[test]
+    fn a_report_takes_back_every_note_of_its_run() {
+        // A note already posted for the run — the user's stop, posted the
+        // moment it lands — while the run's own end is still owed: the report
+        // covers the run, so neither may reach the lead after it.
+        let (registry, id, board) = settled_with_notice();
+        let posted_note = registry.post_completion_notice(&id, &board, "stopped".into());
+        assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
+        assert!(
+            board.take_retracted(posted_note),
+            "the posted note is taken back"
+        );
+        assert_eq!(
+            registry.post_notice(&id, 0, &board, Some("note".into())),
+            NoticePost::Covered,
+            "and the owed one never posts"
+        );
+    }
+
+    #[test]
+    fn a_report_hands_back_an_earlier_runs_unread_answer() {
+        // The report covers the run it read. The run before it ended unread
+        // on the board, and taking that note back for nothing would lose its
+        // answer — so it is handed to the report to carry instead.
+        let (registry, id, board) = settled_with_notice();
+        let first = posted(registry.post_notice(&id, 0, &board, Some("the first answer".into())));
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        assert_eq!(
+            registry.report_settled(&id, 1, Some(&board)),
+            ["the first answer"]
+        );
+        assert!(
+            board.take_pending_notices().is_empty(),
+            "the report carries it now"
+        );
+        assert!(board.take_retracted(first), "and its cell is not owed");
+        assert_eq!(
+            registry.post_notice(&id, 1, &board, Some("second".into())),
+            NoticePost::Covered
+        );
+    }
+
+    #[test]
+    fn a_wait_that_follows_the_users_next_run_still_hands_back_the_first_answer() {
+        // The lead waits on the agent; the user's message, queued as it wrote
+        // its last reply, starts the next run the instant that one ends, so
+        // the wait — seeing the agent at work again — reports the second run.
+        // The first run's answer, released as a notice by the restart, used
+        // to be taken back by that report unread.
+        let (registry, mut rx) = watched_registry();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let board = crate::background::BackgroundRegistry::new(tx, std::env::temp_dir());
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        assert!(registry.begin_wait(&id));
+        registry.settle(
+            &id,
+            Ok("first".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let _ = registry.begin_continuation(&id).expect("settled");
+        let first = posted(registry.post_notice(&id, 0, &board, Some("the first answer".into())));
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let snap = registry.end_wait(&id, true).expect("known");
+        assert_eq!(snap.run, 1);
+        assert_eq!(snap.state, AgentState::Done("second".into()));
+        assert_eq!(
+            registry.report_settled(&id, snap.run, Some(&board)),
+            ["the first answer"]
+        );
+        assert!(board.take_retracted(first));
+        let settles: Vec<(u64, bool)> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentEvent::Settled { run, observed, .. } => Some((run, observed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            settles,
+            [(0, false), (1, true)],
+            "the first run owed its notice, the wait reported the second"
         );
     }
 
@@ -5151,6 +5371,7 @@ mod tests {
             tool_uses: calls.len(),
             calls: calls.iter().map(|call| (*call).to_string()).collect(),
             follow_ups: Vec::new(),
+            run: 0,
         }
     }
 

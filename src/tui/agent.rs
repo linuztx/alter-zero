@@ -49,7 +49,8 @@ impl Session<'_> {
                 id,
                 event,
                 observed,
-            } => self.on_agent_event(&id, event, Some(observed)),
+                run,
+            } => self.on_agent_event(&id, event, Some((observed, run))),
             AgentEvent::Stopped { id } => self.on_agent_stopped_by_lead(&id),
             AgentEvent::Resumed {
                 id,
@@ -93,7 +94,12 @@ impl Session<'_> {
     /// `settle` is `Some` for a run's settle as the registry delivered it —
     /// `Some(true)` when an `agentoutput` already reported it, which owes
     /// no completion notice (`docs/agent-tools.md`).
-    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent, settle: Option<bool>) {
+    pub(crate) fn on_agent_event(
+        &mut self,
+        id: &str,
+        event: StreamEvent,
+        settle: Option<(bool, u64)>,
+    ) {
         let width = self.term.screen().width;
         // A subagent's permission request is the *user's* business, not the
         // roster's: raise the same shared prompt the main turn does, and stop —
@@ -201,9 +207,9 @@ impl Session<'_> {
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
-        let mut settled = self
-            .app
-            .apply_agent_settled(id, &event, settle == Some(true));
+        let mut settled =
+            self.app
+                .apply_agent_settled(id, &event, matches!(settle, Some((true, _))));
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
@@ -224,9 +230,12 @@ impl Session<'_> {
         // nothing and records no cell (docs/agent-tools.md *One notice per
         // answer*).
         let mut seq = None;
-        if settle == Some(false) {
+        if let Some((false, run)) = settle {
             let context = settled.as_ref().map(AgentNotice::context_text);
-            match self.agent_registry.post_notice(id, &self.registry, context) {
+            match self
+                .agent_registry
+                .post_notice(id, run, &self.registry, context)
+            {
                 alter_zero::agents::NoticePost::Posted(posted) => seq = posted,
                 alter_zero::agents::NoticePost::Covered => {
                     if let Some(notice) = settled.take() {
@@ -273,7 +282,10 @@ impl Session<'_> {
             self.agent_registry
                 .post_resume_notice(id, &self.registry, context)
         } else {
-            Some(self.registry.post_agent_notice(context, id))
+            Some(
+                self.agent_registry
+                    .post_completion_notice(id, &self.registry, context),
+            )
         };
         if let Some(seq) = posted {
             self.app.defer_agent_notice(notice, Some(seq));

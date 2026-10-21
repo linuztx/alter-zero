@@ -330,12 +330,13 @@ that hands the lead a settled outcome then tells the registry
 unobserved settle with it (`AgentRegistry::post_notice`, a note owed or not),
 both under the registry lock, so the two never cross:
 
-- the report comes first: the slot's count of unposted notices is spent, the
-  loop posts nothing, and it settles the group entry with no notice cell —
-  the observed path;
+- the report comes first: the run's owed notice is spent (the slot keeps
+  the runs it owes one, `notices_owed`), the loop posts nothing, and it
+  settles the group entry with no notice cell — the observed path; a note
+  of the run's end posted meanwhile (the user's stop) is taken back too;
 - the note is posted but the lead has not taken it: the report takes it back
   off the board (`BackgroundRegistry::retract_agent_notice`, the board's
-  notes tagged with their agent), and the notice cell held with it is
+  notes tagged with their agent and run), and the notice cell held with it is
   dropped when the loop settles it at the turn's end
   (`BackgroundRegistry::take_retracted`). The board remembers retractions by
   each note's **number**, not by agent: the loop holds a cell until the lead
@@ -348,9 +349,46 @@ both under the registry lock, so the two never cross:
 Whichever it is, a note still saying that the user started the run goes too
 (*A resume is news when it starts*).
 
-The edge left: a notice cell that committed at a mid-turn boundary before
+### A report covers one run
+
+Each run of an agent has a number — 0 for its launch, one more for every
+continuation (`AgentSnapshot::run`) — each settle names it
+(`AgentEvent::Settled::run`), and a report accounts only for the run it
+read. That matters because the user's message can start the next run the
+instant one ends: a message queued while the agent writes its last reply is
+continued by the agent's own thread right after the settle
+(`docs/queue.md`), so an `agentoutput` waiting on it sees the agent at work
+again and reports the run after, while the first run's end, released by the
+restart, goes out as an ordinary notice. A report that took back every
+unread note of the agent threw that first answer away — the answer to the
+task the lead gave — and taking back only its own run's would deliver the
+first answer after the newer one, an older `completed` read last. So the
+report hands the earlier answers back: each earlier run's completion still
+unread on the board is taken off it, its cell dropped
+(`BackgroundRegistry::take_earlier_agent_notices`), and carried at the end
+of the report, oldest first, under a line saying it came first:
+
+```text
+[Before this run it had ended an earlier one, whose notice had not reached you:]
+[background agent] Agent "Build the frontend" (a7k2m9x4q) completed in 2m 5s.
+Final response:
+…
+```
+
+An earlier run whose notice the loop has not posted yet — the loop stalled
+for a whole run — stays owed and reaches the lead as a notice. `smoke.sh`
+Phase 143 drives the case through the real backend against a stub
+provider: the lead waits on a background agent, the user's message is
+queued while the agent's final reply is held back, and the wait's result
+carries both answers, the newer first.
+
+The edges left: a notice cell that committed at a mid-turn boundary before
 the report took its untaken note back stays in the history, so later turns'
-context carries the answer twice.
+context carries the answer twice. And the recorded group entry, which a
+taken-back note still updates when its cell settles at the turn's end, can
+be left showing the earlier run's outcome in Ctrl+O after a later run's
+report updated it — display only; the context replays what the wire
+carried.
 
 ## Verified live
 

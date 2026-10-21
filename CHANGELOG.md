@@ -14,6 +14,14 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A subagent's answer is no longer lost when your message starts it
+  again.** If you messaged a subagent while it wrote its final reply, it
+  picked your message up the moment that reply was done — but when the main
+  agent was waiting on it with `agentoutput`, the wait went on to report the
+  new run's answer and threw the first one away, the answer to the task the
+  main agent had given. The report now carries that earlier answer after its
+  own, marked as the one that came first (`docs/agent-tools.md`).
+
 - **The main agent hears when you bring a subagent back.** Messaging a
   subagent that had failed, finished or been stopped starts it working again,
   but the main agent only learned of it once that run ended — until then it

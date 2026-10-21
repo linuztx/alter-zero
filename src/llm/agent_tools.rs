@@ -60,6 +60,16 @@ const STILL_RUNNING_NOTE: &str = "[Still running — you are notified when it fi
 const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the agent keeps running \
      and you are notified when it finishes.]";
 
+/// Ahead of an earlier run's notice a report carries: the agent ended that
+/// run before the one reported, and the notice never reached the lead
+/// (`docs/agent-tools.md` *One notice per answer*).
+const EARLIER_RUN_NOTE: &str =
+    "[Before this run it had ended an earlier one, whose notice had not reached you:]";
+
+/// [`EARLIER_RUN_NOTE`] for several.
+const EARLIER_RUNS_NOTE: &str = "[Before this run it had ended earlier ones, whose notices \
+     had not reached you — oldest first:]";
+
 /// Run one companion call (`docs/agent-tools.md`). `on_output` streams a
 /// waiting `agentoutput`'s calls as the agent starts them, so its running
 /// cell shows the agent at work.
@@ -216,16 +226,32 @@ fn output(
 /// registry told so, so the completion notice saying the same is cancelled
 /// or taken back (`docs/agent-tools.md` *One notice per answer*). A wait
 /// that saw the settle already marked it observed; this covers the settle
-/// it just missed, and the one that landed before the lead looked.
+/// it just missed, and the one that landed before the lead looked. Any
+/// earlier run's notice still unread comes back from the registry and
+/// follows the report, introduced as the earlier answer it is.
 fn reported(
     ctx: &AgentToolContext<'_>,
     snapshot: &crate::agents::AgentSnapshot,
     ended_by_user: bool,
 ) -> ToolOutcome {
-    if snapshot.state != AgentState::Running {
-        ctx.registry.report_settled(&snapshot.id, ctx.background);
+    let earlier = if snapshot.state == AgentState::Running {
+        Vec::new()
+    } else {
+        ctx.registry
+            .report_settled(&snapshot.id, snapshot.run, ctx.background)
+    };
+    let mut report = report(snapshot, ended_by_user);
+    if !earlier.is_empty() {
+        report.push_str("\n\n");
+        report.push_str(if earlier.len() == 1 {
+            EARLIER_RUN_NOTE
+        } else {
+            EARLIER_RUNS_NOTE
+        });
+        report.push('\n');
+        report.push_str(&earlier.join("\n\n"));
     }
-    ToolOutcome::ok(report(snapshot, ended_by_user))
+    ToolOutcome::ok(report)
 }
 
 /// `agentoutput`'s result: the report, and — for an agent still at work —
@@ -599,6 +625,7 @@ mod tests {
                 id,
                 event: StreamEvent::StreamDone,
                 observed: true,
+                run: 0,
             }],
             "the report was the notice"
         );
@@ -642,7 +669,7 @@ mod tests {
             outcome.output
         );
         assert_eq!(
-            registry.post_notice(&id, &background, Some("note".into())),
+            registry.post_notice(&id, 0, &background, Some("note".into())),
             crate::agents::NoticePost::Covered
         );
         assert!(background.take_pending_notices().is_empty());
@@ -652,7 +679,7 @@ mod tests {
     fn a_report_takes_back_a_notice_the_lead_has_not_read() {
         let (registry, id, background) = settled_unobserved();
         let crate::agents::NoticePost::Posted(Some(seq)) =
-            registry.post_notice(&id, &background, Some("note".into()))
+            registry.post_notice(&id, 0, &background, Some("note".into()))
         else {
             panic!("the settle owed a notice");
         };
@@ -723,7 +750,7 @@ mod tests {
         assert!(background.take_pending_notices().is_empty());
         assert!(background.take_retracted(seq), "and its cell is not owed");
         assert_eq!(
-            registry.post_notice(&id, &background, Some("note".into())),
+            registry.post_notice(&id, 1, &background, Some("note".into())),
             crate::agents::NoticePost::Covered
         );
     }
@@ -784,6 +811,60 @@ mod tests {
     }
 
     #[test]
+    fn a_report_carries_an_earlier_runs_unread_answer_after_its_own() {
+        // The run the report covers came last; the one before it ended
+        // unread, and its notice — taken off the board — follows the report,
+        // marked as the earlier answer, where it used to be thrown away
+        // (docs/agent-tools.md *One notice per answer*).
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Create the frontend", "p");
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        registry.settle(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let earlier = "[background agent] Agent \"Create the frontend\" completed.\n\
+                       Final response:\nFrontend created.";
+        let crate::agents::NoticePost::Posted(Some(seq)) =
+            registry.post_notice(&id, 0, &background, Some(earlier.into()))
+        else {
+            panic!("the first run owed a notice");
+        };
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.settle(
+            &id,
+            Ok("Added tests.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        let output = &outcome.output;
+        let own = output
+            .find("Final response:\nAdded tests.")
+            .unwrap_or_else(|| panic!("the report's own answer: {output}"));
+        let lead_in = output
+            .find(EARLIER_RUN_NOTE)
+            .unwrap_or_else(|| panic!("the earlier answer is introduced: {output}"));
+        let carried = output
+            .find(earlier)
+            .unwrap_or_else(|| panic!("the earlier answer is carried: {output}"));
+        assert!(own < lead_in && lead_in < carried, "{output}");
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    #[test]
     fn a_running_agents_report_cancels_no_notice() {
         let (registry, _rx) = registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
@@ -806,7 +887,7 @@ mod tests {
         );
         assert!(
             matches!(
-                registry.post_notice(&id, &background, Some("note".into())),
+                registry.post_notice(&id, 0, &background, Some("note".into())),
                 crate::agents::NoticePost::Posted(Some(_))
             ),
             "the answer it did not report is still noticed"
@@ -881,6 +962,7 @@ mod tests {
                 id,
                 event: StreamEvent::StreamDone,
                 observed: false,
+                run: 0,
             }]
         );
     }

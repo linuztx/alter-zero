@@ -1444,8 +1444,12 @@ stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder
 **holds back** the run's terminal event and `AgentRegistry::settle` sends it
 under the lock — at once, or to a waiting `agentoutput` that releases it
 `observed` (`AgentEvent::Settled`), so an answer the lead read is never
-noticed again; settled slots outlive their roster rows, the newest
-`AGENT_RETAINED_MAX` (16) kept, `/clear` forgetting all); and the **tty detach** (every shell child
+noticed again — each settle naming its **run** (0 for the launch, one more
+per continuation), a report accounting only for the run it read and
+carrying an earlier run's still-unread answer at its end rather than taking
+it back unread, since the user's message can start the next run the instant
+one ends (`take_earlier_agent_notices`); settled slots outlive their roster
+rows, the newest `AGENT_RETAINED_MAX` (16) kept, `/clear` forgetting all); and the **tty detach** (every shell child
 that runs on a pipe — `!`, a `bash` call where no terminal can be had, a
 hook — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
