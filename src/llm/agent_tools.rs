@@ -247,8 +247,8 @@ fn report(snapshot: &crate::agents::AgentSnapshot, ended_by_user: bool) -> Strin
 
 /// `agentkill`: the lead's stop — the agent's report, where it got to, as
 /// the result. One already settled is left as it was. The board goes with
-/// the stop: the report is the run's end, so a note still announcing that
-/// the user started the run is taken back ([`AgentRegistry::stop`]).
+/// the stop: either result says the run is over, so a note still announcing
+/// that the user started the run is taken back ([`AgentRegistry::stop`]).
 fn kill(ctx: &AgentToolContext<'_>, id: &str) -> ToolOutcome {
     let Some(stop) = ctx.registry.stop(id, ctx.background) else {
         return unknown_agent(ctx.registry, id);
@@ -750,6 +750,32 @@ mod tests {
             outcome
                 .output
                 .contains("— message from the user: continue with React —"),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    #[test]
+    fn agentkill_of_a_resumed_agent_already_done_takes_back_its_note() {
+        // The resumed run finished before the lead read the note: the kill
+        // stops nothing and its report says the agent is done, so the note
+        // that it runs again must not follow it (docs/agent-tools.md).
+        let (registry, id, background, seq) = resumed_by_user();
+        registry.finish(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(tools::AGENT_KILL_TOOL, serde_json::json!({"agent_id": id})),
+        );
+        assert!(
+            outcome.output.contains("is not running"),
             "{}",
             outcome.output
         );

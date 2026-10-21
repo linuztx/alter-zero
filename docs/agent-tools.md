@@ -228,22 +228,24 @@ outcome the lead read until the run reports its own.
 The note is news only until the lead hears how that run ended, and two of
 the lead's own calls can tell it first, while the note still waits for the
 round boundary: an `agentoutput` report of the settled run, and `agentkill`,
-whose report is the run's end and after which no notice comes. Read after
-either, the note would say the agent runs and that a notice will follow. So
-both take it back unread, its held cell dropped with it
+whose result says the run is over either way — the report of the stop, after
+which no notice comes, or `not running` for a run that had already ended,
+whose completion notice still follows. Read after either, the note would say
+the agent runs and that a notice will follow. So both take it back unread,
+its held cell dropped with it
 (`BackgroundRegistry::retract_agent_resume_notice`):
 `AgentRegistry::report_settled` whichever way the run's completion stood
-(*One notice per answer*), and `AgentRegistry::stop` — the lead's stop — in
-the same locked step. A report that read the run from **before** the user
-started it again is the exception: it takes back the completion it read and
-leaves the note, which is about a run the lead has not heard of. The
-registry tells the two apart under its own lock (is the run still over?),
-and the loop posts the note under that lock too
-(`AgentRegistry::post_resume_notice`, only while the run it announces is
-going), so a report, a stop and the post never cross. A run that ended
-before its note could be posted owes none: its completion notice names the
-user's messages as well, and the report of a stop the lead made first marks
-them (`— message from the user: … —`).
+(*One notice per answer*), and `AgentRegistry::stop` — the lead's stop,
+whether it stops the run or finds it over — in the same locked step. A
+report that read the run from **before** the user started it again is the
+exception: it takes back the completion it read and leaves the note, which
+is about a run the lead has not heard of. The registry tells the two apart
+under its own lock (is the run still over?), and the loop posts the note
+under that lock too (`AgentRegistry::post_resume_notice`, only while the run
+it announces is going), so a report, a stop and the post never cross. A run
+that ended before its note could be posted owes none: its completion notice
+names the user's messages as well, and the report of a stop the lead made
+first marks them (`— message from the user: … —`).
 
 Both ways a user's message reaches a settled agent count: a chat continuation
 started from its session view — Enter, or a Tab follow-up dispatched at its

@@ -1994,11 +1994,12 @@ impl AgentRegistry {
     /// told ([`AgentEvent::Stopped`]). An agent already settled is left as it
     /// was (`was_live: false`). `None` for an id nothing answers to.
     ///
-    /// The stop's report is the run's end, and no notice follows a stop the
-    /// lead made: the note that the user started this run, still on `board`
-    /// unread, would tell the lead afterwards that it runs and that a notice
-    /// will come — so it is taken back, in the same locked step
-    /// (`docs/agent-tools.md` *A resume is news when it starts*).
+    /// Either way the lead's result says the run is over — the stop's report,
+    /// or that nothing was running — so the note that the user started the
+    /// run, still on `board` unread, would contradict it afterwards: it says
+    /// the agent runs and that a notice will come. It is taken back in the
+    /// same locked step (`docs/agent-tools.md` *A resume is news when it
+    /// starts*); a run that ended on its own still sends its completion.
     pub fn stop(
         &self,
         id: &str,
@@ -2007,6 +2008,9 @@ impl AgentRegistry {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let seq = inner.stamp();
         let slot = inner.slots.get_mut(id)?;
+        if let Some(board) = board {
+            board.retract_agent_resume_notice(id);
+        }
         if slot.done {
             return Some(Stop::default());
         }
@@ -2018,9 +2022,6 @@ impl AgentRegistry {
         slot.killed = true;
         slot.killed_by_user = false;
         slot.done = true;
-        if let Some(board) = board {
-            board.retract_agent_resume_notice(id);
-        }
         let _ = self.events.send(AgentEvent::Stopped { id: id.to_string() });
         Some(Stop {
             was_live: true,
@@ -5113,6 +5114,31 @@ mod tests {
         let left = board.take_pending_notices();
         assert_eq!(left.len(), 1, "{left:?}");
         assert_eq!(left[0].seq, earlier);
+    }
+
+    #[test]
+    fn the_leads_stop_of_a_run_already_over_takes_back_its_resume_note() {
+        // The resumed run ended before the lead read the note, and the lead
+        // stops the agent all the same: nothing is stopped, but the report
+        // it gets says the agent is done, so "running again" read after it
+        // would contradict it. The run's completion still says the rest.
+        let (registry, id, board, resume) = resumed_with_note();
+        registry.settle(
+            &id,
+            Ok("second".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let stop = registry.stop(&id, Some(&board)).expect("known");
+        assert!(!stop.was_live, "nothing was running");
+        assert!(board.take_retracted(resume));
+        assert!(
+            matches!(
+                registry.post_notice(&id, &board, Some("second".into())),
+                NoticePost::Posted(Some(_))
+            ),
+            "the run's completion is still owed"
+        );
     }
 
     fn snapshot(state: AgentState, calls: &[&str]) -> AgentSnapshot {
