@@ -155,7 +155,7 @@ Read them before touching the loop, `term.rs`, or the wrap/markdown renderers.
 
 ## Testing
 
-`cargo test` runs the unit tests (around 5,300, in `#[cfg(test)]` modules beside
+`cargo test` runs the unit tests (around 5,500, in `#[cfg(test)]` modules beside
 the code they cover) plus the integration tests in `tests/` that are not
 `#[ignore]`d. It is offline and deterministic — keep it that way.
 
@@ -166,9 +166,9 @@ mistaken for a regression.
 
 | Suite | How | Run it when |
 | --- | --- | --- |
-| One module | `cargo test --lib app::tests::login` | after every edit (sub-second warm) |
-| All unit tests | `cargo test --lib` | once, before you call the change done |
-| Unit + integration | `cargo test` | the seam you touched spans crates (it rebuilds 22 test binaries, ~2 min) |
+| One module | `cargo test --lib app::tests::login` | after every edit (sub-second once built; a relink of a few seconds after an edit) |
+| All unit tests | `cargo test --lib` | a full unit pass mid-change, without rebuilding the integration binaries |
+| Unit + integration | `cargo test` | once, before you call the change done — it is the gate's test step (it rebuilds every integration binary, ~2 min) |
 | Smoke suite | `cargo build && scripts/smoke.sh` | you changed `src/tui/`, `term.rs`, or anything you can only see on screen |
 | Smoke suite's own tests | `bash scripts/smoke/selftest.sh` | you changed `scripts/smoke/lib.sh` or `scripts/smoke.sh` — the phase readers and the selector, in under a second |
 | Live provider tests | `OPENROUTER_API_KEY=… cargo test --test live_openrouter -- --ignored --nocapture` | you changed a provider, a wire format, or the context assembly |
@@ -204,7 +204,8 @@ The suite's own machinery is tests too: `bash scripts/smoke/selftest.sh` covers
 the phase readers (`smoke_phase_title`, `smoke_phase_tags`, …) and the query
 selector over fixture headers. Those readers decide *which* phases a query
 runs, so one that returns nothing runs the wrong suite instead of failing —
-which is exactly what a BSD-`sed` incompatibility did until it was caught.
+which is exactly what a BSD-`sed` incompatibility did until it was caught. CI
+runs it under GNU `sed` in the smoke job and under BSD `sed` on macOS.
 
 Each phase gets its own tmux server, config home, sessions root, `$HOME` and temp
 tree, and sanitizes the environment (every `*_API_KEY`, every `ALTER_ZERO_*`,
