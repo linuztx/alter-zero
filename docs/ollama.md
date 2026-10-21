@@ -1,7 +1,8 @@
 # Ollama as a provider
 
-Run local models — `/login` → **Use an API key** → **Ollama** → Enter (the
-default host is offered), then `/model` lists what `ollama pull` fetched.
+Run local models — `/login` → **Use a local model** → **Ollama** → Enter (the
+address in force is offered, and tested before it is saved —
+`docs/local-models.md`), then `/model` lists what `ollama pull` fetched.
 
 Two providers ship, over one **fourth wire format** (`wire_api = "ollama"`,
 after Chat Completions, Responses and Messages — `docs/chatgpt.md`,
@@ -125,20 +126,25 @@ CLI configures that row and nothing else — and the server you run reads
 `no_two_shipped_providers_read_the_same_key_variable` pins it for the whole
 file, not just this pair.
 
-### The `/login` host field
+### The `/login` server page
 
-`/login` → **Use an API key** → **Ollama** opens the key step as a **host
-field** rather than a secret one (`KeyKind::Host`, a field on
-`ProviderChoice` the boundary fills from `api_base_env`): the title asks
-`Enter your Ollama host`, the typed value shows **as typed** (a URL typed
-blind is a URL typed wrong), the empty field shows the default, and **Enter
-on the empty field saves the default** — `OLLAMA_HOST=http://127.0.0.1:11434`
-into `.env`, which is what nearly everyone wants and what makes the provider
-configured from then on. A typed host is saved verbatim in Ollama's grammar
-(`myhost:11434`, `0.0.0.0`, `https://host`); the config normalizes it, not the
-field. A secret field still refuses an empty Enter.
+`/login` → **Use a local model** → **Ollama** opens the local server page
+(`docs/local-models.md`) — it used to be a "host field" in the API-key list,
+which saved whatever was typed. The title asks `Enter your Ollama server
+URL`, the typed value shows **as typed** (a URL typed blind is a URL typed
+wrong), and the empty field shows the **address in force**: `OLLAMA_HOST`'s
+value when one is set, else the default. **Enter tests it before anything is
+saved** — the same `/api/tags` + `/api/show` listing `/model` reads — and only
+a pass writes `OLLAMA_HOST` into `.env`, which is what makes the provider
+configured from then on. A failure stays on the page in red, worded for what
+went wrong (`Nothing is answering at 127.0.0.1:11434 — is Ollama's server
+running?`), and a server behind a proxy that answers 401 asks for the bearer
+it wants, saved as `OLLAMA_HOST_API_KEY` beside the address. A typed host is
+saved verbatim in Ollama's grammar (`myhost:11434`, `0.0.0.0`,
+`https://host`); the config normalizes it, not the field.
 
-`ollama_cloud` is an ordinary key provider: its row asks for the key.
+`ollama_cloud` is an ordinary key provider: its row asks for the key, under
+**Use an API key**.
 
 ## The context window
 

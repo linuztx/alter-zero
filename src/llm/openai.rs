@@ -194,8 +194,13 @@ impl OpenAiClient {
         // An explicit-caching model (anthropic/qwen via an OpenRouter-style
         // aggregator) only caches marked blocks: mark a copy of the messages
         // with the ephemeral breakpoints. Implicit-caching providers (OpenAI,
-        // Venice, …) keep the untouched plain-string form.
-        let messages = if super::cache::needs_cache_breakpoints(&self.cfg.model) {
+        // Venice, …) keep the untouched plain-string form — and so does a
+        // keyless one: a server the user runs (LM Studio's `qwen/qwen3-8b`)
+        // spells its ids the aggregator's way but bills no prompt cache for
+        // a breakpoint to buy.
+        let messages = if !self.cfg.auth.key_optional()
+            && super::cache::needs_cache_breakpoints(&self.cfg.model)
+        {
             let mut marked = messages.into_owned();
             super::cache::apply_cache_breakpoints(&mut marked);
             Cow::Owned(marked)
@@ -477,7 +482,9 @@ impl OpenAiClient {
     /// as it did — except on the Ollama wire, whose failures are mostly about
     /// the *machine* (the server not running, a model not pulled, a
     /// capability the model lacks) and say so in words a user can act on
-    /// (`docs/ollama.md`).
+    /// (`docs/ollama.md`), and for a keyless server on this machine that
+    /// refused the connection, which is a server to start
+    /// (`docs/local-models.md`).
     fn explain(&self, error: LlmError) -> LlmError {
         if self.cfg.wire_api == super::WireApi::Ollama {
             return match error {
@@ -513,6 +520,19 @@ impl OpenAiClient {
                 }
                 other => other,
             };
+        }
+        // A keyless server on this machine that refuses the connection is
+        // not running (LM Studio closed, a llama.cpp server not started):
+        // the `/login` test's sentence on the bounded retry, as the Ollama
+        // wire's advice above, rather than a wait for the internet. A keyed
+        // provider on `localhost` is a forwarding proxy, and keeps the wait
+        // (`docs/offline.md`).
+        if self.cfg.auth.key_optional()
+            && let LlmError::Unreachable { message, .. } = &error
+            && let Some(advice) =
+                super::local::refused_advice(&self.cfg.provider_name, &self.base_url(None), message)
+        {
+            return LlmError::Http(advice);
         }
         let LlmError::Api { status, body } = &error else {
             return error;
@@ -1780,6 +1800,22 @@ mod tests {
     }
 
     #[test]
+    fn a_keyless_servers_publisher_model_id_gets_no_cache_breakpoints() {
+        // LM Studio names its models `publisher/model` — `qwen/qwen3-8b` is
+        // the aggregator spelling the sniff reads as explicit caching. A
+        // server the user runs bills no prompt cache for a breakpoint to buy,
+        // so its messages keep the plain form (docs/local-models.md).
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::OptionalKey;
+        cfg.api_base = "http://127.0.0.1:1234/v1".to_string();
+        cfg.model = "qwen/qwen3-8b".to_string();
+        let p = OpenAiClient::new(cfg)
+            .build_payload(&[ChatMessage::system("persona"), ChatMessage::user("hi")]);
+        assert_eq!(p["messages"][0]["content"], json!("persona"), "{p}");
+        assert_eq!(p["messages"][1]["content"], json!("hi"), "{p}");
+    }
+
+    #[test]
     fn payload_leaves_messages_plain_for_implicit_caching_models() {
         // OpenAI/Venice-style models cache automatically — their messages
         // stay the classic bare-string form, byte-identical to before.
@@ -2068,6 +2104,41 @@ mod tests {
         remote.wire_api = super::super::WireApi::Ollama;
         remote.api_base = "https://ollama.com".to_string();
         let kept = OpenAiClient::new(remote).explain(unreachable("ollama.com"));
+        assert!(matches!(kept, LlmError::Unreachable { .. }), "{kept:?}");
+    }
+
+    #[test]
+    fn a_refused_local_keyless_server_is_advice_but_a_proxy_or_a_remote_one_is_waited_for() {
+        // docs/offline.md: LM Studio closed is a server to start, said the
+        // way the /login test says it, on the bounded retry. The same server
+        // on another machine is the network, and a keyed provider on
+        // localhost is a forwarding proxy that comes back by itself (smoke
+        // Phase 129): both keep the wait.
+        let unreachable = |host: &str| LlmError::Unreachable {
+            host: host.to_string(),
+            message: "client error (Connect): tcp connect error: Connection refused (os error 111)"
+                .to_string(),
+        };
+        let keyless = |base: &str| {
+            let mut cfg = ModelConfig::fallback();
+            cfg.provider_name = "LM Studio".to_string();
+            cfg.auth = crate::llm::AuthScheme::OptionalKey;
+            cfg.api_base = base.to_string();
+            cfg
+        };
+        let explained = OpenAiClient::new(keyless("http://127.0.0.1:1234/v1"))
+            .explain(unreachable("127.0.0.1:1234"));
+        assert!(
+            matches!(&explained, LlmError::Http(advice)
+                if advice == "Nothing is answering at 127.0.0.1:1234 — is LM Studio's server running?"),
+            "{explained:?}"
+        );
+        let remote = OpenAiClient::new(keyless("http://gpu-box:1234/v1"))
+            .explain(unreachable("gpu-box:1234"));
+        assert!(matches!(remote, LlmError::Unreachable { .. }), "{remote:?}");
+        let mut proxy = ModelConfig::fallback();
+        proxy.api_base = "http://127.0.0.1:8080/v1".to_string();
+        let kept = OpenAiClient::new(proxy).explain(unreachable("127.0.0.1:8080"));
         assert!(matches!(kept, LlmError::Unreachable { .. }), "{kept:?}");
     }
 

@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, KeyKind, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
+    FileSearch, LocalChoice, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
     SubscriptionChoice,
 };
 
@@ -421,7 +421,6 @@ fn login_choices() -> Vec<ProviderChoice> {
             name: "OpenRouter".into(),
             env_var: "OPENROUTER_API_KEY".into(),
             configured: true,
-            key_kind: KeyKind::Secret,
             description: String::new(),
             key_url: String::new(),
         },
@@ -430,29 +429,37 @@ fn login_choices() -> Vec<ProviderChoice> {
             name: "Together AI".into(),
             env_var: "TOGETHER_API_KEY".into(),
             configured: false,
-            key_kind: KeyKind::Secret,
             description: String::new(),
             key_url: String::new(),
         },
     ]
 }
 
-/// A host-configured provider row — Ollama's, whose `/login` field asks for
-/// where the server is rather than a secret (`docs/ollama.md`). Kept out of
-/// [`login_choices`] so the provider-step geometry the layout tests pin
-/// stays two rows.
-pub(super) fn host_choice() -> ProviderChoice {
-    ProviderChoice {
-        id: "ollama".into(),
-        name: "Ollama".into(),
-        env_var: "OLLAMA_HOST".into(),
-        configured: false,
-        key_kind: KeyKind::Host {
-            default: "http://127.0.0.1:11434".into(),
+/// The local server rows (`docs/local-models.md`): LM Studio and Ollama,
+/// each saving its address under a variable of its own.
+pub(super) fn login_locals() -> Vec<LocalChoice> {
+    vec![
+        LocalChoice {
+            id: "lmstudio".into(),
+            name: "LM Studio".into(),
+            description: "Open models running in LM Studio on your own machine.".into(),
+            install_url: "https://lmstudio.ai/download".into(),
+            configured: false,
+            host_env: Some("LMSTUDIO_HOST".into()),
+            host: "http://127.0.0.1:1234".into(),
+            token_env: "LM_API_TOKEN".into(),
         },
-        description: String::new(),
-        key_url: String::new(),
-    }
+        LocalChoice {
+            id: "ollama".into(),
+            name: "Ollama".into(),
+            description: "Open models running locally on your own machine.".into(),
+            install_url: "https://ollama.com/download".into(),
+            configured: true,
+            host_env: Some("OLLAMA_HOST".into()),
+            host: "http://127.0.0.1:11434".into(),
+            token_env: "OLLAMA_HOST_API_KEY".into(),
+        },
+    ]
 }
 
 /// The row a search-line picker's `❯` search line sits on in its whole and
@@ -546,7 +553,12 @@ pub(super) fn assert_caret_on_search_line(app: &App, page: &[String], width: u16
 /// The `/login` flow parked on its root (the method step).
 pub(super) fn login_app() -> App {
     let mut app = App::new();
-    app.open_key_onboarding(login_choices(), login_subscriptions(), "~/.alter-zero/.env");
+    app.open_key_onboarding(
+        login_choices(),
+        login_subscriptions(),
+        login_locals(),
+        "~/.alter-zero/.env",
+    );
     app
 }
 
@@ -576,7 +588,12 @@ pub(super) fn login_app_signin_method() -> App {
         configured: false,
         kinds: vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
     });
-    app.open_key_onboarding(login_choices(), subscriptions, "~/.alter-zero/.env");
+    app.open_key_onboarding(
+        login_choices(),
+        subscriptions,
+        login_locals(),
+        "~/.alter-zero/.env",
+    );
     let onboarding = app.key_onboarding.as_mut().unwrap();
     onboarding.step = KeyStep::SigninMethod;
     onboarding.chosen_subscription = Some(1);

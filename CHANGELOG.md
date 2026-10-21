@@ -12,6 +12,58 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/login` can connect a local model, and tests it before saving.** `/login`
+  now offers three ways in: a subscription, an API key, or **Use a local
+  model**. The third lists the model servers you run yourself: Ollama, LM
+  Studio, and any keyless server in your own `providers.toml`. Pick one and
+  enter its address. `localhost:1234` is enough, and an empty field uses the
+  address already in force. Enter tests the connection by listing the
+  server's models the way `/model` will, and nothing is saved until the test
+  passes. If the server isn't running, the host is mistyped, the port answers
+  as something else or the certificate isn't trusted, the page says so and
+  what to check, and you can fix the address and try again. A server set to
+  require a token asks for it on the same page. A passing test saves the
+  address, and any token, to `~/.alter-zero/.env` and says how many models it
+  found. If your shell exports that variable with another value, the
+  exported one takes precedence, so instead of confirming, the page tells you
+  which variable to unset (`docs/local-models.md`).
+- **LM Studio is a built-in provider.** It connects through LM Studio's
+  OpenAI-compatible server. Its models are listed from LM Studio's own
+  catalogue, so `/model` shows each model's name, the context length it is
+  loaded with and whether it accepts images, and leaves out embedding models.
+  A server set to require authentication takes its token from `LM_API_TOKEN`
+  (`docs/local-models.md`).
+
+### Changed
+
+- **The local Ollama moved from Use an API key to Use a local model.** It
+  never took a key. Its page now tests the address before saving it, and an
+  empty Enter re-tests the address already saved instead of resetting it to
+  the default. Ollama Cloud, which does take a key, stays under Use an API
+  key.
+- **`/model` with nothing set up now says `No provider set up yet — run
+  /login to add one`**, instead of asking for an API key that a local model
+  doesn't use. `/login`'s entry in the `/` palette and the offline demo's
+  closing line now name all three ways in.
+- **A `[providers.lmstudio]` block in your own `providers.toml`** (as the
+  0.15.0 docs suggested) now adjusts the built-in LM Studio instead of adding
+  a second one. Connect it once under `/login` → Use a local model, or delete
+  the block.
+- **A stopped local server is reported instead of waited out.** When a
+  keyless server on this machine refuses the connection (LM Studio, or a
+  llama.cpp or vLLM block in your own `providers.toml`), the turn now ends
+  in seconds with `Nothing is answering at 127.0.0.1:1234 — is LM Studio's
+  server running?`. It used to show `Waiting for internet…`, which was
+  wrong. A stopped Ollama already behaved this way. A provider that takes a
+  key keeps the wait, even on localhost (`docs/offline.md`).
+- **Keyless providers' requests no longer carry prompt-cache markers.** A
+  model named `qwen/…` or `Qwen/…` on a server you run (LM Studio's
+  `qwen/qwen3-8b`, a vLLM repo id) was sent OpenRouter's `cache_control`
+  breakpoints, which only a hosted service that bills for caching uses
+  (`docs/prompt-caching.md`).
+
 ### Fixed
 
 - **Code generation retains less RAM.** The warm Ctrl+O transcript packs its

@@ -119,6 +119,8 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
     let id = record
         .get("id")
         .or_else(|| record.get("slug"))
+        // LM Studio's native listing names a model by its `key`.
+        .or_else(|| record.get("key").filter(|_| is_lmstudio_record(record)))
         .and_then(serde_json::Value::as_str)?;
     if id.is_empty() {
         return None;
@@ -193,6 +195,36 @@ fn service_tiers_of(record: &serde_json::Value) -> Vec<ServiceTier> {
     } else {
         Vec::new()
     }
+}
+
+/// Is this a record of **LM Studio's** native listing (`GET /api/v1/models`,
+/// `docs/local-models.md`)? Its shape is its own: a model is named by its
+/// `key`, and every record lists the instances loaded from it — the pair no
+/// other provider's list sends.
+fn is_lmstudio_record(record: &serde_json::Value) -> bool {
+    record.get("key").is_some_and(serde_json::Value::is_string)
+        && record
+            .get("loaded_instances")
+            .is_some_and(serde_json::Value::is_array)
+}
+
+/// The context length an LM Studio model is **loaded** with — the window the
+/// server actually holds, which is the load setting (often 4096) and not the
+/// most the model could take. `None` for a model not loaded (the first
+/// request loads it, at its saved setting), or a record that is not LM
+/// Studio's.
+fn lmstudio_loaded_context(record: &serde_json::Value) -> Option<u64> {
+    if !is_lmstudio_record(record) {
+        return None;
+    }
+    record
+        .get("loaded_instances")?
+        .as_array()?
+        .first()?
+        .get("config")?
+        .get("context_length")?
+        .as_u64()
+        .filter(|&n| n > 0)
 }
 
 /// One record's `capabilities` object, when it is GitHub Copilot's — the
@@ -275,6 +307,14 @@ fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
 /// omit it), and a record with no `capabilities` object at all isn't
 /// Copilot's — every other provider's list passes untouched.
 fn is_callable(record: &serde_json::Value) -> bool {
+    // LM Studio lists its embedding models beside the ones that chat — and
+    // ships one with every install (`docs/local-models.md`).
+    if is_lmstudio_record(record) {
+        return matches!(
+            record.get("type").and_then(serde_json::Value::as_str),
+            None | Some("llm" | "vlm")
+        );
+    }
     // The ChatGPT backend marks a record it does not want offered at all
     // (`docs/chatgpt.md`). `hide` only means "not a headline model" — it is
     // still selectable, so only `none` is filtered.
@@ -323,6 +363,13 @@ const DEFAULT_EFFORTS: [ReasoningEffort; 3] = [
 ///
 /// `None` when the record advertises no reasoning at all.
 fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> {
+    // LM Studio names its own reasoning switch (`capabilities.reasoning`),
+    // which the chat wire's `reasoning` parameter does not drive — a Ctrl+T
+    // mode the server would ignore is a footer that lies
+    // (`docs/local-models.md`).
+    if is_lmstudio_record(record) {
+        return None;
+    }
     if let Some(caps) = anthropic_capabilities(record) {
         return anthropic_reasoning(caps);
     }
@@ -487,6 +534,11 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
 /// `None` when the record says nothing either way (a bare OpenAI-style list) —
 /// the backend then attaches images optimistically, exactly as before.
 fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
+    // LM Studio's own `capabilities.vision`, an explicit bool on every model
+    // that chats.
+    if is_lmstudio_record(record) {
+        return record.get("capabilities")?.get("vision")?.as_bool();
+    }
     // Anthropic's own `capabilities.image_input.supported`. Every leaf here
     // is present with an explicit `true`/`false`, so absence of the key is
     // "no vision" rather than "unknown".
@@ -552,6 +604,11 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
 /// `None` when the record doesn't say, or reports a non-positive size (a
 /// meaningless window would divide the gauge by zero). See `docs/compact.md`.
 fn context_window_of(record: &serde_json::Value) -> Option<u64> {
+    // An LM Studio model that is loaded is served at its load setting, not
+    // its maximum; one that is not falls through to `max_context_length`.
+    if let Some(loaded) = lmstudio_loaded_context(record) {
+        return Some(loaded);
+    }
     let raw = record
         .get("context_length")
         .and_then(serde_json::Value::as_u64)
@@ -735,33 +792,48 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         || models_endpoint(cfg),
         |base| models_url(base, cfg.auth, cfg.wire_api),
     );
-    let mut req = client.get(&url).header("accept", "application/json");
-    if let Some(key) = &auth.bearer {
-        req = req.bearer_auth(key);
-    }
-    for (k, v) in &cfg.extra_headers {
-        req = req.header(k, v);
-    }
-    for (k, v) in &auth.headers {
-        req = req.header(k, v);
-    }
-    let mut resp = req.send().map_err(|e| LlmError::transport(&e))?;
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
+    let get = |url: &str| -> Result<String> {
+        let mut req = client.get(url).header("accept", "application/json");
+        if let Some(key) = &auth.bearer {
+            req = req.bearer_auth(key);
+        }
+        for (k, v) in &cfg.extra_headers {
+            req = req.header(k, v);
+        }
+        for (k, v) in &auth.headers {
+            req = req.header(k, v);
+        }
+        let mut resp = req.send().map_err(|e| LlmError::transport(&e))?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let mut body = String::new();
+            let _ = (&mut resp)
+                .take(MODELS_BODY_MAX_BYTES)
+                .read_to_string(&mut body);
+            return Err(LlmError::Api { status, body });
+        }
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
         let mut body = String::new();
-        let _ = (&mut resp)
+        (&mut resp)
             .take(MODELS_BODY_MAX_BYTES)
-            .read_to_string(&mut body);
-        return Err(LlmError::Api { status, body });
-    }
-    if cancel.is_cancelled() {
-        return Err(LlmError::Cancelled);
-    }
-    let mut body = String::new();
-    (&mut resp)
-        .take(MODELS_BODY_MAX_BYTES)
-        .read_to_string(&mut body)
-        .map_err(|e| LlmError::Http(e.to_string()))?;
+            .read_to_string(&mut body)
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+        Ok(body)
+    };
+    // A listing of its own that the server does not have — LM Studio before
+    // 0.4 answers its native `/api/v1/models` with a 404 — stands down for
+    // the chat base's `/models`, which every chat-completions server answers
+    // (`docs/local-models.md`).
+    let chat_listing = (cfg.wire_api == super::WireApi::Chat
+        && auth.base.is_none()
+        && cfg.api_model_base.trim_end_matches('/') != cfg.api_base.trim_end_matches('/'))
+    .then(|| models_url(&cfg.api_base, cfg.auth, cfg.wire_api));
+    let body = match (get(&url), chat_listing) {
+        (Err(LlmError::Api { status: 404, .. }), Some(chat)) => get(&chat)?,
+        (listed, _) => listed?,
+    };
     if cfg.wire_api == super::WireApi::Ollama {
         let base = auth
             .base
@@ -2158,5 +2230,147 @@ mod tests {
         assert_eq!(support.efforts, DEFAULT_EFFORTS.to_vec());
         assert!(support.can_disable);
         assert_eq!(support.default_effort, None);
+    }
+
+    // --- LM Studio's native listing (docs/local-models.md) ---
+
+    /// LM Studio's `GET /api/v1/models` in the shape its docs show: a
+    /// language model loaded at 4096 tokens, and the embedding model every
+    /// install ships with.
+    const LMSTUDIO_MODELS: &str = r#"{"models":[
+      {"type":"llm","publisher":"qwen","key":"qwen/qwen3-8b","display_name":"Qwen3 8B",
+       "architecture":"qwen3","quantization":{"name":"Q4_K_M","bits_per_weight":4},
+       "size_bytes":5027783488,"params_string":"8B",
+       "loaded_instances":[{"id":"qwen/qwen3-8b","config":{"context_length":4096,"eval_batch_size":512}}],
+       "max_context_length":131072,"format":"gguf",
+       "capabilities":{"vision":false,"trained_for_tool_use":true,
+         "reasoning":{"allowed_options":["off","on"],"default":"on"}},
+       "description":null},
+      {"type":"embedding","publisher":"nomic-ai","key":"text-embedding-nomic-embed-text-v1.5",
+       "display_name":"Nomic Embed Text v1.5","quantization":{"name":"Q4_K_M","bits_per_weight":4},
+       "size_bytes":84106624,"params_string":null,"loaded_instances":[],
+       "max_context_length":2048,"format":"gguf"}]}"#;
+
+    #[test]
+    fn an_lm_studio_listing_offers_its_language_models_by_key() {
+        // LM Studio names a model by its `key` — there is no `id` — and lists
+        // embedding models beside the ones that chat; picking one of those
+        // would fail every turn.
+        let models = parse_models(LMSTUDIO_MODELS, "lmstudio").unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["qwen/qwen3-8b"]);
+        assert_eq!(models[0].display_name, "Qwen3 8B");
+        assert_eq!(models[0].vision, Some(false));
+    }
+
+    #[test]
+    fn a_loaded_lm_studio_model_reports_the_window_it_was_loaded_with() {
+        // LM Studio serves a model at the context length it was loaded with,
+        // not the most it could hold — and 4096 is a common load setting. The
+        // gauge reads what the server holds.
+        let models = parse_models(LMSTUDIO_MODELS, "lmstudio").unwrap();
+        assert_eq!(models[0].context, Some(4096));
+    }
+
+    #[test]
+    fn an_unloaded_lm_studio_model_reports_its_maximum_window() {
+        let body = LMSTUDIO_MODELS.replace(
+            r#"[{"id":"qwen/qwen3-8b","config":{"context_length":4096,"eval_batch_size":512}}]"#,
+            "[]",
+        );
+        let models = parse_models(&body, "lmstudio").unwrap();
+        assert_eq!(models[0].context, Some(131_072));
+    }
+
+    #[test]
+    fn an_lm_studio_record_says_whether_the_model_sees() {
+        let body = LMSTUDIO_MODELS.replace(r#""vision":false"#, r#""vision":true"#);
+        let models = parse_models(&body, "lmstudio").unwrap();
+        assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn an_lm_studio_model_offers_no_thinking_mode_of_ours() {
+        // LM Studio names its own reasoning switch, which the chat wire's
+        // `reasoning` parameter does not drive — so Ctrl+T offers nothing
+        // rather than a mode the server would ignore (docs/local-models.md).
+        let models = parse_models(LMSTUDIO_MODELS, "lmstudio").unwrap();
+        assert_eq!(models[0].reasoning, None);
+    }
+
+    /// A loopback server answering each request by its path through
+    /// `answer` (a status line and a body), and logging the paths asked for.
+    fn serve(
+        answer: fn(&str) -> (&'static str, &'static str),
+    ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_err() {
+                    continue;
+                }
+                loop {
+                    let mut header = String::new();
+                    match reader.read_line(&mut header) {
+                        Ok(n) if n > 0 && header != "\r\n" => {}
+                        _ => break,
+                    }
+                }
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let (status, body) = answer(&path);
+                let mut stream = reader.into_inner();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (port, seen)
+    }
+
+    #[test]
+    fn a_server_without_its_native_listing_is_listed_from_the_chat_base() {
+        // LM Studio before 0.4 has no `/api/v1`: its native listing answers
+        // 404, and the OpenAI-compatible `/v1/models` every version serves
+        // stands in — ids alone, but a picker with models in it.
+        let (port, seen) = serve(|path| match path {
+            "/v1/models" => (
+                "200 OK",
+                r#"{"object":"list","data":[{"id":"qwen3-8b","object":"model"}]}"#,
+            ),
+            _ => (
+                "404 Not Found",
+                r#"{"error":"Unexpected endpoint or method."}"#,
+            ),
+        });
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "lmstudio".to_string();
+        cfg.auth = crate::llm::AuthScheme::OptionalKey;
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_model_base = format!("http://127.0.0.1:{port}/api/v1");
+        let models = fetch_models(&cfg, &CancelToken::new()).expect("listed");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["qwen3-8b"]);
+        assert_eq!(*seen.lock().unwrap(), ["/api/v1/models", "/v1/models"]);
+    }
+
+    #[test]
+    fn a_listing_at_the_chat_base_that_answers_404_is_asked_once() {
+        let (port, seen) = serve(|_| ("404 Not Found", "{}"));
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_model_base = cfg.api_base.clone();
+        let err = fetch_models(&cfg, &CancelToken::new()).unwrap_err();
+        assert!(matches!(err, LlmError::Api { status: 404, .. }), "{err:?}");
+        assert_eq!(*seen.lock().unwrap(), ["/v1/models"]);
     }
 }

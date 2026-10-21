@@ -3,8 +3,9 @@
 The providers the app ships with live in the repository's `providers.toml`,
 embedded in the binary. Anything else that speaks an OpenAI-compatible API —
 a hosted service like Groq, DeepSeek, Mistral or Together, a company proxy,
-or a model server on your own machine like LM Studio, llama.cpp or vLLM — is
-added in a file of the user's own: `~/.alter-zero/providers.toml`
+or a model server on your own machine like llama.cpp or vLLM — is
+added in a file of the user's own (Ollama and LM Studio ship built in,
+`docs/local-models.md`): `~/.alter-zero/providers.toml`
 (`{config_home}/providers.toml`, so `ALTER_ZERO_CONFIG_DIR` moves it with the
 rest of the state). The block shape is the shipped file's, and the file is
 **laid over** the built-in providers: it adds to them, and it can change one
@@ -130,8 +131,8 @@ is for.
 | `description` | one line saying what the provider is — `/login`'s key step, and its type-to-search |
 | `api_key_url` | where its keys are made, linked on that step |
 | `api_key_env` | the variable the key is read from; `<ID>_API_KEY` by default |
-| `api_model_base` | where the model list is read from, when not the chat base |
-| `api_base_env` | a variable whose value replaces the chat base (`OLLAMA_HOST`'s role) |
+| `api_model_base` | where the model list is read from, when not the chat base — a URL, or a path **relative** to the chat base (`../api/v1`, `./x`, `/x`), resolved the way a browser resolves a link, so it follows the chat base to any host the base is pointed at (LM Studio's native listing, `docs/local-models.md`) |
+| `api_base_env` | a variable whose value replaces the chat base (`OLLAMA_HOST`'s role) — a bare host in it (`gpu-box:8080`) is a server, completed from the block's own base: its scheme, its port and its API path; a value with a path is the base itself |
 | `extra_headers` | a table of headers sent with every request |
 | `auth` | how it authenticates: a pasted key by default, `optional_key` for a server that needs none, or one of the sign-ins (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`) |
 | `wire_api` | the request shape: Chat Completions by default, or `responses`, `anthropic`, `ollama` |
@@ -139,35 +140,45 @@ is for.
 
 ## Servers that take no key
 
-`auth = "optional_key"`: a stored key rides as a bearer, and none is fine. A
-key-optional provider that names **no host variable** is configured by its
-block alone — the file pointing at it is the configuration, so `/model` lists
-it without a trip through `/login` (`Provider::configured_by_definition`):
+`auth = "optional_key"`: a stored key rides as a bearer, and none is fine. Such
+a provider is a **local server**, listed under `/login` → **Use a local
+model** beside the shipped Ollama and LM Studio rather than under API keys,
+and its page tests the connection before saving anything
+(`docs/local-models.md`). A key-optional provider that names **no host
+variable** is configured by its block alone — the file pointing at it is the
+configuration, so `/model` lists it without a trip through `/login`
+(`Provider::configured_by_definition`), and its page only tests it:
 
 ```toml
-[providers.lmstudio]
-name = "LM Studio"
+[providers.llamacpp]
+name = "llama.cpp"
 auth = "optional_key"
 
-[providers.lmstudio.kwargs]
-api_base = "http://localhost:1234/v1"
+[providers.llamacpp.kwargs]
+api_base = "http://localhost:8080/v1"
 ```
 
 | server | `kwargs.api_base` |
 | --- | --- |
-| LM Studio | `http://localhost:1234/v1` |
 | llama.cpp (`llama-server`) | `http://localhost:8080/v1` |
 | vLLM | `http://localhost:8000/v1` |
 
-To have `/login` ask for the host instead, name a variable for it —
-`api_base_env = "LMSTUDIO_HOST"`. The row then offers a host field rather than
-a key one, an empty Enter saving the block's base as the default, and the
-provider counts as configured once the variable resolves: Ollama's rule
-(`docs/ollama.md`). No shipped provider is configured by its block alone — a
-test pins it — because the shipped `ollama` is for the users who run a server,
-and every `/model` open would otherwise fetch from one most users don't. A
-server of the user's own that isn't running costs `/model` a
-`· LM Studio unavailable` beside its counter, nothing more.
+To have `/login` ask for the address instead, name a variable for it —
+`api_base_env = "LLAMACPP_HOST"`. The page then offers an address field over
+the block's own server, tests what is typed (a bare `gpu-box:8080` is
+completed to the block's `/v1`), saves it to that variable once the test
+passes, and the provider counts as configured once the variable resolves:
+Ollama's rule (`docs/ollama.md`). No shipped provider is configured by its
+block alone — a test pins it — because the shipped `ollama` and `lmstudio`
+are for the users who run those servers, and every `/model` open would
+otherwise fetch from one most users don't. A server of the user's own that
+isn't running costs `/model` a `· llama.cpp unavailable` beside its counter,
+nothing more.
+
+LM Studio itself no longer needs a block: it ships, with its native listing
+and its `LM_API_TOKEN` (`docs/local-models.md`). A `[providers.lmstudio]`
+block written from this page's earlier example now **patches** the shipped
+one — connect it once under Use a local model, or delete the block.
 
 ## Fields a strict server refuses
 
@@ -202,7 +213,9 @@ The picker lists `{api_model_base or api_base}/models`. Both shapes servers
 answer with parse — OpenAI's `{"data": […]}` envelope and the bare array
 Together AI returns — and each record's facts are read per record, whichever
 spelling the server uses: the context window from `context_length`, vLLM's
-`max_model_len`, Mistral's and LM Studio's `max_context_length`, or
+`max_model_len`, Mistral's (and LM Studio's) `max_context_length` — LM
+Studio's native records naming the window a loaded model was loaded with
+first (`docs/local-models.md`) — or
 `context_window` (gauged at 95%, the ChatGPT backend's rule); image input and
 reasoning from the shapes `docs/llm.md` lists. A fact no record states stays
 unknown — the footer's gauge hides and auto-compaction stays off
@@ -237,7 +250,7 @@ in:
 | `drop_params` naming `model` or `stream` | `providers.groq.drop_params cannot drop "stream" — every request needs it` | the rest of the list applies |
 | a value of the wrong type | ``providers.groq: invalid type: string "x", expected a map, in `extra_headers` — skipped`` | the block is skipped |
 | no chat base | `providers.groq has no api_base under [providers.groq.kwargs] — skipped` | the same |
-| a base that is no URL | `providers.groq.kwargs.api_base "api.groq.com/openai/v1" is not an http(s) URL — skipped` | the same (an Ollama-wire host like `gpu-box:11434` is exempt) |
+| a base that is no URL | `providers.groq.kwargs.api_base "api.groq.com/openai/v1" is not an http(s) URL — skipped` | the same (an Ollama-wire host like `gpu-box:11434` is exempt, and so is a relative `api_model_base` like `../api/v1`) |
 | a block that is no table | `providers.groq is not a table — skipped` | the same |
 
 A broken block that patched a shipped provider ends `— kept the built-in`

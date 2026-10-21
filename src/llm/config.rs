@@ -68,11 +68,15 @@ pub enum AuthScheme {
     /// value the provider file uses. A test pins it for the same silent
     /// degradation reason [`Self::AnthropicConsole`]'s does.
     ClineAccount,
-    /// A key that is **accepted but not required**: Ollama's local server
-    /// takes no credential at all, while a hosted one (or a proxy in front
-    /// of one) takes an ordinary bearer — so a stored key rides as
-    /// `Authorization: Bearer` exactly as [`Self::ApiKey`]'s does, and none
-    /// stored is not a reason to fall back to the dummy. See `docs/ollama.md`.
+    /// A key that is **accepted but not required** — a model server the user
+    /// runs. Ollama's or LM Studio's local server takes no credential unless
+    /// it was set to, while a hosted one (or a proxy in front of one) takes
+    /// an ordinary bearer — so a stored key rides as `Authorization: Bearer`
+    /// exactly as [`Self::ApiKey`]'s does, and none stored is not a reason to
+    /// fall back to the dummy. Such a provider is `/login`'s **Use a local
+    /// model** list, its requests carry no cache breakpoints, and a refusal
+    /// from this machine is advice rather than the offline wait. See
+    /// `docs/ollama.md` and `docs/local-models.md`.
     OptionalKey,
     /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
     /// scheme every OpenAI-compatible provider uses. The **fallback** for an
@@ -249,16 +253,18 @@ impl Provider {
             .unwrap_or_else(|| default_key_env(id))
     }
 
-    /// Where the picker lists models from: `api_model_base` if set, else the
-    /// chat `api_base`. Trailing slash trimmed.
+    /// Where the picker lists models from: `api_model_base` if set — resolved
+    /// against the chat base when it is relative (`../api/v1`, `./x`, `/x`)
+    /// — else the chat `api_base`. Trailing slash trimmed.
     #[must_use]
     pub fn models_base(&self) -> String {
-        let base = self
-            .api_model_base
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&self.kwargs.api_base);
-        base.trim_end_matches('/').to_string()
+        match self.api_model_base.as_deref().filter(|s| !s.is_empty()) {
+            Some(relative) if is_relative_base(relative) => {
+                resolve_relative_base(&self.kwargs.api_base, relative)
+            }
+            Some(explicit) => explicit.trim_end_matches('/').to_string(),
+            None => self.kwargs.api_base.trim_end_matches('/').to_string(),
+        }
     }
 
     /// Is this provider configured by its definition alone? One whose key is
@@ -467,16 +473,24 @@ impl ProvidersFile {
             (WireApi::Ollama, base) => {
                 super::ollama::host_url(base.unwrap_or(&provider.kwargs.api_base))
             }
-            (_, Some(base)) => base.trim_end_matches('/').to_string(),
+            // Any other wire: a bare host is a server, completed from the
+            // file's own base — `localhost:1234` is LM Studio's `/v1` there —
+            // and a URL with a path is the base itself (docs/local-models.md).
+            (_, Some(base)) => super::local::base_from_host(base, &provider.kwargs.api_base),
             (_, None) => provider.kwargs.api_base.clone(),
         };
         // The listing follows the chat base wherever the file doesn't name a
-        // separate one — an overridden host lists from that host too.
+        // separate one — an overridden host lists from that host too — and a
+        // relative one is resolved against it, so it follows the chat base
+        // to any host it is pointed at.
         let api_model_base = match provider
             .api_model_base
             .as_deref()
             .filter(|base| !base.is_empty())
         {
+            Some(relative) if is_relative_base(relative) => {
+                resolve_relative_base(&api_base, relative)
+            }
             Some(explicit) if override_base.is_none() => explicit.trim_end_matches('/').to_string(),
             _ => api_base.trim_end_matches('/').to_string(),
         };
@@ -593,12 +607,14 @@ fn layer_block(
         return None;
     }
     // Ollama's bases are hosts in its own grammar (`gpu-box:11434`,
-    // `docs/ollama.md`); every other wire needs the URL itself.
+    // `docs/ollama.md`); every other wire needs the URL itself — or, for the
+    // listing, a path relative to the chat base (`../api/v1`).
     if provider.wire_api != WireApi::Ollama {
-        let bases = [
-            ("kwargs.api_base", Some(base)),
-            ("api_model_base", provider.api_model_base.as_deref()),
-        ];
+        let listing = provider
+            .api_model_base
+            .as_deref()
+            .filter(|listing| !is_relative_base(listing.trim()));
+        let bases = [("kwargs.api_base", Some(base)), ("api_model_base", listing)];
         for (key, url) in bases {
             if let Some(url) = url.map(str::trim).filter(|url| !url.is_empty())
                 && !is_http_url(url)
@@ -658,6 +674,28 @@ const KEPT_IN_USE: &str = "kept the one in use";
 fn is_http_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Is an `api_model_base` written **relative** to the chat base — `../api/v1`,
+/// `./models-api`, `/api/v1`? Only those spellings: a host that lost its
+/// scheme (`lab:1234/api/v1`) is no URL at all, and is said to be.
+fn is_relative_base(base: &str) -> bool {
+    base.starts_with('.') || base.starts_with('/')
+}
+
+/// A relative listing base resolved against the chat base the way a browser
+/// resolves a link, the chat base read as a directory — `../api/v1` against
+/// `http://127.0.0.1:1234/v1` is `http://127.0.0.1:1234/api/v1`, and under a
+/// reverse proxy's `https://proxy/lms/v1` it is `https://proxy/lms/api/v1`.
+/// A chat base that is no URL leaves the listing on the chat base itself.
+fn resolve_relative_base(chat_base: &str, relative: &str) -> String {
+    let directory = format!("{}/", chat_base.trim().trim_end_matches('/'));
+    url::Url::parse(&directory)
+        .and_then(|base| base.join(relative))
+        .map_or_else(
+            |_| chat_base.trim_end_matches('/').to_string(),
+            |url| url.as_str().trim_end_matches('/').to_string(),
+        )
 }
 
 /// Where a file that does not parse went wrong, as one row —
@@ -1572,6 +1610,107 @@ api_base = "http://127.0.0.1:11434"
     }
 
     #[test]
+    fn the_builtin_file_ships_lm_studio_as_a_local_server() {
+        // LM Studio's server, reached the way Ollama's is: no key needed, its
+        // address in a variable of its own — `/login` → Use a local model
+        // writes it (docs/local-models.md) — and LM Studio's own
+        // `LM_API_TOKEN` riding as a bearer when its server is set to require
+        // one.
+        let file = ProvidersFile::builtin();
+        let lmstudio = file.get("lmstudio").expect("shipped");
+        assert_eq!(lmstudio.name, "LM Studio");
+        assert_eq!(lmstudio.auth, AuthScheme::OptionalKey);
+        assert_eq!(
+            lmstudio.wire_api,
+            WireApi::Chat,
+            "its OpenAI-compatible /v1"
+        );
+        assert_eq!(lmstudio.key_env("lmstudio"), "LM_API_TOKEN");
+        assert_eq!(lmstudio.api_base_env.as_deref(), Some("LMSTUDIO_HOST"));
+        assert_eq!(lmstudio.kwargs.api_base, "http://127.0.0.1:1234/v1");
+        // The listing is LM Studio's native one, which carries each model's
+        // window and image input where `/v1/models` names ids alone — and it
+        // is relative, so it follows the chat base to whatever host that is.
+        assert_eq!(lmstudio.api_model_base.as_deref(), Some("../api/v1"));
+        assert_eq!(lmstudio.models_base(), "http://127.0.0.1:1234/api/v1");
+    }
+
+    #[test]
+    fn a_relative_listing_base_follows_the_chat_base_wherever_it_points() {
+        let file = ProvidersFile::builtin();
+        let at = |host: Option<&str>| {
+            file.model_config(&Selection {
+                provider_id: "lmstudio".to_string(),
+                model: "m".to_string(),
+                api_base: host.map(str::to_string),
+                ..Selection::default()
+            })
+            .expect("resolves")
+        };
+        let local = at(None);
+        assert_eq!(local.api_base, "http://127.0.0.1:1234/v1");
+        assert_eq!(local.api_model_base, "http://127.0.0.1:1234/api/v1");
+        let remote = at(Some("http://gpu-box:1234/v1"));
+        assert_eq!(remote.api_base, "http://gpu-box:1234/v1");
+        assert_eq!(remote.api_model_base, "http://gpu-box:1234/api/v1");
+        // Behind a reverse proxy's subpath, both keep its prefix.
+        let proxied = at(Some("https://proxy.example/lmstudio/v1"));
+        assert_eq!(proxied.api_base, "https://proxy.example/lmstudio/v1");
+        assert_eq!(
+            proxied.api_model_base,
+            "https://proxy.example/lmstudio/api/v1"
+        );
+    }
+
+    #[test]
+    fn a_bare_host_override_is_a_server_on_a_chat_completions_wire() {
+        // `/login` saves a local server's address as typed — `localhost:1234`,
+        // the way LM Studio's own server page shows it — so a bare host is
+        // completed from the file's base: its scheme, port and API path
+        // (`local::base_from_host`). A URL with a path is taken as typed.
+        let file = ProvidersFile::builtin();
+        let base = |host: &str| {
+            file.model_config(&Selection {
+                provider_id: "lmstudio".to_string(),
+                model: "m".to_string(),
+                api_base: Some(host.to_string()),
+                ..Selection::default()
+            })
+            .expect("resolves")
+        };
+        let typed = base("localhost:1234");
+        assert_eq!(typed.api_base, "http://localhost:1234/v1");
+        assert_eq!(typed.api_model_base, "http://localhost:1234/api/v1");
+        assert_eq!(base("gpu-box").api_base, "http://gpu-box:1234/v1");
+        assert_eq!(
+            base("https://lms.example.com/openai").api_base,
+            "https://lms.example.com/openai"
+        );
+    }
+
+    #[test]
+    fn a_listing_base_may_be_relative_to_the_chat_base() {
+        let (file, issues) = layer(
+            "[providers.lab]\nname = \"Lab\"\napi_model_base = \"../api/v1\"\n[providers.lab.kwargs]\napi_base = \"http://lab:1234/v1\"\n",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(
+            file.get("lab").unwrap().models_base(),
+            "http://lab:1234/api/v1"
+        );
+        // A bare host is still no URL at all: relative means `./`, `../` or
+        // `/`, never a host that lost its scheme.
+        let (file, issues) = layer(
+            "[providers.lab]\nname = \"Lab\"\napi_model_base = \"lab:1234/api/v1\"\n[providers.lab.kwargs]\napi_base = \"http://lab:1234/v1\"\n",
+        );
+        assert!(file.get("lab").is_none());
+        assert!(
+            issues.iter().any(|i| i.contains("is not an http(s) URL")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
     fn a_selections_base_override_is_normalized_for_the_ollama_wire() {
         // `OLLAMA_HOST` is spelled in Ollama's own grammar (`localhost:11434`,
         // `0.0.0.0`, `https://host`) and resolved at the boundary; the config
@@ -1804,15 +1943,15 @@ api_base = "https://proxy.example/v1"
         // A local server can be its base and nothing else: the id is the
         // label a `/login` row and the footer need.
         let (file, issues) =
-            layer("[providers.lmstudio.kwargs]\napi_base = \"http://localhost:1234/v1\"\n");
+            layer("[providers.llamacpp.kwargs]\napi_base = \"http://localhost:8080/v1\"\n");
         assert_eq!(issues, Vec::<String>::new());
-        assert_eq!(file.get("lmstudio").unwrap().name, "lmstudio");
+        assert_eq!(file.get("llamacpp").unwrap().name, "llamacpp");
         // A blank one is no name either.
         let (file, issues) = layer(
-            "[providers.lmstudio]\nname = \"  \"\n[providers.lmstudio.kwargs]\napi_base = \"http://localhost:1234/v1\"\n",
+            "[providers.llamacpp]\nname = \"  \"\n[providers.llamacpp.kwargs]\napi_base = \"http://localhost:8080/v1\"\n",
         );
         assert_eq!(issues, Vec::<String>::new());
-        assert_eq!(file.get("lmstudio").unwrap().name, "lmstudio");
+        assert_eq!(file.get("llamacpp").unwrap().name, "llamacpp");
     }
 
     #[test]
@@ -2207,25 +2346,27 @@ api_base = "https://api.groq.com/openai/v1"
 
     #[test]
     fn a_keyless_provider_naming_no_host_variable_is_configured_by_its_definition() {
-        // A local LM Studio / llama.cpp / vLLM server takes no key and has no
-        // host variable to resolve: the file pointing at it is the
+        // A local llama.cpp / vLLM server of the user's own takes no key and
+        // has no host variable to resolve: the file pointing at it is the
         // configuration, so `/model` lists it without a trip through `/login`.
         let (file, issues) = layer(
             r#"
-[providers.lmstudio]
-name = "LM Studio"
+[providers.llamacpp]
+name = "llama.cpp"
 auth = "optional_key"
 
-[providers.lmstudio.kwargs]
-api_base = "http://localhost:1234/v1"
+[providers.llamacpp.kwargs]
+api_base = "http://localhost:8080/v1"
 "#,
         );
         assert_eq!(issues, Vec::<String>::new());
-        assert!(file.get("lmstudio").unwrap().configured_by_definition());
-        // A pasted key is still needed for a keyed provider, and Ollama is
-        // pointed at through `OLLAMA_HOST` (docs/ollama.md).
+        assert!(file.get("llamacpp").unwrap().configured_by_definition());
+        // A pasted key is still needed for a keyed provider, and the shipped
+        // local servers are pointed at through their address variables
+        // (docs/local-models.md).
         assert!(!file.get("openrouter").unwrap().configured_by_definition());
         assert!(!file.get("ollama").unwrap().configured_by_definition());
+        assert!(!file.get("lmstudio").unwrap().configured_by_definition());
     }
 
     #[test]

@@ -259,8 +259,8 @@ fn provider_errors_wrap_instead_of_clipping() {
 
 #[test]
 fn the_needs_login_hint_wraps_keeping_its_actionable_tail() {
-    // "No API key yet — run /login to add one": the tail IS the fix; a
-    // 30-column terminal keeps it by wrapping.
+    // "No provider set up yet — run /login to add one": the tail IS the fix;
+    // a 30-column terminal keeps it by wrapping.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(vec![], 0, "x");
     picker.status = ModelLoad::NeedsLogin;
@@ -269,6 +269,19 @@ fn the_needs_login_hint_wraps_keeping_its_actionable_tail() {
         joined(&lines).contains("run /login to add one"),
         "{lines:#?}"
     );
+}
+
+#[test]
+fn the_needs_login_hint_does_not_presume_an_api_key() {
+    // `/login` has three ways in — a subscription, a key, a local server —
+    // and a hint naming only a key sends someone with a local model looking
+    // for a key they will never have (docs/local-models.md).
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(vec![], 0, "x");
+    picker.status = ModelLoad::NeedsLogin;
+    let text = joined(&model_view_lines(&picker, 80, TALL));
+    assert!(text.contains("No provider set up yet"), "{text}");
+    assert!(!text.contains("API key"), "{text}");
 }
 
 #[test]

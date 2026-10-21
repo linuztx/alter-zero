@@ -1,6 +1,7 @@
 //! The inline `/login` API-key onboarding (`docs/llm.md`).
 
 use super::*;
+use crate::llm::local::Verdict;
 
 #[test]
 fn slash_login_opens_the_onboarding_when_idle() {
@@ -29,6 +30,7 @@ fn opening_onboarding_abandons_other_bands_and_the_model_picker() {
     app.open_key_onboarding(
         sample_choices(),
         sample_subscriptions(),
+        sample_locals(),
         "~/.alter-zero/.env",
     );
     assert!(!app.shortcuts_open);
@@ -58,14 +60,14 @@ fn ctrl_c_closes_the_onboarding_not_the_app() {
 
 #[test]
 fn login_opens_on_the_method_step() {
-    // /login now leads with the two ways in; the API-key provider list is one
-    // step down rather than the root.
+    // /login leads with the three ways in; the API-key provider list is one
+    // step down rather than the root, and so is the local server list.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().expect("open");
     assert_eq!(onboarding.step, KeyStep::Method);
     assert_eq!(
         onboarding.method_labels(),
-        vec!["Use a subscription", "Use an API key"]
+        vec!["Use a subscription", "Use an API key", "Use a local model"]
     );
     assert_eq!(onboarding.providers.len(), 3);
     assert_eq!(app.view, View::Conversation, "inline, not an overlay");
@@ -376,4 +378,351 @@ fn the_countdown_is_injected_by_the_boundary_clock() {
         .as_ref()
         .unwrap();
     assert_eq!(device.remaining, Some(std::time::Duration::from_secs(851)));
+}
+
+// --- the local half: "Use a local model" (docs/local-models.md) ---
+
+/// The test the boundary was asked to run for `host`, with `token`.
+fn test_of(host: &str, token: Option<&str>) -> ServerTest {
+    ServerTest {
+        host: host.to_string(),
+        token: token.map(str::to_string),
+    }
+}
+
+/// Enter on the server page, expecting a connection test of `host`.
+fn enter_tests(app: &mut App, provider: &str, host: &str, token: Option<&str>) -> ServerTest {
+    let test = test_of(host, token);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::TestLocalServer {
+            provider: provider.to_string(),
+            test: test.clone(),
+        }
+    );
+    assert_eq!(server_page(app).testing.as_ref(), Some(&test));
+    test
+}
+
+#[test]
+fn enter_on_use_a_local_model_opens_the_local_server_list() {
+    let mut app = login_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down)); // "Use a local model"
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::Local);
+    let names: Vec<&str> = onboarding
+        .local_matches()
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect();
+    assert_eq!(names, ["LM Studio", "Ollama", "vLLM"]);
+}
+
+#[test]
+fn the_local_list_filters_and_steps_back_to_the_root() {
+    let mut app = local_app();
+    type_chars(&mut app, "olla");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.local_matches().len(), 1);
+    assert_eq!(onboarding.highlighted_local().unwrap().id, "ollama");
+    // Esc clears the filter first, then steps back, never out.
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(
+        app.key_onboarding.as_ref().unwrap().local_matches().len(),
+        3
+    );
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Method);
+}
+
+#[test]
+fn enter_on_a_local_server_opens_its_page() {
+    let mut app = local_app();
+    app.on_key(key(KeyCode::Down)); // Ollama
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::Server);
+    assert_eq!(onboarding.chosen_local().unwrap().id, "ollama");
+    let page = server_page(&app);
+    assert!(page.address.is_empty(), "the field opens empty");
+    assert!(page.testing.is_none() && page.failure.is_none());
+    assert!(!page.asks_for_token());
+}
+
+#[test]
+fn an_empty_address_tests_the_one_in_force() {
+    // The field shows what is in force — the variable's value, else the
+    // file's own — and an empty Enter tests it: re-testing a working server
+    // is one keystroke.
+    let mut app = server_app("ollama");
+    enter_tests(&mut app, "ollama", "gpu-box:11434", None);
+    let mut app = server_app("lmstudio");
+    enter_tests(&mut app, "lmstudio", "http://127.0.0.1:1234", None);
+}
+
+#[test]
+fn a_typed_address_is_tested_as_typed() {
+    // The grammar is the config's (`localhost:4321` is a server — docs/
+    // local-models.md); the field keeps what was typed, trimmed.
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, " localhost:4321 ");
+    enter_tests(&mut app, "lmstudio", "localhost:4321", None);
+}
+
+#[test]
+fn a_passed_test_closes_the_flow_and_saves_the_address() {
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, "localhost:4321");
+    let test = enter_tests(&mut app, "lmstudio", "localhost:4321", None);
+    let saved = app.finish_server_test(&test, Verdict::Passed(3));
+    assert_eq!(
+        saved,
+        Some(ServerSave {
+            provider: "lmstudio".into(),
+            name: "LM Studio".into(),
+            env: vec![("LMSTUDIO_HOST".into(), "localhost:4321".into())],
+            models: 3,
+        })
+    );
+    assert!(
+        app.key_onboarding.is_none(),
+        "a passed test closes the flow"
+    );
+}
+
+#[test]
+fn a_failed_test_keeps_the_page_and_says_why() {
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, "localhost:4321");
+    let test = enter_tests(&mut app, "lmstudio", "localhost:4321", None);
+    let reason = "Nothing is answering at localhost:4321 — is LM Studio's server running?";
+    assert_eq!(
+        app.finish_server_test(&test, Verdict::Failed(reason.into())),
+        None,
+        "nothing is saved"
+    );
+    let page = server_page(&app);
+    assert_eq!(page.failure.as_deref(), Some(reason));
+    assert!(page.testing.is_none());
+    assert_eq!(page.address, "localhost:4321", "the address stays to fix");
+    // Editing the address clears the reason: it was about the old one.
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(server_page(&app).failure, None);
+    assert_eq!(server_page(&app).address, "localhost:432");
+}
+
+#[test]
+fn an_answer_to_a_test_no_longer_running_is_dropped() {
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, "first:1234");
+    let first = enter_tests(&mut app, "lmstudio", "first:1234", None);
+    // Esc stops the test and keeps the page…
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CancelServerTest);
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Server);
+    assert!(server_page(&app).testing.is_none());
+    // …and an answer arriving for it afterwards changes nothing.
+    assert_eq!(app.finish_server_test(&first, Verdict::Passed(1)), None);
+    assert!(
+        app.key_onboarding.is_some(),
+        "a dropped answer saves nothing"
+    );
+    // Nor does it land on the test that replaced it.
+    for _ in 0.."first:1234".len() {
+        app.on_key(key(KeyCode::Backspace));
+    }
+    type_chars(&mut app, "second:1234");
+    let second = enter_tests(&mut app, "lmstudio", "second:1234", None);
+    assert_eq!(
+        app.finish_server_test(&first, Verdict::Failed("old".into())),
+        None
+    );
+    assert_eq!(server_page(&app).testing.as_ref(), Some(&second));
+    assert_eq!(server_page(&app).failure, None);
+}
+
+#[test]
+fn the_field_waits_while_its_test_runs() {
+    let mut app = server_app("lmstudio");
+    enter_tests(&mut app, "lmstudio", "http://127.0.0.1:1234", None);
+    // Typing, Backspace, a second Enter and a paste all wait.
+    type_chars(&mut app, "x");
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    app.paste_into_key_onboarding("gpu-box:1234");
+    let page = server_page(&app);
+    assert!(page.address.is_empty());
+    assert!(page.testing.is_some());
+}
+
+#[test]
+fn ctrl_c_while_a_test_runs_closes_the_flow_and_stops_it() {
+    let mut app = server_app("lmstudio");
+    enter_tests(&mut app, "lmstudio", "http://127.0.0.1:1234", None);
+    assert_eq!(app.on_key(ctrl('c')), Action::CancelServerTest);
+    assert!(app.key_onboarding.is_none());
+}
+
+#[test]
+fn esc_on_the_address_steps_back_to_the_local_list() {
+    let mut app = server_app("ollama");
+    type_chars(&mut app, "half-typed");
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert_eq!(onboarding.step, KeyStep::Local);
+    assert!(onboarding.server.is_none(), "the page and its draft go");
+    assert!(onboarding.chosen_local.is_none());
+}
+
+#[test]
+fn an_unauthorized_answer_asks_for_a_token_for_the_same_address() {
+    // LM Studio's "Require Authentication": the server is there and says
+    // so — the page asks for its token rather than reporting a failure.
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, "gpu-box");
+    let test = enter_tests(&mut app, "lmstudio", "gpu-box", None);
+    let reason = "LM Studio at gpu-box:1234 wants an API token.";
+    assert_eq!(
+        app.finish_server_test(&test, Verdict::Unauthorized(reason.into())),
+        None
+    );
+    let page = server_page(&app);
+    assert!(page.asks_for_token());
+    assert_eq!(
+        page.token_for,
+        Some(TokenAsk {
+            host: "gpu-box".into(),
+            reason: reason.into(),
+        })
+    );
+    assert_eq!(page.failure, None, "a request for a token is no failure");
+    // An empty token is nothing to test.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    type_chars(&mut app, "sk-lm-1");
+    let with_token = enter_tests(&mut app, "lmstudio", "gpu-box", Some("sk-lm-1"));
+    // Passed: the address and the token are both saved.
+    let saved = app
+        .finish_server_test(&with_token, Verdict::Passed(2))
+        .expect("saved");
+    assert_eq!(
+        saved.env,
+        vec![
+            ("LMSTUDIO_HOST".to_string(), "gpu-box".to_string()),
+            ("LM_API_TOKEN".to_string(), "sk-lm-1".to_string()),
+        ]
+    );
+    assert!(app.key_onboarding.is_none());
+}
+
+#[test]
+fn a_refused_token_says_so_on_the_token_page() {
+    let mut app = server_app("lmstudio");
+    let test = enter_tests(&mut app, "lmstudio", "http://127.0.0.1:1234", None);
+    let reason = "LM Studio at 127.0.0.1:1234 wants an API token.";
+    app.finish_server_test(&test, Verdict::Unauthorized(reason.into()));
+    type_chars(&mut app, "wrong");
+    let tried = enter_tests(&mut app, "lmstudio", "http://127.0.0.1:1234", Some("wrong"));
+    assert_eq!(
+        app.finish_server_test(&tried, Verdict::Unauthorized(reason.into())),
+        None
+    );
+    let page = server_page(&app);
+    assert!(page.asks_for_token(), "still asking");
+    let failure = page.failure.as_deref().expect("the refusal is said");
+    assert!(failure.contains("refused"), "{failure}");
+    assert_eq!(page.token, "wrong", "kept to fix");
+    // Typing clears it, as on the address.
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(server_page(&app).failure, None);
+}
+
+#[test]
+fn esc_on_the_token_page_returns_to_the_address() {
+    let mut app = server_app("lmstudio");
+    type_chars(&mut app, "gpu-box");
+    let test = enter_tests(&mut app, "lmstudio", "gpu-box", None);
+    app.finish_server_test(&test, Verdict::Unauthorized("wants one".into()));
+    type_chars(&mut app, "sk");
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let page = server_page(&app);
+    assert!(!page.asks_for_token());
+    assert!(page.token.is_empty(), "the token draft goes");
+    assert_eq!(page.address, "gpu-box", "the address stays");
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Server);
+}
+
+#[test]
+fn a_server_its_block_fixes_is_tested_and_nothing_is_saved() {
+    // A keyless server described in the user's own providers.toml with no
+    // host variable: its address is the file's to change, so the field takes
+    // no typing — Enter tests it, and a pass saves nothing.
+    let mut app = server_app("vllm");
+    type_chars(&mut app, "ignored");
+    app.paste_into_key_onboarding("ignored");
+    assert!(server_page(&app).address.is_empty());
+    let test = enter_tests(&mut app, "vllm", "http://localhost:8000/v1", None);
+    let saved = app
+        .finish_server_test(&test, Verdict::Passed(1))
+        .expect("the pass still closes the flow");
+    assert!(saved.env.is_empty());
+}
+
+#[test]
+fn a_pasted_address_keeps_its_punctuation_and_loses_its_newline() {
+    let mut app = server_app("ollama");
+    app.paste_into_key_onboarding("http://192.168.1.5:11434/\n");
+    assert_eq!(server_page(&app).address, "http://192.168.1.5:11434/");
+}
+
+#[test]
+fn the_confirmation_counts_what_there_is_to_pick() {
+    let save = |models| ServerSave {
+        provider: "lmstudio".into(),
+        name: "LM Studio".into(),
+        env: Vec::new(),
+        models,
+    };
+    assert_eq!(
+        save(3).confirmation(),
+        "Connected to LM Studio — 3 models · run /model to pick one"
+    );
+    assert_eq!(
+        save(1).confirmation(),
+        "Connected to LM Studio — 1 model · run /model to use it"
+    );
+    assert_eq!(
+        save(0).confirmation(),
+        "Connected to LM Studio, but it has no models to chat with yet"
+    );
+}
+
+#[test]
+fn a_save_the_environment_overrides_says_which_variable_to_unset() {
+    // The process env is read before `.env`: a variable exported in the
+    // shell keeps the session off the address that just passed its test,
+    // which the confirmation must not hide (docs/local-models.md).
+    let save = ServerSave {
+        provider: "lmstudio".into(),
+        name: "LM Studio".into(),
+        env: vec![
+            ("LMSTUDIO_HOST".into(), "127.0.0.1:1234".into()),
+            ("LM_API_TOKEN".into(), "sk-lm".into()),
+        ],
+        models: 1,
+    };
+    assert_eq!(save.overridden_notice(&[]), None, "nothing overrides it");
+    assert_eq!(
+        save.overridden_notice(&["LMSTUDIO_HOST".into()]).as_deref(),
+        Some("Saved — unset LMSTUDIO_HOST in your environment, which overrides it")
+    );
+    // Named in the order they were saved, and only what was saved.
+    assert_eq!(
+        save.overridden_notice(&["LM_API_TOKEN".into(), "LMSTUDIO_HOST".into(), "PATH".into()])
+            .as_deref(),
+        Some(
+            "Saved — unset LMSTUDIO_HOST and LM_API_TOKEN in your environment, which override them"
+        )
+    );
+    assert_eq!(save.overridden_notice(&["PATH".into()]), None);
 }

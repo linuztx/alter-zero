@@ -17,7 +17,7 @@ const LOGIN_SEARCH_ROW: u16 = 1;
 /// pushes it down, which is the whole reason the seat is found and not
 /// counted.
 const LOGIN_KEY_INPUT_ROW: u16 = 3;
-use crate::ui::login_view::{login_host_prompt, login_key_prompt};
+use crate::ui::login_view::login_key_prompt;
 use crate::ui::theme::{DEVICE_CURSOR_ROW, error_color, model_meta_color, model_selected_color};
 
 /// The row the code box's top border lands on, found by content — the page's
@@ -192,69 +192,6 @@ fn login_key_prompt_avoids_a_doubled_api() {
     );
 }
 
-/// The flow parked on the **host** field — Ollama's row, added as a third
-/// choice for these tests alone.
-fn login_app_host() -> App {
-    let mut app = App::new();
-    let mut choices = login_choices();
-    choices.push(host_choice());
-    app.open_key_onboarding(choices, login_subscriptions(), "~/.alter-zero/.env");
-    let onboarding = app.key_onboarding.as_mut().unwrap();
-    onboarding.step = KeyStep::Key;
-    onboarding.chosen = Some(2);
-    assert!(onboarding.chosen_provider().unwrap().key_kind.is_host());
-    app
-}
-
-#[test]
-fn render_login_host_step_asks_for_the_host_and_shows_it_unmasked() {
-    // A host is not a secret: the title says what it wants, the field shows
-    // what was typed (a URL typed blind is a URL typed wrong), and the hint
-    // says an empty Enter takes the default (docs/ollama.md).
-    let mut app = login_app_host();
-    app.key_onboarding.as_mut().unwrap().key_input = "myhost:11434".into();
-    let onboarding = app.key_onboarding.as_ref().unwrap();
-    let mut buf = buffer(60, LOGIN_KEY_ROWS);
-    render_key_onboarding(buf.area, &mut buf, onboarding);
-    assert!(
-        row(&buf, 1, 60).contains("Enter your Ollama host"),
-        "{:?}",
-        row(&buf, 1, 60)
-    );
-    assert!(
-        !row(&buf, 1, 60).contains("API key"),
-        "not a key: {:?}",
-        row(&buf, 1, 60)
-    );
-    let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
-    assert!(field.contains("myhost:11434"), "unmasked: {field:?}");
-    assert!(!field.contains('•'), "no dots: {field:?}");
-    let hint = row(&buf, LOGIN_KEY_INPUT_ROW + 2, 60);
-    assert!(
-        hint.contains("Enter to save") && hint.contains("empty"),
-        "{hint:?}"
-    );
-}
-
-#[test]
-fn render_login_host_step_offers_the_default_when_empty() {
-    let app = login_app_host();
-    let onboarding = app.key_onboarding.as_ref().unwrap();
-    let mut buf = buffer(60, LOGIN_KEY_ROWS);
-    render_key_onboarding(buf.area, &mut buf, onboarding);
-    let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
-    assert!(
-        field.contains("http://127.0.0.1:11434"),
-        "the default is the placeholder: {field:?}"
-    );
-    assert!(!field.contains("paste your API key"), "{field:?}");
-}
-
-#[test]
-fn login_host_prompt_names_the_provider() {
-    assert_eq!(login_host_prompt("Ollama"), "Enter your Ollama host");
-}
-
 #[test]
 fn render_login_key_step_shows_a_placeholder_when_empty() {
     let app = login_app_key();
@@ -383,8 +320,7 @@ fn every_login_page_hugs_its_frame() {
         ("a device page showing its code", login_app_device()),
         ("a failed sign-in", failed),
         ("the key step", login_app_key()),
-        ("the host step", login_app_host()),
-        ("a described key step", login_app_described(KeyKind::Secret)),
+        ("a described key step", login_app_described()),
     ] {
         let onboarding = app.key_onboarding.as_ref().expect("open");
         assert_frame_hugs_content(what, &key_onboarding_lines(onboarding, 78, 200));
@@ -465,9 +401,9 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
 // --- the method root and the subscription half (docs/copilot.md) ---
 
 #[test]
-fn the_method_step_offers_the_two_ways_in_with_no_counter() {
-    // The root question: rule(0) ❯(1) gap(2) rows(3,4) gap(5) hint(6)
-    // rule(7). No title — the two rows *are* the question — and no `(1/2)`
+fn the_method_step_offers_the_three_ways_in_with_no_counter() {
+    // The root question: rule(0) ❯(1) gap(2) rows(3,4,5) gap(6) hint(7)
+    // rule(8). No title — the rows *are* the question — and no `(1/3)`
     // counter, which would say nothing they don't.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
@@ -475,14 +411,15 @@ fn the_method_step_offers_the_two_ways_in_with_no_counter() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert_eq!(texts.len(), 8, "{texts:?}");
+    assert_eq!(texts.len(), 9, "{texts:?}");
     assert!(texts[1].contains('❯'), "{texts:?}");
     assert_eq!(texts[3], "→ Use a subscription", "{texts:?}");
     assert_eq!(texts[4], "  Use an API key", "{texts:?}");
-    assert!(texts[6].contains("↑↓ navigate"), "{texts:?}");
-    assert!(texts[6].contains("escape/ctrl+c cancel"), "{texts:?}");
+    assert_eq!(texts[5], "  Use a local model", "{texts:?}");
+    assert!(texts[7].contains("↑↓ navigate"), "{texts:?}");
+    assert!(texts[7].contains("escape/ctrl+c cancel"), "{texts:?}");
     assert!(
-        !texts.iter().any(|t| t.contains("(1/2)")),
+        !texts.iter().any(|t| t.contains("(1/3)")),
         "no counter on the root: {texts:?}"
     );
 }
@@ -1018,7 +955,7 @@ fn the_method_root_rows_carry_no_configured_status() {
     // that can be configured, so neither wears a status.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    for name in ["Use a subscription", "Use an API key"] {
+    for name in ["Use a subscription", "Use an API key", "Use a local model"] {
         let row = plain(&page_row(onboarding, 70, name));
         assert!(!row.contains("configured"), "{row:?}");
     }
@@ -1066,19 +1003,18 @@ fn the_two_list_steps_open_straight_onto_their_filter() {
 
 /// The flow parked on the key step of a provider that carries a description
 /// and the page its keys are created on.
-fn login_app_described(key_kind: KeyKind) -> App {
+fn login_app_described() -> App {
     let mut app = App::new();
     let choice = ProviderChoice {
         id: "openrouter".into(),
         name: "OpenRouter".into(),
         env_var: "OPENROUTER_API_KEY".into(),
         configured: false,
-        key_kind,
         description: "One key for models from every major lab, billed from a single balance."
             .into(),
         key_url: "https://openrouter.ai/workspaces/default/keys".into(),
     };
-    app.open_key_onboarding(vec![choice], Vec::new(), "~/.alter-zero/.env");
+    app.open_key_onboarding(vec![choice], Vec::new(), Vec::new(), "~/.alter-zero/.env");
     let onboarding = app.key_onboarding.as_mut().unwrap();
     onboarding.step = KeyStep::Key;
     onboarding.chosen = Some(0);
@@ -1090,7 +1026,7 @@ fn the_key_step_describes_the_provider_and_links_its_key_page() {
     // "Enter your OpenRouter API key" tells a reader who already knows what
     // OpenRouter is nothing, and tells everyone else nothing at all — least
     // of all *where* the key they are being asked to paste comes from.
-    let app = login_app_described(KeyKind::Secret);
+    let app = login_app_described();
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200);
     let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
@@ -1117,7 +1053,7 @@ fn the_key_step_describes_the_provider_and_links_its_key_page() {
 fn a_narrow_key_page_wraps_the_description_rather_than_cutting_it() {
     // Every row of the block must survive: a description clipped at the width
     // is a sentence that stops mid-word, and a clipped URL is a dead link.
-    let app = login_app_described(KeyKind::Secret);
+    let app = login_app_described();
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 40, 200);
     for line in &lines {
@@ -1150,19 +1086,6 @@ fn a_narrow_key_page_wraps_the_description_rather_than_cutting_it() {
 }
 
 #[test]
-fn a_host_field_points_at_the_software_rather_than_a_key_page() {
-    // A keyless provider has no key to create: what its link is for is the
-    // server the host field is asking about (docs/ollama.md).
-    let app = login_app_described(KeyKind::Host {
-        default: "http://127.0.0.1:11434".into(),
-    });
-    let onboarding = app.key_onboarding.as_ref().unwrap();
-    let text = page_texts(onboarding, 70).join("\n");
-    assert!(text.contains("Install it from https://"), "{text}");
-    assert!(!text.contains("Create a key at"), "{text}");
-}
-
-#[test]
 fn a_provider_with_nothing_to_say_keeps_the_bare_key_page() {
     // The block is omitted whole — never a blank band under the title.
     let app = login_app_key();
@@ -1181,7 +1104,7 @@ fn a_provider_with_nothing_to_say_keeps_the_bare_key_page() {
 fn the_cursor_follows_the_key_field_below_a_description_block() {
     // The field's row is no longer a constant — a description of any length
     // sits above it — so the seat is found in the page the paint builds.
-    let mut app = login_app_described(KeyKind::Secret);
+    let mut app = login_app_described();
     app.key_onboarding.as_mut().unwrap().key_input = "abcd".into();
     let area = Rect::new(0, 0, 70, key_onboarding_height(&app, 70, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
@@ -1200,7 +1123,7 @@ fn a_provider_is_findable_by_the_words_of_its_description() {
     // The provider list filters on the description for the same reason the
     // subscription list does: the row shows a name, and a user hunting for
     // "claude" or "local" is describing what they want, not naming it.
-    let app = login_app_described(KeyKind::Secret);
+    let app = login_app_described();
     let mut onboarding = app.key_onboarding.clone().unwrap();
     onboarding.query = "major lab".into();
     assert_eq!(onboarding.matches().len(), 1);
@@ -1431,7 +1354,7 @@ fn the_key_fields_caret_follows_the_bottom_anchor() {
     // the page, where the anchor keeps it — so a terminal shorter than the
     // page paints it from a skipped top, and the caret must sit on the
     // painted field rather than on its page row (docs/view-flow.md).
-    let app = login_app_described(KeyKind::Secret);
+    let app = login_app_described();
     let onboarding = app.key_onboarding.as_ref().expect("open");
     let page = page_texts(onboarding, 70);
     let field = page
@@ -1441,4 +1364,315 @@ fn the_key_fields_caret_follows_the_bottom_anchor() {
     let height = u16::try_from(page.len() - 2).expect("rows");
     let (_, y) = cursor_position(Rect::new(0, 0, 70, height), &app);
     assert_eq!(usize::from(y), field - 2, "two rows skipped: {page:#?}");
+}
+
+// --- the local half: "Use a local model" (docs/local-models.md) ---
+
+/// The `/login` flow on its local server list.
+fn login_app_local() -> App {
+    let mut app = login_app();
+    app.key_onboarding.as_mut().unwrap().step = KeyStep::Local;
+    app
+}
+
+/// The `/login` flow on `id`'s server page, nothing typed.
+fn login_app_server(id: &str) -> App {
+    let mut app = login_app_local();
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.step = KeyStep::Server;
+    onboarding.chosen_local = onboarding.locals.iter().position(|l| l.id == id);
+    assert!(onboarding.chosen_local.is_some(), "no local server {id:?}");
+    onboarding.server = Some(crate::app::ServerPage::default());
+    app
+}
+
+/// The open server page, to set its state up.
+fn server_mut(app: &mut App) -> &mut crate::app::ServerPage {
+    app.key_onboarding
+        .as_mut()
+        .and_then(|o| o.server.as_mut())
+        .expect("a server page is open")
+}
+
+/// A user's own keyless server, its address fixed by its provider block.
+fn fixed_server() -> LocalChoice {
+    LocalChoice {
+        id: "vllm".into(),
+        name: "vLLM".into(),
+        configured: true,
+        host_env: None,
+        host: "http://localhost:8000/v1".into(),
+        token_env: "VLLM_API_KEY".into(),
+        ..LocalChoice::default()
+    }
+}
+
+#[test]
+fn the_local_list_names_each_server_and_whether_it_is_pointed_at() {
+    use crate::ui::theme::{
+        LOGIN_CONFIGURED_LABEL, LOGIN_CONFIGURED_MARK, LOGIN_UNCONFIGURED_LABEL,
+        LOGIN_UNCONFIGURED_MARK,
+    };
+    let app = login_app_local();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts = page_texts(onboarding, 70);
+    assert!(texts[1].contains('❯'), "the filter first: {texts:?}");
+    assert_eq!(
+        texts[3],
+        format!("→ LM Studio · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
+    );
+    assert_eq!(
+        texts[4],
+        format!("  Ollama · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+    );
+    assert!(texts.iter().any(|t| t.trim() == "(1/2)"), "{texts:?}");
+    let hint = texts.iter().rev().nth(1).unwrap();
+    assert!(
+        hint.contains("enter connect") && hint.contains("esc back"),
+        "{hint:?}"
+    );
+    // No heading repeating the root's row, like the other two lists.
+    assert!(
+        !texts.iter().any(|t| t.contains("Use a local model")),
+        "{texts:?}"
+    );
+    assert_frame_hugs_content(
+        "the local list",
+        &crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200),
+    );
+}
+
+#[test]
+fn a_local_filter_matching_nothing_says_so() {
+    let mut app = login_app_local();
+    app.key_onboarding.as_mut().unwrap().query = "zzz".into();
+    let texts = page_texts(app.key_onboarding.as_ref().unwrap(), 70);
+    assert!(
+        texts.iter().any(|t| t.contains("No matching servers")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn the_server_page_asks_for_the_address_and_offers_the_one_in_force() {
+    let app = login_app_server("lmstudio");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200);
+    let texts = page_texts(onboarding, 70);
+    assert_eq!(
+        texts[1].trim(),
+        "Enter your LM Studio server URL",
+        "{texts:?}"
+    );
+    let joined = texts.join("\n");
+    assert!(
+        joined.contains("Open models running in LM Studio"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("Install it from https://lmstudio.ai/download"),
+        "{joined}"
+    );
+    assert_eq!(
+        link_targets(&lines),
+        vec!["https://lmstudio.ai/download".to_string()]
+    );
+    // The empty field offers the address in force, dim — what an empty
+    // Enter tests.
+    let field = page_row(onboarding, 70, "❯");
+    assert_eq!(plain(&field).trim_end(), "  ❯ http://127.0.0.1:1234");
+    assert_eq!(
+        span_fg(&field, "http://127.0.0.1:1234"),
+        Some(model_meta_color())
+    );
+    let hint = texts.iter().rev().nth(1).unwrap();
+    assert_eq!(hint.trim(), "Enter to test and save · Esc to go back");
+    // The about block sits between the title and the field.
+    let about = texts
+        .iter()
+        .position(|t| t.contains("LM Studio on"))
+        .unwrap();
+    let at = texts.iter().position(|t| t.contains('❯')).unwrap();
+    assert!(1 < about && about < at, "{texts:?}");
+}
+
+#[test]
+fn a_typed_address_shows_as_typed() {
+    // A URL typed blind is a URL typed wrong: no mask, the field's own ink.
+    let mut app = login_app_server("lmstudio");
+    server_mut(&mut app).address = "gpu-box:1234".into();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let field = page_row(onboarding, 70, "❯");
+    assert_eq!(plain(&field).trim_end(), "  ❯ gpu-box:1234");
+    assert_ne!(span_fg(&field, "gpu-box:1234"), Some(model_meta_color()));
+}
+
+#[test]
+fn a_running_test_says_so_under_the_field() {
+    let mut app = login_app_server("lmstudio");
+    server_mut(&mut app).testing = Some(crate::app::ServerTest {
+        host: "http://127.0.0.1:1234".into(),
+        token: None,
+    });
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts = page_texts(onboarding, 70);
+    let field = texts.iter().position(|t| t.contains('❯')).unwrap();
+    assert_eq!(texts[field + 1], "", "{texts:?}");
+    assert_eq!(
+        texts[field + 2].trim(),
+        "Testing the connection…",
+        "{texts:?}"
+    );
+    let hint = texts.iter().rev().nth(1).unwrap();
+    assert_eq!(hint.trim(), "Esc to stop the test");
+    // The page waits rather than takes input, so the caret hides.
+    assert!(!cursor_visible(&app));
+}
+
+#[test]
+fn a_failed_test_reads_in_red_under_the_field() {
+    let mut app = login_app_server("lmstudio");
+    let reason = "Nothing is answering at 127.0.0.1:1234 — is LM Studio's server running?";
+    server_mut(&mut app).failure = Some(reason.into());
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts = page_texts(onboarding, 70);
+    let field = texts.iter().position(|t| t.contains('❯')).unwrap();
+    let failure = page_row(onboarding, 70, "Nothing is answering");
+    // Wrapped into word-sized spans; the first word carries the colour.
+    assert_eq!(span_fg(&failure, "Nothing"), Some(error_color()));
+    assert!(
+        texts[field + 2].starts_with("  Nothing is answering"),
+        "under the field: {texts:?}"
+    );
+    // Wrapped, never cut: the question at its end survives.
+    let joined = page_texts(onboarding, 40).join(" ");
+    assert!(joined.contains("running?"), "{joined}");
+    // The field still takes typing, so the hint is the field's own.
+    let hint = texts.iter().rev().nth(1).unwrap();
+    assert_eq!(hint.trim(), "Enter to test and save · Esc to go back");
+    assert!(cursor_visible(&app));
+}
+
+#[test]
+fn the_token_step_asks_for_the_token_masked() {
+    let mut app = login_app_server("lmstudio");
+    server_mut(&mut app).token_for = Some(crate::app::TokenAsk {
+        host: "gpu-box:1234".into(),
+        reason: "LM Studio at gpu-box:1234 wants an API token.".into(),
+    });
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let texts = page_texts(onboarding, 70);
+    assert_eq!(
+        texts[1].trim(),
+        "Enter your LM Studio API token",
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("wants an API token")),
+        "the server's ask is the page's subject: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("Install it from")),
+        "the install link is the address step's: {texts:?}"
+    );
+    let empty = page_row(onboarding, 70, "❯");
+    assert!(plain(&empty).contains("paste the token, then press Enter"));
+    server_mut(&mut app).token = "secret".into();
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let field = plain(&page_row(onboarding, 70, "❯"));
+    assert_eq!(field.trim_end(), "  ❯ ••••••", "masked: {field:?}");
+    assert!(!field.contains("secret"));
+}
+
+#[test]
+fn a_server_its_block_fixes_shows_its_address_as_the_value() {
+    let mut app = login_app_local();
+    {
+        let onboarding = app.key_onboarding.as_mut().unwrap();
+        onboarding.locals.push(fixed_server());
+        onboarding.step = KeyStep::Server;
+        onboarding.chosen_local = Some(2);
+        onboarding.server = Some(crate::app::ServerPage::default());
+    }
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let field = page_row(onboarding, 70, "❯");
+    assert_eq!(plain(&field).trim_end(), "  ❯ http://localhost:8000/v1");
+    assert_ne!(
+        span_fg(&field, "http://localhost:8000/v1"),
+        Some(model_meta_color()),
+        "the address itself, not a placeholder"
+    );
+    let texts = page_texts(onboarding, 70);
+    let hint = texts.iter().rev().nth(1).unwrap();
+    assert_eq!(hint.trim(), "Enter to test · Esc to go back");
+    // Nothing to type, so no caret.
+    assert!(!cursor_visible(&app));
+}
+
+#[test]
+fn the_caret_follows_the_typed_address_then_the_token() {
+    let mut app = login_app_server("lmstudio");
+    server_mut(&mut app).address = "gpu-box".into();
+    let area = Rect::new(0, 0, 70, key_onboarding_height(&app, 70, 40).unwrap());
+    let (x, y) = cursor_position(area, &app);
+    let field = page_texts(app.key_onboarding.as_ref().unwrap(), 70)
+        .iter()
+        .position(|t| t.contains('❯'))
+        .unwrap() as u16;
+    assert_eq!(y, field, "on the field row");
+    // indent(2) + "❯ "(2) + "gpu-box"(7) = 11.
+    assert_eq!(x, 11);
+    assert!(cursor_visible(&app));
+    {
+        let page = server_mut(&mut app);
+        page.token_for = Some(crate::app::TokenAsk {
+            host: "gpu-box".into(),
+            reason: "LM Studio at gpu-box:1234 wants an API token.".into(),
+        });
+        page.token = "abc".into();
+    }
+    let area = Rect::new(0, 0, 70, key_onboarding_height(&app, 70, 40).unwrap());
+    let (x, _) = cursor_position(area, &app);
+    // One mask glyph per token character.
+    assert_eq!(x, 7);
+}
+
+#[test]
+fn every_server_page_hugs_its_frame_and_never_stacks_blanks() {
+    let mut testing = login_app_server("lmstudio");
+    server_mut(&mut testing).testing = Some(crate::app::ServerTest::default());
+    let mut failed = login_app_server("lmstudio");
+    server_mut(&mut failed).failure = Some("it went wrong".into());
+    let mut token = login_app_server("lmstudio");
+    server_mut(&mut token).token_for = Some(crate::app::TokenAsk {
+        host: "h".into(),
+        reason: "LM Studio at h wants an API token.".into(),
+    });
+    let mut bare = login_app_server("lmstudio");
+    {
+        let onboarding = bare.key_onboarding.as_mut().unwrap();
+        onboarding.locals[0].description.clear();
+        onboarding.locals[0].install_url.clear();
+    }
+    for (what, app) in [
+        ("the address step", login_app_server("lmstudio")),
+        ("a running test", testing),
+        ("a failed test", failed),
+        ("the token step", token),
+        ("a server described in no words", bare),
+    ] {
+        let onboarding = app.key_onboarding.as_ref().expect("open");
+        let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200);
+        assert_frame_hugs_content(what, &lines);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        for pair in texts.windows(2) {
+            assert!(
+                !(pair[0].is_empty() && pair[1].is_empty()),
+                "{what} stacked two blank rows: {texts:?}"
+            );
+        }
+    }
 }

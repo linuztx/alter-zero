@@ -88,8 +88,8 @@ pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{
-    DeviceLogin, DeviceStatus, KeyKind, KeyOnboarding, KeyStep, LoginMethod, ProviderChoice,
-    SigninKind, SubscriptionChoice,
+    DeviceLogin, DeviceStatus, KeyOnboarding, KeyStep, LocalChoice, LoginMethod, ProviderChoice,
+    ServerPage, ServerSave, ServerTest, SigninKind, SubscriptionChoice, TokenAsk,
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};

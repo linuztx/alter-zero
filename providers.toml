@@ -2,7 +2,7 @@
 #
 # These are the providers the app ships with; this file is embedded in the
 # binary. To add one of your own — any OpenAI-compatible API, or a local
-# server such as LM Studio, llama.cpp or vLLM — don't copy this file: write the
+# server such as llama.cpp or vLLM — don't copy this file: write the
 # block in ~/.alter-zero/providers.toml, which is laid over these
 # (docs/user-providers.md). A block there with a new id adds a provider, and
 # one naming a provider here changes only the keys it sets.
@@ -12,6 +12,8 @@
 #     in your own file that doesn't is called by its id.
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
+#     A path relative to the chat base (`../api/v1`) follows that base to
+#     whatever host it is pointed at (LM Studio's, docs/local-models.md).
 #   - Everything under `kwargs` is passed through to the client as-is, so nested
 #     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
 #     chat-completions endpoint; other keys are forwarded in the request body.
@@ -25,11 +27,14 @@
 #   - `api_key_env` (optional) names the environment variable the API key is read
 #     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
 #   - `api_base_env` (optional) names an environment variable whose value
-#     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`).
+#     replaces `kwargs.api_base` when set (Ollama's `OLLAMA_HOST`, LM Studio's
+#     `LMSTUDIO_HOST`); a bare host there is completed from the base.
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
 #     `anthropic_console`, `cline_account`), or `optional_key` for a server
-#     that needs none.
+#     that needs none. It also decides the `/login` list a provider is under:
+#     Use a subscription, Use an API key, or Use a local model, whose page
+#     tests the server's address before saving it (docs/local-models.md).
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
 #     docs/ollama.md).
@@ -129,8 +134,9 @@ api_base = "https://api.githubcopilot.com"
 # (4096 tokens on most machines) and the conversation is silently truncated.
 # No key is needed for a local server (`auth = "optional_key"`): the provider
 # is *pointed at* instead, with `OLLAMA_HOST` — Ollama's own variable, in its
-# own grammar (`localhost:11434`, `0.0.0.0`, `https://host`), which `/login`
-# writes for you — and a stored `OLLAMA_HOST_API_KEY` rides as a bearer for a
+# own grammar (`localhost:11434`, `0.0.0.0`, `https://host`), which `/login` →
+# Use a local model writes for you once the address passes its connection
+# test — and a stored `OLLAMA_HOST_API_KEY` rides as a bearer for a
 # server that wants one. That key is deliberately **not** `OLLAMA_API_KEY`,
 # which `ollama_cloud` below reads: two providers naming one variable share
 # one credential, so a key pasted for the cloud used to mark this provider
@@ -149,6 +155,31 @@ api_base_env = "OLLAMA_HOST"
 
 [providers.ollama.kwargs]
 api_base = "http://127.0.0.1:11434"
+
+# LM Studio's local server (docs/local-models.md), reached over its
+# OpenAI-compatible `/v1` the way any chat-completions provider is. Like the
+# local Ollama above it needs no key (`auth = "optional_key"`) and is
+# configured by being *pointed at*: `/login` → Use a local model → LM Studio
+# tests the address typed and saves it to `LMSTUDIO_HOST` — a bare
+# `localhost:1234` is completed from the base below, its scheme, port and
+# `/v1`. A server set to "Require Authentication" takes LM Studio's own
+# `LM_API_TOKEN` as a bearer, which the same page asks for when the test is
+# refused. The listing is LM Studio's **native** one (`/api/v1/models`,
+# LM Studio 0.4+), which carries each model's loaded context length, image
+# input and type where `/v1/models` names ids alone — and `api_model_base` is
+# **relative** to the chat base, so it follows the server wherever it is
+# pointed. An older LM Studio without it is listed from `/v1/models`.
+[providers.lmstudio]
+name = "LM Studio"
+description = "Open models running in LM Studio on your own machine — nothing leaves it, and no key is needed. Start its server in the Developer tab (or with `lms server start`), then point this at it."
+api_key_url = "https://lmstudio.ai/download"
+auth = "optional_key"
+api_key_env = "LM_API_TOKEN"
+api_base_env = "LMSTUDIO_HOST"
+api_model_base = "../api/v1"
+
+[providers.lmstudio.kwargs]
+api_base = "http://127.0.0.1:1234/v1"
 
 # Ollama's hosted models (ollama.com), reached directly with an API key from
 # ollama.com/settings/keys — the same wire, an ordinary pasted key. It keeps

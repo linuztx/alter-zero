@@ -11,14 +11,16 @@
 use super::super::StreamEvent;
 
 /// The hand-off every user-facing demo closes on: with no provider configured
-/// the session *is* the dummy, and `/login` (sign in — a Copilot subscription
-/// or a pasted key) then `/model` (pick one) are the way out. A macro rather than a `const` so the reply literals
+/// the session *is* the dummy, and `/login` (a subscription, a pasted key, or
+/// a local model server — `docs/local-models.md`) then `/model` (pick one) are
+/// the way out. A macro rather than a `const` so the reply literals
 /// can [`concat!`] it in — one source of truth, still a compile-time
 /// `&'static str`.
 macro_rules! handoff {
     () => {
         "Two commands away from the real thing: `/login` signs you in — a \
-         subscription, or a provider API key — then `/model` picks the model to run."
+         subscription, an API key or a local model server — then `/model` picks \
+         the model to run."
     };
 }
 

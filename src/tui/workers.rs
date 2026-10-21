@@ -29,7 +29,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use alter_zero::app::{App, SigninKind, ToastKind};
+use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files};
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
@@ -43,8 +43,10 @@ use super::Session;
 /// Carried on the model-fetch worker's channel. See `docs/llm.md`.
 pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
-/// What the `/login` device-flow worker reports back (`docs/copilot.md`).
-/// Two messages, in order: the code to show, then the flow's verdict.
+/// What the `/login` workers report back. A sign-in sends two messages, in
+/// order — the code to show, then the flow's verdict (`docs/copilot.md`); a
+/// local server's connection test sends one, its verdict
+/// (`docs/local-models.md`).
 #[derive(Debug)]
 pub(crate) enum DeviceEvent {
     /// The provider issued a code — show it, and start counting it down.
@@ -59,6 +61,37 @@ pub(crate) enum DeviceEvent {
     /// The flow finished: the long-lived OAuth token to persist plus the seat
     /// it turned out to be, or why not.
     Done(Result<(String, Option<String>), String>),
+    /// A local server's connection test finished: the test it answers (the
+    /// page drops an answer to one it moved on from) and what it found.
+    Tested {
+        /// The address and token tried.
+        test: ServerTest,
+        /// The listing's outcome, worded for the page.
+        verdict: llm::local::Verdict,
+    },
+}
+
+/// Test a local server's connection on a worker thread: list its models the
+/// way `/model` will (`llm::models::fetch_models`, over `cfg`), and report
+/// the verdict — unless `cancel` tripped meanwhile (Esc stopped the test, or
+/// the page went away), when nothing is sent. `name` and `label` are what
+/// the verdict's sentences call the server. See `docs/local-models.md`.
+pub(crate) fn spawn_server_test(
+    cfg: ModelConfig,
+    name: String,
+    label: String,
+    test: ServerTest,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
+) {
+    std::thread::spawn(move || {
+        let listed = llm::models::fetch_models(&cfg, &cancel);
+        if cancel.is_cancelled() {
+            return;
+        }
+        let verdict = llm::local::verdict(&name, &label, &listed);
+        let _ = tx.send(DeviceEvent::Tested { test, verdict });
+    });
 }
 
 /// Run a subscription's sign-in on a worker thread, reporting what to show

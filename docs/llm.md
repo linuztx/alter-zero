@@ -147,7 +147,8 @@ environment variable that replaces the base (Ollama's `OLLAMA_HOST`). The
 table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
 and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
 `github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
-`cline` and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`), with
+`cline` and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`; and
+`lmstudio`, `docs/local-models.md`), with
 the user's own `~/.alter-zero/providers.toml` **laid over** them: a block with
 a new id adds a provider, one naming a shipped provider changes only the keys
 it sets, and every problem in the file is a toast rather than a silence
@@ -179,6 +180,7 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
 | `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
+| `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Use a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
@@ -300,10 +302,11 @@ tightened by two rows when the frame stopped padding itself,
   Ctrl+B would not reach the runner from inside the picker. The `/login` flow
   and the `/settings` menu are the same view family and behave identically
   (`docs/settings.md`).
-- **A configured provider is required.** If no provider has a resolvable key, the
-  boundary skips the fetch and the list area shows a cyan
-  `No API key yet — run /login to add one` (`ModelLoad::NeedsLogin`) instead of
-  offering models the user can't use.
+- **A configured provider is required.** If no provider has a resolvable key
+  (or, for a local server, an address — `docs/local-models.md`), the boundary
+  skips the fetch and the list area shows a cyan
+  `No provider set up yet — run /login to add one` (`ModelLoad::NeedsLogin`)
+  instead of offering models the user can't use.
 - Otherwise the boundary fetches **every configured provider in parallel** — one
   worker thread each (the image-paste pattern), all sharing one cancel token —
   and merges the results into a single provider-tagged list as they land
@@ -424,7 +427,12 @@ counter / model-name, the `→` marker, the `✓` active mark, the cyan
 `/login` collects a provider API key and saves it to `.env` so it persists across
 runs — the "onboarding" the user asked for. Like `/model` it is **inline**
 (`App::key_onboarding: Option<KeyOnboarding>`, not a `View`), replacing the composer
-in place; unlike it, it is a **two-step** flow.
+in place; unlike it, it is a multi-step flow, rooted at three ways in — **Use a
+subscription**, **Use an API key**, **Use a local model** — whose lists partition
+the provider table by `auth` (a sign-in, a pasted key, a key that is optional).
+The API-key half is below; the subscription half is its own bullet, and the
+local half — a server's address, **tested before it is saved** — is
+`docs/local-models.md`.
 
 **Step 1 — pick a provider** (a filterable list, headerless like `/model`;
 `KeyStep::Provider`):
@@ -467,7 +475,7 @@ in place; unlike it, it is a **two-step** flow.
   provider-step hint names. The save confirmation is a transient toast
   (`Saved {ENV} — run /model to use {provider}`), not a committed message. See
   `docs/toast.md`.
-- **The three list steps** (method, subscription, provider) share one grammar:
+- **The four list steps** (method, subscription, provider, local) share one grammar:
   type-to-filter (id/name substring), `↑/↓` move wrapping at the ends,
   PgUp/PgDn/Home/End jump, `Enter` activates the highlighted row (on the
   provider step, its index is pinned so the filter can't reorder it out from
@@ -485,15 +493,15 @@ in place; unlike it, it is a **two-step** flow.
   hunts for down a column of names — while its word, the `◯`, and the ` · `
   ahead of them stay dim: a status is a fact about a row rather than an alert,
   and colouring the whole tail made a list of facts read as a column of them.
-  The method root's two rows carry no status at all (`status: None`) — they
+  The method root's three rows carry no status at all (`status: None`) — they
   are the question, not something that can be configured.
 - **No list carries a title** (updated 2026-09-03). The subscription and
   provider steps used to repeat the method row that opened them as a cyan
   heading (`Use a subscription` / `Use an API key`); it said nothing the rows
   and the hint below them don't, and it cost every row two lines of a region
-  already sharing the terminal with a running turn. All three lists are one
+  already sharing the terminal with a running turn. All the lists are one
   shape now — the rule, then the `❯` filter straight under it — and the root
-  never had one: there the two rows *are* the question. The method step is
+  never had one: there its rows *are* the question. The method step is
   also the one list with no `(n/total)` counter.
 - **The remaining titles wear the pages' one title dress** — bold, washed in
   the active theme's banner gradient (`ui::header::page_title_line`,
@@ -516,9 +524,7 @@ in place; unlike it, it is a **two-step** flow.
   wait — so they share `SigninKind::BrowserLink` and differ only in their
   constants; and ChatGPT's device code lands on the very page Copilot's and
   Cline's do.
-- **Key step**, or a **host field** for a provider that needs no key (Ollama:
-  the title asks for the host, the value shows as typed, and an empty Enter
-  saves the default — `docs/ollama.md`): printable keys and Backspace edit the key, a **bracketed paste**
+- **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key
   (`Action::SaveApiKey { provider, env_var, key }`) and closes, `Esc` steps *back*
@@ -527,8 +533,9 @@ in place; unlike it, it is a **two-step** flow.
   a doubled "API" when its name already ends in it (`login_key_prompt`).
 - **The key step introduces the provider it is asking for** (added 2026-09-03):
   between the title and the field sit the provider file's own `description` and
-  a `Create a key at {api_key_url}` line — a keyless provider's reads `Install
-  it from …`, since it has no key to create (`docs/ollama.md`). Both are dim,
+  a `Create a key at {api_key_url}` line (a local server's page reads `Install
+  it from …` instead, since it has no key to create — `docs/local-models.md`).
+  Both are dim,
   the URL a real OSC 8 hyperlink like every other URL this flow shows
   (`docs/links.md`), and the block **wraps rather than clips**: a description
   that stops mid-word explains nothing and a truncated link opens nothing,
@@ -538,15 +545,15 @@ in place; unlike it, it is a **two-step** flow.
   as a band of blanks (`provider_about_lines` over the shared `login_page`
   block-joiner). The `description` also steers the provider list's
   type-to-search, as it already did the subscription list's, so `claude` finds
-  **Anthropic** and `local` finds **Ollama**.
+  **Anthropic** — and, on the local list, `local` finds **Ollama**.
 - **The `❯` row is found, not counted.** The key field used to sit on a
   constant row, which stopped being true the moment a description of the
   terminal's own width moved in above it, so `cursor_position` reads the row
   back out of the page the paint just built (`view_prompt_row`, the
   `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
   drift from it.
-- The three list steps (the method root, the subscriptions, the providers)
-  share one page builder, and on a terminal too short for it they build the
+- The four list steps (the method root, the subscriptions, the providers, the
+  local servers) share one page builder, and on a terminal too short for it they build the
   family's **compact** page (`docs/view-flow.md`): the filter, three rows
   between the reserved overflow slots and the key hint, the counter and the
   `Keys are saved to` note yielding. The provider list is fifteen rows with
@@ -555,9 +562,9 @@ in place; unlike it, it is a **two-step** flow.
   same page either way. On a terminal shorter still the compact page sheds
   what is left one row at a time and never its filter line (`docs/view-flow.md`
   *Below the compact page*), a filter matching nothing putting its
-  placeholder in the list's place. The key step and the sign-in pages keep
-  their one shape — their field or their wait sits at the bottom, which the
-  anchor already keeps on screen.
+  placeholder in the list's place. The key step, the sign-in pages and the
+  local server page keep their one shape — their field or their wait sits at
+  the bottom, which the anchor already keeps on screen.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a

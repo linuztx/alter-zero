@@ -1046,9 +1046,11 @@ pub(super) const MODEL_NONE: &str = "No models available";
 /// The list placeholder when the query matches nothing.
 pub(super) const MODEL_NO_MATCH: &str = "No matching models";
 
-/// The list placeholder when no provider has a key yet ([`ModelLoad::NeedsLogin`]) —
-/// shown cyan (an actionable hint, not a red error) pointing at `/login`.
-pub(super) const MODEL_LOGIN_HINT: &str = "No API key yet — run /login to add one";
+/// The list placeholder when no provider is set up yet ([`ModelLoad::NeedsLogin`])
+/// — shown cyan (an actionable hint, not a red error) pointing at `/login`.
+/// It names no API key: `/login` also signs in to a subscription or connects
+/// a local server, which has none (`docs/local-models.md`).
+pub(super) const MODEL_LOGIN_HINT: &str = "No provider set up yet — run /login to add one";
 
 /// The separator between the `(n/total)` counter and its trailing load status.
 pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
@@ -1100,6 +1102,12 @@ pub(super) const LOGIN_SUBSCRIPTION_HINT: &str = "↑↓ navigate  enter sign in
 
 /// The dim hint under the API-key provider list, below the `.env` path row.
 pub(super) const LOGIN_PROVIDER_HINT: &str = "↑↓ navigate  enter select  esc back";
+
+/// The dim hint under the local server list (`docs/local-models.md`).
+pub(super) const LOGIN_LOCAL_HINT: &str = "↑↓ navigate  enter connect  esc back";
+
+/// The list placeholder when the local server filter matches nothing.
+pub(super) const LOGIN_NO_LOCAL_MATCH: &str = "No matching servers";
 
 /// The list placeholder when the method filter matches nothing.
 pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
@@ -1204,18 +1212,35 @@ pub(super) const LOGIN_PROVIDER_HINT_PREFIX: &str = "Keys are saved to ";
 /// The dim hint under the key-entry field.
 pub(super) const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
 
-/// The hint under a **host** field ([`KeyKind::Host`]): an empty Enter saves
-/// the default the field shows (`docs/ollama.md`).
-///
-/// [`KeyKind::Host`]: crate::app::KeyKind::Host
-pub(super) const LOGIN_HOST_HINT: &str =
-    "Enter to save (empty = the default shown) · Esc to go back";
-
 /// What the key step's link is introduced by: the page a **key** is created
-/// on, or — for a provider that takes none — where the server the host field
-/// asks about comes from (`docs/ollama.md`).
+/// on.
 pub(super) const LOGIN_KEY_URL_PREFIX: &str = "Create a key at ";
-pub(super) const LOGIN_HOST_URL_PREFIX: &str = "Install it from ";
+
+// --- The local server page (docs/local-models.md): `/login` → Use a local
+// model → a server. The key step's frame around an address field shown as
+// typed, a connection test whose verdict lands under the field, and — for a
+// server that wants one — a masked token field. ---
+
+/// What a local server's link is introduced by: there is no key to create,
+/// so it points at where the server itself comes from.
+pub(super) const LOGIN_INSTALL_URL_PREFIX: &str = "Install it from ";
+
+/// The hint under an address or token field: Enter tests the connection,
+/// and saves only what passes.
+pub(super) const LOGIN_SERVER_HINT: &str = "Enter to test and save · Esc to go back";
+
+/// The hint under an address the provider block fixes — there is nothing to
+/// save, only the connection to test.
+pub(super) const LOGIN_FIXED_SERVER_HINT: &str = "Enter to test · Esc to go back";
+
+/// The hint while a connection test runs: the page waits, Esc stops it.
+pub(super) const LOGIN_TESTING_HINT: &str = "Esc to stop the test";
+
+/// The dim row under the field while a connection test runs.
+pub(super) const LOGIN_TESTING: &str = "Testing the connection…";
+
+/// The dim placeholder in an empty token field.
+pub(super) const LOGIN_TOKEN_PLACEHOLDER: &str = "paste the token, then press Enter";
 
 /// The dim placeholder shown in the key field before anything is entered.
 pub(super) const LOGIN_KEY_PLACEHOLDER: &str = "paste your API key, then press Enter";

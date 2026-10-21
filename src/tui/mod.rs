@@ -221,9 +221,11 @@ pub(crate) struct Session<'t> {
     diff_tx: tokio::sync::mpsc::UnboundedSender<diff::DiffResult>,
     diff_rx: tokio::sync::mpsc::UnboundedReceiver<diff::DiffResult>,
     diff_generation: u64,
-    /// The `/login` device-flow worker's channel (`docs/copilot.md`), the
-    /// `CancelToken` Esc reaps it with, and when the shown code expires — the
-    /// countdown the page ticks, injected per draw like every other clock.
+    /// The `/login` workers' channel — a sign-in's device flow
+    /// (`docs/copilot.md`) or a local server's connection test
+    /// (`docs/local-models.md`), one at a time — the `CancelToken` Esc reaps
+    /// either with, and when the shown code expires — the countdown the page
+    /// ticks, injected per draw like every other clock.
     device_tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
     device_rx: tokio::sync::mpsc::UnboundedReceiver<DeviceEvent>,
     device_cancel: Option<CancelToken>,

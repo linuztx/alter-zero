@@ -76,6 +76,18 @@ conversation per round — a copy of a pasted picture's megabytes of base64 each
 time (`docs/memory.md`); the copy it marks now is shallow, the pictures shared
 by reference.
 
+The sniff reads a model id, so it only means something where the id names an
+aggregator's routing. A **keyless** provider (`auth = "optional_key"`) is a
+server the user runs, and it is never marked, whatever its ids look like:
+LM Studio names its models `publisher/model` (`qwen/qwen3-8b` is the
+aggregator spelling exactly), and vLLM serves Hugging Face repo ids
+(`Qwen/Qwen3-8B`), which the case-insensitive sniff reads the same way. A
+server with no prompt-cache billing has nothing for a breakpoint to buy, so
+its request keeps the plain form every OpenAI-compatible server reads
+(`docs/local-models.md`). The gate is the payload builder's
+(`OpenAiClient::chat_request`), not the sniff's: the sniff answers a question
+about the model id, and the provider decides whether the question applies.
+
 Anthropic's **own** API (`wire_api = "anthropic"`, `docs/claude.md`) needs no
 model-id sniff — there caching is *always* explicit — so `anthropic.rs` places
 the same three breakpoints on its own shape: the last system block, the last
@@ -417,6 +429,12 @@ and a miss on one does not indict the request.
   more prefix (and a provider that *ignores* `cache_control` merely ignores
   it). Gemini 2.5+ is left implicit on purpose: its automatic caching costs
   no write, where an explicit `cache_control` would bill one.
+- A **keyless proxy** in front of an explicit-caching provider (LiteLLM run
+  with no master key, routing `anthropic/*`) gets no markers from here,
+  since keyless reads as a server the user runs. The proxy can place its own
+  (LiteLLM's `cache_control_injection_points`), or the provider can be
+  declared `auth = "api_key"` with a placeholder key, which a proxy that
+  checks none accepts.
 - **GitHub Copilot** is unverified from here (above). Its proxy may want its
   own `copilot_cache_control` marker for the Claude models it serves; without
   a reachable exchange that stays a hypothesis, not a change.

@@ -366,6 +366,20 @@ pub enum Action {
         /// The API key the user entered.
         key: String,
     },
+    /// Enter on a local server's page: test the connection — list the
+    /// server's models at `test`'s address, with its token — before anything
+    /// is saved. The pure core already shows the page waiting; the loop runs
+    /// the test on a worker thread and hands the verdict back through
+    /// [`App::finish_server_test`]. See `docs/local-models.md`.
+    TestLocalServer {
+        /// The provider id whose server is tested (e.g. `lmstudio`).
+        provider: String,
+        /// The address and token tried.
+        test: ServerTest,
+    },
+    /// Esc (or Ctrl+C) while a connection test runs: stop it. The pure core
+    /// already stopped waiting; the loop cancels the worker.
+    CancelServerTest,
     /// `x` on a shell in the ↓ background manager: stop the background task
     /// with this registry id. The decision is pure; the loop kills the
     /// process group via the `background::BackgroundRegistry`, and the

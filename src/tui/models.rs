@@ -40,7 +40,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{ProviderChoice, SubscriptionChoice, ToastKind};
+use alter_zero::app::{LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
@@ -654,6 +654,73 @@ impl ModelSession {
     /// whether it is already signed in.
     pub(crate) fn subscription_choices(&self) -> Vec<SubscriptionChoice> {
         config::subscription_choices(&self.providers, &self.env_file)
+    }
+
+    /// The **local model** rows the `/login` flow shows — the servers whose
+    /// key is optional — each with the address in force
+    /// (`docs/local-models.md`).
+    pub(crate) fn local_choices(&self) -> Vec<LocalChoice> {
+        config::local_choices(&self.providers, &self.env_file)
+    }
+
+    /// What a `/login` connection test of a local server talks to: the
+    /// provider's config with the tested address in place of whatever its
+    /// variable holds — completed by the same grammar every request is — and
+    /// the token typed for it, else whichever one already resolves, the way a
+    /// real request would send it. The provider's label rides along for the
+    /// verdict's sentences, and its own address as the example a typo is
+    /// answered with. `None` when the provider left the table. See
+    /// `docs/local-models.md`.
+    pub(crate) fn local_test_config(
+        &self,
+        provider: &str,
+        test: &ServerTest,
+    ) -> Option<(String, String, ModelConfig)> {
+        let definition = self.providers.get(provider)?;
+        let sel = llm::Selection {
+            provider_id: provider.to_string(),
+            api_key: test
+                .token
+                .clone()
+                .or_else(|| config::resolve_api_key(&self.providers, &self.env_file, provider)),
+            // A server its block fixes in place is tested where it is.
+            api_base: definition.api_base_env.as_ref().map(|_| test.host.clone()),
+            ..llm::Selection::default()
+        };
+        let cfg = self.providers.model_config(&sel)?;
+        Some((
+            definition.name.clone(),
+            config::own_address(definition),
+            cfg,
+        ))
+    }
+
+    /// Does a variable exported in the process environment override what
+    /// `/login` just saved for it in `.env`? The environment is read first
+    /// (`config::resolve_env`), so an exported value meaning anything else is
+    /// what every request uses. A host is compared as the server it names
+    /// (`localhost:1234` and `http://localhost:1234/v1` are one address), a
+    /// token as typed. See `docs/local-models.md`.
+    pub(crate) fn exported_overrides(&self, provider: &str, var: &str, saved: &str) -> bool {
+        let Some(exported) = std::env::var(var).ok().filter(|v| !v.is_empty()) else {
+            return false;
+        };
+        let host_var = self
+            .providers
+            .get(provider)
+            .and_then(|p| p.api_base_env.as_deref());
+        if host_var != Some(var) {
+            return exported != saved;
+        }
+        let base = |host: &str| {
+            let test = ServerTest {
+                host: host.to_string(),
+                token: None,
+            };
+            self.local_test_config(provider, &test)
+                .map(|(_, _, cfg)| cfg.api_base)
+        };
+        base(&exported) != base(saved)
     }
 
     /// The sign-in behind a `/login` subscription row: the provider's auth

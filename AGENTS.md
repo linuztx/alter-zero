@@ -12,7 +12,7 @@ what looks arbitrary in this code is usually a bug someone already paid for.
 ## The most important rule: run the smallest check that can fail
 
 This is a single crate of about 250k lines of Rust (some 80k of it outside the
-tests) with **about 5,500 unit tests** and **145 smoke phases**. The full suite
+tests) with **about 5,500 unit tests** and **146 smoke phases**. The full suite
 is not a "does it still work" button — it is the last step before a commit, and
 CI runs it for you on every push.
 

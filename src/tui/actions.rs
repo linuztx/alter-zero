@@ -213,6 +213,10 @@ impl Session<'_> {
                 self.start_device_login(&provider, kind);
             }
             Action::CancelDeviceLogin => self.cancel_device_login(),
+            Action::TestLocalServer { provider, test } => self.test_local_server(&provider, test),
+            // Esc (or Ctrl+C) while a connection test runs: the page already
+            // stopped waiting; the worker's answer must never arrive.
+            Action::CancelServerTest => self.cancel_device_login(),
             Action::CopyDeviceCode(code) => self.copy_device_code(&code),
             Action::OpenSettings => self.open_settings(),
             Action::CloseSettings => {

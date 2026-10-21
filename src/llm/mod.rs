@@ -32,6 +32,7 @@ pub mod copilot;
 pub mod exec;
 pub mod hooks;
 pub mod keystore;
+pub mod local;
 pub mod mcp;
 pub mod models;
 pub mod ollama;
