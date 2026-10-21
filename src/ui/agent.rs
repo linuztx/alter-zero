@@ -388,7 +388,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 #[must_use]
 pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<Line<'static>> {
     let color = if notice.resumed {
-        system_color()
+        agent_notice_resumed_color()
     } else if notice.ok() {
         bg_notice_ok_color()
     } else {

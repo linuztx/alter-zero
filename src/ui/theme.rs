@@ -485,6 +485,13 @@ pub(super) fn bg_notice_waiting_color() -> Color {
     palette().warning
 }
 
+/// A subagent the user's message started again (`docs/agent-tools.md` *A
+/// resume is news when it starts*): running, so neither an outcome's green
+/// nor its red — the accent a system notice wears.
+pub(super) fn agent_notice_resumed_color() -> Color {
+    system_color()
+}
+
 /// Placeholder body for a still-executing tool — the `⎿ Running…` row, shown
 /// under a backend tool's `● name(args)` header (req 2: a running cell shows the
 /// header *and* this row, previewed live) and as the whole `!` shell cell.

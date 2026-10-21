@@ -1638,6 +1638,36 @@ fn a_user_message_that_resumes_a_failed_agent_tells_the_lead_at_once() {
 }
 
 #[test]
+fn reviving_a_finished_agent_tells_the_lead_too() {
+    // Not only a failure goes stale: a finished agent the user keeps talking
+    // to is working again, and the lead — holding its answer — must not take
+    // the files it touches as settled.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false)[..1]);
+    app.apply_agent_event("a1", &StreamEvent::Chunk("31°C".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    app.finish_agent_group(
+        false,
+        &[AgentCallDone {
+            id: "a1".into(),
+            output: "31°C".into(),
+            ok: true,
+        }],
+    );
+    let notice = app
+        .agent_chat("a1", "and tomorrow?")
+        .expect("a finished agent the user resumed owes the lead a notice");
+    assert!(notice.resumed);
+    assert_eq!(notice.status, crate::agents::AgentStatus::Done);
+    assert!(
+        notice.context_text().contains("after it finished."),
+        "{}",
+        notice.context_text()
+    );
+}
+
+#[test]
 fn a_resume_the_lead_still_waits_on_is_carried_by_its_group() {
     // A member of a foreground group still waiting: the lead's wait loop
     // takes the resumed run's answer as the member's result, naming the

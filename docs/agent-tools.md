@@ -170,7 +170,10 @@ the agent:
 
 - a **foreground result** carries the same lines between the answer and the
   `agentsend` line, for a message the user sent while the lead waited;
-- the **`agentoutput` report** quotes each one where it arrived.
+- the **`agentoutput` report** quotes each one where it arrived;
+- and a message that starts a **settled** agent working again is told to
+  the lead the moment it does (*A resume is news when it starts*, below),
+  not only in the notice its new run ends with.
 
 A notice names only the messages **its own run** read: each continuation
 starts with none (`AgentRun::user_messages`, cleared by `reopen`; the
@@ -240,9 +243,14 @@ arrived, and drop every event of the run that followed — its answer and its
 notice with it. So when the registry answers `Started`, `Session::agent_chat`
 first drains the agent channel, where the old run's end already waits.
 
-`smoke.sh` Phase 130 has the user message the demo agent once it has
-finished, and checks that the resume cell lands ahead of the answer's and
-that the lead's Ctrl+D context carries the note.
+`smoke.sh` Phase 141 drives the reported case through the real backend
+against a stub provider: the subagent's request is refused, the lead goes
+on with its turn, the user messages the failed agent back to work from its
+session view, and the lead's very next request carries the note — right
+after the result of the call it was making when the user spoke — while the
+cell lands below that call's. Phase 130 covers the idle lead: the user
+messages the offline demo's agent once it has finished, and the resume cell
+lands ahead of the answer's.
 
 ## Retention
 
