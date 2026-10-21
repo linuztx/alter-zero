@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **[`AGENTS.md`](AGENTS.md) governs what you run and when.** Read it before your
 first edit: it maps a change to the smallest check that can fail, so the loop is
 `cargo test --lib <module>::` (sub-second warm) rather than `cargo test` or the
-whole smoke suite after every edit. It also lists this machine's baseline
-failures — 6 on macOS with `setsid` on `PATH`, 46 without it — which are not
-regressions.
+whole smoke suite after every edit. It also lists the macOS baseline
+failures — 6 with util-linux's `setsid` on `PATH`, 46 without it — which are
+not regressions.
 
 ## Commands
 
