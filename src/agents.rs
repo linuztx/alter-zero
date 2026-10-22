@@ -56,6 +56,16 @@ pub const AGENT_REPORT_CALLS_MAX: usize = 30;
 /// The most characters a reported tool call keeps, on its one line.
 pub const AGENT_REPORT_CALL_CHARS: usize = 160;
 
+/// The most characters a progress update keeps — the agent's own account of
+/// what it found and what it is doing, which the lead reads whole up to here
+/// (`docs/agent-progress.md`).
+pub const AGENT_REPORT_UPDATE_CHARS: usize = 2_000;
+
+/// The label the agent's **own words** wear — its activity row's
+/// `Agent: {update}` while it talks, beside a call's `Bash: …`
+/// (`docs/agent-progress.md`).
+pub const AGENT_UPDATE_LABEL: &str = "Agent";
+
 /// The line an `agentoutput` report marks a delivered message with — where,
 /// among the agent's calls, a message reached it: the lead's `agentsend` or a
 /// background shell's completion routed to it. One the user typed into its
@@ -83,6 +93,20 @@ impl FollowUp {
             from_user: None,
         }
     }
+}
+
+/// Something an agent said on its way — a run of its reply that more work
+/// followed, so not its answer — placed where it said it: an `Agent: …`
+/// entry of the `agentoutput` report (`docs/agent-progress.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressUpdate {
+    /// How many of the agent's calls it had made when it said this.
+    pub at: usize,
+    /// How many messages it had read by then — what places it among the
+    /// marks at the same `at` ([`AgentSnapshot::follow_ups`]).
+    pub read: usize,
+    /// What it said, trimmed and cut at [`AGENT_REPORT_UPDATE_CHARS`].
+    pub text: String,
 }
 
 /// The note telling the lead which messages the **user** sent an agent
@@ -297,6 +321,13 @@ pub struct AgentRun {
     /// [`activity`]: AgentRun::activity
     /// [`activity_shown`]: AgentRun::activity_shown
     pub last_call: Option<AgentCall>,
+    /// What the agent **said** last, once that run of text was finalised —
+    /// its newest paragraph on one line — kept while it is the newest thing
+    /// the agent did: the activity row's `Agent: {update}` outranks
+    /// [`last_call`](Self::last_call) until the next call starts, which
+    /// clears it. While the text still streams the row reads it off
+    /// [`streaming`](Self::streaming) instead (`docs/agent-progress.md`).
+    last_update: Option<String>,
     /// The **open** thinking phase's chain-of-thought, or `None` outside one
     /// — what the agent session view's strip previews while the phase runs
     /// (`ui::live_reasoning_lines`). Opened only by
@@ -405,6 +436,7 @@ impl AgentRun {
             hidden: false,
             stopped_by_user: false,
             last_call: None,
+            last_update: None,
             reasoning: None,
             round_reasoning: Vec::new(),
             thinking: None,
@@ -614,6 +646,9 @@ impl AgentRun {
                 // not stamp this one's first live rows (the main session's
                 // `start_tool` rule).
                 self.command_elapsed = None;
+                // The call is now the newest thing it did: what it said
+                // before gives the row back (docs/agent-progress.md).
+                self.last_update = None;
                 self.last_call = Some(AgentCall {
                     name: name.clone(),
                     args: args.clone(),
@@ -1097,8 +1132,10 @@ impl AgentRun {
     /// The tree row's activity: what the agent is doing — or, between tool
     /// calls, what it just did (the sticky [`last_call`] holds until the
     /// next call starts, so the row keeps its context instead of dropping to
-    /// `Working…` while the agent reasons over a result). The record's own
-    /// text, a file tool's path as the model sent it.
+    /// `Working…` while the agent reasons over a result). What the agent
+    /// **says** is its activity too, `Agent: {update}`, and the newer of the
+    /// two wins (`docs/agent-progress.md`). The record's own text, a file
+    /// tool's path as the model sent it.
     ///
     /// [`last_call`]: AgentRun::last_call
     #[must_use]
@@ -1116,26 +1153,43 @@ impl AgentRun {
     pub fn activity_shown(&self, show_args: impl FnOnce(&str, &str) -> String) -> String {
         match self.status {
             AgentStatus::Pending => AgentStatus::Pending.label().to_string(),
-            AgentStatus::Running => self.last_call.as_ref().map_or_else(
-                || "Working…".to_string(),
-                |call| {
-                    activity_line(
-                        &call.name,
-                        &show_args(&call.name, &call.args),
-                        call.detail.as_deref(),
-                    )
-                },
-            ),
+            AgentStatus::Running => match self.update() {
+                Some(update) => format!("{AGENT_UPDATE_LABEL}: {update}"),
+                None => self.last_call.as_ref().map_or_else(
+                    || "Working…".to_string(),
+                    |call| {
+                        activity_line(
+                            &call.name,
+                            &show_args(&call.name, &call.args),
+                            call.detail.as_deref(),
+                        )
+                    },
+                ),
+            },
             settled => settled.label().to_string(),
         }
     }
 
+    /// What the agent said last, while that is the newest thing it did: the
+    /// paragraph it is streaming now, else the one its last finalised run of
+    /// text ended on — until a call starts (`docs/agent-progress.md`).
+    fn update(&self) -> Option<String> {
+        self.streaming
+            .as_deref()
+            .and_then(newest_paragraph)
+            .or_else(|| self.last_update.clone())
+    }
+
     /// Finalise the streamed run of text into the transcript (the
-    /// `flush_streaming_segment` shape) and return it.
+    /// `flush_streaming_segment` shape) and return it. Its newest paragraph
+    /// stays on the activity row until the next call starts.
     fn flush_segment(&mut self) -> Option<String> {
         let text = self.streaming.take()?;
         if text.is_empty() {
             return None;
+        }
+        if let Some(update) = newest_paragraph(&text) {
+            self.last_update = Some(update);
         }
         self.history.push(HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -1299,6 +1353,109 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
     format!("{name}: {args}")
 }
 
+/// How much of the newest paragraph the activity row keeps — wider than any
+/// row it is clipped to, and a bound on the work: the row is built several
+/// times a frame while the text streams, and a table or a code block can be
+/// one long paragraph (`docs/agent-progress.md`).
+const ACTIVITY_UPDATE_MAX_CHARS: usize = 512;
+
+/// The newest paragraph of a run of reply text — its lines after the last
+/// blank one — on one line, the way the activity row shows what the agent is
+/// saying: the run's opening is stale by the time it says *now let me…*,
+/// and a single line can be a fragment of a list. Its head, up to
+/// [`ACTIVITY_UPDATE_MAX_CHARS`] and the word that crosses it. `None` while
+/// the run says nothing (`docs/agent-progress.md`).
+fn newest_paragraph(text: &str) -> Option<String> {
+    let mut lines: Vec<&str> = text
+        .lines()
+        .rev()
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+    lines.reverse();
+    let mut row = String::new();
+    let mut chars = 0;
+    for word in lines.iter().flat_map(|line| line.split_whitespace()) {
+        if chars >= ACTIVITY_UPDATE_MAX_CHARS {
+            break;
+        }
+        if !row.is_empty() {
+            row.push(' ');
+            chars += 1;
+        }
+        row.push_str(word);
+        chars += word.chars().count();
+    }
+    (!row.is_empty()).then_some(row)
+}
+
+/// What a subagent's forwarder keeps of the run it relays
+/// (`llm::backend::spawn_subagent_run`): the run of reply text since the
+/// agent last did anything else — its **answer**, if nothing follows it —
+/// and, as the run goes, the record `agentoutput` reports from: each call it
+/// starts, and each run of text that more work followed, as a **progress
+/// update** (`docs/agent-progress.md`). Pure bookkeeping over the events the
+/// forwarder relays, so the rule is tested here rather than in a thread body.
+#[derive(Debug)]
+pub struct RunRecorder {
+    registry: AgentRegistry,
+    id: String,
+    text: String,
+}
+
+impl RunRecorder {
+    /// A recorder for agent `id`'s run, keeping its record on `registry`.
+    #[must_use]
+    pub fn new(registry: AgentRegistry, id: impl Into<String>) -> Self {
+        Self {
+            registry,
+            id: id.into(),
+            text: String::new(),
+        }
+    }
+
+    /// Take one event of the run into account.
+    pub fn observe(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::Chunk(chunk) => self.text.push_str(chunk),
+            // The text before a call is something it said on the way — on
+            // the record ahead of the call, where it said it.
+            StreamEvent::ToolStart { name, args, .. } => {
+                self.said();
+                self.registry
+                    .record_call(&self.id, &crate::app::tool_header_text(name, args));
+            }
+            // More work follows the text: a tool round, or a message landing
+            // mid-run — whatever the agent had said before it is no longer
+            // its final answer, so the parent must not be handed the two
+            // concatenated (docs/queue.md). Every round that reaches a
+            // boundary emits a tool event first today, which already ends the
+            // text — but that is a property of the current paths, not of the
+            // rule, and the rule is what belongs here. A stop hook's
+            // continuation (docs/hooks.md) turns the answer so far into
+            // something said on the way, too.
+            StreamEvent::ToolBatch(_)
+            | StreamEvent::AgentBatch { .. }
+            | StreamEvent::Steered { .. }
+            | StreamEvent::HookNote { .. } => self.said(),
+            _ => {}
+        }
+    }
+
+    /// The run's answer: the text since the agent last did anything else.
+    #[must_use]
+    pub fn into_answer(self) -> String {
+        self.text
+    }
+
+    /// The text so far was said on the way: a progress update, not the
+    /// answer.
+    fn said(&mut self) {
+        self.registry
+            .record_update(&self.id, &std::mem::take(&mut self.text));
+    }
+}
+
 /// The base36 alphabet agent ids are drawn from (the task-id alphabet).
 const AGENT_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -1409,6 +1566,9 @@ pub struct AgentSnapshot {
     /// Where each message it read arrived, and whether the user sent it, in
     /// order ([`AGENT_FOLLOW_UP_MARK`]).
     pub follow_ups: Vec<FollowUp>,
+    /// What it said on its way, each where it said it, oldest first
+    /// ([`AgentRegistry::record_update`]).
+    pub updates: Vec<ProgressUpdate>,
     /// The run this snapshot describes — the one a report of it covers
     /// ([`AgentRegistry::report_settled`]).
     pub run: u64,
@@ -1534,6 +1694,9 @@ struct AgentSlot {
     /// messages *this* run answered are the ones after it
     /// ([`AgentRegistry::user_messages`]).
     run_follow_ups: usize,
+    /// What it said on its way, each where it said it — the report's
+    /// `Agent: …` entries ([`AgentRegistry::record_update`]).
+    updates: Vec<ProgressUpdate>,
     /// Which run is current: 0 for the launch, one more per continuation
     /// ([`restart`](Self::restart)) — what a settle, a report and a notice
     /// name, since a report covers one run (`docs/agent-tools.md` *One
@@ -1625,6 +1788,7 @@ impl AgentSlot {
             tool_uses: self.calls.len(),
             calls: self.calls.clone(),
             follow_ups: self.follow_ups.clone(),
+            updates: self.updates.clone(),
             run: self.run,
         }
     }
@@ -1800,6 +1964,24 @@ impl AgentRegistry {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
             slot.calls.push(header.to_string());
+        }
+    }
+
+    /// Record a run of text `id` said before doing more — a progress update
+    /// — where it said it: after the calls and the messages recorded so far
+    /// (`docs/agent-progress.md`). Trimmed and cut at
+    /// [`AGENT_REPORT_UPDATE_CHARS`]; a blank run is no update. The
+    /// forwarder's, through [`RunRecorder`].
+    pub fn record_update(&self, id: &str, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let text = cut_chars(text, AGENT_REPORT_UPDATE_CHARS);
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        if let Some(slot) = inner.slots.get_mut(id) {
+            let (at, read) = (slot.calls.len(), slot.follow_ups.len());
+            slot.updates.push(ProgressUpdate { at, read, text });
         }
     }
 
@@ -2542,11 +2724,103 @@ impl AgentSnapshot {
 /// as the report lists it, and as a waiting `agentoutput` streams it.
 #[must_use]
 pub fn report_call(header: &str) -> String {
-    let line = crate::llm::tools::flatten_one_line(header);
-    match line.char_indices().nth(AGENT_REPORT_CALL_CHARS) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line,
+    cut_chars(
+        &crate::llm::tools::flatten_one_line(header),
+        AGENT_REPORT_CALL_CHARS,
+    )
+}
+
+/// `text` kept to `max` characters, a cut marked `…`.
+fn cut_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
     }
+}
+
+/// One progress update as a report lists it: [`AGENT_UPDATE_LABEL`] over its
+/// first line and the rest indented beneath it — the user-messages note's
+/// shape — its blank lines dropped, since a blank line in a report is a
+/// section break (`docs/agent-progress.md`).
+fn report_update(text: &str) -> Vec<String> {
+    let mut rows = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|row| !row.is_empty());
+    let mut lines = vec![format!(
+        "{AGENT_UPDATE_LABEL}: {}",
+        rows.next().unwrap_or_default()
+    )];
+    lines.extend(rows.map(|row| format!("  {row}")));
+    lines
+}
+
+/// One thing an agent did, as its timeline lists it
+/// ([`AgentSnapshot::timeline`]).
+enum TimelineEntry<'a> {
+    /// Its `index`th tool call, as its `Name(args)` one-liner.
+    Call { index: usize, header: &'a str },
+    /// A message it read.
+    FollowUp(&'a FollowUp),
+    /// Its `index`th progress update.
+    Update {
+        index: usize,
+        update: &'a ProgressUpdate,
+    },
+}
+
+impl AgentSnapshot {
+    /// Everything the agent did, in the order it did it: each call, each
+    /// message it read, each update it gave. A message or an update recorded
+    /// after `n` calls falls before call `n`; among those, an update follows
+    /// the messages it had read. Keyed by counts rather than stamped by a
+    /// clock because the two are recorded on different threads — the
+    /// messages by the agent's loop as it drains its queue, the updates by
+    /// the forwarder as it relays the stream (`docs/agent-progress.md`).
+    fn timeline(&self) -> Vec<TimelineEntry<'_>> {
+        // (after how many calls, after how many messages, which goes first)
+        let mut keyed: Vec<((usize, usize, u8), TimelineEntry<'_>)> = Vec::new();
+        keyed.extend(self.updates.iter().enumerate().map(|(index, update)| {
+            (
+                (update.at, update.read, 0),
+                TimelineEntry::Update { index, update },
+            )
+        }));
+        keyed.extend(self.follow_ups.iter().enumerate().map(|(read, follow_up)| {
+            ((follow_up.at, read, 1), TimelineEntry::FollowUp(follow_up))
+        }));
+        keyed.extend(self.calls.iter().enumerate().map(|(index, header)| {
+            (
+                (index, usize::MAX, 2),
+                TimelineEntry::Call { index, header },
+            )
+        }));
+        // Stable: two updates between the same marks keep their order.
+        keyed.sort_by_key(|(key, _)| *key);
+        keyed.into_iter().map(|(_, entry)| entry).collect()
+    }
+}
+
+/// What a waiting `agentoutput` streams of `snapshot` past what it has
+/// shown — `calls` of its calls and `updates` of its updates — one line
+/// each, in the order it happened: a call as the report lists it, an update
+/// on one line under [`AGENT_UPDATE_LABEL`], cut like a call. The running
+/// cell's tail is a few rows tall, and a whole update there would push the
+/// calls around it out of view; the report lists it whole
+/// (`docs/agent-progress.md`).
+#[must_use]
+pub fn progress_lines(snapshot: &AgentSnapshot, calls: usize, updates: usize) -> Vec<String> {
+    snapshot
+        .timeline()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            TimelineEntry::Call { index, header } if index >= calls => Some(report_call(header)),
+            TimelineEntry::Update { index, update } if index >= updates => Some(report_call(
+                &format!("{AGENT_UPDATE_LABEL}: {}", update.text),
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The report line for one delivered message: the bare
@@ -2562,7 +2836,8 @@ fn follow_up_mark(follow_up: &FollowUp) -> String {
 /// `agentoutput`'s report (`docs/agent-tools.md`): the frame line, then what
 /// the agent has been doing as a **summary** — one `Name(args)` line per tool
 /// call, the newest [`AGENT_REPORT_CALLS_MAX`] with the earlier ones counted,
-/// never their outputs — then, once it has settled, what it answered.
+/// never their outputs, and what it said on its way, whole
+/// (`docs/agent-progress.md`) — then, once it has settled, what it answered.
 #[must_use]
 pub fn output_report(snapshot: &AgentSnapshot) -> String {
     let mut lines = vec![snapshot.frame()];
@@ -2572,21 +2847,24 @@ pub fn output_report(snapshot: &AgentSnapshot) -> String {
         1 => lines.push("… 1 earlier tool call".to_string()),
         n => lines.push(format!("… {n} earlier tool calls")),
     }
-    // The calls, each delivered message marked where it arrived — a mark at
-    // index `n` came after the `n`th call. Marks before the kept calls are
-    // counted with them, never shown out of place.
-    let mut follow_ups = snapshot
-        .follow_ups
-        .iter()
-        .filter(|follow_up| follow_up.at >= hidden)
-        .peekable();
-    for (index, call) in snapshot.calls.iter().enumerate().skip(hidden) {
-        while let Some(follow_up) = follow_ups.next_if(|follow_up| follow_up.at <= index) {
-            lines.push(follow_up_mark(follow_up));
+    // The calls, each delivered message marked where it arrived and each
+    // update where the agent gave it — one recorded after `n` calls came
+    // before call `n`. What happened among the hidden calls is counted with
+    // them, never shown out of place.
+    for entry in snapshot.timeline() {
+        match entry {
+            TimelineEntry::Call { index, header } if index >= hidden => {
+                lines.push(report_call(header));
+            }
+            TimelineEntry::FollowUp(follow_up) if follow_up.at >= hidden => {
+                lines.push(follow_up_mark(follow_up));
+            }
+            TimelineEntry::Update { update, .. } if update.at >= hidden => {
+                lines.extend(report_update(&update.text));
+            }
+            _ => {}
         }
-        lines.push(report_call(call));
     }
-    lines.extend(follow_ups.map(follow_up_mark));
     match &snapshot.state {
         AgentState::Running if snapshot.calls.is_empty() => {
             lines.push("No tool calls yet.".to_string());
@@ -2875,6 +3153,116 @@ mod tests {
             arguments: None,
         }));
         assert_eq!(run.activity(), "Deepwiki: ask_question");
+    }
+
+    #[test]
+    fn an_agent_talking_shows_its_newest_paragraph_on_the_activity_row() {
+        // What the agent says is its activity too — `Agent: {update}`, the
+        // newest paragraph on one line (docs/agent-progress.md).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("I'll start with the profile.\n\nLet me fetch"));
+        assert_eq!(run.activity(), "Agent: Let me fetch");
+        run.apply(&chunk(" the public\nrepositories next.\n\n"));
+        assert_eq!(
+            run.activity(),
+            "Agent: Let me fetch the public repositories next.",
+            "the paragraph's lines join on one row, its trailing blank lines skipped"
+        );
+        // The batch finalises the text: the row holds it — through a
+        // permission prompt, say — until the call starts.
+        run.apply(&StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Bash".into(),
+            args: "curl -s https://api.github.com/users/linuztx/repos".into(),
+        }]));
+        assert_eq!(
+            run.activity(),
+            "Agent: Let me fetch the public repositories next."
+        );
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "curl -s https://api.github.com/users/linuztx/repos".into(),
+            detail: Some("Fetch the repositories".into()),
+            arguments: None,
+        });
+        assert_eq!(run.activity(), "Bash: Fetch the repositories");
+        run.apply(&StreamEvent::ToolEnd {
+            output: "[…]".into(),
+            ok: true,
+            truncated: false,
+        });
+        assert_eq!(
+            run.activity(),
+            "Bash: Fetch the repositories",
+            "the call holds between calls, as it always did"
+        );
+        // The next round talks: what it says is newer than the call.
+        run.apply(&chunk("Found 42 repos."));
+        assert_eq!(run.activity(), "Agent: Found 42 repos.");
+        // Once it answers, the row says it settled.
+        run.apply(&StreamEvent::StreamDone);
+        assert_eq!(run.activity(), "Done");
+    }
+
+    #[test]
+    fn the_activity_row_reads_only_the_head_of_a_long_paragraph() {
+        // The row is computed several times a frame while the text streams,
+        // and is clipped to the terminal's width: a paragraph-long table or
+        // code block must not be copied whole each time.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk(&"word ".repeat(10_000)));
+        let activity = run.activity();
+        assert!(activity.starts_with("Agent: word word"), "{activity}");
+        assert!(
+            activity.chars().count() <= "Agent: ".len() + ACTIVITY_UPDATE_MAX_CHARS + 5,
+            "kept to the bound, give or take its last word: {} chars",
+            activity.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_blank_run_of_text_leaves_the_activity_row_alone() {
+        // A model's `\n\n` before a call says nothing: the row keeps what it
+        // showed — the call, or the last thing the agent did say.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&chunk("\n \n"));
+        assert_eq!(run.activity(), "Bash: ls");
+        run.apply(&StreamEvent::ToolEnd {
+            output: "a.rs".into(),
+            ok: true,
+            truncated: false,
+        });
+        run.apply(&chunk("Only a.rs is here."));
+        run.apply(&StreamEvent::Steered {
+            text: "check b.rs too".into(),
+        });
+        assert_eq!(
+            run.activity(),
+            "Agent: Only a.rs is here.",
+            "the text before a message it read is still the newest thing it said"
+        );
+        run.apply(&chunk("\n\n"));
+        run.apply(&StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Read".into(),
+            args: "b.rs".into(),
+        }]));
+        assert_eq!(run.activity(), "Agent: Only a.rs is here.");
+    }
+
+    #[test]
+    fn the_text_before_a_thinking_phase_stays_on_the_activity_row() {
+        // The thinking block flushes the text before it (invariant 4); the
+        // agent's words are still the newest thing it said.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("Let me think about the layout."));
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingChunk("Rows first.".into()));
+        assert_eq!(run.activity(), "Agent: Let me think about the layout.");
     }
 
     #[test]
@@ -5401,8 +5789,219 @@ mod tests {
             tool_uses: calls.len(),
             calls: calls.iter().map(|call| (*call).to_string()).collect(),
             follow_ups: Vec::new(),
+            updates: Vec::new(),
             run: 0,
         }
+    }
+
+    fn update(at: usize, read: usize, text: &str) -> ProgressUpdate {
+        ProgressUpdate {
+            at,
+            read,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_progress_update_is_recorded_where_the_agent_said_it() {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Fetch GitHub profile", "p");
+        registry.record_update(&id, " \n\n ");
+        assert!(
+            registry.snapshot(&id).unwrap().updates.is_empty(),
+            "a blank run is no update"
+        );
+        registry.record_update(&id, "\n  I'll start with the profile.  \n");
+        registry.record_call(&id, "Bash(curl one)");
+        assert!(registry.queue_input(&id, "also check the gists"));
+        let _ = registry.take_pending_inputs(&id);
+        registry.record_update(&id, "Noted — the gists too.");
+        assert_eq!(
+            registry.snapshot(&id).unwrap().updates,
+            [
+                update(0, 0, "I'll start with the profile."),
+                update(1, 1, "Noted — the gists too."),
+            ],
+            "after how many calls, and after how many messages it read"
+        );
+    }
+
+    #[test]
+    fn the_run_recorder_keeps_what_the_agent_said_before_more_work() {
+        // The forwarder's bookkeeping (llm::backend::spawn_subagent_run): each
+        // call it starts goes on the record, and each run of text more work
+        // followed is a progress update — the very points that used to throw
+        // the text away (docs/agent-progress.md).
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let start = |args: &str| StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: args.into(),
+            detail: None,
+            arguments: None,
+        };
+        let end = StreamEvent::ToolEnd {
+            output: "{}".into(),
+            ok: true,
+            truncated: false,
+        };
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        for event in [
+            chunk("I'll start "),
+            chunk("with the profile."),
+            StreamEvent::ToolBatch(vec![ToolCallSummary {
+                name: "Bash".into(),
+                args: "curl one".into(),
+            }]),
+            start("curl one"),
+            end.clone(),
+            // No batch announced: the call's own start ends the text first.
+            chunk("It lists 42 repos."),
+            start("curl two"),
+            end,
+            // A message read mid-run, a stop hook's continuation: the text
+            // before each was said on the way, and is not the answer.
+            chunk("Halfway there."),
+            StreamEvent::Steered {
+                text: "also the gists".into(),
+            },
+            chunk("Done, I think."),
+            StreamEvent::HookNote {
+                label: "Stop hook".into(),
+                text: "run the tests too".into(),
+            },
+            chunk("It has 42 repos."),
+        ] {
+            recorder.observe(&event);
+        }
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.calls, ["Bash(curl one)", "Bash(curl two)"]);
+        assert_eq!(
+            snapshot.updates,
+            [
+                update(0, 0, "I'll start with the profile."),
+                update(1, 0, "It lists 42 repos."),
+                update(2, 0, "Halfway there."),
+                update(2, 0, "Done, I think."),
+            ]
+        );
+        assert_eq!(
+            recorder.into_answer(),
+            "It has 42 repos.",
+            "the run of text nothing followed is the answer, whole"
+        );
+    }
+
+    #[test]
+    fn a_long_progress_update_is_kept_up_to_the_cap() {
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.record_update(&id, &"x".repeat(AGENT_REPORT_UPDATE_CHARS + 50));
+        let snapshot = registry.snapshot(&id).unwrap();
+        let text = &snapshot.updates[0].text;
+        assert_eq!(
+            text.chars().count(),
+            AGENT_REPORT_UPDATE_CHARS + 1,
+            "the cap, then the mark"
+        );
+        assert!(text.ends_with('…'), "{text}");
+    }
+
+    #[test]
+    fn a_report_lists_each_update_where_the_agent_said_it() {
+        // The request's picture (docs/agent-progress.md): what the agent said
+        // on its way, among its calls and the messages it read — an update
+        // after the messages it had read, a multi-line one indented beneath
+        // its first line, its blank lines dropped.
+        let mut running = snapshot(AgentState::Running, &["Bash(curl one)", "Bash(curl two)"]);
+        running.follow_ups = vec![FollowUp::lead(1)];
+        running.updates = vec![
+            update(0, 0, "I'll start with the profile."),
+            update(
+                1,
+                0,
+                "The profile lists 42 repos.\n\nFetching them next.\n  - newest first",
+            ),
+            update(1, 1, "Noted — the gists too."),
+        ];
+        assert_eq!(
+            output_report(&running),
+            [
+                "Running (agent a7k2m9x4q · Fetch GitHub profile · 42s · 2 tool uses)",
+                "Agent: I'll start with the profile.",
+                "Bash(curl one)",
+                "Agent: The profile lists 42 repos.",
+                "  Fetching them next.",
+                "    - newest first",
+                AGENT_FOLLOW_UP_MARK,
+                "Agent: Noted — the gists too.",
+                "Bash(curl two)",
+            ]
+            .join("\n")
+        );
+        // An answer still closes it, after everything it said on the way.
+        let mut done = running.clone();
+        done.state = AgentState::Done("It has 42 repos.".into());
+        done.updates.push(update(2, 1, "Both fetched."));
+        let report = output_report(&done);
+        assert!(
+            report.ends_with(
+                "Bash(curl two)\nAgent: Both fetched.\n\nFinal response:\nIt has 42 repos."
+            ),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn updates_among_the_hidden_calls_are_hidden_with_them() {
+        let calls: Vec<String> = (1..=AGENT_REPORT_CALLS_MAX + 1)
+            .map(|n| format!("Read(file{n}.rs)"))
+            .collect();
+        let refs: Vec<&str> = calls.iter().map(String::as_str).collect();
+        let mut long = snapshot(AgentState::Running, &refs);
+        long.updates = vec![
+            update(0, 0, "Before the first call."),
+            update(1, 0, "After the first call."),
+            update(AGENT_REPORT_CALLS_MAX + 1, 0, "After the last call."),
+        ];
+        let report = output_report(&long);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines[1], "… 1 earlier tool call");
+        assert_eq!(lines[2], "Agent: After the first call.");
+        assert_eq!(lines[3], "Read(file2.rs)");
+        assert_eq!(lines.last().copied(), Some("Agent: After the last call."));
+        assert!(!report.contains("Before the first call."), "{report}");
+    }
+
+    #[test]
+    fn a_wait_streams_what_is_new_one_line_each_in_order() {
+        // The waiting cell tails a few rows: an update streams on one line,
+        // cut like a call, in its place among the calls.
+        let mut snap = snapshot(
+            AgentState::Running,
+            &["Bash(curl one)", "Bash(curl two\n  --silent)"],
+        );
+        snap.updates = vec![
+            update(0, 0, "I'll start with the profile."),
+            update(1, 0, "Found it.\n\nNow the repositories."),
+            update(2, 0, &"y".repeat(400)),
+        ];
+        // Shown so far: the first update and the first call.
+        let lines = progress_lines(&snap, 1, 1);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], "Agent: Found it. Now the repositories.");
+        assert_eq!(lines[1], "Bash(curl two --silent)");
+        assert!(lines[2].starts_with("Agent: yyy"), "{}", lines[2]);
+        assert!(lines[2].ends_with('…'), "{}", lines[2]);
+        assert!(
+            lines[2].chars().count() <= AGENT_REPORT_CALL_CHARS + 1,
+            "{}",
+            lines[2]
+        );
+        assert!(
+            progress_lines(&snap, 2, 3).is_empty(),
+            "nothing new, nothing streamed"
+        );
     }
 
     #[test]

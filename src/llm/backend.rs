@@ -1662,40 +1662,27 @@ fn spawn_subagent_run(
             messages.push(ChatMessage::user(&note));
         }
         // The forwarder tags every event with the agent id and tracks the
-        // final reply text + terminal outcome (the last uninterrupted text
-        // run is the agent's final message — a new tool round resets it).
-        // Each call the agent starts goes on its registry slot too, as the
-        // `Name(args)` one-liner `agentoutput` summarizes it by
-        // (docs/agent-tools.md). The **terminal** event is held back: it
-        // goes out through `registry.settle` below, once the outcome is
-        // recorded — at once, or to an `agentoutput` waiting on it, which
-        // then reports the outcome instead of a notice repeating it.
+        // terminal outcome, while its `RunRecorder` keeps the final reply
+        // text (the last uninterrupted text run is the agent's final message
+        // — a new tool round ends it) and the record `agentoutput` reports
+        // from: each call the agent starts, as its `Name(args)` one-liner,
+        // and each run of text more work followed, as a progress update
+        // (docs/agent-tools.md, docs/agent-progress.md). The **terminal**
+        // event is held back: it goes out through `registry.settle` below,
+        // once the outcome is recorded — at once, or to an `agentoutput`
+        // waiting on it, which then reports the outcome instead of a notice
+        // repeating it.
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
         let forward_registry = registry.clone();
         let forward_id = id.clone();
         let forwarder = thread::spawn(move || {
-            let mut final_text = String::new();
+            let mut recorder =
+                crate::agents::RunRecorder::new(forward_registry.clone(), forward_id.clone());
             let mut outcome: Option<Result<(), String>> = None;
             let mut terminal: Option<StreamEvent> = None;
             while let Some(event) = rx2.blocking_recv() {
+                recorder.observe(&event);
                 match &event {
-                    StreamEvent::Chunk(chunk) => final_text.push_str(chunk),
-                    StreamEvent::ToolStart { name, args, .. } => {
-                        final_text.clear();
-                        forward_registry
-                            .record_call(&forward_id, &crate::app::tool_header_text(name, args));
-                    }
-                    StreamEvent::ToolBatch(_)
-                    | StreamEvent::AgentBatch { .. }
-                    // A user message landed mid-run: whatever the agent had
-                    // said before it is no longer its final answer, so the
-                    // parent must not be handed the two concatenated
-                    // (docs/queue.md). Every round that reaches a boundary
-                    // emits a tool event first today, which already clears
-                    // this — but that is a property of the current paths, not
-                    // of the rule, and the rule is what belongs here.
-                    | StreamEvent::Steered { .. }
-                    | StreamEvent::HookNote { .. } => final_text.clear(),
                     StreamEvent::StreamDone => outcome = Some(Ok(())),
                     StreamEvent::Error(e) => outcome = Some(Err(e.clone())),
                     _ => {}
@@ -1709,7 +1696,7 @@ fn spawn_subagent_run(
                     event,
                 });
             }
-            (final_text, outcome, terminal)
+            (recorder.into_answer(), outcome, terminal)
         });
         let mut executor = RealToolExecutor::new()
             .with_vision(vision)

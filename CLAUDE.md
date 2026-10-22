@@ -1364,7 +1364,9 @@ blinking-grey `● Running {n} agents…` tree (per-agent description · tool us
 (`agents::activity_line`): a bash call's own `description`, held between
 calls, else `{Name}: {args}` (`Write: game.py` — never the header's
 parenthesised `{Name}({args})`), an MCP call as the capitalized
-`{Server}: {tool}` (`Deepwiki: ask_question`) —
+`{Server}: {tool}` (`Deepwiki: ask_question`), and — while the agent
+talks — `Agent: {its newest paragraph}`, which holds until the next call
+starts (`AgentRun::last_update`, `docs/agent-progress.md`) —
 Ctrl+B moves the group to the background; a **lone** agent renders
 `● Agent({description})` over that same one activity row instead, and **every**
 such row — tree and lone cell alike — is one **dim, clipped** line
@@ -1457,6 +1459,10 @@ continuation's first round announces the message as `Steered`; a user-`x`
 stop is final, the lead's own `agentkill` resumable), `agentoutput
 {agent_id, wait?}` reports `{State} (agent {id} · {task} · {runtime} · {n}
 tool uses)` over one `Name(args)` line per call — lifetime numbers, each
+run of text the agent wrote before more work an `Agent: …` progress update
+where it said it (whole, up to `AGENT_REPORT_UPDATE_CHARS`; recorded by the
+forwarder's `agents::RunRecorder`, streamed one line each into a waiting
+cell — `docs/agent-progress.md`), each
 read message marked `— message received —` (a message the *user* typed
 into its session view quoted instead, and named as the user's in the
 lead's notice and foreground result — and one that starts a **settled**

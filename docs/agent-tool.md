@@ -323,10 +323,16 @@ again (`docs/agent-tools.md` *A resume is news when it starts*).
   after the colon shows the bare name — held between calls (never dropping
   to `Working…`) so the row keeps its context while the agent reasons over
   a result (`StreamEvent::ToolStart` carries the `detail`;
-  `AgentRun::last_call`). A **lone** agent renders the tool-cell shape
-  instead of a one-row tree: `● Agent({description})` over that same one
-  `⎿ {activity}` row — `⎿ Initializing…`, then
-  `⎿ Bash: Fetch public repos for linuztx` / `⎿ Bash: curl -s https://…`.
+  `AgentRun::last_call`). What the agent **says** is its activity too:
+  while it writes, the row is `Agent: {update}` — the newest paragraph of
+  its text on one line — and it holds once the text is finalised until the
+  next call starts, the newer of the two winning
+  (`AgentRun::last_update`, `docs/agent-progress.md`). A **lone** agent
+  renders the tool-cell shape instead of a one-row tree:
+  `● Agent({description})` over that same one `⎿ {activity}` row —
+  `⎿ Initializing…`, then `⎿ Bash: Fetch public repos for linuztx` /
+  `⎿ Bash: curl -s https://…` /
+  `⎿ Agent: The profile lists 42 public repos; checking the events now.`.
   The strip's `preview_rows`/`preview_lines` size and draw it like the tool
   queue.
 

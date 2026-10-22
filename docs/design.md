@@ -642,7 +642,9 @@ which Ctrl+V reads the clipboard from.
   `Resume this session with: {bin} --resume {id}` — an empty session prints
   nothing (`docs/cli.md`).
 - **Subagents** (`docs/agent-tool.md`): the model's `agent` tool launches
-  autonomous side-agents — a live tree cell while a foreground group runs, a
+  autonomous side-agents — a live tree cell while a foreground group runs,
+  each row naming the agent's newest call or, while it talks, its words
+  (`Agent: …`, `docs/agent-progress.md`), a
   persistent `● main` + `◯ …` roster under the footer (↓ selects — resuming on
   the last picked row — Enter opens an agent's own inline session view the
   user can chat in, `x` stops it and a second `x` clears the red row it
@@ -653,8 +655,9 @@ which Ctrl+V reads the clipboard from.
   model is handed, and `agent`'s companions work it the way the bash family
   works a session — `agentsend` messages a running agent or resumes a
   finished one's conversation, `agentoutput` reports its tool calls as one
-  line each (and with `wait` blocks on it, no notice repeating an answer it
-  reported), `agentkill` stops it resumably, `agentlist` lists them; settled
+  line each and what it said on its way whole, each where it said it (and
+  with `wait` blocks on it, no notice repeating an answer it reported),
+  `agentkill` stops it resumably, `agentlist` lists them; settled
   agents stay resumable past their roster rows (the newest 16), and one the
   user's own message starts again is announced to the lead as it starts, so
   the lead never goes on believing it failed or finished — the note dropped

@@ -56,13 +56,17 @@ the first resumed turn that carries it).
 ```
 
 What the agent has been doing, as a **summary** — one `Name(args)` line per
-tool call, the same one-liners the Ctrl+O agent cell lists — under a frame
-line saying where it stands:
+tool call, the same one-liners the Ctrl+O agent cell lists, and what it said
+on its way, each **progress update** an `Agent: …` entry where it said it
+(`docs/agent-progress.md`) — under a frame line saying where it stands:
 
 ```text
 Running (agent a7k2m9x4q · Fetch GitHub profile · 42s · 3 tool uses)
+Agent: I'll start with the profile, then the repositories.
 Bash(curl -s https://api.github.com/users/linuztx)
 Bash(curl -s "https://api.github.com/users/linuztx/repos?per_page=100&sort=updated")
+Agent: 42 public repos, most of them Rust.
+  Checking the recent events next.
 Bash(curl -s https://api.github.com/users/linuztx/events/public)
 ```
 
@@ -80,9 +84,13 @@ Final response:
 
 `Failed (…)` carries its error, `Stopped (…)` says by whom — and whether
 `agentsend` can resume it. Only the newest 30 calls are listed, each cut to
-one line; earlier ones are counted (`… 12 earlier tool calls`). The tool
-outputs are deliberately absent: they are the agent's context, not the
-lead's, and the point of a subagent is that the lead never pays for them.
+one line; earlier ones are counted (`… 12 earlier tool calls`), and what the
+agent said among them goes with them. The tool outputs are deliberately
+absent: they are the agent's context, not the lead's, and the point of a
+subagent is that the lead never pays for them. Its own words are not: an
+update is its account of what it found and what it is doing next, so it is
+listed whole — up to 2,000 characters, its first line under `Agent: ` and
+the rest indented beneath it.
 
 The frame's numbers cover the agent's **whole life** — its runtime and its
 tool uses summed over the launch and every continuation — and each message
@@ -96,9 +104,10 @@ and a model read `9s · 5 tool uses` as five calls its follow-up had made —
 it had made none, which the mark after the fifth call now shows.
 
 `wait` (seconds, default 0, at most 600) blocks until the agent settles or
-the time passes. A waiting cell **streams** each call the agent starts
-during the wait, one line each, so the user watches the agent work from the
-lead's own transcript, and Ctrl+B ends the wait early (the agent runs on).
+the time passes. A waiting cell **streams** each call the agent starts and
+each update it gives during the wait, one line each, so the user watches the
+agent work from the lead's own transcript, and Ctrl+B ends the wait early
+(the agent runs on).
 Every report of an agent still at work — a look, or a wait that passed —
 closes on a note saying it is still running and how to wait for it: a model
 that looked once without `wait` told the user the agent had stopped.
@@ -446,7 +455,7 @@ the real binary (`docs/dummy-backend.md`).
 | | |
 | --- | --- |
 | `src/llm/tools.rs` | the specs, the argument types, the display names and header summaries |
-| `src/agents.rs` | the registry (identity, progress, retention, the waiter protocol) and the pure report formatting |
+| `src/agents.rs` | the registry (identity, progress, retention, the waiter protocol), the run recorder the forwarder keeps the record with, and the pure report formatting |
 | `src/llm/agent_tools.rs` | the executor — the companions over the registry, a continuation spawned through an injected launcher |
 | `src/llm/backend.rs` | the forwarder's hold-back, the ids in the launch texts, the routing |
 | `src/app/agent.rs`, `src/tui/agent.rs` | the roster side: observed settles, the lead's stop, resume and revival |
