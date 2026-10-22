@@ -136,7 +136,7 @@ struct Registered {
 /// same turn — while notes still on the board at a turn boundary (the model
 /// never saw them) drive the automatic follow-up turn instead. See
 /// `docs/background.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingNotice {
     /// The note's number on the board, in posting order — what the in-flight
     /// agent's delivery echo names ([`StreamEvent::NoticeDelivered`]), so the
@@ -151,14 +151,26 @@ pub struct PendingNotice {
     /// Whether the model launched the shell (an untaken note from one is what
     /// warrants the automatic follow-up turn).
     pub from_model: bool,
-    /// The subagent whose completion this is — `None` for a shell. What an
-    /// `agentoutput` report retracts by, when it hands the lead the same
-    /// answer first (`docs/agent-tools.md` *One notice per answer*).
+    /// The subagent whose completion this is — `None` for anything else.
+    /// What an `agentoutput` report retracts by, when it hands the lead the
+    /// same answer first (`docs/agent-tools.md` *One notice per answer*).
     pub agent: Option<String>,
     /// The session whose exit — or whose prompt — this note reports. What a
     /// companion call that reports the same first takes it back by
     /// (`docs/bash-tools.md` *One notice per exit*).
     pub shell: Option<String>,
+    /// The subagent whose run this note says the user started again —
+    /// `None` for anything else. Kept apart from [`agent`](Self::agent):
+    /// the note is stale once the lead is handed **that** run's end, while a
+    /// report of the run before it leaves it be (`docs/agent-tools.md` *A
+    /// resume is news when it starts*).
+    pub resumed: Option<String>,
+    /// For an agent's note — [`agent`](Self::agent) or
+    /// [`resumed`](Self::resumed) — the run it is about: the run a
+    /// completion ends, or the run a resume starts. A report covers one run,
+    /// so it takes back that run's completion and hands the earlier ones
+    /// back to carry (`docs/agent-tools.md` *One notice per answer*).
+    pub run: Option<u64>,
 }
 
 /// An exit no call reported — the monitor finalized it with nobody waiting,
@@ -433,24 +445,13 @@ struct Inner {
 }
 
 impl Inner {
-    /// Number a note and put it on the board.
-    fn push_notice(
-        &mut self,
-        context: String,
-        from_model: bool,
-        agent: Option<String>,
-        shell: Option<String>,
-    ) -> u64 {
+    /// Number a note and put it on the board — `notice` as its poster
+    /// tagged it, its [`seq`](PendingNotice::seq) assigned here.
+    fn push_notice(&mut self, mut notice: PendingNotice) -> u64 {
         self.notice_seq += 1;
-        let seq = self.notice_seq;
-        self.pending_notices.push(PendingNotice {
-            seq,
-            context,
-            from_model,
-            agent,
-            shell,
-        });
-        seq
+        notice.seq = self.notice_seq;
+        self.pending_notices.push(notice);
+        self.notice_seq
     }
 
     /// Take every untaken note `matches` off the board, remembering each
@@ -1288,15 +1289,44 @@ impl BackgroundRegistry {
     /// [`seq`](PendingNotice::seq).
     pub fn post_notice(&self, context: String, from_model: bool) -> u64 {
         let mut inner = self.inner.lock().expect("registry lock");
-        inner.push_notice(context, from_model, None, None)
+        inner.push_notice(PendingNotice {
+            context,
+            from_model,
+            ..PendingNotice::default()
+        })
     }
 
-    /// Post a subagent's completion note, tagged with its id
-    /// ([`AgentRegistry::post_notice`](crate::agents::AgentRegistry::post_notice)
-    /// is the one caller). Returns the note's [`seq`](PendingNotice::seq).
-    pub fn post_agent_notice(&self, context: String, agent: &str) -> u64 {
+    /// Post a subagent's completion note, tagged with its id and `run`, the
+    /// run it ended — named by that run's settle
+    /// ([`AgentRegistry::post_notice`](crate::agents::AgentRegistry::post_notice))
+    /// or by the user's stop. Returns the note's [`seq`](PendingNotice::seq).
+    pub fn post_agent_notice(&self, context: String, agent: &str, run: Option<u64>) -> u64 {
         let mut inner = self.inner.lock().expect("registry lock");
-        inner.push_notice(context, true, Some(agent.to_string()), None)
+        inner.push_notice(PendingNotice {
+            context,
+            from_model: true,
+            agent: Some(agent.to_string()),
+            run,
+            ..PendingNotice::default()
+        })
+    }
+
+    /// Post the note that the user started settled agent `agent` again
+    /// (`docs/agent-tools.md`), tagged [`resumed`](PendingNotice::resumed)
+    /// rather than with its completions and owing **no** automatic follow-up
+    /// turn — there is nothing to answer until the run's own completion
+    /// notice, which brings one ([`AgentRegistry::post_resume_notice`] is
+    /// the one caller). Returns the note's [`seq`](PendingNotice::seq).
+    ///
+    /// [`AgentRegistry::post_resume_notice`]: crate::agents::AgentRegistry::post_resume_notice
+    pub fn post_agent_resume_notice(&self, context: String, agent: &str, run: u64) -> u64 {
+        let mut inner = self.inner.lock().expect("registry lock");
+        inner.push_notice(PendingNotice {
+            context,
+            resumed: Some(agent.to_string()),
+            run: Some(run),
+            ..PendingNotice::default()
+        })
     }
 
     /// Post the note of session `id`'s exit — the event loop, as it handles
@@ -1315,7 +1345,12 @@ impl BackgroundRegistry {
             inner.unread_exits.remove(id);
             return None;
         }
-        let seq = inner.push_notice(context, from_model, None, Some(id.to_string()));
+        let seq = inner.push_notice(PendingNotice {
+            context,
+            from_model,
+            shell: Some(id.to_string()),
+            ..PendingNotice::default()
+        });
         if let Some(exit) = inner.unread_exits.get_mut(id) {
             exit.note = ExitNote::Posted(seq);
         }
@@ -1341,7 +1376,12 @@ impl BackgroundRegistry {
         {
             return None;
         }
-        Some(inner.push_notice(context, from_model, None, Some(id.to_string())))
+        Some(inner.push_notice(PendingNotice {
+            context,
+            from_model,
+            shell: Some(id.to_string()),
+            ..PendingNotice::default()
+        }))
     }
 
     /// Session `id`'s note is going to the launching subagent's own queue
@@ -1493,16 +1533,56 @@ impl BackgroundRegistry {
         }
     }
 
-    /// Take `agent`'s completion notes back off the board, untaken — an
-    /// `agentoutput` report already handed the lead what they say — and
-    /// remember their numbers, so the loop drops the cells it holds for them
-    /// ([`take_retracted`](Self::take_retracted)). Whether any was still
-    /// there.
-    pub fn retract_agent_notice(&self, agent: &str) -> bool {
+    /// Take the completion notes of `agent`'s run `run` back off the board,
+    /// untaken — an `agentoutput` report already handed the lead what they
+    /// say — and remember their numbers, so the loop drops the cells it
+    /// holds for them ([`take_retracted`](Self::take_retracted)). Whether
+    /// any was still there. Neither an earlier run's completion
+    /// ([`take_earlier_agent_notices`](Self::take_earlier_agent_notices)) nor
+    /// the note that the user started it again
+    /// ([`retract_agent_resume_notice`](Self::retract_agent_resume_notice))
+    /// is one of them.
+    pub fn retract_agent_notice(&self, agent: &str, run: u64) -> bool {
         self.inner
             .lock()
             .expect("registry lock")
-            .retract(|notice| notice.agent.as_deref() == Some(agent))
+            .retract(|notice| notice.agent.as_deref() == Some(agent) && notice.run == Some(run))
+    }
+
+    /// Take the completion notes of `agent`'s runs before `run` off the
+    /// board, untaken, and return what they say, oldest first — a report of
+    /// `run` carries them, since each is an answer the lead has not read and
+    /// came before the one it reports (`docs/agent-tools.md` *One notice per
+    /// answer*). Their numbers are remembered like
+    /// [`retract_agent_notice`](Self::retract_agent_notice)'s, so their
+    /// cells are dropped too.
+    pub fn take_earlier_agent_notices(&self, agent: &str, run: u64) -> Vec<String> {
+        let mut inner = self.inner.lock().expect("registry lock");
+        let taken: Vec<PendingNotice> = inner
+            .pending_notices
+            .extract_if(.., |notice| {
+                notice.agent.as_deref() == Some(agent) && notice.run.is_some_and(|of| of < run)
+            })
+            .collect();
+        inner
+            .retracted
+            .extend(taken.iter().map(|notice| notice.seq));
+        taken.into_iter().map(|notice| notice.context).collect()
+    }
+
+    /// Take the note that the user started `agent` again back off the board,
+    /// untaken — the lead has been handed that run's end, so the note would
+    /// tell it afterwards that the agent runs and that a notice will come —
+    /// remembering its number like [`retract_agent_notice`]'s. Whether one
+    /// was still there. The agent registry decides when, under its own lock
+    /// (`docs/agent-tools.md` *A resume is news when it starts*).
+    ///
+    /// [`retract_agent_notice`]: Self::retract_agent_notice
+    pub fn retract_agent_resume_notice(&self, agent: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("registry lock")
+            .retract(|notice| notice.resumed.as_deref() == Some(agent))
     }
 
     /// Was note `seq` taken back off the board before a model read it?
@@ -2362,6 +2442,8 @@ mod tests {
                     from_model: true,
                     agent: None,
                     shell: None,
+                    resumed: None,
+                    run: None,
                 },
                 PendingNotice {
                     seq: second,
@@ -2369,6 +2451,8 @@ mod tests {
                     from_model: false,
                     agent: None,
                     shell: None,
+                    resumed: None,
+                    run: None,
                 },
             ]
         );
@@ -2376,6 +2460,79 @@ mod tests {
             reg.take_pending_notices().is_empty(),
             "a take drains the board — nothing is delivered twice"
         );
+    }
+
+    #[test]
+    fn an_agents_resume_note_starts_no_follow_up_turn_of_its_own() {
+        // The user started a settled agent again (docs/agent-tools.md): the
+        // lead must hear it, but there is nothing to answer yet — the run's
+        // completion notice is what warrants a turn.
+        let (reg, _rx) = registry();
+        let seq = reg.post_agent_resume_notice("[background agent] resumed".into(), "a1", 1);
+        assert_eq!(
+            reg.take_pending_notices(),
+            vec![PendingNotice {
+                seq,
+                context: "[background agent] resumed".into(),
+                from_model: false,
+                agent: None,
+                shell: None,
+                resumed: Some("a1".into()),
+                run: Some(1),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_resume_note_is_taken_back_apart_from_the_agents_completions() {
+        // A report of the run before the resume takes back that run's
+        // completion and leaves the note that the agent runs again, which is
+        // about a run the lead has not heard of; only a report of the resumed
+        // run's own end takes that note back (docs/agent-tools.md *A resume
+        // is news when it starts*).
+        let (reg, _rx) = registry();
+        let completion = reg.post_agent_notice("[background agent] failed".into(), "a1", Some(0));
+        let resume = reg.post_agent_resume_notice("[background agent] resumed".into(), "a1", 1);
+        let other = reg.post_agent_resume_notice("[background agent] resumed".into(), "a2", 0);
+        assert!(reg.retract_agent_notice("a1", 0));
+        assert!(reg.take_retracted(completion));
+        assert!(!reg.take_retracted(resume), "the resume note stays");
+        assert!(reg.retract_agent_resume_notice("a1"));
+        assert!(reg.take_retracted(resume));
+        assert!(
+            !reg.retract_agent_resume_notice("a1"),
+            "nothing of a1's is left"
+        );
+        let left = reg.take_pending_notices();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert_eq!(left[0].seq, other, "another agent's note stays");
+    }
+
+    #[test]
+    fn an_agents_completion_is_taken_back_by_its_run() {
+        // A report covers one run: it takes back that run's completion and
+        // hands back the earlier runs' — still unread — for it to carry,
+        // oldest first; another agent's notes and the shells' stay
+        // (docs/agent-tools.md *One notice per answer*).
+        let (reg, _rx) = registry();
+        let first = reg.post_agent_notice("first".into(), "a1", Some(0));
+        let second = reg.post_agent_notice("second".into(), "a1", Some(1));
+        let third = reg.post_agent_notice("third".into(), "a1", Some(2));
+        let other = reg.post_agent_notice("other".into(), "a2", Some(0));
+        let shell = reg.post_notice("[background] a shell".into(), true);
+        assert!(reg.retract_agent_notice("a1", 2));
+        assert!(!reg.retract_agent_notice("a1", 2), "once");
+        assert_eq!(reg.take_earlier_agent_notices("a1", 2), ["first", "second"]);
+        assert!(reg.take_earlier_agent_notices("a1", 2).is_empty(), "once");
+        for seq in [first, second, third] {
+            assert!(reg.take_retracted(seq), "note {seq} owes no cell");
+        }
+        let left: Vec<u64> = reg
+            .take_pending_notices()
+            .iter()
+            .map(|notice| notice.seq)
+            .collect();
+        assert_eq!(left, [other, shell]);
     }
 
     #[test]

@@ -215,11 +215,38 @@ fn agent_durations_humanize_past_a_minute() {
         result: String::new(),
         timestamp: String::new(),
         user_messages: Vec::new(),
+        resumed: false,
     };
     let texts: Vec<String> = agent_notice_lines(&notice, 100).iter().map(plain).collect();
     assert_eq!(
         texts[0],
         "● Agent \"Count 1-100 with sleep\" finished · 6m 2s"
+    );
+}
+
+#[test]
+fn a_resume_notice_wears_the_system_notice_bullet() {
+    // The user started a settled agent again (docs/agent-tools.md): neither
+    // an answer nor a failure, so neither green nor red — the informational
+    // cyan the system notices wear.
+    let notice = crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Build the frontend".into(),
+        status: crate::agents::AgentStatus::Failed,
+        secs: 0,
+        result: String::new(),
+        timestamp: String::new(),
+        user_messages: vec!["carry on".into()],
+        resumed: true,
+    };
+    let lines = agent_notice_lines(&notice, 100);
+    assert_eq!(
+        plain(&lines[0]),
+        "● Agent \"Build the frontend\" was resumed by user"
+    );
+    assert_eq!(
+        lines[0].spans[0].style.fg,
+        Some(crate::ui::theme::system_color())
     );
 }
 
@@ -362,6 +389,7 @@ fn the_transcript_expands_agent_groups_and_notices() {
             result: "19°C".into(),
             timestamp: String::new(),
             user_messages: Vec::new(),
+            resumed: false,
         }));
     let texts: Vec<String> = transcript_lines(&app, 100).iter().map(plain).collect();
     assert!(texts.contains(&"● Agent(Fetch Warsaw) · a1".to_string()));

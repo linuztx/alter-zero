@@ -60,6 +60,16 @@ const STILL_RUNNING_NOTE: &str = "[Still running — you are notified when it fi
 const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the agent keeps running \
      and you are notified when it finishes.]";
 
+/// Ahead of an earlier run's notice a report carries: the agent ended that
+/// run before the one reported, and the notice never reached the lead
+/// (`docs/agent-tools.md` *One notice per answer*).
+const EARLIER_RUN_NOTE: &str =
+    "[Before this run it had ended an earlier one, whose notice had not reached you:]";
+
+/// [`EARLIER_RUN_NOTE`] for several.
+const EARLIER_RUNS_NOTE: &str = "[Before this run it had ended earlier ones, whose notices \
+     had not reached you — oldest first:]";
+
 /// Run one companion call (`docs/agent-tools.md`). `on_output` streams a
 /// waiting `agentoutput`'s calls as the agent starts them, so its running
 /// cell shows the agent at work.
@@ -216,16 +226,32 @@ fn output(
 /// registry told so, so the completion notice saying the same is cancelled
 /// or taken back (`docs/agent-tools.md` *One notice per answer*). A wait
 /// that saw the settle already marked it observed; this covers the settle
-/// it just missed, and the one that landed before the lead looked.
+/// it just missed, and the one that landed before the lead looked. Any
+/// earlier run's notice still unread comes back from the registry and
+/// follows the report, introduced as the earlier answer it is.
 fn reported(
     ctx: &AgentToolContext<'_>,
     snapshot: &crate::agents::AgentSnapshot,
     ended_by_user: bool,
 ) -> ToolOutcome {
-    if snapshot.state != AgentState::Running {
-        ctx.registry.report_settled(&snapshot.id, ctx.background);
+    let earlier = if snapshot.state == AgentState::Running {
+        Vec::new()
+    } else {
+        ctx.registry
+            .report_settled(&snapshot.id, snapshot.run, ctx.background)
+    };
+    let mut report = report(snapshot, ended_by_user);
+    if !earlier.is_empty() {
+        report.push_str("\n\n");
+        report.push_str(if earlier.len() == 1 {
+            EARLIER_RUN_NOTE
+        } else {
+            EARLIER_RUNS_NOTE
+        });
+        report.push('\n');
+        report.push_str(&earlier.join("\n\n"));
     }
-    ToolOutcome::ok(report(snapshot, ended_by_user))
+    ToolOutcome::ok(report)
 }
 
 /// `agentoutput`'s result: the report, and — for an agent still at work —
@@ -246,9 +272,11 @@ fn report(snapshot: &crate::agents::AgentSnapshot, ended_by_user: bool) -> Strin
 }
 
 /// `agentkill`: the lead's stop — the agent's report, where it got to, as
-/// the result. One already settled is left as it was.
+/// the result. One already settled is left as it was. The board goes with
+/// the stop: either result says the run is over, so a note still announcing
+/// that the user started the run is taken back ([`AgentRegistry::stop`]).
 fn kill(ctx: &AgentToolContext<'_>, id: &str) -> ToolOutcome {
-    let Some(stop) = ctx.registry.stop(id) else {
+    let Some(stop) = ctx.registry.stop(id, ctx.background) else {
         return unknown_agent(ctx.registry, id);
     };
     let Some(snapshot) = ctx.registry.snapshot(id) else {
@@ -425,7 +453,7 @@ mod tests {
         // takes a moment to return, and the send resumes it once it has.
         let (registry, _rx) = registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
-        let _ = registry.stop(&id);
+        let _ = registry.stop(&id, None);
         let finisher = {
             let registry = registry.clone();
             let id = id.clone();
@@ -597,6 +625,7 @@ mod tests {
                 id,
                 event: StreamEvent::StreamDone,
                 observed: true,
+                run: 0,
             }],
             "the report was the notice"
         );
@@ -640,7 +669,7 @@ mod tests {
             outcome.output
         );
         assert_eq!(
-            registry.post_notice(&id, &background, Some("note".into())),
+            registry.post_notice(&id, 0, &background, Some("note".into())),
             crate::agents::NoticePost::Covered
         );
         assert!(background.take_pending_notices().is_empty());
@@ -650,7 +679,7 @@ mod tests {
     fn a_report_takes_back_a_notice_the_lead_has_not_read() {
         let (registry, id, background) = settled_unobserved();
         let crate::agents::NoticePost::Posted(Some(seq)) =
-            registry.post_notice(&id, &background, Some("note".into()))
+            registry.post_notice(&id, 0, &background, Some("note".into()))
         else {
             panic!("the settle owed a notice");
         };
@@ -672,6 +701,166 @@ mod tests {
             background.take_pending_notices().is_empty(),
             "off the board"
         );
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    /// A failed agent the user brought back with "continue with React" while
+    /// the lead was mid-round — the note that it runs again posted, unread.
+    fn resumed_by_user() -> (AgentRegistry, String, BackgroundRegistry, u64) {
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.finish(&id, Err("refused".into()), vec![ChatMessage::user("p")]);
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.note_user_message(&id, "continue with React");
+        let seq = registry
+            .post_resume_notice(&id, &background, "running again".into())
+            .expect("the run is going");
+        (registry, id, background, seq)
+    }
+
+    #[test]
+    fn a_look_at_the_resumed_runs_end_takes_back_the_note_that_it_runs() {
+        // The resumed run ends and the lead looks before the loop has handled
+        // the settle: the report hands it the answer, so the note that the
+        // agent runs again must not reach it after (docs/agent-tools.md *A
+        // resume is news when it starts*).
+        let (registry, id, background, seq) = resumed_by_user();
+        registry.settle(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        assert!(
+            outcome.output.ends_with("Frontend created."),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+        assert_eq!(
+            registry.post_notice(&id, 1, &background, Some("note".into())),
+            crate::agents::NoticePost::Covered
+        );
+    }
+
+    #[test]
+    fn agentkill_takes_back_the_note_that_the_user_resumed_the_run() {
+        // The lead stops the agent before reading the note: the stop's report
+        // is the run's end — the user's message marked in it — and no notice
+        // follows a stop the lead made, so "running again, you will be
+        // notified" must not reach it after (docs/agent-tools.md).
+        let (registry, id, background, seq) = resumed_by_user();
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(tools::AGENT_KILL_TOOL, serde_json::json!({"agent_id": id})),
+        );
+        assert!(
+            outcome.output.starts_with("Stopped (agent"),
+            "{}",
+            outcome.output
+        );
+        assert!(
+            outcome
+                .output
+                .contains("— message from the user: continue with React —"),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    #[test]
+    fn agentkill_of_a_resumed_agent_already_done_takes_back_its_note() {
+        // The resumed run finished before the lead read the note: the kill
+        // stops nothing and its report says the agent is done, so the note
+        // that it runs again must not follow it (docs/agent-tools.md).
+        let (registry, id, background, seq) = resumed_by_user();
+        registry.finish(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(tools::AGENT_KILL_TOOL, serde_json::json!({"agent_id": id})),
+        );
+        assert!(
+            outcome.output.contains("is not running"),
+            "{}",
+            outcome.output
+        );
+        assert!(background.take_pending_notices().is_empty());
+        assert!(background.take_retracted(seq), "and its cell is not owed");
+    }
+
+    #[test]
+    fn a_report_carries_an_earlier_runs_unread_answer_after_its_own() {
+        // The run the report covers came last; the one before it ended
+        // unread, and its notice — taken off the board — follows the report,
+        // marked as the earlier answer, where it used to be thrown away
+        // (docs/agent-tools.md *One notice per answer*).
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Create the frontend", "p");
+        let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let background = BackgroundRegistry::new(bg_tx, std::env::temp_dir());
+        registry.settle(
+            &id,
+            Ok("Frontend created.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let earlier = "[background agent] Agent \"Create the frontend\" completed.\n\
+                       Final response:\nFrontend created.";
+        let crate::agents::NoticePost::Posted(Some(seq)) =
+            registry.post_notice(&id, 0, &background, Some(earlier.into()))
+        else {
+            panic!("the first run owed a notice");
+        };
+        let _ = registry.begin_continuation(&id).expect("settled");
+        registry.settle(
+            &id,
+            Ok("Added tests.".into()),
+            vec![ChatMessage::user("p")],
+            Some(StreamEvent::StreamDone),
+        );
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            Some(&background),
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        let output = &outcome.output;
+        let own = output
+            .find("Final response:\nAdded tests.")
+            .unwrap_or_else(|| panic!("the report's own answer: {output}"));
+        let lead_in = output
+            .find(EARLIER_RUN_NOTE)
+            .unwrap_or_else(|| panic!("the earlier answer is introduced: {output}"));
+        let carried = output
+            .find(earlier)
+            .unwrap_or_else(|| panic!("the earlier answer is carried: {output}"));
+        assert!(own < lead_in && lead_in < carried, "{output}");
+        assert!(background.take_pending_notices().is_empty());
         assert!(background.take_retracted(seq), "and its cell is not owed");
     }
 
@@ -698,7 +887,7 @@ mod tests {
         );
         assert!(
             matches!(
-                registry.post_notice(&id, &background, Some("note".into())),
+                registry.post_notice(&id, 0, &background, Some("note".into())),
                 crate::agents::NoticePost::Posted(Some(_))
             ),
             "the answer it did not report is still noticed"
@@ -773,6 +962,7 @@ mod tests {
                 id,
                 event: StreamEvent::StreamDone,
                 observed: false,
+                run: 0,
             }]
         );
     }

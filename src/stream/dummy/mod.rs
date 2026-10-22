@@ -28,7 +28,7 @@ use crate::context::ContextMessage;
 use self::scenario::{Cue, Play, Stage};
 use super::{CancelToken, ReplySource, StreamEvent};
 
-mod agent;
+pub(super) mod agent;
 mod gated;
 pub(super) mod scenario;
 pub(super) mod script;

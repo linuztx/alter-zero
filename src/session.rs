@@ -262,6 +262,11 @@ struct AgentNoticeRecord {
     /// that names none, and from every rollout older than the field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     user_messages: Vec<String>,
+    /// The user started the agent again rather than it settling
+    /// (`docs/agent-tools.md`) — omitted when false, so a completion's record
+    /// keeps its shape (the background record's `waiting` rule).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resumed: bool,
 }
 
 /// The lowercase on-disk name of an agent status.
@@ -638,6 +643,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             result: notice.result.clone(),
             timestamp: notice.timestamp.clone(),
             user_messages: notice.user_messages.clone(),
+            resumed: notice.resumed,
         }),
         HistoryItem::Reasoning(reasoning) => ItemRecord::Reasoning(ReasoningRecord {
             text: reasoning.text.clone(),
@@ -820,6 +826,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     result: notice.result,
                     timestamp: notice.timestamp,
                     user_messages: notice.user_messages,
+                    resumed: notice.resumed,
                 }));
             }
             ItemRecord::HookNote(note) => {
@@ -2117,6 +2124,7 @@ mod tests {
             result: String::new(),
             timestamp: "t".into(),
             user_messages: vec!["also check Manila".into()],
+            resumed: false,
         });
         let text = format!(
             "{}\n{}\n{}\n",
@@ -2165,6 +2173,42 @@ mod tests {
             panic!()
         };
         assert_eq!(g.agents[0].status, AgentStatus::Interrupted);
+    }
+
+    #[test]
+    fn a_resume_notice_round_trips_with_how_the_run_before_it_ended() {
+        // The note that the user started a settled agent again
+        // (docs/agent-tools.md) keeps its kind and the outcome the lead last
+        // heard, so a resumed session replays the same note.
+        let resumed = HistoryItem::AgentNotice(AgentNotice {
+            id: "a1".into(),
+            description: "Build the frontend".into(),
+            status: AgentStatus::Failed,
+            secs: 0,
+            result: String::new(),
+            timestamp: "t".into(),
+            user_messages: vec!["carry on".into()],
+            resumed: true,
+        });
+        let line = item_line(&resumed, "s");
+        assert!(line.contains("\"resumed\":true"), "{line}");
+        let (_, items) =
+            parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "s"))).expect("parses");
+        assert_eq!(items, std::slice::from_ref(&resumed));
+        // A completion notice writes no field — the shape every older rollout
+        // has, which reads back as a completion.
+        let HistoryItem::AgentNotice(notice) = &resumed else {
+            unreachable!()
+        };
+        let completion = HistoryItem::AgentNotice(AgentNotice {
+            resumed: false,
+            ..notice.clone()
+        });
+        let line = item_line(&completion, "s");
+        assert!(!line.contains("resumed"), "{line}");
+        let (_, items) =
+            parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "s"))).expect("parses");
+        assert_eq!(items, [completion]);
     }
     // ===== the session's own model (docs/session-model.md) =====
 

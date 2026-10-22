@@ -394,6 +394,7 @@ fn a_delivered_agent_notice_is_taken_by_its_board_number() {
         result: "done".to_string(),
         timestamp: String::new(),
         user_messages: Vec::new(),
+        resumed: false,
     };
     app.defer_agent_notice(notice("a1"), Some(2));
     app.defer_agent_notice(notice("a2"), Some(3));

@@ -1459,15 +1459,25 @@ stop is final, the lead's own `agentkill` resumable), `agentoutput
 tool uses)` over one `Name(args)` line per call — lifetime numbers, each
 read message marked `— message received —` (a message the *user* typed
 into its session view quoted instead, and named as the user's in the
-lead's notice and foreground result), the final response once
+lead's notice and foreground result — and one that starts a **settled**
+agent again announced to the lead at once, a cyan `was resumed by user`
+`AgentNotice::resumed` that owes no follow-up turn, so the lead stops
+acting on "the agent failed" — tagged `PendingNotice::resumed` apart from
+the completions, posted only while that run is going and taken back unread
+once a report of its end or the lead's own `agentkill` hands the lead the
+run's end, all under the registry lock), the final response once
 settled — and with `wait` blocks, its cell tailing each new call as a
 command cell (`COMMAND_TOOL_NAMES`), Ctrl+B ending the wait, `agentkill`
 stops (`AgentEvent::Stopped`), `agentlist` lists; the subagent's forwarder
 **holds back** the run's terminal event and `AgentRegistry::settle` sends it
 under the lock — at once, or to a waiting `agentoutput` that releases it
 `observed` (`AgentEvent::Settled`), so an answer the lead read is never
-noticed again; settled slots outlive their roster rows, the newest
-`AGENT_RETAINED_MAX` (16) kept, `/clear` forgetting all); and the **tty detach** (every shell child
+noticed again — each settle naming its **run** (0 for the launch, one more
+per continuation), a report accounting only for the run it read and
+carrying an earlier run's still-unread answer at its end rather than taking
+it back unread, since the user's message can start the next run the instant
+one ends (`take_earlier_agent_notices`); settled slots outlive their roster
+rows, the newest `AGENT_RETAINED_MAX` (16) kept, `/clear` forgetting all); and the **tty detach** (every shell child
 that runs on a pipe — `!`, a `bash` call where no terminal can be had, a
 hook — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s

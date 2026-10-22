@@ -46,7 +46,11 @@ view="$(pane "$S130" -S -200)"
 dump "the agent's own session" "$view"
 # Now the USER talks to the agent, in its session view. The lead never wrote
 # this message, so the answer's notice must say who did — otherwise the lead
-# reads a reply to a question it never asked as its own conversation.
+# reads a reply to a question it never asked as its own conversation. And
+# the agent had FINISHED: the message starts it again, which the lead must
+# hear when it happens — not only once the answer arrives — or it goes on
+# believing the agent is done (docs/agent-tools.md *A resume is news when it
+# starts*).
 submit "$S130" "thanks, keep it short"
 wait_pane 15 "$S130" -F "this reply is its next turn" >/dev/null ||
 	fail "the agent never answered the user's message"
@@ -55,10 +59,18 @@ wait_pane 15 "$S130" -F 'Agent "Read the release notes" finished' >/dev/null ||
 	fail "the user's conversation with the agent was never noticed to the lead"
 wait_settled 30 "$S130" -E "^$SUMMARY_RE" >/dev/null ||
 	fail "the follow-up turn the notice started never settled"
+back="$(pane "$S130" -S -200)"
+dump "the lead's transcript after the user's chat" "$back"
 keys "$S130" C-d
 sleep 0.5
 keys "$S130" End
 told="$(wait_pane 5 "$S130" -F "The user messaged this agent directly")"
+# The resume's note sits just above the answer's; one page up keeps it in
+# reach however long the follow-up turn's reply runs.
+keys "$S130" PageUp
+sleep 0.3
+told="$told
+$(pane "$S130")"
 dump "Ctrl+D — what the lead was told about the user's message" "$told"
 keys "$S130" C-d
 tmux kill-session -t "$S130" 2>/dev/null
@@ -78,4 +90,10 @@ expect_has "$view" -F "❯ And what did it add for questions nobody answers?" "t
 expect_has "$view" -F "keeps working on its best judgment" "the agent's session view does not show its answer to the follow-up"
 expect_has "$told" -F "The user messaged this agent directly in its session view" "the lead's notice does not say the user wrote to the agent"
 expect_has "$told" -F -- "- thanks, keep it short" "the lead's notice does not quote the user's message"
+expect_has "$back" -F 'Agent "Read the release notes" was resumed by user' "the lead was never told the user started the finished agent again"
+resumed_at="$(grep -nF 'Agent "Read the release notes" was resumed by user' <<<"$back" | head -1 | cut -d: -f1)"
+answered_at="$(grep -nF 'Agent "Read the release notes" finished' <<<"$back" | tail -1 | cut -d: -f1)"
+[ -n "$resumed_at" ] && [ -n "$answered_at" ] && [ "$resumed_at" -lt "$answered_at" ] ||
+	fail "the resume was not noticed ahead of the answer it led to"
+expect_has "$told" -F "is running again" "the lead's context does not carry the note that the agent is running again"
 smoke_finish

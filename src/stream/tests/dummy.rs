@@ -339,6 +339,83 @@ fn the_dummy_declines_a_chat_with_no_subagents_attached() {
 }
 
 #[test]
+fn the_dummys_chat_continuation_ends_as_its_settle_naming_its_run() {
+    // docs/agent-tools.md *One notice per answer*: a run's end reaches the
+    // loop as its settle, which names the run its notice is tagged with. The
+    // demo's scripted runs sent their end on the channel and settled after
+    // it — an end naming no run, which the loop tagged with whichever run
+    // was going when it folded it: after a restart, the next one.
+    use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE};
+    let (agent_tx, mut agent_rx) = unbounded_channel();
+    let registry = AgentRegistry::new(agent_tx);
+    let (id, _cancel) = registry.register(GENERAL_PURPOSE);
+    registry.settle(
+        &id,
+        Ok("first".into()),
+        vec![crate::llm::ChatMessage::user("p")],
+        None,
+    );
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_agents(registry.clone());
+    assert_eq!(
+        dummy.spawn_agent_chat(&id, "and the docs"),
+        crate::stream::AgentChatDelivery::Started
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let (event, observed, run) = loop {
+        match agent_rx.try_recv() {
+            Ok(AgentEvent::Settled {
+                event,
+                observed,
+                run,
+                ..
+            }) => break (event, observed, run),
+            Ok(AgentEvent::Stream {
+                event: StreamEvent::StreamDone,
+                ..
+            }) => panic!("the continuation's end went out apart from its settle, naming no run"),
+            Ok(_) => {}
+            Err(_) => {
+                assert!(std::time::Instant::now() < deadline, "never ended");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    assert!(matches!(event, StreamEvent::StreamDone), "{event:?}");
+    assert!(!observed, "nothing waited on it, so it owes a notice");
+    assert_eq!(run, 1, "the continuation is the agent's second run");
+}
+
+#[test]
+fn a_scripted_run_settles_with_its_end_unless_a_stop_came_first() {
+    // Every demo run ends the way the live forwarder ends one: its end goes
+    // out through the registry's settle, naming the run. A run a stop came
+    // first to settles with no end to send — the stop settled its row.
+    use super::super::dummy::agent::settle_scripted_run;
+    use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE};
+    let (agent_tx, mut agent_rx) = unbounded_channel();
+    let registry = AgentRegistry::new(agent_tx);
+    let (id, cancel) = registry.register(GENERAL_PURPOSE);
+    settle_scripted_run(&registry, &id, Ok("done".into()), &cancel);
+    assert!(registry.is_done(&id));
+    assert!(
+        matches!(
+            agent_rx.try_recv(),
+            Ok(AgentEvent::Settled {
+                event: StreamEvent::StreamDone,
+                observed: false,
+                run: 0,
+                ..
+            })
+        ),
+        "the end goes out with its settle, naming the run"
+    );
+    let (stopped, cancel) = registry.register(GENERAL_PURPOSE);
+    let _ = registry.kill(&stopped);
+    settle_scripted_run(&registry, &stopped, Ok("late".into()), &cancel);
+    assert!(agent_rx.try_recv().is_err(), "a stopped run sends no end");
+}
+
+#[test]
 fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
     // A slow model streams a few tokens a second, and the whole point of
     // `ALTER_ZERO_CHUNK_DELAY_MS` is to make the dummy do the same, so the

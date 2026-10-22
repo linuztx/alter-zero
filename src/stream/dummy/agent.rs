@@ -143,6 +143,23 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     }
 }
 
+/// End a scripted run the way the live forwarder ends one: its end goes out
+/// through [`AgentRegistry::settle`], which names the run — the run a notice
+/// of it is tagged with (`docs/agent-tools.md` *A report covers one run*).
+/// Sent ahead of its settle, an end named no run, and the loop tagged its
+/// notice with whichever run was going when it folded it: after a restart,
+/// the next one. A run a stop came first to settles with no end to send —
+/// the stop settled its row.
+pub(in crate::stream) fn settle_scripted_run(
+    registry: &AgentRegistry,
+    id: &str,
+    outcome: Result<String, String>,
+    cancel: &CancelToken,
+) {
+    let end = (!cancel.is_cancelled()).then_some(StreamEvent::StreamDone);
+    registry.settle(id, outcome, Vec::new(), end);
+}
+
 /// Stream the launched agent's own round on the agent channel: a pre-roll
 /// pause, a thinking phase, the table word by word, then the settle.
 ///
@@ -209,10 +226,9 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
                 return;
             }
         }
-        send(StreamEvent::StreamDone, Duration::ZERO);
         // Close the slot so the roster's stop/sweep and any continuation see a
         // finished run, exactly as the live backend's wait loop leaves it.
-        registry.finish(&id, Ok(DEMO_REPLY.to_string()), Vec::new());
+        settle_scripted_run(&registry, &id, Ok(DEMO_REPLY.to_string()), &cancel);
     });
 }
 
@@ -247,11 +263,7 @@ pub(super) fn spawn_chat_continuation(registry: AgentRegistry, id: String, cance
         if cancel.is_cancelled() {
             return;
         }
-        registry.send(AgentEvent::Stream {
-            id: id.clone(),
-            event: StreamEvent::StreamDone,
-        });
-        registry.finish(&id, Ok(DEMO_CONTINUATION.to_string()), Vec::new());
+        settle_scripted_run(&registry, &id, Ok(DEMO_CONTINUATION.to_string()), &cancel);
     });
 }
 
@@ -411,7 +423,7 @@ fn spawn_gated_agent_session(
         // `is_done` to resolve its group. An early return that skipped this
         // would leave the launching turn spinning for an agent that had
         // already stopped. (A killed slot keeps its own outcome.)
-        registry.finish(&id, outcome, Vec::new());
+        settle_scripted_run(&registry, &id, outcome, &cancel);
     });
 }
 
@@ -478,7 +490,6 @@ fn gated_agent_round(
             return Err(STOPPED.to_string());
         }
     }
-    send(StreamEvent::StreamDone, Duration::ZERO);
     Ok(GATED_REPLY.to_string())
 }
 

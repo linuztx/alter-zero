@@ -1487,6 +1487,7 @@ mod tests {
                 result: "19°C".into(),
                 timestamp: String::new(),
                 user_messages: Vec::new(),
+                resumed: false,
             }),
             batched("Bash", "pwd", "/x", 1, "call_b"),
         ];
@@ -1925,6 +1926,7 @@ mod tests {
                     result: "19°C".into(),
                     timestamp: String::new(),
                     user_messages: Vec::new(),
+                    resumed: false,
                 })],
             ),
             (
@@ -2646,6 +2648,7 @@ mod tests {
             result: "19°C and sunny".into(),
             timestamp: String::new(),
             user_messages: Vec::new(),
+            resumed: false,
         })];
         let messages = context_messages(&history);
         assert_eq!(messages.len(), 1);

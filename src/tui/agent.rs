@@ -49,7 +49,8 @@ impl Session<'_> {
                 id,
                 event,
                 observed,
-            } => self.on_agent_event(&id, event, Some(observed)),
+                run,
+            } => self.on_agent_event(&id, event, Some((observed, run))),
             AgentEvent::Stopped { id } => self.on_agent_stopped_by_lead(&id),
             AgentEvent::Resumed {
                 id,
@@ -93,7 +94,12 @@ impl Session<'_> {
     /// `settle` is `Some` for a run's settle as the registry delivered it —
     /// `Some(true)` when an `agentoutput` already reported it, which owes
     /// no completion notice (`docs/agent-tools.md`).
-    pub(crate) fn on_agent_event(&mut self, id: &str, event: StreamEvent, settle: Option<bool>) {
+    pub(crate) fn on_agent_event(
+        &mut self,
+        id: &str,
+        event: StreamEvent,
+        settle: Option<(bool, u64)>,
+    ) {
         let width = self.term.screen().width;
         // A subagent's permission request is the *user's* business, not the
         // roster's: raise the same shared prompt the main turn does, and stop —
@@ -201,9 +207,9 @@ impl Session<'_> {
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
-        let mut settled = self
-            .app
-            .apply_agent_settled(id, &event, settle == Some(true));
+        let mut settled =
+            self.app
+                .apply_agent_settled(id, &event, matches!(settle, Some((true, _))));
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
@@ -224,9 +230,12 @@ impl Session<'_> {
         // nothing and records no cell (docs/agent-tools.md *One notice per
         // answer*).
         let mut seq = None;
-        if settle == Some(false) {
+        if let Some((false, run)) = settle {
             let context = settled.as_ref().map(AgentNotice::context_text);
-            match self.agent_registry.post_notice(id, &self.registry, context) {
+            match self
+                .agent_registry
+                .post_notice(id, run, &self.registry, context)
+            {
                 alter_zero::agents::NoticePost::Posted(posted) => seq = posted,
                 alter_zero::agents::NoticePost::Covered => {
                     if let Some(notice) = settled.take() {
@@ -234,8 +243,11 @@ impl Session<'_> {
                     }
                 }
             }
-        } else if let Some(notice) = &settled {
-            seq = Some(self.registry.post_agent_notice(notice.context_text(), id));
+        } else if let Some(notice) = settled.take() {
+            // The user's queued message starting a settled agent again, which
+            // the lead hears too (docs/agent-tools.md) — not a run's end,
+            // which arrives as its settle, naming the run.
+            self.hold_agent_note(notice, id, None);
         }
         // Held until the lead reads the note (`StreamEvent::NoticeDelivered`),
         // so its cell lands where the lead heard it (docs/background.md).
@@ -251,6 +263,36 @@ impl Session<'_> {
             self.agent_clocks.remove(id);
             self.agent_expiry
                 .insert(id.to_string(), Instant::now() + linger);
+        }
+    }
+
+    /// Put `notice` on the shared board for the lead, tagged with agent `id`
+    /// so a report of its answer can take it back, and hold its cell until
+    /// the lead reads it (docs/background.md *Where a notice lands*). A
+    /// completion is a note whose unread presence at a turn's end starts the
+    /// follow-up turn; a [`resumed`](AgentNotice::resumed) one is not — the
+    /// run it announces has nothing to answer yet, and its own completion
+    /// notice brings that turn — and the registry posts it only while that
+    /// run is going: one already over, or stopped by the lead, owes neither
+    /// the note nor its cell (docs/agent-tools.md *A resume is news when it
+    /// starts*).
+    ///
+    /// A completion is tagged with `run`, the run it ended — for the user's
+    /// stop, the run `kill` reported — never with whichever run is going when
+    /// it posts (docs/agent-tools.md *A report covers one run*). An end that reached
+    /// the loop without its settle, which no backend sends, goes untagged: a
+    /// report never takes it back, so the lead may read that answer twice,
+    /// but never under another run's number.
+    fn hold_agent_note(&mut self, notice: AgentNotice, id: &str, run: Option<u64>) {
+        let context = notice.context_text();
+        let posted = if notice.resumed {
+            self.agent_registry
+                .post_resume_notice(id, &self.registry, context)
+        } else {
+            Some(self.registry.post_agent_notice(context, id, run))
+        };
+        if let Some(seq) = posted {
+            self.app.defer_agent_notice(notice, Some(seq));
         }
     }
 
@@ -515,6 +557,8 @@ impl Session<'_> {
     /// members' terminal events were enqueued *before* the backend sent the
     /// resolution, so taking them first is what makes the roster snapshots the
     /// recorded group entries are built from final (`docs/agent-tool.md`).
+    /// A chat continuation's start drains it for the same reason — the run it
+    /// follows has ended in the registry, so its end is already enqueued.
     pub(crate) fn drain_agent_events(&mut self) {
         while let Ok(message) = self.agent_rx.try_recv() {
             self.handle_agent_message(message);
@@ -584,12 +628,11 @@ impl Session<'_> {
                         // (docs/agent-tools.md *One notice per answer*).
                         self.app.settle_agent_completion(&notice);
                     } else {
-                        // Tagged with the agent, like every completion of
-                        // its: an `agentoutput` that reports the stop first
-                        // takes the note back (docs/agent-tools.md *One
-                        // notice per answer*).
-                        let seq = self.registry.post_agent_notice(notice.context_text(), id);
-                        self.app.defer_agent_notice(notice, Some(seq));
+                        // Tagged with the agent and the run it stopped, like
+                        // every completion of its: an `agentoutput` that
+                        // reports the stop first takes the note back
+                        // (docs/agent-tools.md *One notice per answer*).
+                        self.hold_agent_note(notice, id, Some(stop.run));
                         if !self.app.turn_active() {
                             self.dispatch_after_turn();
                         }
@@ -645,7 +688,11 @@ impl Session<'_> {
     ///   genuinely has it.
     /// - **idle** → a continuation run started with the message as its newest
     ///   user turn, so the transcript records it now and the bubble commits
-    ///   here — an idle submit, one level down.
+    ///   here — an idle submit, one level down. An agent that had **settled**
+    ///   is news to the lead, which last heard it end: the notice that it is
+    ///   running again goes on the board like a completion's — read at the
+    ///   lead's next round, or recorded at once when it is idle — so the
+    ///   lead stops acting on "the agent failed" (docs/agent-tools.md).
     pub(crate) fn agent_chat(&mut self, id: &str, text: &str) {
         match self.models.backend().spawn_agent_chat(id, text) {
             AgentChatDelivery::Queued => {
@@ -653,7 +700,15 @@ impl Session<'_> {
                 self.agent_expiry.remove(id);
             }
             AgentChatDelivery::Started => {
-                self.app.agent_chat(id, text);
+                // The registry restarted a settled run, whose terminal event
+                // is already on the channel — sent with its settle, or
+                // released just now from a waiting `agentoutput` — though
+                // the roster may not have folded it: a Tab follow-up
+                // dispatches from the draw tick. Fold it first, so the entry
+                // reopens for this run instead of settling under it, which
+                // would drop the run's events and its notice.
+                self.drain_agent_events();
+                let resumed = self.app.agent_chat(id, text);
                 let width = self.term.screen().width;
                 if self.viewing_agent(id) {
                     let height = self.live_region_height();
@@ -666,6 +721,15 @@ impl Session<'_> {
                     .entry(id.to_string())
                     .or_insert_with(Instant::now);
                 self.agent_expiry.remove(id);
+                if let Some(notice) = resumed {
+                    self.hold_agent_note(notice, id, None);
+                }
+                // Idle: settle what is held now — the resume, which starts no
+                // turn of its own, and any end the drain folded — as the
+                // agent channel's own branch does (`on_agent_message`).
+                if !self.app.turn_active() && self.app.has_pending_agent_notices() {
+                    self.dispatch_after_turn();
+                }
             }
             AgentChatDelivery::Declined => self.toast(
                 "Agent chat is not available with this backend",
