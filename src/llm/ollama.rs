@@ -654,11 +654,12 @@ pub struct CatalogRecord {
 
 /// The `/api/tags` envelope. Each record stays an unparsed slice of the
 /// body and is decoded one at a time (the `parse_models` posture,
-/// `docs/memory.md`).
+/// `docs/memory.md`). The list is optional so that a body carrying none is
+/// told apart from an Ollama with nothing pulled.
 #[derive(Debug, Deserialize)]
 struct TagsResponse<'a> {
     #[serde(default, borrow)]
-    models: Vec<&'a serde_json::value::RawValue>,
+    models: Option<Vec<&'a serde_json::value::RawValue>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -689,12 +690,16 @@ struct Details {
 /// skipped, never fatal.
 ///
 /// # Errors
-/// A decode error when the body isn't the envelope.
+/// A decode error when the body isn't the envelope, or carries no models
+/// list — what another server answering this port says (LM Studio answers
+/// every path it does not serve with 200 and an error object).
 pub fn tags_records(body: &str) -> Result<Vec<CatalogRecord>> {
     let parsed: TagsResponse =
         serde_json::from_str(body).map_err(|e| LlmError::Decode(e.to_string()))?;
-    Ok(parsed
-        .models
+    let Some(models) = parsed.models else {
+        return Err(super::models::not_a_listing(body));
+    };
+    Ok(models
         .iter()
         .filter_map(|raw| {
             let record: TagRecord = serde_json::from_str(raw.get()).ok()?;
@@ -1465,6 +1470,19 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name, "ok");
         assert!(tags_records("not json").is_err());
+    }
+
+    #[test]
+    fn a_body_with_no_models_list_is_not_ollama() {
+        // LM Studio answers every path it does not serve with 200 and an
+        // error object, so its port typed in as Ollama's read as an Ollama
+        // with no models — a `/login` test that passed and saved the wrong
+        // server (docs/local-models.md).
+        let err = tags_records(r#"{"error":"Unexpected endpoint or method. (GET /api/tags)"}"#)
+            .unwrap_err();
+        assert!(matches!(err, LlmError::Decode(_)), "{err:?}");
+        // An Ollama with nothing pulled is still an Ollama.
+        assert!(tags_records(r#"{"models":[]}"#).unwrap().is_empty());
     }
 
     #[test]

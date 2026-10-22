@@ -503,9 +503,28 @@ toast naming the file written); an empty conversation is a `Nothing to
 export` toast, never an empty file; `smoke.sh` Phase 122) in
 `docs/export.md`; the
 **`/login` sign-in fork** (the
-flow's root now asks *how* you sign in — **Use a subscription** or **Use an
-API key** — because GitHub Copilot is not a key you paste. Below that root the
-two lists carry **no heading** (each used to repeat the row that opened it, in
+flow's root now asks *how* you sign in — **Use a subscription**, **Use an
+API key** or **Use a local model** — because GitHub Copilot is not a key you
+paste and a local server takes an address, not a key: the three lists
+partition the providers by `auth`, and a local server's page **tests the
+address before saving it** — the `/model` listing run on the `/login`
+worker, the verdict worded by the pure `llm::local::verdict`, a 401 asking
+for the server's token on the same page, LM Studio shipping beside Ollama
+over chat completions with its native `/api/v1/models` listing behind a
+relative `api_model_base`, a keyless provider sending no cache breakpoints
+and a stopped one on this machine answered with the test's own sentence
+rather than the offline wait (`local::refused_advice`), a save that a
+variable exported in the shell overrides naming the variable to unset
+instead of confirming (`ServerSave::overridden_notice`), a listing body
+with no models list told apart from an empty one (`models::not_a_listing`
+— LM Studio answers a path it does not serve with 200 and an error object,
+so an LM Studio before 0.4 falls back to `/v1/models` and its port typed in
+as Ollama's is refused), an unloaded LM Studio model's window unknown
+rather than its maximum, and LM Studio's bare-string stream frame for a
+prompt longer than the loaded context surfaced (`openai::parse_sse_error`)
+as advice to raise it (`local::refusal_advice`),
+`docs/local-models.md`, `smoke.sh` Phase 141.
+Below that root the lists carry **no heading** (each used to repeat the row that opened it, in
 cyan, for two rows that said nothing the hint below them doesn't) and every
 row states its own reachability — `{name} · ✔ configured` when a key or token
 resolves, `{name} · ◯ unconfigured` when none does — only the **`✔` is

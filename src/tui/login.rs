@@ -1,33 +1,93 @@
 //! The `/login` flow's boundary half: opening it with the choices the file
 //! and the key store between them decide, running a subscription's device
-//! sign-in on a worker, and persisting what it mints. See `docs/copilot.md`
-//! and `docs/llm.md`.
+//! sign-in — or a local server's connection test — on a worker, and
+//! persisting what it mints or what passed. See `docs/copilot.md`,
+//! `docs/llm.md` and `docs/local-models.md`.
 
-use alter_zero::app::{SigninKind, ToastKind};
+use alter_zero::app::{ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::llm;
 use alter_zero::stream::CancelToken;
 
 use super::Session;
-use super::workers::{DeviceEvent, spawn_signin};
+use super::workers::{DeviceEvent, spawn_server_test, spawn_signin};
 
 /// The toast a copied device code raises — the `/copy` confirmation's sibling,
 /// worded for what was actually copied.
 const CODE_COPIED_NOTICE: &str = "Copied the code to clipboard";
 
 impl Session<'_> {
-    /// `/login` (`docs/llm.md`): open the inline onboarding, its two lists
-    /// built from the provider file — the subscriptions signed in to, and the
-    /// providers keyed — each row's ✓ reflecting real key resolution. The hint
-    /// names the real `.env` path. The file is re-read first, so a provider
-    /// added to it since startup is a row already (`docs/user-providers.md`).
+    /// `/login` (`docs/llm.md`): open the inline onboarding, its three lists
+    /// built from the provider file — the subscriptions signed in to, the
+    /// providers keyed, and the local servers pointed at — each row's ✓
+    /// reflecting real resolution. The hint names the real `.env` path. The
+    /// file is re-read first, so a provider added to it since startup is a
+    /// row already (`docs/user-providers.md`).
     pub(crate) fn open_key_onboarding(&mut self) {
         self.reload_providers();
         let providers = self.models.provider_choices();
         let subscriptions = self.models.subscription_choices();
+        let locals = self.models.local_choices();
         let env_path = self.models.env_path_display().to_string();
         self.app
-            .open_key_onboarding(providers, subscriptions, env_path);
+            .open_key_onboarding(providers, subscriptions, locals, env_path);
+    }
+
+    /// Enter on a local server's page: test the connection on a worker — the
+    /// server's model listing, fetched the way `/model` will fetch it — before
+    /// anything is saved. An address that is no URL at all is answered at
+    /// once, with no request made. See `docs/local-models.md`.
+    pub(crate) fn test_local_server(&mut self, provider: &str, test: ServerTest) {
+        self.cancel_device_login();
+        let Some((name, example, cfg)) = self.models.local_test_config(provider, &test) else {
+            let verdict =
+                llm::local::Verdict::Failed(format!("{provider} is no longer a provider."));
+            self.finish_server_test(&test, verdict);
+            return;
+        };
+        let Some(label) = llm::local::server_label(&cfg.api_base) else {
+            let verdict = llm::local::unusable_address(&test.host, &example);
+            self.finish_server_test(&test, verdict);
+            return;
+        };
+        let cancel = CancelToken::new();
+        self.device_cancel = Some(cancel.clone());
+        spawn_server_test(cfg, name, label, test, cancel, self.device_tx.clone());
+    }
+
+    /// A connection test's verdict reached the page. A pass closes the flow
+    /// and saves what passed — the address, and a token typed for it — to the
+    /// same `.env` store a pasted key lands in, so `/model`, the ✓ and the
+    /// next launch all find it; anything else the page shows itself. An
+    /// answer to a test the page moved on from changes nothing.
+    fn finish_server_test(&mut self, test: &ServerTest, verdict: llm::local::Verdict) {
+        // The page changed either way, and nothing else schedules its frame:
+        // a test has no ticking chain of its own, unlike a sign-in's
+        // countdown.
+        self.frame.schedule_frame();
+        let Some(save) = self.app.finish_server_test(test, verdict) else {
+            return;
+        };
+        self.cancel_device_login();
+        for (var, value) in &save.env {
+            if let Err(reason) = self.models.save_api_key(var, value) {
+                self.toast(reason, ToastKind::Error);
+                return;
+            }
+        }
+        // A shell that exports the variable keeps the session where it
+        // points, whatever passed here: say so rather than confirm a
+        // connection the session will not use.
+        let overridden: Vec<String> = save
+            .env
+            .iter()
+            .filter(|(var, value)| self.models.exported_overrides(&save.provider, var, value))
+            .map(|(var, _)| var.clone())
+            .collect();
+        match save.overridden_notice(&overridden) {
+            Some(notice) => self.toast(notice, ToastKind::Error),
+            None => self.toast(save.confirmation(), ToastKind::Info),
+        }
     }
 
     /// Enter on a subscription row (or its sign-in method choice): start the
@@ -93,6 +153,7 @@ impl Session<'_> {
                 self.cancel_device_login();
                 self.app.fail_device_login(reason);
             }
+            DeviceEvent::Tested { test, verdict } => self.finish_server_test(&test, verdict),
         }
     }
 

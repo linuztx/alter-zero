@@ -901,6 +901,15 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
+    // A local server page waiting on its connection test, or showing an
+    // address its provider block fixes, has no field to type into either
+    // (`docs/local-models.md`).
+    if let Some(onboarding) = &app.key_onboarding
+        && onboarding.step == KeyStep::Server
+        && !onboarding.server_takes_typing()
+    {
+        return false;
+    }
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
@@ -1236,10 +1245,22 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                 onboarding.key_input.chars().count(),
                 prompt.unwrap_or(DEVICE_CURSOR_ROW),
             ),
-            // The three lists are one shape — none carries a title — so their
+            // The four lists are one shape — none carries a title — so their
             // filter is the frame's first content row.
-            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
+            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
                 (cols(&onboarding.query), prompt.unwrap_or(DEVICE_CURSOR_ROW))
+            }
+            // After what was typed: the address as typed, or one mask glyph
+            // per token character.
+            KeyStep::Server => {
+                let typed = onboarding.server.as_ref().map_or(0, |page| {
+                    if page.asks_for_token() {
+                        page.token.chars().count()
+                    } else {
+                        cols(&page.address)
+                    }
+                });
+                (typed, prompt.unwrap_or(DEVICE_CURSOR_ROW))
             }
         };
         let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);

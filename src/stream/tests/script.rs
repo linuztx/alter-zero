@@ -93,6 +93,15 @@ fn the_handoff_paragraph_closes_every_demo_reply() {
     // lets `scripts/smoke.sh` settle on "Two commands away" whatever the
     // prompt selected.
     assert!(HANDOFF.contains("/login") && HANDOFF.contains("/model"));
+    // …naming all three ways `/login` connects a model — a demo that only
+    // mentions keys leaves a local server out of the very first pointer a
+    // new user gets (docs/local-models.md).
+    for way in ["subscription", "API key", "local model"] {
+        assert!(
+            HANDOFF.contains(way),
+            "the hand-off omits {way:?}: {HANDOFF}"
+        );
+    }
     for prompt in EVERY_REPLY {
         let reply = dummy_response(prompt);
         assert!(

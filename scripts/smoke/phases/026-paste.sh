@@ -59,4 +59,4 @@ expect_lacks "$paste_backspaced" -F "[Pasted Content" "one Backspace did not rem
 # … and a bracketed paste into the /model picker's search reaches the FILTER
 # (docs/llm.md) — it used to be swallowed, so nothing happened at all.
 expect_has "$model_paste" -F "openai/gpt-4o-mini" "a bracketed paste into the /model search never reached the filter (swallowed paste regressed)"
-expect_has "$model_paste" -F "No API key yet" "the /model picker was not open when the paste landed (the phase tested nothing)"
+expect_has "$model_paste" -F "No provider set up yet" "the /model picker was not open when the paste landed (the phase tested nothing)"

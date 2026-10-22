@@ -274,7 +274,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     SlashCommand::builtin("diff", "Review Git changes", CommandEffect::Diff),
     SlashCommand::builtin(
         "login",
-        "Add or update a provider API key",
+        "Sign in, add an API key, or connect a local model",
         CommandEffect::Login,
     ),
     SlashCommand::builtin("settings", "Open settings menu", CommandEffect::Settings),

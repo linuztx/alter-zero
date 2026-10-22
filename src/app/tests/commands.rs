@@ -89,6 +89,12 @@ fn palette_descriptions_are_concise_and_product_name_free() {
     };
     assert_eq!(desc("quit"), "Exit the app");
     assert_eq!(desc("trust"), "Review and approve this project's config");
+    // `/login` has three ways in, and a description naming only a key sends
+    // someone with a local server looking for one (docs/local-models.md).
+    assert_eq!(
+        desc("login"),
+        "Sign in, add an API key, or connect a local model"
+    );
 }
 
 #[test]

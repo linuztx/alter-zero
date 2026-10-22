@@ -51,7 +51,7 @@ Alter Zero is an open-source AI coding agent written in Rust. It works directly 
 | --- | --- |
 | **Work you can follow** | Live command output, readable diffs, and a task checklist make progress easy to inspect. |
 | **Control over execution** | Choose a permission mode, review proposed changes, and steer the agent while it works. |
-| **Your choice of model** | Connect with a supported subscription or API key, or run local models with Ollama. |
+| **Your choice of model** | Connect with a supported subscription or API key, or run local models with Ollama or LM Studio. |
 | **Room to extend** | Add specialist subagents, reusable skills, lifecycle hooks, and MCP servers to fit your workflow. |
 | **A native terminal experience** | A single Rust binary with persistent sessions, inline images, and keyboard-driven controls. |
 
@@ -171,7 +171,8 @@ Connect to a supported subscription service, API provider, or local model server
 | **Cline** | API key. | The models behind the Cline extension and CLI, through [Cline's OpenAI-compatible API](https://app.cline.bot) — Anthropic, OpenAI, Google and more, billed to your account's credits. |
 | **ClinePass** | Subscription ($9.99/month), with a Cline account sign-in. | 2-5x usage on Cline's curated open coding models — the plan's `cline-pass/…` models appear in `/model`. |
 | **OpenRouter** | API key. | Access models from multiple providers through one account. |
-| **Ollama** | Point Alter Zero at your local server; no key required. | Run inference on your own machine with locally hosted models. |
+| **Ollama** | Local model: enter your server's address, which is tested before it's saved; no key required. | Run inference on your own machine with locally hosted models. |
+| **LM Studio** | Local model: enter your server's address, tested the same way; a token only if the server requires one. | Run the models you downloaded in [LM Studio](https://lmstudio.ai/download); start its server first. |
 | **Ollama Cloud** | API key. | Use open models hosted by Ollama. |
 
 The footer shows your active model, thinking mode, speed tier and context usage. **Ctrl+T** cycles the model's supported reasoning levels, a ChatGPT model that lists speed tiers gets a command per tier (**`/fast`**, `/ultrafast`) that switches it to that processing (faster replies at increased plan usage), vision support is checked before sending images, and requests support prompt caching where the provider allows it.
@@ -179,7 +180,7 @@ The footer shows your active model, thinking mode, speed tier and context usage.
 <details>
 <summary><strong>Add a provider of your own</strong></summary>
 
-Any service with an OpenAI-compatible API, or a local server such as LM Studio, llama.cpp or vLLM, can be added in `~/.alter-zero/providers.toml`. The file adds to the providers above rather than replacing them:
+Any service with an OpenAI-compatible API, or a local server such as llama.cpp or vLLM, can be added in `~/.alter-zero/providers.toml`. The file adds to the providers above rather than replacing them:
 
 ```toml
 [providers.groq]
@@ -250,7 +251,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/resume` | Resume a saved chat |
 | `/model` | Switch the active model |
 | `/fast`, `/ultrafast`, … | Switch the model's speed tier — one command per tier its listing names, shown only on a model that lists it |
-| `/login` | Add or update a provider sign-in |
+| `/login` | Sign in, add an API key, or connect a local model |
 | `/settings` | Open the settings menu |
 | `/theme` | Choose the colour theme |
 | `/mascot` | Choose the banner mascot |

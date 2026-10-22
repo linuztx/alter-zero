@@ -194,8 +194,13 @@ impl OpenAiClient {
         // An explicit-caching model (anthropic/qwen via an OpenRouter-style
         // aggregator) only caches marked blocks: mark a copy of the messages
         // with the ephemeral breakpoints. Implicit-caching providers (OpenAI,
-        // Venice, …) keep the untouched plain-string form.
-        let messages = if super::cache::needs_cache_breakpoints(&self.cfg.model) {
+        // Venice, …) keep the untouched plain-string form — and so does a
+        // keyless one: a server the user runs (LM Studio's `qwen/qwen3-8b`)
+        // spells its ids the aggregator's way but bills no prompt cache for
+        // a breakpoint to buy.
+        let messages = if !self.cfg.auth.key_optional()
+            && super::cache::needs_cache_breakpoints(&self.cfg.model)
+        {
             let mut marked = messages.into_owned();
             super::cache::apply_cache_breakpoints(&mut marked);
             Cow::Owned(marked)
@@ -477,7 +482,11 @@ impl OpenAiClient {
     /// as it did — except on the Ollama wire, whose failures are mostly about
     /// the *machine* (the server not running, a model not pulled, a
     /// capability the model lacks) and say so in words a user can act on
-    /// (`docs/ollama.md`).
+    /// (`docs/ollama.md`) — and a keyless server's, which is a server the
+    /// user runs: a refused connection on this machine is one to start, a
+    /// prompt longer than the context LM Studio loaded the model with is one
+    /// to raise, and a token the server wants is one `/login` takes
+    /// (`docs/local-models.md`).
     fn explain(&self, error: LlmError) -> LlmError {
         if self.cfg.wire_api == super::WireApi::Ollama {
             return match error {
@@ -514,6 +523,19 @@ impl OpenAiClient {
                 other => other,
             };
         }
+        // A keyless server on this machine that refuses the connection is
+        // not running (LM Studio closed, a llama.cpp server not started):
+        // the `/login` test's sentence on the bounded retry, as the Ollama
+        // wire's advice above, rather than a wait for the internet. A keyed
+        // provider on `localhost` is a forwarding proxy, and keeps the wait
+        // (`docs/offline.md`).
+        if self.cfg.auth.key_optional()
+            && let LlmError::Unreachable { message, .. } = &error
+            && let Some(advice) =
+                super::local::refused_advice(&self.cfg.provider_name, &self.base_url(None), message)
+        {
+            return LlmError::Http(advice);
+        }
         let LlmError::Api { status, body } = &error else {
             return error;
         };
@@ -544,7 +566,17 @@ impl OpenAiClient {
             super::AuthScheme::ApiKey if super::cline::is_api_base(&self.cfg.api_base) => {
                 super::cline::key_advice(*status, body)
             }
-            super::AuthScheme::ApiKey | super::AuthScheme::OptionalKey => None,
+            // A server the user runs: a prompt longer than the context LM
+            // Studio loaded the model with, and a token the server was set to
+            // require after `/login` saved its address (docs/local-models.md).
+            super::AuthScheme::OptionalKey => super::local::refusal_advice(
+                &self.cfg.provider_name,
+                &self.base_url(None),
+                &self.cfg.model,
+                *status,
+                body,
+            ),
+            super::AuthScheme::ApiKey => None,
         };
         match advice {
             Some(advice) => LlmError::Api {
@@ -1245,10 +1277,14 @@ fn process_payload(
 /// The wire shape of an in-band error frame: `{"error": {"message", "code"?}}`.
 /// The code is a number for HTTP-like statuses (OpenRouter) but some providers
 /// send a string tag — both map into [`LlmError::Api`] (a string code becomes
-/// status 0, keeping the message).
+/// status 0, keeping the message). The error is kept a borrowed slice so a
+/// frame naming none — every ordinary delta, `"error": null` included — costs
+/// no more than the scan it always did, and a string-valued one
+/// (`{"error": "Model unloaded."}`) is read as its message.
 #[derive(Debug, Deserialize)]
-struct ErrorPayload {
-    error: ErrorBody,
+struct ErrorPayload<'a> {
+    #[serde(borrow)]
+    error: &'a serde_json::value::RawValue,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1259,20 +1295,36 @@ struct ErrorBody {
     code: Option<serde_json::Value>,
 }
 
-/// Detect an in-band `{"error": …}` frame in one SSE `data:` payload. `None`
-/// for ordinary delta frames (including unparseable ones — those stay skipped,
-/// a keep-alive shouldn't kill the stream).
+/// Detect an in-band failure in one SSE `data:` payload: an `{"error": …}`
+/// frame, or a frame that is **only a JSON string** — how LM Studio reports a
+/// prompt longer than the context it loaded the model with, before it ends
+/// the stream (`docs/local-models.md`); skipped, that ended the turn with no
+/// reply and no error. `None` for ordinary delta frames (including
+/// unparseable ones — those stay skipped, a keep-alive shouldn't kill the
+/// stream).
 fn parse_sse_error(data: &str) -> Option<LlmError> {
+    let in_band = |message: String| {
+        (!message.trim().is_empty()).then_some(LlmError::Api {
+            status: 0,
+            body: message,
+        })
+    };
+    if data.trim_start().starts_with('"') {
+        return in_band(serde_json::from_str(data).ok()?);
+    }
     let payload: ErrorPayload = serde_json::from_str(data).ok()?;
-    let status = payload
-        .error
+    let raw = payload.error.get();
+    if raw.trim_start().starts_with('"') {
+        return in_band(serde_json::from_str(raw).ok()?);
+    }
+    let error: ErrorBody = serde_json::from_str(raw).ok()?;
+    let status = error
         .code
         .as_ref()
         .and_then(serde_json::Value::as_u64)
         .and_then(|c| u16::try_from(c).ok())
         .unwrap_or(0);
-    let body = payload
-        .error
+    let body = error
         .message
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| data.to_string());
@@ -1780,6 +1832,22 @@ mod tests {
     }
 
     #[test]
+    fn a_keyless_servers_publisher_model_id_gets_no_cache_breakpoints() {
+        // LM Studio names its models `publisher/model` — `qwen/qwen3-8b` is
+        // the aggregator spelling the sniff reads as explicit caching. A
+        // server the user runs bills no prompt cache for a breakpoint to buy,
+        // so its messages keep the plain form (docs/local-models.md).
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::OptionalKey;
+        cfg.api_base = "http://127.0.0.1:1234/v1".to_string();
+        cfg.model = "qwen/qwen3-8b".to_string();
+        let p = OpenAiClient::new(cfg)
+            .build_payload(&[ChatMessage::system("persona"), ChatMessage::user("hi")]);
+        assert_eq!(p["messages"][0]["content"], json!("persona"), "{p}");
+        assert_eq!(p["messages"][1]["content"], json!("hi"), "{p}");
+    }
+
+    #[test]
     fn payload_leaves_messages_plain_for_implicit_caching_models() {
         // OpenAI/Venice-style models cache automatically — their messages
         // stay the classic bare-string form, byte-identical to before.
@@ -2072,6 +2140,68 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_local_keyless_server_is_advice_but_a_proxy_or_a_remote_one_is_waited_for() {
+        // docs/offline.md: LM Studio closed is a server to start, said the
+        // way the /login test says it, on the bounded retry. The same server
+        // on another machine is the network, and a keyed provider on
+        // localhost is a forwarding proxy that comes back by itself (smoke
+        // Phase 129): both keep the wait.
+        let unreachable = |host: &str| LlmError::Unreachable {
+            host: host.to_string(),
+            message: "client error (Connect): tcp connect error: Connection refused (os error 111)"
+                .to_string(),
+        };
+        let keyless = |base: &str| {
+            let mut cfg = ModelConfig::fallback();
+            cfg.provider_name = "LM Studio".to_string();
+            cfg.auth = crate::llm::AuthScheme::OptionalKey;
+            cfg.api_base = base.to_string();
+            cfg
+        };
+        let explained = OpenAiClient::new(keyless("http://127.0.0.1:1234/v1"))
+            .explain(unreachable("127.0.0.1:1234"));
+        assert!(
+            matches!(&explained, LlmError::Http(advice)
+                if advice == "Nothing is answering at 127.0.0.1:1234 — is LM Studio's server running?"),
+            "{explained:?}"
+        );
+        let remote = OpenAiClient::new(keyless("http://gpu-box:1234/v1"))
+            .explain(unreachable("gpu-box:1234"));
+        assert!(matches!(remote, LlmError::Unreachable { .. }), "{remote:?}");
+        let mut proxy = ModelConfig::fallback();
+        proxy.api_base = "http://127.0.0.1:8080/v1".to_string();
+        let kept = OpenAiClient::new(proxy).explain(unreachable("127.0.0.1:8080"));
+        assert!(matches!(kept, LlmError::Unreachable { .. }), "{kept:?}");
+    }
+
+    #[test]
+    fn a_keyless_servers_refusals_are_explained_but_a_keyed_ones_pass_through() {
+        // docs/local-models.md: LM Studio's prompt longer than the loaded
+        // context, sent inside the stream, becomes advice to raise it; a
+        // pasted-key provider's own words stand.
+        let overflow = || LlmError::Api {
+            status: 0,
+            body: "The number of tokens to keep from the initial prompt is greater than the \
+                   context length."
+                .to_string(),
+        };
+        let mut local = ModelConfig::fallback();
+        local.provider_name = "LM Studio".to_string();
+        local.auth = crate::llm::AuthScheme::OptionalKey;
+        local.api_base = "http://127.0.0.1:1234/v1".to_string();
+        local.model = "qwen/qwen3-8b".to_string();
+        let explained = OpenAiClient::new(local).explain(overflow()).to_string();
+        assert!(
+            explained.starts_with("qwen/qwen3-8b is loaded with a context window too small"),
+            "{explained}"
+        );
+        assert!(explained.contains("lms load qwen/qwen3-8b"), "{explained}");
+
+        let kept = OpenAiClient::new(ModelConfig::fallback()).explain(overflow());
+        assert_eq!(kept.to_string(), overflow().to_string());
+    }
+
+    #[test]
     fn only_a_copilot_config_has_its_failures_rewritten() {
         let raw = r#"{"error":{"message":"The requested model is not supported.",
             "code":"model_not_supported"}}"#;
@@ -2242,6 +2372,43 @@ mod tests {
             shown.contains("Provider returned error"),
             "carries the message: {shown}"
         );
+    }
+
+    #[test]
+    fn a_bare_string_frame_is_the_servers_error_not_a_skipped_line() {
+        // LM Studio reports a prompt longer than the context it loaded the
+        // model with as a frame that is only a JSON string, then ends the
+        // stream. Skipped, it ended the turn with no reply and no error.
+        let (step, deltas) = drive_line(
+            r#"data: "The number of tokens to keep from the initial prompt is greater than the context length.""#,
+        );
+        let SseStep::Fail(LlmError::Api { status, body }) = step else {
+            panic!("a bare string frame must fail the stream");
+        };
+        assert!(deltas.is_empty());
+        assert_eq!(status, 0, "an in-band failure has no HTTP status");
+        assert_eq!(
+            body,
+            "The number of tokens to keep from the initial prompt is greater than the context length."
+        );
+    }
+
+    #[test]
+    fn an_error_named_by_a_string_fails_the_stream_too() {
+        let (step, _deltas) = drive_line(r#"data: {"error":"Model unloaded."}"#);
+        let SseStep::Fail(LlmError::Api { status: 0, body }) = step else {
+            panic!("a string-valued error must fail the stream");
+        };
+        assert_eq!(body, "Model unloaded.");
+    }
+
+    #[test]
+    fn a_frame_whose_error_is_null_is_an_ordinary_delta() {
+        let (step, deltas) = drive_line(
+            r#"data: {"error":null,"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#,
+        );
+        assert!(matches!(step, SseStep::Continue), "not a failure");
+        assert_eq!(deltas.len(), 1);
     }
 
     #[test]

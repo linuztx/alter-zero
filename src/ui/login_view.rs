@@ -3,7 +3,7 @@
 //! page, the API-key provider list and its masked key field. See
 //! `docs/llm.md`, `docs/copilot.md` and `docs/chatgpt.md`.
 
-use crate::app::ProviderChoice;
+use crate::app::{LocalChoice, ProviderChoice, ServerPage};
 
 use super::model_view::{
     compact_page, first_page_that_fits, list_window, model_linked_rows, model_placeholder_row,
@@ -129,6 +129,11 @@ fn login_rows(onboarding: &KeyOnboarding) -> Vec<(String, Option<bool>)> {
             .into_iter()
             .map(|s| (s.name.clone(), Some(s.configured)))
             .collect(),
+        KeyStep::Local => onboarding
+            .local_matches()
+            .into_iter()
+            .map(|l| (l.name.clone(), Some(l.configured)))
+            .collect(),
         _ => onboarding
             .matches()
             .into_iter()
@@ -167,6 +172,7 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
         let placeholder = match onboarding.step {
             KeyStep::Method => LOGIN_NO_METHOD_MATCH,
             KeyStep::Subscription => LOGIN_NO_SUBSCRIPTION_MATCH,
+            KeyStep::Local => LOGIN_NO_LOCAL_MATCH,
             _ => LOGIN_NO_MATCH,
         };
         return vec![model_placeholder_row(
@@ -189,6 +195,7 @@ fn login_list_len(onboarding: &KeyOnboarding) -> usize {
     match onboarding.step {
         KeyStep::Method => onboarding.method_matches().len(),
         KeyStep::Subscription => onboarding.subscription_matches().len(),
+        KeyStep::Local => onboarding.local_matches().len(),
         _ => onboarding.matches().len(),
     }
 }
@@ -221,44 +228,26 @@ pub(super) fn login_key_prompt(name: &str) -> String {
     }
 }
 
-/// The host step's title: `Enter your Ollama host` — what it wants, not a
-/// key it doesn't (`docs/ollama.md`).
-pub(super) fn login_host_prompt(name: &str) -> String {
-    format!("Enter your {name} host")
-}
-
-/// The `/login` key field. A **secret** is rendered as [`LOGIN_MASK_CHAR`]
-/// dots (one per character, truncated to width) over a dim placeholder when
-/// empty; a **host** ([`KeyKind::Host`]) is shown as typed — a URL typed blind
-/// is a URL typed wrong — over its default, which is what an empty Enter
-/// saves.
+/// The `/login` key field: the secret rendered as [`LOGIN_MASK_CHAR`] dots
+/// (one per character, truncated to width) over a dim placeholder when empty
+/// — the plaintext key never touches the screen.
 fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + cols(MODEL_PROMPT))
         .max(1);
-    let kind = onboarding.chosen_provider().map(|choice| &choice.key_kind);
-    let body = match (kind, onboarding.key_input.is_empty()) {
-        (Some(KeyKind::Host { default }), true) => Span::styled(
-            ellipsize(default, room),
-            Style::new().fg(model_meta_color()),
-        ),
-        (Some(KeyKind::Host { .. }), false) => Span::styled(
-            truncate_cols(&onboarding.key_input, room),
-            Style::new().fg(model_id_color()),
-        ),
-        (_, true) => Span::styled(
+    let body = if onboarding.key_input.is_empty() {
+        Span::styled(
             ellipsize(LOGIN_KEY_PLACEHOLDER, room),
             Style::new().fg(model_meta_color()),
-        ),
-        (_, false) => {
-            let dots: String = (0..onboarding.key_input.chars().count())
-                .map(|_| LOGIN_MASK_CHAR)
-                .collect();
-            Span::styled(
-                truncate_cols(&dots, room),
-                Style::new().fg(model_id_color()),
-            )
-        }
+        )
+    } else {
+        let dots: String = (0..onboarding.key_input.chars().count())
+            .map(|_| LOGIN_MASK_CHAR)
+            .collect();
+        Span::styled(
+            truncate_cols(&dots, room),
+            Style::new().fg(model_id_color()),
+        )
     };
     login_prompt_line(Line::from(vec![body]))
 }
@@ -498,19 +487,120 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
         if !text.is_empty() {
             text.push('\n');
         }
-        // A provider that takes no key has none to create: what its link is
-        // for is the server the host field is asking about (`docs/ollama.md`).
-        text.push_str(if choice.key_kind.is_host() {
-            LOGIN_HOST_URL_PREFIX
-        } else {
-            LOGIN_KEY_URL_PREFIX
-        });
+        text.push_str(LOGIN_KEY_URL_PREFIX);
         text.push_str(&choice.key_url);
     }
     if text.is_empty() {
         return Vec::new();
     }
     model_linked_rows(&text, model_meta_color(), width)
+}
+
+/// The local server page's title: `Enter your LM Studio server URL` — or,
+/// once the server asked for one, `Enter your LM Studio API token`
+/// (`docs/local-models.md`).
+pub(super) fn login_server_prompt(name: &str, token: bool) -> String {
+    if token {
+        format!("Enter your {name} API token")
+    } else {
+        format!("Enter your {name} server URL")
+    }
+}
+
+/// What the address step says about a local server: the file's description
+/// over where the server comes from, both dim, the URL a hyperlink — wrapped,
+/// never cut, and omitted whole when the file says neither (the key step's
+/// [`provider_about_lines`] rule).
+fn local_about_lines(choice: &LocalChoice, width: u16) -> Vec<Line<'static>> {
+    let mut text = choice.description.clone();
+    if !choice.install_url.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(LOGIN_INSTALL_URL_PREFIX);
+        text.push_str(&choice.install_url);
+    }
+    if text.is_empty() {
+        return Vec::new();
+    }
+    model_linked_rows(&text, model_meta_color(), width)
+}
+
+/// The server page's `❯` field. The **address** shows as typed — a URL typed
+/// blind is a URL typed wrong — over the address in force, dim, which is what
+/// an empty Enter tests; an address the provider block fixes is shown as the
+/// value it is. The **token** is masked like a key.
+fn server_field(choice: &LocalChoice, page: &ServerPage, width: u16) -> Line<'static> {
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(MODEL_PROMPT))
+        .max(1);
+    let typed = Style::new().fg(model_id_color());
+    let placeholder = Style::new().fg(model_meta_color());
+    let body = if page.asks_for_token() {
+        if page.token.is_empty() {
+            Span::styled(ellipsize(LOGIN_TOKEN_PLACEHOLDER, room), placeholder)
+        } else {
+            let dots: String = (0..page.token.chars().count())
+                .map(|_| LOGIN_MASK_CHAR)
+                .collect();
+            Span::styled(truncate_cols(&dots, room), typed)
+        }
+    } else if !page.address.is_empty() {
+        Span::styled(truncate_cols(&page.address, room), typed)
+    } else if choice.host_env.is_none() {
+        Span::styled(ellipsize(&choice.host, room), typed)
+    } else {
+        Span::styled(ellipsize(&choice.host, room), placeholder)
+    };
+    login_prompt_line(Line::from(vec![body]))
+}
+
+/// Under the field: the test running, dim, or why it failed, in red and
+/// wrapped (a URL in the reason linked, like the sign-in page's failures).
+/// Nothing at all otherwise, so the page does not reserve a blank band.
+fn server_status_lines(page: &ServerPage, width: u16) -> Vec<Line<'static>> {
+    if page.testing.is_some() {
+        return model_wrapped_rows(LOGIN_TESTING, model_meta_color(), width);
+    }
+    page.failure.as_deref().map_or_else(Vec::new, |reason| {
+        model_linked_rows(reason, error_color(), width)
+    })
+}
+
+/// The local server page ([`KeyStep::Server`], `docs/local-models.md`) as
+/// blocks: the title, what the server is (or, on the token step, the
+/// server's own ask), the field, the test's status, and the hint — each
+/// block one blank row from the next, an empty one contributing nothing.
+fn server_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+    let (Some(choice), Some(page)) = (onboarding.chosen_local(), onboarding.server.as_ref()) else {
+        // Unreachable in practice (the step and the page open together);
+        // a torn-down page paints the frame alone, never a void.
+        return vec![model_rule(width), model_rule(width)];
+    };
+    let about = match &page.token_for {
+        Some(ask) => model_linked_rows(&ask.reason, model_meta_color(), width),
+        None => local_about_lines(choice, width),
+    };
+    let hint = if page.testing.is_some() {
+        LOGIN_TESTING_HINT
+    } else if choice.host_env.is_none() && !page.asks_for_token() {
+        LOGIN_FIXED_SERVER_HINT
+    } else {
+        LOGIN_SERVER_HINT
+    };
+    login_page(
+        vec![
+            vec![login_title(
+                &login_server_prompt(&choice.name, page.asks_for_token()),
+                width,
+            )],
+            about,
+            vec![server_field(choice, page, width)],
+            server_status_lines(page, width),
+            vec![model_placeholder_row(hint, model_meta_color(), width)],
+        ],
+        width,
+    )
 }
 
 /// A `/login` list page: top rule, the `❯` filter, gap, the windowed list, a
@@ -533,6 +623,7 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
     let hint = match onboarding.step {
         KeyStep::Method => LOGIN_METHOD_HINT,
         KeyStep::Subscription => LOGIN_SUBSCRIPTION_HINT,
+        KeyStep::Local => LOGIN_LOCAL_HINT,
         _ => LOGIN_PROVIDER_HINT,
     };
     let filter = login_prompt_line(Line::from(onboarding.query.clone()));
@@ -609,7 +700,7 @@ pub(super) fn key_onboarding_lines(
     height: u16,
 ) -> Vec<Line<'static>> {
     match onboarding.step {
-        KeyStep::Method | KeyStep::Subscription | KeyStep::Provider => {
+        KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
             list_page_lines(onboarding, width, height)
         }
         KeyStep::SigninMethod => signin_method_page_lines(onboarding, width),
@@ -623,29 +714,21 @@ pub(super) fn key_onboarding_lines(
         KeyStep::Key => {
             let chosen = onboarding.chosen_provider();
             let name = chosen.map_or("the provider", |c| c.name.as_str());
-            // A host field asks for where the server is and defaults on an
-            // empty Enter; a secret field asks for the key and waits for one.
-            let host = chosen.is_some_and(|c| c.key_kind.is_host());
-            let title = if host {
-                login_host_prompt(name)
-            } else {
-                login_key_prompt(name)
-            };
-            let hint = if host {
-                LOGIN_HOST_HINT
-            } else {
-                LOGIN_KEY_HINT
-            };
             login_page(
                 vec![
-                    vec![login_title(&title, width)],
+                    vec![login_title(&login_key_prompt(name), width)],
                     chosen.map_or_else(Vec::new, |c| provider_about_lines(c, width)),
                     vec![login_key_field(onboarding, width)],
-                    vec![model_placeholder_row(hint, model_meta_color(), width)],
+                    vec![model_placeholder_row(
+                        LOGIN_KEY_HINT,
+                        model_meta_color(),
+                        width,
+                    )],
                 ],
                 width,
             )
         }
+        KeyStep::Server => server_page_lines(onboarding, width),
     }
 }
 

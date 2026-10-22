@@ -83,10 +83,11 @@ smoke_sanitize_env() {
 	for v in $(env | sed -n 's/^\(ALTER_ZERO_[A-Za-z0-9_]*\)=.*/\1/p'); do
 		unset "$v"
 	done
-	# The Ollama provider is configured by being *pointed at* (docs/ollama.md):
-	# a developer's own host would make the /model phases fetch from a server
-	# the suite doesn't run.
-	unset OLLAMA_HOST
+	# The local servers are configured by being *pointed at*
+	# (docs/local-models.md): a developer's own Ollama or LM Studio host — or
+	# LM Studio's token, whose name does not end in API_KEY — would make the
+	# /model phases fetch from a server the suite doesn't run.
+	unset OLLAMA_HOST LMSTUDIO_HOST LM_API_TOKEN
 	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
 	# report its turns to the developer's real herdr — the pane the suite was
 	# started from flickering through a hundred agents' states. The herdr

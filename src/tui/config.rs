@@ -23,7 +23,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alter_zero::app::{KeyKind, Look, LookFile, ProviderChoice, SigninKind, SubscriptionChoice};
+use alter_zero::app::{
+    LocalChoice, Look, LookFile, ProviderChoice, SigninKind, SubscriptionChoice,
+};
 use alter_zero::checkpoint;
 use alter_zero::llm::config::Provider;
 use alter_zero::llm::{
@@ -248,12 +250,14 @@ pub(crate) fn session_cache_key() -> &'static str {
 /// pasted, tagged with its env var and whether one already resolves (the ✓).
 /// A subscription provider is excluded — it is signed in to, not keyed, and
 /// listing it beside the others would offer a key field for a flow that has
-/// none. See `docs/llm.md` and `docs/copilot.md`.
+/// none — and so is a server whose key is optional: it is pointed at, under
+/// **Use a local model** ([`local_choices`]). See `docs/llm.md`,
+/// `docs/copilot.md` and `docs/local-models.md`.
 pub(crate) fn provider_choices(
     providers: &ProvidersFile,
     env_file: &EnvFile,
 ) -> Vec<ProviderChoice> {
-    choices_where(providers, env_file, |p| !p.auth.is_subscription())
+    choices_where(providers, env_file, |p| p.auth == AuthScheme::ApiKey)
 }
 
 /// **Every** provider, however it authenticates — what the `/model` picker
@@ -280,39 +284,7 @@ fn choices_where(
         .map(|id| {
             let provider = providers.get(&id);
             let name = provider.map_or_else(|| id.clone(), |p| p.name.clone());
-            let keyed = resolve_api_key(providers, env_file, &id).is_some();
-            // A provider that needs no key is configured by being *pointed
-            // at* instead: its host variable resolving (`OLLAMA_HOST`, which
-            // `/login` writes), or the environment naming it the active
-            // provider outright (`docs/ollama.md`). Without that rule every
-            // `/model` open would fetch from a server most users don't run
-            // and paint its refusal in red.
-            let host_var = provider
-                .filter(|p| p.auth.key_optional())
-                .and_then(|p| p.api_base_env.clone());
-            let pointed_at = host_var
-                .as_deref()
-                .is_some_and(|var| resolve_env(env_file, var).is_some())
-                || std::env::var("ALTER_ZERO_PROVIDER")
-                    .ok()
-                    .is_some_and(|env| alter_zero::llm::chatgpt::canonical_provider_id(&env) == id);
-            // …and a keyless provider naming no host variable at all — a
-            // local LM Studio or vLLM server a user described in their own
-            // file — is configured by that description alone
-            // (`docs/user-providers.md`).
-            let defined = provider.is_some_and(Provider::configured_by_definition);
-            let configured = keyed || pointed_at || defined;
-            // What `/login` asks for, and what its Enter saves: the host
-            // for a host-configured provider, the key for everyone else.
-            let (env_var, key_kind) = match host_var {
-                Some(var) => (
-                    var,
-                    KeyKind::Host {
-                        default: provider.map_or_else(String::new, |p| p.kwargs.api_base.clone()),
-                    },
-                ),
-                None => (key_env_name(providers, &id), KeyKind::Secret),
-            };
+            let configured = is_configured(providers, env_file, &id);
             // What the key step introduces the provider with, and where its
             // keys are made: both come from the file, so adding a provider is
             // still one `[providers.<id>]` block (`docs/llm.md`).
@@ -323,16 +295,85 @@ fn choices_where(
                 .and_then(|p| p.api_key_url.clone())
                 .unwrap_or_default();
             ProviderChoice {
+                env_var: key_env_name(providers, &id),
                 id,
                 name,
-                env_var,
                 configured,
-                key_kind,
                 description,
                 key_url,
             }
         })
         .collect()
+}
+
+/// Is a provider configured — the `/login` row's ✓, and whether `/model`
+/// fetches from it? A key resolving, for any provider. A provider that needs
+/// no key is configured by being *pointed at* instead: its host variable
+/// resolving (`OLLAMA_HOST`, `LMSTUDIO_HOST`, which `/login` writes once the
+/// connection test passes), or the environment naming it the active provider
+/// outright (`docs/local-models.md`). Without that rule every `/model` open
+/// would fetch from a server most users don't run and paint its refusal in
+/// red. And a keyless provider naming no host variable at all — a local
+/// llama.cpp or vLLM server a user described in their own file — is
+/// configured by that description alone (`docs/user-providers.md`).
+fn is_configured(providers: &ProvidersFile, env_file: &EnvFile, id: &str) -> bool {
+    let provider = providers.get(id);
+    let keyed = resolve_api_key(providers, env_file, id).is_some();
+    let host_var = provider
+        .filter(|p| p.auth.key_optional())
+        .and_then(|p| p.api_base_env.as_deref());
+    let pointed_at = host_var.is_some_and(|var| resolve_env(env_file, var).is_some())
+        || std::env::var("ALTER_ZERO_PROVIDER")
+            .ok()
+            .is_some_and(|env| alter_zero::llm::chatgpt::canonical_provider_id(&env) == id);
+    let defined = provider.is_some_and(Provider::configured_by_definition);
+    keyed || pointed_at || defined
+}
+
+/// The **local model** rows the `/login` flow shows: every provider whose key
+/// is optional — a server the user runs (Ollama, LM Studio, a keyless one of
+/// their own) — with what its page needs: the variable its address is saved
+/// under, the address in force (that variable's value, else the file's own
+/// server address, the API path left for the config to add back), and the
+/// variable a token would go to. See `docs/local-models.md`.
+pub(crate) fn local_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Vec<LocalChoice> {
+    providers
+        .providers
+        .iter()
+        .filter(|(_, p)| p.auth.key_optional())
+        .map(|(id, p)| {
+            let host = match &p.api_base_env {
+                // Shown as stored: it is what the user (or `/login`) wrote.
+                Some(var) => resolve_env(env_file, var).unwrap_or_else(|| own_address(p)),
+                // Fixed by the block: the base itself, which is what is tested.
+                None => p.kwargs.api_base.trim().trim_end_matches('/').to_string(),
+            };
+            LocalChoice {
+                id: id.clone(),
+                name: p.name.clone(),
+                description: p.description.clone().unwrap_or_default(),
+                install_url: p.api_key_url.clone().unwrap_or_default(),
+                configured: is_configured(providers, env_file, id),
+                host_env: p.api_base_env.clone(),
+                host,
+                token_env: key_env_name(providers, id),
+            }
+        })
+        .collect()
+}
+
+/// A local server's own address, as its block names it — the server, without
+/// the API path the config adds back (`http://127.0.0.1:1234` for LM Studio's
+/// `…/v1`); Ollama's base, in its own grammar, is its address already. What
+/// the `/login` field offers when nothing is stored, and the example a typo
+/// is answered with (`docs/local-models.md`).
+pub(crate) fn own_address(provider: &Provider) -> String {
+    let base = provider.kwargs.api_base.trim();
+    if provider.wire_api == llm::WireApi::Ollama {
+        base.to_string()
+    } else {
+        llm::local::server_address(base, base)
+    }
 }
 
 /// The **subscription** rows the `/login` flow shows: every provider whose

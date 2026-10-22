@@ -163,10 +163,18 @@ forever would hide the one sentence that fixes it. So `OpenAiClient::explain`
 maps an `Unreachable` back to an `Http(advice)` — the bounded retry, the
 advice surfaced in seconds — **only when the base is on this machine**
 (`ollama::is_local_base`: a loopback address or `localhost`). Ollama's cloud
-and an `OLLAMA_HOST` elsewhere keep the wait. No other wire makes the
-distinction: a chat-completions provider pointed at `localhost` (a local
-proxy, LM Studio) that is down shows `Waiting for internet…` over `No
-connection to localhost:8080`, which names what is actually gone.
+and an `OLLAMA_HOST` elsewhere keep the wait.
+
+Every other **keyless** provider (`auth = "optional_key"`: LM Studio, a
+llama.cpp or vLLM block) is a server the user runs too, so it gets the same
+exception on any wire, worded the way the `/login` connection test words it
+(`local::refused_advice`, `docs/local-models.md`): `Nothing is answering at
+127.0.0.1:1234 — is LM Studio's server running?`. The same server on another
+machine keeps the wait, and so does a provider that **takes a key**, even on
+`localhost`: there a refusal is a forwarding proxy in front of a hosted
+service, which comes back by itself. That one shows `Waiting for internet…`
+over `No connection to localhost:8080`, which names what is actually gone
+(Phase 129's `flaky` stub is one).
 
 ## What stays as it was
 
@@ -201,7 +209,9 @@ connection to localhost:8080`, which names what is actually gone.
   outage count after an answer, stops silently on a cancel mid-wait, and
   surfaces the error with retries off.
 - `llm::openai::tests`: a refused local Ollama is advice, a remote one is
-  waited for; `ollama::is_local_base`.
+  waited for; `ollama::is_local_base`. A refused keyless server on this
+  machine is the `/login` test's sentence, while the same server elsewhere
+  and a keyed provider on loopback are waited for; `local::refused_advice`.
 - `app::tests::turn`: `set_offline` records the host, the count and the
   clock reading; later announcements keep the start; every content arm and
   both round announcements end the wait; `retry` and `offline` never show
@@ -230,7 +240,7 @@ connection to localhost:8080`, which names what is actually gone.
 | --- | --- |
 | The classification, `LlmError::Unreachable`, `host_label`, the cause chain | `src/llm/mod.rs` (`LlmError::transport`), applied in `openai.rs`, `models.rs`, `copilot.rs`, `chatgpt.rs`, `claude.rs` |
 | The policy: `Attempts`, `RetryStep::AwaitConnection`, `offline_backoff`, the driver | `src/llm/retry.rs` |
-| Ollama's exception | `src/llm/ollama.rs` (`is_local_base`), `src/llm/openai.rs` (`explain`) |
+| The local-server exception | `src/llm/ollama.rs` (`is_local_base`), `src/llm/local.rs` (`refused_advice`), `src/llm/openai.rs` (`explain`) |
 | The event | `src/stream/event.rs` (`StreamEvent::Offline`) |
 | The state | `src/app/status.rs` (`OfflineInfo`, `TurnStatus::offline`, `set_offline`, `offline`, `recovered`), `src/agents.rs` (`AgentRun::offline`) |
 | The boundary arm | `src/tui/stream.rs` |

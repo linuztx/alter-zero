@@ -295,7 +295,6 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
             name: "Agent Zero API".into(),
             env_var: "A0_VENICE_API_KEY".into(),
             configured: false,
-            key_kind: KeyKind::Secret,
             description: String::new(),
             key_url: String::new(),
         },
@@ -304,7 +303,6 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
             name: "OpenRouter".into(),
             env_var: "OPENROUTER_API_KEY".into(),
             configured: true,
-            key_kind: KeyKind::Secret,
             description: String::new(),
             key_url: String::new(),
         },
@@ -313,48 +311,82 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
             name: "Together AI".into(),
             env_var: "TOGETHER_API_KEY".into(),
             configured: false,
-            key_kind: KeyKind::Secret,
             description: String::new(),
             key_url: String::new(),
         },
     ]
 }
 
-/// A host-configured provider row — Ollama's, whose `/login` field asks for
-/// where the server is rather than a secret (`docs/ollama.md`).
-pub(super) fn host_choice() -> ProviderChoice {
-    ProviderChoice {
-        id: "ollama".into(),
-        name: "Ollama".into(),
-        env_var: "OLLAMA_HOST".into(),
-        configured: false,
-        key_kind: KeyKind::Host {
-            default: "http://127.0.0.1:11434".into(),
+/// The local server rows the boundary injects (`docs/local-models.md`): LM
+/// Studio, not yet pointed at, and Ollama, pointed at a box on the network —
+/// both saving their address under a variable of their own — and a server
+/// the user's own provider block fixes in place, with nothing to save.
+pub(super) fn sample_locals() -> Vec<LocalChoice> {
+    vec![
+        LocalChoice {
+            id: "lmstudio".into(),
+            name: "LM Studio".into(),
+            description: "Open models running in LM Studio.".into(),
+            install_url: "https://lmstudio.ai/download".into(),
+            configured: false,
+            host_env: Some("LMSTUDIO_HOST".into()),
+            host: "http://127.0.0.1:1234".into(),
+            token_env: "LM_API_TOKEN".into(),
         },
-        description: String::new(),
-        key_url: String::new(),
-    }
+        LocalChoice {
+            id: "ollama".into(),
+            name: "Ollama".into(),
+            description: "Open models running locally.".into(),
+            install_url: "https://ollama.com/download".into(),
+            configured: true,
+            host_env: Some("OLLAMA_HOST".into()),
+            host: "gpu-box:11434".into(),
+            token_env: "OLLAMA_HOST_API_KEY".into(),
+        },
+        LocalChoice {
+            id: "vllm".into(),
+            name: "vLLM".into(),
+            description: String::new(),
+            install_url: String::new(),
+            configured: true,
+            host_env: None,
+            host: "http://localhost:8000/v1".into(),
+            token_env: "VLLM_API_KEY".into(),
+        },
+    ]
 }
 
-/// The flow parked on the host field for [`host_choice`]'s provider.
-pub(super) fn host_app() -> App {
-    let mut app = App::new();
-    let mut choices = sample_choices();
-    choices.push(host_choice());
-    app.open_key_onboarding(choices, sample_subscriptions(), "~/.alter-zero/.env");
-    app.on_key(key(KeyCode::Down)); // "Use an API key"
+/// Drive the flow to the local server list (the method step's third row).
+pub(super) fn local_app() -> App {
+    let mut app = login_app();
+    app.on_key(key(KeyCode::Up)); // wraps to "Use a local model"
     app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Local);
+    app
+}
+
+/// Drive the flow to `id`'s server page.
+pub(super) fn server_app(id: &str) -> App {
+    let mut app = local_app();
     {
         let onboarding = app.key_onboarding.as_mut().unwrap();
         onboarding.selected = onboarding
-            .matches()
+            .local_matches()
             .iter()
-            .position(|p| p.id == "ollama")
+            .position(|l| l.id == id)
             .unwrap();
     }
     app.on_key(key(KeyCode::Enter));
-    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Key);
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Server);
     app
+}
+
+/// The server page's state, for the assertions.
+pub(super) fn server_page(app: &App) -> &ServerPage {
+    app.key_onboarding
+        .as_ref()
+        .and_then(|o| o.server.as_ref())
+        .expect("a server page is open")
 }
 
 /// The subscription rows the boundary injects — one, GitHub Copilot.
@@ -386,7 +418,12 @@ pub(super) fn login_app_with_chatgpt() -> App {
     let mut app = App::new();
     let mut subscriptions = sample_subscriptions();
     subscriptions.push(chatgpt_subscription());
-    app.open_key_onboarding(sample_choices(), subscriptions, "~/.alter-zero/.env");
+    app.open_key_onboarding(
+        sample_choices(),
+        subscriptions,
+        sample_locals(),
+        "~/.alter-zero/.env",
+    );
     app
 }
 
@@ -408,6 +445,7 @@ pub(super) fn login_app() -> App {
     app.open_key_onboarding(
         sample_choices(),
         sample_subscriptions(),
+        sample_locals(),
         "~/.alter-zero/.env",
     );
     app

@@ -642,7 +642,9 @@ fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
         );
     };
     hint_clock_off(|app| app.open_model_picker("a"));
-    hint_clock_off(|app| app.open_key_onboarding(Vec::new(), Vec::new(), "~/.alter-zero/.env"));
+    hint_clock_off(|app| {
+        app.open_key_onboarding(Vec::new(), Vec::new(), Vec::new(), "~/.alter-zero/.env")
+    });
     hint_clock_off(App::open_settings);
     hint_clock_off(|app| {
         app.open_hooks_menu(crate::hooks::HooksOverview::default(), None, true);

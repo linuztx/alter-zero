@@ -381,14 +381,19 @@ which Ctrl+V reads the clipboard from.
   the picker, so the running turn's status line and live tool cell stay
   visible while you browse (the ↓ manager band's geometry —
   `ui::layout`'s `strip_above_rows`/`view_split`; `docs/llm.md`).
-- **`/login` API-key onboarding** (`docs/llm.md`). A second **inline** flow,
-  two-step: pick a provider (headerless list), then paste its API key (masked,
-  under a periwinkle `Enter your … API key` prompt). On save the key is written to
-  `~/.alter-zero/.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so
-  it **persists across runs** — key resolution consults the real process env
-  first, then this file. Because `std::env::set_var` is `unsafe` (forbidden here),
-  the loaded keys live in an in-memory map, never the process env. Opens
-  mid-turn — over the same kept streaming strip — like `/model`.
+- **`/login` onboarding** (`docs/llm.md`). A second **inline** flow, rooted at
+  three ways in: a subscription sign-in, an API key — pick a provider
+  (headerless list), then paste its key (masked, under an `Enter your … API
+  key` title) — or a **local model** server, whose address is **tested before
+  it is saved**: the page lists the server's models the way `/model` will, a
+  failure stays on the page in red, and a server answering 401 asks for its
+  token (`docs/local-models.md`). On save the key, token or address is written
+  to `~/.alter-zero/.env` (`llm::keystore::EnvFile`, a pure `.env`
+  reader/writer) so it **persists across runs** — key resolution consults the
+  real process env first, then this file. Because `std::env::set_var` is
+  `unsafe` (forbidden here), the loaded keys live in an in-memory map, never
+  the process env. Opens mid-turn — over the same kept streaming strip — like
+  `/model`.
 - **Your own providers** (`docs/user-providers.md`). The shipped providers are
   embedded; a user's `~/.alter-zero/providers.toml` is laid over them block by
   block — a new id adds a provider, a shipped id is patched key by key — and
@@ -934,10 +939,12 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,
   `/login`, `/quit`) — the slash-command palette's data; adding a command is
   one registry entry (+ an effect arm).
-- `KeyOnboarding { providers, step, selected, query, chosen, key_input }` +
-  `KeyStep { Provider, Key }` + `ProviderChoice { id, name, env_var, configured }`
-  — the open inline `/login` flow (`App::key_onboarding`, `None` when closed;
-  `docs/llm.md`).
+- `KeyOnboarding { providers, subscriptions, locals, step, selected, query,
+  chosen, chosen_subscription, chosen_local, key_input, device, server, … }` +
+  `KeyStep { Method, Subscription, SigninMethod, Device, Provider, Key, Local,
+  Server }` + `ProviderChoice` / `SubscriptionChoice` / `LocalChoice` — the open
+  inline `/login` flow (`App::key_onboarding`, `None` when closed;
+  `docs/llm.md`, `docs/local-models.md`).
 - `ResumePicker { sessions, selected, query, cwd, filter, sort, focus }` —
   the open `/resume` picker (`App::resume_picker`, `None` when closed); the
   rows derive on demand (`matches` — filter, query, then the active sort).
@@ -1364,7 +1371,7 @@ two places that have to agree (both now applied by every phase for itself, so
 a phase run on its own is as hermetic as one run by the suite):
 
 - **The variables.** The script unsets every `*_API_KEY`, every `ALTER_ZERO_*`
-  knob, `OLLAMA_HOST`, `NO_COLOR`, `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, and
+  knob, `OLLAMA_HOST`, `LMSTUDIO_HOST` and `LM_API_TOKEN`, `NO_COLOR`, `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, and
   herdr's four `HERDR_*` pane variables (run from a herdr pane, every phase
   would report its turns to the developer's real multiplexer —
   `docs/herdr.md`) before its first launch, then spells out per launch the ones
