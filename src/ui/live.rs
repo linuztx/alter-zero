@@ -726,6 +726,17 @@ pub fn render_live_with_preview(
         super::export_view::render_export_picker(body, buf, app);
         return;
     }
+    // …and the read-only `/context` page, its sibling too. See
+    // `docs/context-usage.md`.
+    if app.context_usage.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::context_usage_view::context_usage_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        super::context_usage_view::render_context_usage(body, buf, app);
+        return;
+    }
     // …and the `/trust` review menu, its sibling. See
     // `docs/project-config.md`.
     if app.trust_menu.is_some() {

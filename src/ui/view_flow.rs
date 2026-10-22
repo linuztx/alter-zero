@@ -235,6 +235,16 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.context_usage.is_some() {
+        // The `/context` page never ticks — it changes when the
+        // conversation does (a round lands, a server connects) — so it signs
+        // its rows like its siblings: a re-count that changes them rebuilds
+        // once (`docs/context-usage.md`).
+        return Some(FlowPage::framed(
+            super::context_usage_view::context_usage_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.trust_menu.is_some() {
         return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),

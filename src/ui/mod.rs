@@ -42,6 +42,7 @@ mod assistant;
 mod background_view;
 mod cached_lines;
 mod classifier_view;
+mod context_usage_view;
 mod context_view;
 mod conversation;
 mod diff_view;
@@ -91,6 +92,9 @@ pub use self::agent::{
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
 pub use self::classifier_view::classifier_lines;
+pub use self::context_usage_view::{
+    context_usage_height, context_usage_lines, render_context_usage,
+};
 pub use self::context_view::{ContextCache, context_lines, render_context_view};
 pub use self::conversation::{
     banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,

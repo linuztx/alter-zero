@@ -14,6 +14,21 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/context` shows what fills the context window.** The footer's gauge says
+  how full the window is; `/context` says what is filling it. The page breaks
+  the window into the system prompt, the built-in tools' schemas, each MCP
+  server's tools, the project's `AGENTS.md`, the skills and agent-type
+  listings, any secrets' names and the conversation itself, each with its
+  tokens and its share, over a bar of the whole window in the same colours
+  with the free space and the auto-compact reserve at its end. ↑/↓ pick a
+  row and the detail beside it says what it is made of: the tool that costs
+  the most, the file, the skill, or how the conversation splits between your
+  messages, replies, tool calls and tool results. Under it is what the
+  provider reported: the last request's tokens in and out, how much of it
+  was read from the prompt cache, and the totals since launch. It opens
+  mid-turn too, keeps counting while the turn runs, and inside a subagent's
+  session view shows that agent's own window. Ctrl+D shows the raw context
+  behind the numbers, and Esc closes it (`docs/context-usage.md`).
 - **`/login` can connect a local model, and tests it before saving.** `/login`
   now offers three ways in: a subscription, an API key, or **Use a local
   model**. The third lists the model servers you run yourself: Ollama, LM

@@ -25,6 +25,10 @@
 //! - [`context`]     — the per-session LLM conversation context: derive the
 //!   raw message list a real backend sends (and the Ctrl+D context-debug
 //!   view shows) from history. See `docs/context.md`.
+//! - [`context_usage`] — the `/context` page's pure core: the window broken
+//!   into the categories a request carries (system prompt, tools, the
+//!   reminder's sections, messages) with each one's parts, and the
+//!   provider's usage frames summed (see `docs/context-usage.md`).
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
@@ -144,6 +148,7 @@ pub mod checkpoint;
 pub mod cli;
 pub mod clipboard;
 pub mod context;
+pub mod context_usage;
 pub mod file_search;
 pub mod frame;
 pub mod frontmatter;

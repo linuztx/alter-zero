@@ -1044,6 +1044,10 @@ impl<'t> Session<'t> {
         // The spinner tip walk's position (docs/tips.md) — likewise nothing
         // on the iterations that drew no tip.
         self.sync_tip_cursor();
+        // An open `/context` page re-counts whatever this iteration changed
+        // under it — a tool round landing, a server connecting
+        // (docs/context-usage.md). Nothing at all while the page is closed.
+        self.sync_context_usage();
         // Pre-render whatever this iteration committed into the Ctrl+O transcript
         // cache (docs/tool-view-performance.md) — a few integer compares when
         // nothing did, one grammar-highlight per new item when something did, the

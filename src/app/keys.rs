@@ -76,6 +76,11 @@ impl App {
         if self.view == View::Conversation && self.export_picker.is_some() {
             return self.on_key_export_picker(key);
         }
+        // …and the read-only `/context` page, its sibling too. See
+        // `docs/context-usage.md`.
+        if self.view == View::Conversation && self.context_usage.is_some() {
+            return self.on_key_context_usage(key);
+        }
         // …and the `/secrets` page, whose form takes text of its own — never
         // the composer's. See `docs/secrets.md`.
         if self.view == View::Conversation && self.secrets_page.is_some() {

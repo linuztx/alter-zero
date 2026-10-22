@@ -272,6 +272,14 @@ impl Session<'_> {
             Action::SaveSecret(draft) => self.save_secret(&draft),
             Action::DeleteSecret(name) => self.delete_secret(&name),
             Action::CopySecretPlaceholder(name) => self.copy_secret_placeholder(&name),
+            // The pure open already counted the window; the boundary hands
+            // it the backend's tool set before the first frame
+            // (docs/context-usage.md).
+            Action::OpenContextUsage => self.sync_context_usage(),
+            Action::CloseContextUsage => {
+                // Esc/Ctrl+C dismissed the page: nothing to reap; the region
+                // collapses back to the composer on the next draw.
+            }
             Action::OpenExportPicker => {
                 // The pure open already happened (the rows are a const —
                 // nothing to fetch or inject); after_key schedules the frame
@@ -561,8 +569,10 @@ impl Session<'_> {
             // …and the read-only `/donate` page has no field at all
             // (docs/donate.md)…
             View::Conversation if self.app.donate_picker.is_some() => {}
-            // …nor does the `/export` page, its sibling (docs/export.md).
+            // …nor does the `/export` page, its sibling (docs/export.md)…
             View::Conversation if self.app.export_picker.is_some() => {}
+            // …nor the `/context` page (docs/context-usage.md).
+            View::Conversation if self.app.context_usage.is_some() => {}
             // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
             // composer draft underneath (docs/secrets.md).

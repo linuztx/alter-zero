@@ -24,6 +24,7 @@ use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
 use crate::ask::AskGate;
 use crate::context::ContextMessage;
+use crate::context_usage::ToolDefinition;
 use crate::images::AttachmentUrl;
 use crate::permission::PermissionGate;
 use crate::steer::SteerQueue;
@@ -55,6 +56,12 @@ pub struct LlmBackend {
     model: String,
     system_prompt: Option<String>,
     tools_enabled: bool,
+    /// The client's `tools` array as the `/context` page counts it — each
+    /// tool's wire name and its schema serialized as sent
+    /// (`docs/context-usage.md`). Rebuilt with the array itself, at the two
+    /// places that set it, so the two cannot drift; shared by handle so the
+    /// page's per-iteration pull costs a pointer copy.
+    tool_definitions: Arc<[ToolDefinition]>,
     /// The shared background-shell registry, when the boundary attached one —
     /// enables the `bash` tool's `run_in_background` and Ctrl+B handoff
     /// (`docs/background.md`).
@@ -196,11 +203,14 @@ impl LlmBackend {
         let system_prompt = system_prompt
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let mut tool_definitions = Arc::default();
         if tools_enabled {
             // The schemas carry the whole capability story — no prose note
             // rides the system prompt, so enabling tools costs no prompt
             // tokens.
-            client = client.with_tools(tools::tool_specs());
+            let specs = tools::tool_specs();
+            tool_definitions = ToolDefinition::from_specs(&specs);
+            client = client.with_tools(specs);
         }
         Self {
             client,
@@ -208,6 +218,7 @@ impl LlmBackend {
             model,
             system_prompt,
             tools_enabled,
+            tool_definitions,
             background: None,
             vision,
             prompt_context: None,
@@ -406,6 +417,7 @@ impl LlmBackend {
         if let Some(manager) = &self.mcp {
             specs.extend(manager.tool_specs());
         }
+        self.tool_definitions = ToolDefinition::from_specs(&specs);
         self.client = self.client.clone().with_tools(specs);
         self.wire_history = Arc::new(Mutex::new(super::wire_history::WireHistory::default()));
     }
@@ -1086,6 +1098,31 @@ impl ReplySource for LlmBackend {
         self.subagent_config().briefing_for(agent_type)
     }
 
+    /// The tools the next request offers — the set `sync_tool_specs` last
+    /// handed the client, shared by handle (`docs/context-usage.md`).
+    fn tool_definitions(&self) -> Arc<[ToolDefinition]> {
+        Arc::clone(&self.tool_definitions)
+    }
+
+    /// The tools a subagent of `agent_type` is launched with — built by the
+    /// same `subagent_tool_specs` its launch calls, through the type's
+    /// allowlist. Only asked while its session view's `/context` page is
+    /// open, so it is built per call rather than kept.
+    fn agent_tool_definitions(&self, agent_type: &str) -> Arc<[ToolDefinition]> {
+        if !self.tools_enabled {
+            return Arc::default();
+        }
+        let allowed = self
+            .subagents
+            .find(agent_type)
+            .map_or(crate::subagents::AgentTools::All, |def| def.tools);
+        ToolDefinition::from_specs(&subagent_tool_specs(
+            self.skills.is_some(),
+            self.mcp.as_ref(),
+            &allowed,
+        ))
+    }
+
     /// The model a subagent of `agent_type` is launched on when its
     /// definition pins one — read off the same definition
     /// `spawn_subagent_run` switches the client for
@@ -1278,6 +1315,30 @@ impl SubagentConfig {
             SUBAGENT_SYSTEM_SUFFIX,
         )
     }
+}
+
+/// A subagent's tool set: the built-ins its definition's `allowed` list
+/// permits (never `agent` — no nesting), plus the `skill` tool when the
+/// session found any (`docs/skills.md`) and the MCP servers' tools
+/// (`docs/mcp.md`), both through the same allowlist. One function, because
+/// two answer the same question: the launch that **sends** it
+/// ([`spawn_subagent_run`]) and the agent view's `/context` page that
+/// **counts** it (`ReplySource::agent_tool_definitions`).
+fn subagent_tool_specs(
+    skills: bool,
+    mcp: Option<&super::mcp::McpManager>,
+    allowed: &crate::subagents::AgentTools,
+) -> Vec<serde_json::Value> {
+    let mut specs = tools::subagent_tool_specs(allowed);
+    let mut extras = Vec::new();
+    if skills {
+        extras.push(tools::skill_spec());
+    }
+    if let Some(manager) = mcp {
+        extras.extend(manager.tool_specs());
+    }
+    specs.extend(tools::allowed_specs(extras, allowed));
+    specs
 }
 
 /// A subagent's whole briefing — the skills it may load and, behind them,
@@ -1596,19 +1657,7 @@ fn spawn_subagent_run(
     let allowed = definition
         .as_ref()
         .map_or(crate::subagents::AgentTools::All, |def| def.tools.clone());
-    // The subagent's tool set: the built-ins its definition allows (never
-    // `agent` — no nesting), plus the `skill` tool when the session found any
-    // (`docs/skills.md`) and the MCP servers' tools (`docs/mcp.md`), both
-    // through the same allowlist.
-    let mut specs = tools::subagent_tool_specs(&allowed);
-    let mut extras = Vec::new();
-    if skills.is_some() {
-        extras.push(tools::skill_spec());
-    }
-    if let Some(manager) = &mcp {
-        extras.extend(manager.tool_specs());
-    }
-    specs.extend(tools::allowed_specs(extras, &allowed));
+    let specs = subagent_tool_specs(skills.is_some(), mcp.as_ref(), &allowed);
     // A definition may pin its own model (`model: kimi-k3`): same provider,
     // base and key, and the session's thinking mode / vision verdict dropped
     // — both describe the model being replaced, not this one.
@@ -2394,6 +2443,59 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "no group was announced: nothing was launched for a type that does not exist"
+        );
+    }
+
+    #[test]
+    fn the_backend_surfaces_the_tool_set_it_sends() {
+        // What `/context` counts the tools from (docs/context-usage.md): the
+        // very set the client sends, each schema serialized as sent.
+        let names = |backend: &LlmBackend| -> Vec<String> {
+            ReplySource::tool_definitions(backend)
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect()
+        };
+        let off = LlmBackend::configure(ModelConfig::fallback(), None, false);
+        assert!(names(&off).is_empty(), "a tools-off backend offers nothing");
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true);
+        let sent: Vec<String> = tools::tool_specs()
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names(&backend), sent);
+        assert_eq!(
+            ReplySource::tool_definitions(&backend)[0].schema,
+            tools::tool_specs()[0].to_string()
+        );
+        // Every attachment that widens the set widens what it reports.
+        let backend = backend.with_ask(AskGate::new());
+        assert!(names(&backend).contains(&"askuserquestion".to_string()));
+    }
+
+    #[test]
+    fn a_subagents_tool_set_follows_its_types_allowlist() {
+        let defs = crate::subagents::SubagentRegistry::new(vec![
+            crate::subagents::parse_agent(
+                "---\nname: reader\ndescription: d\ntools: Read\n---\n",
+                "reader",
+            )
+            .expect("parses"),
+        ]);
+        let backend =
+            LlmBackend::configure(ModelConfig::fallback(), None, true).with_subagents(defs);
+        let names = |agent_type: &str| -> Vec<String> {
+            ReplySource::agent_tool_definitions(&backend, agent_type)
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect()
+        };
+        assert_eq!(names("reader"), ["read"]);
+        let general = names(crate::agents::GENERAL_PURPOSE);
+        assert!(general.contains(&"bash".to_string()), "{general:?}");
+        assert!(
+            !general.contains(&"agent".to_string()),
+            "subagents never nest: {general:?}"
         );
     }
 

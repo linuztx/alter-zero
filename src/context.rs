@@ -130,6 +130,19 @@ fn summary_bridge(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{body}")
 }
 
+/// The bridge the derivation sends for `history`'s **last** `/compact`
+/// marker — exactly the user message [`context_messages`] pushes in place of
+/// everything before it — or `None` while no marker stands. What the
+/// `/context` page counts as the conversation's summary
+/// (`docs/context-usage.md`).
+#[must_use]
+pub fn compaction_bridge(history: &[HistoryItem]) -> Option<String> {
+    history.iter().rev().find_map(|item| match item {
+        HistoryItem::Compaction(compaction) => Some(summary_bridge(&compaction.summary)),
+        _ => None,
+    })
+}
+
 /// The wire role a context message is sent as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextRole {
@@ -2245,6 +2258,30 @@ mod tests {
         let ctx = context_messages(&history);
         assert_eq!(ctx.len(), 1);
         assert_eq!(ctx[0].text, format!("{SUMMARY_PREFIX}\nfrom nothing"));
+    }
+
+    #[test]
+    fn the_compaction_bridge_is_the_last_markers_as_derived() {
+        // What `/context` counts as the summary (docs/context-usage.md):
+        // exactly the bridge the derivation pushes, from the *last* marker.
+        assert_eq!(compaction_bridge(&[]), None, "no marker, no bridge");
+        let history = vec![
+            compaction("the first"),
+            message(Role::User, "then more"),
+            compaction("the second"),
+        ];
+        let bridge = compaction_bridge(&history).expect("a marker stands");
+        assert_eq!(bridge, format!("{SUMMARY_PREFIX}\nthe second"));
+        assert!(
+            context_messages(&history)
+                .iter()
+                .any(|message| message.text.contains(&bridge)),
+            "the bridge is what the derivation sends"
+        );
+        assert_eq!(
+            compaction_bridge(&[compaction("")]),
+            Some(format!("{SUMMARY_PREFIX}\n(no summary available)"))
+        );
     }
 
     #[test]

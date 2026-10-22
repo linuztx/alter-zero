@@ -1643,6 +1643,171 @@ pub(super) const EXPORT_FILE_DESC_DIR_FALLBACK: &str = "the working directory";
 /// The dim key hint — the page's whole grammar.
 pub(super) const EXPORT_HINT: &str = "↑↓ navigate  enter select  esc close";
 
+// --- the read-only /context page (docs/context-usage.md). The /donate
+// page's frame — the family's indent, its `❯` marker, the dim meta ink, the
+// pages' title dress — over the context window: a bar standing for the
+// whole window, a legend of what fills it with the highlighted row's detail
+// beside or under it, and what the provider reported about the cache. ---
+
+/// The page's title.
+pub(super) const CONTEXT_USAGE_TITLE: &str = "Context usage";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const CONTEXT_USAGE_HINT: &str = "↑↓ select  ctrl+d raw context  esc close";
+
+/// Marks the subtitle's total as the tokenizer's estimate — the categories
+/// are counted app-side, the usage rows are the provider's own.
+pub(super) const CONTEXT_USAGE_ESTIMATE_MARK: &str = "≈";
+
+/// What the subtitle says when the model's window is unknown.
+pub(super) const CONTEXT_USAGE_WINDOW_UNKNOWN: &str = "window unknown";
+
+/// The window bar's cells: a category's, the free space's, and the hatched
+/// headroom auto-compact keeps.
+pub(super) const CONTEXT_USAGE_BAR_USED: &str = "█";
+pub(super) const CONTEXT_USAGE_BAR_FREE: &str = "░";
+pub(super) const CONTEXT_USAGE_BAR_RESERVED: &str = "╱";
+
+/// The legend's swatches, echoing the bar's cells.
+pub(super) const CONTEXT_USAGE_SWATCH: &str = "■";
+pub(super) const CONTEXT_USAGE_FREE_SWATCH: &str = "□";
+pub(super) const CONTEXT_USAGE_RESERVED_SWATCH: &str = "╱";
+
+/// The two legend rows for the room that is left.
+pub(super) const CONTEXT_USAGE_FREE_LABEL: &str = "Free space";
+pub(super) const CONTEXT_USAGE_RESERVED_LABEL: &str = "Auto-compact";
+
+/// The gap between the legend's columns, and between a detail row's.
+pub(super) const CONTEXT_USAGE_COLUMN_GAP: &str = "  ";
+
+/// The gap between the legend and the detail beside it.
+pub(super) const CONTEXT_USAGE_PANEL_GAP: &str = "   ";
+
+/// The narrowest terminal the detail sits **beside** the legend on; under
+/// it, the detail stacks under the legend.
+pub(super) const CONTEXT_USAGE_SIDE_BY_SIDE_MIN_COLS: u16 = 76;
+
+/// The narrowest the detail beside the legend may be; a terminal that
+/// leaves it less stacks the detail under the legend instead.
+pub(super) const CONTEXT_USAGE_DETAIL_MIN_COLS: usize = 24;
+
+/// The most parts a whole page's detail lists (more fold into one `… N
+/// more` row), and the most a compact page's stacked detail does.
+pub(super) const CONTEXT_USAGE_DETAIL_PARTS: usize = 6;
+pub(super) const CONTEXT_USAGE_DETAIL_COMPACT_PARTS: usize = 3;
+
+/// The **Messages** detail of an empty conversation — a fact worth
+/// stating, rather than an empty panel.
+pub(super) const CONTEXT_USAGE_NOTHING_YET: &str =
+    "Nothing yet — the conversation starts with your first message.";
+
+/// The **Free space** detail: how far the conversation is from where it
+/// compacts itself — or, with no threshold, from the window's end. `free`,
+/// `threshold` are humanized token counts; `settings_hint` adds where auto
+/// compact is turned back on, for the main session that turned it off.
+pub(super) fn context_usage_free_text(
+    free: &str,
+    threshold: Option<&str>,
+    past_threshold: bool,
+    settings_hint: bool,
+) -> String {
+    match threshold {
+        Some(threshold) if past_threshold => {
+            format!("Past the auto-compact threshold of {threshold}. /compact frees room now.")
+        }
+        Some(threshold) => format!("{free} until auto-compact runs at {threshold}."),
+        None if settings_hint => {
+            format!("{free} until the window is full. Auto compact is off — /settings turns it on.")
+        }
+        None => format!("{free} until the window is full."),
+    }
+}
+
+/// The **Auto-compact** detail: the headroom it keeps, and what runs there.
+pub(super) fn context_usage_headroom_text(headroom: &str, threshold: &str) -> String {
+    format!(
+        "The last {headroom} of the window stays free: past {threshold} the session \
+         summarizes itself. /compact does it now."
+    )
+}
+
+/// A detail part's bar — measured against the slice's largest part — and
+/// its longest run.
+pub(super) const CONTEXT_USAGE_PART_BAR: &str = "━";
+pub(super) const CONTEXT_USAGE_PART_BAR_MAX: usize = 12;
+
+/// The usage section's row labels — the provider's own numbers.
+pub(super) const CONTEXT_USAGE_LAST_REQUEST: &str = "Last request";
+pub(super) const CONTEXT_USAGE_CACHE_HIT: &str = "Cache hit";
+pub(super) const CONTEXT_USAGE_SINCE_LAUNCH: &str = "Since launch";
+pub(super) const CONTEXT_USAGE_THIS_AGENT: &str = "This agent";
+
+/// The gap after the usage section's labels.
+pub(super) const CONTEXT_USAGE_LABEL_GAP: &str = "   ";
+
+/// The usage section before any frame arrived (the offline dummy never
+/// sends one).
+pub(super) const CONTEXT_USAGE_NO_USAGE: &str = "no usage reported yet";
+
+/// The cache meter's cells, and its shortest and longest run.
+pub(super) const CONTEXT_USAGE_METER_FILL: &str = "█";
+pub(super) const CONTEXT_USAGE_METER_EMPTY: &str = "░";
+pub(super) const CONTEXT_USAGE_METER_MIN: usize = 8;
+pub(super) const CONTEXT_USAGE_METER_MAX: usize = 24;
+
+/// The window's fill past which the subtitle's share turns amber; past the
+/// auto-compact threshold (or, with none, 90%) it turns red.
+pub(super) const CONTEXT_USAGE_WARN_SHARE: f64 = 0.75;
+pub(super) const CONTEXT_USAGE_FULL_SHARE: f64 = 0.9;
+
+/// A category's colour — the bar's cells, the legend's swatch, the detail's
+/// bars. The system prompt and the tools wear the Ctrl+D view's system and
+/// tool tags (amber, purple), the conversation the brand accent, and the
+/// reminder's sections the other hues — two of them blends, so eight
+/// categories read apart on a palette of six. They are chosen in bar order,
+/// so every pair of neighbours on the bar differs in hue: amber, purple,
+/// peach (amber into red), blue, green, orchid (purple into red), red, cyan.
+pub(super) fn context_usage_color(category: crate::context_usage::Category) -> Color {
+    use crate::context_usage::Category;
+    match category {
+        Category::SystemPrompt => context_system_color(),
+        Category::SystemTools => context_tool_color(),
+        Category::McpTools => lerp_color(palette().warning, palette().error, 0.5),
+        Category::ProjectDocs => palette().link,
+        Category::Skills => palette().success,
+        Category::AgentTypes => lerp_color(palette().purple, palette().error, 0.5),
+        Category::Secrets => palette().error,
+        Category::Messages => palette().accent,
+    }
+}
+
+/// The free space's cells and swatch — the dim everything empty wears.
+pub(super) fn context_usage_free_color() -> Color {
+    tool_dim_color()
+}
+
+/// The auto-compact headroom's hatching — the frame's rule colour, a shade
+/// apart from the free space.
+pub(super) fn context_usage_reserved_color() -> Color {
+    border_color()
+}
+
+/// The cache meter's filled cells — the success green.
+pub(super) fn context_usage_meter_color() -> Color {
+    tool_ok_color()
+}
+
+/// The subtitle's share past [`CONTEXT_USAGE_WARN_SHARE`] — the caution
+/// amber the ask review warns in.
+pub(super) fn context_usage_warn_color() -> Color {
+    ask_warning_color()
+}
+
+/// The subtitle's share past the auto-compact threshold — the error red.
+pub(super) fn context_usage_full_color() -> Color {
+    error_color()
+}
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

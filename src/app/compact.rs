@@ -195,12 +195,21 @@ impl App {
         if self.auto_compact_blocked || self.turn_active() || self.is_streaming() {
             return false;
         }
-        let threshold = window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR;
-        if self.context_used <= threshold {
+        if self.context_used <= auto_compact_threshold(window) {
             return false;
         }
         crate::context::derives_conversation(&self.history)
     }
+}
+
+/// Where auto-compaction runs for a `window`-token context window: codex's
+/// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
+/// ([`App::should_auto_compact`]) and the `/context` page's headroom
+/// (`docs/context-usage.md`) both read it, so the page can never show a
+/// threshold the loop does not act on.
+#[must_use]
+pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
+    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
 }
 
 /// The tokenizer estimate of a derived context: every message's text, a flat
