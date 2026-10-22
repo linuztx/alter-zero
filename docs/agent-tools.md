@@ -104,10 +104,11 @@ and a model read `9s · 5 tool uses` as five calls its follow-up had made —
 it had made none, which the mark after the fifth call now shows.
 
 `wait` (seconds, default 0, at most 600) blocks until the agent settles or
-the time passes. A waiting cell **streams** each call the agent starts and
-each update it gives during the wait, one line each, so the user watches the
-agent work from the lead's own transcript, and Ctrl+B ends the wait early
-(the agent runs on).
+the time passes. A waiting cell **streams** each call the agent starts, each
+update it gives and each message it reads during the wait, one line each in
+the report's order, so the user watches the agent work from the lead's own
+transcript, and Ctrl+B ends the wait early (the agent runs on). Each poll
+copies only what is new (`docs/agent-progress.md` *The wait stream*).
 Every report of an agent still at work — a look, or a wait that passed —
 closes on a note saying it is still running and how to wait for it: a model
 that looked once without `wait` told the user the agent had stopped.
@@ -444,7 +445,7 @@ the real binary (`docs/dummy-backend.md`).
   profile)` — the agent named by its description from the moment the call
   is announced (`tools::summarize_call_naming`, the bash sessions' lookup
   answering agent ids too). A waiting `AgentOutput` renders like a running
-  command: the streamed calls tail under a `(12s · wait 5m)` clock row and
+  command: the streamed lines tail under a `(12s · wait 5m)` clock row and
   `(ctrl+b to stop waiting)`.
 - **The roster**: a resumed agent reappears on it (or reopens there, if
   still lingering) with a fresh runtime clock; one the lead stopped turns red

@@ -1629,6 +1629,38 @@ pub struct AgentSnapshot {
     pub run: u64,
 }
 
+/// How far a waiting `agentoutput` has streamed an agent's timeline — how
+/// many of its calls, the messages it read and its updates the cell has
+/// shown ([`AgentRegistry::progress`], `docs/agent-progress.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProgressCursor {
+    calls: usize,
+    follow_ups: usize,
+    updates: usize,
+}
+
+impl ProgressCursor {
+    /// Past everything `snapshot` holds: what the report will list, never
+    /// streamed as new.
+    #[must_use]
+    pub fn at(snapshot: &AgentSnapshot) -> Self {
+        Self {
+            calls: snapshot.calls.len(),
+            follow_ups: snapshot.follow_ups.len(),
+            updates: snapshot.updates.len(),
+        }
+    }
+}
+
+/// What one poll of a waited-on agent found ([`AgentRegistry::progress`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    /// What it did past the cursor, one line each, in the order it did it.
+    pub lines: Vec<String>,
+    /// Its run is still going.
+    pub running: bool,
+}
+
 /// What stopping an agent found ([`AgentRegistry::kill`],
 /// [`AgentRegistry::stop`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1816,6 +1848,12 @@ impl AgentSlot {
         }
     }
 
+    /// Is its run still going — [`state`](Self::state)'s `Running`, read
+    /// without copying an outcome?
+    fn running(&self) -> bool {
+        !self.killed && (self.busy || !self.done)
+    }
+
     /// Where it stands — a stop outranks the outcome its thread reported
     /// late.
     fn state(&self) -> AgentState {
@@ -1824,7 +1862,7 @@ impl AgentSlot {
                 by_user: self.killed_by_user,
             };
         }
-        if self.busy || !self.done {
+        if self.running() {
             return AgentState::Running;
         }
         match &self.failed {
@@ -2038,6 +2076,32 @@ impl AgentRegistry {
             let (at, read) = (slot.calls.len(), slot.follow_ups.len());
             slot.updates.push(ProgressUpdate { at, read, text });
         }
+    }
+
+    /// What `id` did past `cursor` — each call, message and update recorded
+    /// since, one line each, in the order it did them — and whether its run
+    /// is still going, the cursor moved past what is returned. A waiting
+    /// `agentoutput` polls this every few milliseconds, so it reads the slot
+    /// under the lock and copies only what is new, never the agent's whole
+    /// history as a [`snapshot`](Self::snapshot) would. `None` for an id
+    /// nothing answers to.
+    #[must_use]
+    pub fn progress(&self, id: &str, cursor: &mut ProgressCursor) -> Option<Progress> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        let slot = inner.slots.get(id)?;
+        let lines = timeline(&slot.calls, &slot.follow_ups, &slot.updates, *cursor)
+            .iter()
+            .map(stream_line)
+            .collect();
+        *cursor = ProgressCursor {
+            calls: slot.calls.len(),
+            follow_ups: slot.follow_ups.len(),
+            updates: slot.updates.len(),
+        };
+        Some(Progress {
+            lines,
+            running: slot.running(),
+        })
     }
 
     /// `id` as the lead's companions see it, taken at one instant.
@@ -2817,65 +2881,82 @@ enum TimelineEntry<'a> {
     Call { index: usize, header: &'a str },
     /// A message it read.
     FollowUp(&'a FollowUp),
-    /// Its `index`th progress update.
-    Update {
-        index: usize,
-        update: &'a ProgressUpdate,
-    },
+    /// A progress update it gave.
+    Update(&'a ProgressUpdate),
+}
+
+/// What an agent did past `from`, in the order it did it: each call, each
+/// message it read, each update it gave. A message or an update recorded
+/// after `n` calls falls before call `n`; among those, an update follows the
+/// messages it had read. Keyed by counts rather than stamped by a clock
+/// because the two are recorded on different threads — the messages by the
+/// agent's loop as it drains its queue, the updates by the forwarder as it
+/// relays the stream (`docs/agent-progress.md`). Every entry recorded later
+/// keys after every one recorded earlier, so the entries past a cursor are
+/// the timeline's own tail.
+fn timeline<'a>(
+    calls: &'a [String],
+    follow_ups: &'a [FollowUp],
+    updates: &'a [ProgressUpdate],
+    from: ProgressCursor,
+) -> Vec<TimelineEntry<'a>> {
+    // (after how many calls, after how many messages, which goes first)
+    let mut keyed: Vec<((usize, usize, u8), TimelineEntry<'a>)> = Vec::new();
+    keyed.extend(
+        updates
+            .iter()
+            .skip(from.updates)
+            .map(|update| ((update.at, update.read, 0), TimelineEntry::Update(update))),
+    );
+    keyed.extend(
+        follow_ups
+            .iter()
+            .enumerate()
+            .skip(from.follow_ups)
+            .map(|(read, follow_up)| ((follow_up.at, read, 1), TimelineEntry::FollowUp(follow_up))),
+    );
+    keyed.extend(
+        calls
+            .iter()
+            .enumerate()
+            .skip(from.calls)
+            .map(|(index, header)| {
+                (
+                    (index, usize::MAX, 2),
+                    TimelineEntry::Call { index, header },
+                )
+            }),
+    );
+    // Stable: two updates between the same marks keep their order.
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, entry)| entry).collect()
 }
 
 impl AgentSnapshot {
-    /// Everything the agent did, in the order it did it: each call, each
-    /// message it read, each update it gave. A message or an update recorded
-    /// after `n` calls falls before call `n`; among those, an update follows
-    /// the messages it had read. Keyed by counts rather than stamped by a
-    /// clock because the two are recorded on different threads — the
-    /// messages by the agent's loop as it drains its queue, the updates by
-    /// the forwarder as it relays the stream (`docs/agent-progress.md`).
+    /// Everything the agent did, in the order it did it ([`timeline`]).
     fn timeline(&self) -> Vec<TimelineEntry<'_>> {
-        // (after how many calls, after how many messages, which goes first)
-        let mut keyed: Vec<((usize, usize, u8), TimelineEntry<'_>)> = Vec::new();
-        keyed.extend(self.updates.iter().enumerate().map(|(index, update)| {
-            (
-                (update.at, update.read, 0),
-                TimelineEntry::Update { index, update },
-            )
-        }));
-        keyed.extend(self.follow_ups.iter().enumerate().map(|(read, follow_up)| {
-            ((follow_up.at, read, 1), TimelineEntry::FollowUp(follow_up))
-        }));
-        keyed.extend(self.calls.iter().enumerate().map(|(index, header)| {
-            (
-                (index, usize::MAX, 2),
-                TimelineEntry::Call { index, header },
-            )
-        }));
-        // Stable: two updates between the same marks keep their order.
-        keyed.sort_by_key(|(key, _)| *key);
-        keyed.into_iter().map(|(_, entry)| entry).collect()
+        timeline(
+            &self.calls,
+            &self.follow_ups,
+            &self.updates,
+            ProgressCursor::default(),
+        )
     }
 }
 
-/// What a waiting `agentoutput` streams of `snapshot` past what it has
-/// shown — `calls` of its calls and `updates` of its updates — one line
-/// each, in the order it happened: a call as the report lists it, an update
-/// on one line under [`AGENT_UPDATE_LABEL`], cut like a call. The running
-/// cell's tail is a few rows tall, and a whole update there would push the
-/// calls around it out of view; the report lists it whole
-/// (`docs/agent-progress.md`).
-#[must_use]
-pub fn progress_lines(snapshot: &AgentSnapshot, calls: usize, updates: usize) -> Vec<String> {
-    snapshot
-        .timeline()
-        .into_iter()
-        .filter_map(|entry| match entry {
-            TimelineEntry::Call { index, header } if index >= calls => Some(report_call(header)),
-            TimelineEntry::Update { index, update } if index >= updates => Some(report_call(
-                &format!("{AGENT_UPDATE_LABEL}: {}", update.text),
-            )),
-            _ => None,
-        })
-        .collect()
+/// One timeline entry as a waiting `agentoutput` streams it, on one line: a
+/// call or a message as the report lists it, an update under
+/// [`AGENT_UPDATE_LABEL`] cut like a call. The running cell's tail is a few
+/// rows tall, and a whole update there would push what surrounds it out of
+/// view; the report lists it whole (`docs/agent-progress.md`).
+fn stream_line(entry: &TimelineEntry<'_>) -> String {
+    match entry {
+        TimelineEntry::Call { header, .. } => report_call(header),
+        TimelineEntry::FollowUp(follow_up) => follow_up_mark(follow_up),
+        TimelineEntry::Update(update) => {
+            report_call(&format!("{AGENT_UPDATE_LABEL}: {}", update.text))
+        }
+    }
 }
 
 /// The report line for one delivered message: the bare
@@ -2914,7 +2995,7 @@ pub fn output_report(snapshot: &AgentSnapshot) -> String {
             TimelineEntry::FollowUp(follow_up) if follow_up.at >= hidden => {
                 lines.push(follow_up_mark(follow_up));
             }
-            TimelineEntry::Update { update, .. } if update.at >= hidden => {
+            TimelineEntry::Update(update) if update.at >= hidden => {
                 lines.extend(report_update(&update.text));
             }
             _ => {}
@@ -6089,34 +6170,52 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_streams_what_is_new_one_line_each_in_order() {
-        // The waiting cell tails a few rows: an update streams on one line,
-        // cut like a call, in its place among the calls.
-        let mut snap = snapshot(
-            AgentState::Running,
-            &["Bash(curl one)", "Bash(curl two\n  --silent)"],
+    fn a_wait_is_handed_only_what_is_new_one_line_each_in_order() {
+        // The waiting cell tails a few rows: what the agent did since the
+        // last poll, a line each in the order it did it — an update cut like
+        // a call, a message it read marked — and never anything twice.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.record_update(&id, "I'll start with the profile.");
+        registry.record_call(&id, "Bash(curl one)");
+        // What it did before the wait is the report's.
+        let mut cursor = ProgressCursor::at(&registry.snapshot(&id).unwrap());
+        let quiet = registry.progress(&id, &mut cursor).unwrap();
+        assert!(quiet.lines.is_empty(), "{:?}", quiet.lines);
+        assert!(quiet.running);
+        registry.record_update(&id, "Found it.\n\nNow the repositories.");
+        registry.record_call(&id, "Bash(curl two\n  --silent)");
+        assert!(registry.queue_input(&id, "also the stars"));
+        let _ = registry.take_pending_inputs(&id);
+        registry.record_update(&id, &"y".repeat(400));
+        let lines = registry.progress(&id, &mut cursor).unwrap().lines;
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(
+            lines[..3],
+            [
+                "Agent: Found it. Now the repositories.",
+                "Bash(curl two --silent)",
+                AGENT_FOLLOW_UP_MARK,
+            ]
         );
-        snap.updates = vec![
-            update(0, 0, "I'll start with the profile."),
-            update(1, 0, "Found it.\n\nNow the repositories."),
-            update(2, 0, &"y".repeat(400)),
-        ];
-        // Shown so far: the first update and the first call.
-        let lines = progress_lines(&snap, 1, 1);
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert_eq!(lines[0], "Agent: Found it. Now the repositories.");
-        assert_eq!(lines[1], "Bash(curl two --silent)");
-        assert!(lines[2].starts_with("Agent: yyy"), "{}", lines[2]);
-        assert!(lines[2].ends_with('…'), "{}", lines[2]);
+        assert!(lines[3].starts_with("Agent: yyy"), "{}", lines[3]);
+        assert!(lines[3].ends_with('…'), "{}", lines[3]);
         assert!(
-            lines[2].chars().count() <= AGENT_REPORT_CALL_CHARS + 1,
+            lines[3].chars().count() <= AGENT_REPORT_CALL_CHARS + 1,
             "{}",
-            lines[2]
+            lines[3]
         );
         assert!(
-            progress_lines(&snap, 2, 3).is_empty(),
-            "nothing new, nothing streamed"
+            registry
+                .progress(&id, &mut cursor)
+                .unwrap()
+                .lines
+                .is_empty(),
+            "nothing new, nothing handed over"
         );
+        registry.finish(&id, Ok("done".into()), Vec::new());
+        assert!(!registry.progress(&id, &mut cursor).unwrap().running);
+        assert!(registry.progress("a000nope0", &mut cursor).is_none());
     }
 
     #[test]

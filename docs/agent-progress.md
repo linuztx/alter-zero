@@ -151,10 +151,22 @@ of place.
 
 A waiting `agentoutput` streams what the agent does while it is watched
 (`docs/agent-tools.md`), and now that includes what it says: each update is
-streamed as one line, `Agent: {flattened}`, cut like a call
-(`agents::progress_lines`, `report_call`). The cell's tail is a four-row
-window, and a whole update there would push the calls it sits among out of
-it; the settled cell's output is the report, updates whole.
+streamed as one line, `Agent: {flattened}`, cut like a call (`report_call`),
+and each message it reads as the mark the report gives it. The cell's tail
+is a four-row window, and a whole update there would push the calls it sits
+among out of it; the settled cell's output is the report, updates whole.
+
+The wait polls every 50 ms, so what one poll costs matters on a long wait
+over a busy agent. A poll is `AgentRegistry::progress(id, &mut cursor)`:
+under the registry's lock it reads only the entries past a
+`ProgressCursor` — how many calls, messages and updates the cell has shown —
+formats those, and moves the cursor past them. Nothing the cell has shown is
+copied again, where the first version took a `snapshot` per poll and copied
+the agent's whole history, updates and all, twenty times a second. The tail
+it reads is the report's own: an entry recorded later never sorts before
+one recorded earlier, since the counts it is placed by can only have grown,
+so the lines past the cursor are the newest of the timeline, in its order,
+and the stream and the report the wait ends on cannot disagree.
 
 ## What stays as it was
 
@@ -166,6 +178,23 @@ it; the settled cell's output is the report, updates whole.
 - **The offline demos** are untouched: their scripted agents do not narrate,
   so their reports read as before (`smoke.sh` Phases 98 and 130).
 
+## A known limit: two threads place the marks
+
+The messages an agent reads are marked by its own loop as it drains its
+queue (`AgentRegistry::take_pending_inputs`), while its calls and updates are
+recorded by the forwarder as it relays the stream. Each entry is placed by
+the counts it reads when it is recorded, so when the loop gets ahead of the
+forwarder — a call that returns in microseconds, a machine under load — a
+mark can be recorded before a call or an update that came ahead of it, and
+the report lists it too early. The stream and the report still agree, since
+both read the same records.
+
+This predates the updates: a mark could already land ahead of the call
+before it. The fix is to record the mark where the stream announces the
+message, at the forwarder's `Steered`, which needs that event to say whose
+message it was (the user's are quoted, the lead's are not); it is left for
+a change of its own.
+
 ## Testing
 
 - `agents` (unit): the row shows the newest paragraph while the text streams,
@@ -176,15 +205,16 @@ it; the settled cell's output is the report, updates whole.
   CRLF endings and words split across chunks included, is found where a
   whole-text reading puts it. The report places updates among calls and
   marks by `at`/`read`, renders a multi-line update indented with its blank
-  lines dropped, hides those among the hidden calls, and `progress_lines`
-  streams only what is new, in order. `record_update` trims, cuts at the cap
-  and skips a blank run. `RunRecorder` records an update at every point that
-  ends a run of text before more work — and ahead of the call a `ToolStart`
-  records — and keeps the answer's text whole.
+  lines dropped, and hides those among the hidden calls;
+  `AgentRegistry::progress` hands a wait only what is new, one line each, in
+  order, marks included. `record_update` trims, cuts at the cap and skips a
+  blank run. `RunRecorder` records an update at every point that ends a run
+  of text before more work — and ahead of the call a `ToolStart` records —
+  and keeps the answer's text whole.
 - `ui` (unit): the lone and tree cells render `⎿  Agent: …` dim and clipped.
 - `llm::agent_tools` (unit): a report hands the lead the updates, and a wait
   streams an update the agent gives while it is watched, in its place among
-  the calls.
+  the calls, with the mark of a message it reads meanwhile.
 - `scripts/smoke.sh` **Phase 144**: the real backend against a stub provider.
   A foreground agent's reply is held mid-stream so the lead's live cell can be
   read showing `⎿  Agent: …`; then the lead asks `agentoutput`, and the

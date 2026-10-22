@@ -180,27 +180,23 @@ fn output(
     }
     let deadline = Instant::now() + wait;
     // What the agent did before the wait is the report's; the cell streams
-    // the calls it starts and what it says while it is watched.
-    let mut shown = (snapshot.calls.len(), snapshot.updates.len());
+    // what it starts, says and reads while it is watched.
+    let mut cursor = crate::agents::ProgressCursor::at(&snapshot);
     let mut ended_by_user = false;
     loop {
-        let Some(now) = ctx.registry.snapshot(id) else {
+        let Some(progress) = ctx.registry.progress(id, &mut cursor) else {
             break;
         };
         // What the agent has done since the last look, a line each, in the
         // order it did it — the running cell tails them
         // (docs/agent-progress.md).
-        for line in crate::agents::progress_lines(&now, shown.0, shown.1) {
+        for line in &progress.lines {
             on_output(ToolProgress::Screen {
                 settled: &format!("{line}\n"),
                 live: "",
             });
         }
-        shown = (now.calls.len(), now.updates.len());
-        if now.state != AgentState::Running
-            || ctx.cancel.is_cancelled()
-            || Instant::now() >= deadline
-        {
+        if !progress.running || ctx.cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
         if ctx
@@ -677,6 +673,9 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(80));
                 registry.record_update(&id, "Found the profile.\n\nNow the repositories.");
                 registry.record_call(&id, "Bash(curl two)");
+                // A message it reads while watched is part of what it did.
+                assert!(registry.queue_input(&id, "also the stars"));
+                let _ = registry.take_pending_inputs(&id);
                 std::thread::sleep(Duration::from_millis(80));
                 registry.settle(
                     &id,
@@ -700,15 +699,18 @@ mod tests {
             streamed,
             [
                 "Agent: Found the profile. Now the repositories.\n",
-                "Bash(curl two)\n"
+                "Bash(curl two)\n",
+                "— message received —\n"
             ],
-            "what the agent says while watched streams in its place, one line \
-             each — what it said before the wait is the report's"
+            "what the agent says, starts and reads while watched streams in \
+             its place, one line each — what it did before the wait is the \
+             report's"
         );
         assert!(
             outcome.output.contains(
                 "Agent: I'll start with the profile.\nBash(curl one)\n\
-                 Agent: Found the profile.\n  Now the repositories.\nBash(curl two)\n"
+                 Agent: Found the profile.\n  Now the repositories.\nBash(curl two)\n\
+                 — message received —\n"
             ),
             "{}",
             outcome.output

@@ -51,8 +51,9 @@ release heading when a version is cut.
   agent wrote before going on to more work is listed as an `Agent: …` entry
   in its place among the calls. The lead now reads what the agent has found
   and what it plans next, not just which commands it ran. Each entry is kept
-  whole up to 2,000 characters. A waiting `agentoutput` streams the entries
-  into its cell as they arrive, and `agentkill`'s report includes them too.
+  whole up to 2,000 characters, and `agentkill`'s report includes them too.
+  A waiting `agentoutput` streams the entries into its cell as they arrive,
+  along with the messages the agent reads.
 
 ### Changed
 

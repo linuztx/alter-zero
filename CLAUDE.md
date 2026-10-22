@@ -1462,7 +1462,8 @@ tool uses)` over one `Name(args)` line per call — lifetime numbers, each
 run of text the agent wrote before more work an `Agent: …` progress update
 where it said it (whole, up to `AGENT_REPORT_UPDATE_CHARS`; recorded by the
 forwarder's `agents::RunRecorder`, streamed one line each into a waiting
-cell — `docs/agent-progress.md`), each
+cell with the read-message marks, a poll copying only what is past its
+`agents::ProgressCursor` — `docs/agent-progress.md`), each
 read message marked `— message received —` (a message the *user* typed
 into its session view quoted instead, and named as the user's in the
 lead's notice and foreground result — and one that starts a **settled**
