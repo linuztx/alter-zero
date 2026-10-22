@@ -175,8 +175,9 @@ and the stream and the report the wait ends on cannot disagree.
   for at that moment; the updates are there for the lead that asks.
 - **The Ctrl+O agent cell** keeps its prompt, call headers and response; the
   agent's session view is where its whole conversation is read.
-- **The offline demos** are untouched: their scripted agents do not narrate,
-  so their reports read as before (`smoke.sh` Phases 98 and 130).
+- **The other offline demos**: their scripted agents do not narrate, so
+  their reports read as before (`smoke.sh` Phase 98). The follow-up demo's
+  agent does (*Testing*, below).
 
 ## A known limit: two threads place the marks
 
@@ -215,6 +216,11 @@ a change of its own.
 - `llm::agent_tools` (unit): a report hands the lead the updates, and a wait
   streams an update the agent gives while it is watched, in its place among
   the calls, with the mark of a message it reads meanwhile.
+- `stream::dummy` (unit) and `scripts/smoke.sh` **Phase 130**: the offline
+  follow-up demo's agent says what it is about to do before its call,
+  recorded through the same `RunRecorder` the live forwarder keeps, so its
+  first wait streams `Agent: I'll read the top of the changelog first.` over
+  the call and its report lists both, with no network.
 - `scripts/smoke.sh` **Phase 144**: the real backend against a stub provider.
   A foreground agent's reply is held mid-stream so the lead's live cell can be
   read showing `⎿  Agent: …`; then the lead asks `agentoutput`, and the

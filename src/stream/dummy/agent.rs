@@ -25,7 +25,7 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE};
+use crate::agents::{AgentEvent, AgentRegistry, GENERAL_PURPOSE, RunRecorder};
 use crate::permission::{PermissionDecision, PermissionGate, PermissionKind, PermissionRequest};
 
 use super::super::{AgentCallDone, AgentSpec, CancelToken, StreamEvent};
@@ -570,6 +570,11 @@ const FOLLOW_UP_DESCRIPTION: &str = "Read the release notes";
 const FOLLOW_UP_PROMPT: &str =
     "Read CHANGELOG.md and say in one line what the latest release added.";
 
+/// What its first run says before that call — a progress update, which the
+/// first wait streams and its report lists ahead of the call
+/// (`docs/agent-progress.md`).
+const FOLLOW_UP_INTRO: &str = "I'll read the top of the changelog first.";
+
 /// The one command its first run makes — the call the reports list.
 const FOLLOW_UP_COMMAND: &str = "head -12 CHANGELOG.md";
 
@@ -727,16 +732,23 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
 }
 
 /// Play one run of the follow-up demo's agent on the agent channel — the
-/// launch's (a call, then its answer) or the continuation's (the lead's
-/// message announced as its loop reads it, then the answer) — and settle it
-/// through the registry, which delivers the terminal event to a waiting
-/// `agentoutput` rather than straight to the roster (`docs/agent-tools.md`).
+/// launch's (what it is about to do, a call, then its answer) or the
+/// continuation's (the lead's message announced as its loop reads it, then
+/// the answer) — and settle it through the registry, which delivers the
+/// terminal event to a waiting `agentoutput` rather than straight to the
+/// roster (`docs/agent-tools.md`).
+///
+/// Every event goes through a [`RunRecorder`], the live forwarder's own
+/// bookkeeping, so the calls and progress updates the reports list are
+/// recorded exactly as a real run's are (`docs/agent-progress.md`).
 fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken, launch: bool) {
     thread::spawn(move || {
-        let send = |event: StreamEvent, pause: Duration| -> bool {
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        let mut send = |event: StreamEvent, pause: Duration| -> bool {
             if cancel.is_cancelled() {
                 return false;
             }
+            recorder.observe(&event);
             registry.send(AgentEvent::Stream {
                 id: id.clone(),
                 event,
@@ -753,17 +765,16 @@ fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken,
             &cancel,
         );
         let reply = if launch {
-            let call = ScriptedCall::command(FOLLOW_UP_COMMAND, FOLLOW_UP_COMMAND_OUTPUT, 0);
-            if !send(StreamEvent::ToolBatch(vec![call.summary()]), TOOL_DELAY) {
-                return;
+            for piece in chunks(FOLLOW_UP_INTRO) {
+                if !send(StreamEvent::Chunk(piece), CHUNK_DELAY) {
+                    return;
+                }
             }
-            // The live forwarder records each call as it starts; this one
-            // has no forwarder, so it says so itself.
-            registry.record_call(
-                &id,
-                &crate::app::tool_header_text("Bash", FOLLOW_UP_COMMAND),
-            );
-            if !send(call.start(), TOOL_DELAY) || !send(call.end(), CHUNK_DELAY) {
+            let call = ScriptedCall::command(FOLLOW_UP_COMMAND, FOLLOW_UP_COMMAND_OUTPUT, 0);
+            if !send(StreamEvent::ToolBatch(vec![call.summary()]), TOOL_DELAY)
+                || !send(call.start(), TOOL_DELAY)
+                || !send(call.end(), CHUNK_DELAY)
+            {
                 return;
             }
             FOLLOW_UP_FIRST_REPLY

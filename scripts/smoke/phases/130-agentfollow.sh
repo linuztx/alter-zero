@@ -9,8 +9,9 @@ smoke_begin
 # waits on it, `agentsend` resumes its FINISHED conversation with a
 # follow-up, a second wait reports that answer, and `agentlist` lists it —
 # every companion call through the real executor against the real registry.
-# Assert each cell shows what the executor reported (the frame, the call
-# summary, the mark where the follow-up arrived), that NEITHER answer comes
+# Assert each cell shows what the executor reported (the frame, what the
+# agent said before its call, the call summary, the mark where the follow-up
+# arrived), that NEITHER answer comes
 # back a second time as a completion notice — the waits reported them, the
 # observed settle — and that the agent's own session view shows the lead's
 # message as a bubble between its two answers. Then the user messages the
@@ -31,7 +32,16 @@ keys "$S130" C-d
 sleep 0.5
 keys "$S130" Home
 context="$(wait_pane 5 "$S130" -F "launched as a")"
-dump "Ctrl+D — the launch result the model read" "$context"
+# The second report's mark comes after what the agent said and its call,
+# past the cell's three-row peek; the report the model read carries it whole,
+# a page or two further down.
+for _ in 1 2; do
+	keys "$S130" PageDown
+	sleep 0.3
+	context="$context
+$(pane "$S130")"
+done
+dump "Ctrl+D — the reports the model read" "$context"
 keys "$S130" C-d
 sleep 0.3
 # ↓ onto the roster, ↓ onto the agent, Enter: its own session.
@@ -80,9 +90,10 @@ expect_has "$context" -E "launched as a[0-9a-z]{8}" "the launch result the model
 expect_has "$full" -F "● AgentOutput(Read the release notes)" "the agentoutput cell is missing or not named by the agent's task"
 expect_has "$full" -E "Done \(agent a[0-9a-z]{8} · Read the release notes · [0-9]+s · 1 tool use\)" "the first wait did not report the settled agent's frame"
 expect_has "$full" -F "Bash(head -12 CHANGELOG.md)" "the report did not summarize the agent's call"
+expect_has "$full" -F "Agent: I'll read the top of the changelog first." "the report did not say what the agent said before its call"
 expect_has "$full" -F "● AgentSend(Read the release notes ← And what did it add for questions nobody answers?)" "the agentsend cell is missing or not named by the agent's task"
 expect_has "$full" -F "resumed with your message" "agentsend did not resume the finished agent"
-expect_has "$full" -F "— message received —" "the second report did not mark where the follow-up arrived"
+expect_has "$context" -F "— message received —" "the second report did not mark where the follow-up arrived"
 expect_has "$full" -F "● AgentList" "the agentlist cell is missing"
 expect_has "$full" -F "1 agent:" "agentlist did not list the agent"
 expect_lacks "$full" -F 'Agent "Read the release notes" finished' "an answer a wait already reported came back again as a notice"

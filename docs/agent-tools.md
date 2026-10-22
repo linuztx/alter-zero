@@ -426,8 +426,10 @@ agreeing that the stop is resumable.
 
 Offline, the dummy's `agent-follow-up` demo plays the first of those with no
 network — its companion calls through the real executor, its agent's runs
-settling through the real registry — and `smoke.sh` Phase 130 drives it in
-the real binary (`docs/dummy-backend.md`).
+recorded by the live forwarder's `RunRecorder` and settling through the real
+registry, so its first wait streams what the agent says before its call —
+and `smoke.sh` Phase 130 drives it in the real binary
+(`docs/dummy-backend.md`).
 
 ## Wiring
 
