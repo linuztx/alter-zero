@@ -103,7 +103,7 @@ without being pointed at would paint `LM Studio unavailable` in red on every
   | could not connect: an https request to a plain-http server | `{host} does not speak https — try http:// instead.` |
   | timed out | `{host} did not answer in time — check the address, and that nothing blocks the port.` |
   | answered 401 or 403 | *(asks for a token: the next section)* |
-  | answered 404, or a body that is not a listing | `{host} answered, but not as {name} — check the address and port.` |
+  | answered 404, or a body that is not a listing (a 200 with no models list in it, as LM Studio answers any path it does not serve) | `{host} answered, but not as {name} — check the address and port.` |
   | answered any other status | `{name} at {host} answered HTTP {status}: {body}` |
 
   `{host}` is `host[:port]`, the port shown only when the URL names one. A
@@ -209,9 +209,13 @@ api_base = "http://127.0.0.1:1234/v1"
   - **only language models are offered.** `type: "embedding"` (every install
     ships one) has no chat surface and would fail every turn;
   - **the window is the loaded one.** LM Studio serves a model at the
-    context length it was **loaded** with (`loaded_instances[0].config.
-    context_length`, commonly 4096), not the most it could take. A loaded
-    model gauges against that, an unloaded one against `max_context_length`;
+    context length it was **loaded** with (`loaded_instances[].config.
+    context_length`, commonly 4096), not the most it could take; with several
+    instances loaded, the smallest, since a request may land on any of them.
+    A model not loaded yet is loaded by the first request at a saved setting
+    the listing does not report, so its window is **unknown**: the gauge
+    hides and auto-compaction stays off, rather than claiming its
+    `max_context_length` right up to the server's refusal;
   - **image input** is `capabilities.vision`, an explicit bool.
 - **`api_model_base` is relative**, `../api/v1`, resolved against the chat
   base the way a browser resolves a link (`config::resolve_relative_base`). It
@@ -221,11 +225,42 @@ api_base = "http://127.0.0.1:1234/v1"
   provider may write one (`./x`, `../x`, `/x`). An absolute model base on a
   provider whose host was overridden still gives way to the chat base, as it
   always did.
-- **An older LM Studio** (before 0.4) has no `/api/v1`. Its native listing
-  answers 404, and `fetch_models` falls back to the chat base's `/models` for
-  any chat-completions provider whose model base differs from its chat base.
-  The rows then carry ids alone: no window, image input unknown, and any
-  embedding model listed.
+- **An older LM Studio** (before 0.4) has no `/api/v1`. It answers its
+  native listing the way it answers every path it does not serve: **200**
+  and `{"error":"Unexpected endpoint or method. (GET /api/v1/models)"}`
+  ("Returning 200 anyway", its log says), never a 404. A body like that
+  carries no models list, which is not an empty listing
+  (`models::is_listing`, `not_a_listing`): `fetch_models` falls back to the
+  chat base's `/models` on it, as on a 404, for any chat-completions provider
+  whose model base differs from its chat base. The rows then carry ids alone:
+  no window, image input unknown, and any embedding model listed. Read as a
+  listing, the error object was a server with no models: the test passed,
+  saved the address, and `/model` showed nothing.
+- **A server that answers every path is not the one named.** The same rule
+  holds for Ollama's `/api/tags` (`ollama::tags_records`): LM Studio's port
+  typed into Ollama's page answers 200 with that error object, and is
+  refused as `127.0.0.1:1234 answered, but not as Ollama — check the address
+  and port.` Before, it passed as an Ollama with no models and replaced the
+  saved `OLLAMA_HOST`. An empty list (`{"models":[]}`, an Ollama with
+  nothing pulled) is still a listing.
+- **A prompt longer than the loaded context says how to raise it.** LM
+  Studio refuses one inside the stream, as a frame that is only a JSON
+  string (`data: "The number of tokens to keep from the initial prompt is
+  greater than the context length."`), then ends the stream. The chat drain
+  skipped a frame it could not read as a delta, so the turn ended with no
+  reply and no error. `openai::parse_sse_error` now reads a bare string
+  frame, and an `{"error": "…"}` naming its error by a string, as the
+  server's failure. `explain` then answers LM Studio's words
+  (`local::refusal_advice`: `greater than the context length`, `context
+  length of only`) with `qwen/qwen3-8b is loaded with a context window too
+  small for this conversation — raise its context length in LM Studio, or
+  load it with lms load qwen/qwen3-8b --context-length 32768, then try
+  again.` An in-band failure has no HTTP status, so it shows without an
+  `HTTP 0:` prefix.
+- **A token the server wants, mid-session, is `/login`'s.** A keyless server
+  set to require a token after `/login` saved its address (or whose token
+  changed) refuses with 401/403, answered `LM Studio at 127.0.0.1:1234 wants
+  an API token — run /login to enter it.`
 - **A stopped server is advice, not a wait.** A refused connection to a
   keyless server on this machine is a server that is not running, not the
   internet being down. `OpenAiClient::explain` answers it with the test's own
@@ -331,17 +366,24 @@ rather than built, so its shape is agreed before any code exists:
 - **`llm::local`** (pure): `base_from_host` / `server_address` (the address
   grammar and the field's offer), `server_label`, `Verdict` + `verdict` (the
   page's sentences), `unusable_address` (a typo answered before any
-  request, with the server's own address as the example) and
-  `refused_advice` (a stopped server mid-session, in the test's words).
-- **`llm::openai`**: `explain` turns a keyless loopback refusal into that
-  advice, and `chat_request` leaves a keyless provider's messages unmarked.
+  request, with the server's own address as the example),
+  `refused_advice` (a stopped server mid-session, in the test's words) and
+  `refusal_advice` (a prompt longer than the loaded context, a token the
+  server wants).
+- **`llm::openai`**: `explain` turns a keyless loopback refusal and a keyless
+  server's refusals into that advice, `parse_sse_error` reads a bare string
+  frame and a string-valued `error` as the server's failure, and
+  `chat_request` leaves a keyless provider's messages unmarked.
 - **`llm::config`** (pure): the shipped `lmstudio` block; a non-Ollama
   `api_base_env` value completed by `base_from_host`; relative
   `api_model_base` (`is_relative_base`, `resolve_relative_base`), accepted in
   a user's block.
 - **`llm::models`**: LM Studio's native records (`is_lmstudio_record`,
-  `lmstudio_loaded_context`, the type filter, `capabilities.vision`, no
-  reasoning); the 404 fallback to the chat base's listing in `fetch_models`.
+  `lmstudio_loaded_context` — the smallest loaded window, none when
+  unloaded — the type filter, `capabilities.vision`, no reasoning); a body
+  with no models list told apart from an empty one (`is_listing`,
+  `not_a_listing`, shared by `ollama::tags_records`); the fallback to the
+  chat base's listing in `fetch_models`, on a 404 or such a body.
 - **`app::login`** (pure): `LoginMethod::Local`, `KeyStep::Local` /
   `KeyStep::Server`, `LocalChoice`, `ServerPage`, `ServerTest`, `TokenAsk`,
   `ServerSave` (+ `confirmation`, `overridden_notice`),
@@ -361,21 +403,27 @@ rather than built, so its shape is agreed before any code exists:
 
 The grammar, the verdict, the listing parse and its fallback (against a
 loopback stub), the relative listing base, and the page's whole key grammar
-are unit-tested (`llm::local`, `llm::config`, `llm::models`,
-`app::tests::login`, `ui::tests::login_view`). `smoke.sh` Phase 141 drives
-the real binary against three local stubs: an LM Studio listing one language
-model and one embedding model, an LM Studio requiring a token, and an
-Ollama. It walks the third root row, the API-key list without the local
-Ollama, a refused address shown in red and saved nowhere, a pass that saves
+are unit-tested (`llm::local`, `llm::config`, `llm::models`, `llm::ollama`,
+`llm::openai`, `app::tests::login`, `ui::tests::login_view`). `smoke.sh`
+Phase 141 drives the real binary against local stubs: an LM Studio listing
+one language model and one embedding model, an LM Studio requiring a token,
+an LM Studio before 0.4, an LM Studio refusing every prompt as longer than
+its loaded context, and an Ollama. Every LM Studio stub answers a path it
+does not serve as the real one does, 200 and an error object, never a 404.
+It walks the third root row, the API-key list without the local Ollama, a
+refused address shown in red and saved nowhere, a pass that saves
 `LMSTUDIO_HOST` and lists the language model in `/model` (never the
 embedding one), the token step (asked, refused, then saved beside the
-address), and Ollama saving `OLLAMA_HOST`. Then a session on LM Studio's
-model whose server has stopped must end its turn on `Nothing is answering at
-…` rather than `Waiting for internet…` (the check fails with the advice
-disabled, which is how it was verified). Last, in that session, whose
-`LMSTUDIO_HOST` is exported, a working address saved under `/login` must say
-`Saved — unset LMSTUDIO_HOST in your environment, which overrides it`
-rather than confirm. The token step's pass is awaited on the `.env` write,
+address), Ollama saving `OLLAMA_HOST`, the older LM Studio listed through
+`/v1/models`, and LM Studio's port refused on Ollama's page with the saved
+`OLLAMA_HOST` kept. Then a session on LM Studio's model whose server has
+stopped must end its turn on `Nothing is answering at …` rather than
+`Waiting for internet…`. In that session, whose `LMSTUDIO_HOST` is
+exported, a working address saved under `/login` must say `Saved — unset
+LMSTUDIO_HOST in your environment, which overrides it` rather than confirm.
+Last, a session on the overflowing stub must end its turn on the advice to
+raise the context length, not on an empty reply. Each of those checks was
+seen to fail with its fix taken out. The token step's pass is awaited on the `.env` write,
 not its toast: the earlier pass's confirmation reads the same and a toast
 lives 4 s, so a toast wait could return before the test did. The suite
 unsets `OLLAMA_HOST`,
@@ -389,12 +437,13 @@ phase.
   `options.num_ctx` (`docs/ollama.md`), the chat-completions wire cannot ask
   LM Studio for a context length, so a model loaded at 4096 overflows on an
   agentic turn's first file read. The gauge shows the loaded window when the
-  model is loaded. Raise it in LM Studio, or with
+  model is loaded, and the refusal says to raise it in LM Studio or with
   `lms load <model> --context-length 32768`. Loading the selected model at
   the session's window through LM Studio's `/api/v1/models/load` is the
   next step.
-- **A model not yet loaded** is gauged against its maximum: LM Studio loads it
-  on the first request at a setting its listing does not report.
+- **A model not yet loaded has no gauge** until its window is read loaded: a
+  `/model` pick or the next launch's probe reads it once the first request
+  has loaded it.
 - **No Ctrl+T for LM Studio** (above).
 - **No "save anyway"** for an address that fails its test (above).
 - **Self-signed certificates** are trusted through `ALTER_ZERO_CA_FILE`; asking

@@ -513,9 +513,16 @@ for the server's token on the same page, LM Studio shipping beside Ollama
 over chat completions with its native `/api/v1/models` listing behind a
 relative `api_model_base`, a keyless provider sending no cache breakpoints
 and a stopped one on this machine answered with the test's own sentence
-rather than the offline wait (`local::refused_advice`), and a save that a
+rather than the offline wait (`local::refused_advice`), a save that a
 variable exported in the shell overrides naming the variable to unset
-instead of confirming (`ServerSave::overridden_notice`),
+instead of confirming (`ServerSave::overridden_notice`), a listing body
+with no models list told apart from an empty one (`models::not_a_listing`
+— LM Studio answers a path it does not serve with 200 and an error object,
+so an LM Studio before 0.4 falls back to `/v1/models` and its port typed in
+as Ollama's is refused), an unloaded LM Studio model's window unknown
+rather than its maximum, and LM Studio's bare-string stream frame for a
+prompt longer than the loaded context surfaced (`openai::parse_sse_error`)
+as advice to raise it (`local::refusal_advice`),
 `docs/local-models.md`, `smoke.sh` Phase 141.
 Below that root the lists carry **no heading** (each used to repeat the row that opened it, in
 cyan, for two rows that said nothing the hint below them doesn't) and every

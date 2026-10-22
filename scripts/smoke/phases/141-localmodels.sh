@@ -4,11 +4,15 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# `/login` → Use a local model (docs/local-models.md). Three local stubs stand
-# in for the servers: an LM Studio listing one language model and one
-# embedding model over its native /api/v1/models, a second LM Studio set to
-# require an API token (401 without `Bearer sk-lm-smoke`), and an Ollama
-# answering /api/tags and /api/show. Against the real binary:
+# `/login` → Use a local model (docs/local-models.md). Local stubs stand in
+# for the servers: an LM Studio listing one language model and one embedding
+# model over its native /api/v1/models, a second LM Studio set to require an
+# API token (401 without `Bearer sk-lm-smoke`), an LM Studio before 0.4 (no
+# native listing, only /v1/models), an LM Studio that refuses every prompt as
+# longer than the context it loaded the model with, and an Ollama answering
+# /api/tags and /api/show. Like the real thing, every LM Studio stub answers a
+# path it does not serve with 200 and an error object, never a 404. Against
+# the real binary:
 #   (a) the root offers a third way in; its list holds the local servers, and
 #       the API-key list no longer offers the local Ollama a key field;
 #   (b) an address nothing answers at is tested, refused in red on the page,
@@ -20,12 +24,19 @@ smoke_begin
 #       the one typed is refused, and saves the address and the token once
 #       one passes;
 #   (e) Ollama tests and saves its OLLAMA_HOST the same way;
-#   (f) a session on LM Studio's model whose server has stopped ends the turn
+#   (f) an LM Studio before 0.4, whose native listing is an error object on a
+#       200, passes through /v1/models;
+#   (g) LM Studio's port typed in as Ollama's answers, but not as Ollama: it
+#       is refused, and the saved OLLAMA_HOST stays;
+#   (h) a session on LM Studio's model whose server has stopped ends the turn
 #       on the test's own sentence, never on `Waiting for internet…`
 #       (docs/offline.md);
-#   (g) in that session, whose shell exports LMSTUDIO_HOST, a working address
+#   (i) in that session, whose shell exports LMSTUDIO_HOST, a working address
 #       saved under /login says the exported variable overrides it, instead
-#       of confirming a connection the session will not use.
+#       of confirming a connection the session will not use;
+#   (j) a prompt longer than the context LM Studio loaded the model with —
+#       reported as a bare string frame inside the stream — ends the turn on
+#       advice to raise it, not on an empty reply.
 S141="${S}_local"
 L_LOG="$SMOKE_TMP/local.log"
 l_port() {
@@ -34,6 +45,8 @@ l_port() {
 L_OPEN="$(l_port)"
 L_TOKEN="$(l_port)"
 L_OLLAMA="$(l_port)"
+L_OLD="$(l_port)"
+L_OVERFLOW="$(l_port)"
 # Bound and released: nothing listens here, so a connect is refused at once.
 L_DEAD="$(l_port)"
 
@@ -68,16 +81,27 @@ class Stub(BaseHTTPRequestHandler):
         with open(log, "a") as f:
             f.write(f"{mode} {self.command} {self.path} {self.headers.get('authorization')}\n")
 
+    def unknown(self):
+        # LM Studio answers a path it does not serve with 200 and an error
+        # object ("Returning 200 anyway", its log says); Ollama with a 404.
+        if mode.startswith("lmstudio"):
+            return self.reply(200, {
+                "error": f"Unexpected endpoint or method. ({self.command} {self.path})"})
+        self.reply(404, {"error": "not found"})
+
     def do_GET(self):
         self.note()
         if mode == "lmstudio-token" and self.headers.get("authorization") != TOKEN:
             return self.reply(401, {"error": "Missing or invalid API token"})
-        if mode.startswith("lmstudio") and self.path == "/api/v1/models":
+        if mode == "lmstudio-old" and self.path == "/v1/models":
+            return self.reply(200, {"object": "list", "data": [
+                {"id": "qwen2.5-7b-instruct", "object": "model", "owned_by": "organization_owner"}]})
+        if mode.startswith("lmstudio") and mode != "lmstudio-old" and self.path == "/api/v1/models":
             return self.reply(200, LMSTUDIO)
         if mode == "ollama" and self.path == "/api/tags":
             return self.reply(200, {"models": [
                 {"name": "qwen3:8b", "model": "qwen3:8b", "details": {"family": "qwen3"}}]})
-        self.reply(404, {"error": "Unexpected endpoint or method."})
+        self.unknown()
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length") or 0))
@@ -87,7 +111,18 @@ class Stub(BaseHTTPRequestHandler):
                 "capabilities": ["completion", "tools"], "parameters": "",
                 "details": {"family": "qwen3"},
                 "model_info": {"general.architecture": "qwen3", "qwen3.context_length": 40960}})
-        self.reply(404, {"error": "not found"})
+        if mode == "lmstudio-overflow" and self.path == "/v1/chat/completions":
+            # LM Studio's refusal of a prompt longer than the loaded context:
+            # one frame that is only a JSON string, then the end of the stream.
+            data = (b'data: "The number of tokens to keep from the initial prompt '
+                    b'is greater than the context length."\n\n')
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.unknown()
 
     def log_message(self, *_args):
         pass
@@ -99,7 +134,9 @@ PY
 l_stub lmstudio "$L_OPEN"
 l_stub lmstudio-token "$L_TOKEN"
 l_stub ollama "$L_OLLAMA"
-for port in "$L_OPEN" "$L_TOKEN" "$L_OLLAMA"; do # wait for each to listen
+l_stub lmstudio-old "$L_OLD"
+l_stub lmstudio-overflow "$L_OVERFLOW"
+for port in "$L_OPEN" "$L_TOKEN" "$L_OLLAMA" "$L_OLD" "$L_OVERFLOW"; do # wait for each to listen
 	for _ in $(seq 1 30); do
 		if python3 -c "import socket, sys; s = socket.socket(); s.settimeout(0.2); sys.exit(0 if s.connect_ex(('127.0.0.1', $port)) == 0 else 1)" 2>/dev/null; then
 			break
@@ -246,9 +283,35 @@ keys "$S141" Enter
 wait_for 15 "$S141" -F "Connected to Ollama — 1 model" || fail "the Ollama stub did not pass"
 l_saved OLLAMA_HOST "$ollama" || fail "OLLAMA_HOST=$ollama was not saved"
 grep -qF "ollama POST /api/show" "$L_LOG" || fail "the Ollama test did not read the model's show record"
+
+# ---- (f) an LM Studio before 0.4: its native listing is an error on a 200 ----
+page="$(l_server "$S141" "LM Studio" 0)" || fail "LM Studio's page did not reopen"
+old="127.0.0.1:$L_OLD"
+type_text "$S141" "$old"
+sleep 0.2
+keys "$S141" Enter
+# Read as a listing, the error object was a server with no models — which
+# passes and saves too, so the save alone proves nothing: the fallback
+# request is what tells the two apart.
+poll 15 l_saved LMSTUDIO_HOST "$old" || fail "an LM Studio before 0.4 did not pass"
+grep -qF "lmstudio-old GET /v1/models" "$L_LOG" ||
+	fail "the older LM Studio was not listed through /v1/models (its error body read as no models?)"
+older="$(pane "$S141")"
+dump "an LM Studio before 0.4" "$older"
+expect_lacks "$older" -F "no models to chat with" "the older LM Studio was confirmed as having no models"
+
+# ---- (g) LM Studio's port typed in as Ollama's is not an Ollama ----
+page="$(l_server "$S141" "Ollama" 1)" || fail "Ollama's page did not reopen"
+type_text "$S141" "$open"
+sleep 0.2
+keys "$S141" Enter
+impostor="$(wait_pane 15 "$S141" -F "answered, but not as Ollama")" ||
+	fail "LM Studio's port passed as an Ollama (its error object read as no models?)"
+dump "LM Studio's port on Ollama's page" "$impostor"
+l_saved OLLAMA_HOST "$ollama" || fail "a server that is not Ollama replaced the saved OLLAMA_HOST"
 tmux kill-session -t "$S141" 2>/dev/null
 
-# ---- (f) the server stops: advice in seconds, not a wait for the internet ----
+# ---- (h) the server stops: advice in seconds, not a wait for the internet ----
 # A saved selection on LM Studio's model (Phase 129's trick) and its host
 # pointed at the dead port, the process env outranking the .env store: the
 # turn's refused connect must come back as the test's sentence on the bounded
@@ -266,7 +329,7 @@ dump "a stopped LM Studio mid-session" "$stopped"
 expect_has "$stopped" -F "Nothing is answering at $dead" "the advice does not name the server"
 expect_lacks "$stopped" -F "Waiting for internet" "a stopped local server was waited out as an outage"
 
-# ---- (g) an exported variable overrides the save, and the toast says so ----
+# ---- (i) an exported variable overrides the save, and the toast says so ----
 page="$(l_server "$S141F" "LM Studio" 0)" || fail "LM Studio's page did not open over the exported host"
 dump "LM Studio's page, the host exported" "$page"
 expect_has "$page" -F "❯ $dead" "the field does not offer the exported address in force"
@@ -281,4 +344,16 @@ expect_has "$overridden" -F "Saved — unset LMSTUDIO_HOST in your environment, 
 expect_lacks "$overridden" -F "Connected to LM Studio" "the overridden save was confirmed"
 l_saved LMSTUDIO_HOST "$open" || fail "the overridden address was not saved for when the variable is unset"
 tmux kill-session -t "$S141F" 2>/dev/null
-note "Use a local model tests each address, refuses the dead one, asks for a token, saves what passes, reports a stopped server, and names an exported override"
+
+# ---- (j) a prompt longer than the loaded context: advice, not an empty reply ----
+S141J="${S}_local_overflow"
+launch "$S141J" 100 32 "env LMSTUDIO_HOST=127.0.0.1:$L_OVERFLOW $L_APP"
+wait_for 10 "$S141J" -F "qwen/qwen3-8b" || fail "the overflow session did not start on LM Studio's model"
+submit "$S141J" "hello"
+overflow="$(wait_pane 15 "$S141J" -F "context window too small")" ||
+	fail "LM Studio's overflow frame was not surfaced (an empty reply?)"
+dump "a prompt longer than LM Studio's loaded context" "$overflow"
+expect_has "$overflow" -F "context-length 32768" "the advice does not say how to load the model larger"
+grep -qF "lmstudio-overflow POST /v1/chat/completions" "$L_LOG" || fail "the turn never reached the stub"
+tmux kill-session -t "$S141J" 2>/dev/null
+note "Use a local model tests each address, reads an older LM Studio, refuses a server that is not the one named, reports a stopped server, names an exported override, and explains a prompt too long for the loaded context"

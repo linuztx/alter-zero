@@ -289,7 +289,13 @@ impl std::fmt::Display for LlmError {
                     // Keep the surfaced error to one tidy line.
                     let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
                     let flat = truncate_chars(&flat, 300);
-                    write!(f, "HTTP {status}: {flat}")
+                    // Status 0 is a failure reported inside a 200 stream,
+                    // which has no status of its own to name.
+                    if *status == 0 {
+                        write!(f, "{flat}")
+                    } else {
+                        write!(f, "HTTP {status}: {flat}")
+                    }
                 }
             }
             Self::Decode(e) => write!(f, "could not decode the response: {e}"),
@@ -644,6 +650,18 @@ mod tests {
             body: String::new(),
         };
         assert_eq!(e.to_string(), "provider returned HTTP 500");
+    }
+
+    #[test]
+    fn an_in_band_failure_names_no_http_status() {
+        // Status 0 is a failure the server reported inside a 200 stream
+        // (`openai::parse_sse_error`): there is no status to name, and
+        // `HTTP 0` would read as one.
+        let e = LlmError::Api {
+            status: 0,
+            body: "Model unloaded.".to_string(),
+        };
+        assert_eq!(e.to_string(), "Model unloaded.");
     }
 
     #[test]

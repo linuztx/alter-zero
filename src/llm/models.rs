@@ -60,16 +60,41 @@ pub struct ModelEntry {
 /// missing/null/non-string id, a non-object row) is still skipped per-record
 /// instead of failing the whole list into a Decode error.
 ///
+/// Both arrays are optional so that a body carrying **neither** is told apart
+/// from an empty list: that body said nothing about its models
+/// ([`not_a_listing`]).
+///
 /// [`RawValue`]: serde_json::value::RawValue
 #[derive(Debug, Deserialize)]
 struct ModelsResponse<'a> {
     #[serde(default, borrow)]
-    data: Vec<&'a serde_json::value::RawValue>,
+    data: Option<Vec<&'a serde_json::value::RawValue>>,
     /// The ChatGPT backend names the same array `models` and its records
     /// `slug` (`docs/chatgpt.md`). One extra field costs nothing and keeps a
     /// second parse function from existing.
     #[serde(default, borrow)]
-    models: Vec<&'a serde_json::value::RawValue>,
+    models: Option<Vec<&'a serde_json::value::RawValue>>,
+}
+
+/// Does `body` carry a models list at all — a bare array, or an object with a
+/// `data` or `models` array? A server that answers a path it does not serve
+/// with 200 and an error object (LM Studio does) has not.
+fn is_listing(body: &str) -> bool {
+    body.trim_start().starts_with('[')
+        || serde_json::from_str::<ModelsResponse>(body)
+            .is_ok_and(|parsed| parsed.data.is_some() || parsed.models.is_some())
+}
+
+/// The failure for a body with no models list in it: not an empty catalog —
+/// a server with nothing to chat with still says so with an empty list — but
+/// a server that said nothing about its models at all, whose own words lead
+/// the message (`Unexpected endpoint or method. (GET /api/tags)`).
+pub(crate) fn not_a_listing(body: &str) -> LlmError {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    LlmError::Decode(format!(
+        "no models list in the response: {}",
+        super::truncate_chars(&flat, 120)
+    ))
 }
 
 /// Parse a `/models` response body into rows tagged with `provider`, sorted by
@@ -92,10 +117,11 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
         &bare
     } else {
         parsed = serde_json::from_str(body).map_err(decode)?;
-        if parsed.data.is_empty() {
-            &parsed.models
-        } else {
-            &parsed.data
+        match (parsed.data.as_deref(), parsed.models.as_deref()) {
+            (None, None) => return Err(not_a_listing(body)),
+            (Some(data), _) if !data.is_empty() => data,
+            (_, Some(models)) => models,
+            (Some(data), None) => data,
         }
     };
     let mut out: Vec<ModelEntry> = records
@@ -210,9 +236,10 @@ fn is_lmstudio_record(record: &serde_json::Value) -> bool {
 
 /// The context length an LM Studio model is **loaded** with — the window the
 /// server actually holds, which is the load setting (often 4096) and not the
-/// most the model could take. `None` for a model not loaded (the first
-/// request loads it, at its saved setting), or a record that is not LM
-/// Studio's.
+/// most the model could take; the **smallest**, when several instances are
+/// loaded, since a request may land on any of them. `None` for a model not
+/// loaded (the first request loads it, at a saved setting the listing does
+/// not report), or a record that is not LM Studio's.
 fn lmstudio_loaded_context(record: &serde_json::Value) -> Option<u64> {
     if !is_lmstudio_record(record) {
         return None;
@@ -220,11 +247,10 @@ fn lmstudio_loaded_context(record: &serde_json::Value) -> Option<u64> {
     record
         .get("loaded_instances")?
         .as_array()?
-        .first()?
-        .get("config")?
-        .get("context_length")?
-        .as_u64()
+        .iter()
+        .filter_map(|instance| instance.get("config")?.get("context_length")?.as_u64())
         .filter(|&n| n > 0)
+        .min()
 }
 
 /// One record's `capabilities` object, when it is GitHub Copilot's — the
@@ -604,10 +630,12 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
 /// `None` when the record doesn't say, or reports a non-positive size (a
 /// meaningless window would divide the gauge by zero). See `docs/compact.md`.
 fn context_window_of(record: &serde_json::Value) -> Option<u64> {
-    // An LM Studio model that is loaded is served at its load setting, not
-    // its maximum; one that is not falls through to `max_context_length`.
-    if let Some(loaded) = lmstudio_loaded_context(record) {
-        return Some(loaded);
+    // An LM Studio model is served at its load setting, not its maximum, and
+    // one not loaded yet will be loaded at a setting the listing does not
+    // name: its window is unknown — never `max_context_length`, which a
+    // gauge would claim right up to the server's refusal.
+    if is_lmstudio_record(record) {
+        return lmstudio_loaded_context(record);
     }
     let raw = record
         .get("context_length")
@@ -822,16 +850,18 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
             .map_err(|e| LlmError::Http(e.to_string()))?;
         Ok(body)
     };
-    // A listing of its own that the server does not have — LM Studio before
-    // 0.4 answers its native `/api/v1/models` with a 404 — stands down for
-    // the chat base's `/models`, which every chat-completions server answers
-    // (`docs/local-models.md`).
+    // A listing of its own that the server does not have stands down for the
+    // chat base's `/models`, which every chat-completions server answers
+    // (`docs/local-models.md`): a server answers such a path 404 — or, as
+    // LM Studio before 0.4 answers its native `/api/v1/models`, 200 and an
+    // error object with no models list in it.
     let chat_listing = (cfg.wire_api == super::WireApi::Chat
         && auth.base.is_none()
         && cfg.api_model_base.trim_end_matches('/') != cfg.api_base.trim_end_matches('/'))
     .then(|| models_url(&cfg.api_base, cfg.auth, cfg.wire_api));
     let body = match (get(&url), chat_listing) {
         (Err(LlmError::Api { status: 404, .. }), Some(chat)) => get(&chat)?,
+        (Ok(body), Some(chat)) if !is_listing(&body) => get(&chat)?,
         (listed, _) => listed?,
     };
     if cfg.wire_api == super::WireApi::Ollama {
@@ -2273,13 +2303,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unloaded_lm_studio_model_reports_its_maximum_window() {
+    fn an_unloaded_lm_studio_models_window_is_unknown() {
+        // The first request loads it at its saved setting — commonly 4096 —
+        // which the listing does not report. Its `max_context_length` is what
+        // it could take, not what the server will hold, and a gauge claiming
+        // that would never warn before the server refuses.
         let body = LMSTUDIO_MODELS.replace(
             r#"[{"id":"qwen/qwen3-8b","config":{"context_length":4096,"eval_batch_size":512}}]"#,
             "[]",
         );
         let models = parse_models(&body, "lmstudio").unwrap();
-        assert_eq!(models[0].context, Some(131_072));
+        assert_eq!(models[0].context, None);
+    }
+
+    #[test]
+    fn a_model_loaded_twice_reports_the_smaller_window() {
+        // A request may land on either instance, so only the smaller window
+        // is one the server always holds.
+        let body = LMSTUDIO_MODELS.replace(
+            r#"[{"id":"qwen/qwen3-8b","config":{"context_length":4096,"eval_batch_size":512}}]"#,
+            r#"[{"id":"qwen/qwen3-8b","config":{"context_length":32768}},
+                {"id":"qwen/qwen3-8b:2","config":{"context_length":8192}}]"#,
+        );
+        let models = parse_models(&body, "lmstudio").unwrap();
+        assert_eq!(models[0].context, Some(8192));
     }
 
     #[test]
@@ -2338,10 +2385,57 @@ mod tests {
     }
 
     #[test]
+    fn a_body_with_no_models_list_is_not_an_empty_listing() {
+        // LM Studio answers a path it does not serve with 200 and an error
+        // object: a server that said nothing about its models, which read as
+        // one with none — a `/login` test that passed and a `/model` with no
+        // rows (docs/local-models.md).
+        let err = parse_models(
+            r#"{"error":"Unexpected endpoint or method. (GET /api/v1/models)"}"#,
+            "lmstudio",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, LlmError::Decode(m) if m.contains("Unexpected endpoint")),
+            "{err:?}"
+        );
+        // An empty list is still a list.
+        assert!(parse_models(r#"{"data":[]}"#, "x").unwrap().is_empty());
+        assert!(parse_models(r#"{"models":[]}"#, "x").unwrap().is_empty());
+        assert!(parse_models("[]", "x").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_lm_studio_without_its_native_listing_is_listed_from_the_chat_base() {
+        // LM Studio before 0.4 has no `/api/v1`, and answers its native
+        // listing as it answers every path it does not serve: 200 and an
+        // error object. The OpenAI-compatible `/v1/models` stands in.
+        let (port, seen) = serve(|path| match path {
+            "/v1/models" => (
+                "200 OK",
+                r#"{"object":"list","data":[{"id":"qwen3-8b","object":"model"}]}"#,
+            ),
+            _ => (
+                "200 OK",
+                r#"{"error":"Unexpected endpoint or method. (GET /api/v1/models)"}"#,
+            ),
+        });
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "lmstudio".to_string();
+        cfg.auth = crate::llm::AuthScheme::OptionalKey;
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_model_base = format!("http://127.0.0.1:{port}/api/v1");
+        let models = fetch_models(&cfg, &CancelToken::new()).expect("listed");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["qwen3-8b"]);
+        assert_eq!(*seen.lock().unwrap(), ["/api/v1/models", "/v1/models"]);
+    }
+
+    #[test]
     fn a_server_without_its_native_listing_is_listed_from_the_chat_base() {
-        // LM Studio before 0.4 has no `/api/v1`: its native listing answers
-        // 404, and the OpenAI-compatible `/v1/models` every version serves
-        // stands in — ids alone, but a picker with models in it.
+        // A server with no listing of its own at the model base answers 404
+        // there, and the OpenAI-compatible `/models` on the chat base stands
+        // in — ids alone, but a picker with models in it.
         let (port, seen) = serve(|path| match path {
             "/v1/models" => (
                 "200 OK",

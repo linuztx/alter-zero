@@ -210,7 +210,12 @@ table — from **`/api/tags` plus one `/api/show` per model**:
 
 `/api/tags` carries `capabilities` since 0.9.1 and the window since 0.19; a
 tags record is what the fetch **falls back to** when a model's show fails,
-so an older server still lists with whatever it said. The capability list is
+so an older server still lists with whatever it said. A tags body with no
+`models` list at all is not an Ollama with nothing pulled (that answers
+`{"models":[]}`) but another server answering the port: LM Studio answers
+every path it does not serve with 200 and an error object, so its port
+typed in as Ollama's is refused as such (`tags_records`,
+`docs/local-models.md`). The capability list is
 explicit, so absence is the answer — a record with the list and no `vision`
 cannot see (`Some(false)`, and the backend degrades attachments), where a
 record with no list at all stays unknown, the optimistic default every other

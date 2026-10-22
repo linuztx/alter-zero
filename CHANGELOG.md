@@ -33,7 +33,13 @@ release heading when a version is cut.
   OpenAI-compatible server. Its models are listed from LM Studio's own
   catalogue, so `/model` shows each model's name, the context length it is
   loaded with and whether it accepts images, and leaves out embedding models.
-  A server set to require authentication takes its token from `LM_API_TOKEN`
+  An LM Studio older than 0.4, which has no such catalogue, is listed through
+  `/v1/models`. A model that isn't loaded yet shows no context gauge rather
+  than its maximum, since LM Studio loads it at a setting it doesn't report.
+  A prompt longer than the context a model was loaded with ends the turn
+  with how to raise it (`lms load <model> --context-length 32768`), and a
+  server that starts requiring a token sends you to `/login`. A server set
+  to require authentication takes its token from `LM_API_TOKEN`
   (`docs/local-models.md`).
 
 ### Changed
@@ -66,6 +72,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **An error a server reports inside its reply now ends the turn with that
+  error.** A stream frame that was only a message (`data: "…"`), or an
+  `{"error": "…"}` naming its error by a string, was skipped, so the turn
+  ended with no reply and no error. LM Studio reports a prompt longer than
+  its loaded context this way (`docs/local-models.md`).
+- **A model listing with no models list in it is an error, not an empty
+  provider.** A server answering `/models` with 200 and an error object
+  showed in `/model` as having no models and no reason; it is now marked
+  unavailable with the server's own words (`docs/user-providers.md`).
 - **Code generation retains less RAM.** The warm Ctrl+O transcript packs its
   text and styles and expands only visible rows, preserving complete output,
   syntax colours and fast opens. File rewrites use a 2 MB diff table in place

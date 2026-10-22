@@ -4,7 +4,8 @@
 //! llama.cpp / vLLM a user described in their own file — Ollama's own
 //! grammar is [`super::ollama::host_url`]), and the sentences a connection
 //! test answers with ([`verdict`]), which a session's request refused by a
-//! stopped server on this machine is answered with too ([`refused_advice`]).
+//! stopped server on this machine is answered with too ([`refused_advice`]),
+//! beside the server's own refusals a user can act on ([`refusal_advice`]).
 //!
 //! Pure and unit-tested; the connection test itself runs at the boundary
 //! (`tui::login`), over the same [`super::models::fetch_models`] the `/model`
@@ -226,6 +227,42 @@ pub fn verdict(name: &str, server: &str, result: &Result<Vec<ModelEntry>>) -> Ve
 pub fn refused_advice(name: &str, base: &str, message: &str) -> Option<String> {
     let server = server_label(base)?;
     (refused(message) && super::ollama::is_local_base(base)).then(|| not_running(name, &server))
+}
+
+/// LM Studio's words for a prompt longer than the context it loaded the model
+/// with: its engine's (`… is greater than the context length.`) and its own
+/// longer form (`… the model is loaded with context length of only 4096
+/// tokens, which is not enough.`).
+const OVERFLOW_TELLS: [&str; 2] = ["greater than the context length", "context length of only"];
+
+/// The advice for a session's request that a keyless server refused, in words
+/// that say what to do (`docs/local-models.md`): a prompt longer than the
+/// context LM Studio loaded `model` with, and a token the server wants.
+/// `None` keeps the server's own body, which for everything else is the best
+/// account. `name` is the provider's label and `base` its chat base.
+#[must_use]
+pub fn refusal_advice(
+    name: &str,
+    base: &str,
+    model: &str,
+    status: u16,
+    body: &str,
+) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    if OVERFLOW_TELLS.iter().any(|tell| lower.contains(tell)) {
+        return Some(format!(
+            "{model} is loaded with a context window too small for this conversation — raise \
+             its context length in LM Studio, or load it with `lms load {model} \
+             --context-length 32768`, then try again."
+        ));
+    }
+    if matches!(status, 401 | 403) {
+        let server = server_label(base)?;
+        return Some(format!(
+            "{name} at {server} wants an API token — run /login to enter it."
+        ));
+    }
+    None
 }
 
 /// Does a transport message say the connection was refused?
@@ -531,6 +568,59 @@ mod tests {
                 "http://127.0.0.1:1234/v1",
                 "operation timed out"
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_prompt_longer_than_the_loaded_context_says_how_to_raise_it() {
+        // LM Studio loads a model at a context length of its own (commonly
+        // 4096) and refuses a longer prompt in its engine's words — the
+        // agent's first file read is enough (docs/local-models.md).
+        let advice = |body: &str| {
+            refusal_advice(
+                "LM Studio",
+                "http://127.0.0.1:1234/v1",
+                "qwen/qwen3-8b",
+                0,
+                body,
+            )
+        };
+        let expected = "qwen/qwen3-8b is loaded with a context window too small for this \
+                        conversation — raise its context length in LM Studio, or load it with \
+                        `lms load qwen/qwen3-8b --context-length 32768`, then try again.";
+        for body in [
+            "The number of tokens to keep from the initial prompt is greater than the context length.",
+            r#"{"error":"Trying to keep the first 5210 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough."}"#,
+        ] {
+            assert_eq!(advice(body).as_deref(), Some(expected), "{body}");
+        }
+        assert_eq!(
+            advice("Model unloaded."),
+            None,
+            "any other refusal keeps its words"
+        );
+    }
+
+    #[test]
+    fn a_session_refused_as_unauthorized_is_sent_to_login() {
+        // A server set to require a token after `/login` saved its address,
+        // or whose token changed: the page that asks for one is the fix.
+        for status in [401, 403] {
+            assert_eq!(
+                refusal_advice(
+                    "LM Studio",
+                    "http://127.0.0.1:1234/v1",
+                    "qwen/qwen3-8b",
+                    status,
+                    r#"{"error":"Invalid API token"}"#,
+                )
+                .as_deref(),
+                Some("LM Studio at 127.0.0.1:1234 wants an API token — run /login to enter it.")
+            );
+        }
+        assert_eq!(
+            refusal_advice("LM Studio", "http://127.0.0.1:1234/v1", "m", 500, "boom"),
             None
         );
     }

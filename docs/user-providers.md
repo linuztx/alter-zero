@@ -213,17 +213,19 @@ The picker lists `{api_model_base or api_base}/models`. Both shapes servers
 answer with parse — OpenAI's `{"data": […]}` envelope and the bare array
 Together AI returns — and each record's facts are read per record, whichever
 spelling the server uses: the context window from `context_length`, vLLM's
-`max_model_len`, Mistral's (and LM Studio's) `max_context_length` — LM
-Studio's native records naming the window a loaded model was loaded with
-first (`docs/local-models.md`) — or
+`max_model_len`, Mistral's `max_context_length` — LM Studio's native
+records naming the window a loaded model was loaded with instead, and none
+for one not loaded yet (`docs/local-models.md`) — or
 `context_window` (gauged at 95%, the ChatGPT backend's rule); image input and
 reasoning from the shapes `docs/llm.md` lists. A fact no record states stays
 unknown — the footer's gauge hides and auto-compaction stays off
 (`ALTER_ZERO_CONTEXT_WINDOW` supplies a window), and images are attached
 optimistically (`docs/tools.md`).
 
-A server with no `/models` at all lists nothing; name the model at launch
-instead, with `ALTER_ZERO_PROVIDER` and `ALTER_ZERO_MODEL`.
+A server with no `/models` at all lists nothing, and `/model` notes it
+`unavailable` — so does one answering `/models` with a 200 that carries no
+models list (an error object), which an empty list is not; name the model
+at launch instead, with `ALTER_ZERO_PROVIDER` and `ALTER_ZERO_MODEL`.
 
 ## When the file is wrong
 
