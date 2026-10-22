@@ -1296,9 +1296,10 @@ impl BackgroundRegistry {
         })
     }
 
-    /// Post a subagent's completion note, tagged with its id
-    /// ([`AgentRegistry::post_notice`](crate::agents::AgentRegistry::post_notice)
-    /// is the one caller). Returns the note's [`seq`](PendingNotice::seq).
+    /// Post a subagent's completion note, tagged with its id and `run`, the
+    /// run it ended — named by that run's settle
+    /// ([`AgentRegistry::post_notice`](crate::agents::AgentRegistry::post_notice))
+    /// or by the user's stop. Returns the note's [`seq`](PendingNotice::seq).
     pub fn post_agent_notice(&self, context: String, agent: &str, run: Option<u64>) -> u64 {
         let mut inner = self.inner.lock().expect("registry lock");
         inner.push_notice(PendingNotice {

@@ -1423,6 +1423,9 @@ pub struct Stop {
     /// An `agentoutput` call was waiting on it and will report the stop
     /// itself — no completion notice is owed (`docs/agent-tools.md`).
     pub watched: bool,
+    /// The run it found — the one a note of the stop is tagged with
+    /// (`docs/agent-tools.md` *A report covers one run*).
+    pub run: u64,
 }
 
 /// What became of an `agentsend` ([`AgentRegistry::resume`]).
@@ -1924,8 +1927,10 @@ impl AgentRegistry {
         let _ = self.events.send(event);
     }
 
-    /// A run finished whose terminal event its caller already sent — the
-    /// offline dummy's scripted runs. See [`settle`](Self::settle).
+    /// A run finished with no end to deliver: [`settle`](Self::settle) with
+    /// none. A run that ended on its own sends its end through `settle`,
+    /// which names the run; sent ahead of it, the end names none
+    /// (`docs/agent-tools.md` *A report covers one run*).
     pub fn finish(&self, id: &str, outcome: Result<String, String>, messages: Vec<ChatMessage>) {
         self.settle(id, outcome, messages, None);
     }
@@ -2003,6 +2008,7 @@ impl AgentRegistry {
         Stop {
             was_live,
             watched: was_live && slot.waiters > 0,
+            run: slot.run,
         }
     }
 
@@ -2030,7 +2036,10 @@ impl AgentRegistry {
             board.retract_agent_resume_notice(id);
         }
         if slot.done {
-            return Some(Stop::default());
+            return Some(Stop {
+                run: slot.run,
+                ..Stop::default()
+            });
         }
         slot.cancel.cancel();
         // The roster drops their rows: a resume delivers only its own message.
@@ -2044,6 +2053,7 @@ impl AgentRegistry {
         Some(Stop {
             was_live: true,
             watched: false,
+            run: slot.run,
         })
     }
 
@@ -2435,21 +2445,6 @@ impl AgentRegistry {
             slot.notices_owed.remove(at);
         }
         NoticePost::Posted(context.map(|context| board.post_agent_notice(context, id, Some(run))))
-    }
-
-    /// Post a completion notice of `id`'s current run that no settle owes —
-    /// a scripted run's end, or the user's stop — on `board`, tagged with
-    /// that run so a report of it takes the note back like any other
-    /// ([`report_settled`](Self::report_settled)). Its board number.
-    pub fn post_completion_notice(
-        &self,
-        id: &str,
-        board: &crate::background::BackgroundRegistry,
-        context: String,
-    ) -> u64 {
-        let inner = self.inner.lock().expect("agent registry poisoned");
-        let run = inner.slots.get(id).map(|slot| slot.run);
-        board.post_agent_notice(context, id, run)
     }
 
     /// Post the note that the user started `id` again (`context`) on `board`
@@ -4445,6 +4440,40 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_names_the_run_it_found() {
+        // A note of a run's end is tagged with that run (docs/agent-tools.md
+        // *A report covers one run*), and the user's stop posts one: it names
+        // the run it stopped, rather than the note taking whichever run is
+        // going when it is posted.
+        let registry = test_registry();
+        let (id, _c1) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.settle(&id, Ok("first".into()), vec![ChatMessage::user("p")], None);
+        let _ = registry
+            .begin_continuation(&id)
+            .expect("a stored conversation");
+        assert_eq!(
+            registry.kill(&id).run,
+            1,
+            "the user's stop of the second run"
+        );
+        let (led, _c2) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.settle(&led, Ok("first".into()), vec![ChatMessage::user("p")], None);
+        let _ = registry
+            .begin_continuation(&led)
+            .expect("a stored conversation");
+        assert_eq!(
+            registry.stop(&led, None).expect("known").run,
+            1,
+            "the lead's"
+        );
+        assert_eq!(
+            registry.stop(&led, None).expect("known").run,
+            1,
+            "the lead's, of a run already over"
+        );
+    }
+
+    #[test]
     fn the_leads_stop_tells_the_loop_and_keeps_the_agent_resumable() {
         // `agentkill`: no event of the run's own will say it stopped (a
         // cancelled loop returns silently), so the registry says so — and
@@ -5268,10 +5297,11 @@ mod tests {
     #[test]
     fn a_report_takes_back_every_note_of_its_run() {
         // A note already posted for the run — the user's stop, posted the
-        // moment it lands — while the run's own end is still owed: the report
-        // covers the run, so neither may reach the lead after it.
+        // moment it lands, tagged with the run the stop found — while the
+        // run's own end is still owed: the report covers the run, so neither
+        // may reach the lead after it.
         let (registry, id, board) = settled_with_notice();
-        let posted_note = registry.post_completion_notice(&id, &board, "stopped".into());
+        let posted_note = board.post_agent_notice("stopped".into(), &id, Some(0));
         assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
         assert!(
             board.take_retracted(posted_note),

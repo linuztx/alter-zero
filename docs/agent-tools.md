@@ -352,19 +352,24 @@ Whichever it is, a note still saying that the user started the run goes too
 ### A report covers one run
 
 Each run of an agent has a number — 0 for its launch, one more for every
-continuation (`AgentSnapshot::run`) — each settle names it
-(`AgentEvent::Settled::run`), and a report accounts only for the run it
-read. That matters because the user's message can start the next run the
-instant one ends: a message queued while the agent writes its last reply is
-continued by the agent's own thread right after the settle
-(`docs/queue.md`), so an `agentoutput` waiting on it sees the agent at work
-again and reports the run after, while the first run's end, released by the
-restart, goes out as an ordinary notice. A report that took back every
-unread note of the agent threw that first answer away — the answer to the
-task the lead gave — and taking back only its own run's would deliver the
-first answer after the newer one, an older `completed` read last. So the
-report hands the earlier answers back: each earlier run's completion still
-unread on the board is taken off it, its cell dropped
+continuation (`AgentSnapshot::run`) — and a note of a run's end is tagged
+with that run: each settle names it (`AgentEvent::Settled::run`), the
+offline demo's scripted runs settling the way the live forwarder's do, and
+the user's stop names the run it stopped (`Stop::run`). Never the run going
+when the loop posts the note: by then the user's message may have started
+the next one, whose report would take the note back as its own instead of
+handing it back. A report accounts only for the run it read. That matters
+because the user's message can start the next run the instant one ends: a
+message queued while the agent writes its last reply is continued by the
+agent's own thread right after the settle (`docs/queue.md`), so an
+`agentoutput` waiting on it sees the agent at work again and reports the run
+after, while the first run's end, released by the restart, goes out as an
+ordinary notice. A report that took back every unread note of the agent
+threw that first answer away — the answer to the task the lead gave — and
+taking back only its own run's would deliver the first answer after the
+newer one, an older `completed` read last. So the report hands the earlier
+answers back: each earlier run's completion still unread on the board is
+taken off it, its cell dropped
 (`BackgroundRegistry::take_earlier_agent_notices`), and carried at the end
 of the report, oldest first, under a line saying it came first:
 

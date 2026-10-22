@@ -244,10 +244,10 @@ impl Session<'_> {
                 }
             }
         } else if let Some(notice) = settled.take() {
-            // A scripted run's settle — or the user's queued message starting
-            // a settled agent again, which the lead hears too
-            // (docs/agent-tools.md).
-            self.hold_agent_note(notice, id);
+            // The user's queued message starting a settled agent again, which
+            // the lead hears too (docs/agent-tools.md) — not a run's end,
+            // which arrives as its settle, naming the run.
+            self.hold_agent_note(notice, id, None);
         }
         // Held until the lead reads the note (`StreamEvent::NoticeDelivered`),
         // so its cell lands where the lead heard it (docs/background.md).
@@ -276,16 +276,20 @@ impl Session<'_> {
     /// run is going: one already over, or stopped by the lead, owes neither
     /// the note nor its cell (docs/agent-tools.md *A resume is news when it
     /// starts*).
-    fn hold_agent_note(&mut self, notice: AgentNotice, id: &str) {
+    ///
+    /// A completion is tagged with `run`, the run it ended — for the user's
+    /// stop, the run `kill` reported — never with whichever run is going when
+    /// it posts (docs/agent-tools.md *A report covers one run*). An end that reached
+    /// the loop without its settle, which no backend sends, goes untagged: a
+    /// report never takes it back, so the lead may read that answer twice,
+    /// but never under another run's number.
+    fn hold_agent_note(&mut self, notice: AgentNotice, id: &str, run: Option<u64>) {
         let context = notice.context_text();
         let posted = if notice.resumed {
             self.agent_registry
                 .post_resume_notice(id, &self.registry, context)
         } else {
-            Some(
-                self.agent_registry
-                    .post_completion_notice(id, &self.registry, context),
-            )
+            Some(self.registry.post_agent_notice(context, id, run))
         };
         if let Some(seq) = posted {
             self.app.defer_agent_notice(notice, Some(seq));
@@ -624,11 +628,11 @@ impl Session<'_> {
                         // (docs/agent-tools.md *One notice per answer*).
                         self.app.settle_agent_completion(&notice);
                     } else {
-                        // Tagged with the agent, like every completion of
-                        // its: an `agentoutput` that reports the stop first
-                        // takes the note back (docs/agent-tools.md *One
-                        // notice per answer*).
-                        self.hold_agent_note(notice, id);
+                        // Tagged with the agent and the run it stopped, like
+                        // every completion of its: an `agentoutput` that
+                        // reports the stop first takes the note back
+                        // (docs/agent-tools.md *One notice per answer*).
+                        self.hold_agent_note(notice, id, Some(stop.run));
                         if !self.app.turn_active() {
                             self.dispatch_after_turn();
                         }
@@ -718,7 +722,7 @@ impl Session<'_> {
                     .or_insert_with(Instant::now);
                 self.agent_expiry.remove(id);
                 if let Some(notice) = resumed {
-                    self.hold_agent_note(notice, id);
+                    self.hold_agent_note(notice, id, None);
                 }
                 // Idle: settle what is held now — the resume, which starts no
                 // turn of its own, and any end the drain folded — as the
