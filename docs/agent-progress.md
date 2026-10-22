@@ -56,22 +56,34 @@ The row's one grammar (`{Name}: {detail}`, `agents::activity_line`) gains an
 actor: the agent itself, under `agents::AGENT_UPDATE_LABEL`. It shows
 
 - **the newest paragraph** of what the agent is saying — the lines after the
-  run's last blank line, flattened onto one line (`flatten_one_line`), and
-  clipped at the width like every activity row. Not the whole run: a run's
-  opening is stale by the time it says *now let me…*, and it is the newest
-  intent the row is for. Not the newest line: a list or a wrapped sentence
-  would show a fragment. Within one paragraph the row is **prefix-stable** —
-  the clip keeps the head — so once a paragraph is wider than the row it
-  stops changing rather than ticking along under the user's eyes. Only that
-  head is read, up to `ACTIVITY_UPDATE_MAX_CHARS` (512): the row is built
-  several times a frame while the text streams, and a table or a code block
-  can be one paragraph thousands of characters long;
+  run's last blank line, on one line with every whitespace run one space,
+  and clipped at the width like every activity row. Not the whole run: a
+  run's opening is stale by the time it says *now let me…*, and it is the
+  newest intent the row is for. Not the newest line: a list or a wrapped
+  sentence would show a fragment. Within one paragraph the row is
+  **prefix-stable** — the clip keeps the head — so once a paragraph is wider
+  than the row it stops changing rather than ticking along under the user's
+  eyes;
 - **while the text streams**, read off `AgentRun::streaming` at each frame;
 - **and after it is finalised**, held in `AgentRun::last_update` — through a
   batch's permission prompt, say, between the text and the call — until the
   **next call starts**, which clears it. The sticky rule, made two-sided:
   the row shows the newest thing the agent did, a call or something it said,
   and holds it between them instead of dropping to `Working…`.
+
+**No frame rescans the run.** The row is built several times a frame while
+the text streams, and a run can be anything: a table or a code block
+thousands of lines long, a URL or a blob with no space in it, a page of
+blank space. So `AgentRun` notes where the newest paragraph starts as each
+chunk arrives (`ParagraphStart`, each chunk read once, a line split across
+chunks — CRLF endings included — landing where a whole-text reading puts
+it), and the row reads only that paragraph's head: at most
+`ACTIVITY_UPDATE_MAX_CHARS` (512) characters, from no more than four times
+as many, which leaves room for any indentation or table padding and stops a
+blob inside itself and a blank run short of its end. The first version
+found the paragraph again from the end of the text each time, so a
+paragraph thousands of lines long was walked every frame and a blob with no
+space in it was copied whole.
 
 The transcript keeps the text as it came; the row's one-liner is derived
 from it, so nothing about the row's wording reaches `history`, the session
@@ -159,13 +171,16 @@ it; the settled cell's output is the report, updates whole.
 - `agents` (unit): the row shows the newest paragraph while the text streams,
   holds it once the text is finalised, and yields to the next call; a blank
   run changes nothing; a settled agent still reads `Done`; a paragraph
-  ten thousand words long is read only up to the bound. The report places
-  updates among calls and marks by `at`/`read`, renders a multi-line update
-  indented with its blank lines dropped, hides those among the hidden calls,
-  and `progress_lines` streams only what is new, in order. `record_update`
-  trims, cuts at the cap and skips a blank run. `RunRecorder` records an
-  update at every point that ends a run of text before more work — and
-  ahead of the call a `ToolStart` records — and keeps the answer's text whole.
+  ten thousand words long, a run with no space in it and a page of blank
+  space are each read only up to the bound; a paragraph streamed in pieces,
+  CRLF endings and words split across chunks included, is found where a
+  whole-text reading puts it. The report places updates among calls and
+  marks by `at`/`read`, renders a multi-line update indented with its blank
+  lines dropped, hides those among the hidden calls, and `progress_lines`
+  streams only what is new, in order. `record_update` trims, cuts at the cap
+  and skips a blank run. `RunRecorder` records an update at every point that
+  ends a run of text before more work — and ahead of the call a `ToolStart`
+  records — and keeps the answer's text whole.
 - `ui` (unit): the lone and tree cells render `⎿  Agent: …` dim and clipped.
 - `llm::agent_tools` (unit): a report hands the lead the updates, and a wait
   streams an update the agent gives while it is watched, in its place among

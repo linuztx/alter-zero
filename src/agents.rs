@@ -328,6 +328,9 @@ pub struct AgentRun {
     /// clears it. While the text still streams the row reads it off
     /// [`streaming`](Self::streaming) instead (`docs/agent-progress.md`).
     last_update: Option<String>,
+    /// Where the newest paragraph of [`streaming`](Self::streaming) starts,
+    /// kept as the text arrives so the row never rescans it.
+    paragraph: ParagraphStart,
     /// The **open** thinking phase's chain-of-thought, or `None` outside one
     /// — what the agent session view's strip previews while the phase runs
     /// (`ui::live_reasoning_lines`). Opened only by
@@ -437,6 +440,7 @@ impl AgentRun {
             stopped_by_user: false,
             last_call: None,
             last_update: None,
+            paragraph: ParagraphStart::default(),
             reasoning: None,
             round_reasoning: Vec::new(),
             thinking: None,
@@ -526,9 +530,10 @@ impl AgentRun {
         }
         match event {
             StreamEvent::Chunk(chunk) => {
-                self.streaming
-                    .get_or_insert_with(String::new)
-                    .push_str(chunk);
+                let buffer = self.streaming.get_or_insert_with(String::new);
+                let from = buffer.len();
+                buffer.push_str(chunk);
+                self.paragraph.extend(buffer, from);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
                 // Content arrived — the reconnect, or the wait for the
                 // connection, is over (the main turn's rule, `docs/llm.md`,
@@ -1176,7 +1181,7 @@ impl AgentRun {
     fn update(&self) -> Option<String> {
         self.streaming
             .as_deref()
-            .and_then(newest_paragraph)
+            .and_then(|text| self.paragraph.head(text))
             .or_else(|| self.last_update.clone())
     }
 
@@ -1185,10 +1190,11 @@ impl AgentRun {
     /// stays on the activity row until the next call starts.
     fn flush_segment(&mut self) -> Option<String> {
         let text = self.streaming.take()?;
+        let paragraph = std::mem::take(&mut self.paragraph);
         if text.is_empty() {
             return None;
         }
-        if let Some(update) = newest_paragraph(&text) {
+        if let Some(update) = paragraph.head(&text) {
             self.last_update = Some(update);
         }
         self.history.push(HistoryItem::Message(Message {
@@ -1355,38 +1361,87 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
 
 /// How much of the newest paragraph the activity row keeps — wider than any
 /// row it is clipped to, and a bound on the work: the row is built several
-/// times a frame while the text streams, and a table or a code block can be
-/// one long paragraph (`docs/agent-progress.md`).
+/// times a frame while the text streams (`docs/agent-progress.md`).
 const ACTIVITY_UPDATE_MAX_CHARS: usize = 512;
 
-/// The newest paragraph of a run of reply text — its lines after the last
-/// blank one — on one line, the way the activity row shows what the agent is
-/// saying: the run's opening is stale by the time it says *now let me…*,
-/// and a single line can be a fragment of a list. Its head, up to
-/// [`ACTIVITY_UPDATE_MAX_CHARS`] and the word that crosses it. `None` while
-/// the run says nothing (`docs/agent-progress.md`).
-fn newest_paragraph(text: &str) -> Option<String> {
-    let mut lines: Vec<&str> = text
-        .lines()
-        .rev()
-        .skip_while(|line| line.trim().is_empty())
-        .take_while(|line| !line.trim().is_empty())
-        .collect();
-    lines.reverse();
-    let mut row = String::new();
-    let mut chars = 0;
-    for word in lines.iter().flat_map(|line| line.split_whitespace()) {
-        if chars >= ACTIVITY_UPDATE_MAX_CHARS {
+/// Where the newest paragraph of a growing run of reply text starts — its
+/// lines after the last blank one, the way the activity row shows what the
+/// agent is saying: the run's opening is stale by the time it says *now let
+/// me…*, and a single line can be a fragment of a list. Found as the text
+/// arrives, each chunk read once ([`extend`](Self::extend)), so a frame
+/// never rescans the run — a table or a code block can be one paragraph
+/// thousands of lines long (`docs/agent-progress.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParagraphStart {
+    /// Where the line being written starts.
+    line: usize,
+    /// Where the newest paragraph with a finished line starts.
+    paragraph: Option<usize>,
+    /// A blank line has ended since that paragraph's last line: the next
+    /// line with something on it opens a new one.
+    closed: bool,
+}
+
+impl ParagraphStart {
+    /// Take in what `text` gained since it was `from` bytes long.
+    fn extend(&mut self, text: &str, from: usize) {
+        let Some(added) = text.get(from..) else {
+            return;
+        };
+        for (at, _) in added.match_indices('\n') {
+            let end = from + at;
+            let blank = text
+                .get(self.line..end)
+                .is_none_or(|line| line.trim().is_empty());
+            if blank {
+                self.closed |= self.paragraph.is_some();
+            } else if self.closed || self.paragraph.is_none() {
+                self.paragraph = Some(self.line);
+                self.closed = false;
+            }
+            self.line = end + 1;
+        }
+    }
+
+    /// The newest paragraph's head in `text` on one line, up to
+    /// [`ACTIVITY_UPDATE_MAX_CHARS`] — the line being written, when it opens
+    /// one — or `None` while `text` says nothing.
+    fn head(&self, text: &str) -> Option<String> {
+        let writing = text.get(self.line..)?;
+        let opens = !writing.trim().is_empty() && (self.closed || self.paragraph.is_none());
+        let start = if opens { self.line } else { self.paragraph? };
+        let head = one_line_head(text.get(start..)?, ACTIVITY_UPDATE_MAX_CHARS);
+        (!head.is_empty()).then_some(head)
+    }
+}
+
+/// `text`'s head on one line — every whitespace run one space, the start
+/// trimmed — at most `max` characters of it, read from no more than four
+/// times as many: a run with no space in it (a URL, a blob) is cut inside
+/// itself rather than copied whole, and a run of nothing but whitespace is
+/// never walked to its end. Four times leaves room for any indentation or
+/// table padding a paragraph carries.
+fn one_line_head(text: &str, max: usize) -> String {
+    let mut line = String::new();
+    let mut kept = 0;
+    let mut space = false;
+    for ch in text.chars().take(max.saturating_mul(4)) {
+        if ch.is_whitespace() {
+            space = !line.is_empty();
+            continue;
+        }
+        if kept + usize::from(space) >= max {
             break;
         }
-        if !row.is_empty() {
-            row.push(' ');
-            chars += 1;
+        if space {
+            line.push(' ');
+            kept += 1;
+            space = false;
         }
-        row.push_str(word);
-        chars += word.chars().count();
+        line.push(ch);
+        kept += 1;
     }
-    (!row.is_empty()).then_some(row)
+    line
 }
 
 /// What a subagent's forwarder keeps of the run it relays
@@ -3213,10 +3268,70 @@ mod tests {
         let activity = run.activity();
         assert!(activity.starts_with("Agent: word word"), "{activity}");
         assert!(
-            activity.chars().count() <= "Agent: ".len() + ACTIVITY_UPDATE_MAX_CHARS + 5,
-            "kept to the bound, give or take its last word: {} chars",
+            activity.chars().count() <= "Agent: ".len() + ACTIVITY_UPDATE_MAX_CHARS,
+            "kept to the bound: {} chars",
             activity.chars().count()
         );
+    }
+
+    #[test]
+    fn a_long_unbroken_run_is_read_only_up_to_the_bound() {
+        // A URL or a blob with no space in it is one "word": the bound holds
+        // inside it too, or the row copies the whole run every frame.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk(&"x".repeat(100_000)));
+        let activity = run.activity();
+        assert!(activity.starts_with("Agent: xxx"), "{activity}");
+        assert!(
+            activity.chars().count() <= "Agent: ".len() + ACTIVITY_UPDATE_MAX_CHARS,
+            "{} chars",
+            activity.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_long_run_of_whitespace_is_read_only_up_to_the_bound() {
+        // Whitespace collapses to nothing on the row, but walking it is work
+        // all the same: a model that streams a page of blank space after a
+        // sentence must not have it walked again every frame. The row reads
+        // no further than the bound, so what lies past the run is not shown.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk(&format!("Checking.{}far", " ".repeat(100_000))));
+        assert_eq!(run.activity(), "Agent: Checking.");
+    }
+
+    #[test]
+    fn a_paragraph_streamed_in_pieces_is_found_as_it_arrives() {
+        // The newest paragraph is tracked chunk by chunk, so a blank line or
+        // a word split across chunks — CRLF endings included — must land
+        // exactly where a whole-text reading puts it.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        for piece in [
+            "I'll start",
+            " with the profile.\r\n",
+            " ",
+            "\r\n",
+            "Let me fetch",
+            " the repos.\r\n",
+            "\r\n",
+        ] {
+            run.apply(&chunk(piece));
+        }
+        assert_eq!(run.activity(), "Agent: Let me fetch the repos.");
+        run.apply(&chunk("Now the"));
+        assert_eq!(run.activity(), "Agent: Now the");
+        run.apply(&chunk(" events.\nThen the stars."));
+        assert_eq!(
+            run.activity(),
+            "Agent: Now the events. Then the stars.",
+            "a line break inside a paragraph is a space"
+        );
+        // Finalised, the same paragraph holds.
+        run.apply(&StreamEvent::ToolBatch(Vec::new()));
+        assert_eq!(run.activity(), "Agent: Now the events. Then the stars.");
+        // The next run of text starts from nothing.
+        run.apply(&chunk("Done."));
+        assert_eq!(run.activity(), "Agent: Done.");
     }
 
     #[test]
