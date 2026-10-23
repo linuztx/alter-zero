@@ -1,11 +1,13 @@
 //! The backend seam: the one trait the event loop depends on.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::context::ContextMessage;
+use crate::context_usage::ToolDefinition;
 
 use super::{CancelToken, StreamEvent};
 
@@ -77,6 +79,25 @@ pub trait ReplySource {
     fn agent_system_reminder(&self, agent_type: &str) -> Option<String> {
         let _ = agent_type;
         None
+    }
+
+    /// The tools the next request offers the model — each one's wire name
+    /// and its schema serialized exactly as the client sends it — surfaced
+    /// so the `/context` page can show what they cost of the window
+    /// (`docs/context-usage.md`). Read at the loop bottom while the page is
+    /// open, so a backend hands out a shared handle rather than building the
+    /// set per call. Empty for a backend that offers none — the dummy sends
+    /// the model nothing at all.
+    fn tool_definitions(&self) -> Arc<[ToolDefinition]> {
+        Arc::default()
+    }
+
+    /// The tools a **subagent** of `agent_type` is offered — the same
+    /// allowlisted set its launch builds — for the `/context` page inside its
+    /// session view, beside [`agent_system_prompt`](ReplySource::agent_system_prompt).
+    fn agent_tool_definitions(&self, agent_type: &str) -> Arc<[ToolDefinition]> {
+        let _ = agent_type;
+        Arc::default()
     }
 
     /// The model a **subagent** of `agent_type` runs on when its definition

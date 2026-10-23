@@ -76,11 +76,17 @@ impl App {
     /// truncates history and prefills the very composer the modal has stashed
     /// — while a tool thread is still blocked on the gate. Nothing is
     /// rewindable while something is blocked on the user.
+    ///
+    /// The read-only `/context` page lets the same two overlays through, and
+    /// a rewind begun from one would land back on a page still open over the
+    /// draft it recalled (`docs/context-usage.md`): the overlay opened from
+    /// it is a look, so its Esc goes back to the page.
     #[must_use]
     pub fn overlay_esc_backtracks(&self) -> bool {
         !self.turn_active()
             && !self.modal_open()
             && self.agent_view.is_none()
+            && self.context_usage.is_none()
             && self.has_backtrack_target()
     }
 
@@ -163,8 +169,11 @@ impl App {
         // The rewound history's tail can be an older batch-sibling user
         // message — fence it off from the interrupt-undo like a resumed tail.
         self.undo_floor = self.history.len();
-        // The gauge re-seats on the rewound conversation (docs/compact.md).
+        // The gauge re-seats on the rewound conversation (docs/compact.md),
+        // and the last request described the one rewound away
+        // (`docs/context-usage.md`).
         self.refresh_context_used();
+        self.last_usage = None;
         self.backtrack = Backtrack::default();
         self.view = View::Conversation;
         self.recall_input(&text);

@@ -56,7 +56,7 @@ pub(super) fn page_title_spans(text: &str) -> Vec<Span<'static>> {
 /// A page's title row: [`page_title_spans`] at the pages' inset, `…`-cut to
 /// a width that cannot seat it.
 pub(super) fn page_title_line(text: &str, width: u16) -> Line<'static> {
-    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT));
     let shown = super::wrap::ellipsize(text, room);
     let mut spans = vec![Span::raw(MODEL_INDENT)];
     spans.extend(page_title_spans(&shown));

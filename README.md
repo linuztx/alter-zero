@@ -222,7 +222,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 
 - **Saved conversations.** `/resume` opens a searchable session picker. Use `--continue` for the latest session in this directory or `--resume <id>` for a specific one.
 - **Settings that stay with the project.** Model choices, permissions, skills, and appearance are remembered per directory, and every saved conversation resumes on the model it was using. Input history carries across sessions and is searchable with **Ctrl+R**.
-- **Managed context.** `/compact` summarises long conversations, with automatic compaction as the context window fills. A session scratchpad holds temporary scripts and notes outside your project.
+- **Managed context.** `/context` shows what fills the context window and how much of it the prompt cache served. `/compact` summarises long conversations, with automatic compaction as the window fills. A session scratchpad holds temporary scripts and notes outside your project.
 
 ### Make the terminal yours
 
@@ -248,6 +248,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/diff` | Review staged, unstaged, and untracked Git changes in a full-screen viewer |
 | `/init` | Create an `AGENTS.md` contributor guide |
 | `/compact` | Summarise the conversation to free up context |
+| `/context` | See what fills the context window: tokens per category, the free space and the cache hit rate |
 | `/resume` | Resume a saved chat |
 | `/model` | Switch the active model |
 | `/fast`, `/ultrafast`, … | Switch the model's speed tier — one command per tier its listing names, shown only on a model that lists it |

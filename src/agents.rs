@@ -233,6 +233,12 @@ pub struct AgentRun {
     /// (`estimate_context_tokens`). Zero until the first of either lands,
     /// where the main gauge starts too.
     context_used: u64,
+    /// Its newest usage frame — what its session view's `/context` page
+    /// reports as the **Last request** (`docs/context-usage.md`).
+    pub last_usage: Option<crate::stream::TokenUsage>,
+    /// Every usage frame it has reported, summed — the page's **This agent**
+    /// row (`docs/context-usage.md`).
+    pub usage: crate::context_usage::UsageLedger,
     /// How long it has been running — boundary-injected each frame
     /// ([`crate::app::App::set_agent_runtime`], the `set_status_times`
     /// pattern). Frozen at its final value once the agent settles.
@@ -418,6 +424,8 @@ impl AgentRun {
             turn_usage_cached: 0,
             turn_usage_cache_write: 0,
             context_used: 0,
+            last_usage: None,
+            usage: crate::context_usage::UsageLedger::default(),
             runtime: Duration::ZERO,
             verb_start: 0,
             verb_index: 0,
@@ -796,6 +804,9 @@ impl AgentRun {
                 crate::app::snap_reasoning_tokens(&mut self.history, &targets, usage.reasoning);
                 self.usage_tokens += usage.total();
                 self.tokens = self.usage_tokens;
+                // Its session view's `/context` page (docs/context-usage.md).
+                self.last_usage = Some(*usage);
+                self.usage.record(usage);
                 self.turn_usage_tokens += usage.total();
                 self.turn_usage_cached += usage.cached;
                 self.turn_usage_cache_write += usage.cache_write;

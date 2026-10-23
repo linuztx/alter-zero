@@ -439,6 +439,24 @@ pub fn activate_theme(theme: Theme) {
     ACTIVE.with(|active| active.set(theme));
 }
 
+/// A named colour's bright twin (`Red` → `LightRed`), or the colour itself:
+/// how a theme of the terminal's own sixteen colours gets a second shade of
+/// a hue, where an RGB theme would mix one (`docs/theme.md`).
+#[must_use]
+pub(super) const fn bright(color: Color) -> Color {
+    match color {
+        Color::Red => Color::LightRed,
+        Color::Green => Color::LightGreen,
+        Color::Yellow => Color::LightYellow,
+        Color::Blue => Color::LightBlue,
+        Color::Magenta => Color::LightMagenta,
+        Color::Cyan => Color::LightCyan,
+        Color::Gray => Color::White,
+        Color::DarkGray => Color::Gray,
+        other => other,
+    }
+}
+
 /// Run `f` with `theme` active, then restore whatever was active before —
 /// how the `/theme` picker renders its preview cells in the highlighted
 /// theme while the rest of the screen keeps the session's (`docs/theme.md`),

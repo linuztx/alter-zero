@@ -19,6 +19,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod context_usage;
 mod donate;
 mod drafts;
 mod export;

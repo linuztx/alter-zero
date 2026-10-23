@@ -32,6 +32,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod context_usage;
 mod diff;
 mod donate;
 mod drafts;
@@ -80,6 +81,7 @@ pub use self::commands::{
 pub(crate) use self::compact::estimate_messages_tokens;
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
+pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
 pub use self::drafts::{ArgField, ArgsScanner, ToolDraft, ToolDrafts, previewed_display};
@@ -530,6 +532,27 @@ pub struct App {
     /// sibling (no text entry) over the two export targets — the clipboard
     /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.
     pub export_picker: Option<ExportPicker>,
+    /// The open `/context` page; `None` when closed. The `/donate` page's
+    /// sibling (no text entry) over the context window's breakdown, counted
+    /// when it opens and re-counted at the loop bottom whenever its inputs
+    /// change. See `docs/context-usage.md`.
+    pub context_usage: Option<ContextUsagePage>,
+    /// The tools the main session's next request offers, as the client
+    /// sends them — pulled from the backend while the `/context` page is
+    /// open ([`App::set_tool_definitions`]), empty for the dummy.
+    tool_definitions: std::sync::Arc<[crate::context_usage::ToolDefinition]>,
+    /// The tools the **viewed** subagent's type is offered — its session
+    /// view's `/context` ([`App::set_agent_tool_definitions`]).
+    agent_tool_definitions: std::sync::Arc<[crate::context_usage::ToolDefinition]>,
+    /// Bumped whenever either tool set changes, so the `/context` page's
+    /// signature sees a new set without hashing every schema per refresh.
+    tool_definitions_revision: u64,
+    /// The main session's newest usage frame — the `/context` page's **Last
+    /// request** row. A fact about the provider, so `/clear` leaves it.
+    last_usage: Option<crate::stream::TokenUsage>,
+    /// Every usage frame since launch — the main session's and every
+    /// subagent's — the `/context` page's **Since launch** row.
+    usage_since_launch: crate::context_usage::UsageLedger,
     /// The open `/secrets` page; `None` when closed — the list of the user's
     /// secrets and the form that adds or edits one, values masked
     /// throughout. See `docs/secrets.md`.
@@ -1174,6 +1197,9 @@ impl App {
         // 0). Auto-compact re-arms.
         self.refresh_context_used();
         self.auto_compact_blocked = false;
+        // The last request described the conversation that just went; what
+        // the session spent stays in the ledger (`docs/context-usage.md`).
+        self.last_usage = None;
         self.tool_queue.clear();
         self.tool_drafts.clear();
         self.status = None;

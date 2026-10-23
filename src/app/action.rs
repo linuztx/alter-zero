@@ -297,6 +297,16 @@ pub enum Action {
     /// `c` on the list: copy this secret's placeholder — never its value —
     /// to the clipboard, through `/copy`'s path.
     CopySecretPlaceholder(String),
+    /// `/context`: open the read-only context page — the window broken into
+    /// what fills it, and what the provider said about the cache. Like
+    /// `/donate` it works mid-turn — it only replaces the composer. The pure
+    /// open already counted the window; the loop pulls the backend's tool
+    /// set at the loop bottom (`docs/context-usage.md`).
+    OpenContextUsage,
+    /// The context page was dismissed (Esc, or Ctrl+C):
+    /// [`App::context_usage`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseContextUsage,
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

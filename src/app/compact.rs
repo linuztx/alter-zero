@@ -109,6 +109,9 @@ impl App {
         // The gauge drops to the compacted derivation's estimate (codex's
         // recompute_token_usage) — the marker records the shrink.
         self.refresh_context_used();
+        // The newest frame is the summarizer's request, which described the
+        // conversation the marker just replaced (`docs/context-usage.md`).
+        self.last_usage = None;
         compaction.after = self.context_used;
         if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
             recorded.after = self.context_used;
@@ -195,12 +198,21 @@ impl App {
         if self.auto_compact_blocked || self.turn_active() || self.is_streaming() {
             return false;
         }
-        let threshold = window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR;
-        if self.context_used <= threshold {
+        if self.context_used <= auto_compact_threshold(window) {
             return false;
         }
         crate::context::derives_conversation(&self.history)
     }
+}
+
+/// Where auto-compaction runs for a `window`-token context window: codex's
+/// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
+/// ([`App::should_auto_compact`]) and the `/context` page's headroom
+/// (`docs/context-usage.md`) both read it, so the page can never show a
+/// threshold the loop does not act on.
+#[must_use]
+pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
+    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
 }
 
 /// The tokenizer estimate of a derived context: every message's text, a flat

@@ -623,8 +623,8 @@ fn typing_filters_and_clamps_the_selection() {
     type_str(&mut app, "/c");
     assert_eq!(
         matching_commands(&app.commands(), "c").len(),
-        3,
-        "/clear, /copy, /compact"
+        4,
+        "/clear, /copy, /compact, /context"
     );
     app.on_key(key(KeyCode::Down)); // highlight /copy (index 1)
     assert_eq!(app.command_menu.as_ref().unwrap().selected, 1);

@@ -247,8 +247,64 @@ impl ContextMessage {
     }
 }
 
+/// Where a user-role text in the derived conversation came from — what the
+/// `/context` page splits the user's share of the window by
+/// (`docs/context-usage.md`). The derivation merges adjacent user-role texts
+/// into one message, so one message can hold several.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextOrigin {
+    /// What the user typed (after a `/compact`, a recent one the shape kept).
+    Typed,
+    /// A `!` command the user ran, with its output.
+    Shell,
+    /// The app's own note to the model: an `[error]` or `[system]` notice, a
+    /// background shell's or agent's completion, a hook's injected text.
+    Notice,
+    /// The note an image read's pixels ride with.
+    Attachment,
+    /// The bridge carrying the newest `/compact` summary.
+    Summary,
+    /// The `<system-reminder>` the window opens with.
+    Reminder,
+}
+
+/// One user-role text the derivation pushed: the message it landed in, the
+/// byte range it spans in that message's text, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSegment {
+    /// The index of the message it landed in.
+    pub message: usize,
+    /// Its byte range in that message's text.
+    pub range: std::ops::Range<usize>,
+    /// Where it came from.
+    pub origin: TextOrigin,
+}
+
 /// How adjacent same-role plain-text context entries are joined when merged.
 pub(crate) const MERGE_SEPARATOR: &str = "\n\n";
+
+/// The messages a derivation writes — and, when the `/context` page asks
+/// ([`context_messages_with_origins`]), where each user-role text in them
+/// came from. It dereferences to the messages, so the mapping reads as it
+/// always has; only [`push_user_text`] notes an origin.
+struct Derived {
+    messages: Vec<ContextMessage>,
+    origins: Option<Vec<TextSegment>>,
+}
+
+impl std::ops::Deref for Derived {
+    type Target = Vec<ContextMessage>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.messages
+    }
+}
+
+impl std::ops::DerefMut for Derived {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.messages
+    }
+}
 
 /// The wire tool name (lowercase, as declared to the provider) for a finished
 /// tool's display `name` (title-cased by `llm::tools::display_name`). The four
@@ -332,17 +388,27 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
 /// notices collapse and the plain-text portions stay alternating. Tool-call
 /// assistant messages and tool-result messages are never merge targets (a tool
 /// result must sit between them).
-fn push_text(out: &mut Vec<ContextMessage>, role: ContextRole, text: String, images: Vec<PathBuf>) {
+///
+/// Returns where the text landed: its message's index and its byte range in
+/// that message's text.
+fn push_text(
+    out: &mut Vec<ContextMessage>,
+    role: ContextRole,
+    text: String,
+    images: Vec<PathBuf>,
+) -> (usize, std::ops::Range<usize>) {
     if let Some(last) = out.last_mut()
         && last.role == role
         && last.tool_calls.is_empty()
         && last.tool_call_id.is_none()
     {
         last.text.push_str(MERGE_SEPARATOR);
+        let start = last.text.len();
         last.text.push_str(&text);
         last.images.extend(images);
-        return;
+        return (out.len() - 1, start..start + text.len());
     }
+    let len = text.len();
     out.push(ContextMessage {
         role,
         text,
@@ -350,6 +416,20 @@ fn push_text(out: &mut Vec<ContextMessage>, role: ContextRole, text: String, ima
         tool_calls: Vec::new(),
         tool_call_id: None,
     });
+    (out.len() - 1, 0..len)
+}
+
+/// [`push_text`] for a user-role entry, noting where it came from when the
+/// derivation keeps origins.
+fn push_user_text(out: &mut Derived, text: String, images: Vec<PathBuf>, origin: TextOrigin) {
+    let (message, range) = push_text(out, ContextRole::User, text, images);
+    if let Some(origins) = &mut out.origins {
+        origins.push(TextSegment {
+            message,
+            range,
+            origin,
+        });
+    }
 }
 
 /// Derive the raw context window from the conversation history, oldest first.
@@ -474,9 +554,31 @@ fn context_messages_led_by(
     leading: Option<String>,
     history: &[HistoryItem],
 ) -> Vec<ContextMessage> {
-    let mut out: Vec<ContextMessage> = Vec::new();
+    derive(leading, history, false).messages
+}
+
+/// [`context_messages`] with every user-role text's origin beside it — the
+/// same messages, and one [`TextSegment`] per user-role text pushed into
+/// them, in order. What the `/context` page counts the conversation from
+/// (`docs/context-usage.md`).
+#[must_use]
+pub fn context_messages_with_origins(
+    history: &[HistoryItem],
+) -> (Vec<ContextMessage>, Vec<TextSegment>) {
+    let derived = derive(None, history, true);
+    (derived.messages, derived.origins.unwrap_or_default())
+}
+
+/// The derivation every public entry point shares: the leading fragment (if
+/// it says anything) as the first user entry, then `history` — noting
+/// origins only when asked, so the request path pays nothing for them.
+fn derive(leading: Option<String>, history: &[HistoryItem], origins: bool) -> Derived {
+    let mut out = Derived {
+        messages: Vec::new(),
+        origins: origins.then(Vec::new),
+    };
     if let Some(fragment) = leading.filter(|fragment| !fragment.trim().is_empty()) {
-        push_text(&mut out, ContextRole::User, fragment, vec![]);
+        push_user_text(&mut out, fragment, vec![], TextOrigin::Reminder);
     }
     derive_history_into(&mut out, history);
     out
@@ -497,7 +599,7 @@ pub fn context_messages_with(
 
 /// Derive `history` into `out` behind whatever leading fragments it already
 /// holds — the compaction split, then the per-item mapping.
-fn derive_history_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
+fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
     // everything before it derives as codex's compacted shape — the budgeted
     // recent user texts, then the summary bridge — with the items after it
@@ -513,13 +615,13 @@ fn derive_history_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
             unreachable!("rposition matched a Compaction");
         };
         for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
-            push_text(out, ContextRole::User, text, vec![]);
+            push_user_text(out, text, vec![], TextOrigin::Typed);
         }
-        push_text(
+        push_user_text(
             out,
-            ContextRole::User,
             summary_bridge(&compaction.summary),
             vec![],
+            TextOrigin::Summary,
         );
         derive_into(out, &history[cut + 1..]);
     } else {
@@ -536,7 +638,7 @@ fn derive_history_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
 /// re-sends the prefix the provider cached rather than one call per message
 /// under synthesized ids (`docs/prompt-caching.md`). A record with no batch
 /// is a round of its own, exactly as before the ids were recorded.
-fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
+fn derive_into(out: &mut Derived, history: &[HistoryItem]) {
     let mut ids = CallIds::default();
     let mut position = 0;
     while position < history.len() {
@@ -651,7 +753,7 @@ fn round_at(history: &[HistoryItem], position: usize) -> Option<Round<'_>> {
 /// order, the image reads' attachment notes after the results — the live loop
 /// appends them after a round's results too (`docs/tools.md`) — and last the
 /// notices that committed inside the round.
-fn derive_round(out: &mut Vec<ContextMessage>, round: &Round<'_>, ids: &mut CallIds) {
+fn derive_round(out: &mut Derived, round: &Round<'_>, ids: &mut CallIds) {
     let mut entries = Vec::new();
     for item in &round.calls {
         record_calls(item, ids, &mut entries);
@@ -680,15 +782,15 @@ fn derive_round(out: &mut Vec<ContextMessage>, round: &Round<'_>, ids: &mut Call
         out.extend(results);
     }
     for (note, path) in attachments {
-        push_text(out, ContextRole::User, note, vec![path]);
+        push_user_text(out, note, vec![path], TextOrigin::Attachment);
     }
     for item in &round.deferred {
         match item {
             HistoryItem::Background(notice) => {
-                push_text(out, ContextRole::User, notice.context_text(), vec![]);
+                push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
             }
             HistoryItem::AgentNotice(notice) => {
-                push_text(out, ContextRole::User, notice.context_text(), vec![]);
+                push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
             }
             _ => {}
         }
@@ -784,13 +886,13 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
 /// The per-item mapping for everything that bears no calls (see
 /// [`context_messages`]); `position` is the item's index, which the
 /// `Role::Shell` header needs to see whether its tool cell follows.
-fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position: usize) {
+fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
     match &history[position] {
         // Hook-injected conversation text (docs/hooks.md): the model read
         // it as a user message mid-turn, so every later turn replays it
         // verbatim in place.
         HistoryItem::HookNote(note) => {
-            push_text(out, ContextRole::User, note.text.clone(), vec![]);
+            push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
         }
         HistoryItem::Message(message) => match message.role {
             // A pasted picture's placeholder names the file it was saved
@@ -799,26 +901,26 @@ fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position:
             // leave Ctrl+D showing text the wire never carried
             // (`docs/image-paste.md`). Per message, before the merge, so
             // each draft's `[Image #1]` names its own picture.
-            Role::User => push_text(
+            Role::User => push_user_text(
                 out,
-                ContextRole::User,
                 crate::paste::annotate_image_placeholders(&message.text, &message.images),
                 message.images.clone(),
+                TextOrigin::Typed,
             ),
             Role::Assistant => {
                 push_text(out, ContextRole::Assistant, message.text.clone(), vec![]);
             }
-            Role::Error => push_text(
+            Role::Error => push_user_text(
                 out,
-                ContextRole::User,
                 format!("[error] {}", message.text),
                 vec![],
+                TextOrigin::Notice,
             ),
-            Role::System => push_text(
+            Role::System => push_user_text(
                 out,
-                ContextRole::User,
                 format!("[system] {}", message.text),
                 vec![],
+                TextOrigin::Notice,
             ),
             Role::Shell => {
                 // Its tool cell (recorded when the command resolves)
@@ -832,11 +934,11 @@ fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position:
                     Some(HistoryItem::Tool(tool)) if tool.shell
                 );
                 if !resolved {
-                    push_text(
+                    push_user_text(
                         out,
-                        ContextRole::User,
                         format!("$ {}", message.text),
                         vec![],
+                        TextOrigin::Shell,
                     );
                 }
             }
@@ -851,7 +953,7 @@ fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position:
                 text.push('\n');
                 text.push_str(&tool.output);
             }
-            push_text(out, ContextRole::User, text, vec![]);
+            push_user_text(out, text, vec![], TextOrigin::Shell);
         }
         HistoryItem::TaskCall(_) | HistoryItem::AgentGroup(_) => {
             unreachable!("call-bearing items are derived a round at a time")
@@ -867,13 +969,13 @@ fn derive_item(out: &mut Vec<ContextMessage>, history: &[HistoryItem], position:
         // User-role like the other notices: strict providers reject
         // mid-conversation system messages. See docs/background.md.
         HistoryItem::Background(notice) => {
-            push_text(out, ContextRole::User, notice.context_text(), vec![]);
+            push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
         }
         // A background agent's completion: the bracketed user-role note
         // carrying the outcome and the final response, exactly like a
         // background shell's (docs/agent-tool.md).
         HistoryItem::AgentNotice(notice) => {
-            push_text(out, ContextRole::User, notice.context_text(), vec![]);
+            push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
         }
         // A settled thinking phase is **not** conversation: Chat
         // Completions has nowhere to put a previous round's raw
@@ -2245,6 +2347,88 @@ mod tests {
         let ctx = context_messages(&history);
         assert_eq!(ctx.len(), 1);
         assert_eq!(ctx[0].text, format!("{SUMMARY_PREFIX}\nfrom nothing"));
+    }
+
+    /// Each origin note as `(message, the text it names, origin)`.
+    fn named(history: &[HistoryItem]) -> Vec<(usize, String, TextOrigin)> {
+        let (messages, origins) = context_messages_with_origins(history);
+        assert_eq!(
+            messages,
+            context_messages(history),
+            "the derivation is untouched"
+        );
+        origins
+            .iter()
+            .map(|segment| {
+                let text = messages[segment.message].text[segment.range.clone()].to_string();
+                (segment.message, text, segment.origin)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn origins_name_where_each_user_text_came_from() {
+        // What `/context` splits the user's share of the window by
+        // (docs/context-usage.md). The derivation merges adjacent user-role
+        // texts into one message — a `!` command, the app's notice and the
+        // next typed message land in the same one — so where each came from
+        // is noted as it is pushed.
+        let history = vec![
+            message(Role::User, "hello"),
+            message(Role::Assistant, "hi"),
+            message(Role::Shell, "ls"),
+            tool("ls", "", "file.txt", ToolStatus::Ok, true),
+            message(Role::System, "Copied"),
+            message(Role::Error, "Conversation interrupted"),
+            message(Role::User, "and now"),
+        ];
+        assert_eq!(
+            named(&history),
+            vec![
+                (0, "hello".to_string(), TextOrigin::Typed),
+                (2, "$ ls\nfile.txt".to_string(), TextOrigin::Shell),
+                (2, "[system] Copied".to_string(), TextOrigin::Notice),
+                (
+                    2,
+                    "[error] Conversation interrupted".to_string(),
+                    TextOrigin::Notice
+                ),
+                (2, "and now".to_string(), TextOrigin::Typed),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_compactions_texts_are_typed_and_its_bridge_the_summary() {
+        // After a `/compact`, the recent user texts the shape keeps are still
+        // the user's, and the bridge from the *last* marker is the summary.
+        let history = vec![
+            message(Role::User, "first ask"),
+            compaction("the first"),
+            message(Role::User, "then more"),
+            compaction("the second"),
+            message(Role::User, "next"),
+        ];
+        let origins = named(&history);
+        let summary: Vec<&(usize, String, TextOrigin)> = origins
+            .iter()
+            .filter(|(.., origin)| *origin == TextOrigin::Summary)
+            .collect();
+        assert_eq!(summary.len(), 1, "{origins:?}");
+        assert_eq!(summary[0].1, format!("{SUMMARY_PREFIX}\nthe second"));
+        assert!(
+            origins
+                .iter()
+                .filter(|(.., origin)| *origin == TextOrigin::Typed)
+                .any(|(_, text, _)| text == "then more"),
+            "{origins:?}"
+        );
+        assert!(
+            origins
+                .iter()
+                .any(|(_, text, origin)| text == "next" && *origin == TextOrigin::Typed),
+            "{origins:?}"
+        );
     }
 
     #[test]

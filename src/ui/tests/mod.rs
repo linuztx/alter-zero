@@ -18,6 +18,7 @@ mod ask_view;
 mod assistant;
 mod background_view;
 mod classifier_view;
+mod context_usage_view;
 mod context_view;
 mod donate_view;
 mod export_view;

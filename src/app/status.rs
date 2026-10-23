@@ -284,6 +284,10 @@ impl App {
         // …` cells trade their tokenizer estimate for the provider's own
         // `reasoning_tokens` (docs/thinking-stream.md).
         self.snap_round_reasoning(usage.reasoning);
+        // The `/context` page's Last request and Since launch rows
+        // (docs/context-usage.md).
+        self.last_usage = Some(*usage);
+        self.usage_since_launch.record(usage);
         self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
         self.turn_usage_cached += usize::try_from(usage.cached).unwrap_or(usize::MAX);
         self.turn_usage_cache_write += usize::try_from(usage.cache_write).unwrap_or(usize::MAX);
@@ -456,6 +460,7 @@ impl App {
             || self.donate_picker.is_some()
             || self.secrets_page.is_some()
             || self.export_picker.is_some()
+            || self.context_usage.is_some()
         {
             return None;
         }

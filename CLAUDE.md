@@ -245,24 +245,24 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -501,7 +501,40 @@ dropped and every row `trim_end`ed, one closing newline — written through
 `-2`, `-3` rather than ever overwriting (`app::export_file_name`, the
 toast naming the file written); an empty conversation is a `Nothing to
 export` toast, never an empty file; `smoke.sh` Phase 122) in
-`docs/export.md`; the
+`docs/export.md`; the **`/context` page** (`docs/context-usage.md`: what
+fills the context window — the `/export` page's family, read-only and
+composer-replacing, working mid-turn under the strip — counted by the pure
+`context_usage` core from **the very sources the request is built from**:
+the system prompt split at its headings, the tool schemas as the client
+serializes them (`ReplySource::tool_definitions`/`agent_tool_definitions`,
+`LlmBackend` keeping them beside the client's array in the one
+`sync_tool_specs` so the two cannot drift), the MCP ones grouped by server,
+the derived context's `<system-reminder>` split into project docs (the
+stored `App::user_instructions`, found whole, so an `AGENTS.md` quoting a
+header is never cut) then skills, agent types and secrets by the headers
+each contributor writes, and `context::context_messages` split into your
+messages, shell commands, app notices, replies, tool calls, tool results,
+images and the compaction summary — the user-role text by **origin**, noted
+as the derivation lands it (`context::context_messages_with_origins`) —
+every count the tokenizer's estimate, marked `≈`, while the usage rows under
+it are the provider's own frames (`App::last_usage`, dropped with the
+conversation a `/clear`, `/resume`, rewind or compaction replaces; the
+`UsageLedger` since launch, subagents included, a viewed agent's own inside
+its session view): tokens in and out and the cache-hit share as a meter
+(`>99%` and `<1%` short of all or none); a window bar in category
+colours with the free space and the hatched auto-compact reserve allotted
+on cumulative cell boundaries, so the hatch starts at 90% to the cell; a
+legend whose highlighted row's parts sit beside it from 76 columns, the
+highlight following the largest category until the user moves it; **live**
+— `tui::context_usage` hands over the tool set and re-counts at the loop
+bottom only when a signature over the history, prompts, reminder inputs and
+tool-set revision moves, each text's count read from a per-page
+`context_usage::CountMemo` so a re-count tokenizes only what is new (55 ms
+→ under 1 ms per commit at 288k tokens); the family's shedding ladder on a
+short terminal, ending on the compact pages' legend window under the title
+row and then that row alone, so it never flows; an overlay opened from the
+page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
+`smoke.sh` Phase 144) in `docs/context-usage.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription**, **Use an
 API key** or **Use a local model** — because GitHub Copilot is not a key you
@@ -3259,7 +3292,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

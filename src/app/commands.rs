@@ -99,6 +99,11 @@ pub enum CommandEffect {
     /// it mid-task) / a [`COMPACT_EMPTY_NOTICE`] toast when the derived
     /// context is empty.
     Compact,
+    /// Open the read-only `/context` page: what fills the context window,
+    /// by category, and what the provider said about the last request and
+    /// the cache. Works **mid-turn** like `/donate` — it only replaces the
+    /// composer, and it is live. See `docs/context-usage.md`.
+    Context,
     /// Open the `/resume` session picker — or reject with a
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
     /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
@@ -266,6 +271,14 @@ pub const COMMANDS: &[SlashCommand] = &[
         "compact",
         "Summarize the conversation to free up context",
         CommandEffect::Compact,
+    ),
+    // The window's two commands sit together: the one that frees it, then
+    // the one that shows what fills it (`/init` keeps codex's place right
+    // before `/compact`).
+    SlashCommand::builtin(
+        "context",
+        "Show what fills the context window",
+        CommandEffect::Context,
     ),
     SlashCommand::builtin("resume", "Resume a saved chat", CommandEffect::Resume),
     // The active model's speed tiers list right after this row
@@ -487,6 +500,14 @@ impl App {
                 } else {
                     Action::Toast(EXPORT_EMPTY_NOTICE.to_string())
                 }
+            }
+            CommandEffect::Context => {
+                // /context works mid-turn like /donate: a read-only page that
+                // only replaces the composer. The pure open counts what App
+                // holds right here; the boundary then hands it the tool set
+                // the backend sends and keeps it live (docs/context-usage.md).
+                self.open_context_usage();
+                Action::OpenContextUsage
             }
             CommandEffect::Init => {
                 // Codex's /init is submit_user_message(INIT_PROMPT): the canned
