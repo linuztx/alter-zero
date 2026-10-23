@@ -91,9 +91,16 @@ sleep 0.3
 tmux send-keys -t "$S107D" C-o
 img_overlay_fg=""
 for _ in $(seq 1 40); do
-	img_overlay_fg="$(img_block_fg "$(tmux capture-pane -t "$S107D" -p -e)")"
-	if [ "$(printf '%s\n' "$img_overlay_fg" | grep -c '38;2;')" -ge 6 ]; then
-		break
+	img_capture="$(tmux capture-pane -t "$S107D" -p -e)"
+	# Until the transcript is up the pane still shows the inline screen, whose
+	# six rows of the picture were painted red before the rewrite — enough to
+	# end this wait on the wrong screen.
+	if printf '%s\n' "$img_capture" | sed -E $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' |
+		grep -qF "T R A N S C R I P T"; then
+		img_overlay_fg="$(img_block_fg "$img_capture")"
+		if [ "$(printf '%s\n' "$img_overlay_fg" | grep -c '38;2;')" -ge 6 ]; then
+			break
+		fi
 	fi
 	sleep 0.1
 done
