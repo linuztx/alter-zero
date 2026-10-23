@@ -22,13 +22,15 @@ release heading when a version is cut.
   tokens and its share, over a bar of the whole window in the same colours
   with the free space and the auto-compact reserve at its end. ↑/↓ pick a
   row and the detail beside it says what it is made of: the tool that costs
-  the most, the file, the skill, or how the conversation splits between your
-  messages, replies, tool calls and tool results. Under it is what the
-  provider reported: the last request's tokens in and out, how much of it
-  was read from the prompt cache, and the totals since launch. It opens
-  mid-turn too, keeps counting while the turn runs, and inside a subagent's
-  session view shows that agent's own window. Ctrl+D shows the raw context
-  behind the numbers, and Esc closes it (`docs/context-usage.md`).
+  the most, the file, the skill, or how the conversation splits between what
+  you typed, your shell commands, the app's own notices, replies, tool calls
+  and tool results. Under it is what the provider reported: the last
+  request's tokens in and out, how much of it was read from the prompt
+  cache, and the totals since launch. It opens mid-turn too, keeps counting
+  while the turn runs, fits a terminal of any height by narrowing its list
+  to the rows around the highlight, and inside a subagent's session view
+  shows that agent's own window. Ctrl+D shows the raw context behind the
+  numbers, and Esc closes it (`docs/context-usage.md`).
 - **`/login` can connect a local model, and tests it before saving.** `/login`
   now offers three ways in: a subscription, an API key, or **Use a local
   model**. The third lists the model servers you run yourself: Ollama, LM

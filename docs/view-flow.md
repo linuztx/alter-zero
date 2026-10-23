@@ -205,8 +205,9 @@ folded to their label rows while the highlighted one keeps its box, then
 the highlighted address alone, its numbered label saying where it stands
 (`docs/donate.md`), and `/context`, which sheds its detail's tail, its
 usage rows down to the last request, then its bar and subtitle — the title
-folding into one row with the window's fill — before its legend
-(`docs/context-usage.md`). The `AskUserQuestion` modal walks the same kind of
+folding into one row with the window's fill — and the usage row before its
+legend, which then windows around the highlight on the compact pages'
+ladder with that title row as its anchor (`docs/context-usage.md`). The `AskUserQuestion` modal walks the same kind of
 ladder (`docs/ask.md`): its options' descriptions yield, then its rows
 window around the selection, and its chip strip of question tabs goes last,
 codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
@@ -225,8 +226,8 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
   or permission modal covers everything below it). `/context` is the one
   page here whose rows also move between keystrokes — it re-counts as the
   conversation does — but only on an event, never per frame, so it signs on
-  its rows like the rest and a re-count that moves a flowed page rebuilds
-  once (`docs/context-usage.md`).
+  its rows like the rest; its ladder ends on its title row alone, so like
+  the search-line pickers it never actually flows (`docs/context-usage.md`).
 
   The search-line pickers stay eligible but never actually flow: their `❯`
   search line sits in the page **top**, where a flow would take it into

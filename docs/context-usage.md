@@ -100,8 +100,11 @@ Ctrl+D view's own two, the messages the accent, the project docs the link
 blue, the skills the success green, the secrets the error red, and the two
 categories with no role of their own are blends — the MCP tools between the
 warning and the error hues, the agent types between the purple and the red —
-so every row stays distinct in every theme, the terminal's own sixteen
-colours included.
+so every row stays distinct in every theme. The terminal's own sixteen
+colours (`ansi`) have no components to mix, and a blend of two named colours
+would step to one of its ends — the MCP tools and the agent types both
+landing on the secrets' red — so there each takes the bright variant of its
+first hue instead (bright yellow, bright magenta; `palette::bright`).
 
 The highlighted row's **detail** sits beside the legend on a terminal wide
 enough for both (`CONTEXT_USAGE_SIDE_BY_SIDE_MIN_COLS`), and under it
@@ -125,7 +128,7 @@ sends it back to the largest.
 | Skills | the reminder's skills section (`docs/skills.md`) | one per listed skill |
 | Agent types | the reminder's subagent-type section (`docs/subagents.md`) | one per type |
 | Secrets | the reminder's secrets section (`docs/secrets.md`) — names and context only, never a value | one per secret |
-| Messages | the derived conversation (`context::context_messages`, `docs/context.md`) | your messages, replies, tool calls, tool results, images, the compaction summary |
+| Messages | the derived conversation (`context::context_messages`, `docs/context.md`) | your messages, shell commands, app notices, the compaction summary, replies, tool calls, tool results, images |
 
 The reminder's wrapper — the tags and its one-line preamble, a few tokens —
 counts with its first section, so the reminder's sections add up to the
@@ -135,12 +138,34 @@ there.
 
 Every row's tokens come from the derivation the request is built from, never
 a parallel model of it: the tool schemas are the very JSON the client sends,
-the reminder sections are found in the reminder text by the headers each
-contributor writes (`project_doc::INSTRUCTIONS_PREAMBLE`,
-`skills::SKILL_LISTING_HEADER`, `subagents::AGENT_LISTING_HEADER`,
-`secrets::SECRET_LISTING_HEADER`), and the messages are
-`context::context_messages` — what Ctrl+D shows and the next request carries.
-So the page cannot describe a context the model does not get.
+the reminder is the block the derived context leads with, and the messages
+are `context::context_messages` — what Ctrl+D shows and the next request
+carries. So the page cannot describe a context the model does not get. The
+tools are counted in the chat-completions shape the client keeps them in; a
+wire that translates them (the Anthropic, Responses and Ollama requests,
+`docs/claude.md`, `docs/chatgpt.md`, `docs/ollama.md`) sends the same names,
+descriptions and parameters in its own framing, a few tokens either way.
+
+The reminder is cut in two ways. Its instructions section is the text the
+session stored (`App::user_instructions`), found whole where the reminder
+carries it: an `AGENTS.md` is the user's own text and may quote any of the
+headers below, so no header inside it may cut it. The listings after it are
+the session's own rendering, in a fixed order, and each is found by the
+header its contributor writes (`skills::SKILL_LISTING_HEADER`,
+`subagents::AGENT_LISTING_HEADER`, `secrets::SECRET_LISTING_HEADER`), from
+the end, where the session writes it. A subagent's briefing carries no
+instructions, so it has no **Project docs** row.
+
+The **Messages** parts split the user-role text by where it came from rather
+than by its role, because much of what rides as a user message is not
+something the user typed: the derivation notes each text's origin as it
+lands (`context::context_messages_with_origins` — the same messages, with a
+`TextSegment` per user-role text naming its `TextOrigin`), so **Your
+messages** is only what was typed, **Shell commands** the `!` transcripts,
+**App notices** the `[error]`/`[system]` notices, the background and agent
+notices and the hook notes, **Summary** the newest compaction's bridge, and
+an image read's attachment note counts with the **Tool results** it
+belongs to.
 
 ### Usage and the cache
 
@@ -157,8 +182,14 @@ estimated (`docs/prompt-caching.md` *Real or estimated*):
   that was a cache read.
 
 Before the first frame (the offline dummy never sends one) the section is one
-dim row saying so. A `/clear` resets neither: the last request is a fact about
-the provider, and the ledger is the session's spend.
+dim row saying so. The last request describes the conversation it was sent
+for, so whatever replaces that conversation — a `/clear`, a `/resume`, an
+Esc-Esc rewind, a compaction (whose newest frame is the summarizer's own
+request) — takes it too, and the row says so again until the next frame. The
+ledger is the session's spend and keeps every frame.
+
+A share is a whole percent that never claims all or none it is not: a
+99.6% hit reads `>99%` and a 0.3% one `<1%`.
 
 ## Estimated and reported
 
@@ -199,8 +230,8 @@ every commit. Opening the page pays the whole count once. The usage section
 is read live from `App` at every paint.
 
 The page signs its view flow on its rows (`docs/view-flow.md`), like every
-page that changes on its own schedule rather than per frame: on a terminal
-short enough to flow it, a re-count that changes its rows rebuilds once.
+page that changes on its own schedule rather than per frame — though it
+never flows: every terminal gets a page that fits (below).
 
 ## Inside an agent session view
 
@@ -209,7 +240,8 @@ Ctrl+D and the footer gauge already follow (`docs/agent-view-streaming.md`,
 `docs/agent-context-gauge.md`): inside a subagent's session view it is that
 agent's window — its own system prompt (`App::agent_system_prompt`), the tool
 set its type is offered (`ReplySource::agent_tool_definitions`, the same
-allowlisted set its launch builds), its briefing
+allowlisted set its launch builds — kept by the backend until the type or
+its allowlist moves, since the page asks at every loop bottom), its briefing
 (`App::agent_system_reminder`) and its transcript — against the window of the
 model it runs on, with its own last request and a **This agent** ledger in
 place of the session's. A subagent never auto-compacts, so its bar has no
@@ -226,8 +258,11 @@ hatched headroom.
 | Esc / Ctrl+C   | close — the composer returns                                   |
 
 The two read-only overlays pass through for the permission prompt's reason:
-they show what the page measures, and they only scroll. Everything else is
-swallowed, pastes included.
+they show what the page measures, and they only scroll. An overlay opened
+from the page is a look, so its Esc goes back to the page and never arms the
+Esc-Esc rewind (`App::overlay_esc_backtracks`): a rewind begun there would
+land back on a page still open over the draft it recalled. Everything else
+is swallowed, pastes included.
 
 ## A terminal too short for the page
 
@@ -239,9 +274,26 @@ beside the legend costs no rows and stays), the **Since launch** row, the
 cache meter (its share riding the **Last request** row instead), the bar and
 the subtitle together — the title folding into one row with the window's
 fill, since how full the window is outlasts both the bar and the model's
-name — then that row, and finally the usage row, leaving the legend and the
-hint, which every page keeps. Only a terminal shorter than that
-bottom-anchors the last page and flows its top into scrollback.
+name — and the usage row. Past those the legend itself is windowed: three
+rows riding the highlight between reserved `↑`/`↓` slots, under the title
+row and over the hint, the compact pages' shape (`model_view::compact_page`,
+the `/theme` and `/skills` pickers' own), with the detail beside the window
+where the terminal is wide enough. That ladder sheds the overflow slots, the
+top rule, the rows down to the highlighted one, the bottom rule and the hint,
+leaving the title row alone — so no terminal is too short for a page, and
+nothing flows into scrollback.
+
+```
+──────────────────────────────────────────────────────────
+  Context usage · ≈36.4k of 200k tokens (18.2%)
+  ↑ 5 more above
+    ■ Agent types       122   0.1%
+  ❯ ■ Messages        29.8k  14.9%
+    □ Free space     143.6k  71.8%
+  ↓ 1 more below
+  ↑↓ select  ctrl+d raw context  esc close
+──────────────────────────────────────────────────────────
+```
 
 ## The seam
 
@@ -255,12 +307,18 @@ client sends it. Both default to empty — the dummy offers the model nothing.
 `LlmBackend` keeps its own set beside the client's `tools` array, rebuilt by
 the one function that rebuilds that array (`sync_tool_specs`), so the two
 cannot drift; the subagent set is built by the same function its launch uses
-(`subagent_tool_specs`, beside `spawn_subagent_run`).
+(`subagent_tool_specs`, beside `spawn_subagent_run`) and kept with the type
+and the allowlist it was built from, the one input a per-turn rescan
+rewrites in place. The skills verdict and the MCP set are the backend's as
+built — the boundary rebuilds the backend when either moves
+(`refresh_skills`, `refresh_mcp`), which starts a fresh set — so, like the
+lead's own, the agent's describes the backend as it stands.
 
 ## API
 
 - `context_usage` (pure): `ToolDefinition`, `UsageLedger`, `Category`,
-  `Part`, `Slice`, `Breakdown`, `Sources`, `breakdown`, `CountMemo`.
+  `Part`, `Slice`, `Breakdown`, `Sources` (its `instructions` and `origins`
+  what cut the reminder and the messages), `breakdown`, `CountMemo`.
 - `app`: `ContextUsagePage`, `ContextUsageRow`; `App::open_context_usage`,
   `close_context_usage`, `refresh_context_usage`, `set_tool_definitions`,
   `set_agent_tool_definitions`, `last_usage`, `usage_since_launch`;
@@ -269,9 +327,9 @@ cannot drift; the subagent set is built by the same function its launch uses
 - `ui::context_usage_view`: `context_usage_lines` (the page builder; its
   length is the reserved height), `context_usage_height`,
   `render_context_usage`.
-- `context::compaction_bridge` — the newest compaction's summary as the
-  derived context carries it, so the page can count it apart from the
-  messages it replaced.
+- `context::context_messages_with_origins`, `TextOrigin`, `TextSegment` —
+  the derived conversation with each user-role text's origin noted, so the
+  page can count what was typed apart from what the app said.
 - `tui::context_usage` — `Session::sync_context_usage`, the refresh run on
   the open and at the loop bottom.
 
@@ -279,23 +337,36 @@ cannot drift; the subagent set is built by the same function its launch uses
 
 - `context_usage` — every category's attribution over a fixture prompt,
   tool set, reminder and history (the counter injected, so a token is a byte
-  and every sum is checkable by hand); the reminder split by its headers and
-  its wrapper counted with the first section; MCP tools grouped by server;
-  messages split by kind; the ledger's sums and hit rate; the memo counting
-  each text once across passes, forgetting what a pass skipped, and never
-  changing a count.
+  and every sum is checkable by hand); the reminder's instructions counted
+  as stored however they quote a header, its listings split by their
+  headers, its wrapper counted with the first section; the system prompt
+  split at headings outside its code fences; MCP tools grouped by server;
+  messages split by kind and their user-role text by origin; the ledger's
+  sums and hit rate; the memo counting each text once across passes,
+  forgetting what a pass skipped, and never changing a count.
+- `context` — each user-role text's origin noted where it lands, the
+  compaction's texts and its bridge included, over messages identical to
+  `context_messages`.
+- `llm::backend` — the subagent tool set built once until its allowlist
+  moves.
 - `app/tests/context_usage.rs` — the palette row, the command opening the
   page idle and mid-turn and inside an agent view, the largest category
   opening highlighted and the highlight following it until the user moves
   it, the key grammar (wrapping, Home/End, Esc/Ctrl+C, the
-  overlay pass-through, owns-every-key), the re-count happening on a change
-  and only then, the ledgers fed by lead and agent frames.
+  overlay pass-through, owns-every-key), an overlay over the page never
+  arming a rewind, the re-count happening on a change and only then, the
+  ledgers fed by lead and agent frames, the last request dropped with the
+  conversation a `/clear`, `/resume`, rewind or compaction replaced, and the
+  user's share naming what they did not type.
 - `ui/tests/context_usage_view.rs` — the framed page and its hugging frame,
   the bar's allotment (every category visible, the hatched headroom, a
   window over the threshold), the legend's columns and swatches, the detail
-  beside and under the legend, the usage rows and the meter, an unknown
-  window, the ladder at every height, width safety, the flow, the hidden
-  cursor seated on the `❯`.
+  beside and under the legend, the usage rows and the meter, a share short
+  of whole never reading as all or none, an unknown window, every category
+  its own colour in every theme, the ladder at every height down to the
+  windowed legend and the title row alone, width safety down to two
+  columns, no flow at any height, the hidden cursor seated on the `❯` on
+  every page.
 - `scripts/smoke.sh` Phase 144 — the page end to end in a real terminal:
   against an OpenAI-compatible stub with a skill, an `AGENTS.md` and a
   scripted MCP server planted (every category on the legend, the MCP

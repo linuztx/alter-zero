@@ -19,7 +19,7 @@
 //! palette plus its accessor here, never a literal `Color::Rgb` at a call
 //! site.
 
-use super::palette::palette;
+use super::palette::{bright, palette};
 use super::wrap::lerp_color;
 use super::*;
 
@@ -1767,17 +1767,31 @@ pub(super) const CONTEXT_USAGE_FULL_SHARE: f64 = 0.9;
 /// categories read apart on a palette of six. They are chosen in bar order,
 /// so every pair of neighbours on the bar differs in hue: amber, purple,
 /// peach (amber into red), blue, green, orchid (purple into red), red, cyan.
+/// Under the `ansi` theme the two blends are bright yellow and bright
+/// magenta ([`category_blend`]), so no two categories share a colour in any
+/// theme.
 pub(super) fn context_usage_color(category: crate::context_usage::Category) -> Color {
     use crate::context_usage::Category;
     match category {
         Category::SystemPrompt => context_system_color(),
         Category::SystemTools => context_tool_color(),
-        Category::McpTools => lerp_color(palette().warning, palette().error, 0.5),
+        Category::McpTools => category_blend(palette().warning, palette().error),
         Category::ProjectDocs => palette().link,
         Category::Skills => palette().success,
-        Category::AgentTypes => lerp_color(palette().purple, palette().error, 0.5),
+        Category::AgentTypes => category_blend(palette().purple, palette().error),
         Category::Secrets => palette().error,
         Category::Messages => palette().accent,
+    }
+}
+
+/// Halfway between two hues: the colour of a category no role covers. A
+/// theme of named colours cannot mix one — [`lerp_color`] steps to an end,
+/// and both blends landed on the red the secrets wear — so there it is the
+/// first end's bright twin instead, every category still its own colour.
+fn category_blend(a: Color, b: Color) -> Color {
+    match (a, b) {
+        (Color::Rgb(..), Color::Rgb(..)) => lerp_color(a, b, 0.5),
+        _ => bright(a),
     }
 }
 

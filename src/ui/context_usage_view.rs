@@ -24,7 +24,9 @@
 //! terminal too short for it, the first of its shorter pages that fits.
 
 use super::header::{page_title_line, page_title_spans};
-use super::model_view::{first_page_that_fits, model_placeholder_row, model_rule};
+use super::model_view::{
+    compact_page, first_page_that_fits, list_window, model_placeholder_row, model_rule,
+};
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize, wrap_text};
 use super::*;
@@ -142,6 +144,20 @@ fn share_text(part: u64, whole: u64) -> String {
         "<0.1%".to_string()
     } else {
         format!("{percent:.1}%")
+    }
+}
+
+/// A cache share as a whole percent that never claims all or none it is
+/// not: `>99%` for a share that would round up to all of it, `<1%` for one
+/// that would round down to nothing.
+fn cache_percent(share: f64) -> String {
+    let percent = share * 100.0;
+    if share > 0.0 && percent < 0.5 {
+        "<1%".to_string()
+    } else if share < 1.0 && percent >= 99.5 {
+        ">99%".to_string()
+    } else {
+        format!("{percent:.0}%")
     }
 }
 
@@ -351,7 +367,7 @@ fn bar_line(gauge: &Gauge<'_>, width: u16) -> Line<'static> {
             }
         }
     }
-    Line::from(spans)
+    Line::from(clip(spans, width as usize))
 }
 
 /// The legend's rows as span runs, and the columns each takes: `{❯ }{swatch}
@@ -626,29 +642,18 @@ enum DetailRoom {
 fn body(gauge: &Gauge<'_>, width: u16, room: DetailRoom) -> Vec<Vec<Line<'static>>> {
     let (legend, legend_w) = legend(gauge, width);
     let w = width as usize;
-    let panel_gap = cols(CONTEXT_USAGE_PANEL_GAP);
-    let beside = width >= CONTEXT_USAGE_SIDE_BY_SIDE_MIN_COLS
-        && legend_w + panel_gap + CONTEXT_USAGE_DETAIL_MIN_COLS <= w;
-    if beside {
+    if fits_beside(width, legend_w) {
         let detail_rows = match room {
             DetailRoom::Whole => legend.len().max(CONTEXT_USAGE_DETAIL_PARTS + 1),
             DetailRoom::Compact | DetailRoom::Beside => legend.len(),
         };
-        let detail = detail(gauge, w - legend_w - panel_gap, detail_rows);
-        let lines = (0..legend.len().max(detail.len()))
-            .map(|i| {
-                let mut spans = legend.get(i).cloned().unwrap_or_default();
-                if let Some(row) = detail.get(i) {
-                    let used: usize = spans.iter().map(|span| cols(&span.content)).sum();
-                    spans.push(Span::raw(
-                        " ".repeat(legend_w.saturating_sub(used) + panel_gap),
-                    ));
-                    spans.extend(row.iter().cloned());
-                }
-                Line::from(spans)
-            })
-            .collect();
-        return vec![lines];
+        return vec![with_detail_beside(
+            gauge,
+            legend,
+            legend_w,
+            width,
+            detail_rows,
+        )];
     }
     let legend_block: Vec<Line<'static>> = legend.into_iter().map(Line::from).collect();
     let parts = match room {
@@ -667,6 +672,63 @@ fn body(gauge: &Gauge<'_>, width: u16, room: DetailRoom) -> Vec<Vec<Line<'static
         })
         .collect();
     vec![legend_block, detail_block]
+}
+
+/// Is the terminal wide enough to seat the detail beside a `legend_w`-column
+/// legend?
+fn fits_beside(width: u16, legend_w: usize) -> bool {
+    width >= CONTEXT_USAGE_SIDE_BY_SIDE_MIN_COLS
+        && legend_w + cols(CONTEXT_USAGE_PANEL_GAP) + CONTEXT_USAGE_DETAIL_MIN_COLS
+            <= width as usize
+}
+
+/// `legend` rows with the highlighted row's detail — at most `detail_rows`
+/// of it — beside them, past the panel gap.
+fn with_detail_beside(
+    gauge: &Gauge<'_>,
+    legend: Vec<Vec<Span<'static>>>,
+    legend_w: usize,
+    width: u16,
+    detail_rows: usize,
+) -> Vec<Line<'static>> {
+    let panel_gap = cols(CONTEXT_USAGE_PANEL_GAP);
+    let detail = detail(gauge, width as usize - legend_w - panel_gap, detail_rows);
+    (0..legend.len().max(detail.len()))
+        .map(|i| {
+            let mut spans = legend.get(i).cloned().unwrap_or_default();
+            if let Some(row) = detail.get(i) {
+                let used: usize = spans.iter().map(|span| cols(&span.content)).sum();
+                spans.push(Span::raw(
+                    " ".repeat(legend_w.saturating_sub(used) + panel_gap),
+                ));
+                spans.extend(row.iter().cloned());
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The legend's window of at most `max` rows riding the highlight
+/// ([`list_window`]) — how many rows it hides above, its rows, and how many
+/// below — with the highlighted row's detail beside it where the terminal
+/// is wide enough, no taller than the window. What the compact pages lay
+/// between the title row and the hint ([`compact_page`]).
+fn legend_window(gauge: &Gauge<'_>, width: u16, max: usize) -> (usize, Vec<Line<'static>>, usize) {
+    let (legend, legend_w) = legend(gauge, width);
+    let selected = gauge
+        .rows
+        .iter()
+        .position(|row| *row == gauge.page.selected)
+        .unwrap_or(0);
+    let (above, range, below) = list_window(legend.len(), selected, max);
+    let rows: Vec<Vec<Span<'static>>> = legend[range].to_vec();
+    let lines = if fits_beside(width, legend_w) {
+        let shown = rows.len();
+        with_detail_beside(gauge, rows, legend_w, width, shown)
+    } else {
+        rows.into_iter().map(Line::from).collect()
+    };
+    (above, lines, below)
 }
 
 /// How much of the usage section a page keeps.
@@ -720,7 +782,7 @@ fn usage(gauge: &Gauge<'_>, width: u16, room: UsageRoom) -> Vec<Line<'static>> {
             {
                 spans.push(Span::styled(" · ", dim));
                 spans.push(Span::styled(
-                    format!("{:.0}%", share * 100.0),
+                    cache_percent(share),
                     Style::new().fg(ai_color()),
                 ));
                 spans.push(Span::styled(" cached", dim));
@@ -770,7 +832,7 @@ fn in_out(input: u64, output: u64) -> Vec<Span<'static>> {
 /// written`, sized to the `room` it has — the trailer dropped first, the
 /// meter never shorter than [`CONTEXT_USAGE_METER_MIN`] while it fits.
 fn meter(share: f64, last: &TokenUsage, room: usize) -> Vec<Span<'static>> {
-    let percent = format!("{:.0}%", share * 100.0);
+    let percent = cache_percent(share);
     let mut halves = Vec::new();
     if last.cached > 0 {
         halves.push(format!("{} read", token_text(last.cached)));
@@ -832,7 +894,7 @@ fn ledger_values(ledger: &UsageLedger, with_cache: bool) -> Vec<Span<'static>> {
     spans.extend(in_out(ledger.input, ledger.output));
     if with_cache && let Some(share) = ledger.cache_share() {
         spans.push(Span::styled(" · ", dim));
-        spans.push(Span::styled(format!("{:.0}%", share * 100.0), bright));
+        spans.push(Span::styled(cache_percent(share), bright));
         spans.push(Span::styled(" cached", dim));
     }
     spans
@@ -859,8 +921,11 @@ fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
 /// (a detail under the legend first shrinks, then goes), the ledger row, the
 /// cache meter (its share riding the last request's row instead), the bar
 /// and the model's name (the title and the window's fill folding into one
-/// row), that row, and the usage row — the legend and the hint stay on
-/// every page. What [`render_context_usage`] paints and
+/// row), and the usage row. Past those the legend itself is windowed: three
+/// rows riding the highlight between reserved `↑`/`↓` slots, under the title
+/// row and over the hint, the compact pages' ladder (`compact_page`) then
+/// shedding down to the title row alone — so no terminal is too short for a
+/// page and nothing flows. What [`render_context_usage`] paints and
 /// `context_usage_menu_rows` counts, so the reserved height and the painted
 /// rows can never disagree. Empty when the page is closed.
 #[must_use]
@@ -933,12 +998,20 @@ pub fn context_usage_lines(app: &App, width: u16, height: u16) -> Vec<Line<'stat
             },
             &|| {
                 page(
-                    Vec::new(),
+                    vec![vec![compact_header(&gauge, width)]],
                     DetailRoom::Beside,
-                    vec![usage(UsageRoom::Minimal), hint()],
+                    vec![hint()],
                 )
             },
-            &|| page(Vec::new(), DetailRoom::Beside, vec![hint()]),
+            &|| {
+                compact_page(
+                    height,
+                    &compact_header(&gauge, width),
+                    &|max| legend_window(&gauge, width, max),
+                    &hint(),
+                    width,
+                )
+            },
         ],
     )
 }
@@ -967,10 +1040,9 @@ pub fn context_usage_height(app: &App, width: u16, term_height: u16) -> Option<u
 }
 
 /// Render the **inline** `/context` page into the live region, in place of
-/// the composer — bottom-anchored, so a squeezed area keeps the legend, the
-/// hint and the closing rule on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/context-usage.md`.
+/// the composer — the page built for the area's own height, bottom-anchored
+/// like every framed page (`docs/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/context-usage.md`.
 pub fn render_context_usage(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

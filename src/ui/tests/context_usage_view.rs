@@ -139,13 +139,35 @@ fn the_page_is_framed_with_its_title_subtitle_bar_legend_usage_and_hint() {
 
 #[test]
 fn the_frame_hugs_its_content_at_every_width_and_height() {
-    let app = open_app();
+    // A page that keeps both rules hugs them; one short enough to have shed
+    // a rule never lets a blank row hug the rule it kept.
+    let mut app = open_app();
+    let rows = app.context_usage_rows();
     for width in [40u16, 60, 80, 120] {
-        for height in 1..=40u16 {
-            assert_frame_hugs_content(
-                &format!("width {width} height {height}"),
-                &context_usage_lines(&app, width, height),
-            );
+        for row in [rows[0], rows[rows.len() - 1]] {
+            select(&mut app, row);
+            for height in 1..=40u16 {
+                let what = format!("width {width} height {height} {row:?}");
+                let page = context_usage_lines(&app, width, height);
+                let texts: Vec<String> = page
+                    .iter()
+                    .map(|line| plain(line).trim_end().to_string())
+                    .collect();
+                let rule = |text: Option<&String>| text.is_some_and(|t| t.starts_with('─'));
+                if rule(texts.first()) && rule(texts.last()) {
+                    assert_frame_hugs_content(&what, &page);
+                    continue;
+                }
+                let blank = |text: Option<&String>| text.is_some_and(String::is_empty);
+                assert!(
+                    !(rule(texts.first()) && blank(texts.get(1))),
+                    "{what}: a blank row hugs the top rule: {texts:#?}"
+                );
+                assert!(
+                    !(rule(texts.last()) && blank(texts.iter().rev().nth(1))),
+                    "{what}: a blank row hugs the bottom rule: {texts:#?}"
+                );
+            }
         }
     }
 }
@@ -164,10 +186,10 @@ fn no_page_is_wider_than_the_terminal() {
         },
     );
     let rows = app.context_usage_rows();
-    for width in (12u16..=130).step_by(3) {
+    for width in (2u16..12).chain((12..=130).step_by(3)) {
         for row in &rows {
             select(&mut app, *row);
-            for height in [TALL, 18, 9] {
+            for height in [TALL, 18, 9, 5, 2] {
                 for line in context_usage_lines(&app, width, height) {
                     assert!(
                         crate::ui::wrap::cols(&plain(&line)) <= width as usize,
@@ -211,6 +233,30 @@ fn allot_cells_shares_the_cells_by_size_and_never_loses_one() {
             cells,
             "{sizes:?} into {cells}"
         );
+    }
+}
+
+#[test]
+fn every_category_has_its_own_colour_in_every_theme() {
+    // The bar and the legend tell the categories apart by colour alone, so
+    // no two of them — nor the free space and the headroom drawn beside them
+    // — may share one in any theme. The `ansi` theme is the one that failed:
+    // its named colours cannot be mixed, and both blended categories snapped
+    // onto the secrets' red.
+    for theme in crate::app::Theme::ALL {
+        with_theme(theme, || {
+            let mut colours: Vec<(&str, Color)> = Category::ALL
+                .iter()
+                .map(|&category| (category.label(), context_usage_color(category)))
+                .collect();
+            colours.push(("Free space", context_usage_free_color()));
+            colours.push(("Auto-compact", context_usage_reserved_color()));
+            for (i, (a, colour_a)) in colours.iter().enumerate() {
+                for (b, colour_b) in &colours[i + 1..] {
+                    assert_ne!(colour_a, colour_b, "{theme:?}: {a} and {b} share a colour");
+                }
+            }
+        });
     }
 }
 
@@ -562,6 +608,59 @@ fn the_usage_rows_report_the_providers_numbers() {
 }
 
 #[test]
+fn a_cache_share_short_of_whole_never_reads_as_all_or_none() {
+    // 99.6% of the input read from the cache is not all of it, and 0.3% is
+    // not none: a share rounds toward the truth at both ends, wherever the
+    // page shows one.
+    for (cached, shown, wrong) in [(996, ">99%", "100%"), (3, "<1%", " 0%")] {
+        let mut app = open_app();
+        report(
+            &mut app,
+            TokenUsage {
+                input: 1_000,
+                output: 10,
+                cached,
+                ..TokenUsage::default()
+            },
+        );
+        let texts = page_texts(&app, 100);
+        let row = |texts: &[String], label: &str| -> String {
+            texts
+                .iter()
+                .find(|t| t.contains(label))
+                .unwrap_or_else(|| panic!("the {label} row: {texts:#?}"))
+                .clone()
+        };
+        let meter = row(&texts, "Cache hit");
+        assert!(
+            meter.contains(&format!("  {shown}")) && !meter.contains(wrong),
+            "{meter:?}"
+        );
+        let ledger = row(&texts, "Since launch");
+        assert!(
+            ledger.contains(&format!("{shown} cached")) && !ledger.contains(wrong),
+            "{ledger:?}"
+        );
+        // The share riding the last request's own row on a shorter page.
+        let short = (1..=TALL)
+            .rev()
+            .map(|height| {
+                context_usage_lines(&app, 100, height)
+                    .iter()
+                    .map(|line| plain(line).trim_end().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .find(|page| !has(page, "Cache hit") && has(page, "Last request"))
+            .expect("a page whose last request carries its share");
+        let last = row(&short, "Last request");
+        assert!(
+            last.contains(&format!("{shown} cached")) && !last.contains(wrong),
+            "{last:?}"
+        );
+    }
+}
+
+#[test]
 fn inside_an_agent_view_the_usage_rows_are_the_agents() {
     let mut app = open_app();
     app.close_context_usage();
@@ -600,7 +699,7 @@ fn agent_specs_for_view() -> Vec<crate::stream::AgentSpec> {
 // ===== a terminal too short for the page =====
 
 #[test]
-fn a_short_terminal_sheds_rows_and_keeps_the_legend_and_the_hint() {
+fn a_short_terminal_sheds_rows_and_keeps_the_title_the_highlight_and_the_hint() {
     let mut app = open_app();
     report(
         &mut app,
@@ -620,25 +719,45 @@ fn a_short_terminal_sheds_rows_and_keeps_the_legend_and_the_hint() {
             .map(plain)
             .collect();
         assert!(
+            page.len() as u16 <= height,
+            "height {height}: every terminal gets a page that fits: {page:#?}"
+        );
+        assert!(
             page.len() as u16 <= last,
             "a shorter terminal never builds a taller page"
         );
         last = page.len() as u16;
-        if page.len() as u16 <= height {
+        assert!(
+            has(&page, "Context usage") && has(&page, "of 200k tokens ("),
+            "height {height} keeps the title and the window's fill: {page:#?}"
+        );
+        if height >= 2 {
             assert!(
-                has(&page, "↑↓ select"),
-                "height {height} keeps the hint: {page:?}"
-            );
-            assert!(
-                has(&page, "System tools") && has(&page, "Messages"),
-                "height {height} keeps the legend: {page:?}"
+                page.iter()
+                    .any(|t| t.trim_start().starts_with('❯') && t.contains("System tools")),
+                "height {height} keeps the highlighted row: {page:#?}"
             );
         }
+        if height >= 3 {
+            assert!(
+                has(&page, "↑↓ select"),
+                "height {height} keeps the hint: {page:#?}"
+            );
+        }
+        assert!(
+            page.windows(2)
+                .all(|pair| !(pair[0].trim().is_empty() && pair[1].trim().is_empty())),
+            "height {height}: two blank rows stack: {page:#?}"
+        );
         for (what, needle) in [
             ("the detail", "· 7 tools"),
             ("since launch", "Since launch"),
             ("the meter", "Cache hit"),
-            ("the title", "Context usage"),
+            ("the model", "dummy_model_name"),
+            ("the last request", "Last request"),
+            ("the whole legend", "Free space"),
+            ("the hint", "↑↓ select"),
+            ("the highlighted row", "System tools"),
         ] {
             if !has(&page, needle) && !shed.contains(&what) {
                 shed.push(what);
@@ -647,9 +766,72 @@ fn a_short_terminal_sheds_rows_and_keeps_the_legend_and_the_hint() {
     }
     assert_eq!(
         shed,
-        ["the detail", "since launch", "the meter", "the title"],
+        [
+            "the detail",
+            "since launch",
+            "the meter",
+            "the model",
+            "the last request",
+            "the whole legend",
+            "the hint",
+            "the highlighted row",
+        ],
         "what yields first"
     );
+}
+
+#[test]
+fn a_short_terminal_windows_the_legend_around_the_highlight() {
+    // Three legend rows between the reserved `↑`/`↓` slots, under the title
+    // row and over the hint — the compact pages' shape (`docs/view-flow.md`).
+    let mut app = open_app();
+    let texts = |app: &App| -> Vec<String> {
+        context_usage_lines(app, 60, 9)
+            .iter()
+            .map(|line| plain(line).trim_end().to_string())
+            .collect()
+    };
+    let page = texts(&app);
+    assert_eq!(page.len(), 9, "{page:#?}");
+    assert!(
+        page[0].starts_with('─') && page[8].starts_with('─'),
+        "{page:#?}"
+    );
+    assert!(page[1].contains("Context usage"), "{page:#?}");
+    assert_eq!(page[2], "", "nothing hidden above: {page:#?}");
+    assert!(page[3].contains("System prompt"), "{page:#?}");
+    assert!(
+        page[4].trim_start().starts_with("❯ ■ System tools"),
+        "{page:#?}"
+    );
+    assert!(page[5].contains("MCP tools"), "{page:#?}");
+    assert_eq!(page[6].trim(), "↓ 3 more below", "{page:#?}");
+    assert!(page[7].contains("↑↓ select"), "{page:#?}");
+    let last = *app.context_usage_rows().last().expect("rows");
+    select(&mut app, last);
+    let page = texts(&app);
+    assert_eq!(page[2].trim(), "↑ 3 more above", "{page:#?}");
+    assert!(page[3].contains("Messages"), "{page:#?}");
+    assert!(page[4].contains("Free space"), "{page:#?}");
+    assert!(page[5].trim_start().starts_with('❯'), "{page:#?}");
+    assert!(page[5].contains("Auto-compact"), "{page:#?}");
+    assert_eq!(page[6], "", "nothing hidden below: {page:#?}");
+}
+
+#[test]
+fn a_wide_short_terminal_keeps_the_detail_beside_the_window() {
+    // Beside the window the detail costs no rows, so a wide terminal keeps
+    // the highlighted category's header and its largest part, the rest
+    // folded into one row.
+    let app = open_app();
+    let page: Vec<String> = context_usage_lines(&app, 100, 9)
+        .iter()
+        .map(|line| plain(line).trim_end().to_string())
+        .collect();
+    assert_eq!(page.len(), 9, "{page:#?}");
+    assert!(page[3].contains("System tools · 7 tools"), "{page:#?}");
+    assert!(page[4].contains("bash"), "{page:#?}");
+    assert!(page[5].contains("… 6 more"), "{page:#?}");
 }
 
 #[test]
@@ -662,11 +844,37 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 }
 
 #[test]
-fn a_terminal_shorter_than_every_page_flows_its_top() {
+fn the_page_never_flows_however_short_the_terminal() {
+    // The last rung is the title row alone, so no terminal is too short
+    // for a page and nothing flows into scrollback (`docs/view-flow.md`).
     let app = open_app();
-    let page = context_usage_lines(&app, 80, 4).len();
-    let flow = crate::ui::view_flow(&app, 80, 4, 1000).expect("flows on a 4-row terminal");
-    assert_eq!(flow.lines.len(), page - 4, "the skipped top flows");
+    for width in [100u16, 60] {
+        for height in (1..=24).chain([TALL]) {
+            assert!(
+                crate::ui::view_flow(&app, width, height, 1000).is_none(),
+                "{width}x{height}"
+            );
+        }
+    }
+}
+
+#[test]
+fn on_a_short_terminal_the_hidden_cursor_seats_on_the_windowed_marker() {
+    let mut app = open_app();
+    let last = *app.context_usage_rows().last().expect("rows");
+    select(&mut app, last);
+    for height in [9u16, 6, 4] {
+        let mut buf = buffer(80, height);
+        render_context_usage(buf.area, &mut buf, &app);
+        let marker_row = (0..height)
+            .find(|&y| row(&buf, y, 80).trim_start().starts_with('❯'))
+            .expect("the highlighted row is on screen");
+        assert_eq!(
+            cursor_position(Rect::new(0, 0, 80, height), &app),
+            (2, marker_row),
+            "{height} rows"
+        );
+    }
 }
 
 #[test]

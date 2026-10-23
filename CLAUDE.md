@@ -509,14 +509,19 @@ the system prompt split at its headings, the tool schemas as the client
 serializes them (`ReplySource::tool_definitions`/`agent_tool_definitions`,
 `LlmBackend` keeping them beside the client's array in the one
 `sync_tool_specs` so the two cannot drift), the MCP ones grouped by server,
-the derived context's `<system-reminder>` split into project docs, skills,
-agent types and secrets by the headers each contributor writes, and
-`context::context_messages` split into your messages, replies, tool calls,
-tool results, images and the compaction summary — every count the
-tokenizer's estimate, marked `≈`, while the usage rows under it are the
-provider's own frames (`App::last_usage`, the `UsageLedger` since launch,
-subagents included, a viewed agent's own inside its session view): tokens
-in and out and the cache-hit share as a meter; a window bar in category
+the derived context's `<system-reminder>` split into project docs (the
+stored `App::user_instructions`, found whole, so an `AGENTS.md` quoting a
+header is never cut) then skills, agent types and secrets by the headers
+each contributor writes, and `context::context_messages` split into your
+messages, shell commands, app notices, replies, tool calls, tool results,
+images and the compaction summary — the user-role text by **origin**, noted
+as the derivation lands it (`context::context_messages_with_origins`) —
+every count the tokenizer's estimate, marked `≈`, while the usage rows under
+it are the provider's own frames (`App::last_usage`, dropped with the
+conversation a `/clear`, `/resume`, rewind or compaction replaces; the
+`UsageLedger` since launch, subagents included, a viewed agent's own inside
+its session view): tokens in and out and the cache-hit share as a meter
+(`>99%` and `<1%` short of all or none); a window bar in category
 colours with the free space and the hatched auto-compact reserve allotted
 on cumulative cell boundaries, so the hatch starts at 90% to the cell; a
 legend whose highlighted row's parts sit beside it from 76 columns, the
@@ -526,7 +531,9 @@ bottom only when a signature over the history, prompts, reminder inputs and
 tool-set revision moves, each text's count read from a per-page
 `context_usage::CountMemo` so a re-count tokenizes only what is new (55 ms
 → under 1 ms per commit at 288k tokens); the family's shedding ladder on a
-short terminal;
+short terminal, ending on the compact pages' legend window under the title
+row and then that row alone, so it never flows; an overlay opened from the
+page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
 `smoke.sh` Phase 144) in `docs/context-usage.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription**, **Use an

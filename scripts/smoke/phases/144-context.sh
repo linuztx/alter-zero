@@ -26,7 +26,11 @@ smoke_begin
 #       it; Esc closes the page back to the composer and its footer;
 #   (d) after two turns the usage rows report the last request's tokens in
 #       and out, the cache-hit share the provider answered, and the running
-#       total since launch;
+#       total since launch; Ctrl+O over the page comes back to it on Esc
+#       rather than arming a rewind; a 9-row pane windows the legend around
+#       the highlight under the title row, nothing flowing; and after a
+#       /clear the last request is gone with the conversation it described
+#       while the total since launch stays;
 # Then against the offline dummy:
 #   (e) /context opens mid-turn with the status line still above it, and
 #       the page keeps counting while the turn streams underneath.
@@ -222,8 +226,39 @@ expect_has "$usage" -E "Cache hit +[█░]+ +86%" "the cache-hit meter does not
 expect_has "$usage" -E "Since launch +2 requests · [0-9.]+k? in · 84 out" "the running total does not add both requests"
 expect_lacks "$usage" -F "no usage reported yet" "the usage rows still read as empty after two requests"
 expect_has "$usage" -E "■ Messages +[0-9.]+k?" "the Messages row is missing after two turns"
+# An overlay over the page is a look: with a message to rewind to, its Esc
+# still comes back to the page instead of starting the Esc-Esc preview.
+keys "$S144" C-o
+wait_for 5 "$S144" -F "T R A N S C R I P T" || fail "Ctrl+O did not open the transcript over the page"
+keys "$S144" Escape
+looked="$(wait_pane 5 "$S144" -F "Context usage")" ||
+	fail "Esc from the transcript over the page did not come back to it (a rewind began?)"
+dump "back from Ctrl+O" "$looked"
+# A pane too short for the whole legend windows it around the highlight,
+# the title row and the hint kept, so nothing flows into scrollback.
+tmux resize-window -t "$S144" -x 110 -y 9
+short="$(wait_pane 5 "$S144" -E "[↑↓] [0-9]+ more (above|below)")" ||
+	fail "a 9-row pane did not window the legend"
+dump "the page on a 9-row pane" "$short"
+expect_has "$short" -E "Context usage · ≈[0-9.]+k? of 200k tokens" "the short page lost its title row"
+expect_has "$short" -E "❯ (■|□|╱) " "the short page lost its highlighted row"
+expect_has "$short" -F "↑↓ select" "the short page lost its hint"
+tmux resize-window -t "$S144" -x 110 -y 40
+wait_for 5 "$S144" -F "Since launch" || fail "the page did not grow back with the pane"
 keys "$S144" Escape
 wait_for 5 "$S144" -F "stub-model · ~/ctx" || fail "Esc did not close the reopened page"
+# The last request described the conversation /clear removes; the session's
+# spend stays.
+c_cleared() { ! pane_has "$S144" -S -200 -- -F "second question"; }
+submit "$S144" "/clear"
+poll 5 c_cleared || fail "/clear did not clear the conversation"
+submit "$S144" "/context"
+cleared="$(wait_pane 5 "$S144" -F "Context usage")" || fail "/context did not open after /clear"
+dump "the page after /clear" "$cleared"
+expect_has "$cleared" -F "no usage reported yet" "the last request outlived the conversation /clear removed"
+expect_has "$cleared" -E "Since launch +2 requests" "/clear reset the total since launch"
+keys "$S144" Escape
+wait_for 5 "$S144" -F "stub-model · ~/ctx" || fail "Esc did not close the page after /clear"
 tmux kill-session -t "$S144" 2>/dev/null
 
 # ---- (e) the dummy, mid-turn: the status line above, the page live ----

@@ -62,6 +62,12 @@ pub struct LlmBackend {
     /// places that set it, so the two cannot drift; shared by handle so the
     /// page's per-iteration pull costs a pointer copy.
     tool_definitions: Arc<[ToolDefinition]>,
+    /// The last subagent tool set `agent_tool_definitions` built, kept with
+    /// the type and the allowlist it was built from — the one input a
+    /// rescan rewrites in place. The skills verdict and the MCP set are this
+    /// backend's as built, and the boundary rebuilds the backend when either
+    /// moves, so neither needs a key. Reset with the client's own set.
+    agent_tools: Arc<Mutex<Option<AgentToolsMemo>>>,
     /// The shared background-shell registry, when the boundary attached one —
     /// enables the `bash` tool's `run_in_background` and Ctrl+B handoff
     /// (`docs/background.md`).
@@ -219,6 +225,7 @@ impl LlmBackend {
             system_prompt,
             tools_enabled,
             tool_definitions,
+            agent_tools: Arc::default(),
             background: None,
             vision,
             prompt_context: None,
@@ -418,6 +425,7 @@ impl LlmBackend {
             specs.extend(manager.tool_specs());
         }
         self.tool_definitions = ToolDefinition::from_specs(&specs);
+        self.agent_tools = Arc::default();
         self.client = self.client.clone().with_tools(specs);
         self.wire_history = Arc::new(Mutex::new(super::wire_history::WireHistory::default()));
     }
@@ -1106,8 +1114,9 @@ impl ReplySource for LlmBackend {
 
     /// The tools a subagent of `agent_type` is launched with — built by the
     /// same `subagent_tool_specs` its launch calls, through the type's
-    /// allowlist. Only asked while its session view's `/context` page is
-    /// open, so it is built per call rather than kept.
+    /// allowlist. Its session view's `/context` page asks at every loop
+    /// bottom, so the set is kept until the type or its allowlist moves; like
+    /// the lead's own, it is this backend's as built.
     fn agent_tool_definitions(&self, agent_type: &str) -> Arc<[ToolDefinition]> {
         if !self.tools_enabled {
             return Arc::default();
@@ -1116,11 +1125,30 @@ impl ReplySource for LlmBackend {
             .subagents
             .find(agent_type)
             .map_or(crate::subagents::AgentTools::All, |def| def.tools);
-        ToolDefinition::from_specs(&subagent_tool_specs(
+        let Ok(mut memo) = self.agent_tools.lock() else {
+            return ToolDefinition::from_specs(&subagent_tool_specs(
+                self.skills.is_some(),
+                self.mcp.as_ref(),
+                &allowed,
+            ));
+        };
+        if let Some(kept) = memo.as_ref()
+            && kept.agent_type == agent_type
+            && kept.allowed == allowed
+        {
+            return Arc::clone(&kept.tools);
+        }
+        let tools = ToolDefinition::from_specs(&subagent_tool_specs(
             self.skills.is_some(),
             self.mcp.as_ref(),
             &allowed,
-        ))
+        ));
+        *memo = Some(AgentToolsMemo {
+            agent_type: agent_type.to_string(),
+            allowed,
+            tools: Arc::clone(&tools),
+        });
+        tools
     }
 
     /// The model a subagent of `agent_type` is launched on when its
@@ -1315,6 +1343,15 @@ impl SubagentConfig {
             SUBAGENT_SYSTEM_SUFFIX,
         )
     }
+}
+
+/// The subagent tool set a backend last built for the `/context` page, with
+/// the type and the allowlist it was built from (`docs/context-usage.md`).
+#[derive(Debug)]
+struct AgentToolsMemo {
+    agent_type: String,
+    allowed: crate::subagents::AgentTools,
+    tools: Arc<[ToolDefinition]>,
 }
 
 /// A subagent's tool set: the built-ins its definition's `allowed` list
@@ -2496,6 +2533,36 @@ mod tests {
         assert!(
             !general.contains(&"agent".to_string()),
             "subagents never nest: {general:?}"
+        );
+    }
+
+    #[test]
+    fn a_subagents_tool_set_is_built_once_until_its_allowlist_moves() {
+        // The agent view's `/context` page asks at every loop bottom
+        // (docs/context-usage.md): the same type under the same allowlist is
+        // the same set, handed back by handle, while a rescan that rewrote
+        // the type's `tools:` in place is a new one.
+        let reader = |tools: &str| {
+            crate::subagents::parse_agent(
+                &format!("---\nname: reader\ndescription: d\ntools: {tools}\n---\n"),
+                "reader",
+            )
+            .expect("parses")
+        };
+        let defs = crate::subagents::SubagentRegistry::new(vec![reader("Read")]);
+        let backend =
+            LlmBackend::configure(ModelConfig::fallback(), None, true).with_subagents(defs.clone());
+        let first = ReplySource::agent_tool_definitions(&backend, "reader");
+        let again = ReplySource::agent_tool_definitions(&backend, "reader");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "an unchanged type is not rebuilt"
+        );
+        defs.replace(vec![reader("Read, Bash")]);
+        let moved = ReplySource::agent_tool_definitions(&backend, "reader");
+        assert!(
+            moved.iter().any(|definition| definition.name == "bash"),
+            "the rewritten allowlist is what counts: {moved:?}"
         );
     }
 

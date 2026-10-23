@@ -109,6 +109,9 @@ impl App {
         // The gauge drops to the compacted derivation's estimate (codex's
         // recompute_token_usage) — the marker records the shrink.
         self.refresh_context_used();
+        // The newest frame is the summarizer's request, which described the
+        // conversation the marker just replaced (`docs/context-usage.md`).
+        self.last_usage = None;
         compaction.after = self.context_used;
         if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
             recorded.after = self.context_used;

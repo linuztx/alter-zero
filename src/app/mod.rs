@@ -1197,6 +1197,9 @@ impl App {
         // 0). Auto-compact re-arms.
         self.refresh_context_used();
         self.auto_compact_blocked = false;
+        // The last request described the conversation that just went; what
+        // the session spent stays in the ledger (`docs/context-usage.md`).
+        self.last_usage = None;
         self.tool_queue.clear();
         self.tool_drafts.clear();
         self.status = None;

@@ -135,6 +135,37 @@ fn the_page_counts_the_window_the_session_sends() {
 // ===== the rows =====
 
 #[test]
+fn the_conversations_parts_name_what_the_user_did_not_type() {
+    // An app notice rides as user-role text merged with the next typed
+    // message; the page counts it apart, from the origins the derivation
+    // notes, instead of as something the user said.
+    let mut app = session();
+    app.history.push(HistoryItem::Message(Message {
+        role: Role::System,
+        text: "Copied last message to clipboard".to_string(),
+        timestamp: String::new(),
+        images: Vec::new(),
+    }));
+    app.record_user_message("next");
+    app.open_context_usage();
+    let page = app.context_usage.as_ref().expect("open");
+    let parts = &page
+        .breakdown
+        .slice(Category::Messages)
+        .expect("listed")
+        .parts;
+    let notices = parts
+        .iter()
+        .find(|part| part.label == "App notices")
+        .expect("the notice is its own part");
+    assert_eq!(
+        notices.tokens,
+        count_tokens("[system] Copied last message to clipboard")
+    );
+    assert!(parts.iter().any(|part| part.label == "Your messages"));
+}
+
+#[test]
 fn the_rows_are_the_slices_then_the_room_left() {
     let mut app = session();
     app.open_context_usage();
@@ -213,6 +244,27 @@ fn ctrl_d_opens_the_raw_context_over_the_open_page() {
     assert!(app.context_usage.is_some(), "and is there on the way back");
     assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
     assert_eq!(app.view, View::ToolOutput);
+}
+
+#[test]
+fn the_transcript_over_the_page_never_arms_a_rewind() {
+    // Ctrl+O from the page is a look at the transcript, not a way into the
+    // Esc-Esc backtrack: its idle Esc began the preview, whose Enter rewound
+    // the conversation (and, with checkpoints, the files) under a page that
+    // stayed open over the recalled draft. Esc goes back to the page.
+    let mut app = session();
+    app.open_context_usage();
+    app.on_key(ctrl('o'));
+    assert_eq!(app.view, View::ToolOutput);
+    assert!(
+        !app.overlay_esc_backtracks(),
+        "the hint must not offer a rewind"
+    );
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.backtrack.selected, None, "no preview began");
+    assert_eq!(app.view, View::Conversation, "Esc closed the transcript");
+    assert!(app.context_usage.is_some(), "back on the page");
+    assert_eq!(app.history.len(), 1, "nothing was rewound");
 }
 
 #[test]
@@ -427,10 +479,53 @@ fn usage_frames_feed_the_last_request_and_the_ledger() {
             cache_write: 500,
         }
     );
-    // A `/clear` is a new conversation, not a refund: both stay.
+    // A `/clear` is a new conversation, not a refund: the ledger stays,
+    // while the last request — a fact about the conversation that went —
+    // goes with it.
     app.clear_conversation();
-    assert_eq!(app.last_usage(), Some(second));
+    assert_eq!(app.last_usage(), None);
     assert_eq!(app.usage_since_launch().requests, 2);
+}
+
+#[test]
+fn a_replaced_conversation_takes_its_last_request_with_it() {
+    // "Last request" describes what the provider was last sent. A /resume
+    // load, a rewind and a compaction each replace the conversation on
+    // screen, so it would describe one that is gone — after a compaction,
+    // the summarizer's own request. The session's spend stays.
+    let frame = TokenUsage {
+        input: 4_000,
+        output: 40,
+        cached: 3_000,
+        ..TokenUsage::default()
+    };
+    let with_frame = || {
+        let mut app = session();
+        app.begin_stream();
+        app.apply_usage(&frame);
+        app.finish_stream();
+        app.record_user_message("and one more");
+        assert_eq!(app.last_usage(), Some(frame));
+        app
+    };
+    let mut resumed = with_frame();
+    resumed.load_session(vec![]);
+    assert_eq!(resumed.last_usage(), None, "a /resume load");
+    let mut rewound = with_frame();
+    rewound.backtrack.selected = Some(0);
+    rewound.confirm_backtrack();
+    assert_eq!(rewound.last_usage(), None, "a rewind");
+    let mut compacted = with_frame();
+    compacted.begin_compact(false);
+    compacted.apply_usage(&frame);
+    compacted.push_chunk("gist");
+    compacted.finish_compact(0);
+    assert_eq!(compacted.last_usage(), None, "a compaction");
+    assert_eq!(
+        compacted.usage_since_launch().requests,
+        2,
+        "the summarizer's request is still spend"
+    );
 }
 
 #[test]

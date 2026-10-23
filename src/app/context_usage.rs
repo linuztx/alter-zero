@@ -224,15 +224,16 @@ impl App {
         let count = |text: &str| memo.borrow_mut().count(text, &count_tokens);
         let breakdown = match self.viewed_agent() {
             Some(run) => {
-                let messages = crate::context::context_messages(&run.history);
-                let summary = crate::context::compaction_bridge(&run.history);
+                let (messages, origins) =
+                    crate::context::context_messages_with_origins(&run.history);
                 crate::context_usage::breakdown(
                     &Sources {
                         system_prompt: self.agent_system_prompt.as_deref(),
                         tools: &self.agent_tool_definitions,
                         reminder: self.agent_system_reminder.as_deref(),
+                        instructions: None,
                         messages: &messages,
-                        summary: summary.as_deref(),
+                        origins: &origins,
                         image_tokens: IMAGE_INPUT_TOKENS,
                     },
                     &count,
@@ -245,15 +246,16 @@ impl App {
                     self.user_instructions.as_deref().unwrap_or_default(),
                     self.listings.as_deref().unwrap_or_default(),
                 ]);
-                let messages = crate::context::context_messages(&self.history);
-                let summary = crate::context::compaction_bridge(&self.history);
+                let (messages, origins) =
+                    crate::context::context_messages_with_origins(&self.history);
                 crate::context_usage::breakdown(
                     &Sources {
                         system_prompt: self.system_prompt.as_deref(),
                         tools: &self.tool_definitions,
                         reminder: Some(&reminder),
+                        instructions: self.user_instructions.as_deref(),
                         messages: &messages,
-                        summary: summary.as_deref(),
+                        origins: &origins,
                         image_tokens: IMAGE_INPUT_TOKENS,
                     },
                     &count,

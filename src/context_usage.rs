@@ -7,11 +7,13 @@
 //! `<system-reminder>` text the derived context leads with, the derived
 //! messages — and attributes every token to the [`Category`] it belongs to,
 //! each with its own [`Part`]s for the page's detail. Nothing here models the
-//! request a second time: the reminder's sections are found by the headers
-//! their contributors write, the tools by their wire names, the messages by
-//! their roles, so the page cannot describe a context the model does not
-//! get. The counter is injected, which is what lets every attribution be
-//! checked by hand in the tests (a token is a byte there).
+//! request a second time: the reminder's instructions are the text the
+//! session stored and its listings are found by the headers their
+//! contributors write, the tools by their wire names, the messages by their
+//! roles and the origins the derivation noted, so the page cannot describe a
+//! context the model does not get. The counter is injected, which is what
+//! lets every attribution be checked by hand in the tests (a token is a byte
+//! there).
 //!
 //! [`UsageLedger`] is the other half: the provider's own usage frames,
 //! summed — never estimated.
@@ -24,13 +26,15 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use crate::context::{ContextMessage, ContextRole};
+use crate::context::{ContextMessage, ContextRole, TextOrigin, TextSegment};
 use crate::mcp::{is_mcp_tool, parse_wire_name};
 use crate::stream::TokenUsage;
 
 /// One tool the next request offers the model: its wire name and its schema
-/// serialized exactly as the client sends it — what the page counts a tool's
-/// share of the window from.
+/// serialized exactly as the client keeps it — what the page counts a tool's
+/// share of the window from. The client keeps the chat-completions shape; a
+/// wire that translates it (Anthropic, Responses, Ollama) frames the same
+/// fields its own way, a few tokens either side.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToolDefinition {
     /// The wire name the model calls it by (`bash`, `mcp__deepwiki__ask`).
@@ -283,13 +287,17 @@ pub struct Sources<'a> {
     /// main session's composed block (`reminder::reminder_message`), or a
     /// subagent's briefing exactly as its launch wrapped it.
     pub reminder: Option<&'a str>,
+    /// The instructions section that reminder opens with, exactly as the
+    /// session stored it (`App::user_instructions`). `None` when it carries
+    /// none, as a subagent's briefing never does.
+    pub instructions: Option<&'a str>,
     /// The derived conversation **without** the reminder
-    /// (`context::context_messages`).
+    /// (`context::context_messages_with_origins`).
     pub messages: &'a [ContextMessage],
-    /// The compaction bridge among those messages, when a `/compact` marker
-    /// stands — counted out of the user's messages as its own part
-    /// (`context::compaction_bridge`).
-    pub summary: Option<&'a str>,
+    /// Where each user-role text in those messages came from, in message
+    /// order — what splits the user's share by origin. A user-role text with
+    /// no noted origin counts as typed.
+    pub origins: &'a [TextSegment],
     /// What one image attachment is counted as.
     pub image_tokens: usize,
 }
@@ -341,7 +349,7 @@ pub fn breakdown(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize) -> Breakd
     // as a user message, so it is counted with the messages.
     let mut stray = 0;
     if let Some(reminder) = sources.reminder.filter(|r| !r.trim().is_empty()) {
-        let sections = reminder_sections(reminder);
+        let sections = reminder_sections(reminder, sources.instructions);
         if sections.is_empty() {
             stray = count(reminder);
         }
@@ -357,13 +365,7 @@ pub fn breakdown(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize) -> Breakd
             slices.push(Slice::of(category, count(text), items.len(), parts));
         }
     }
-    let mut message_parts = message_parts(sources, count);
-    if stray > 0 {
-        message_parts.push(Part {
-            label: "Reminder".to_string(),
-            tokens: stray,
-        });
-    }
+    let message_parts = message_parts(sources, count, stray);
     slices.push(Slice::summed(
         Category::Messages,
         sources.messages.len(),
@@ -398,14 +400,20 @@ impl Slice {
 /// The system prompt's blocks, one per markdown heading — the persona's
 /// `# System prompt`, the `## Environment` and `## Scratchpad` blocks the
 /// boundary appends (`docs/environment.md`) — each labelled by its heading
-/// and running to the next one. Text ahead of the first heading (an
-/// override prompt with no headings at all) is a block of its own.
+/// and running to the next one; a `#` line inside a fenced example is that
+/// block's text. Text ahead of the first heading (an override prompt with no
+/// headings at all) is a block of its own.
 fn prompt_blocks(prompt: &str) -> Vec<(String, &str)> {
     let mut starts: Vec<(usize, String)> = Vec::new();
     let mut offset = 0;
+    // A `#` line inside a fenced example is that block's text.
+    let mut scanner = crate::markdown::BlockScanner::new();
     for line in prompt.split_inclusive('\n') {
-        if line.starts_with('#') {
-            starts.push((offset, line.trim_start_matches('#').trim().to_string()));
+        let text = line.trim_end_matches(['\n', '\r']);
+        if scanner.classify(text) == crate::markdown::LineKind::Prose
+            && let Some((_, heading)) = crate::markdown::heading_level(text)
+        {
+            starts.push((offset, heading.to_string()));
         }
         offset += line.len();
     }
@@ -450,32 +458,40 @@ fn server_parts(tools: &[&ToolDefinition], count: &dyn Fn(&str) -> usize) -> Vec
         .collect()
 }
 
-/// The reminder cut into its sections at the headers their contributors
-/// write: the instructions section's preamble
-/// ([`crate::project_doc::INSTRUCTIONS_PREAMBLE`]), then the skills, agent
-/// types and secrets listings' headers. The slices cover the whole text —
-/// the wrapper's opening counts with the first section and its closing tag
-/// with the last — so the sections add up to the reminder.
-///
-/// The listings are the session's own text and come last, so their headers
-/// are found **from the end**: an `AGENTS.md` is the user's text and may
-/// quote a header without becoming a listing. Empty when no section is
+/// The reminder cut into its sections. The instructions section is the
+/// text the session stored (`instructions`), found whole where the reminder
+/// carries it: an `AGENTS.md` is the user's own text and may quote any
+/// header, so no header inside it may cut it. The listings after it — the
+/// skills, agent types and secrets the session renders itself, in that
+/// order — are cut at their headers, each found **from the end**, where the
+/// session writes it. The slices cover the whole text — the wrapper's
+/// opening counts with the first section and its closing tag with the last
+/// — so the sections add up to the reminder. Empty when no section is
 /// recognised.
-fn reminder_sections(reminder: &str) -> Vec<(Category, &str)> {
+fn reminder_sections<'a>(
+    reminder: &'a str,
+    instructions: Option<&str>,
+) -> Vec<(Category, &'a str)> {
     let mut cuts: Vec<(usize, Category)> = Vec::new();
+    // Where the listings may start: past the instructions, when there are
+    // any.
+    let mut listings = 0;
+    if let Some(docs) = instructions.map(str::trim).filter(|docs| !docs.is_empty())
+        && let Some(at) = reminder.find(docs)
+    {
+        cuts.push((0, Category::ProjectDocs));
+        listings = at + docs.len();
+    }
     let mut end = reminder.len();
     for (category, header) in [
         (Category::Secrets, crate::secrets::SECRET_LISTING_HEADER),
         (Category::AgentTypes, crate::subagents::AGENT_LISTING_HEADER),
         (Category::Skills, crate::skills::SKILL_LISTING_HEADER),
     ] {
-        if let Some(at) = line_start_rfind(&reminder[..end], header) {
+        if let Some(at) = line_start_rfind(&reminder[..end], header).filter(|&at| at >= listings) {
             cuts.push((at, category));
             end = at;
         }
-    }
-    if let Some(at) = line_start_find(&reminder[..end], crate::project_doc::INSTRUCTIONS_PREAMBLE) {
-        cuts.push((at, Category::ProjectDocs));
     }
     cuts.sort_by_key(|(at, _)| *at);
     let mut sections = Vec::with_capacity(cuts.len());
@@ -485,13 +501,6 @@ fn reminder_sections(reminder: &str) -> Vec<(Category, &str)> {
         sections.push((*category, &reminder[start..stop]));
     }
     sections
-}
-
-/// Where `needle` starts a line of `hay` first.
-fn line_start_find(hay: &str, needle: &str) -> Option<usize> {
-    hay.match_indices(needle)
-        .map(|(at, _)| at)
-        .find(|&at| at == 0 || hay[..at].ends_with('\n'))
 }
 
 /// Where `needle` starts a line of `hay` last.
@@ -563,15 +572,44 @@ fn doc_heading_path(line: &str) -> Option<&str> {
     .find_map(|note| rest.strip_suffix(&format!(" ({note}):")))
 }
 
-/// The conversation's parts, by what each message is: what the user said,
-/// the replies, the tool calls (each one's name and arguments), the tool
-/// results, the image attachments, and the compaction summary — which rides
-/// as a user message and is counted out of the user's.
-fn message_parts(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize) -> Vec<Part> {
-    let (mut user, mut replies, mut calls, mut results, mut images) = (0, 0, 0, 0, 0);
-    for message in sources.messages {
+/// The conversation's parts: what the user typed, the `!` commands they ran
+/// with their output, the app's notices to the model, the compaction
+/// summary, the replies, the tool calls (each one's name and arguments), the
+/// tool results (an image read's attachment note with them), the image
+/// attachments — and `stray` reminder text no header claims. A user-role
+/// message counts whole, the gauge's rule (`app::estimate_messages_tokens`);
+/// the texts the derivation noted as coming from elsewhere are counted out
+/// of it, so the parts still add up to the message.
+fn message_parts(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize, stray: usize) -> Vec<Part> {
+    let (mut typed, mut shell, mut notices, mut summary) = (0, 0, 0, 0);
+    let (mut replies, mut calls, mut results, mut images, mut reminder) = (0, 0, 0, 0, stray);
+    // The origins arrive in message order, so one cursor walks them.
+    let mut origins = sources.origins.iter().peekable();
+    for (index, message) in sources.messages.iter().enumerate() {
+        while origins.next_if(|segment| segment.message < index).is_some() {}
         match message.role {
-            ContextRole::User | ContextRole::System => user += count(&message.text),
+            ContextRole::User | ContextRole::System => {
+                let whole = count(&message.text);
+                let mut elsewhere = 0;
+                while let Some(segment) = origins.next_if(|segment| segment.message == index) {
+                    let bucket = match segment.origin {
+                        TextOrigin::Typed => continue,
+                        TextOrigin::Shell => &mut shell,
+                        TextOrigin::Notice => &mut notices,
+                        TextOrigin::Attachment => &mut results,
+                        TextOrigin::Summary => &mut summary,
+                        TextOrigin::Reminder => &mut reminder,
+                    };
+                    let tokens = message
+                        .text
+                        .get(segment.range.clone())
+                        .map_or(0, count)
+                        .min(whole - elsewhere);
+                    *bucket += tokens;
+                    elsewhere += tokens;
+                }
+                typed += whole - elsewhere;
+            }
             ContextRole::Assistant => replies += count(&message.text),
             ContextRole::Tool => results += count(&message.text),
         }
@@ -582,14 +620,16 @@ fn message_parts(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize) -> Vec<Pa
             .map(|call| count(&call.name) + count(&call.arguments))
             .sum::<usize>();
     }
-    let summary = sources.summary.map_or(0, count).min(user);
     [
-        ("Your messages", user - summary),
+        ("Your messages", typed),
+        ("Shell commands", shell),
+        ("App notices", notices),
         ("Summary", summary),
         ("Replies", replies),
         ("Tool calls", calls),
         ("Tool results", results),
         ("Images", images),
+        ("Reminder", reminder),
     ]
     .into_iter()
     .map(|(label, tokens)| Part {
@@ -602,7 +642,7 @@ fn message_parts(sources: &Sources<'_>, count: &dyn Fn(&str) -> usize) -> Vec<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ContextToolCall;
+    use crate::context::{ContextToolCall, TextOrigin, TextSegment};
 
     /// The test counter: a token is a byte, so every sum is checkable by hand.
     fn bytes(text: &str) -> usize {
@@ -723,6 +763,27 @@ mod tests {
     }
 
     #[test]
+    fn a_hash_inside_a_code_fence_is_not_a_heading() {
+        // A shell comment in a fenced example is the block's own text, not a
+        // block of its own — and neither is a `#` with no space after it.
+        let prompt = "# System prompt\n\n#1 rule. Run:\n\n```bash\n# install first\nmake\n```\n\n## Environment\n\nDate x";
+        let breakdown = of(Sources {
+            system_prompt: Some(prompt),
+            ..Sources::default()
+        });
+        assert_eq!(
+            parts(&breakdown, Category::SystemPrompt),
+            [
+                (
+                    "System prompt".to_string(),
+                    "# System prompt\n\n#1 rule. Run:\n\n```bash\n# install first\nmake\n```".len()
+                ),
+                ("Environment".to_string(), "## Environment\n\nDate x".len()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_prompt_with_no_heading_is_one_block() {
         let breakdown = of(Sources {
             system_prompt: Some("You are a helpful bot."),
@@ -823,6 +884,7 @@ mod tests {
         let text = reminder(&[&docs, &skills, &agents, &secrets]);
         let breakdown = of(Sources {
             reminder: Some(&text),
+            instructions: Some(&docs),
             ..Sources::default()
         });
         // Every byte of the reminder is attributed to exactly one section.
@@ -865,6 +927,7 @@ mod tests {
         let text = reminder(&[&docs, &skills, &agents, &secrets]);
         let breakdown = of(Sources {
             reminder: Some(&text),
+            instructions: Some(&docs),
             ..Sources::default()
         });
         let labels = |category| -> Vec<String> {
@@ -910,8 +973,8 @@ mod tests {
     #[test]
     fn instructions_quoting_a_listing_header_stay_instructions() {
         // An AGENTS.md is the user's own text and may quote anything — even
-        // the skills header. The listing sections are found from the end,
-        // where the session writes them, so the quote stays in the docs.
+        // the skills header. The listings are looked for only after the
+        // instructions the session stored, so the quote stays in the docs.
         let docs = format!(
             "{}\n\nContents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\nThe reminder reads:\n{}\n- not-a-skill: quoted",
             crate::project_doc::INSTRUCTIONS_PREAMBLE,
@@ -921,6 +984,7 @@ mod tests {
         let text = reminder(&[&docs, &skills]);
         let breakdown = of(Sources {
             reminder: Some(&text),
+            instructions: Some(&docs),
             ..Sources::default()
         });
         assert_eq!(
@@ -933,6 +997,39 @@ mod tests {
             .collect();
         labels.sort();
         assert_eq!(labels, ["dataviz", "haiku-writer"]);
+    }
+
+    #[test]
+    fn instructions_quoting_a_header_the_reminder_lacks_stay_instructions() {
+        // The instructions are counted as the session stored them, never
+        // found by a header: an AGENTS.md quoting the skills and secrets
+        // headers, in a session listing neither, stays the user's text whole.
+        let docs = format!(
+            "{}\n\nContents of /repo/AGENTS.md (project instructions, checked into the codebase):\n\nThe reminder reads:\n{}\n- not-a-skill: quoted\n{}\n- <secret:NOT_ONE>",
+            crate::project_doc::INSTRUCTIONS_PREAMBLE,
+            crate::skills::SKILL_LISTING_HEADER,
+            crate::secrets::SECRET_LISTING_HEADER,
+        );
+        let agents = agents_section();
+        let text = reminder(&[&docs, &agents]);
+        let breakdown = of(Sources {
+            reminder: Some(&text),
+            instructions: Some(&docs),
+            ..Sources::default()
+        });
+        let opening = text
+            .find(&docs)
+            .expect("the docs section is in the reminder");
+        assert_eq!(
+            tokens(&breakdown, Category::ProjectDocs),
+            opening + docs.len() + 2
+        );
+        assert_eq!(tokens(&breakdown, Category::Skills), 0);
+        assert_eq!(tokens(&breakdown, Category::Secrets), 0);
+        assert_eq!(
+            tokens(&breakdown, Category::AgentTypes),
+            agents.len() + "\n</system-reminder>".len()
+        );
     }
 
     #[test]
@@ -998,24 +1095,97 @@ mod tests {
         assert_eq!(breakdown.slice(Category::Messages).unwrap().items, 4);
     }
 
+    fn segment(range: std::ops::Range<usize>, origin: TextOrigin) -> TextSegment {
+        TextSegment {
+            message: 0,
+            range,
+            origin,
+        }
+    }
+
     #[test]
-    fn the_compaction_summary_is_counted_out_of_the_users_messages() {
-        let bridge = "PREFIX\nwe did the thing";
-        let merged = format!("do the thing\n\n{bridge}");
-        let messages = [message(ContextRole::User, &merged)];
+    fn the_users_share_splits_by_where_each_text_came_from() {
+        // A `!` command and the app's notices ride as user-role text, merged
+        // with what was typed around them: the origins the derivation noted
+        // say which is which, so "Your messages" is only what was typed.
+        let text = "hello\n\n$ ls\nfile.txt\n\n[system] Copied\n\nand now";
+        let messages = [message(ContextRole::User, text)];
+        let origins = [
+            segment(0..5, TextOrigin::Typed),
+            segment(7..20, TextOrigin::Shell),
+            segment(22..37, TextOrigin::Notice),
+            segment(39..46, TextOrigin::Typed),
+        ];
         let breakdown = of(Sources {
             messages: &messages,
-            summary: Some(bridge),
+            origins: &origins,
             ..Sources::default()
         });
         assert_eq!(
             parts(&breakdown, Category::Messages),
             [
-                ("Summary".to_string(), bridge.len()),
-                ("Your messages".to_string(), merged.len() - bridge.len()),
+                ("Your messages".to_string(), text.len() - 13 - 15),
+                ("App notices".to_string(), 15),
+                ("Shell commands".to_string(), 13),
             ]
         );
-        assert_eq!(tokens(&breakdown, Category::Messages), merged.len());
+        assert_eq!(
+            tokens(&breakdown, Category::Messages),
+            text.len(),
+            "the parts still add up to the message"
+        );
+    }
+
+    #[test]
+    fn the_compaction_summary_and_an_image_reads_note_are_their_own_parts() {
+        let bridge = "PREFIX\nwe did the thing";
+        let merged = format!("do the thing\n\n{bridge}");
+        let note = "[image read: /a.png]";
+        let mut attached = message(ContextRole::User, note);
+        attached.images = vec!["/a.png".into()];
+        let messages = [
+            message(ContextRole::User, &merged),
+            message(ContextRole::Assistant, "ok"),
+            attached,
+        ];
+        let origins = [
+            segment(0..12, TextOrigin::Typed),
+            segment(14..merged.len(), TextOrigin::Summary),
+            TextSegment {
+                message: 2,
+                range: 0..note.len(),
+                origin: TextOrigin::Attachment,
+            },
+        ];
+        let breakdown = of(Sources {
+            messages: &messages,
+            origins: &origins,
+            image_tokens: 100,
+            ..Sources::default()
+        });
+        assert_eq!(
+            parts(&breakdown, Category::Messages),
+            [
+                ("Images".to_string(), 100),
+                ("Summary".to_string(), bridge.len()),
+                ("Tool results".to_string(), note.len()),
+                ("Your messages".to_string(), merged.len() - bridge.len()),
+                ("Replies".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn user_text_with_no_noted_origin_is_the_users() {
+        let messages = [message(ContextRole::User, "typed")];
+        let breakdown = of(Sources {
+            messages: &messages,
+            ..Sources::default()
+        });
+        assert_eq!(
+            parts(&breakdown, Category::Messages),
+            [("Your messages".to_string(), 5)]
+        );
     }
 
     #[test]
