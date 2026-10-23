@@ -479,12 +479,17 @@ fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
     let mut calls: Vec<(String, String, bool)> = Vec::new();
     let mut running = None;
     let mut launched = None;
+    // What the first wait's cell streamed while the agent worked.
+    let mut streamed = String::new();
     while let Some(event) = rx.blocking_recv() {
         match event {
             StreamEvent::AgentGroupDone { agents, .. } => {
                 launched = agents.first().map(|done| done.output.clone());
             }
             StreamEvent::ToolStart { name, .. } => running = Some(name),
+            StreamEvent::ToolScreen { settled, .. } if calls.is_empty() => {
+                streamed.push_str(&settled);
+            }
             StreamEvent::ToolEnd { output, ok, .. } => {
                 calls.push((running.take().expect("started"), output, ok));
             }
@@ -501,6 +506,12 @@ fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
     );
     assert!(calls.iter().all(|(_, _, ok)| *ok), "{calls:?}");
     assert!(calls[0].1.starts_with("Done (agent a"), "{}", calls[0].1);
+    // What the agent said before its call is listed ahead of it, and the
+    // first wait streamed both as they happened (docs/agent-progress.md).
+    let steps = "Agent: I'll read the top of the changelog first.\n\
+                 Bash(head -12 CHANGELOG.md)\n";
+    assert!(calls[0].1.contains(steps), "{}", calls[0].1);
+    assert_eq!(streamed, steps, "the first wait streamed both lines");
     assert!(calls[1].1.contains("resumed"), "{}", calls[1].1);
     assert!(
         calls[2].1.contains(AGENT_FOLLOW_UP_MARK),
@@ -511,8 +522,20 @@ fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
     let mut observed = 0;
     let mut resumed = false;
     let mut steered = false;
+    // The agent channel carries the words ahead of the call, as a live
+    // run's does: what a foreground group's row reads (`Agent: …`).
+    let mut said = String::new();
+    let mut said_before_call = None;
     while let Ok(event) = agent_rx.try_recv() {
         match event {
+            AgentEvent::Stream {
+                event: StreamEvent::Chunk(text),
+                ..
+            } if said_before_call.is_none() => said.push_str(&text),
+            AgentEvent::Stream {
+                event: StreamEvent::ToolBatch(_),
+                ..
+            } if said_before_call.is_none() => said_before_call = Some(said.clone()),
             AgentEvent::Settled { observed: true, .. } => observed += 1,
             AgentEvent::Settled {
                 observed: false, ..
@@ -530,4 +553,8 @@ fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
     assert_eq!(observed, 2, "both waits reported their answer");
     assert!(resumed, "the roster is told of the continuation");
     assert!(steered, "…whose first round announces the message");
+    assert_eq!(
+        said_before_call.as_deref(),
+        Some("I'll read the top of the changelog first.")
+    );
 }

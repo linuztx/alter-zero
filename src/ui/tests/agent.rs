@@ -152,6 +152,84 @@ fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
 }
 
 #[test]
+fn a_lone_live_agent_shows_what_it_is_saying() {
+    // The request's own picture (docs/agent-progress.md): while the agent
+    // talks, its row is its words — `Agent: …`, beside `Bash: …` and
+    // `Write: …` — dim, and clipped rather than wrapped like every row.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[spec("a1", "Gather GitHub contexts for user linuztx", false)],
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Chunk(
+            "The profile lists 42 public repos.\n\nLet me fetch the repositories next.".into(),
+        ),
+    );
+    let lines = live_agent_group_lines(&app, 80);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts[0], "● Agent(Gather GitHub contexts for user linuztx)");
+    assert_eq!(texts[1], "  ⎿  Agent: Let me fetch the repositories next.");
+    assert_eq!(texts.len(), 2, "one row for the state: {texts:?}");
+    assert!(
+        lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(tool_dim_color())),
+        "the whole row is dim: {:?}",
+        lines[1]
+    );
+    assert_eq!(usize::from(preview_rows(&app, 80)), texts.len());
+    let narrow: Vec<String> = live_agent_group_lines(&app, 30).iter().map(plain).collect();
+    assert!(narrow[1].starts_with("  ⎿  Agent: Let me"), "{}", narrow[1]);
+    assert!(narrow[1].ends_with('…'), "the cut is marked: {}", narrow[1]);
+    assert!(
+        cols(&narrow[1]) <= 30,
+        "clipped at the width: {}",
+        narrow[1]
+    );
+}
+
+#[test]
+fn a_tree_row_shows_what_its_agent_is_saying_beside_a_siblings_call() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[
+            spec("a1", "Fetch Warsaw", false),
+            spec("a2", "Fetch Manila", false),
+        ],
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::Chunk("Checking the Warsaw forecast first.".into()),
+    );
+    app.apply_agent_event(
+        "a2",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "curl wttr.in/Manila".into(),
+            detail: Some("Fetching Manila weather".into()),
+            arguments: None,
+        },
+    );
+    let texts: Vec<String> = live_agent_group_lines(&app, 90).iter().map(plain).collect();
+    assert!(
+        texts[2].ends_with("⎿  Agent: Checking the Warsaw forecast first."),
+        "{}",
+        texts[2]
+    );
+    assert!(
+        texts[4].ends_with("⎿  Bash: Fetching Manila weather"),
+        "{}",
+        texts[4]
+    );
+}
+
+#[test]
 fn a_lone_committed_agent_renders_done_with_the_expand_hint() {
     use crate::agents::AgentStatus;
     let group = crate::app::AgentGroup {

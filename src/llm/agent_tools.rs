@@ -179,27 +179,24 @@ fn output(
         background.clear_background_request();
     }
     let deadline = Instant::now() + wait;
-    // The calls made before the wait are the report's; the cell streams the
-    // ones the agent starts while it is watched.
-    let mut shown = snapshot.calls.len();
+    // What the agent did before the wait is the report's; the cell streams
+    // what it starts, says and reads while it is watched.
+    let mut cursor = crate::agents::ProgressCursor::at(&snapshot);
     let mut ended_by_user = false;
     loop {
-        let Some(now) = ctx.registry.snapshot(id) else {
+        let Some(progress) = ctx.registry.progress(id, &mut cursor) else {
             break;
         };
-        // What the agent has started since the last look, a line each, as
-        // the report will list it — the running cell tails them.
-        for call in now.calls.iter().skip(shown) {
+        // What the agent has done since the last look, a line each, in the
+        // order it did it — the running cell tails them
+        // (docs/agent-progress.md).
+        for line in &progress.lines {
             on_output(ToolProgress::Screen {
-                settled: &format!("{}\n", crate::agents::report_call(call)),
+                settled: &format!("{line}\n"),
                 live: "",
             });
         }
-        shown = now.calls.len();
-        if now.state != AgentState::Running
-            || ctx.cancel.is_cancelled()
-            || Instant::now() >= deadline
-        {
+        if !progress.running || ctx.cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
         if ctx
@@ -628,6 +625,97 @@ mod tests {
                 run: 0,
             }],
             "the report was the notice"
+        );
+    }
+
+    #[test]
+    fn agentoutput_hands_the_lead_what_the_agent_said_on_its_way() {
+        // docs/agent-progress.md: the lead reads the agent's own account of
+        // its progress, not only the calls it made.
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Fetch profile", "p");
+        registry.record_update(&id, "I'll start with the profile.");
+        registry.record_call(&id, "Bash(curl -s https://api.github.com/users/linuztx)");
+        registry.record_update(&id, "It lists 42 public repos.");
+        let (outcome, _, _) = run(
+            &registry,
+            &CancelToken::new(),
+            None,
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id}),
+            ),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let lines: Vec<&str> = outcome.output.lines().collect();
+        assert_eq!(
+            lines[1..4],
+            [
+                "Agent: I'll start with the profile.",
+                "Bash(curl -s https://api.github.com/users/linuztx)",
+                "Agent: It lists 42 public repos.",
+            ],
+            "{}",
+            outcome.output
+        );
+    }
+
+    #[test]
+    fn a_waiting_agentoutput_streams_the_agents_updates_among_its_calls() {
+        let (registry, _rx) = registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Fetch profile", "p");
+        registry.record_update(&id, "I'll start with the profile.");
+        registry.record_call(&id, "Bash(curl one)");
+        let worker = {
+            let registry = registry.clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(80));
+                registry.record_update(&id, "Found the profile.\n\nNow the repositories.");
+                registry.record_call(&id, "Bash(curl two)");
+                // A message it reads while watched is part of what it did:
+                // its loop takes it, and the forwarder relays the announcement.
+                assert!(registry.queue_input(&id, "also the stars"));
+                let _ = registry.take_pending_inputs(&id);
+                registry.announce_read(&id);
+                std::thread::sleep(Duration::from_millis(80));
+                registry.settle(
+                    &id,
+                    Ok("It has 12 repos.".into()),
+                    Vec::new(),
+                    Some(StreamEvent::StreamDone),
+                );
+            })
+        };
+        let (outcome, _, streamed) = run(
+            &registry,
+            &CancelToken::new(),
+            None,
+            &call(
+                tools::AGENT_OUTPUT_TOOL,
+                serde_json::json!({"agent_id": id, "wait": 30}),
+            ),
+        );
+        worker.join().unwrap();
+        assert_eq!(
+            streamed,
+            [
+                "Agent: Found the profile. Now the repositories.\n",
+                "Bash(curl two)\n",
+                "— message received —\n"
+            ],
+            "what the agent says, starts and reads while watched streams in \
+             its place, one line each — what it did before the wait is the \
+             report's"
+        );
+        assert!(
+            outcome.output.contains(
+                "Agent: I'll start with the profile.\nBash(curl one)\n\
+                 Agent: Found the profile.\n  Now the repositories.\nBash(curl two)\n\
+                 — message received —\n"
+            ),
+            "{}",
+            outcome.output
         );
     }
 

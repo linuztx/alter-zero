@@ -172,7 +172,7 @@ full debug info: the test build measured **11 GB**. `check()` appends
 given, and the same build measured **1.2 GB** — and compiled in 7m 28s
 rather than 10m 23s. Nothing in the suite reads a backtrace.
 
-**Five frame-budget gates are skipped.** A few tests hold rendering to a
+**Six frame-budget gates are skipped.** A few tests hold rendering to a
 wall-clock budget — `the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line`
 wants an average redraw under 25 ms on a 130 KB line, the inline-diff and
 highlighter gates 32 and 50 ms. They are performance regression gates, and on

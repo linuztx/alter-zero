@@ -57,7 +57,8 @@ check() {
     --skip a_pathological_line_pair_answers_within_the_bound \
     --skip preview_of_a_growing_code_line_is_bounded \
     --skip the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line \
-    --skip a_pathological_line_renders_plain_within_the_frame_budget
+    --skip a_pathological_line_renders_plain_within_the_frame_budget \
+    --skip the_activity_row_stays_inside_the_frame_budget_on_a_line_of_blank_space
 }
 
 package() {

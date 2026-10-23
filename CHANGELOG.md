@@ -41,6 +41,19 @@ release heading when a version is cut.
   server that starts requiring a token sends you to `/login`. A server set
   to require authentication takes its token from `LM_API_TOKEN`
   (`docs/local-models.md`).
+- **A running subagent shows what it is saying.** Its row under the
+  `● Agent(…)` cell used to name only its calls (`⎿ Bash: …`, `⎿ Write: …`).
+  While the agent writes, the row now shows its words, `⎿ Agent: Checking the
+  recent events next.`, taken from the newest paragraph of its text. The row
+  keeps showing them until the agent starts its next call
+  (`docs/agent-progress.md`).
+- **`agentoutput` reports what the agent said along the way.** Text the
+  agent wrote before going on to more work is listed as an `Agent: …` entry
+  in its place among the calls. The lead now reads what the agent has found
+  and what it plans next, not just which commands it ran. Each entry is kept
+  whole up to 2,000 characters, and `agentkill`'s report includes them too.
+  A waiting `agentoutput` streams the entries into its cell as they arrive,
+  along with the messages the agent reads.
 
 ### Changed
 
@@ -72,6 +85,11 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **`agentoutput` lists a message the agent read where it read it.** A
+  `— message received —` mark could appear ahead of a call the agent had
+  made before reading the message, when the agent ran ahead of the thread
+  keeping its record — a quick call, or a busy machine. Marks are now placed
+  in the order the agent worked (`docs/agent-progress.md`).
 - **An error a server reports inside its reply now ends the turn with that
   error.** A stream frame that was only a message (`data: "…"`), or an
   `{"error": "…"}` naming its error by a string, was skipped, so the turn
