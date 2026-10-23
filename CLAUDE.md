@@ -173,7 +173,7 @@ rustc into a failed install; `options=('!lto')`, since makepkg's
 debug info Cargo would strip; and `RUSTONIG_SYSTEM_LIBONIG=1`, linking Arch's
 `oniguruma` — so a C library newly linked in `Cargo.toml` is a new
 `depends` entry there. Its `check()` runs the dev-profile suite without
-debug info and `--skip`s the five frame-budget gates by name (a redraw under
+debug info and `--skip`s the six frame-budget gates by name (a redraw under
 25 ms measures the user's machine, not the package), so a new wall-clock
 gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.

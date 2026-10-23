@@ -1368,13 +1368,16 @@ const ACTIVITY_UPDATE_MAX_CHARS: usize = 512;
 /// lines after the last blank one, the way the activity row shows what the
 /// agent is saying: the run's opening is stale by the time it says *now let
 /// me…*, and a single line can be a fragment of a list. Found as the text
-/// arrives, each chunk read once ([`extend`](Self::extend)), so a frame
-/// never rescans the run — a table or a code block can be one paragraph
-/// thousands of lines long (`docs/agent-progress.md`).
+/// arrives ([`extend`](Self::extend)), so a frame never reads the run again —
+/// a table or a code block can be one paragraph thousands of lines long, and
+/// the line being written can end in a page of blank space
+/// (`docs/agent-progress.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ParagraphStart {
     /// Where the line being written starts.
     line: usize,
+    /// The line being written has something on it so far.
+    line_has_text: bool,
     /// Where the newest paragraph with a finished line starts.
     paragraph: Option<usize>,
     /// A blank line has ended since that paragraph's last line: the next
@@ -1383,23 +1386,32 @@ struct ParagraphStart {
 }
 
 impl ParagraphStart {
-    /// Take in what `text` gained since it was `from` bytes long.
+    /// Take in what `text` gained since it was `from` bytes long, reading
+    /// nothing before it.
     fn extend(&mut self, text: &str, from: usize) {
         let Some(added) = text.get(from..) else {
             return;
         };
-        for (at, _) in added.match_indices('\n') {
-            let end = from + at;
-            let blank = text
-                .get(self.line..end)
-                .is_none_or(|line| line.trim().is_empty());
-            if blank {
+        let mut at = from;
+        for piece in added.split_inclusive('\n') {
+            at += piece.len();
+            let (body, ended) = piece
+                .strip_suffix('\n')
+                .map_or((piece, false), |body| (body, true));
+            // Once the line has something on it, it is not checked again.
+            self.line_has_text =
+                self.line_has_text || body.contains(|ch: char| !ch.is_whitespace());
+            if !ended {
+                continue;
+            }
+            if !self.line_has_text {
                 self.closed |= self.paragraph.is_some();
             } else if self.closed || self.paragraph.is_none() {
                 self.paragraph = Some(self.line);
                 self.closed = false;
             }
-            self.line = end + 1;
+            self.line = at;
+            self.line_has_text = false;
         }
     }
 
@@ -1407,8 +1419,7 @@ impl ParagraphStart {
     /// [`ACTIVITY_UPDATE_MAX_CHARS`] — the line being written, when it opens
     /// one — or `None` while `text` says nothing.
     fn head(&self, text: &str) -> Option<String> {
-        let writing = text.get(self.line..)?;
-        let opens = !writing.trim().is_empty() && (self.closed || self.paragraph.is_none());
+        let opens = self.line_has_text && (self.closed || self.paragraph.is_none());
         let start = if opens { self.line } else { self.paragraph? };
         let head = one_line_head(text.get(start..)?, ACTIVITY_UPDATE_MAX_CHARS);
         (!head.is_empty()).then_some(head)
@@ -3372,13 +3383,94 @@ mod tests {
 
     #[test]
     fn a_long_run_of_whitespace_is_read_only_up_to_the_bound() {
-        // Whitespace collapses to nothing on the row, but walking it is work
-        // all the same: a model that streams a page of blank space after a
-        // sentence must not have it walked again every frame. The row reads
-        // no further than the bound, so what lies past the run is not shown.
+        // Whitespace collapses to nothing on the row, but reading it is work
+        // all the same: the row's head is read from no more than four times
+        // the bound, so a word past a page of blank space is never reached.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&chunk(&format!("Checking.{}far", " ".repeat(100_000))));
         assert_eq!(run.activity(), "Agent: Checking.");
+    }
+
+    #[test]
+    fn the_activity_row_stays_inside_the_frame_budget_on_a_line_of_blank_space() {
+        // The row is built several times a frame while the agent writes, and
+        // the line it is writing can end in a page of blank space: whether
+        // that line has anything on it is known from its chunks as they
+        // arrived, never found by walking the line again on every frame.
+        // Driven the way `AgentRun::apply` drives it, minus the token count
+        // that would make four megabytes slow to stream in.
+        let mut text = String::from("Checking.");
+        let mut paragraph = ParagraphStart::default();
+        paragraph.extend(&text, 0);
+        let spaces = " ".repeat(64 * 1024);
+        for _ in 0..64 {
+            let from = text.len();
+            text.push_str(&spaces);
+            paragraph.extend(&text, from);
+        }
+        let rows = 20;
+        let start = std::time::Instant::now();
+        for _ in 0..rows {
+            assert_eq!(paragraph.head(&text).as_deref(), Some("Checking."));
+        }
+        let per_row = start.elapsed() / rows;
+        println!("an activity row over 4 MB of blank space: {per_row:?}");
+        assert!(
+            per_row < std::time::Duration::from_millis(1),
+            "one activity row took {per_row:?}: the line being written was \
+             walked again, a cost paid several times a frame"
+        );
+    }
+
+    /// The newest paragraph read the slow way, from the whole text each
+    /// time: its lines after the last blank one, on one line.
+    fn whole_text_paragraph(text: &str) -> Option<String> {
+        let mut lines: Vec<&str> = text
+            .lines()
+            .rev()
+            .skip_while(|line| line.trim().is_empty())
+            .take_while(|line| !line.trim().is_empty())
+            .collect();
+        lines.reverse();
+        let words: Vec<&str> = lines
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+        (!words.is_empty()).then(|| words.join(" "))
+    }
+
+    #[test]
+    fn the_paragraph_found_chunk_by_chunk_is_the_one_the_whole_text_holds() {
+        // Every text of up to six characters drawn from a letter, a space, a
+        // CR and a line break, streamed in every way it can be cut: after
+        // each chunk the tracker must name the paragraph a reading of the
+        // whole text so far finds.
+        const ALPHABET: [char; 4] = ['a', ' ', '\r', '\n'];
+        for len in 0..=6u32 {
+            for code in 0..ALPHABET.len().pow(len) {
+                let text: String = (0..len)
+                    .map(|i| ALPHABET[code / ALPHABET.len().pow(i) % ALPHABET.len()])
+                    .collect();
+                for cuts in 0..1usize << len.saturating_sub(1) {
+                    let mut tracker = ParagraphStart::default();
+                    let mut streamed = String::new();
+                    let mut from = 0;
+                    for (i, ch) in text.char_indices() {
+                        streamed.push(ch);
+                        if i + 1 < text.len() && cuts & (1 << i) == 0 {
+                            continue;
+                        }
+                        tracker.extend(&streamed, from);
+                        from = streamed.len();
+                        assert_eq!(
+                            tracker.head(&streamed),
+                            whole_text_paragraph(&streamed),
+                            "{streamed:?} streamed with cuts {cuts:b}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -71,11 +71,12 @@ actor: the agent itself, under `agents::AGENT_UPDATE_LABEL`. It shows
   the row shows the newest thing the agent did, a call or something it said,
   and holds it between them instead of dropping to `Working…`.
 
-**No frame rescans the run.** The row is built several times a frame while
-the text streams, and a run can be anything: a table or a code block
+**No frame reads the run again.** The row is built several times a frame
+while the text streams, and a run can be anything: a table or a code block
 thousands of lines long, a URL or a blob with no space in it, a page of
-blank space. So `AgentRun` notes where the newest paragraph starts as each
-chunk arrives (`ParagraphStart`, each chunk read once, a line split across
+blank space. So `AgentRun` notes, as each chunk arrives, where the newest
+paragraph starts and whether the line being written has anything on it yet
+(`ParagraphStart`, nothing before the chunk read again, a line split across
 chunks — CRLF endings included — landing where a whole-text reading puts
 it), and the row reads only that paragraph's head: at most
 `ACTIVITY_UPDATE_MAX_CHARS` (512) characters, from no more than four times
@@ -83,7 +84,10 @@ as many, which leaves room for any indentation or table padding and stops a
 blob inside itself and a blank run short of its end. The first version
 found the paragraph again from the end of the text each time, so a
 paragraph thousands of lines long was walked every frame and a blob with no
-space in it was copied whole.
+space in it was copied whole. The second still trimmed the line being
+written on every frame to learn whether it had opened a paragraph, so a line
+ending in four megabytes of spaces cost 24 ms a row; it now costs a few
+microseconds.
 
 The transcript keeps the text as it came; the row's one-liner is derived
 from it, so nothing about the row's wording reaches `history`, the session
@@ -202,9 +206,14 @@ a change of its own.
   holds it once the text is finalised, and yields to the next call; a blank
   run changes nothing; a settled agent still reads `Done`; a paragraph
   ten thousand words long, a run with no space in it and a page of blank
-  space are each read only up to the bound; a paragraph streamed in pieces,
-  CRLF endings and words split across chunks included, is found where a
-  whole-text reading puts it. The report places updates among calls and
+  space are each read only up to the bound, and a row over a line ending in
+  four megabytes of spaces is built inside a millisecond (a wall-clock gate,
+  skipped by the AUR package's `check()` with the other frame budgets,
+  `docs/aur.md`); the paragraph is found where a whole-text reading puts it
+  after every chunk of every text of up to six characters drawn from a
+  letter, a space, a CR and a line break, cut every way it can be, and in a
+  hand-written stream of CRLF endings and words split across chunks. The
+  report places updates among calls and
   marks by `at`/`read`, renders a multi-line update indented with its blank
   lines dropped, and hides those among the hidden calls;
   `AgentRegistry::progress` hands a wait only what is new, one line each, in
