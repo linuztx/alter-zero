@@ -30,7 +30,9 @@ for _ in $(seq 1 60); do
 	if [ -n "$sp_out" ]; then break; fi
 	sleep 0.15
 done
-sp_pane="$(tmux capture-pane -t "$S91" -p)"
+# The output file is created before the cell redraws as backgrounded, so one
+# capture taken the moment the file appears can still hold the old frame.
+sp_pane="$(wait_pane 3 "$S91" -F "Running in the background")"
 tmux kill-session -t "$S91" 2>/dev/null
 echo "==== Phase 91: scratchpad='${sp_dir#"$SP_TMP"}', task output='${sp_out#"$SP_TMP"}' ===="
 if [ -z "$sp_dir" ]; then
