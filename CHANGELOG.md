@@ -85,6 +85,11 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **`agentoutput` lists a message the agent read where it read it.** A
+  `— message received —` mark could appear ahead of a call the agent had
+  made before reading the message, when the agent ran ahead of the thread
+  keeping its record — a quick call, or a busy machine. Marks are now placed
+  in the order the agent worked (`docs/agent-progress.md`).
 - **An error a server reports inside its reply now ends the turn with that
   error.** A stream frame that was only a message (`data: "…"`), or an
   `{"error": "…"}` naming its error by a string, was skipped, so the turn

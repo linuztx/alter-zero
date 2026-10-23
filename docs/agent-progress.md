@@ -103,10 +103,8 @@ it read (`AgentSlot::updates`, `AgentSnapshot::updates`), each a
 `ProgressUpdate { at, read, text }`:
 
 - `at` — how many calls it had made when it said it, the `FollowUp` rule;
-- `read` — how many messages it had read by then. The messages are marked by
-  the agent's own thread as its loop drains its queue, the updates by the
-  forwarder as it relays the stream, so neither can stamp the other's order;
-  counts both can read can place an update among the marks at the same `at`;
+- `read` — how many messages it had read by then, which places it among the
+  marks at the same `at` (*Where a mark is placed*, below);
 - `text` — trimmed, and kept **whole up to
   `AGENT_REPORT_UPDATE_CHARS`** (2,000 characters), cut there with `…`. A
   blank run is no update and is not recorded.
@@ -183,22 +181,32 @@ and the stream and the report the wait ends on cannot disagree.
   their reports read as before (`smoke.sh` Phase 98). The follow-up demo's
   agent does (*Testing*, below).
 
-## A known limit: two threads place the marks
+## Where a mark is placed
 
-The messages an agent reads are marked by its own loop as it drains its
-queue (`AgentRegistry::take_pending_inputs`), while its calls and updates are
-recorded by the forwarder as it relays the stream. Each entry is placed by
-the counts it reads when it is recorded, so when the loop gets ahead of the
-forwarder — a call that returns in microseconds, a machine under load — a
-mark can be recorded before a call or an update that came ahead of it, and
-the report lists it too early. The stream and the report still agree, since
-both read the same records.
+A message the agent reads is taken off its queue by its own loop at a round
+boundary (`AgentRegistry::take_pending_inputs`), on the agent's thread. Its
+calls and updates are recorded by the forwarder as it relays the stream, on
+another — and the forwarder can run behind the loop: a call that returns in
+microseconds, a machine under load. Every entry is keyed by the counts it
+reads when it is recorded, so a mark recorded at the drain could be keyed by
+counts the forwarder had not caught up to, and the report listed it ahead of
+a call, or of something the agent said, that came before it. The race
+predates the updates, which only gave a mark one more thing to land ahead of.
 
-This predates the updates: a mark could already land ahead of the call
-before it. The fix is to record the mark where the stream announces the
-message, at the forwarder's `Steered`, which needs that event to say whose
-message it was (the user's are quoted, the lead's are not); it is left for
-a change of its own.
+So the drain only notes what each mark says — one for the lead's messages,
+each of the user's quoted — and the mark is placed where the stream
+announces the message. The loop sends one `StreamEvent::Steered` per message
+it took, right after taking them, and nothing else sends one on a subagent's
+stream; the forwarder's `RunRecorder`, relaying the first of a drain's
+announcements, records what the agent said before it and then places the
+drain's marks after the calls it has relayed (`AgentRegistry::announce_read`).
+Calls, updates and marks are all recorded on one thread, in the stream's
+order. Drains queue up in order, since the loop can drain again before the
+forwarder reaches the first drain's announcement, and each is placed at its
+own. A drain no announcement reaches — a run cut short between the two — is
+placed when the run settles or starts again, late rather than never; and
+`AgentRegistry::user_messages` counts the user's messages from the drain,
+since a stop can be reported before the forwarder relays them.
 
 ## Testing
 
@@ -220,7 +228,11 @@ a change of its own.
   order, marks included. `record_update` trims, cuts at the cap and skips a
   blank run. `RunRecorder` records an update at every point that ends a run
   of text before more work — and ahead of the call a `ToolStart` records —
-  and keeps the answer's text whole.
+  and keeps the answer's text whole. A drain the forwarder relays after a
+  call it had not yet recorded is marked after that call and after what the
+  agent said before it; two drains in flight are each marked at their own
+  announcement; a drain never announced is marked when the run ends, its
+  user message counted from the drain.
 - `ui` (unit): the lone and tree cells render `⎿  Agent: …` dim and clipped.
 - `llm::agent_tools` (unit): a report hands the lead the updates, and a wait
   streams an update the agent gives while it is watched, in its place among

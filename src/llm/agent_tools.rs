@@ -673,9 +673,11 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(80));
                 registry.record_update(&id, "Found the profile.\n\nNow the repositories.");
                 registry.record_call(&id, "Bash(curl two)");
-                // A message it reads while watched is part of what it did.
+                // A message it reads while watched is part of what it did:
+                // its loop takes it, and the forwarder relays the announcement.
                 assert!(registry.queue_input(&id, "also the stars"));
                 let _ = registry.take_pending_inputs(&id);
+                registry.announce_read(&id);
                 std::thread::sleep(Duration::from_millis(80));
                 registry.settle(
                     &id,

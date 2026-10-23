@@ -1459,9 +1459,11 @@ fn one_line_head(text: &str, max: usize) -> String {
 /// (`llm::backend::spawn_subagent_run`): the run of reply text since the
 /// agent last did anything else — its **answer**, if nothing follows it —
 /// and, as the run goes, the record `agentoutput` reports from: each call it
-/// starts, and each run of text that more work followed, as a **progress
-/// update** (`docs/agent-progress.md`). Pure bookkeeping over the events the
-/// forwarder relays, so the rule is tested here rather than in a thread body.
+/// starts, each run of text that more work followed, as a **progress
+/// update**, and the mark of each message the agent read, where the stream
+/// announces it (`docs/agent-progress.md`). Pure bookkeeping over the events
+/// the forwarder relays, so the rule is tested here rather than in a thread
+/// body.
 #[derive(Debug)]
 pub struct RunRecorder {
     registry: AgentRegistry,
@@ -1502,8 +1504,13 @@ impl RunRecorder {
             // something said on the way, too.
             StreamEvent::ToolBatch(_)
             | StreamEvent::AgentBatch { .. }
-            | StreamEvent::Steered { .. }
             | StreamEvent::HookNote { .. } => self.said(),
+            // A message the loop read: what the agent said before it, then
+            // the mark, placed here in the stream's order.
+            StreamEvent::Steered { .. } => {
+                self.said();
+                self.registry.announce_read(&self.id);
+            }
             _ => {}
         }
     }
@@ -1731,6 +1738,19 @@ impl PendingInput {
     }
 }
 
+/// The messages an agent's loop took off its queue at one round boundary,
+/// waiting to be marked where its stream announces them
+/// ([`AgentRegistry::announce_read`], `docs/agent-progress.md`).
+#[derive(Debug)]
+struct Drained {
+    /// The marks still to place — one for the lead's messages, then each
+    /// message the user sent, quoted ([`FollowUp::from_user`]). The first
+    /// announcement places them all.
+    marks: Vec<Option<String>>,
+    /// The announcements still to come, one per message taken.
+    announcements: usize,
+}
+
 /// A shell's note routed to the agent that launched it
 /// ([`AgentRegistry::route_shell_note`]) — what its own call into that
 /// session takes back while the note is unread (`docs/bash-tools.md` *One
@@ -1792,6 +1812,11 @@ struct AgentSlot {
     /// messages *this* run answered are the ones after it
     /// ([`AgentRegistry::user_messages`]).
     run_follow_ups: usize,
+    /// The messages its loop has taken off the queue whose announcement the
+    /// forwarder has not relayed yet, oldest first — marked once it has, so
+    /// a mark is placed on the thread that records the calls and the
+    /// updates ([`AgentRegistry::announce_read`]).
+    drained: VecDeque<Drained>,
     /// What it said on its way, each where it said it — the report's
     /// `Agent: …` entries ([`AgentRegistry::record_update`]).
     updates: Vec<ProgressUpdate>,
@@ -1859,6 +1884,41 @@ impl AgentSlot {
         }
     }
 
+    /// One message its loop read was announced on its stream: the first
+    /// announcement of the oldest drain places that drain's marks after the
+    /// calls recorded so far.
+    fn announce_read(&mut self) {
+        let at = self.calls.len();
+        let Some(drained) = self.drained.front_mut() else {
+            return;
+        };
+        self.follow_ups.extend(
+            drained
+                .marks
+                .drain(..)
+                .map(|from_user| FollowUp { at, from_user }),
+        );
+        drained.announcements = drained.announcements.saturating_sub(1);
+        if drained.announcements == 0 {
+            self.drained.pop_front();
+        }
+    }
+
+    /// Mark every drain no announcement reached — the run is over, or
+    /// starting again: a message the agent read is marked late rather than
+    /// never.
+    fn place_unannounced(&mut self) {
+        let at = self.calls.len();
+        for drained in self.drained.drain(..) {
+            self.follow_ups.extend(
+                drained
+                    .marks
+                    .into_iter()
+                    .map(|from_user| FollowUp { at, from_user }),
+            );
+        }
+    }
+
     /// Is its run still going — [`state`](Self::state)'s `Running`, read
     /// without copying an outcome?
     fn running(&self) -> bool {
@@ -1911,6 +1971,7 @@ impl AgentSlot {
         self.failed = None;
         self.run_started = Some(Instant::now());
         self.settled = None;
+        self.place_unannounced();
         self.run_follow_ups = self.follow_ups.len();
         self.run += 1;
         cancel
@@ -2265,6 +2326,7 @@ impl AgentRegistry {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let seq = inner.stamp();
         if let Some(slot) = inner.slots.get_mut(id) {
+            slot.place_unannounced();
             slot.busy = false;
             slot.done = true;
             slot.messages = Some(messages);
@@ -2600,30 +2662,43 @@ impl AgentRegistry {
             return Vec::new();
         };
         let taken = std::mem::take(&mut slot.pending_inputs);
-        // Read now, at this round boundary: the report's timeline marks it
-        // after the calls made so far — one mark for the lead's messages, one
-        // per message the user sent, each quoted (docs/agent-tools.md).
-        let at = slot.calls.len();
-        if taken.iter().any(|input| !input.from_user) {
-            slot.follow_ups.push(FollowUp::lead(at));
+        // Read now, at this round boundary — one mark for the lead's
+        // messages, one per message the user sent, each quoted
+        // (docs/agent-tools.md). Placed where the stream announces them, not
+        // here: this is the agent's own thread, and the forwarder recording
+        // its calls can still be relaying the round before
+        // (docs/agent-progress.md).
+        if !taken.is_empty() {
+            let lead = taken.iter().any(|input| !input.from_user).then_some(None);
+            let users = taken
+                .iter()
+                .filter(|input| input.from_user)
+                .map(|input| Some(input.text.clone()));
+            slot.drained.push_back(Drained {
+                marks: lead.into_iter().chain(users).collect(),
+                announcements: taken.len(),
+            });
         }
-        slot.follow_ups
-            .extend(
-                taken
-                    .iter()
-                    .filter(|input| input.from_user)
-                    .map(|input| FollowUp {
-                        at,
-                        from_user: Some(input.text.clone()),
-                    }),
-            );
         taken.into_iter().map(|input| input.text).collect()
+    }
+
+    /// The forwarder relayed `id`'s announcement of one message its loop read
+    /// (`StreamEvent::Steered`): the first announcement of a drain places
+    /// that drain's marks after the calls relayed before it. The forwarder
+    /// records the calls and the updates too, so the three land in the order
+    /// the stream carried them, however far behind the loop it runs
+    /// (`docs/agent-progress.md`).
+    pub fn announce_read(&self, id: &str) {
+        let mut inner = self.inner.lock().expect("agent registry poisoned");
+        if let Some(slot) = inner.slots.get_mut(id) {
+            slot.announce_read();
+        }
     }
 
     /// Mark that `id` read a message the user sent **outside** its queue — a
     /// session-view chat that continues it with the message already in its
-    /// conversation (`spawn_agent_chat`); a queued one is marked as its loop
-    /// drains it ([`take_pending_inputs`](Self::take_pending_inputs)).
+    /// conversation (`spawn_agent_chat`); a queued one is marked where its
+    /// stream announces it ([`announce_read`](Self::announce_read)).
     pub fn note_user_message(&self, id: &str, text: &str) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
@@ -2642,10 +2717,16 @@ impl AgentRegistry {
     pub fn user_messages(&self, id: &str) -> Vec<String> {
         let inner = self.inner.lock().expect("agent registry poisoned");
         inner.slots.get(id).map_or_else(Vec::new, |slot| {
-            slot.follow_ups[slot.run_follow_ups.min(slot.follow_ups.len())..]
+            let placed = slot.follow_ups[slot.run_follow_ups.min(slot.follow_ups.len())..]
                 .iter()
-                .filter_map(|follow_up| follow_up.from_user.clone())
-                .collect()
+                .filter_map(|follow_up| follow_up.from_user.clone());
+            // Read already, though not marked yet: a stop can be read before
+            // the forwarder relays the announcement.
+            let unannounced = slot
+                .drained
+                .iter()
+                .flat_map(|drained| drained.marks.iter().flatten().cloned());
+            placed.chain(unannounced).collect()
         })
     }
 
@@ -2899,12 +2980,12 @@ enum TimelineEntry<'a> {
 /// What an agent did past `from`, in the order it did it: each call, each
 /// message it read, each update it gave. A message or an update recorded
 /// after `n` calls falls before call `n`; among those, an update follows the
-/// messages it had read. Keyed by counts rather than stamped by a clock
-/// because the two are recorded on different threads — the messages by the
-/// agent's loop as it drains its queue, the updates by the forwarder as it
-/// relays the stream (`docs/agent-progress.md`). Every entry recorded later
-/// keys after every one recorded earlier, so the entries past a cursor are
-/// the timeline's own tail.
+/// messages it had read. The forwarder records the calls and the updates as
+/// it relays the stream, and places a message's mark where the stream
+/// announces it ([`AgentRegistry::announce_read`]), so the counts each is
+/// keyed by follow the stream's own order (`docs/agent-progress.md`). Every
+/// entry recorded later keys after every one recorded earlier, so the
+/// entries past a cursor are the timeline's own tail.
 fn timeline<'a>(
     calls: &'a [String],
     follow_ups: &'a [FollowUp],
@@ -3943,6 +4024,16 @@ mod tests {
     fn test_registry() -> AgentRegistry {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         AgentRegistry::new(tx)
+    }
+
+    /// `id`'s loop drains its queue and the forwarder relays each message's
+    /// announcement straight after — the two in step, as on a quiet machine.
+    fn read_queued(registry: &AgentRegistry, id: &str) -> Vec<String> {
+        let read = registry.take_pending_inputs(id);
+        for _ in &read {
+            registry.announce_read(id);
+        }
+        read
     }
 
     #[test]
@@ -5377,7 +5468,7 @@ mod tests {
         );
         registry.record_call(&id, "Read(a)");
         assert!(registry.queue_input(&id, "also b"));
-        let _ = registry.take_pending_inputs(&id);
+        let _ = read_queued(&registry, &id);
         registry.record_call(&id, "Read(b)");
         registry.note_user_message(&id, "and c");
         let at: Vec<usize> = registry
@@ -5399,11 +5490,11 @@ mod tests {
         let registry = test_registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
         assert!(registry.queue_input(&id, "lead's own"));
-        let _ = registry.take_pending_inputs(&id);
+        let _ = read_queued(&registry, &id);
         registry.record_call(&id, "Read(a)");
         assert!(registry.queue_user_input(&id, "also check\nManila"));
         assert_eq!(
-            registry.take_pending_inputs(&id),
+            read_queued(&registry, &id),
             ["also check\nManila"],
             "the loop reads the text either way"
         );
@@ -6102,7 +6193,7 @@ mod tests {
         registry.record_update(&id, "\n  I'll start with the profile.  \n");
         registry.record_call(&id, "Bash(curl one)");
         assert!(registry.queue_input(&id, "also check the gists"));
-        let _ = registry.take_pending_inputs(&id);
+        let _ = read_queued(&registry, &id);
         registry.record_update(&id, "Noted — the gists too.");
         assert_eq!(
             registry.snapshot(&id).unwrap().updates,
@@ -6178,6 +6269,94 @@ mod tests {
             "It has 42 repos.",
             "the run of text nothing followed is the answer, whole"
         );
+    }
+
+    /// A call's start, as the forwarder relays it.
+    fn bash_start(args: &str) -> StreamEvent {
+        StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: args.into(),
+            detail: None,
+            arguments: None,
+        }
+    }
+
+    #[test]
+    fn a_message_read_after_a_call_is_marked_after_it_however_far_behind_the_forwarder_runs() {
+        // The agent's loop runs ahead of the forwarder relaying its stream:
+        // by the time the forwarder relays the call, the loop has already
+        // drained the message queued for the next round. The mark goes where
+        // the stream announces the message, after the call and after what
+        // the agent said before it — not wherever the forwarder happened to
+        // be when the loop drained (docs/agent-progress.md).
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        assert!(registry.queue_input(&id, "also the stars"));
+        let read = registry.take_pending_inputs(&id);
+        recorder.observe(&chunk("I'll start with the profile."));
+        recorder.observe(&StreamEvent::ToolBatch(Vec::new()));
+        recorder.observe(&bash_start("curl one"));
+        for text in read {
+            recorder.observe(&StreamEvent::Steered { text });
+        }
+        let report = output_report(&registry.snapshot(&id).unwrap());
+        assert!(
+            report.contains(
+                "Agent: I'll start with the profile.\nBash(curl one)\n— message received —"
+            ),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn each_drain_is_marked_where_its_own_announcement_lands() {
+        // The loop can drain twice before the forwarder relays the first
+        // drain's announcement: each drain's mark goes where its own
+        // announcement lands, never both at the first.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        assert!(registry.queue_input(&id, "first"));
+        let first = registry.take_pending_inputs(&id);
+        assert!(registry.queue_user_input(&id, "second"));
+        assert!(registry.queue_user_input(&id, "third"));
+        let second = registry.take_pending_inputs(&id);
+        for text in first {
+            recorder.observe(&StreamEvent::Steered { text });
+        }
+        recorder.observe(&bash_start("curl one"));
+        for text in second {
+            recorder.observe(&StreamEvent::Steered { text });
+        }
+        let report = output_report(&registry.snapshot(&id).unwrap());
+        assert!(
+            report.contains(
+                "— message received —\nBash(curl one)\n\
+                 — message from the user: second —\n— message from the user: third —"
+            ),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_message_read_but_never_announced_is_marked_when_the_run_ends() {
+        // A run cut short between the drain and the forwarder relaying it:
+        // the agent did read the message, so its mark is placed late rather
+        // than lost — and the run's answer is told the user's message it read.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        registry.record_call(&id, "Bash(curl one)");
+        assert!(registry.queue_user_input(&id, "also the stars"));
+        let _ = registry.take_pending_inputs(&id);
+        assert_eq!(registry.user_messages(&id), ["also the stars"]);
+        registry.finish(&id, Ok("done".into()), Vec::new());
+        let report = output_report(&registry.snapshot(&id).unwrap());
+        assert!(
+            report.contains("Bash(curl one)\n— message from the user: also the stars —"),
+            "{report}"
+        );
+        assert_eq!(registry.user_messages(&id), ["also the stars"]);
     }
 
     #[test]
@@ -6278,7 +6457,7 @@ mod tests {
         registry.record_update(&id, "Found it.\n\nNow the repositories.");
         registry.record_call(&id, "Bash(curl two\n  --silent)");
         assert!(registry.queue_input(&id, "also the stars"));
-        let _ = registry.take_pending_inputs(&id);
+        let _ = read_queued(&registry, &id);
         registry.record_update(&id, &"y".repeat(400));
         let lines = registry.progress(&id, &mut cursor).unwrap().lines;
         assert_eq!(lines.len(), 4, "{lines:?}");

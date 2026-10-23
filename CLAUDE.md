@@ -1464,10 +1464,12 @@ where it said it (whole, up to `AGENT_REPORT_UPDATE_CHARS`; recorded by the
 forwarder's `agents::RunRecorder`, streamed one line each into a waiting
 cell with the read-message marks, a poll copying only what is past its
 `agents::ProgressCursor` — `docs/agent-progress.md`), each
-read message marked `— message received —` (a message the *user* typed
-into its session view quoted instead, and named as the user's in the
-lead's notice and foreground result — and one that starts a **settled**
-agent again announced to the lead at once, a cyan `was resumed by user`
+read message marked `— message received —` (placed where its stream
+announces it, `AgentRegistry::announce_read`, on the forwarder's thread
+beside the calls, so a loop running ahead cannot place it early; a message
+the *user* typed into its session view quoted instead, and named as the
+user's in the lead's notice and foreground result — and one that starts a
+**settled** agent again announced to the lead at once, a cyan `was resumed by user`
 `AgentNotice::resumed` that owes no follow-up turn, so the lead stops
 acting on "the agent failed" — tagged `PendingNotice::resumed` apart from
 the completions, posted only while that run is going and taken back unread
