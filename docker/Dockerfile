@@ -28,6 +28,16 @@ FROM ${KALI_IMAGE} AS tools
 # kept. They stay in force for what you `apt install` later; delete the file
 # and reinstall a package to get its pages back.
 #
+# Then the mirror list. http.kali.org hands each file to a mirror of its
+# choosing, and when that mirror is down apt retries the mirror, never the
+# redirector, so one dead mirror failed every build that drew it. Through
+# apt's mirror method a file that fails moves down the list instead: the
+# redirector stays first, and Kali's own CDN catches what its mirrors drop.
+# Only the URIs line of the base image's kali.sources changes, and the list
+# serves what you `apt install` later too. A base without that file keeps its
+# own sources rather than failing the build; smoke_image.py asserts apt reads
+# the list, so a base that stops matching still fails, in that test.
+#
 # The setcap line: Kali ships the scanner with forced file capabilities
 # (net_admin among them). A container's default set has no NET_ADMIN, and the
 # kernel then refuses to exec the binary at all — "Operation not permitted",
@@ -52,6 +62,17 @@ RUN printf '%s\n' \
         'path-exclude /usr/share/locale/*' \
         'path-include /usr/share/locale/locale.alias' \
         > /etc/dpkg/dpkg.cfg.d/90alter-zero-slim \
+    && printf '%s\n' \
+        '# Alter Zero container (docker/Dockerfile): a file that fails moves down the list.' \
+        > /etc/apt/alter-zero-mirrors.txt \
+    && printf '%s\tpriority:%s\n' \
+        http://http.kali.org/kali/ 1 \
+        http://kali.download/kali/ 2 \
+        >> /etc/apt/alter-zero-mirrors.txt \
+    && if [ -f /etc/apt/sources.list.d/kali.sources ]; then \
+        sed -i 's|^URIs: http://http\.kali\.org/kali/*$|URIs: mirror+file:/etc/apt/alter-zero-mirrors.txt|' \
+            /etc/apt/sources.list.d/kali.sources; \
+    fi \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl wget git openssh-client \

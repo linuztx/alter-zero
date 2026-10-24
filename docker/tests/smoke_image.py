@@ -48,6 +48,10 @@ VENV = "/opt/az-venv"
 PIP_CACHE = "/var/cache/pip"
 # Setting any of these in the image would change what the app reports home.
 TELEMETRY_KEYS = ("ALTER_ZERO_TELEMETRY", "DO_NOT_TRACK", "ALTER_ZERO_TELEMETRY_URL")
+# Kali's archive is read through this list: the redirector, then Kali's own CDN
+# (docs/docker.md *A dead mirror costs a retry, not the build*).
+MIRROR_LIST = "/etc/apt/alter-zero-mirrors.txt"
+MIRRORS = [["http://http.kali.org/kali/", "priority:1"], ["http://kali.download/kali/", "priority:2"]]
 
 
 def run(*args, **kwargs):
@@ -236,6 +240,26 @@ def check_scanner_runs():
     assert run("nmap", "--version").returncode == 0
 
 
+def check_apt_mirrors():
+    """http.kali.org hands each file to a mirror of its choosing, and apt
+    retries the mirror it was sent to, never the redirector — so one dead
+    mirror failed every build that drew it. apt's mirror method moves a file
+    that fails down the list instead."""
+    entries = [line.split("\t") for line in Path(MIRROR_LIST).read_text().splitlines()
+               if line and not line.startswith("#")]
+    assert entries == MIRRORS, f"{MIRROR_LIST}: {entries}"
+    # apt agrees, rather than us merely having written a file: everything an
+    # update would fetch goes through the list. --print-uris only prints, so
+    # this needs no network. A base image whose sources no longer match the
+    # Dockerfile's rewrite fails here, naming the URI apt would use instead.
+    printed = run("apt-get", "update", "--print-uris")
+    assert printed.returncode == 0, printed.stderr
+    uris = [line.split()[0].strip("'") for line in printed.stdout.splitlines() if line.strip()]
+    assert uris, "apt has no sources at all"
+    stray = [uri for uri in uris if not uri.startswith(f"mirror+file:{MIRROR_LIST}/")]
+    assert not stray, f"apt would fetch these past the mirror list: {stray}"
+
+
 def check_nothing_listens():
     listeners = run("ss", "-H", "-lntu").stdout.strip()
     assert not listeners, f"the idle image has listeners: {listeners}"
@@ -397,6 +421,7 @@ def main():
     check_custom_venv()
     check_pip_cache()
     check_scanner_runs()
+    check_apt_mirrors()
     check_nothing_listens()
     ping = check_telemetry_is_on(version)
     print(json.dumps({"result": "passed", "alter_zero": version, "ping": ping}, indent=2))

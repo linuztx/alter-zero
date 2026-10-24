@@ -107,6 +107,65 @@ Before Node.js/npm were added: **409 MB on disk, 278 MB over the 131 MB Kali
 base** — the 393 MB that leaves, plus the 16 MB of `python3-venv` and the
 virtualenv it builds.
 
+### A dead mirror costs a retry, not the build
+
+The base image fetches from `http.kali.org`, which Kali's documentation calls
+its load balancer: a redirector that sends each file to a mirror of its
+choosing. In October 2026 one of those mirrors, `mirror.us.cdn-perfprod.com`,
+stopped accepting connections while staying in the rotation (on 24 October
+the redirector still gave it 9.4% of requests from a US address). From the
+23rd, five of the eight image builds in four `container.yml` runs failed, on
+whichever engine drew it: `Unable to fetch some archives`, or, when it drew
+the index, an `apt-get update` that only warned, then an install that found
+none of its packages.
+
+apt's own retries cannot get past it. After a redirect apt retries the
+*mirror*, three more times (Kali's `Acquire::Retries`), and never asks the
+redirector again, which would have chosen afresh. Measured with a stand-in
+redirector that sent 7% of a build's requests, 41 of 545, to a blackholed
+address: each of the 41 was tried four times at that address, and the build
+failed.
+
+So the tools layer reads Kali's archive through apt's `mirror+file:` method,
+the failover GitHub's Ubuntu runner images configure for their own archive:
+
+```
+/etc/apt/alter-zero-mirrors.txt
+    http://http.kali.org/kali/   priority:1
+    http://kali.download/kali/   priority:2
+
+/etc/apt/sources.list.d/kali.sources
+    URIs: mirror+file:/etc/apt/alter-zero-mirrors.txt
+```
+
+A file that fails moves down the list once its retries are spent. The
+redirector stays first, so nothing changes while its mirrors work, and
+`kali.download`, Kali's own download host on Cloudflare (and, at 61%, the
+redirector's own first choice for that US address), serves what they drop.
+With the list, the same stand-in: the 41 files came from `kali.download` and
+all 544 packages arrived in 67 seconds. With *every* request sent to the dead
+address the fetch still completed, in about 7 minutes instead of 1, each file
+paying its retries first. Each line's URI and priority are separated by a
+tab, the only separator apt's parser accepts; with a space, `priority:1`
+would be read as part of the URI.
+
+Only the `URIs:` line of the base image's `kali.sources` is rewritten. The
+suite, the components and the keyring stay as Kali ships them, and the list
+serves the user's and the agent's later `apt install`s too. A base with no
+`kali.sources` keeps its own sources rather than failing the build, the
+`setcap` rule: `smoke_image.py` asks apt itself (`apt-get update
+--print-uris`, which needs no network) whether every index it would fetch
+goes through the list, so a base that stops matching fails there, naming the
+URI apt would use instead.
+
+Refused: **`kali.download` alone**, which would have passed, but would put
+every download on one host, where with the list a build fails only when the
+redirector's pick and the CDN both fail the same file; **a retry loop around
+`apt-get`**, since each pass asks the redirector again and so gets there only
+by luck, at a connect timeout per pass; **a third-party mirror in the list**,
+which is the kind of host that went dark here; and **`continue-on-error` on
+the job**, which would have hidden the next real failure along with this one.
+
 ## Root, and no user
 
 Kali's image is root already, and the container stays that way: no `useradd`,
@@ -543,7 +602,8 @@ home) without one test run landing in the production numbers.
 | | Needs | Covers |
 | --- | --- | --- |
 | `docker/tests/test_scripts.py` | nothing | `build.sh` and `run.sh` under a `PATH` holding only symlinked coreutils and recording stubs named `docker`, `podman`, `curl`, `wget`, `xauth` — the exact argv the engine would get; a bug can never reach a real engine or the network |
-| `docker/tests/smoke_image.py` | the image | run inside it, no network: root and no added user, tools, terminfo, the scanner and its dpkg hook, no listeners, telemetry on |
+| `docker/tests/test_dockerfile.py` | nothing | the Dockerfile itself: its default packages and exposed ports, and its mirror list and `kali.sources` rewrite, each run as written against the file Kali ships |
+| `docker/tests/smoke_image.py` | the image | run inside it, no network: root and no added user, tools, terminfo, the scanner and its dpkg hook, apt reading the mirror list, no listeners, telemetry on |
 | `docker/tests/smoke.sh` | an engine | the above, then `run.sh` for real: files cross the mount both ways, a server inside answers on the published port, everything it made is removed |
 
 They run in **`container.yml`**, a workflow of their own: the stub suite and
@@ -561,6 +621,8 @@ redirect, would buy flake and nothing else.
 - **Compiling in the image.** Minutes per build and a toolchain in the image,
   to produce the binary the release workflow already published and checksummed.
 - **A `latest` resolved inside a `RUN`.** Cached forever; see above.
+- **Pinning `kali.download`.** Every download on one host; see *A dead mirror
+  costs a retry, not the build*.
 - **A non-root user.** Asked for root, and a Kali user expects it. The
   ownership cost is real only under rootful Docker and is documented.
 - **Publishing to `0.0.0.0` by default.** See *Ports*.

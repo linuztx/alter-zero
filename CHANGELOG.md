@@ -169,6 +169,15 @@ release heading when a version is cut.
   line lost its `⎿` corner. Blank lines at the start and end of a thought are
   no longer drawn; the breaks between its paragraphs stay.
 
+- **The Kali container builds when a Kali mirror is down.** `http.kali.org`
+  hands each download to a mirror of its choosing, and when one of those
+  mirrors stopped accepting connections apt kept retrying that mirror and the
+  build failed. The image now reads Kali's archive through a mirror list, so a
+  file a mirror fails to deliver comes from Kali's own CDN, `kali.download`,
+  instead. The same applies to packages you `apt install` in the container
+  later; a container made from an older image needs a rebuild and
+  `docker/run.sh --replace` (`docs/docker.md`).
+
 ## [0.15.0] - 2026-10-20
 
 ### Added
