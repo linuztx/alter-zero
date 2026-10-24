@@ -225,22 +225,6 @@ pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 
-/// How many wrapped display **rows** ONE source line may spend in a collapsed
-/// **numbered file cell** (`ui/file_cell.rs`, `docs/long-lines.md`). Past this
-/// it shows its head and stops, marked with [`TOOL_LINE_ELLIPSIS`], so a
-/// minified `.json` line in a `read`/`write` peek paints three rows instead of
-/// dozens while the short lines after it still show. The exec cells need no
-/// per-line budget of their own: their whole block folds at
-/// [`TOOL_FOLD_ROWS`], which bounds a blob and everything else alike.
-pub(super) const TOOL_LINE_MAX_ROWS: usize = 3;
-
-/// The marker closing a numbered row whose source line was cut at
-/// [`TOOL_LINE_MAX_ROWS`]: without it a clipped line reads as a line that
-/// simply ended, and a complete row is indistinguishable from the head of a
-/// 2 KB blob. Fitted so the row still ends inside the width, like
-/// [`ellipsize`]'s cut.
-pub(super) const TOOL_LINE_ELLIPSIS: &str = "…";
-
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at
 /// the lowest row still moving (`LiveTail::anchor` — the last row for every
@@ -736,9 +720,11 @@ pub(super) const TOOL_WRITING: &str = "Writing…";
 pub(super) const TOOL_WRITING_PREFIX: &str = "Writing ";
 pub(super) const TOOL_WRITING_SUFFIX: &str = "…";
 
-/// How many numbered body rows a `write`/`edit` cell shows inline before the
-/// `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row Write preview;
-/// other tools keep the tighter [`TOOL_PEEK_LINES`]).
+/// How many numbered body rows a `read`/`write`/`edit` cell shows inline
+/// before the `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row
+/// Write preview; the exec cells fold at the tighter [`TOOL_FOLD_ROWS`]).
+/// Spent on **whole** source lines — the first always, however many rows it
+/// wraps to — since a file cell never cuts a line (`docs/long-lines.md` §7).
 pub(super) const FILE_PEEK_LINES: usize = 10;
 
 /// The model tools whose output is a file change — rendered as the numbered,

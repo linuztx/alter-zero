@@ -165,18 +165,98 @@ fn the_tail_is_coloured_as_if_the_whole_file_had_been_read() {
 }
 
 #[test]
-fn a_long_line_spends_at_most_three_rows_in_the_window() {
+fn a_long_line_streams_whole_into_the_window() {
+    // A line wider than the terminal wraps to every row it needs (72 content
+    // columns at width 80 past the six-column indent and the `2 ` gutter → 7
+    // rows for 500 columns) — never three rows and a `…` standing in for the
+    // rest of it.
     let content = format!("short\n{}\nend", "x".repeat(500));
-    let drafts = drafts_with("a.txt", &content, false);
+    let drafts = drafts_with("a.md", &content, false);
     let lines = texts(&streaming_cell(draft(&drafts)));
-    let long_rows = lines.iter().filter(|row| row.contains("xxxx")).count();
+    let body = &lines[2..];
+    assert_eq!(body.len(), 1 + 7 + 1, "{lines:#?}");
     assert_eq!(
-        long_rows, 3,
-        "the collapsed cell's per-line budget: {lines:#?}"
+        body.iter()
+            .map(|row| row.matches('x').count())
+            .sum::<usize>(),
+        500,
+        "every column of the long line shows: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|row| row.ends_with('…')),
-        "the cut is marked"
+        !body.iter().any(|row| row.contains('…')),
+        "nothing is cut: {lines:#?}"
+    );
+}
+
+#[test]
+fn a_line_taller_than_the_window_scrolls_through_it_as_it_arrives() {
+    // The window is the newest FILE_PEEK_LINES rows: a line taller than that
+    // shows its newest rows, the characters still arriving at the bottom,
+    // while its head scrolls off the top the way a terminal's would.
+    let content = format!("short\n{}", "x".repeat(1000));
+    let drafts = drafts_with("a.md", &content, false);
+    let lines = texts(&streaming_cell(draft(&drafts)));
+    let body = &lines[2..];
+    assert_eq!(body.len(), FILE_PEEK_LINES, "{lines:#?}");
+    assert!(
+        !body.iter().any(|row| row.contains("short")),
+        "the older line gave way: {lines:#?}"
+    );
+    assert!(
+        !body.iter().any(|row| row.contains('…')),
+        "nothing is cut: {lines:#?}"
+    );
+    // 1000 columns at 72 a row: 13 full rows, then 64 on the newest.
+    assert_eq!(
+        body.last().map(|row| row.trim()),
+        Some("x".repeat(1000 - 13 * 72).as_str()),
+        "the bottom row is where the line is still arriving: {lines:#?}"
+    );
+}
+
+#[test]
+fn a_long_lines_rows_are_the_ctrl_o_views_rows_too() {
+    // The window shows the Ctrl+O view's own rows for a long line as well —
+    // the newest of them while it streams, the first once it has arrived —
+    // and that head is the committed cell's peek, row for row.
+    let body = |lines: &[Line<'static>]| lines[2..].to_vec();
+    // 300 columns at 72 a row: five rows, then seven one-row lines.
+    let rest: Vec<String> = (2..=8).map(|i| format!("line {i}")).collect();
+    let content = format!("{}\n{}", "y".repeat(300), rest.join("\n"));
+    let open = drafts_with("a.md", &content, false);
+    let whole = body(&draft_cell_lines(
+        draft(&open),
+        None,
+        None,
+        WIDTH,
+        &PathDisplay::VERBATIM,
+        true,
+    ));
+    assert_eq!(whole.len(), 5 + 7, "the whole file: {:#?}", texts(&whole));
+    let tail = body(&streaming_cell(draft(&open)));
+    assert_eq!(
+        tail,
+        whole[whole.len() - FILE_PEEK_LINES..],
+        "the newest rows"
+    );
+
+    let closed = drafts_with("a.md", &content, true);
+    let mut head = body(&streaming_cell(draft(&closed)));
+    assert!(
+        plain(&head.pop().expect("the hint")).contains("+2 lines (ctrl+o to expand)"),
+        "the head closes on the hint: {:#?}",
+        texts(&head)
+    );
+    assert_eq!(head, whole[..FILE_PEEK_LINES], "the first rows");
+    let committed = tool_lines(
+        &committed_call("a.md", &content),
+        WIDTH,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        body(&streaming_cell(draft(&closed))),
+        committed[2..],
+        "the committed peek, row for row"
     );
 }
 

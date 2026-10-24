@@ -635,15 +635,15 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   Derived from the parsed body, so it lights up on rollouts recorded before it
   existed, and the permission prompt's preview gets it too.
 - Long rows **wrap** (`code_content_rows`), continuations indented under the
-  content column, keeping colour and tint — bounded, inline, to
-  `TOOL_LINE_MAX_ROWS` rows per source line with a dim `…` marking the cut
-  (`clip_segments`, `docs/long-lines.md`), so one minified `.json` line can't
-  paint dozens of rows in a collapsed cell. The Ctrl+O expansion and the
-  permission prompt's preview pass no cap and render every row.
+  content column, keeping colour and tint — **whole**, inline as in the
+  Ctrl+O expansion and the permission prompt's preview: no line is cut short,
+  and no `…` stands in for the rest of one (`docs/long-lines.md` §7).
 - The **inline peek** shows the first `FILE_PEEK_LINES` (10) body rows (whole
-  source rows only) then the `… +N lines (ctrl+o to expand)` hint — counting
-  **file lines** here, the unit the gutter numbers and the expansion shows;
-  the Ctrl+O transcript shows everything.
+  source rows only — the first always, however many rows it wraps to; a line
+  with no room left waits whole behind the hint) then the
+  `… +N lines (ctrl+o to expand)` hint — counting **file lines** here, the
+  unit the gutter numbers and the expansion shows; the Ctrl+O transcript
+  shows everything.
 
 ### Path display
 

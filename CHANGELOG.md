@@ -99,6 +99,16 @@ release heading when a version is cut.
   `qwen/qwen3-8b`, a vLLM repo id) was sent OpenRouter's `cache_control`
   breakpoints, which only a hosted service that bills for caching uses
   (`docs/prompt-caching.md`).
+- **`read`, `write` and `edit` cells show long lines whole.** A file line
+  longer than three rows used to stop at the third with a `…`, cutting a
+  markdown paragraph, a long HTML tag or a string in mid-sentence. Every line
+  a cell shows now wraps to every row it needs, in the finished cell and
+  while a `write` streams into it, where a line taller than the cell scrolls
+  through it the way a terminal would. The cell still shows about ten rows
+  inline: a long line with no room left waits whole behind
+  `… +N lines (ctrl+o to expand)` instead of being cut. A cell's first line
+  always shows, so a minified file's single line now takes every row it needs
+  (`docs/long-lines.md`).
 
 ### Fixed
 

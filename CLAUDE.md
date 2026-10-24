@@ -1247,10 +1247,12 @@ whatever shape its output has, hint included, and the running tail's
 `TOOL_PEEK_ROWS` (4) window is the same ceiling, so the cell never *grows*
 when it settles. The fold is what bounds a blob: it shows three rows of it
 as they are and the hint under them says the rest follows (Claude Code's
-look — no `…` on the row); only the numbered file cell keeps a per-line
-budget, `TOOL_LINE_MAX_ROWS` rows closed by `TOOL_LINE_ELLIPSIS`, since its
-ten-line peek has no row ceiling of its own — never in Ctrl+O and never in
-the permission preview, where the whole line is the point. The `… +N lines`
+look — no `…` on the row); the numbered file cell cuts no line at all — its
+`FILE_PEEK_LINES` (10) peek is whole source lines, each wrapped to its end
+(the first always, however tall), a line the budget has no room left for
+waiting whole behind the hint, and a `write` streaming into it shows its
+newest ten rows, a long line's head scrolling off the top, so the strip is no
+taller than it ever was (`docs/long-lines.md` §7). The `… +N lines`
 hint counts the **display rows** the expansion adds rather than source lines
 (the numbered file cells keep counting *file* lines: the rule is "count in
 the unit the expansion shows", and their gutter numbers them). And what the

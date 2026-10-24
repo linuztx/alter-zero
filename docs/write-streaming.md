@@ -167,15 +167,18 @@ geometry is the committed cell's, so the two cannot drift:
   first), then `Waiting…`/`Running…` once queued.
 - **The body** is the numbered, syntax-highlighted gutter of the committed
   `Wrote …` cell, built by the same `numbered_row_lines`. It uses the same
-  `{n:>W}` gutter, the same one-column indent past the corner, and the same
-  `TOOL_LINE_MAX_ROWS` cap per line, so a minified line takes three rows here
-  too. The window is `FILE_PEEK_LINES` (10) **display rows**, whole source
-  lines only, the committed peek's budget:
-  - **tail**, while the content streams: the newest lines that fit, the
-    unfinished last line at the bottom;
-  - **head**, once it has all arrived: the first lines that fit, over the
-    `… +N lines (ctrl+o to expand)` hint, where N counts the lines Ctrl+O adds;
-  - **whole**, in Ctrl+O: every line, uncapped.
+  `{n:>W}` gutter and the same one-column indent past the corner, and like the
+  committed cell it cuts no line: a long one wraps to every row it needs, with
+  no `…` standing in for the rest (`docs/long-lines.md` §7). The window is
+  `FILE_PEEK_LINES` (10) **display rows**, the committed peek's budget:
+  - **tail**, while the content streams: the newest rows, the unfinished last
+    line at the bottom. A line taller than the window shows its newest rows
+    and its head scrolls off the top, the way a terminal's would, so the cell
+    is never taller than the budget while it streams;
+  - **head**, once it has all arrived: the first whole lines that fit, the
+    first always, over the `… +N lines (ctrl+o to expand)` hint, where N
+    counts the lines Ctrl+O adds;
+  - **whole**, in Ctrl+O: every line.
 
 The window flips from tail to head on the content's closing quote, or when the
 round seals without one. It does not wait for the call to be announced. A
@@ -261,7 +264,10 @@ drives the **real** backend against a stub provider that streams a 30-line
 `write` six characters at a time, sampling the cell as it moves. Past ten
 lines the window's bottom row must keep moving down the file and line 1 must
 never show. Once the content closes, the cell must show lines 1 to 10, and the
-committed cell must keep them over `… +20 lines`.
+committed cell must keep them over `… +20 lines`. Phase 138b streams one long
+paragraph line the same way and reads the file back: the streaming cell must
+show more than three rows of it with no row ending in `…`, and the committed
+`Write` and `Read` cells must both show its last word.
 
 ## What it does not do
 
