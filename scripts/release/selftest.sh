@@ -676,6 +676,8 @@ EOF
 			expect_ok "a second run publishes nothing" "${npm_env[@]}" bash "$STEPS/npm.sh" 0.4.2 "$T/npm-dist" --out "$T/npm-out"
 			expect_contains "…finding each version already there" "$OUT" "@example/alter-zero@0.4.2 is already on the registry"
 			expect_eq "…and the registry as it was" "7" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
+			expect_ok "a dry run validates an already-published immutable version" "${npm_env[@]}" bash "$STEPS/npm.sh" 0.4.2 "$T/npm-dist" --out "$T/npm-out" --dry-run
+			expect_eq "…without publishing anything over it" "7" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
 			expect_ok "npm install -g installs the launcher from the registry" "${npm_env[@]}" npm install -g --prefix "$T/npm-prefix" @example/alter-zero
 			expect_eq "…whose alter-zero runs the host's binary" "alter-zero 0.4.2" "$("$T/npm-prefix/bin/alter-zero" --version 2>&1)"
 			expect_eq "…the one platform package installed beside it" "alter-zero-$(npm_platform "$host")" "$(ls "$T/npm-prefix/lib/node_modules/@example/alter-zero/node_modules/@example")"

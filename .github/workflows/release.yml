@@ -233,7 +233,7 @@ jobs:
 
   # The npm packages (docs/npm.md): the same verified archives, staged as one
   # package per platform plus the launcher. Every run rehearses them — stages
-  # and validates each with `npm publish --dry-run`, publishing nothing — in
+  # and validates each with `npm pack --dry-run`, publishing nothing — in
   # a job that holds no credentials at all, pull requests included.
   npm:
     name: rehearse publishing v${{ needs.check.outputs.version }} to npm

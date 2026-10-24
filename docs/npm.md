@@ -187,7 +187,7 @@ target builds), and `prepare` rewrites the version and the six pins in
 place.
 
 ```bash
-scripts/release.sh npm X.Y.Z dist --dry-run   # verify, stage into target/npm, `npm publish --dry-run` each
+scripts/release.sh npm X.Y.Z dist --dry-run   # verify, stage into target/npm, `npm pack --dry-run --offline` each
 scripts/release.sh npm X.Y.Z dist             # …and publish: six platform packages, then the launcher
 ```
 
@@ -221,6 +221,12 @@ is simply run again. A pre-release goes to the `next` dist-tag, keeping
 launcher could reach the registry ahead of its platform packages and install
 with no binary at all. The staged copy carries no scripts, so the published
 package runs nothing anywhere.
+
+A rehearsal uses `npm pack --dry-run --offline` to validate exactly what would be
+uploaded, and prints the real `npm publish` command. Unlike `npm publish
+--dry-run`, packing does not contact the registry or reject a version that
+already exists there, so the current released version can be rehearsed.
+Actual publication still checks the registry and skips immutable versions.
 
 Registry and credentials are npm's own configuration — `npm login` on a
 laptop, `NODE_AUTH_TOKEN` or trusted publishing in the workflow — and a dry
@@ -259,7 +265,7 @@ environment `npm`. Set that up once, in the repository's **Settings**:
   tags*, allow only the tag pattern `v*`, so no branch and no pull request
   can run a job in it (a required reviewer can be added as well).
 - In that environment's secrets, `NPM_TOKEN`: an npm granular access token
-  with read and write access to the five packages, allowed to publish
+  with read and write access to the seven packages, allowed to publish
   without a one-time password. An environment secret is readable only by a
   job running in the environment, which the rule above keeps to release
   tags.
@@ -284,6 +290,11 @@ short-lived publish token on its own. Naming the environment is what makes
 the trust narrow: npm accepts only a token minted by a job in the `npm`
 environment, and GitHub runs a job there only on a ref the environment
 admits.
+
+When adding a new platform package to a setup already using trusted
+publishing, bootstrap that package with a publish-capable token, then add
+the same trusted publisher to its settings. This applies to the two Windows
+packages when they are first introduced.
 
 If the job fails after the GitHub release went out, re-run it: whatever was
 published is skipped.

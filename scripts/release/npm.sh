@@ -183,7 +183,10 @@ for i in "${!dirs[@]}"; do
 	publish=(npm publish "$dir" --tag "$tag")
 	if [ "$dry_run" -eq 1 ]; then
 		info "would run: ${publish[*]}"
-		"${publish[@]}" --dry-run
+		# npm publish --dry-run still queries the registry and rejects an
+		# already-published immutable version. Packing validates the exact
+		# upload contents offline, even when rehearsing the current release.
+		npm pack "$dir" --dry-run --offline
 		continue
 	fi
 	if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
