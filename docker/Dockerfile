@@ -28,6 +28,16 @@ FROM ${KALI_IMAGE} AS tools
 # kept. They stay in force for what you `apt install` later; delete the file
 # and reinstall a package to get its pages back.
 #
+# The mirror list next. Kali's sources name its redirector, http.kali.org,
+# which hands each file to a mirror of its choosing; when it picks one that
+# has stopped answering, apt fails those files and the whole layer with them
+# ("Unable to fetch some archives"). Pointed at this list instead, apt still
+# asks the redirector first, and fetches whatever its pick cannot deliver from
+# kali.download, Kali's Cloudflare mirror (apt-transport-mirror(1)). It stays
+# in force for what you `apt install` later. Only the URIs line Kali ships is
+# rewritten, so a base image without it builds as before; smoke_image.py
+# checks that this one was. apt reads a mirror's priority only after a tab.
+#
 # The setcap line: Kali ships the scanner with forced file capabilities
 # (net_admin among them). A container's default set has no NET_ADMIN, and the
 # kernel then refuses to exec the binary at all — "Operation not permitted",
@@ -52,6 +62,17 @@ RUN printf '%s\n' \
         'path-exclude /usr/share/locale/*' \
         'path-include /usr/share/locale/locale.alias' \
         > /etc/dpkg/dpkg.cfg.d/90alter-zero-slim \
+    && printf '%s\n' \
+        '# Alter Zero container (docker/Dockerfile): Kali mirrors, tried in priority order.' \
+        > /etc/apt/kali-mirrors.txt \
+    && printf '%s\tpriority:%s\n' \
+        http://http.kali.org/kali/ 1 \
+        http://kali.download/kali/ 2 \
+        >> /etc/apt/kali-mirrors.txt \
+    && if [ -f /etc/apt/sources.list.d/kali.sources ]; then \
+        sed -i 's|^URIs: http://http\.kali\.org/kali/\{0,1\}$|URIs: mirror+file:/etc/apt/kali-mirrors.txt|' \
+            /etc/apt/sources.list.d/kali.sources; \
+    fi \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl wget git openssh-client \

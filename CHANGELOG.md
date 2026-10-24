@@ -112,6 +112,14 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **The Kali container builds while a Kali mirror is down.** Kali's
+  redirector, `http.kali.org`, hands each file to a mirror it picks, and when
+  it picked one that had stopped answering, `docker/build.sh` failed with
+  `Unable to fetch some archives`, on Docker and Podman alike. apt in the
+  image now still asks the redirector first, and fetches any file its pick
+  cannot deliver from `kali.download`, Kali's Cloudflare mirror. That holds
+  for the build and for every `apt install` in the container
+  (`docs/docker.md`).
 - **`agentoutput` lists a message the agent read where it read it.** A
   `— message received —` mark could appear ahead of a call the agent had
   made before reading the message, when the agent ran ahead of the thread
