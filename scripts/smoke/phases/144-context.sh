@@ -28,9 +28,12 @@ smoke_begin
 #       and out, the cache-hit share the provider answered, and the running
 #       total since launch; Ctrl+O over the page comes back to it on Esc
 #       rather than arming a rewind; a 9-row pane windows the legend around
-#       the highlight under the title row, nothing flowing; and after a
-#       /clear the last request is gone with the conversation it described
-#       while the total since launch stays;
+#       the highlight under the title row, nothing flowing; a long third
+#       answer grows the conversation's run on the bar — its cells in the
+#       accent, read off the raw SGR bytes — to its own share of the window,
+#       however many slivers sit ahead of it; and after a /clear the last
+#       request is gone with the conversation it described while the total
+#       since launch stays;
 # Then against the offline dummy:
 #   (e) /context opens mid-turn with the status line still above it, and
 #       the page keeps counting while the turn streams underneath.
@@ -61,11 +64,14 @@ class Stub(BaseHTTPRequestHandler):
         seen["requests"] += 1
         prompt = max(1, len(raw) // 4)
         cached = 0 if seen["requests"] == 1 else int(prompt * 0.86)
+        reply = "A short reply from the stub."
+        if b"a long answer please" in raw:
+            reply = "The context window fills as the conversation grows. " * 700
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.end_headers()
         for frame in (
-            {"choices": [{"index": 0, "delta": {"content": "A short reply from the stub."}}]},
+            {"choices": [{"index": 0, "delta": {"content": reply}}]},
             {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
             {"choices": [], "usage": {"prompt_tokens": prompt, "completion_tokens": 42,
                                       "prompt_tokens_details": {"cached_tokens": cached}}},
@@ -143,6 +149,37 @@ c_select() {
 # c_tokens PAGE LABEL — the token count on LABEL's legend row ("37", "3.2k").
 c_tokens() {
 	grep -oE "$2 +[0-9.]+k?" <<<"$1" | head -n 1 | grep -oE '[0-9.]+k?$'
+}
+# c_bar_cells SESSION R;G;B — how many `█` cells the window bar paints in
+# that truecolour, read off the raw SGR bytes (`capture-pane -e`): one
+# category's run.
+c_bar_cells() {
+	tmux capture-pane -t "$1" -p -e | python3 -c '
+import re, sys
+
+want = sys.argv[1]
+for line in sys.stdin:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+    if len(text) < 10 or set(text) - set("█░╱"):
+        continue
+    fg, cells = None, 0
+    for sgr, run in re.findall(r"\x1b\[([0-9;]*)m|([^\x1b]+)", line):
+        if run:
+            cells += run.count("█") if fg == want else 0
+            continue
+        params, i = sgr.split(";"), 0
+        while i < len(params):
+            if params[i] == "38" and params[i + 1 : i + 2] == ["2"]:
+                fg, i = ";".join(params[i + 2 : i + 5]), i + 5
+            elif params[i] == "38" and params[i + 1 : i + 2] == ["5"]:
+                fg, i = None, i + 3
+            else:
+                if params[i] in ("", "0", "39"):
+                    fg = None
+                i += 1
+    print(cells)
+    break
+' "$2"
 }
 
 # ---- (a) the palette lists /context, and it opens before any turn ----
@@ -247,6 +284,28 @@ tmux resize-window -t "$S144" -x 110 -y 40
 wait_for 5 "$S144" -F "Since launch" || fail "the page did not grow back with the pane"
 keys "$S144" Escape
 wait_for 5 "$S144" -F "stub-model · ~/ctx" || fail "Esc did not close the reopened page"
+# The bar moves with the conversation: a long answer grows its run — the
+# Messages cells, in Mocha's sky accent — to its own share of the 200k
+# window across the 106-cell bar. The slivers ahead of it (the system
+# prompt, the doc, the listings) take their one visible cell each from the
+# free space; the conversation used to pay for them all and sat cells short.
+submit "$S144" "a long answer please"
+wait_summaries 30 "$S144" 3 -S -2000 >/dev/null || fail "the long answer from the stub never settled"
+submit "$S144" "/context"
+long="$(wait_pane 5 "$S144" -F "Since launch")" || fail "/context did not reopen after the long answer"
+dump "the page after a long answer" "$long"
+long_tokens="$(c_tokens "$long" "Messages")"
+long_want="$(awk -v t="$long_tokens" 'BEGIN {
+	n = t + 0; if (t ~ /k$/) n *= 1000
+	c = int(n * 106 / 200000 + 0.5); if (c < 1) c = 1; print c }')"
+long_cells="$(c_bar_cells "$S144" "137;220;235")"
+note "the conversation's ${long_tokens:-?} tokens are ${long_cells:-?} cells on the bar (its own share: $long_want)"
+[ "${long_want:-0}" -ge 3 ] || fail "the long answer left the conversation too small to measure (${long_tokens:-?} tokens)"
+if [ -z "$long_cells" ] || [ "$long_cells" -lt $((long_want - 1)) ] || [ "$long_cells" -gt $((long_want + 1)) ]; then
+	fail "the conversation's run is ${long_cells:-missing} cells, not its own share of the window ($long_want)"
+fi
+keys "$S144" Escape
+wait_for 5 "$S144" -F "stub-model · ~/ctx" || fail "Esc did not close the page after the long answer"
 # The last request described the conversation /clear removes; the session's
 # spend stays.
 c_cleared() { ! pane_has "$S144" -S -200 -- -F "second question"; }
@@ -256,7 +315,7 @@ submit "$S144" "/context"
 cleared="$(wait_pane 5 "$S144" -F "Context usage")" || fail "/context did not open after /clear"
 dump "the page after /clear" "$cleared"
 expect_has "$cleared" -F "no usage reported yet" "the last request outlived the conversation /clear removed"
-expect_has "$cleared" -E "Since launch +2 requests" "/clear reset the total since launch"
+expect_has "$cleared" -E "Since launch +3 requests" "/clear reset the total since launch"
 keys "$S144" Escape
 wait_for 5 "$S144" -F "stub-model · ~/ctx" || fail "Esc did not close the page after /clear"
 tmux kill-session -t "$S144" 2>/dev/null

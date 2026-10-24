@@ -7,10 +7,11 @@
 //! - a **subtitle** naming the model and the window's fill, the share
 //!   turning amber and then red as it nears the threshold where the session
 //!   compacts itself;
-//! - a **bar** standing for the whole window, one cell per slice of it in
-//!   its category's colour, then the free space and the hatched headroom
-//!   auto-compact keeps ([`allot_cells`] places every boundary within half a
-//!   cell of where it belongs);
+//! - a **bar** standing for the whole window, each category a run of cells
+//!   as long as its own share of it, in its colour, then the free space and
+//!   the hatched headroom auto-compact keeps ([`allot_cells`] — the free
+//!   space pays for every sliver's visible cell, so no run pays for
+//!   another's);
 //! - a **legend** — a swatch, the label, the tokens and the share in
 //!   aligned columns — whose highlighted row's **detail** (its parts,
 //!   largest first, each with a bar against the largest) sits beside it on
@@ -280,50 +281,63 @@ fn fill_color(gauge: &Gauge<'_>, window: u64) -> Color {
     }
 }
 
-/// Split `cells` among `sizes` by **boundary**: each running total lands
-/// within half a cell of where it belongs, so a position on the bar — the
-/// auto-compact threshold — reads true. A non-zero size gets at least one
-/// cell while there are cells enough for every one, taken from what
-/// follows it, and a zero size gets none; the cells always sum to `cells`
-/// (none when every size is zero).
-pub(super) fn allot_cells(sizes: &[u64], cells: usize) -> Vec<usize> {
+/// Split `cells` among `sizes`, each by its **own** share — its fraction of
+/// the whole, rounded to the nearest cell — so a run is as long as its size
+/// is worth however many sizes sit before it, and grows as that size does. A
+/// non-zero size gets at least one cell while there are cells enough for
+/// every one, and a zero size gets none. The `slack` size — the free space,
+/// which is whatever the rest leave — takes up what that rounding leaves
+/// over or short, so a sliver's one visible cell is the free space's and
+/// never a neighbour's; past what the slack can give (or with no slack, or
+/// an empty one) the longest run gives or takes the difference, a cell at a
+/// time. The cells always sum to `cells` (none when every size is zero).
+pub(super) fn allot_cells(sizes: &[u64], cells: usize, slack: Option<usize>) -> Vec<usize> {
     let sum: u128 = sizes.iter().map(|&size| u128::from(size)).sum();
     if sum == 0 || cells == 0 {
         return vec![0; sizes.len()];
     }
-    let mut nonzero_left = sizes.iter().filter(|&&size| size > 0).count();
-    let every_one_visible = nonzero_left <= cells;
+    let every_one_visible = sizes.iter().filter(|&&size| size > 0).count() <= cells;
+    let least = |i: usize| usize::from(every_one_visible && sizes[i] > 0);
     let scale = cells as u128;
-    let mut out = Vec::with_capacity(sizes.len());
-    let mut running: u128 = 0;
-    let mut previous = 0usize;
-    for &size in sizes {
-        if size == 0 {
-            // Nothing to draw: a boundary held back a cell for the sizes
-            // after it must not hand that cell to an empty one between.
-            out.push(0);
-            continue;
+    let mut out: Vec<usize> = (0..sizes.len())
+        .map(|i| {
+            // round(size / sum × cells), in integers.
+            let share = (u128::from(sizes[i]) * scale * 2 + sum) / (sum * 2);
+            usize::try_from(share).unwrap_or(cells).max(least(i))
+        })
+        .collect();
+    if let Some(slack) = slack.filter(|&i| sizes.get(i).is_some_and(|&size| size > 0)) {
+        let rest = out.iter().sum::<usize>() - out[slack];
+        out[slack] = cells.saturating_sub(rest).max(least(slack));
+    }
+    let mut total: usize = out.iter().sum();
+    while total != cells {
+        let over = total > cells;
+        // The run a cell changes least: the longest (the larger size on a
+        // tie, then the later) — and, giving one back, one above its floor.
+        let Some(longest) = (0..sizes.len())
+            .filter(|&i| !over || out[i] > least(i))
+            .max_by_key(|&i| (out[i], sizes[i]))
+        else {
+            break;
+        };
+        if over {
+            out[longest] -= 1;
+            total -= 1;
+        } else {
+            out[longest] += 1;
+            total += 1;
         }
-        running += u128::from(size);
-        nonzero_left -= 1;
-        // round(running / sum × cells), in integers.
-        let mut boundary =
-            usize::try_from((running * scale * 2 + sum) / (sum * 2)).unwrap_or(cells);
-        if every_one_visible {
-            boundary = boundary.max(previous + 1).min(cells - nonzero_left);
-        }
-        let boundary = boundary.clamp(previous, cells);
-        out.push(boundary - previous);
-        previous = boundary;
     }
     out
 }
 
 /// The bar standing for the whole window, the page's width less its inset
-/// on either side: each category's cells in its colour, in the order the
-/// request carries them, then the free space (`░`) and the hatched headroom
-/// (`╱`). With no window known it is the total's own proportions; with
-/// nothing counted at all, empty.
+/// on either side: each category a run of cells as long as its own share of
+/// the window, in its colour and in the order the request carries them, then
+/// the free space (`░`) — whatever the categories and the headroom leave —
+/// and the hatched headroom (`╱`). With no window known it is the total's
+/// own proportions; with nothing counted at all, empty.
 fn bar_line(gauge: &Gauge<'_>, width: u16) -> Line<'static> {
     let cells = (width as usize)
         .saturating_sub(2 * cols(MODEL_INDENT))
@@ -341,6 +355,9 @@ fn bar_line(gauge: &Gauge<'_>, width: u16) -> Line<'static> {
             )
         })
         .collect();
+    // The free space is whatever the rest leave, so it is where their
+    // rounding — and each sliver's one visible cell — is taken up.
+    let slack = gauge.window.map(|_| segments.len());
     if gauge.window.is_some() {
         segments.push((
             gauge.free(),
@@ -361,7 +378,7 @@ fn bar_line(gauge: &Gauge<'_>, width: u16) -> Line<'static> {
             Style::new().fg(context_usage_free_color()),
         ));
     } else {
-        for ((_, glyph, color), count) in segments.iter().zip(allot_cells(&sizes, cells)) {
+        for ((_, glyph, color), count) in segments.iter().zip(allot_cells(&sizes, cells, slack)) {
             if count > 0 {
                 spans.push(Span::styled(glyph.repeat(count), Style::new().fg(*color)));
             }
