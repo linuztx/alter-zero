@@ -86,6 +86,54 @@ pub(super) fn code_content_rows(
     rows
 }
 
+/// The last `keep` of the rows [`code_content_rows`] breaks `segments` into
+/// at `width`, and how many rows come before them — the tail of a long line
+/// without wrapping its head, which is what a streaming file's window shows
+/// several times a frame (`docs/long-lines.md` §7).
+///
+/// When every byte is printable ASCII each character is one grapheme one
+/// column wide, so row `k` starts at byte `k * width` and the rows before the
+/// tail are skipped by arithmetic; the tail is wrapped from a row start,
+/// where the greedy break starts afresh, so its rows are the whole wrap's.
+/// Any other text is wrapped whole and its head dropped.
+pub(super) fn code_content_tail_rows(
+    segments: &[(String, Style)],
+    width: u16,
+    keep: usize,
+) -> (Vec<Vec<Span<'static>>>, usize) {
+    let printable = segments
+        .iter()
+        .all(|(text, _)| text.bytes().all(|b| (b' '..=b'~').contains(&b)));
+    if !printable {
+        let mut rows = code_content_rows(segments, width);
+        let dropped = rows.len().saturating_sub(keep);
+        rows.drain(..dropped);
+        return (rows, dropped);
+    }
+    let row_cols = (width as usize).max(1);
+    let len: usize = segments.iter().map(|(text, _)| text.len()).sum();
+    // An empty line is still one (empty) row.
+    let total = len.div_ceil(row_cols).max(1);
+    let dropped = total.saturating_sub(keep);
+    if keep == 0 {
+        return (Vec::new(), dropped);
+    }
+    if dropped == 0 {
+        return (code_content_rows(segments, width), 0);
+    }
+    let mut skip = dropped * row_cols;
+    let mut tail: Vec<(String, Style)> = Vec::new();
+    for (text, style) in segments {
+        if skip >= text.len() {
+            skip -= text.len();
+            continue;
+        }
+        tail.push((text[skip..].to_string(), *style));
+        skip = 0;
+    }
+    (code_content_rows(&tail, width), dropped)
+}
+
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`), by
 /// driving one [`AssistantRenderer`] over its source lines: prose word-wraps
 /// with its inline markdown styled, lists and quotes render codex's way, blocks

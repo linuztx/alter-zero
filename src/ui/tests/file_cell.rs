@@ -165,19 +165,90 @@ fn the_tail_is_coloured_as_if_the_whole_file_had_been_read() {
 }
 
 #[test]
-fn a_long_line_spends_at_most_three_rows_in_the_window() {
-    let content = format!("short\n{}\nend", "x".repeat(500));
+fn a_long_line_still_arriving_shows_its_newest_rows() {
+    // The window is the newest FILE_PEEK_LINES rows of the file as it stands,
+    // so a long line still arriving keeps the text that just arrived on the
+    // bottom row. The old per-line cut showed the line's first three rows
+    // over a `…`, and none of what was streaming in. Nothing is cut: the
+    // rows the window has no room for have scrolled off its top.
+    let content = format!("short\n{}{}", "a".repeat(500), "b".repeat(500));
     let drafts = drafts_with("a.txt", &content, false);
     let lines = texts(&streaming_cell(draft(&drafts)));
-    let long_rows = lines.iter().filter(|row| row.contains("xxxx")).count();
+    let body = &lines[2..];
+    assert_eq!(body.len(), FILE_PEEK_LINES, "{lines:#?}");
+    assert!(
+        !body.iter().any(|row| row.contains('…')),
+        "no cut marker: {lines:#?}"
+    );
     assert_eq!(
-        long_rows, 3,
-        "the collapsed cell's per-line budget: {lines:#?}"
+        body.iter()
+            .map(|row| row.matches('b').count())
+            .sum::<usize>(),
+        500,
+        "everything that arrived last shows: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|row| row.ends_with('…')),
-        "the cut is marked"
+        body[body.len() - 1].ends_with('b'),
+        "the newest text is on the bottom row: {lines:#?}"
     );
+}
+
+#[test]
+fn the_tail_is_the_newest_rows_of_the_whole_view_when_lines_wrap() {
+    // Rows, not lines: with wrapping lines the window is still exactly the
+    // last FILE_PEEK_LINES rows Ctrl+O shows, even when its top row is the
+    // end of a line whose start has scrolled off.
+    let content = format!("{}\nshort\n{}\nend", "p".repeat(300), "q".repeat(500));
+    let drafts = drafts_with("a.txt", &content, false);
+    let whole = draft_cell_lines(
+        draft(&drafts),
+        None,
+        None,
+        WIDTH,
+        &PathDisplay::VERBATIM,
+        true,
+    );
+    let tail = streaming_cell(draft(&drafts));
+    assert_eq!(
+        tail[2..],
+        whole[whole.len() - FILE_PEEK_LINES..],
+        "the newest rows, styles and all: {:#?}",
+        texts(&tail)
+    );
+}
+
+#[test]
+fn a_finished_write_with_a_long_line_shows_the_head_the_committed_cell_will() {
+    // The head and the committed cell share the peek's rule: a long line the
+    // peek starts is shown whole, and the cell is the same either side of
+    // the call resolving.
+    let mut content = String::new();
+    for i in 1..=12 {
+        if i == 8 {
+            content.push_str(&"y".repeat(400));
+        } else {
+            content.push_str(&format!("line {i}"));
+        }
+        content.push('\n');
+    }
+    let drafts = drafts_with("a.txt", &content, true);
+    let lines = streaming_cell(draft(&drafts));
+    let committed = tool_lines(
+        &committed_call("a.txt", &content),
+        WIDTH,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        lines[2..],
+        committed[2..],
+        "row for row: {:#?}",
+        texts(&lines)
+    );
+    let ys: usize = texts(&lines)
+        .iter()
+        .map(|row| row.matches('y').count())
+        .sum();
+    assert_eq!(ys, 400, "the long line whole: {:#?}", texts(&lines));
 }
 
 #[test]
@@ -312,4 +383,30 @@ fn ctrl_o_shows_the_whole_file_as_it_streams() {
     let numbers: Vec<Option<usize>> = lines[2..].iter().map(|row| number_of(row)).collect();
     assert_eq!(numbers, (1..=17).map(Some).collect::<Vec<_>>());
     assert!(!lines.iter().any(|row| row.contains("ctrl+o to expand")));
+}
+
+#[test]
+fn the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget() {
+    // The strip builds a streaming write's cell several times a frame, so the
+    // window must not cost the whole line it shows the end of: the tail of a
+    // long printable line is found by arithmetic rather than by wrapping the
+    // rows it drops (docs/long-lines.md §7). Wrapped whole, this ~1 MB line
+    // costs tens of milliseconds a build.
+    let content = "{\"k\":123,\"deep\":[1,2,3]},".repeat(40_000);
+    let drafts = drafts_with("a.json", &content, false);
+    let streaming = draft(&drafts);
+    // The highlight cache's first fill is the line's arrival, not a frame.
+    assert_eq!(streaming_cell(streaming).len(), 2 + FILE_PEEK_LINES);
+    let frames = 10u32;
+    let start = std::time::Instant::now();
+    for _ in 0..frames {
+        assert_eq!(streaming_cell(streaming).len(), 2 + FILE_PEEK_LINES);
+    }
+    let per_build = start.elapsed() / frames;
+    println!("the streaming cell of a 1 MB line: {per_build:?} per build");
+    assert!(
+        per_build < std::time::Duration::from_millis(10),
+        "one build of the streaming cell took {per_build:?} — the tail is \
+         wrapping the whole line again"
+    );
 }

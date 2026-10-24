@@ -173,7 +173,7 @@ rustc into a failed install; `options=('!lto')`, since makepkg's
 debug info Cargo would strip; and `RUSTONIG_SYSTEM_LIBONIG=1`, linking Arch's
 `oniguruma` — so a C library newly linked in `Cargo.toml` is a new
 `depends` entry there. Its `check()` runs the dev-profile suite without
-debug info and `--skip`s the six frame-budget gates by name (a redraw under
+debug info and `--skip`s the seven frame-budget gates by name (a redraw under
 25 ms measures the user's machine, not the package), so a new wall-clock
 gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.
@@ -1247,10 +1247,12 @@ whatever shape its output has, hint included, and the running tail's
 `TOOL_PEEK_ROWS` (4) window is the same ceiling, so the cell never *grows*
 when it settles. The fold is what bounds a blob: it shows three rows of it
 as they are and the hint under them says the rest follows (Claude Code's
-look — no `…` on the row); only the numbered file cell keeps a per-line
-budget, `TOOL_LINE_MAX_ROWS` rows closed by `TOOL_LINE_ELLIPSIS`, since its
-ten-line peek has no row ceiling of its own — never in Ctrl+O and never in
-the permission preview, where the whole line is the point. The `… +N lines`
+look — no `…` on the row); and the numbered file cell cuts no line at all:
+its peek starts lines while it has `FILE_PEEK_LINES` (10) rows left and shows
+each line it starts whole, since the three-row cut it once kept, closed by a
+`…`, hid the end of a Markdown paragraph or a long string in the one cell
+the user reads (§7 of the doc), while a streaming `write`'s tail is the
+newest ten rows, never a cut line. The `… +N lines`
 hint counts the **display rows** the expansion adds rather than source lines
 (the numbered file cells keep counting *file* lines: the rule is "count in
 the unit the expansion shows", and their gutter numbers them). And what the
@@ -3833,7 +3835,8 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   line numbers, green/red signs (`read`/`created` have none), the content
   syntax-highlighted by the path's extension, added/removed rows on
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
-  (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
+  (`FILE_PEEK_LINES`, every line it starts shown whole, never cut) with the
+  `… +N lines` hint, everything in Ctrl+O;
   unparseable output (old rollouts, error bodies, a `read` placeholder) keeps
   the legacy rendering. And where a `-`/`+` pair is an **edit** of a line
   rather than a replacement of one, the **characters that actually differ**
