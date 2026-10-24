@@ -14,6 +14,11 @@ release heading when a version is cut.
 
 ### Added
 
+- Native Windows x64 and ARM64 builds: ConPTY interactive shells, Git for
+  Windows Bash discovery, Windows home paths and process-tree cancellation.
+- Windows release archives and npm platform packages, a checksum-verified
+  PowerShell installer, native updates, and Windows CI and release gates.
+
 - **`/context` shows what fills the context window.** The footer's gauge says
   how full the window is; `/context` says what is filling it. The page breaks
   the window into the system prompt, the built-in tools' schemas, each MCP

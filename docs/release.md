@@ -2,6 +2,12 @@
 
 Date: 2026-09-12
 
+Windows x64 and ARM64 are native MSVC release targets, built and gated on
+Windows runners. They use the same verified `.tar.gz` archives, with
+`alter-zero.exe` as the binary. `install.ps1` verifies and installs them from
+PowerShell; `install.sh` remains the Unix installer. Both Windows assets also
+become npm platform packages. See [Windows support](windows.md).
+
 ## Goal
 
 Cutting a release is one short command sequence, and a tag push does the
@@ -60,9 +66,11 @@ anything that can publish.
 | `alter-zero-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` | Linux arm64 (glibc ≥ 2.35) | `ubuntu-22.04`, cross-compiled with `gcc-aarch64-linux-gnu` |
 | `alter-zero-vX.Y.Z-x86_64-apple-darwin.tar.gz` | macOS Intel | `macos-latest` (arm64), cross-compiled by Apple's clang |
 | `alter-zero-vX.Y.Z-aarch64-apple-darwin.tar.gz` | macOS Apple silicon | `macos-latest`, native |
+| `alter-zero-vX.Y.Z-x86_64-pc-windows-msvc.tar.gz` | Windows x64 | `windows-latest`, native MSVC |
+| `alter-zero-vX.Y.Z-aarch64-pc-windows-msvc.tar.gz` | Windows ARM64 | `windows-11-arm`, native MSVC |
 
 Each archive unpacks to a directory of the same stem holding the
-`alter-zero` binary (mode 755), `LICENSE`, `README.md` and the release's
+`alter-zero` binary (mode 755; `alter-zero.exe` on Windows), `LICENSE`, `README.md` and the release's
 `CHANGELOG.md` — nothing else, and `verify` enforces exactly that list.
 Beside every archive sits `{archive}.sha256`, one line in `sha256sum -c`
 form (`<hex>  <filename>`), and `SHA256SUMS` collects every such line so a
@@ -216,7 +224,7 @@ tree, which is how the selftest drives them against fixtures.
 | `notes VERSION [DIST]` | The markdown above, on stdout. |
 | `publish VERSION [DIST] [--notes FILE] [--dry-run]` | `verify`, assemble `SHA256SUMS`, then `gh release create` **as a draft** with notes and every asset, then `gh release edit --draft=false` (`--latest` unless a pre-release). |
 | `download VERSION [DIST] [--from URL]` | A published release back into an empty `dist/`: its `SHA256SUMS`, then every asset it lists, with curl or wget (no `gh`), each beside its `.sha256` as `build` leaves it, then `verify`. `--from` names another repository root. |
-| `npm VERSION [DIST] [--out DIR] [--dry-run]` | `verify`, stage the four platform packages and the launcher under `target/npm`, then `npm publish` each not yet on the registry, the launcher last ([`docs/npm.md`](npm.md)). |
+| `npm VERSION [DIST] [--out DIR] [--dry-run]` | `verify`, stage the six platform packages and the launcher under `target/npm`, then `npm publish` each not yet on the registry, the launcher last ([`docs/npm.md`](npm.md)). |
 | `prepare VERSION` | The version bump and changelog roll, then `check`, then the commit/tag/push to run. |
 | `selftest` | 250-odd fixture-driven assertions over all of the above. |
 
@@ -276,7 +284,7 @@ an empty `[Unreleased]` — the notes would be empty too.
 
 **On GitHub, before the first tag**: run the Release workflow by hand
 (Actions → Release → *Run workflow*, `publish` off). It does everything a
-tag push does — `check`, the gate, all four builds, `verify` on each and on
+tag push does — `check`, the gate, all six builds, `verify` on each and on
 all together — renders the notes into the job summary, keeps every `dist/`
 and the notes as artifacts for seven days, and prints the `gh` commands it
 would have run. This is the recommended first run: it exercises the
@@ -375,10 +383,10 @@ follow-ups.
 so there is no YAML-only logic to get wrong without a way to run it, and
 the fixture selftest covers the logic rather than a workflow run.
 
-**Four targets, glibc, no musl, no Windows.** The crate is unix-shaped —
-`rustix` termios and `setsid`, the tty detach, `/proc` reads — and has
-never been built for Windows; a target the tests cannot cover is not a
-target to ship. A static musl Linux build would run on any distribution,
+**Six targets: Linux glibc, macOS, and native Windows.** Windows MSVC
+builds use ConPTY via `portable-pty`, Git for Windows Bash and native
+process-tree cancellation. Both Windows CPUs have native CI and release gates
+(`docs/windows.md`). A static musl Linux build would run on any distribution,
 but musl's allocator is markedly slower on the allocation-heavy render
 path, and every resident-memory figure in `docs/memory.md` was measured
 against glibc's allocator; shipping musl means measuring again first. The
@@ -428,7 +436,7 @@ those three. Grouped, the pair moves in one pull request, and that pull
 request is exercised where it lands: `release.yml` runs as a
 **rehearsal on any pull request that touches it**, the release scripts,
 or `install.sh`. Its check job computes `publish=false` off a tag, so the
-whole pipeline — gate, four platform builds, the artifact handoff,
+whole pipeline — gate, six platform builds, the artifact handoff,
 `verify`, the notes, `publish --dry-run` — runs and publishes nothing.
 Without that trigger those two lines ran only on a tag, while every
 check a pull request runs came from `ci.yml`, so a half-moved pair

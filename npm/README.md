@@ -27,3 +27,5 @@ The [repository](https://github.com/linuztx/alter-zero) has the full README,
 the other ways to install, the changelog, and what the app sends over the
 network ([`TELEMETRY.md`](https://github.com/linuztx/alter-zero/blob/main/TELEMETRY.md)).
 Licensed under Apache-2.0.
+
+Native Windows x64 and ARM64 are supported. Install [Git for Windows](https://gitforwindows.org/) for Bash commands and use Windows Terminal. [Windows setup](https://github.com/linuztx/alter-zero/blob/main/docs/windows.md).

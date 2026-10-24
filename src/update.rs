@@ -40,7 +40,10 @@ pub const DEFAULT_REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// The one-line installer's name at the repository root, and the branch it
 /// is served from ([`installer_url`]).
+#[cfg(not(windows))]
 pub const INSTALLER_FILE: &str = "install.sh";
+#[cfg(windows)]
+pub const INSTALLER_FILE: &str = "install.ps1";
 pub const INSTALLER_BRANCH: &str = "main";
 
 /// The npm package that installs the binary — `npm/package.json`'s name
@@ -421,9 +424,16 @@ pub fn is_cargo_build_dir(exe: &Path) -> bool {
 /// closing `main "$@"` call, and the variable `alter-zero update` hands it.
 #[must_use]
 pub fn looks_like_installer(text: &str) -> bool {
-    text.starts_with("#!/bin/sh")
-        && text.contains("\nmain \"$@\"")
-        && text.contains("ALTER_ZERO_INSTALL_DIR")
+    if cfg!(windows) {
+        text.starts_with("#requires -Version 5.1")
+            && text.contains("# Alter Zero Windows installer.")
+            && text.contains("Get-FileHash")
+            && text.contains("ALTER_ZERO_INSTALL_DIR")
+    } else {
+        text.starts_with("#!/bin/sh")
+            && text.contains("\nmain \"$@\"")
+            && text.contains("ALTER_ZERO_INSTALL_DIR")
+    }
 }
 
 /// Fetch the one-line installer's text from [`installer_url`] — the
@@ -680,17 +690,17 @@ mod tests {
         );
         assert_eq!(
             installer_url(repo),
-            "https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh",
+            format!("https://raw.githubusercontent.com/linuztx/alter-zero/main/{INSTALLER_FILE}"),
             "GitHub serves raw files from another host"
         );
         assert_eq!(
             installer_url("https://github.com/linuztx/alter-zero/"),
-            "https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh",
+            format!("https://raw.githubusercontent.com/linuztx/alter-zero/main/{INSTALLER_FILE}"),
             "a trailing slash is tolerated"
         );
         assert_eq!(
             installer_url("http://127.0.0.1:8000"),
-            "http://127.0.0.1:8000/install.sh",
+            format!("http://127.0.0.1:8000/{INSTALLER_FILE}"),
             "a stand-in server serves it beside the releases"
         );
         assert_eq!(
@@ -736,8 +746,9 @@ mod tests {
 
     #[test]
     fn a_fetched_installer_must_look_like_the_installer() {
-        let real = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/install.sh"))
-            .expect("the checkout's install.sh");
+        let real =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(INSTALLER_FILE))
+                .expect("the checkout's install.sh");
         assert!(looks_like_installer(&real), "the real script passes");
         for fake in [
             "",

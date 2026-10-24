@@ -100,12 +100,14 @@ function elfImage(interp, { types = [6, 3, 1] } = {}) {
 
 describe('the platform table', () => {
   test('maps the four release platforms and nothing else', () => {
+    assert.equal(launcher.platformKey('win32', 'x64'), 'win32-x64');
+    assert.equal(launcher.platformKey('win32', 'arm64'), 'win32-arm64');
     assert.equal(launcher.platformKey('linux', 'x64'), 'linux-x64');
     assert.equal(launcher.platformKey('linux', 'arm64'), 'linux-arm64');
     assert.equal(launcher.platformKey('darwin', 'x64'), 'darwin-x64');
     assert.equal(launcher.platformKey('darwin', 'arm64'), 'darwin-arm64');
     for (const [platform, arch] of [
-      ['win32', 'x64'],
+      ['win32', 'ia32'],
       ['linux', 'ia32'],
       ['linux', 'riscv64'],
       ['freebsd', 'x64'],
@@ -132,11 +134,13 @@ describe('the platform table', () => {
       'darwin-x64': 'x86_64-apple-darwin',
       'linux-arm64': 'aarch64-unknown-linux-gnu',
       'linux-x64': 'x86_64-unknown-linux-gnu',
+      'win32-x64': 'x86_64-pc-windows-msvc',
+      'win32-arm64': 'aarch64-pc-windows-msvc',
     });
   });
 
   test('installs only where a platform package exists', () => {
-    assert.deepEqual([...MANIFEST.os].sort(), ['darwin', 'linux']);
+    assert.deepEqual([...MANIFEST.os].sort(), ['darwin', 'linux', 'win32']);
     assert.deepEqual([...MANIFEST.cpu].sort(), ['arm64', 'x64']);
   });
 });
@@ -203,10 +207,9 @@ describe('locate', () => {
 
   test('refuses an unsupported platform, naming the supported ones', () => {
     const install = fakeInstall({ key: 'linux-x64', binary: '#!/bin/sh\n' });
-    const { error } = locateIn(install, { platform: 'win32', arch: 'x64' });
-    assert.match(error, /win32 x64/);
-    assert.match(error, /Linux and macOS/);
-    assert.match(error, /WSL/);
+    const { error } = locateIn(install, { platform: 'freebsd', arch: 'x64' });
+    assert.match(error, /freebsd x64/);
+    assert.match(error, /Linux, macOS and Windows/);
   });
 
   test('explains a platform package npm did not install, and how to get it', () => {
@@ -566,4 +569,24 @@ describe('the package', () => {
     });
     assert.equal(dry.status, 0, 'a dry run publishes nothing, so it may look');
   });
+});
+
+describe('Windows native packages', () => {
+  for (const arch of ['x64', 'arm64']) {
+    test(`resolves the ${arch} executable, including spaces in its path`, () => {
+      const dir = path.join(tempDir(), 'Windows install');
+      fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+      const binary = path.join(dir, 'bin', 'alter-zero.exe');
+      fs.writeFileSync(binary, 'MZ');
+      const found = launcher.locate({
+        name: MANIFEST.name, platform: 'win32', arch,
+        resolve: (name) => {
+          assert.equal(name, `${MANIFEST.name}-win32-${arch}/package.json`);
+          return path.join(dir, 'package.json');
+        },
+        report: () => { throw new Error('Windows must not probe ELF or libc'); },
+      });
+      assert.deepEqual(found, { binary });
+    });
+  }
 });

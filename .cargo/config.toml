@@ -1,0 +1,5 @@
+# Ship a self-contained Windows executable: do not require users to install
+# the Visual C++ Redistributable. cc-rs applies the same CRT choice to ring
+# and the bundled Oniguruma sources. Unix targets retain their existing flags.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

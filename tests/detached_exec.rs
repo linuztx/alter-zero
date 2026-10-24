@@ -10,6 +10,8 @@
 //! used to write its prompt over the TUI and block forever; detached, the
 //! open fails at once and the call resolves as a prompt error.
 
+#![cfg(unix)]
+
 use std::path::PathBuf;
 
 use alter_zero::llm::exec::{RealToolExecutor, ToolExecutor};

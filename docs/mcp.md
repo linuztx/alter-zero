@@ -8,6 +8,11 @@ connected server's tools join the model's tool set under fully-qualified
 tools → tool detail, with an OAuth authentication flow for remote servers
 that need one.
 
+On native Windows, stdio commands also resolve npm's `.cmd`/`.bat` shims
+(including `npx`) from absolute PATH entries, including a server's configured
+PATH override. Rust's Windows process handling quotes their arguments; commands
+run with captured stdio and without the TUI's console.
+
 ## Configuration
 
 Two scopes over three files, first occurrence of a name winning (the Claude

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The `alter-zero` command an npm install puts on PATH (docs/npm.md).
 //
-// npm installs this launcher and exactly one of its four optional
-// dependencies — @linuztx/alter-zero-{linux,darwin}-{x64,arm64}, each
+// npm installs this launcher and exactly one of its six optional
+// dependencies — @linuztx/alter-zero-{linux,darwin,win32}-{x64,arm64}, each
 // holding that platform's release binary and chosen by its os/cpu/libc
 // fields — and this file finds that binary and becomes it. Nothing is
 // downloaded and nothing runs at install time, so --ignore-scripts, pnpm
@@ -27,7 +27,7 @@ const REPO = 'https://github.com/linuztx/alter-zero';
 const SOURCE_BUILD = `${REPO}#build-from-source`;
 
 // `${process.platform}-${process.arch}` → the release target its platform
-// package carries. These are the four targets the release builds
+// package carries. These are the six targets the release builds
 // (docs/release.md); scripts/release/lib.sh's npm_platform maps them back
 // and package.json's optionalDependencies names one package per key — the
 // tests hold all three together.
@@ -36,6 +36,8 @@ const PLATFORMS = {
   'darwin-x64': 'x86_64-apple-darwin',
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'linux-x64': 'x86_64-unknown-linux-gnu',
+  'win32-x64': 'x86_64-pc-windows-msvc',
+  'win32-arm64': 'aarch64-pc-windows-msvc',
 };
 
 function platformKey(platform, arch) {
@@ -140,7 +142,7 @@ function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
     return {
       error:
         `there is no Alter Zero build for ${platform} ${arch}.\n` +
-        'It runs on Linux and macOS, on x64 and arm64 — on Windows, inside WSL.\n',
+        'It runs on Linux, macOS and Windows, on x64 and arm64.\n',
     };
   }
   const pkg = platformPackage(name, key);
@@ -162,7 +164,7 @@ function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
         again,
     };
   }
-  const binary = path.join(path.dirname(manifest), 'bin', COMMAND);
+  const binary = path.join(path.dirname(manifest), 'bin', platform === 'win32' ? `${COMMAND}.exe` : COMMAND);
   let stat;
   try {
     stat = fs.statSync(binary);
@@ -232,7 +234,7 @@ const CORE_SIGNALS = new Set([
 // child that owns the terminal, relay the signals sent to this process,
 // and end the way it ended.
 function launch(binary, args, { execve = process.execve, spawn = require('child_process').spawn } = {}) {
-  if (typeof execve === 'function') {
+  if (process.platform !== 'win32' && typeof execve === 'function') {
     // Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored
     // across exec, while a caught one is reset to its default. Catching both
     // hands the binary the dispositions a direct run would have.
@@ -246,7 +248,7 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
   const pendingSignals = [];
   // What a process manager or a closing terminal sends to this process;
   // without a listener, Node would die of it and leave the binary running.
-  const relayed = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
+  const relayed = process.platform === 'win32' ? ['SIGINT', 'SIGTERM', 'SIGHUP'] : ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
   const relay = (signal) => {
     if (!child) {
       pendingSignals.push(signal);
@@ -269,7 +271,7 @@ function launch(binary, args, { execve = process.execve, spawn = require('child_
       // one that dumps core, and SIGUSR1, which Node answers by starting its
       // inspector. Not re-raised, or still here after the kill (an ignored
       // signal): exit as a shell reports a death by signal.
-      if (signal !== 'SIGUSR1' && !CORE_SIGNALS.has(signal)) process.kill(process.pid, signal);
+      if (process.platform !== 'win32' && signal !== 'SIGUSR1' && !CORE_SIGNALS.has(signal)) process.kill(process.pid, signal);
       process.exit(128 + (os.constants.signals[signal] || 0));
     }
     process.exit(code === null ? 1 : code);

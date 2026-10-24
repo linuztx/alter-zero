@@ -11,7 +11,7 @@ Use the same tools for cybersecurity research, technical investigation, and ever
 
 <p>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Built_with-Rust-F5A97F?style=for-the-badge&amp;logo=rust&amp;logoColor=white&amp;labelColor=181825" alt="Built with Rust" height="32"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Platforms-Linux_%7C_macOS-89B4FA?style=for-the-badge&amp;logo=linux&amp;logoColor=white&amp;labelColor=181825" alt="Platforms: Linux and macOS" height="32"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Platforms-Linux_%7C_macOS_%7C_Windows-89B4FA?style=for-the-badge&amp;logo=linux&amp;logoColor=white&amp;labelColor=181825" alt="Platforms: Linux, macOS and Windows" height="32"></a>
   <a href="https://github.com/linuztx/alter-zero/releases"><img src="https://img.shields.io/badge/Version-0.15.0-89DCEB?style=for-the-badge&amp;logo=github&amp;logoColor=white&amp;labelColor=181825" alt="Version: 0.15.0" height="32"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-A6E3A1?style=for-the-badge&amp;logo=apache&amp;logoColor=white&amp;labelColor=181825" alt="License: Apache 2.0" height="32"></a>
@@ -57,7 +57,7 @@ Alter Zero is an open-source AI coding agent written in Rust. It works directly 
 
 ## Quick start
 
-Alter Zero runs on **Linux** (x86_64, arm64) and **macOS** (Intel, Apple silicon) in a modern terminal.
+Alter Zero runs on **Linux** (x86_64, arm64), **macOS** (Intel, Apple silicon), and **Windows 10/11** (x64, ARM64) in a modern terminal. On Windows, use Windows Terminal and install [Git for Windows](https://gitforwindows.org/) for Bash commands.
 
 ### Install
 
@@ -69,11 +69,13 @@ curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh 
 
 It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`.
 
-Or install the same build with npm:
+Or install the same build with npm on Linux, macOS or Windows:
 
 ```bash
 npm install -g @linuztx/alter-zero
 ```
+
+Windows also has a checksum-verified [PowerShell installer](install.ps1). See [Windows setup and source builds](docs/windows.md).
 
 <details>
 <summary><strong>Install options</strong></summary>

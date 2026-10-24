@@ -41,3 +41,6 @@ pub mod session;
 pub mod settle;
 pub mod spawn;
 pub mod transcript;
+
+#[cfg(windows)]
+pub mod windows;

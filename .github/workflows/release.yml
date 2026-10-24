@@ -20,9 +20,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .cargo/**
       - scripts/release.sh
       - scripts/release/**
       - install.sh
+      - install.ps1
       - npm/**
   workflow_dispatch:
     inputs:
@@ -89,9 +91,39 @@ jobs:
       - run: cargo test
       - run: cargo doc --no-deps --lib
 
+  windows-gate:
+    name: Windows native gate (${{ matrix.os }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_INCREMENTAL: "0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-debug
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --test windows --test cli_help
+      - run: cargo test --lib -- platform:: update:: llm::mcp::transport::tests::windows_stdio
+      - run: cargo doc --no-deps --lib
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Native npm launcher
+        run: node --test --test-name-pattern 'platform table|Windows native packages|Windows launcher' npm/test/*.test.js
+
   build:
     name: build ${{ matrix.target }}
-    needs: [check, gate]
+    needs: [check, gate, windows-gate]
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +144,14 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain

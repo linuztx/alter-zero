@@ -32,6 +32,13 @@ is the *Update check* section of the root `TELEMETRY.md`, which promises to
 be the complete list of what leaves a machine and so must name this request
 too. Change one and re-read the other.
 
+On Windows the same flow fetches `install.ps1` and runs it from a closed
+temporary file with Windows PowerShell, verifying SHA-256, archive members and
+version before replacing the executable. The old executable is renamed before
+replacement because Windows locks running binaries; a still-open backup can be
+removed after the process exits. npm installs still require their package
+manager's update command. See [Windows support](windows.md).
+
 ## What is sent
 
 One `HEAD` request per UTC day per install, to

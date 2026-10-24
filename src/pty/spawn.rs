@@ -23,6 +23,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 
+#[cfg(not(windows))]
 use super::screen::{COLUMNS, ROWS};
 
 /// What a session's environment says about its terminal — the one it
@@ -138,8 +139,8 @@ pub struct PtyProcess {
 }
 
 /// Start `command` under the model's shell ([`crate::subprocess::tool_shell`]
-/// — `bash -c`, else `sh -c`) in a new pseudo-terminal ([`ROWS`] ×
-/// [`COLUMNS`]) as the leader of a session whose controlling terminal it is.
+/// — `bash -c`, else `sh -c`) in a new pseudo-terminal (`ROWS` ×
+/// `COLUMNS`) as the leader of a session whose controlling terminal it is.
 ///
 /// # Errors
 /// The terminal could not be allocated, the spawn failed, or — `NotFound` —
@@ -363,7 +364,7 @@ pub fn line_mode(master: &std::fs::File) -> Option<LineMode> {
 }
 
 /// Allocate a pseudo-terminal: the master (close-on-exec, so no child
-/// inherits it) and its slave, already sized to [`ROWS`] × [`COLUMNS`].
+/// inherits it) and its slave, already sized to `ROWS` × `COLUMNS`.
 #[cfg(unix)]
 fn open_terminal() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
     use rustix::pty::{OpenptFlags, grantpt, openpt, unlockpt};
@@ -418,7 +419,7 @@ fn open_slave(master: &std::os::fd::OwnedFd) -> std::io::Result<std::os::fd::Own
 ///
 /// # Errors
 /// Always.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn spawn(detach_helper: Option<&Path>, command: &str) -> std::io::Result<()> {
     let _ = (detach_helper, command, ROWS, COLUMNS);
     Err(std::io::Error::new(
@@ -764,4 +765,16 @@ mod tests {
         let _ = session.child.wait();
         assert!(out.contains("[xterm-256color] [cat]"), "{out:?}");
     }
+}
+
+/// Start a native Windows ConPTY session. The Unix detach helper is unused.
+///
+/// # Errors
+/// ConPTY allocation or Git for Windows Bash could not be started.
+#[cfg(windows)]
+pub fn spawn(
+    _detach_helper: Option<&Path>,
+    command: &str,
+) -> std::io::Result<super::windows::PtyProcess> {
+    super::windows::spawn(command)
 }

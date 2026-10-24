@@ -46,7 +46,6 @@ done
 [ -n "$target" ] || target="$(host_target)"
 host="$(host_target)"
 version="$(manifest_version)"
-name="$(manifest_name)"
 cargo_target_dir="${CARGO_TARGET_DIR:-$RELEASE_ROOT/target}"
 
 # Set one variable unless the caller already did.
@@ -90,7 +89,7 @@ fi
 info "cargo build --release --locked --target $target (profile.release.incremental=false)"
 (cd "$RELEASE_ROOT" && cargo build --release --locked --target "$target" --config profile.release.incremental=false)
 
-bin="$cargo_target_dir/$target/release/$name"
+bin="$cargo_target_dir/$target/release/$(binary_name "$target")"
 [ -x "$bin" ] || die "build: expected the binary at $bin"
 archive="$(package_dist "$bin" "$version" "$target" "$dist")"
 ok "built $archive ($(du -h "$archive" | awk '{ print $1 }'))"

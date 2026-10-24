@@ -426,7 +426,7 @@ pub(crate) fn config_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ALTER_ZERO_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".alter-zero"))
+    alter_zero::platform::home_dir().map(|home| home.join(".alter-zero"))
 }
 
 /// The `.env` key store path: `ALTER_ZERO_ENV_FILE`, else `{config_home}/.env`,

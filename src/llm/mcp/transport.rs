@@ -960,7 +960,39 @@ fn stdio_command(
     env: &BTreeMap<String, String>,
     cwd: Option<&std::path::Path>,
 ) -> Command {
-    let mut cmd = Command::new(command);
+    #[cfg(windows)]
+    let program = {
+        // npm exposes npx/npm as .cmd shims. Rust only appends .exe to a
+        // bare program name, but safely invokes an explicitly named .cmd.
+        let path = env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+            .map(|(_, value)| std::ffi::OsString::from(value))
+            .or_else(|| std::env::var_os("PATH"));
+        let explicit = std::path::Path::new(command);
+        if explicit.extension().is_some() || explicit.components().count() > 1 {
+            std::path::PathBuf::from(command)
+        } else {
+            ["exe", "cmd", "bat"]
+                .into_iter()
+                .find_map(|ext| {
+                    crate::subprocess::find_on_path(
+                        &format!("{command}.{ext}"),
+                        path.as_deref(),
+                        |p| p.is_file(),
+                    )
+                })
+                .unwrap_or_else(|| command.into())
+        }
+    };
+    #[cfg(not(windows))]
+    let program = command;
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -988,6 +1020,25 @@ fn one_line(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_stdio_resolves_npm_cmd_shims_with_the_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("npx.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let env = std::collections::BTreeMap::from([(
+            "Path".to_string(),
+            dir.path().to_string_lossy().into_owned(),
+        )]);
+        let args = vec!["package with spaces".to_string(), "& literal".to_string()];
+        let cmd = super::stdio_command("npx", &args, &env, None);
+        assert_eq!(cmd.get_program(), shim.as_os_str());
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            args.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>()
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

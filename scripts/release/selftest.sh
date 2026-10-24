@@ -125,6 +125,25 @@ section() { printf '%s%s%s\n' "$_c_dim" "$*" "$_c_off"; }
 # a target this machine cannot build, since it runs only the host's.
 craft_header() {
 	case "$1" in
+	*-pc-windows-msvc)
+		python3 - "$1" "$2" <<'PE'
+import struct
+import sys
+from pathlib import Path
+image = bytearray(512)
+image[:2] = b'MZ'
+struct.pack_into('<I', image, 0x3c, 128)
+image[128:132] = b'PE\0\0'
+struct.pack_into('<HHIIIHH', image, 132, 0x8664 if sys.argv[1].startswith('x86_64') else 0xaa64, 0, 0, 0, 0, 240, 0x22)
+struct.pack_into('<H', image, 152, 0x20b)
+struct.pack_into('<H', image, 220, 3)
+Path(sys.argv[2]).write_bytes(image)
+PE
+		chmod 755 "$2"
+		return
+		;;
+	esac
+	case "$1" in
 	x86_64-unknown-linux-gnu) printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\076\000\001\000\000\000' ;;
 	aarch64-unknown-linux-gnu) printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000\001\000\000\000' ;;
 	x86_64-apple-darwin) printf '\317\372\355\376\007\000\000\001\003\000\000\000\002\000\000\000' ;;
@@ -255,13 +274,27 @@ RELEASE_ROOT="$T/pre" expect_eq "README badge unescapes -- to -" "0.5.0-rc.1" "$
 expect_eq "badge_escape" "0.5.0--rc.1" "$(badge_escape 0.5.0-rc.1)"
 
 # ---------------------------------------------------------------------------
+section "Windows release contracts"
+expect_eq "Windows x64 npm platform" "win32-x64" "$(npm_platform x86_64-pc-windows-msvc)"
+expect_eq "Windows ARM64 npm platform" "win32-arm64" "$(npm_platform aarch64-pc-windows-msvc)"
+expect_eq "Windows binary suffix" "alter-zero.exe" "$(binary_name x86_64-pc-windows-msvc)"
+expect_eq "Unix binary name" "alter-zero" "$(binary_name x86_64-unknown-linux-gnu)"
+expect_eq "Windows archive members" "alter-zero.exe
+LICENSE
+README.md
+CHANGELOG.md" "$(asset_files x86_64-pc-windows-msvc)"
+expect_eq "Windows PE x64 verification" "PE32+|x86-64" "$(binary_format_words x86_64-pc-windows-msvc)"
+expect_eq "Windows PE ARM64 verification" "PE32+|ARM64" "$(binary_format_words aarch64-pc-windows-msvc)"
+
 section "npm readers"
 expect_eq "npm package name" "@example/alter-zero" "$(npm_name)"
 expect_eq "npm package version (not a dependency's, nor engines')" "0.4.2" "$(npm_version)"
 expect_eq "npm pins, one per platform package" "@example/alter-zero-darwin-arm64 0.4.2
 @example/alter-zero-darwin-x64 0.4.2
 @example/alter-zero-linux-arm64 0.4.2
-@example/alter-zero-linux-x64 0.4.2" "$(npm_pins)"
+@example/alter-zero-linux-x64 0.4.2
+@example/alter-zero-win32-arm64 0.4.2
+@example/alter-zero-win32-x64 0.4.2" "$(npm_pins)"
 expect_eq "npm platform of a Linux target" "linux-arm64" "$(npm_platform aarch64-unknown-linux-gnu)"
 expect_eq "npm platform of a macOS target" "darwin-x64" "$(npm_platform x86_64-apple-darwin)"
 expect_fail "npm_platform refuses a target the release does not build" npm_platform x86_64-unknown-linux-musl
@@ -600,14 +633,15 @@ EOF
 			expect_contains "…naming each command it would run" "$OUT" "npm publish $T/npm-out/alter-zero-linux-x64 --tag latest"
 			for target in $NPM_TARGETS; do
 				key="$(npm_platform "$target")"
+				bin="$(binary_name "$target")"
 				dir="$T/npm-out/alter-zero-$key"
 				libc=""
 				[ "${key%-*}" = linux ] && libc=glibc
 				expect_eq "…$key: name, version, os, cpu, libc and files" \
-					"@example/alter-zero-$key 0.4.2 ${key%-*} ${key#*-} $libc bin/alter-zero" \
+					"@example/alter-zero-$key 0.4.2 ${key%-*} ${key#*-} $libc bin/$bin" \
 					"$(json "$dir/package.json" '[m.name, m.version, m.os.join(), m.cpu.join(), (m.libc || []).join(), m.files.join()].join(" ")')"
-				expect_eq "…$key: packing the binary, its README and the LICENSE" "LICENSE README.md bin/alter-zero package.json" "$(packed "$dir")"
-				if [ -x "$dir/bin/alter-zero" ]; then pass "…$key: the binary is executable"; else flunk "$dir/bin/alter-zero is not executable"; fi
+				expect_eq "…$key: packing the binary, its README and the LICENSE" "LICENSE README.md bin/$bin package.json" "$(packed "$dir")"
+				if [ -x "$dir/bin/$bin" ]; then pass "…$key: the binary is executable"; else flunk "$dir/bin/$bin is not executable"; fi
 			done
 			expect_eq "…the host's package holds the host's binary" "alter-zero 0.4.2" "$("$T/npm-out/alter-zero-$(npm_platform "$host")/bin/alter-zero" --version 2>&1)"
 			expect_contains "…its README pointing at the launcher" "$(cat "$T/npm-out/alter-zero-linux-x64/README.md")" "npm install -g @example/alter-zero"
@@ -636,10 +670,12 @@ EOF
 @example/alter-zero-linux-arm64@0.4.2
 @example/alter-zero-darwin-x64@0.4.2
 @example/alter-zero-darwin-arm64@0.4.2
+@example/alter-zero-win32-x64@0.4.2
+@example/alter-zero-win32-arm64@0.4.2
 @example/alter-zero@0.4.2" "$(cat "$T/registry/published.log")"
 			expect_ok "a second run publishes nothing" "${npm_env[@]}" bash "$STEPS/npm.sh" 0.4.2 "$T/npm-dist" --out "$T/npm-out"
 			expect_contains "…finding each version already there" "$OUT" "@example/alter-zero@0.4.2 is already on the registry"
-			expect_eq "…and the registry as it was" "5" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
+			expect_eq "…and the registry as it was" "7" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
 			expect_ok "npm install -g installs the launcher from the registry" "${npm_env[@]}" npm install -g --prefix "$T/npm-prefix" @example/alter-zero
 			expect_eq "…whose alter-zero runs the host's binary" "alter-zero 0.4.2" "$("$T/npm-prefix/bin/alter-zero" --version 2>&1)"
 			expect_eq "…the one platform package installed beside it" "alter-zero-$(npm_platform "$host")" "$(ls "$T/npm-prefix/lib/node_modules/@example/alter-zero/node_modules/@example")"
@@ -722,7 +758,7 @@ expect_eq "…older sections intact" "**A fixed thing**
 expect_eq "…compare link added" "https://github.com/example/alter-zero/compare/v0.4.2...v0.5.0" "$(RELEASE_ROOT="$T/prep" changelog_link 0.5.0)"
 expect_eq "…[Unreleased] re-pointed" "https://github.com/example/alter-zero/compare/v0.5.0...HEAD" "$(RELEASE_ROOT="$T/prep" changelog_link Unreleased)"
 expect_eq "…npm/package.json bumped" "0.5.0" "$(RELEASE_ROOT="$T/prep" npm_version)"
-expect_eq "…every platform package re-pinned" "0.5.0 0.5.0 0.5.0 0.5.0" "$(RELEASE_ROOT="$T/prep" npm_pins | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "…every platform package re-pinned" "0.5.0 0.5.0 0.5.0 0.5.0 0.5.0 0.5.0" "$(RELEASE_ROOT="$T/prep" npm_pins | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ $//')"
 expect_eq "…its engines range untouched" "1" "$(grep -c '"node": ">=18"' "$T/prep/npm/package.json")"
 expect_contains "…and the commit it prints adds it" "$OUT" "git add Cargo.toml Cargo.lock README.md CHANGELOG.md npm/package.json"
 if command -v node >/dev/null 2>&1; then

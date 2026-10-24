@@ -2,6 +2,13 @@
 
 Date: 2026-06-07
 
+Native Windows x64 and ARM64 support uses MSVC and a Windows-only ConPTY adapter
+through `portable-pty`; Unix retains rustix. Both feed the existing terminal
+emulator and background registry. Windows uses Git for Windows Bash, native home
+paths, process-tree cancellation, a PowerShell installer and platform npm
+packages. See [Windows support](windows.md) for requirements, release checks and
+platform-specific limitations.
+
 ## Goal
 
 A minimal, readable, well-documented inline terminal UI (ratatui) for a

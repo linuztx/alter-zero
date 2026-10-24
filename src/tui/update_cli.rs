@@ -88,7 +88,7 @@ pub(crate) fn run() -> i32 {
     };
     let mut file = match tempfile::Builder::new()
         .prefix("alter-zero-install-")
-        .suffix(".sh")
+        .suffix(if cfg!(windows) { ".ps1" } else { ".sh" })
         .tempfile()
     {
         Ok(file) => file,
@@ -104,8 +104,24 @@ pub(crate) fn run() -> i32 {
         eprintln!("{bin} update: could not write the installer to a temp file: {err}");
         return 1;
     }
-    let status = Command::new("sh")
-        .arg(file.path())
+    // Windows must release the tempfile handle before PowerShell opens it.
+    let path = file.into_temp_path();
+    let mut installer = if cfg!(windows) {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
+        cmd
+    } else {
+        Command::new("sh")
+    };
+    let status = installer
+        .arg(&path)
         .env("ALTER_ZERO_INSTALL_DIR", dir)
         .env("ALTER_ZERO_VERSION", format!("v{latest}"))
         .env("ALTER_ZERO_INSTALL_BASE_URL", &repo)
@@ -113,7 +129,7 @@ pub(crate) fn run() -> i32 {
     match status {
         Ok(status) => status.code().unwrap_or(1),
         Err(err) => {
-            eprintln!("{bin} update: could not run sh: {err}");
+            eprintln!("{bin} update: could not run the installer: {err}");
             1
         }
     }

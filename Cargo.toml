@@ -121,7 +121,7 @@ regex = "1"
 # just enables its setsid wrapper. `termios`, `fs` and `pty` open and read the
 # interactive sessions' terminals; `event` polls one before asking how much
 # typed input is still unread (`pty::spawn::InputQueue`).
-rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"] }
+
 # The model's interactive shells (`bash` with `tty`, `bash_session` —
 # docs/interactive-shell.md) read a pseudo-terminal's byte stream two ways.
 # `vt100` is the screen: an emulator at the pty's size (no scrollback, ~150 KB
@@ -194,6 +194,13 @@ ratatui-image = { version = "11.0.6", default-features = false, features = ["cro
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
 wl-clipboard-rs = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"] }
+
+[target.'cfg(windows)'.dependencies]
+# Safe ConPTY allocation and process handles; the Unix terminal stays rustix.
+portable-pty = "0.9"
 
 [dev-dependencies]
 # The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):

@@ -29,7 +29,7 @@ scripts/release.sh verify dist              # the archives: checksums, layout, C
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh download X.Y.Z [DIST]   # a published release back into an empty dist/, each archive beside its .sha256, verified (curl or wget, no gh)
-scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/npm.md)
+scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: six platform packages, then the launcher (docs/npm.md)
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
@@ -179,9 +179,9 @@ gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.
 
 **`npm/`** is the npm launcher package, `@linuztx/alter-zero`
-(`docs/npm.md`): `npm install -g` fetches it and exactly one of the four
+(`docs/npm.md`): `npm install -g` fetches it and exactly one of the six
 platform packages its `optionalDependencies` pin —
-`@linuztx/alter-zero-{linux,darwin}-{x64,arm64}`, staged per release target
+`@linuztx/alter-zero-{linux,darwin,win32}-{x64,arm64}`, staged per release target
 by `scripts/release.sh npm` from that target's release archive, with
 `os`/`cpu` (and `libc: glibc` on Linux) so npm installs only the one that
 runs. **No install script anywhere**, so `--ignore-scripts`, pnpm and bun
@@ -198,7 +198,7 @@ inherit them. `argv[0]` is `alter-zero` (the resume hint prints it), while
 (`.pnpm`/`.bun`/`yarn/global` around `node_modules` say which), so the update
 card names that manager's command and `alter-zero update` refuses. Its
 `package.json` is a fifth place the version is written: `check` rule 7 and
-`prepare` keep the version and the four pins in step, and its
+`prepare` keep the version and the six pins in step, and its
 `prepublishOnly` refuses a publish made from `npm/` itself — the staged copy
 drops `scripts` and gains the LICENSE, and the launcher is published last,
 after its platforms. `verify` holds every archive to the `.sha256` beside
@@ -241,6 +241,14 @@ what each knob bought, why `lto = "off"` was measured and refused (a faster
 cold build for a 7–19% slower render path), and what a release build still
 pays for and why (`moxcms` under `image`, the sixel quantiser under
 `ratatui-image`, the Wayland and TLS stacks).
+
+Native **Windows** x64 and ARM64 builds use MSVC and `portable-pty`'s safe
+ConPTY adapter (`src/pty/windows.rs`), alongside the Unix-only rustix backend.
+`platform::home_dir` resolves native Windows homes; Git for Windows Bash runs
+shell tools; `install.ps1` and the Windows npm packages share the release
+archives. Windows CI compiles every target and exercises the CLI, captured
+shells, ConPTY, installer and npm launcher. See `docs/windows.md` for the
+runtime requirements and the probes that remain Unix-only.
 
 ## Architecture
 

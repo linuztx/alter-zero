@@ -11,6 +11,11 @@ running nothing but a small launcher — and only until the binary takes over
 its process. This is the design: what was decided, what was measured, and
 what was tried and refused; then the steps that publish a release to npm.
 
+Native Windows x64 and ARM64 use `win32-x64` and `win32-arm64`, carrying
+`bin/alter-zero.exe`. Windows always uses the inherited-terminal spawn path;
+`execve` and Unix signal re-raising are disabled there. Install Git for Windows
+for the application's Bash tools. See [Windows support](windows.md).
+
 ## The shape
 
 Five packages per release, all at the release's version:
@@ -22,6 +27,8 @@ Five packages per release, all at the release's version:
     @linuztx/alter-zero-linux-arm64   os linux   cpu arm64  libc glibc   ← aarch64-unknown-linux-gnu
     @linuztx/alter-zero-darwin-x64    os darwin  cpu x64                 ← x86_64-apple-darwin
     @linuztx/alter-zero-darwin-arm64  os darwin  cpu arm64               ← aarch64-apple-darwin
+    @linuztx/alter-zero-win32-x64     os win32   cpu x64                 ← x86_64-pc-windows-msvc
+    @linuztx/alter-zero-win32-arm64   os win32   cpu arm64               ← aarch64-pc-windows-msvc
 ```
 
 Each platform package holds one release archive's binary at
@@ -30,7 +37,7 @@ launcher. npm reads the `os`/`cpu`/`libc` of every optional dependency and
 installs only the one that matches, so an install downloads the launcher
 (a few kilobytes) and one ~10 MB binary package; an optional dependency that
 does not match is skipped rather than failed. The launcher's own `os`/`cpu`
-make npm refuse an unsupported platform (Windows, a 32-bit CPU) at install
+make npm refuse an unsupported platform (for example, a 32-bit CPU) at install
 time instead of at first run. The packages are built from the **same
 verified archives** the GitHub release carries (`docs/release.md`), so an npm
 install, `install.sh` and `alter-zero-bin` all run one binary.
@@ -53,7 +60,7 @@ Three ways to put a native binary behind `npm install -g` were weighed:
   with no binary in it: under `--ignore-scripts`, under pnpm and bun (which
   skip dependencies' install scripts by default), from a registry mirror or
   through a proxy npm is configured for, and from npm's cache offline. The
-  registry's integrity hash covers the binary itself. The cost is five
+  registry's integrity hash covers the binary itself. The cost is seven
   packages per release instead of one, which the release workflow publishes.
 - **Download on install** — one package whose `postinstall` fetches the
   GitHub archive. Refused: the script does not run under `--ignore-scripts`,
@@ -62,8 +69,8 @@ Three ways to put a native binary behind `npm install -g` were weighed:
   `https` does not read `HTTPS_PROXY` unless told to); and the binary's
   integrity then rests on a checksum fetched from the same place as the
   binary.
-- **All four binaries in one package** — no script, one publish. Refused:
-  every install downloads ~38 MB and unpacks ~90 MB to run one of them.
+- **All binaries in one package** — no script, one publish. Refused:
+  every install downloads and unpacks every platform's binary to run one.
 
 ## The launcher
 
@@ -90,7 +97,7 @@ first, and answers each with a message instead:
 
 | check | what the user is told |
 |---|---|
-| a platform package exists for this OS and CPU | the supported platforms, and WSL for Windows |
+| a platform package exists for this OS and CPU | Linux, macOS and Windows on x64 and ARM64 |
 | the platform package resolves | it is an optional dependency: reinstall, without `--omit=optional` — in the installing manager's words |
 | …and on musl | the Linux build needs glibc; build from source |
 | `bin/alter-zero` is a file | the install is incomplete: reinstall |
@@ -176,12 +183,12 @@ environment of every command the agent runs.
 step the way the other four are (`docs/release.md`): `scripts/release.sh
 check` requires its version and each platform package's pin to equal
 Cargo.toml's (rule 7, which also refuses a pin for a platform no release
-target builds), and `prepare` rewrites the version and the four pins in
+target builds), and `prepare` rewrites the version and the six pins in
 place.
 
 ```bash
 scripts/release.sh npm X.Y.Z dist --dry-run   # verify, stage into target/npm, `npm publish --dry-run` each
-scripts/release.sh npm X.Y.Z dist             # …and publish: four platform packages, then the launcher
+scripts/release.sh npm X.Y.Z dist             # …and publish: six platform packages, then the launcher
 ```
 
 The command first runs `verify` over the archives: a release **as built**,
@@ -268,7 +275,7 @@ Without the variable only the rehearsal runs, so a release is never held up
 by npm.
 
 npm limits how long a token that can publish stays valid, so the lasting
-setup is **trusted publishing**: on npmjs.com, open each of the five
+setup is **trusted publishing**: on npmjs.com, open each of the seven
 packages' settings and add a trusted publisher — GitHub Actions, repository
 `linuztx/alter-zero`, workflow `release.yml`, environment `npm` — then
 delete the `NPM_TOKEN` secret. `npm-publish` alone holds `id-token: write`,
@@ -297,7 +304,7 @@ published is skipped.
   `download` from `release_server.py`, the stand-in github.com — with curl
   and with wget only, refusing an unpublished version, a checksum that does
   not match, a path in `SHA256SUMS` and a directory that is not empty — and
-  a four-target fixture release (the host's binary real, the others headers
+  a six-target fixture release (the host's binary real, the others headers
   `file(1)` accepts) staged, dry-run, published to
   `scripts/release/npm_registry.py` — a stand-in registry that serves
   packuments and tarballs and takes `npm publish`'s PUT — in order, re-run
@@ -323,4 +330,5 @@ published is skipped.
   explains why), so Alpine gets the launcher's explanation; a glibc older
   than 2.35 installs and then fails in the dynamic loader. Building from
   source covers both.
-- **Windows** is refused at install time, as by `install.sh`; WSL works.
+- **Windows** uses native MSVC binaries and ConPTY, with Git for Windows
+  Bash required. `install.ps1` provides the manual installer.

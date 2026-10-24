@@ -825,9 +825,15 @@ fn clear_carriers(buf: &mut Buffer) {
 /// The terminal's cell size from the tty itself: the window's pixel size
 /// divided by its cell grid. Zeroes — what a terminal that doesn't report
 /// pixels sends — mean "unknown", not a zero-sized cell.
+#[cfg(unix)]
 fn cell_size_from_tty() -> Option<FontSize> {
     let size = rustix::termios::tcgetwinsize(std::io::stdout()).ok()?;
     let (px_w, px_h) = (size.ws_xpixel, size.ws_ypixel);
     let (cols, rows) = (size.ws_col, size.ws_row);
     (px_w > 0 && px_h > 0 && cols > 0 && rows > 0).then(|| (px_w / cols, px_h / rows))
+}
+
+#[cfg(windows)]
+fn cell_size_from_tty() -> Option<FontSize> {
+    None
 }

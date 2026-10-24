@@ -164,6 +164,7 @@ pub mod markdown;
 pub mod mcp;
 pub mod paste;
 pub mod permission;
+pub mod platform;
 pub mod project_doc;
 pub mod pty;
 pub mod reminder;

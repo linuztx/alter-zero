@@ -39,7 +39,7 @@ impl Session<'_> {
     /// hands all three to `App`, the `/resume` picker's injection seam.
     pub(crate) fn open_hooks_menu(&mut self) {
         let (overview, enabled) = self.models.hooks_browse();
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = alter_zero::platform::home_dir();
         let mut source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
             .map(|path| alter_zero::ui::display_cwd(&path, home.as_deref()));
         // A trusted project file is part of the merge the browser shows, so
@@ -69,7 +69,7 @@ impl Session<'_> {
         // with what the session booted with — a menu that lied for one turn
         // is worse than no menu.
         self.rescan_skills();
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = alter_zero::platform::home_dir();
         // The same resolver the startup walk used, so the menu can only ever
         // name directories that were actually read.
         let roots = alter_zero::llm::skill::resolved_skill_roots(

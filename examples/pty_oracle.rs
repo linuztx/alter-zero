@@ -16,15 +16,23 @@
 //! `ORACLE_TRACE=1` logs every write, every read and every query reply to
 //! stderr.
 
+#[cfg(unix)]
 use std::io::{BufRead, Read, Write};
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use alter_zero::pty::keys::{ESC_PAUSE, KEY_PAUSE, Pace, encode, parse_input};
+#[cfg(unix)]
 use alter_zero::pty::screen::Screen;
+#[cfg(unix)]
 use alter_zero::pty::spawn::spawn;
+#[cfg(unix)]
 use serde_json::Value;
 
+#[cfg(unix)]
 fn main() {
     let mut args = std::env::args().skip(1);
     let command = args
@@ -127,4 +135,9 @@ fn main() {
         snapshot.alternate,
         raw.lock().unwrap().len()
     );
+}
+
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("pty_oracle compares Unix PTYs with tmux; run it on Linux or macOS");
 }

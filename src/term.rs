@@ -49,8 +49,10 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
@@ -70,6 +72,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
+#[cfg(unix)]
 use rustix::termios::{OptionalActions, SpecialCodeIndex};
 
 use crate::app::App;
@@ -213,11 +216,12 @@ impl InlineViewport {
     pub fn init(min_height: u16) -> io::Result<Self> {
         // Decide up front whether to turn on keyboard enhancement, so the panic
         // hook captures the same answer and only pops the stack if we pushed.
-        let keyboard_enhanced = !keyboard_enhancement_disabled(
-            std::env::var(DISABLE_KEYBOARD_ENHANCEMENT_ENV)
-                .ok()
-                .as_deref(),
-        );
+        let keyboard_enhanced = !cfg!(windows)
+            && !keyboard_enhancement_disabled(
+                std::env::var(DISABLE_KEYBOARD_ENHANCEMENT_ENV)
+                    .ok()
+                    .as_deref(),
+            );
         install_panic_hook(keyboard_enhanced);
         enable_raw_mode()?;
         // Every fallible step from here on runs with raw mode ON, and the
@@ -1434,16 +1438,19 @@ const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "ALTER_ZERO_DISABLE_KEYBOARD_ENHA
 
 /// How long the startup read waits for the cursor report before giving up —
 /// the budget crossterm's own `position()` had, which this read replaced.
+#[cfg(unix)]
 const STARTUP_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The terminal's input side, found the way crossterm finds it: stdin when
 /// stdin is a tty, else the controlling terminal — the descriptor the loop's
 /// `EventStream` goes on to read.
+#[cfg(unix)]
 enum TtyInput {
     Stdin(io::Stdin),
     Device(std::fs::File),
 }
 
+#[cfg(unix)]
 impl TtyInput {
     fn open() -> io::Result<Self> {
         let stdin = io::stdin();
@@ -1459,6 +1466,7 @@ impl TtyInput {
     }
 }
 
+#[cfg(unix)]
 impl AsFd for TtyInput {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
@@ -1477,6 +1485,7 @@ impl AsFd for TtyInput {
 /// byte: whatever the user types after that is still unread, and the
 /// `EventStream` gets it with crossterm's whole parser. What was typed
 /// *before* it is in the answer's `typed`, for the loop to replay.
+#[cfg(unix)]
 fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
     let tty = TtyInput::open()?;
     // Raw mode's reads block until a byte arrives (VMIN 1, VTIME 0). Give
@@ -1498,6 +1507,7 @@ fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
 }
 
 /// [`startup_read`]'s write and read loop.
+#[cfg(unix)]
 fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupReplies> {
     let mut stdout = io::stdout();
     stdout.write_all(query::startup_query(graphics).as_bytes())?;
@@ -1518,6 +1528,18 @@ fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupRepl
             io::ErrorKind::TimedOut,
             "The cursor position could not be read within a normal duration",
         )
+    })
+}
+
+// crossterm uses the Windows console API for cursor position. No raw stdin
+// read or Unix termios is needed before EventStream takes ownership of input.
+#[cfg(windows)]
+fn startup_read(_graphics: bool) -> io::Result<query::StartupReplies> {
+    let (x, y) = ratatui::crossterm::cursor::position()?;
+    Ok(query::StartupReplies {
+        cursor: Position::new(x, y),
+        graphics: images::GraphicsReply::default(),
+        typed: Vec::new(),
     })
 }
 

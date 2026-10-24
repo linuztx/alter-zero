@@ -32,7 +32,7 @@
 //! 2. **`HelperReexec`** — a re-exec of **our own binary** in a helper mode:
 //!    `{current_exe} {DETACH_ARG} {command}`. `main()` calls
 //!    [`run_detached_exec_if_requested`] as its very first statement; in
-//!    helper mode that calls the safe [`rustix::process::setsid`] wrapper and
+//!    helper mode that calls the safe `rustix::process::setsid` wrapper and
 //!    `exec`s `sh -c {command}` **in place** (same pid), never returning. This
 //!    is what keeps macOS / minimal images — no `setsid` binary there — from
 //!    degrading back to the attached bug. Opt-in per process (`detach_helper`
@@ -114,12 +114,19 @@ pub fn find_on_path(
 pub fn tool_shell() -> &'static Path {
     static SHELL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     SHELL.get_or_init(|| {
-        find_on_path(
-            "bash",
-            std::env::var_os("PATH").as_deref(),
-            is_executable_file,
-        )
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
+        #[cfg(windows)]
+        {
+            crate::platform::windows_shell()
+        }
+        #[cfg(not(windows))]
+        {
+            find_on_path(
+                "bash",
+                std::env::var_os("PATH").as_deref(),
+                is_executable_file,
+            )
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
+        }
     })
 }
 
@@ -187,6 +194,12 @@ pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
 /// [`command_for`] under `shell` — [`tool_shell`] for a model command.
 #[must_use]
 pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command {
+    #[cfg(windows)]
+    let shell = if shell == Path::new(DEFAULT_SHELL) {
+        tool_shell()
+    } else {
+        shell
+    };
     let mut cmd = match tier {
         DetachTier::SetsidBinary => {
             // Deliberately NO process_group: a group leader can't setsid(2),
@@ -224,6 +237,12 @@ pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command
     // it over, after which herdr drops every report the TUI sends
     // (`docs/herdr.md`) — the terminal path drops it the same way
     // (`pty::spawn::FOREIGN_TERMINAL_VARS`).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Captured commands cannot read or paint the TUI's console.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
+    }
     cmd.env_remove(crate::herdr::PANE_ID_ENV);
     cmd
 }
@@ -489,6 +508,8 @@ pub fn group_outlives(_child: &Child) -> bool {
 /// Non-unix fallback: no process groups — just kill and reap the direct child.
 #[cfg(not(unix))]
 pub fn kill_process_group(child: &mut Child) {
+    #[cfg(windows)]
+    crate::platform::kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }

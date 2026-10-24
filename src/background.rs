@@ -22,7 +22,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Child;
+#[cfg(any(unix, test))]
+use std::process::Command;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -355,6 +357,7 @@ struct Task {
     /// A TTY session's terminal (a handle on its master), kept to read the
     /// program's [`LineMode`](crate::pty::spawn::LineMode) — whether what the
     /// model typed has reached it yet.
+    #[cfg(unix)]
     terminal: Option<File>,
     /// The launch facts, kept for an announcement made later (a `tty` call
     /// announces its session only once it outlives the call).
@@ -387,6 +390,7 @@ enum WriteOp {
 
 /// How often the writer asks whether the program has read the key it typed
 /// ([`type_keys`]).
+#[cfg(unix)]
 const KEY_READ_POLL: Duration = Duration::from_micros(250);
 
 /// The most TTY sessions that may run at once. One more is refused with the
@@ -751,7 +755,7 @@ impl BackgroundRegistry {
                 Vec::new(),
                 Terminal::Tty {
                     input: input_tx,
-                    terminal: probe,
+                    terminal: Some(probe),
                 },
                 announce,
             );
@@ -760,11 +764,40 @@ impl BackgroundRegistry {
                 io: registered.io,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let session = crate::pty::windows::spawn(command)
+                .map_err(|err| TtyLaunchError::NoTerminal(err.to_string()))?;
+            let (chunk_tx, chunk_rx) = mpsc::channel();
+            std::thread::spawn(move || drain_pipe(session.reader, &chunk_tx));
+            let (input_tx, input_rx) = mpsc::channel();
+            std::thread::spawn(move || write_terminal(session.writer, &input_rx));
+            let registered = self.register(
+                Launch {
+                    command: command.to_string(),
+                    description,
+                    from_model: true,
+                    origin,
+                },
+                session.child,
+                chunk_rx,
+                Vec::new(),
+                Terminal::Tty {
+                    input: input_tx,
+                    terminal: None,
+                },
+                announce,
+            );
+            Ok(TtyLaunch {
+                task: registered.task,
+                io: registered.io,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (command, description, origin, announce);
             Err(TtyLaunchError::NoTerminal(
-                "a terminal needs a Unix pseudo-terminal".to_string(),
+                "no pseudo-terminal backend for this platform".to_string(),
             ))
         }
     }
@@ -811,12 +844,13 @@ impl BackgroundRegistry {
     fn register(
         &self,
         mut launch: Launch,
-        child: Child,
+        child: impl Into<MonitoredChild>,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         prior: Vec<u8>,
         terminal: Terminal,
         announce: bool,
     ) -> Registered {
+        let child = child.into();
         // The command ran expanded, and so did its description (the executor
         // expands every string of the call); everything that names them from
         // here on — the list, the manager, a prompt's detail, the completion
@@ -827,11 +861,14 @@ impl BackgroundRegistry {
         let kill = CancelToken::new();
         let (input, terminal, tty) = match terminal {
             Terminal::Pipe => (None, None, false),
-            Terminal::Tty { input, terminal } => (Some(input), Some(terminal), true),
+            Terminal::Tty { input, terminal } => (Some(input), terminal, true),
         };
         // The monitor reads the terminal's line mode as output arrives; a
         // handle of its own, so it never takes the registry lock to do it.
+        #[cfg(unix)]
         let monitor_terminal = terminal.as_ref().and_then(|t| t.try_clone().ok());
+        #[cfg(not(unix))]
+        let _ = terminal;
         // A TTY session its launching call waits on is a waiter from birth,
         // so an exit before the call reaches its wait is still the call's to
         // report (`pty::session`).
@@ -869,6 +906,7 @@ impl BackgroundRegistry {
                     exited: false,
                     io: Arc::clone(&io),
                     input: input.clone(),
+                    #[cfg(unix)]
                     terminal,
                     launch: launch.clone(),
                     started: std::time::Instant::now(),
@@ -904,6 +942,7 @@ impl BackgroundRegistry {
             id: id.clone(),
             io: Arc::clone(&io),
             input,
+            #[cfg(unix)]
             terminal: monitor_terminal,
         };
         std::thread::spawn(move || monitor.run(child, prior, chunk_rx, kill, file));
@@ -1077,7 +1116,14 @@ impl BackgroundRegistry {
         } else {
             signal_group(pgid, signal);
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let _ = (tty, signal);
+            // Native Windows has no Unix group signals. Terminal Ctrl+C is
+            // sent as input; explicit stop requests terminate the tree.
+            crate::platform::kill_tree(pgid);
+        }
+        #[cfg(not(any(unix, windows)))]
         let _ = (pgid, tty, signal);
     }
 
@@ -1632,13 +1678,74 @@ impl BackgroundRegistry {
     }
 }
 
+#[cfg(not(windows))]
+type TerminalWriter = File;
+#[cfg(windows)]
+type TerminalWriter = Box<dyn Write + Send>;
+
+// A pipe child and a ConPTY child share the registry's monitor and exit path.
+enum MonitoredChild {
+    Pipe(Child),
+    #[cfg(windows)]
+    Pty(crate::pty::windows::Process),
+}
+
+impl From<Child> for MonitoredChild {
+    fn from(child: Child) -> Self {
+        Self::Pipe(child)
+    }
+}
+#[cfg(windows)]
+impl From<crate::pty::windows::Process> for MonitoredChild {
+    fn from(child: crate::pty::windows::Process) -> Self {
+        Self::Pty(child)
+    }
+}
+impl MonitoredChild {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Pipe(child) => child.id(),
+            #[cfg(windows)]
+            Self::Pty(child) => child.id(),
+        }
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Pipe(child) => child.try_wait(),
+            #[cfg(windows)]
+            Self::Pty(child) => child.try_wait(),
+        }
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Pipe(child) => child.kill(),
+            #[cfg(windows)]
+            Self::Pty(child) => child.kill(),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Pipe(child) => child.wait(),
+            #[cfg(windows)]
+            Self::Pty(child) => child.wait(),
+        }
+    }
+    fn group_outlives(&self) -> bool {
+        match self {
+            Self::Pipe(child) => crate::subprocess::group_outlives(child),
+            #[cfg(windows)]
+            Self::Pty(_) => false,
+        }
+    }
+}
+
 /// How a task's process is wired: pipes (stdout/stderr, stdin on
 /// `/dev/null`), or a terminal of its own with a writer for its input.
 enum Terminal {
     Pipe,
     Tty {
         input: mpsc::Sender<WriteOp>,
-        terminal: File,
+        terminal: Option<File>,
     },
 }
 
@@ -1651,6 +1758,7 @@ struct MonitorHandle {
     input: Option<mpsc::Sender<WriteOp>>,
     /// A TTY session's terminal, to read how the program is reading it
     /// ([`MonitorHandle::refresh_line_mode`]).
+    #[cfg(unix)]
     terminal: Option<File>,
 }
 
@@ -1661,7 +1769,7 @@ impl MonitorHandle {
     /// fold as the rest. See the module docs.
     fn run(
         self,
-        mut child: Child,
+        mut child: MonitoredChild,
         prior: Vec<u8>,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         kill: CancelToken,
@@ -1685,7 +1793,7 @@ impl MonitorHandle {
                     // A process the command started and left running (`server
                     // & …`) stops with it below: the report tells the model
                     // how to keep one running (docs/bash-tools.md).
-                    if crate::subprocess::group_outlives(&child) {
+                    if child.group_outlives() {
                         self.io.set_stranded();
                     }
                     break Some(status);
@@ -1970,7 +2078,7 @@ const TTY_DRAIN_GRACE: Duration = Duration::from_millis(150);
 /// A TTY session's writer thread: every [`WriteOp`] in order, until the
 /// session's task is dropped (the channel closes) or the terminal refuses a
 /// write (the session is gone).
-fn write_terminal(mut terminal: File, ops: &mpsc::Receiver<WriteOp>) {
+fn write_terminal(mut terminal: TerminalWriter, ops: &mpsc::Receiver<WriteOp>) {
     while let Ok(op) = ops.recv() {
         let written = match op {
             WriteOp::Bytes(bytes) => terminal.write_all(&bytes).is_ok(),
@@ -2007,7 +2115,7 @@ fn write_terminal(mut terminal: File, ops: &mpsc::Receiver<WriteOp>) {
 /// [`KEY_PAUSE`]: crate::pty::keys::KEY_PAUSE
 /// [`KEY_READ_WAIT`]: crate::pty::keys::KEY_READ_WAIT
 /// [`ESC_PAUSE`]: crate::pty::keys::ESC_PAUSE
-fn type_keys(terminal: &mut File, chunks: &[InputChunk]) -> bool {
+fn type_keys(terminal: &mut TerminalWriter, chunks: &[InputChunk]) -> bool {
     use crate::pty::keys::{ESC_PAUSE, KEY_PAUSE, Pace};
     #[cfg(unix)]
     let mut queue = crate::pty::spawn::InputQueue::of(terminal);
@@ -2115,7 +2223,12 @@ fn signal_session(sid: u32, signal: &str) {
 
 /// Non-unix fallback: no process groups — the monitor's own `child.kill()`
 /// (via the kill token) reaps the direct child.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn kill_group(pgid: u32) {
+    crate::platform::kill_tree(pgid);
+}
+
+#[cfg(not(any(unix, windows)))]
 fn kill_group(_pgid: u32) {}
 
 /// Non-unix fallback: no process groups to signal.
@@ -2123,7 +2236,12 @@ fn kill_group(_pgid: u32) {}
 fn signal_group(_pgid: u32, _signal: &str) {}
 
 /// Non-unix fallback: no sessions to sweep.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn kill_session(sid: u32) {
+    crate::platform::kill_tree(sid);
+}
+
+#[cfg(not(any(unix, windows)))]
 fn kill_session(_sid: u32) {}
 
 #[cfg(test)]
@@ -2717,18 +2835,25 @@ mod tests {
 
     // --- TTY sessions (docs/interactive-shell.md) ---
 
+    #[cfg(unix)]
     use crate::pty::keys::{encode, parse_input};
+    #[cfg(unix)]
     use crate::pty::report::{Status, Waiting};
+    #[cfg(unix)]
     use crate::pty::session::WaitEnd;
+    #[cfg(unix)]
     use crate::pty::settle::{Settle, WaitKind};
 
+    #[cfg(unix)]
     const LONG: Duration = Duration::from_secs(10);
 
+    #[cfg(unix)]
     fn never() -> bool {
         false
     }
 
     /// Type `input` (the `bash_session` notation) into session `id`.
+    #[cfg(unix)]
     fn type_into(reg: &BackgroundRegistry, id: &str, input: &str) {
         let io = reg.session(id).expect("a running session").io;
         let chunks = encode(&parse_input(input), io.modes());
@@ -2736,6 +2861,7 @@ mod tests {
     }
 
     /// Drain every event that arrives within `window`.
+    #[cfg(unix)]
     fn drain(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
         window: Duration,
@@ -2844,6 +2970,7 @@ mod tests {
 
     /// The same screen over a menu: a program waiting on the terminal itself
     /// for a key, the terminal held key by key.
+    #[cfg(unix)]
     const MENU_LOOP: &str = "stty -icanon -echo; printf '\\033[?1049h'; while :; do \
         printf '\\033[H\\033[JRefreshing run status every 30 seconds. Press Ctrl+C to quit.\\n\\n\
         * v0.7.0 Release\\n'; read -s -n 1 -t 30 _; done";

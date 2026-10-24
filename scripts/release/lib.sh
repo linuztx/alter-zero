@@ -210,10 +210,16 @@ asset_target() {
 }
 # What the archive must contain, relative to its top-level directory.
 ASSET_FILES="alter-zero LICENSE README.md CHANGELOG.md"
+binary_name() {
+	case "${1:-}" in
+	*-pc-windows-*) printf '%s.exe\n' "$(manifest_name)" ;;
+	*) manifest_name ;;
+	esac
+}
 asset_files() {
 	local f
 	for f in $ASSET_FILES; do
-		if [ "$f" = alter-zero ]; then manifest_name; else printf '%s\n' "$f"; fi
+		if [ "$f" = alter-zero ]; then binary_name "${1:-}"; else printf '%s\n' "$f"; fi
 	done
 }
 
@@ -224,6 +230,8 @@ platform_label() {
 	aarch64-unknown-linux-gnu) printf 'Linux arm64 (glibc)\n' ;;
 	x86_64-unknown-linux-musl) printf 'Linux x86_64 (static, musl)\n' ;;
 	aarch64-unknown-linux-musl) printf 'Linux arm64 (static, musl)\n' ;;
+	x86_64-pc-windows-msvc) printf 'Windows x64\n' ;;
+	aarch64-pc-windows-msvc) printf 'Windows ARM64\n' ;;
 	x86_64-apple-darwin) printf 'macOS Intel\n' ;;
 	aarch64-apple-darwin) printf 'macOS Apple silicon\n' ;;
 	*) printf '%s\n' "$1" ;;
@@ -238,6 +246,8 @@ binary_format_words() {
 	case "$1" in
 	x86_64-unknown-linux-*) printf 'ELF 64-bit|x86-64\n' ;;
 	aarch64-unknown-linux-*) printf 'ELF 64-bit|aarch64\n' ;;
+	x86_64-pc-windows-msvc) printf 'PE32+|x86-64\n' ;;
+	aarch64-pc-windows-msvc) printf 'PE32+|ARM64\n' ;;
 	x86_64-apple-darwin) printf 'Mach-O 64-bit|x86_64\n' ;;
 	aarch64-apple-darwin) printf 'Mach-O 64-bit|arm64\n' ;;
 	*) return 1 ;;
@@ -257,6 +267,9 @@ host_target() {
 	case "$os" in
 	Linux) printf '%s-unknown-linux-gnu\n' "$arch" ;;
 	Darwin) printf '%s-apple-darwin\n' "$arch" ;;
+	MINGW* | MSYS* | CYGWIN*)
+		case "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-}}" in ARM64) arch=aarch64 ;; esac
+		printf '%s-pc-windows-msvc\n' "$arch" ;;
 	*) printf '%s-unknown-%s\n' "$arch" "$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
 	esac
 }
@@ -314,8 +327,8 @@ package_dist() {
 	mkdir -p "$dist"
 	stage="$(mktemp -d)"
 	mkdir -p "$stage/$stem"
-	cp "$bin" "$stage/$stem/$(manifest_name)"
-	chmod 755 "$stage/$stem/$(manifest_name)"
+	cp "$bin" "$stage/$stem/$(binary_name "$target")"
+	chmod 755 "$stage/$stem/$(binary_name "$target")"
 	for f in LICENSE README.md CHANGELOG.md; do
 		[ -f "$RELEASE_ROOT/$f" ] || die "missing $RELEASE_ROOT/$f — every asset ships it"
 		cp "$RELEASE_ROOT/$f" "$stage/$stem/"
@@ -364,12 +377,14 @@ write_sha256sums() {
 # real file, so a reformatted package.json fails there first.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2034 # read by the steps that source this file
-NPM_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin"
+NPM_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc"
 npm_manifest_path() { printf '%s/npm/package.json\n' "$RELEASE_ROOT"; }
 npm_platform() {
 	case "$1" in
 	x86_64-unknown-linux-gnu) printf 'linux-x64\n' ;;
 	aarch64-unknown-linux-gnu) printf 'linux-arm64\n' ;;
+	x86_64-pc-windows-msvc) printf 'win32-x64\n' ;;
+	aarch64-pc-windows-msvc) printf 'win32-arm64\n' ;;
 	x86_64-apple-darwin) printf 'darwin-x64\n' ;;
 	aarch64-apple-darwin) printf 'darwin-arm64\n' ;;
 	*) return 1 ;;

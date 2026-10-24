@@ -34,7 +34,7 @@ pub(crate) fn load_mcp_sources(
         .as_deref()
         .map(|contents| mcp::parse_disabled(contents, &project))
         .unwrap_or_default();
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = alter_zero::platform::home_dir();
     let user_display = user_path
         .as_deref()
         .map(|path| alter_zero::ui::display_cwd(path, home.as_deref()))

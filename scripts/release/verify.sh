@@ -65,7 +65,7 @@ for archive in "$dist"/*.tar.gz; do
 
 	entries="$(tar -tzf "$archive" | sed 's#/$##' | sort -u)"
 	expected="$(printf '%s\n' "$stem"
-		for f in $(asset_files); do printf '%s/%s\n' "$stem" "$f"; done)"
+		for f in $(asset_files "$target"); do printf '%s/%s\n' "$stem" "$f"; done)"
 	expected="$(printf '%s\n' "$expected" | sort -u)"
 	if [ "$entries" != "$expected" ]; then
 		fail "$base: unexpected layout —
@@ -77,7 +77,7 @@ for archive in "$dist"/*.tar.gz; do
 	rm -rf "$scratch/x"
 	mkdir -p "$scratch/x"
 	tar -xzf "$archive" -C "$scratch/x"
-	bin="$scratch/x/$stem/$name"
+	bin="$scratch/x/$stem/$(binary_name "$target")"
 	if [ ! -x "$bin" ]; then
 		fail "$base: $stem/$name is not executable"
 		continue
@@ -85,6 +85,7 @@ for archive in "$dist"/*.tar.gz; do
 
 	if words="$(binary_format_words "$target")"; then
 		desc="$(file -b "$bin")"
+		case "$target" in aarch64-pc-windows-*) desc="$(printf '%s' "$desc" | sed 's/[Aa]arch64/ARM64/g')" ;; esac
 		for w in $(printf '%s' "$words" | tr '|' ' '); do
 			case "$desc" in
 			*"$w"* | *"$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')"*) ;;
