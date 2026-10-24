@@ -19,8 +19,9 @@ release heading when a version is cut.
   the window into the system prompt, the built-in tools' schemas, each MCP
   server's tools, the project's `AGENTS.md`, the skills and agent-type
   listings, any secrets' names and the conversation itself, each with its
-  tokens and its share, over a bar of the whole window in the same colours
-  with the free space and the auto-compact reserve at its end. ↑/↓ pick a
+  tokens and its share, over a bar of the whole window in the same colours,
+  each category as long as its share and growing as it does, with the free
+  space and the auto-compact reserve at its end. ↑/↓ pick a
   row and the detail beside it says what it is made of: the tool that costs
   the most, the file, the skill, or how the conversation splits between what
   you typed, your shell commands, the app's own notices, replies, tool calls

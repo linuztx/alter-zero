@@ -23,7 +23,7 @@ cache (`docs/prompt-caching.md`).
   Context usage
   gpt-5.5 · ≈36.4k of 200k tokens (18.2%)
 
-  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░╱╱╱╱╱╱╱
+  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░╱╱╱╱╱╱╱
 
     ■ System prompt     161   0.1%   Messages · 48 messages
     ■ System tools     3.2k   1.6%   Tool results   17.2k  ━━━━━━━━━━━━
@@ -76,14 +76,29 @@ whole window: each category's cells in its own colour, in the order the
 request carries them (system prompt, tools, the reminder's sections,
 messages), then the free space (`░`, dim), then the **auto-compact headroom**
 — the last 10% the session never fills, because at 90% the loop compacts on
-its own (`docs/compact.md`) — hatched `╱`. Cells are allotted by rounding
-each segment's **cumulative** boundary rather than its own size
-(`allot_cells`), so the segments always sum to the bar, the hatching starts
-at 90% of it to the cell, and no run of small categories rounds itself away;
-a category with any tokens at all gets at least one cell, so the 161-token
-system prompt is a visible sliver rather than nothing. A conversation already
+its own (`docs/compact.md`) — hatched `╱`.
+
+Each segment's cells are its **own** share of the window, rounded to the
+nearest cell (`allot_cells`), so a category's run is as long as its tokens
+are worth whatever sits before it, and grows a cell at a time as they do. A
+category with any tokens at all gets at least one cell, so the 161-token
+system prompt is a visible sliver rather than nothing — and that cell comes
+out of the **free space**, which is whatever the categories and the headroom
+leave, never out of a neighbour's run. The headroom is its own share too, so
+the hatching starts at 90% of the bar to the cell. The slivers' cells are
+paid for where a cell costs least: the used cells can read up to a cell per
+sliver fuller than the subtitle's share, which is the number to read. Only
+once the free space is down to its own last cell — a few cells short of the
+threshold — does the longest run give cells back. A conversation already
 past the threshold fills the hatched cells; one past the window fills the
-bar. With no window known the bar is the total's own proportions.
+bar. With no window known the bar is the total's own proportions, the
+longest run taking up the rounding.
+
+The bar used to round each segment's **cumulative** boundary instead,
+taking a sliver's cell from the run after it. The conversation runs after
+every sliver, so it paid for all of them: on a 1M window with six small
+categories ahead of it, its run held one cell from the first message to
+nearly 88k tokens — a bar that never moved while the legend counted up.
 
 ### The legend and the detail
 
@@ -359,18 +374,22 @@ lead's own, the agent's describes the backend as it stands.
   conversation a `/clear`, `/resume`, rewind or compaction replaced, and the
   user's share naming what they did not type.
 - `ui/tests/context_usage_view.rs` — the framed page and its hugging frame,
-  the bar's allotment (every category visible, the hatched headroom, a
-  window over the threshold), the legend's columns and swatches, the detail
-  beside and under the legend, the usage rows and the meter, a share short
-  of whole never reading as all or none, an unknown window, every category
-  its own colour in every theme, the ladder at every height down to the
-  windowed legend and the title row alone, width safety down to two
-  columns, no flow at any height, the hidden cursor seated on the `❯` on
-  every page.
+  the bar's allotment (every run its own share however many slivers sit
+  before it, the free space paying for their cells, the conversation's run
+  growing a cell at a time and never shrinking, every category visible, the
+  hatched headroom, a window over the threshold), the legend's columns and
+  swatches, the detail beside and under the legend, the usage rows and the
+  meter, a share short of whole never reading as all or none, an unknown
+  window, every category its own colour in every theme, the ladder at every
+  height down to the windowed legend and the title row alone, width safety
+  down to two columns, no flow at any height, the hidden cursor seated on
+  the `❯` on every page.
 - `scripts/smoke.sh` Phase 144 — the page end to end in a real terminal:
   against an OpenAI-compatible stub with a skill, an `AGENTS.md` and a
   scripted MCP server planted (every category on the legend, the MCP
   server's tools landing on the already-open page, ↓ walking each detail,
   Ctrl+D over the page and back, the provider's in/out and 86% cache hit
-  after two turns), then the dummy mid-turn (the status line above the page,
+  after two turns, a long third answer growing the conversation's run on
+  the bar — its accent cells read off the raw SGR bytes — to its own share
+  of the window), then the dummy mid-turn (the status line above the page,
   the conversation re-counted as the turn streams under it).

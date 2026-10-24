@@ -88,6 +88,29 @@ fn bar_row(app: &App, width: u16) -> Line<'static> {
         .expect("the page has a window bar")
 }
 
+/// How many `glyph` cells `bar` paints in `colour` — one category's run.
+fn run_cells(bar: &Line, colour: Color, glyph: char) -> usize {
+    bar.spans
+        .iter()
+        .filter(|s| s.style.fg == Some(colour))
+        .map(|s| s.content.chars().filter(|&c| c == glyph).count())
+        .sum()
+}
+
+/// What `tokens` are worth on a bar of `cells` standing for `whole`: their
+/// own share, rounded — at least one cell when they are not nothing.
+fn own_share(tokens: usize, whole: u64, cells: usize) -> usize {
+    if tokens == 0 {
+        return 0;
+    }
+    ((tokens as f64 * cells as f64 / whole as f64).round() as usize).max(1)
+}
+
+/// About 2k tokens of conversation, for growing the Messages category.
+fn long_message() -> String {
+    "the context window fills as the conversation grows ".repeat(250)
+}
+
 /// Turn on usage reporting: one frame, applied mid-turn as the loop does.
 fn report(app: &mut App, usage: TokenUsage) {
     app.begin_stream();
@@ -206,20 +229,22 @@ fn no_page_is_wider_than_the_terminal() {
 
 #[test]
 fn allot_cells_shares_the_cells_by_size_and_never_loses_one() {
-    assert_eq!(allot_cells(&[50, 50], 10), [5, 5]);
-    assert_eq!(allot_cells(&[30, 60, 10], 20), [6, 12, 2]);
-    // Each boundary sits within half a cell of where it belongs (3.3 and
-    // 6.7 of 10), so a position on the bar — the auto-compact threshold —
-    // reads true.
-    assert_eq!(allot_cells(&[1, 1, 1], 10), [3, 4, 3]);
-    // Anything at all gets a cell, taken from what follows it.
-    assert_eq!(allot_cells(&[1, 999], 10), [1, 9]);
-    assert_eq!(allot_cells(&[0, 10, 0], 5), [0, 5, 0]);
-    // More segments than cells: plain rounding decides.
-    assert_eq!(allot_cells(&[1, 1, 1], 2), [1, 0, 1]);
-    assert_eq!(allot_cells(&[], 5), Vec::<usize>::new());
-    assert_eq!(allot_cells(&[0, 0], 5), [0, 0]);
-    assert_eq!(allot_cells(&[3, 7], 0), [0, 0]);
+    assert_eq!(allot_cells(&[50, 50], 10, None), [5, 5]);
+    assert_eq!(allot_cells(&[30, 60, 10], 20, None), [6, 12, 2]);
+    // Each size is its own share, rounded (3.3 of 10 apiece); the cell
+    // that leaves over is the slack's when there is one, else the longest
+    // run's — the later one, on a tie.
+    assert_eq!(allot_cells(&[1, 1, 1], 10, Some(1)), [3, 4, 3]);
+    assert_eq!(allot_cells(&[1, 1, 1], 10, None), [3, 3, 4]);
+    // Anything at all gets a cell, given back by the longest run.
+    assert_eq!(allot_cells(&[1, 999], 10, None), [1, 9]);
+    assert_eq!(allot_cells(&[0, 10, 0], 5, None), [0, 5, 0]);
+    // More sizes than cells: none is promised a cell, and what the
+    // rounding overspends comes off the longest run — the later, on a tie.
+    assert_eq!(allot_cells(&[1, 1, 1], 2, None), [1, 1, 0]);
+    assert_eq!(allot_cells(&[], 5, None), Vec::<usize>::new());
+    assert_eq!(allot_cells(&[0, 0], 5, Some(0)), [0, 0]);
+    assert_eq!(allot_cells(&[3, 7], 0, Some(1)), [0, 0]);
     for (sizes, cells) in [
         (
             vec![161u64, 11_900, 1_100, 433, 21_200, 143_600, 20_000],
@@ -227,13 +252,96 @@ fn allot_cells_shares_the_cells_by_size_and_never_loses_one() {
         ),
         (vec![5, 5, 5, 5, 5, 5, 5, 5], 7),
         (vec![1, 1_000_000], 3),
+        (vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 3),
     ] {
-        assert_eq!(
-            allot_cells(&sizes, cells).iter().sum::<usize>(),
-            cells,
-            "{sizes:?} into {cells}"
-        );
+        for slack in [None, Some(0), Some(sizes.len() - 2)] {
+            assert_eq!(
+                allot_cells(&sizes, cells, slack).iter().sum::<usize>(),
+                cells,
+                "{sizes:?} into {cells}, slack {slack:?}"
+            );
+        }
     }
+}
+
+#[test]
+fn a_run_is_its_own_share_however_many_slivers_sit_before_it() {
+    // The reported page: a 1M window on an 80-cell bar, six slivers ahead of
+    // the conversation. Each sliver's visible cell comes out of the free
+    // space, so the conversation keeps the six cells its 75.1k tokens are
+    // worth — it used to pay for every sliver itself, and held one cell from
+    // its first message until it outgrew them all.
+    let window = 1_048_576u64;
+    let threshold = window * 9 / 10;
+    let slivers = [122u64, 3_200, 6_700, 404, 117, 102];
+    let messages = 75_100;
+    let used = slivers.iter().sum::<u64>() + messages;
+    let mut sizes = slivers.to_vec();
+    sizes.extend([messages, threshold - used, window - threshold]);
+    assert_eq!(
+        allot_cells(&sizes, 80, Some(7)),
+        [1, 1, 1, 1, 1, 1, 6, 60, 8]
+    );
+}
+
+#[test]
+fn the_free_space_takes_up_the_rounding_beside_a_longer_run() {
+    // Past the middle of the window the conversation outgrows the free
+    // space, and the free space still pays for the slivers. Were the longest
+    // run the one to pay, the conversation would drop the slivers' six cells
+    // the moment it overtook the free space — a run that shrank as it grew.
+    assert_eq!(
+        allot_cells(&[1, 1, 1, 1, 1, 1, 500, 394, 100], 80, Some(7)),
+        [1, 1, 1, 1, 1, 1, 40, 26, 8]
+    );
+}
+
+#[test]
+fn the_longest_run_gives_back_what_the_free_space_cannot() {
+    // A few cells short of the threshold the free space is down to its own
+    // one cell, so the slivers' cells come back off the longest run rather
+    // than off the headroom, whose hatching keeps marking the threshold.
+    assert_eq!(
+        allot_cells(&[1, 1, 890, 8, 100], 10, Some(3)),
+        [1, 1, 6, 1, 1]
+    );
+}
+
+#[test]
+fn a_run_never_shrinks_as_its_category_grows() {
+    // The conversation growing from nothing to a full 1M window behind six
+    // slivers, on an 80-cell bar: its run never loses a cell, it is exactly
+    // its own share while the free space has a cell to spare, and the
+    // headroom holds still until the conversation reaches it.
+    let window = 1_000_000u64;
+    let threshold = window * 9 / 10;
+    let slivers = [500u64, 4_000, 2_000, 600, 200, 200];
+    let fixed: u64 = slivers.iter().sum();
+    let mut last = 0;
+    for messages in (0..=window - fixed).step_by(2_500) {
+        let used = fixed + messages;
+        let mut sizes = slivers.to_vec();
+        sizes.extend([
+            messages,
+            threshold.saturating_sub(used),
+            window - used.max(threshold),
+        ]);
+        let out = allot_cells(&sizes, 80, Some(7));
+        assert_eq!(out.iter().sum::<usize>(), 80, "{messages}: {out:?}");
+        assert!(out[6] >= last, "{messages}: the run shrank to {out:?}");
+        if out[7] > 1 {
+            let own = usize::try_from(messages).unwrap();
+            assert_eq!(out[6], own_share(own, window, 80), "{messages}: {out:?}");
+        }
+        if used <= threshold {
+            assert_eq!(out[8], 8, "{messages}: the headroom moved: {out:?}");
+        }
+        last = out[6];
+    }
+    assert_eq!(
+        last, 74,
+        "a full window is all conversation but the slivers"
+    );
 }
 
 #[test]
@@ -261,13 +369,13 @@ fn every_category_has_its_own_colour_in_every_theme() {
 }
 
 #[test]
-fn a_zero_size_never_takes_the_cell_held_back_for_the_size_after_it() {
+fn an_empty_free_space_is_no_slack() {
     // A conversation past the threshold has no free space and a sliver of
-    // headroom: the boundary before the empty free-space segment is held
-    // back a cell so the headroom can show, and that cell is the headroom's
-    // — drawn as free space, it would claim room the window doesn't have.
-    assert_eq!(allot_cells(&[95, 0, 5], 10), [9, 0, 1]);
-    assert_eq!(allot_cells(&[90, 0, 0, 5, 5], 10), [8, 0, 0, 1, 1]);
+    // headroom. The empty free space takes up nothing — a cell drawn there
+    // would claim room the window doesn't have — so the headroom's one cell
+    // comes off the longest run.
+    assert_eq!(allot_cells(&[95, 0, 5], 10, Some(1)), [9, 0, 1]);
+    assert_eq!(allot_cells(&[90, 0, 0, 5, 5], 10, Some(1)), [8, 0, 0, 1, 1]);
 }
 
 #[test]
@@ -322,6 +430,80 @@ fn the_bar_stands_for_the_whole_window() {
             .filter(|s| s.content.contains('╱'))
             .all(|s| s.style.fg == Some(context_usage_reserved_color()))
     );
+}
+
+#[test]
+fn every_run_on_the_bar_is_its_own_share_of_the_window() {
+    // The conversation is the category that grows, and it runs after every
+    // small one: its run is what its own tokens are worth, never what a
+    // running total leaves it once each sliver before it has taken a cell.
+    let window = 100_000;
+    let mut app = open_with(Some(window));
+    for _ in 0..6 {
+        app.record_user_message(&long_message());
+    }
+    app.refresh_context_usage();
+    let width = 100u16;
+    let cells = width as usize - 4;
+    let bar = bar_row(&app, width);
+    for slice in &app.context_usage.as_ref().unwrap().breakdown.slices {
+        assert_eq!(
+            run_cells(&bar, context_usage_color(slice.category), '█'),
+            own_share(slice.tokens, window, cells),
+            "{:?}'s {} tokens: {}",
+            slice.category,
+            slice.tokens,
+            plain(&bar)
+        );
+    }
+    // The hatched headroom is its own share too — the last tenth — and the
+    // free space is whatever the rest leave.
+    let reserved = run_cells(&bar, context_usage_reserved_color(), '╱');
+    assert_eq!(reserved, 10);
+    let used: usize = app
+        .context_usage
+        .as_ref()
+        .unwrap()
+        .breakdown
+        .slices
+        .iter()
+        .map(|slice| run_cells(&bar, context_usage_color(slice.category), '█'))
+        .sum();
+    assert_eq!(
+        run_cells(&bar, context_usage_free_color(), '░'),
+        cells - used - reserved
+    );
+}
+
+#[test]
+fn the_conversations_run_grows_as_the_conversation_does() {
+    // The legend counts the conversation up as it grows, and the bar must
+    // move with it: every message is cells on the bar as soon as it is
+    // worth one, while the headroom holds still at the threshold.
+    let window = 100_000;
+    let mut app = open_with(Some(window));
+    let width = 100u16;
+    let cells = width as usize - 4;
+    let mut last = 0;
+    for _ in 0..12 {
+        app.record_user_message(&long_message());
+        app.refresh_context_usage();
+        let bar = bar_row(&app, width);
+        let run = run_cells(&bar, context_usage_color(Category::Messages), '█');
+        let messages = tokens(&app, Category::Messages);
+        assert_eq!(
+            run,
+            own_share(messages, window, cells),
+            "{messages} tokens of conversation: {}",
+            plain(&bar)
+        );
+        assert!(
+            run > last,
+            "the run grew with the conversation: {last} → {run}"
+        );
+        assert_eq!(run_cells(&bar, context_usage_reserved_color(), '╱'), 10);
+        last = run;
+    }
 }
 
 #[test]
