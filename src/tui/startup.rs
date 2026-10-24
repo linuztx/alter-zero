@@ -86,6 +86,13 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
             Err(0)
         }
         Cli::Session(SessionArgs { start, prompt }) => {
+            // Native Windows keeps the Bash tool contract. Check before raw
+            // mode so a missing prerequisite is normal actionable stderr,
+            // while --help/--version and configuration CLI remain usable.
+            alter_zero::subprocess::validate_tool_shell().map_err(|error| {
+                eprintln!("alter-zero: {error}");
+                1
+            })?;
             let session = resolve_session(start)?;
             Ok(Startup { session, prompt })
         }

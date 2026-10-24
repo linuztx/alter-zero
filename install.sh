@@ -127,7 +127,7 @@ detect_target() {
 		if [ "$cpu" = aarch64 ]; then platform="macOS Apple silicon"; else platform="macOS Intel"; fi
 		;;
 	MINGW* | MSYS* | CYGWIN* | Windows_NT)
-		fail "Windows is not supported" "Alter Zero runs on Linux and macOS; on Windows, use it inside WSL."
+		fail "use the native Windows PowerShell installer" "On Windows x64 (Windows 10 1809+, Git for Windows required), run in PowerShell: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex"
 		;;
 	*) fail "unsupported operating system: $os" "Alter Zero ships for Linux and macOS." ;;
 	esac

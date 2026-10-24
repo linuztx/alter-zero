@@ -18,11 +18,14 @@
 //! `ALTER_ZERO_UPDATE_CHECK=0` silences the *automatic* check; an explicit
 //! `alter-zero update` is the user's own request and runs regardless.
 
+#[cfg(not(windows))]
 use std::io::Write;
+#[cfg(not(windows))]
 use std::process::Command;
 
 use alter_zero::update;
 
+#[cfg(not(windows))]
 use super::config;
 
 /// Run the subcommand and return the process exit code: `0` when this binary
@@ -34,6 +37,7 @@ use super::config;
 /// progress report.
 pub(crate) fn run() -> i32 {
     let bin = env!("CARGO_PKG_NAME");
+    #[cfg(not(windows))]
     let current = env!("CARGO_PKG_VERSION");
     let exe = match std::env::current_exe() {
         Ok(path) => path,
@@ -58,6 +62,23 @@ pub(crate) fn run() -> i32 {
         );
         return 1;
     }
+    #[cfg(windows)]
+    {
+        eprintln!(
+            "{bin} update: Windows cannot replace a running executable. Close all Alter Zero instances, then run the PowerShell installer:\n  {}\nFor a custom installation directory, set ALTER_ZERO_INSTALL_DIR to {} first.",
+            update::update_command(None),
+            exe.parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .display()
+        );
+        1
+    }
+    #[cfg(not(windows))]
+    install(&exe, bin, current)
+}
+
+#[cfg(not(windows))]
+fn install(exe: &std::path::Path, bin: &str, current: &str) -> i32 {
     let Some(dir) = exe.parent() else {
         eprintln!("{bin} update: {} has no parent directory", exe.display());
         return 1;

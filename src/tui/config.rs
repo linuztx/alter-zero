@@ -417,16 +417,14 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
 }
 
 /// The app's config home — where the `.env` key store and `config.json` live:
-/// `ALTER_ZERO_CONFIG_DIR`, else `~/.alter-zero`, else `None` (no HOME and no
-/// override, so file persistence is disabled). Every per-user file resolves
+/// `ALTER_ZERO_CONFIG_DIR`, else `.alter-zero` under the native user profile
+/// (`USERPROFILE` on Windows, `HOME` on Unix), else `None` (file persistence
+/// disabled). Empty values count as unset. Every per-user file resolves
 /// under it — `providers.toml`, the `.env` key store, the checkpoints root and
 /// the sessions root (`resume::sessions_root`) alike — so moving it moves the
 /// whole state dir. See `docs/llm.md`.
 pub(crate) fn config_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("ALTER_ZERO_CONFIG_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".alter-zero"))
+    alter_zero::platform::config_home()
 }
 
 /// The `.env` key store path: `ALTER_ZERO_ENV_FILE`, else `{config_home}/.env`,
@@ -576,12 +574,12 @@ pub(crate) fn checkpoints_root() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("checkpoints"))
 }
 
-/// The platform temp directory (`$TMPDIR`) — `/tmp` under another name, and
-/// on macOS a per-user path (`/var/folders/xx/yyy/T`) no fixed list can
-/// predict. Fed to [`checkpoint::cwd_scope`] so launching *in* it is refused
-/// while a `mktemp -d` project inside it still checkpoints.
+/// The platform temp directory — including native Windows' temporary path,
+/// and macOS's unpredictable per-user path (`/var/folders/xx/yyy/T`). Fed to
+/// [`checkpoint::cwd_scope`] so launching *in* it is refused while a project
+/// inside it still checkpoints. Use the OS resolver, not only Unix's `TMPDIR`.
 pub(crate) fn tmp_dir() -> Option<PathBuf> {
-    std::env::var_os("TMPDIR").map(PathBuf::from)
+    Some(std::env::temp_dir())
 }
 
 // ===== the session's temp layout (docs/scratchpad.md) =====
@@ -859,8 +857,9 @@ pub(crate) fn skills_json_path() -> Option<PathBuf> {
 
 /// The secrets file — `{config_home}/secrets.json`, per **user** like the
 /// `.env` key store (a credential belongs to the person, not the directory)
-/// and written owner-only (`docs/secrets.md`). `None` (no config home)
-/// disables persistence: the page still works for the session.
+/// and written owner-only on Unix (`docs/secrets.md`); native Windows uses
+/// inherited ACLs (`docs/windows.md`). `None` (no config home) disables
+/// persistence: the page still works for the session.
 pub(crate) fn secrets_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join(alter_zero::secrets::SECRETS_FILE_NAME))
 }
@@ -1475,4 +1474,12 @@ pub(crate) fn mcp_tool_timeout() -> std::time::Duration {
         "ALTER_ZERO_MCP_TOOL_TIMEOUT_MS",
         alter_zero::llm::mcp::DEFAULT_TOOL_TIMEOUT,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn checkpoint_temp_scope_uses_the_native_os_directory() {
+        assert_eq!(super::tmp_dir(), Some(std::env::temp_dir()));
+    }
 }

@@ -10,18 +10,24 @@
 //! used to write its prompt over the TUI and block forever; detached, the
 //! open fails at once and the call resolves as a prompt error.
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use alter_zero::llm::exec::{RealToolExecutor, ToolExecutor};
+#[cfg(unix)]
 use alter_zero::llm::tools::ToolCallRequest;
+#[cfg(unix)]
 use alter_zero::stream::CancelToken;
 
 /// The production detach helper: the TUI binary this test run just built.
+#[cfg(unix)]
 fn helper() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_alter-zero"))
 }
 
 /// Run one `bash` tool call through the real executor + real helper.
+#[cfg(unix)]
 fn bash(command: &str) -> alter_zero::llm::tools::ToolOutcome {
     let call = ToolCallRequest {
         id: "c".to_string(),

@@ -1,0 +1,17 @@
+# Shell scripts and byte-for-byte text fixtures must survive Windows checkout.
+# Do not normalize binary assets (images, archives or executables).
+* text=auto
+.gitattributes text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

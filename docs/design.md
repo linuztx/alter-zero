@@ -23,6 +23,15 @@ the app takes from its surroundings have to be handed over on purpose: the
 terminal's identity, which picks the image protocol, and the display server,
 which Ctrl+V reads the clipboard from.
 
+## Native Windows
+
+The native Windows implementation targets x64 Windows 10 1809+ / Windows 11,
+with Git for Windows providing the existing Bash tool contract and ConPTY
+providing isolated interactive terminals. It is not a WSL launcher and does
+not silently reinterpret Bash as PowerShell. Windows distribution, update
+limitations and platform acceptance checks are described in
+[`windows.md`](windows.md); the Unix runtime and release layouts remain intact.
+
 ## Behaviour
 
 - The app runs in ratatui's **inline viewport** (no alternate screen). Normal

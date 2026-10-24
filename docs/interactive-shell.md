@@ -28,6 +28,18 @@ large class of useful programs needs more:
 and returns while it is still running, and a companion tool, **`bash_session`**,
 types into it, waits for it, reads it, and ends it.
 
+## Native Windows backend
+
+Native Windows x64 uses ConPTY through `portable-pty`, keeping its reader,
+writer and pseudoconsole lifetime separate. The real executable's helper
+joins a kill-on-close Job Object **before** starting Git for Windows Bash;
+stopping the helper therefore cleans up descendants even after Bash exits.
+The same screen/transcript, input notation and reporting cores are shared.
+ConPTY does not expose the Unix termios, input queue or Linux process probe,
+so these capabilities stay unknown and input uses the existing timed pacing
+fallback. Helpers without a real application executable have best-effort
+process-tree cleanup only. See [`windows.md`](windows.md).
+
 ## What the model sees
 
 ### `bash` — one new parameter

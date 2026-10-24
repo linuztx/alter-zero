@@ -2576,6 +2576,7 @@ os.write(1, b"\n")'"#;
     }
 
     /// Every registry event that arrives within `window`.
+    #[cfg(unix)]
     fn events_within(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::background::BgEvent>,
         window: std::time::Duration,
@@ -3889,6 +3890,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     }
 
     /// The refined headers a call sent, in order.
+    #[cfg(unix)]
     fn titles_of(
         executor: &RealToolExecutor,
         name: &str,

@@ -83,7 +83,6 @@ done
 # The assets are proven before anything is staged from them.
 bash "$RELEASE_LIB_DIR/verify.sh" "$dist" --version "$version"
 
-bin="$(manifest_name)"
 repo="$(manifest_repository)"
 tag="$(npm_dist_tag "$version")"
 scratch="$(mktemp -d)"
@@ -114,7 +113,7 @@ if (mode === 'platform') {
     os: [os],
     cpu: [cpu],
     ...(os === 'linux' ? { libc: ['glibc'] } : {}),
-    files: ['bin/alter-zero'],
+    files: [os === 'win32' ? 'bin/alter-zero.exe' : 'bin/alter-zero'],
     preferUnplugged: true,
     publishConfig: launcher.publishConfig,
   };
@@ -145,7 +144,8 @@ for target in $NPM_TARGETS; do
 	rm -rf "$dir"
 	mkdir -p "$dir/bin"
 	stem="$(asset_stem "$version" "$target")"
-	tar -xzf "$archive" -C "$scratch"
+	bin="$(asset_binary "$target")"
+	extract_asset "$target" "$archive" "$stem" "$scratch"
 	cp "$scratch/$stem/$bin" "$dir/bin/$bin"
 	chmod 755 "$dir/bin/$bin"
 	cp "$scratch/$stem/LICENSE" "$dir/LICENSE"

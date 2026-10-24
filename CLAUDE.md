@@ -242,6 +242,21 @@ cold build for a 7–19% slower render path), and what a release build still
 pays for and why (`moxcms` under `image`, the sixel quantiser under
 `ratatui-image`, the Wayland and TLS stacks).
 
+## Native Windows
+
+[`docs/windows.md`](docs/windows.md) defines the Windows x64 contract:
+Windows 10 1809+ / Windows 11, native MSVC executable, Git for Windows Bash
+required (never silently PowerShell or WSL). Windows uses crossterm's native
+cursor API before the sole EventStream, `portable-pty` ConPTY sessions, and a
+helper-owned kill-on-close Job Object joined **before** Bash starts. Unix
+keeps rustix and its detach/PTY/probe paths. `platform` centralizes profile
+and config lookup (`USERPROFILE` on Windows, `HOME` on Unix). Windows ships a
+ZIP/`alter-zero.exe`, `install.ps1` and an npm `win32-x64` platform package;
+its unmanaged update is an explicit close-and-reinstall instruction, not a
+promise to overwrite the running executable. The required Windows workflow
+compiles/lints all targets and records exactly which native tests execute;
+its selected subset is not a full Windows-suite pass.
+
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,

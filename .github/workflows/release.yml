@@ -20,9 +20,13 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/windows.yml
+      - .gitattributes
       - scripts/release.sh
       - scripts/release/**
+      - scripts/windows/**
       - install.sh
+      - install.ps1
       - npm/**
   workflow_dispatch:
     inputs:
@@ -89,9 +93,16 @@ jobs:
       - run: cargo test
       - run: cargo doc --no-deps --lib
 
+  # Re-run native runtime coverage on the tagged/rehearsed commit, just as
+  # the Linux gate above is repeated rather than trusting a prior CI result.
+  windows:
+    name: Windows x64 MSVC
+    needs: check
+    uses: ./.github/workflows/windows.yml
+
   build:
     name: build ${{ matrix.target }}
-    needs: [check, gate]
+    needs: [check, gate, windows]
     strategy:
       fail-fast: false
       matrix:
@@ -112,9 +123,61 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          # Native MSVC, not MinGW or WSL; Windows 10 1809+ / Windows 11 x64.
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Windows' default is PowerShell; the release entry point is Bash.
+        shell: bash
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v6
+        if: runner.os == 'Windows'
+        with:
+          node-version: 24
+      - name: Require Git for Windows for the release and shell fixtures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $gitRoot = Join-Path $env:ProgramFiles 'Git'
+          $bash = Join-Path $gitRoot 'bin\bash.exe'
+          $usr = Join-Path $gitRoot 'usr\bin'
+          if (-not (Test-Path -LiteralPath $bash -PathType Leaf) -or -not (Test-Path -LiteralPath $usr -PathType Container)) {
+            throw 'Git for Windows is required; do not use the WSL Bash launcher'
+          }
+          "ALTER_ZERO_BASH=$bash" >> $env:GITHUB_ENV
+          (Join-Path $gitRoot 'bin') >> $env:GITHUB_PATH
+          $usr >> $env:GITHUB_PATH
+          & $bash --noprofile --norc -c 'case "$(uname -s)" in MINGW*|MSYS*) ;; *) exit 1 ;; esac'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Set up the x64 MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Pin native MSVC tools ahead of Git fixture utilities
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
+          foreach ($tool in @('cl.exe', 'link.exe', 'lib.exe', 'dumpbin.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $tools $tool) -PathType Leaf)) {
+              throw "Missing x64 MSVC tool: $tool"
+            }
+          }
+          # GITHUB_PATH entries outrank an exported PATH; disambiguate both
+          # cargo's linker and C build tools from Git's usr/bin/link.exe.
+          $tools >> $env:GITHUB_PATH
+          $linker = Join-Path $tools 'link.exe'
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add ${{ matrix.target }}
@@ -124,8 +187,31 @@ jobs:
       - name: Install the cross toolchain
         if: matrix.cross
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross }}
-      - run: scripts/release.sh build ${{ matrix.target }}
-      - run: scripts/release.sh verify dist
+      - name: Build the Unix release archive
+        if: runner.os != 'Windows'
+        run: bash scripts/release.sh build ${{ matrix.target }}
+      - name: Build the Windows release ZIP with a static CRT
+        if: runner.os == 'Windows'
+        env:
+          # Only this target's release build: do not change the Unix profile
+          # or the debug/runtime test gate's CRT linkage policy.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: bash scripts/release.sh build ${{ matrix.target }}
+      - run: bash scripts/release.sh verify dist
+      - name: Refuse a Windows release needing the MSVC redistributable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $imports = @(dumpbin /nologo /dependents target/x86_64-pc-windows-msvc/release/alter-zero.exe)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $imports
+          if ($imports -match '(?i)\b(?:vcruntime\d*[^\s]*|msvcp\d*[^\s]*|msvcr\d+[^\s]*|ucrtbase[d]?|api-ms-win-crt-[^\s]+)\.dll\b') {
+            throw 'Release imports a dynamic MSVC CRT; build with -C target-feature=+crt-static'
+          }
+      - name: Offline Windows packaged executable and installation tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows/test.ps1 -Dist dist
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}

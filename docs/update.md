@@ -237,6 +237,19 @@ What it does, in order:
    platform pick and the `PATH` advice are unchanged — the subcommand adds no
    second install path.
 
+### Native Windows
+
+Windows installations made through npm/pnpm/Bun/Yarn remain owned by their
+package manager. An unmanaged Windows `alter-zero.exe` cannot be overwritten
+while it is running, so `alter-zero update` refuses **before network or
+installer execution**, tells the user to close every instance and rerun
+`install.ps1`, and names the existing install directory for
+`ALTER_ZERO_INSTALL_DIR`. The automatic update card names the PowerShell
+installer rather than promising an in-process replacement. The installer
+validates checksums and its staged executable before replacement and reports
+locked files as errors; no deferred helper claims success early. See
+[`windows.md`](windows.md) for the platform contract.
+
 The subcommand ignores `ALTER_ZERO_UPDATE_CHECK`: that variable silences the
 *automatic* check, and an explicit command is the user's own request.
 

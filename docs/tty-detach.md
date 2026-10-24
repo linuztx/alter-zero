@@ -88,8 +88,14 @@ is real and surfaces):
    resort where neither detach route exists (still fully killable, but
    sharing the controlling terminal).
 
-Non-Unix (Windows) has no `/dev/tty` and no sessions to escape; it uses the
-plain path only.
+Native Windows uses the helper re-exec when available. The helper creates a
+non-breakaway **kill-on-close Job Object and assigns itself before spawning
+Bash**, so every command descendant is owned from launch. Pipe helpers and
+their Bash children use `CREATE_NO_WINDOW` so `CONIN$`/`CONOUT$` cannot reach
+the TUI; ConPTY helpers deliberately inherit their own console instead.
+`taskkill.exe /T /F /PID` plus the owned direct-child handle supplies explicit
+cancellation. A helperless library launch has only best-effort taskkill tree
+cleanup, not the production Job Object guarantee. See [`windows.md`](windows.md).
 
 ### The TTY form of the chain
 

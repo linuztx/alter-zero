@@ -287,7 +287,7 @@ const PRIMARY: Screen = false;
 ///   themselves in `TERM`/`TERM_PROGRAM`/`KITTY_WINDOW_ID` — and *not* under
 ///   a multiplexer, where exactly that answer goes stale.
 ///
-/// Where that leaves the half-block fallback, the terminal is asked — inside
+/// On Unix, where that leaves the half-block fallback, the terminal is asked — inside
 /// the cursor query's own read, the one stdin reader there is before the
 /// loop's `EventStream` ([`crate::term::query`]) — whether it speaks the
 /// kitty protocol, which is how a terminal the environment cannot name gets
@@ -825,9 +825,25 @@ fn clear_carriers(buf: &mut Buffer) {
 /// The terminal's cell size from the tty itself: the window's pixel size
 /// divided by its cell grid. Zeroes — what a terminal that doesn't report
 /// pixels sends — mean "unknown", not a zero-sized cell.
+#[cfg(unix)]
 fn cell_size_from_tty() -> Option<FontSize> {
     let size = rustix::termios::tcgetwinsize(std::io::stdout()).ok()?;
     let (px_w, px_h) = (size.ws_xpixel, size.ws_ypixel);
     let (cols, rows) = (size.ws_col, size.ws_row);
     (px_w > 0 && px_h > 0 && cols > 0 && rows > 0).then(|| (px_w / cols, px_h / rows))
+}
+
+/// Native Windows has no supported cell-pixel query here. Keep dimensions
+/// unknown so the existing ratio fallback (or explicit override) decides.
+#[cfg(not(unix))]
+fn cell_size_from_tty() -> Option<FontSize> {
+    None
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn native_cell_pixels_remain_unknown() {
+        assert_eq!(super::cell_size_from_tty(), None);
+    }
 }

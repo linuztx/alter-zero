@@ -14,6 +14,16 @@ release heading when a version is cut.
 
 ### Added
 
+- **Native Windows x64 support.** Alter Zero builds as a Windows executable
+  with ConPTY-backed interactive sessions and descendant-process cleanup,
+  native profile/configuration paths, and the system clipboard. Git for
+  Windows provides the Bash tools; WSL is not required. Windows releases ship
+  a checksum-verified ZIP, a per-user PowerShell installer, and the
+  `@linuztx/alter-zero-win32-x64` npm platform package. Native MSVC CI checks
+  compilation, selected runtime tests and packaged installation. Close all
+  running instances before reinstalling an unmanaged Windows installation;
+  npm installations continue to update through their package manager
+  (`docs/windows.md`).
 - **`/context` shows what fills the context window.** The footer's gauge says
   how full the window is; `/context` says what is filling it. The page breaks
   the window into the system prompt, the built-in tools' schemas, each MCP

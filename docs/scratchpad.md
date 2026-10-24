@@ -10,6 +10,12 @@ working note goes to a session-private directory instead of `/tmp`, where it
 can't collide with another session, can't be mistaken for the user's work, and
 doesn't need a permission prompt to write.
 
+Here **session-private** means a separate layout, not an access-control
+promise. Native Windows inherits filesystem ACLs for these directories and
+files; the app does not install or verify owner-only ACLs. Keep the OS temp
+location and any override suitably restricted, particularly because raw task
+logs can contain secret values (`docs/windows.md`, `docs/secrets.md`).
+
 The same move organises what was already there: the background shells' interim
 `{id}.output` files move under a `tasks/` leaf, so one session root holds two
 named children instead of one flat pile.

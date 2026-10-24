@@ -99,13 +99,16 @@ function elfImage(interp, { types = [6, 3, 1] } = {}) {
 }
 
 describe('the platform table', () => {
-  test('maps the four release platforms and nothing else', () => {
+  test('maps the five release platforms and nothing else', () => {
+    assert.equal(launcher.platformKey('win32', 'x64'), 'win32-x64');
+    assert.equal(launcher.PLATFORMS['win32-x64'], 'x86_64-pc-windows-msvc');
     assert.equal(launcher.platformKey('linux', 'x64'), 'linux-x64');
     assert.equal(launcher.platformKey('linux', 'arm64'), 'linux-arm64');
     assert.equal(launcher.platformKey('darwin', 'x64'), 'darwin-x64');
     assert.equal(launcher.platformKey('darwin', 'arm64'), 'darwin-arm64');
     for (const [platform, arch] of [
-      ['win32', 'x64'],
+      ['win32', 'arm64'],
+      ['win32', 'ia32'],
       ['linux', 'ia32'],
       ['linux', 'riscv64'],
       ['freebsd', 'x64'],
@@ -132,11 +135,12 @@ describe('the platform table', () => {
       'darwin-x64': 'x86_64-apple-darwin',
       'linux-arm64': 'aarch64-unknown-linux-gnu',
       'linux-x64': 'x86_64-unknown-linux-gnu',
+      'win32-x64': 'x86_64-pc-windows-msvc',
     });
   });
 
   test('installs only where a platform package exists', () => {
-    assert.deepEqual([...MANIFEST.os].sort(), ['darwin', 'linux']);
+    assert.deepEqual([...MANIFEST.os].sort(), ['darwin', 'linux', 'win32']);
     assert.deepEqual([...MANIFEST.cpu].sort(), ['arm64', 'x64']);
   });
 });
@@ -203,10 +207,11 @@ describe('locate', () => {
 
   test('refuses an unsupported platform, naming the supported ones', () => {
     const install = fakeInstall({ key: 'linux-x64', binary: '#!/bin/sh\n' });
-    const { error } = locateIn(install, { platform: 'win32', arch: 'x64' });
-    assert.match(error, /win32 x64/);
+    const { error } = locateIn(install, { platform: 'win32', arch: 'arm64' });
+    assert.match(error, /win32 arm64/);
     assert.match(error, /Linux and macOS/);
-    assert.match(error, /WSL/);
+    assert.match(error, /native Windows x64/);
+    assert.match(error, /Git for Windows/);
   });
 
   test('explains a platform package npm did not install, and how to get it', () => {
@@ -245,7 +250,7 @@ describe('locate', () => {
     assert.match(error, /npm install -g @linuztx\/alter-zero/);
   });
 
-  test('restores the executable bit a package manager dropped', () => {
+  test('restores the executable bit a package manager dropped', { skip: process.platform === 'win32' && 'Unix mode bits' }, () => {
     const install = fakeInstall({ key: 'linux-x64', binary: '#!/bin/sh\n', mode: 0o644 });
     assert.deepEqual(locateIn(install), { binary: install.bin });
     assert.ok(fs.statSync(install.bin).mode & 0o100, 'chmodded back to executable');
@@ -338,7 +343,7 @@ function run(entry, args, options = {}) {
 
 const echoArgs = '#!/bin/sh\nfor a in "$@"; do printf "[%s]\\n" "$a"; done\necho "env=$ALTER_ZERO_NPM_TEST" >&2\nexit "${FAKE_EXIT:-0}"\n';
 
-describe('the launcher', { skip: HOST === null && 'no platform package for this machine' }, () => {
+describe('the Unix launcher', { skip: (HOST === null || process.platform === 'win32') && 'Unix shell/process fixtures; Windows has windows.test.js' }, () => {
   test('passes every argument through verbatim', () => {
     const install = fakeInstall({ binary: echoArgs });
     const result = run(install.entry, ['--version', 'two words', '', 'ünï', '--', '-c']);
@@ -457,7 +462,7 @@ describe('the launcher', { skip: HOST === null && 'no platform package for this 
 
 // The fallback for a Node without process.execve: the binary runs as a
 // child, and the launcher relays signals and mirrors how it ended.
-describe('the spawn fallback', { skip: HOST === null && 'no platform package for this machine' }, () => {
+describe('the Unix spawn fallback', { skip: (HOST === null || process.platform === 'win32') && 'Unix signals; Windows has windows.test.js' }, () => {
   const harness = (install, signalDuringSpawn = false) => {
     const file = path.join(install.root, 'harness.js');
     const spawn = signalDuringSpawn

@@ -1,5 +1,6 @@
-# .github/workflows/ci.yml — the project's gate, on every push to main and
-# every pull request (docs/release.md). Each job is one thing a contributor
+# .github/workflows/ci.yml — the project's gate, on every push to main or
+# feat/native-windows-support and every pull request (docs/release.md).
+# Each job is one thing a contributor
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
 # --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
 # real binary in tmux, the release tooling's own fixture tests plus the
@@ -13,7 +14,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/native-windows-support]
   pull_request:
   workflow_dispatch:
 
@@ -31,6 +32,12 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Unconditional, blocking native coverage: no path filter or allowed failure.
+  # Configure this check as required in branch protection; YAML cannot set that.
+  windows:
+    name: Windows x64 MSVC
+    uses: ./.github/workflows/windows.yml
+
   gate:
     name: fmt · clippy · test · doc
     runs-on: ubuntu-latest

@@ -52,7 +52,13 @@ What the old shape asked of a model, measured through the real executor
 {"command": "cargo test", "wait": 300, "description": "Run the test suite"}
 ```
 
-The command runs as `bash -c {command}` — `sh -c` where no `bash` is
+On native Windows the command runs in ConPTY under **Git for Windows Bash**;
+missing Bash is an actionable prerequisite error, never a PowerShell/cmd
+substitution or WSL launch. `ALTER_ZERO_BASH` can name an absolute Bash
+executable, and non-login execution receives Git's POSIX utility directories
+without sourcing profile files. See [`windows.md`](windows.md).
+
+The command runs as `bash -c {command}` — `sh -c` on Unix where no `bash` is
 installed (`subprocess::tool_shell`) — in a **pseudo-terminal of its own**
 (120×40, `docs/interactive-shell.md` *The terminal*), in the working
 directory. The call returns when the first of these happens:

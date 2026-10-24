@@ -116,7 +116,7 @@ impl<'t> Session<'t> {
         }
         alter_zero::ui::activate_theme(app.theme());
 
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = alter_zero::platform::profile_dir();
         // How a `Read`/`Write`/`Edit` cell names its file (`docs/tools.md`
         // *Path display*): relative under this cwd, `~`-relative under home,
         // absolute elsewhere — injected once, like the clock, so the pure

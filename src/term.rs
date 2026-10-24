@@ -49,8 +49,10 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
@@ -70,6 +72,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
+#[cfg(unix)]
 use rustix::termios::{OptionalActions, SpecialCodeIndex};
 
 use crate::app::App;
@@ -205,10 +208,11 @@ pub struct InlineViewport {
 impl InlineViewport {
     /// Enter raw mode and reserve `min_height` rows at the bottom for the live
     /// region, anchored to the current cursor row (mirrors how ratatui seats an
-    /// inline viewport). Queries the cursor over stdin — and, where the
-    /// environment names no graphics protocol, whether the terminal speaks
-    /// kitty's (`term::query`) — in one synchronous read, safe here because
-    /// this runs on the main thread before the loop's `EventStream` exists
+    /// inline viewport). On Unix, queries the cursor over stdin — and, where
+    /// the environment names no graphics protocol, whether the terminal speaks
+    /// kitty's (`term::query`) — in one synchronous read. Windows uses the
+    /// native console cursor instead, without reading stdin or sending queries.
+    /// Both run on the main thread before the loop's `EventStream` exists
     /// (invariant 1).
     pub fn init(min_height: u16) -> io::Result<Self> {
         // Decide up front whether to turn on keyboard enhancement, so the panic
@@ -1434,16 +1438,19 @@ const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "ALTER_ZERO_DISABLE_KEYBOARD_ENHA
 
 /// How long the startup read waits for the cursor report before giving up —
 /// the budget crossterm's own `position()` had, which this read replaced.
+#[cfg(unix)]
 const STARTUP_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The terminal's input side, found the way crossterm finds it: stdin when
 /// stdin is a tty, else the controlling terminal — the descriptor the loop's
 /// `EventStream` goes on to read.
+#[cfg(unix)]
 enum TtyInput {
     Stdin(io::Stdin),
     Device(std::fs::File),
 }
 
+#[cfg(unix)]
 impl TtyInput {
     fn open() -> io::Result<Self> {
         let stdin = io::stdin();
@@ -1459,6 +1466,7 @@ impl TtyInput {
     }
 }
 
+#[cfg(unix)]
 impl AsFd for TtyInput {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
@@ -1477,6 +1485,7 @@ impl AsFd for TtyInput {
 /// byte: whatever the user types after that is still unread, and the
 /// `EventStream` gets it with crossterm's whole parser. What was typed
 /// *before* it is in the answer's `typed`, for the loop to replay.
+#[cfg(unix)]
 fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
     let tty = TtyInput::open()?;
     // Raw mode's reads block until a byte arrives (VMIN 1, VTIME 0). Give
@@ -1498,6 +1507,7 @@ fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
 }
 
 /// [`startup_read`]'s write and read loop.
+#[cfg(unix)]
 fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupReplies> {
     let mut stdout = io::stdout();
     stdout.write_all(query::startup_query(graphics).as_bytes())?;
@@ -1521,6 +1531,25 @@ fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupRepl
     })
 }
 
+/// Native Windows reads its console cursor directly, before `EventStream`
+/// exists. Never send Unix DSR/graphics requests or read stdin on this path.
+#[cfg(windows)]
+fn startup_read(_graphics: bool) -> io::Result<query::StartupReplies> {
+    native_startup_replies(ratatui::crossterm::cursor::position())
+}
+
+/// Keep the native query's result in the shared startup shape without
+/// inventing graphics answers or consuming queued console input.
+#[cfg(any(windows, test))]
+fn native_startup_replies(position: io::Result<(u16, u16)>) -> io::Result<query::StartupReplies> {
+    let (x, y) = position?;
+    Ok(query::StartupReplies {
+        cursor: Position::new(x, y),
+        graphics: images::GraphicsReply::default(),
+        typed: Vec::new(),
+    })
+}
+
 /// Whether keyboard enhancement should be left **off**, given the value of
 /// [`DISABLE_KEYBOARD_ENHANCEMENT_ENV`]. A truthy value (`1`/`true`/`yes`,
 /// case-insensitive, surrounding whitespace ignored) disables it; anything else —
@@ -1540,6 +1569,25 @@ mod tests {
     use ratatui::style::Style;
 
     use super::{OverlayPaint, keyboard_enhancement_disabled, overlay_paint, visible_cells};
+
+    #[test]
+    fn native_startup_keeps_the_cursor_without_consuming_typeahead_or_graphics() {
+        let replies = super::native_startup_replies(Ok((23, 7))).expect("native position");
+        assert_eq!(replies.cursor, Position::new(23, 7));
+        assert_eq!(replies.graphics, crate::images::GraphicsReply::default());
+        assert!(replies.typed.is_empty(), "native position reads no stdin");
+    }
+
+    #[test]
+    fn native_startup_propagates_a_cursor_error() {
+        let error = super::native_startup_replies(Err(std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "no console",
+        )))
+        .expect_err("a missing console is not a fabricated cursor");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
+        assert_eq!(error.to_string(), "no console");
+    }
 
     /// Render `line` into a `width`-wide one-row buffer the way every full-cell
     /// paint does, then list what [`visible_cells`] would actually send to the

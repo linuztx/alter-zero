@@ -20,7 +20,7 @@ scripts/release.sh prepare X.Y.Z     # bump + roll the changelog (a commit's wor
 git commit … && git tag -a vX.Y.Z -m "alter-zero vX.Y.Z" && git push origin HEAD vX.Y.Z
         │
         ▼  .github/workflows/release.yml
-   check ──► gate ──► build ×4 ──┬──► publish ──┬──► npm-publish
+   check ──► gate ──► build ×5 ──┬──► publish ──┬──► npm-publish
                                  └──► npm ──────┘
 ```
 
@@ -60,9 +60,14 @@ anything that can publish.
 | `alter-zero-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` | Linux arm64 (glibc ≥ 2.35) | `ubuntu-22.04`, cross-compiled with `gcc-aarch64-linux-gnu` |
 | `alter-zero-vX.Y.Z-x86_64-apple-darwin.tar.gz` | macOS Intel | `macos-latest` (arm64), cross-compiled by Apple's clang |
 | `alter-zero-vX.Y.Z-aarch64-apple-darwin.tar.gz` | macOS Apple silicon | `macos-latest`, native |
+| `alter-zero-vX.Y.Z-x86_64-pc-windows-msvc.zip` | Native Windows x64, Windows 10 1809+ / Windows 11 | `windows-2022`, x64 MSVC; static CRT |
+
+Windows requires **Git for Windows**, not WSL; Windows Terminal is recommended.
+Windows ARM64, ia32 and MinGW builds are not release targets. See
+[`windows.md`](windows.md) for runtime support and the native validation scope.
 
 Each archive unpacks to a directory of the same stem holding the
-`alter-zero` binary (mode 755), `LICENSE`, `README.md` and the release's
+`alter-zero` binary (mode 755), or Windows' `alter-zero.exe`, `LICENSE`, `README.md` and the release's
 `CHANGELOG.md` — nothing else, and `verify` enforces exactly that list.
 Beside every archive sits `{archive}.sha256`, one line in `sha256sum -c`
 form (`<hex>  <filename>`), and `SHA256SUMS` collects every such line so a
@@ -70,7 +75,14 @@ user can check any download with one command. Assets are named by the full
 Rust target triple rather than a friendlier `linux-arm64`: the triple is
 unambiguous about the libc, it is what `rustup target add` and `cargo build
 --target` take, and `verify` parses the target straight back out of the
-name to decide what `file(1)` must say about the binary inside.
+name to select validation. Unix uses `file(1)`; Windows uses numeric DOS/COFF/PE
+headers: `MZ`, an in-bounds `PE\0\0` signature, x64 machine `0x8664`, PE32+
+magic `0x020b`, executable-image flag set, DLL flag clear, console subsystem
+`3`, and complete optional/section headers and section bounds. Unknown targets
+and mismatched extensions fail closed. ZIP extraction allowlists the exact
+stem and four regular files before creating anything: traversal, drive/UNC or
+backslash paths, alternate streams, duplicate/case aliases, links, special
+files and extra entries are rejected.
 
 The binary is the one Cargo.toml documents for a packaged release —
 `cargo build --release --locked --target T --config
@@ -145,9 +157,8 @@ curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh 
 ```
 
 `install.sh` at the repository root is the one line the README leads with.
-It maps `uname` to a target triple (refusing Windows, musl, and a glibc
-older than the 2.35 floor with a message that points at building from
-source), reads the latest tag off github.com's `/releases/latest` redirect
+It maps `uname` to a target triple (redirecting native Windows to `install.ps1`,
+refusing musl and a glibc older than the 2.35 floor with source-build advice), reads the latest tag off github.com's `/releases/latest` redirect
 — curl's final URL, or the last `Location:` header wget prints where there
 is no curl; never the API, which is rate-limited per address and knows
 nothing of `ALTER_ZERO_INSTALL_BASE_URL` (`ALTER_ZERO_VERSION=vX.Y.Z` or
@@ -199,6 +210,37 @@ correct. `release_server.py` therefore also serves the installer at
 `/install.sh` (its optional third argument), which is what lets `smoke.sh`
 Phase 116 run that command end to end against a packaged fake release.
 
+### Native Windows installer
+
+From PowerShell (Windows PowerShell 5.1 or PowerShell 7):
+
+```powershell
+irm https://raw.githubusercontent.com/linuztx/alter-zero/main/install.ps1 | iex
+```
+
+For review before execution, save that file and run
+`.\install.ps1 -Version 0.15.0 -InstallDir "$env:LOCALAPPDATA\Alter Zero\bin"`.
+`-Version` (with or without `v`), `-InstallDir` (`-Dir`) and `-BaseUrl` override
+`ALTER_ZERO_VERSION`, `ALTER_ZERO_INSTALL_DIR` and `ALTER_ZERO_INSTALL_BASE_URL`.
+The default is `%LOCALAPPDATA%\Alter Zero\bin`, never a machine-wide directory;
+no elevation, persistent PATH mutation or execution-policy change is performed.
+The script prints a user PATH/session hint and an uninstall command.
+
+The installer resolves latest from the repository redirect, downloads the ZIP
+and `SHA256SUMS`, requires exactly one matching checksum, validates the ZIP
+allowlist and numeric PE32+ x64 console headers, and checks `--version` before
+and after replacement. It stages on the destination filesystem and explicitly
+fails on a locked/running/unwritable executable. Close all Alter Zero instances
+and rerun it; Unix rename-over-a-running-binary behavior is not promised on
+Windows. Failed final validation attempts rollback and never reports success.
+Package-manager installations must be updated with their package manager.
+
+`scripts/windows/test-installer.ps1 -BinaryPath PATH` builds a release fixture
+from a real MSVC executable and runs this path entirely against loopback,
+including latest, pinned versions, overrides and paths with spaces, reinstallation,
+locked-executable refusal, a corrupt checksum, missing release and unsafe ZIP.
+`release_server.py DIST TAG [INSTALL_SH] [INSTALL_PS1]` serves both installers.
+
 ## The scripts
 
 `scripts/release.sh` is one entry point over the steps under
@@ -216,9 +258,9 @@ tree, which is how the selftest drives them against fixtures.
 | `notes VERSION [DIST]` | The markdown above, on stdout. |
 | `publish VERSION [DIST] [--notes FILE] [--dry-run]` | `verify`, assemble `SHA256SUMS`, then `gh release create` **as a draft** with notes and every asset, then `gh release edit --draft=false` (`--latest` unless a pre-release). |
 | `download VERSION [DIST] [--from URL]` | A published release back into an empty `dist/`: its `SHA256SUMS`, then every asset it lists, with curl or wget (no `gh`), each beside its `.sha256` as `build` leaves it, then `verify`. `--from` names another repository root. |
-| `npm VERSION [DIST] [--out DIR] [--dry-run]` | `verify`, stage the four platform packages and the launcher under `target/npm`, then `npm publish` each not yet on the registry, the launcher last ([`docs/npm.md`](npm.md)). |
+| `npm VERSION [DIST] [--out DIR] [--dry-run]` | `verify`, stage the five platform packages and the launcher under `target/npm`, then `npm publish` each not yet on the registry, the launcher last ([`docs/npm.md`](npm.md)). |
 | `prepare VERSION` | The version bump and changelog roll, then `check`, then the commit/tag/push to run. |
-| `selftest` | 250-odd fixture-driven assertions over all of the above. |
+| `selftest` | 260+ fixture-driven assertions over all of the above, including the Python Windows archive/PE suite. |
 
 `check`'s rules:
 
@@ -276,7 +318,7 @@ an empty `[Unreleased]` — the notes would be empty too.
 
 **On GitHub, before the first tag**: run the Release workflow by hand
 (Actions → Release → *Run workflow*, `publish` off). It does everything a
-tag push does — `check`, the gate, all four builds, `verify` on each and on
+tag push does — `check`, the gate, all five builds, `verify` on each and on
 all together — renders the notes into the job summary, keeps every `dist/`
 and the notes as artifacts for seven days, and prints the `gh` commands it
 would have run. This is the recommended first run: it exercises the
@@ -303,6 +345,30 @@ either.
 **Publishing by hand**, if the automatic run failed after the builds: run
 the workflow on the tag with `publish` on, or locally `scripts/release.sh
 publish X.Y.Z dist` with `gh` signed in (the dry run shows the exact calls).
+
+### Native Windows local/CI command interface
+
+With Python 3, Git for Windows Bash, the pinned Rust toolchain, and an x64 MSVC
+developer environment already prepared (MSVC's `link.exe` before Git's `link.exe`):
+
+```bash
+RUSTFLAGS='-C target-feature=+crt-static' bash scripts/release.sh build x86_64-pc-windows-msvc
+bash scripts/release.sh verify dist
+```
+
+Then from PowerShell:
+
+```powershell
+./scripts/windows/test.ps1 -Dist dist
+```
+
+This runs the packaged `--version`/`--help`, the offline installer in PowerShell
+7 and Windows PowerShell 5.1, and a script-free npm install from the loopback
+registry through npm's real `.cmd` shim. The standalone pure installer gate is
+`pwsh -NoProfile -File scripts/windows/test-installer-functions.ps1`; it can run
+on Linux as well, but cannot validate Windows executable locking or native
+execution. The native npm argument-boundary test is
+`node --test test/windows.test.js` from `npm/`.
 
 ## Cutting a release
 
@@ -375,10 +441,13 @@ follow-ups.
 so there is no YAML-only logic to get wrong without a way to run it, and
 the fixture selftest covers the logic rather than a workflow run.
 
-**Four targets, glibc, no musl, no Windows.** The crate is unix-shaped —
-`rustix` termios and `setsid`, the tty detach, `/proc` reads — and has
-never been built for Windows; a target the tests cannot cover is not a
-target to ship. A static musl Linux build would run on any distribution,
+**Five targets, glibc on Linux, native MSVC on Windows, no musl.** Unix
+termios, `setsid`, tty detach and `/proc` remain Unix-specific; Windows uses
+native ConPTY and Git for Windows Bash instead of WSL (`windows.md`). Native
+Windows compilation, runtime and package gates are separate from Linux fixtures.
+Windows release jobs set `RUSTFLAGS=-C target-feature=+crt-static` and check DLL
+imports so the archive does not need the MSVC redistributable; shared Unix build
+profiles are unchanged. A static musl Linux build would run on any distribution,
 but musl's allocator is markedly slower on the allocation-heavy render
 path, and every resident-memory figure in `docs/memory.md` was measured
 against glibc's allocator; shipping musl means measuring again first. The
@@ -397,7 +466,13 @@ binary are byte-identical whenever they run. The mtime line is the one that
 had to be learned: `cp` stamps each copy with *now*, so the check passed only
 while both packagings landed inside the same second, and the selftest now
 sleeps a second between them to keep that from coming back. The binary itself
-is not claimed reproducible across machines.
+is not claimed reproducible across machines. The four Unix tar/gzip code paths
+and entry layouts are unchanged; byte-comparison fixtures pin their previous
+packaging behavior. Windows ZIPs use sorted names, fixed regular-file modes,
+UTC binary mtime (ZIP's two-second resolution and date range), and no builder
+identity or extra fields. Python 3's standard library owns ZIP/PE handling;
+`lib.sh` owns the shared target → archive extension / binary name / extraction
+mapping.
 
 **Versions are read in five places because they are written in five.** A
 single source would be better; short of generating the README and the npm
@@ -428,7 +503,7 @@ those three. Grouped, the pair moves in one pull request, and that pull
 request is exercised where it lands: `release.yml` runs as a
 **rehearsal on any pull request that touches it**, the release scripts,
 or `install.sh`. Its check job computes `publish=false` off a tag, so the
-whole pipeline — gate, four platform builds, the artifact handoff,
+whole pipeline — gate, five platform builds, the artifact handoff,
 `verify`, the notes, `publish --dry-run` — runs and publishes nothing.
 Without that trigger those two lines ran only on a tag, while every
 check a pull request runs came from `ci.yml`, so a half-moved pair
@@ -478,7 +553,10 @@ toolchain bump is the one edit it already is.
   release server (above), `download` back from that server with curl and
   with wget alone, and the npm packages staged, published to a
   stand-in registry and installed back with `npm install -g`
-  ([`docs/npm.md`](npm.md)). It needs bash, awk, sed, tar, gzip, `file`, a C
+  ([`docs/npm.md`](npm.md)). It also runs the Python Windows fixtures:
+  deterministic ZIPs, numeric malformed/wrong-CPU/DLL/non-console PE rejection,
+  unsafe/duplicate ZIP entries, unknown targets, installer contracts and exact
+  previous Unix tar bytes. It needs bash, awk, sed, tar, gzip, `file`, a C
   compiler and python3, plus node and npm for the npm cases, and runs in
   under half a minute — most of it npm's own start-up, a dozen times; CI and
   the release workflow both run it.

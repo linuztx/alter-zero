@@ -196,25 +196,62 @@ changelog_link() {
 # holding a directory of the same stem with the binary, LICENSE, README.md
 # and CHANGELOG.md — beside its `.sha256` in `sha256sum -c` form.
 # ---------------------------------------------------------------------------
+# This allowlist is shared by naming, packaging, verification and npm.
+# Unknown triples fail closed — never infer support from a CPU prefix.
+RELEASE_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc"
+archive_ext() {
+	case "$1" in
+	x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu | x86_64-apple-darwin | aarch64-apple-darwin) printf 'tar.gz\n' ;;
+	x86_64-pc-windows-msvc) printf 'zip\n' ;;
+	*) return 1 ;;
+	esac
+}
+asset_binary() {
+	archive_ext "$1" >/dev/null || return 1
+	if [ "$1" = x86_64-pc-windows-msvc ]; then printf '%s.exe\n' "$(manifest_name)"; else manifest_name; fi
+}
 asset_stem() { printf '%s-v%s-%s\n' "$(manifest_name)" "$1" "$2"; }
-asset_archive() { printf '%s.tar.gz\n' "$(asset_stem "$1" "$2")"; }
-# The target an asset name carries, given the version it must name; fails on
-# a foreign name so a stray file can never pass as an asset.
+asset_archive() {
+	local ext
+	ext="$(archive_ext "$2")" || return 1
+	printf '%s.%s\n' "$(asset_stem "$1" "$2")" "$ext"
+}
+# Match an exact known target AND its extension; foreign names and unknown
+# triples cannot pass, even with otherwise valid checksums and layouts.
 asset_target() {
-	local name="$1" version="$2" prefix
-	prefix="$(manifest_name)-v$version-"
-	name="${name%.tar.gz}"
-	[[ "$name" == "$prefix"* ]] || return 1
-	[ -n "${name#"$prefix"}" ] || return 1
-	printf '%s\n' "${name#"$prefix"}"
+	local name="$1" version="$2" target
+	for target in $RELEASE_TARGETS; do
+		if [ "$name" = "$(asset_archive "$version" "$target")" ]; then
+			printf '%s\n' "$target"
+			return 0
+		fi
+	done
+	return 1
 }
 # What the archive must contain, relative to its top-level directory.
-ASSET_FILES="alter-zero LICENSE README.md CHANGELOG.md"
 asset_files() {
-	local f
-	for f in $ASSET_FILES; do
-		if [ "$f" = alter-zero ]; then manifest_name; else printf '%s\n' "$f"; fi
-	done
+	asset_binary "$1" || return 1
+	printf '%s\n' LICENSE README.md CHANGELOG.md
+}
+# setup-python supplies python on native Windows; Unix distributions supply
+# python3. Keep a single entry point and never fall back to Python 2.
+windows_archive() {
+	local python
+	if command -v python3 >/dev/null 2>&1; then python=python3
+	elif command -v python >/dev/null 2>&1; then python=python
+	else die "Windows ZIP/PE handling requires Python 3"
+	fi
+	"$python" "$RELEASE_LIB_DIR/windows_archive.py" "$@"
+}
+# Called only after the tar layout check, or with ZIP's exact allowlist
+# validation BEFORE extraction. npm uses the same mapping as verify.
+extract_asset() {
+	local target="$1" archive="$2" stem="$3" destination="$4" ext
+	ext="$(archive_ext "$target")" || return 1
+	case "$ext" in
+	tar.gz) tar -xzf "$archive" -C "$destination" ;;
+	zip) windows_archive extract "$archive" "$stem" "$(asset_binary "$target")" "$destination" ;;
+	esac
 }
 
 # The row a target gets in the release notes' assets table.
@@ -226,6 +263,7 @@ platform_label() {
 	aarch64-unknown-linux-musl) printf 'Linux arm64 (static, musl)\n' ;;
 	x86_64-apple-darwin) printf 'macOS Intel\n' ;;
 	aarch64-apple-darwin) printf 'macOS Apple silicon\n' ;;
+	x86_64-pc-windows-msvc) printf 'Windows x64 (MSVC, Windows 10 1809+)\n' ;;
 	*) printf '%s\n' "$1" ;;
 	esac
 }
@@ -236,8 +274,8 @@ platform_label() {
 # words, every one of which must appear (case-insensitively).
 binary_format_words() {
 	case "$1" in
-	x86_64-unknown-linux-*) printf 'ELF 64-bit|x86-64\n' ;;
-	aarch64-unknown-linux-*) printf 'ELF 64-bit|aarch64\n' ;;
+	x86_64-unknown-linux-gnu) printf 'ELF 64-bit|x86-64\n' ;;
+	aarch64-unknown-linux-gnu) printf 'ELF 64-bit|aarch64\n' ;;
 	x86_64-apple-darwin) printf 'Mach-O 64-bit|x86_64\n' ;;
 	aarch64-apple-darwin) printf 'Mach-O 64-bit|arm64\n' ;;
 	*) return 1 ;;
@@ -257,6 +295,7 @@ host_target() {
 	case "$os" in
 	Linux) printf '%s-unknown-linux-gnu\n' "$arch" ;;
 	Darwin) printf '%s-apple-darwin\n' "$arch" ;;
+	MINGW* | MSYS* | CYGWIN*) printf '%s-pc-windows-msvc\n' "$arch" ;;
 	*) printf '%s-unknown-%s\n' "$arch" "$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]')" ;;
 	esac
 }
@@ -308,14 +347,16 @@ tar_reproducible() {
 # $RELEASE_ROOT, then its .sha256. Prints the archive's path.
 package_dist() {
 	local bin="$1" version="$2" target="$3" dist="$4"
-	local stem stage archive f
+	local stem stage archive f binary ext
 	[ -f "$bin" ] || die "no binary at $bin"
+	ext="$(archive_ext "$target")" || die "unsupported release target: $target"
+	binary="$(asset_binary "$target")"
 	stem="$(asset_stem "$version" "$target")"
 	mkdir -p "$dist"
 	stage="$(mktemp -d)"
 	mkdir -p "$stage/$stem"
-	cp "$bin" "$stage/$stem/$(manifest_name)"
-	chmod 755 "$stage/$stem/$(manifest_name)"
+	cp "$bin" "$stage/$stem/$binary"
+	chmod 755 "$stage/$stem/$binary"
 	for f in LICENSE README.md CHANGELOG.md; do
 		[ -f "$RELEASE_ROOT/$f" ] || die "missing $RELEASE_ROOT/$f — every asset ships it"
 		cp "$RELEASE_ROOT/$f" "$stage/$stem/"
@@ -325,9 +366,12 @@ package_dist() {
 	# a second apart differ by nothing but that — which is exactly what the
 	# reproducibility check below caught once it straddled a second.
 	touch -r "$bin" "$stage/$stem" "$stage/$stem"/*
-	archive="$dist/$stem.tar.gz"
+	archive="$dist/$stem.$ext"
 	rm -f "$archive" "$archive.sha256"
-	tar_reproducible "$stage" "$stem" "$archive"
+	case "$ext" in
+	tar.gz) tar_reproducible "$stage" "$stem" "$archive" ;;
+	zip) windows_archive pack "$stage" "$stem" "$archive" ;;
+	esac
 	rm -rf "$stage"
 	write_sha256 "$archive"
 	printf '%s\n' "$archive"
@@ -346,8 +390,12 @@ write_sha256sums() {
 	local dist="$1" sums
 	# Unmatched, the glob is either itself (the default) or nothing at all
 	# (under `publish`'s nullglob); neither names a file.
-	sums=("$dist"/*.tar.gz.sha256)
-	if [ "${#sums[@]}" -eq 0 ] || [ ! -e "${sums[0]}" ]; then
+	sums=()
+	local file
+	for file in "$dist"/*.tar.gz.sha256 "$dist"/*.zip.sha256; do
+		[ -f "$file" ] && sums+=("$file")
+	done
+	if [ "${#sums[@]}" -eq 0 ]; then
 		die "no per-asset .sha256 files in $dist to gather into SHA256SUMS — scripts/release.sh build writes one beside each archive"
 	fi
 	cat "${sums[@]}" | sort -k 2 >"$dist/SHA256SUMS"
@@ -364,7 +412,7 @@ write_sha256sums() {
 # real file, so a reformatted package.json fails there first.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2034 # read by the steps that source this file
-NPM_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin"
+NPM_TARGETS="$RELEASE_TARGETS"
 npm_manifest_path() { printf '%s/npm/package.json\n' "$RELEASE_ROOT"; }
 npm_platform() {
 	case "$1" in
@@ -372,6 +420,7 @@ npm_platform() {
 	aarch64-unknown-linux-gnu) printf 'linux-arm64\n' ;;
 	x86_64-apple-darwin) printf 'darwin-x64\n' ;;
 	aarch64-apple-darwin) printf 'darwin-arm64\n' ;;
+	x86_64-pc-windows-msvc) printf 'win32-x64\n' ;;
 	*) return 1 ;;
 	esac
 }

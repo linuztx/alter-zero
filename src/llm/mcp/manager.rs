@@ -871,8 +871,23 @@ impl McpManager {
 }
 
 /// Open the system browser on the authorize URL — best-effort, detached
-/// (`xdg-open` on Linux, `open` on macOS); the URL is on screen either way.
+/// (`xdg-open` on Linux, `open` on macOS, the system URL handler on Windows);
+/// the URL is on screen either way.
 fn open_browser(url: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+        if let Some(mut command) = windows_browser_command(url, root.as_deref()) {
+            let _ = command
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+    #[cfg(not(windows))]
     for launcher in ["xdg-open", "open"] {
         let spawned = std::process::Command::new(launcher)
             .arg(url)
@@ -886,10 +901,77 @@ fn open_browser(url: &str) {
     }
 }
 
+/// Windows' native URL handler, never `cmd /c start`. Restrict the target to
+/// HTTP(S) before handing the canonical URL over as one argument; file/custom
+/// schemes could run an executable rather than open the authorization page.
+#[cfg(any(windows, test))]
+fn windows_browser_command(
+    url: &str,
+    system_root: Option<&std::path::Path>,
+) -> Option<std::process::Command> {
+    if url.chars().any(char::is_control) {
+        return None;
+    }
+    let url = reqwest::Url::parse(url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    let root = system_root.filter(|root| root.is_absolute())?;
+    let mut command = std::process::Command::new(root.join("System32/rundll32.exe"));
+    command.arg("url.dll,FileProtocolHandler").arg(url.as_str());
+    Some(command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mcp::{McpScope, McpServerConfig};
+
+    #[test]
+    fn windows_mcp_browser_uses_the_system_launcher_and_one_http_url_argument() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "https://example.test/authorize?state=a%26b&scope=openid%20offline_access";
+        let command = windows_browser_command(url, Some(root.path())).expect("HTTP authorize URL");
+        assert_eq!(
+            command.get_program(),
+            root.path().join("System32/rundll32.exe")
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["url.dll,FileProtocolHandler", url]
+        );
+        let quoted =
+            windows_browser_command("http://localhost:1455/a\"b", Some(root.path())).unwrap();
+        assert_eq!(
+            quoted.get_args().last().unwrap(),
+            "http://localhost:1455/a%22b"
+        );
+    }
+
+    #[test]
+    fn windows_mcp_browser_rejects_other_schemes_controls_and_missing_system_directory() {
+        let root = tempfile::tempdir().unwrap();
+        for url in [
+            "file:///C:/server.cmd",
+            "javascript:alert(1)",
+            "cmd.exe /c calc",
+            "https://example.test/\r\nunsafe",
+            "not a URL",
+        ] {
+            assert!(
+                windows_browser_command(url, Some(root.path())).is_none(),
+                "{url:?}"
+            );
+        }
+        assert!(windows_browser_command("https://example.test", None).is_none());
+        assert!(
+            windows_browser_command(
+                "https://example.test",
+                Some(std::path::Path::new("relative"))
+            )
+            .is_none()
+        );
+    }
 
     fn stdio_entry(name: &str) -> McpServerEntry {
         // The deterministic-ids `sh` fixture, a LEGACY server: the modern

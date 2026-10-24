@@ -32,7 +32,7 @@
 //! 2. **`HelperReexec`** — a re-exec of **our own binary** in a helper mode:
 //!    `{current_exe} {DETACH_ARG} {command}`. `main()` calls
 //!    [`run_detached_exec_if_requested`] as its very first statement; in
-//!    helper mode that calls the safe [`rustix::process::setsid`] wrapper and
+//!    helper mode that calls the safe `rustix::process::setsid` wrapper and
 //!    `exec`s `sh -c {command}` **in place** (same pid), never returning. This
 //!    is what keeps macOS / minimal images — no `setsid` binary there — from
 //!    degrading back to the attached bug. Opt-in per process (`detach_helper`
@@ -112,15 +112,163 @@ pub fn find_on_path(
 /// environment the TUI was started with is the one every command gets.
 #[must_use]
 pub fn tool_shell() -> &'static Path {
-    static SHELL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    SHELL.get_or_init(|| {
-        find_on_path(
-            "bash",
-            std::env::var_os("PATH").as_deref(),
-            is_executable_file,
-        )
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
-    })
+    #[cfg(windows)]
+    {
+        windows_shell()
+            .as_deref()
+            .unwrap_or_else(|_| Path::new("__alter-zero-install-git-for-windows__"))
+    }
+    #[cfg(not(windows))]
+    {
+        static SHELL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        SHELL.get_or_init(|| {
+            find_on_path(
+                "bash",
+                std::env::var_os("PATH").as_deref(),
+                is_executable_file,
+            )
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
+        })
+    }
+}
+
+/// The local-command and hook shell: the existing `sh` on Unix, native Git
+/// Bash on Windows. A Windows command is never reinterpreted as PowerShell.
+#[must_use]
+pub fn default_shell() -> &'static Path {
+    #[cfg(windows)]
+    {
+        tool_shell()
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(DEFAULT_SHELL)
+    }
+}
+
+/// Check the Windows Bash prerequisite before spawning, preserving the
+/// discovery error instead of reporting an opaque missing executable.
+///
+/// # Errors
+/// Git for Windows is unavailable or `ALTER_ZERO_BASH` is invalid.
+pub fn validate_tool_shell() -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_shell()
+            .as_ref()
+            .map(|_| ())
+            .map_err(|message| io::Error::new(io::ErrorKind::NotFound, message.clone()))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell() -> &'static Result<PathBuf, String> {
+    static SHELL: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    SHELL.get_or_init(|| windows_bash(|name| std::env::var_os(name), is_executable_file))
+}
+
+/// Resolve native Git Bash without invoking a shell or accepting the Windows
+/// WSL launcher. Injectable reads keep discovery testable on Unix too.
+#[cfg(any(windows, test))]
+fn windows_bash(
+    var: impl Fn(&str) -> Option<OsString>,
+    installed: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, String> {
+    let advice = "Git for Windows is required for Bash commands. Install it from \
+                  https://gitforwindows.org, or set ALTER_ZERO_BASH to its absolute bin\\bash.exe path";
+    if let Some(explicit) = var("ALTER_ZERO_BASH") {
+        let path = PathBuf::from(explicit);
+        if !path.is_absolute() || !installed(&path) {
+            return Err(format!(
+                "ALTER_ZERO_BASH must name an existing absolute Bash executable. {advice}"
+            ));
+        }
+        return Ok(path);
+    }
+    let windows = var("SystemRoot").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    if let Some(path) = var("PATH") {
+        for directory in std::env::split_paths(&path).filter(|dir| dir.is_absolute()) {
+            if windows.as_ref().is_some_and(|root| {
+                directory
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with(&root.to_string_lossy().to_ascii_lowercase())
+            }) {
+                continue;
+            }
+            candidates.push(directory.join("bash.exe"));
+            if directory
+                .file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd"))
+                && let Some(root) = directory.parent()
+            {
+                candidates.push(root.join("bin/bash.exe"));
+                candidates.push(root.join("usr/bin/bash.exe"));
+            }
+        }
+    }
+    for name in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(directory) = var(name).map(PathBuf::from).filter(|dir| dir.is_absolute()) {
+            candidates.push(directory.join("Git/bin/bash.exe"));
+        }
+    }
+    if let Some(directory) = var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+    {
+        candidates.push(directory.join("Programs/Git/bin/bash.exe"));
+    }
+    candidates
+        .into_iter()
+        .find(|path| installed(path))
+        .ok_or_else(|| advice.to_string())
+}
+
+/// A ConPTY helper must survive the console's Ctrl+C delivery while Bash
+/// handles it. Installing a caught handler (not the inheritable ignore flag)
+/// protects only the helper; a new child receives its normal handler table.
+#[cfg(any(windows, test))]
+fn prepare_windows_console(tty: bool, install: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    if tty { install() } else { Ok(()) }
+}
+
+/// Native pipe commands have no console; TTY commands inherit their ConPTY.
+#[cfg(any(windows, test))]
+fn windows_child_flags(tty: bool) -> u32 {
+    if tty { 0 } else { 0x0800_0000 }
+}
+
+/// Add Git's POSIX utilities without reading shell startup files. Git's
+/// usual Windows PATH entry is only `Git/cmd`, which does not contain `cat`,
+/// `sleep` or the other commands the Bash tool needs. Do not rewrite the
+/// parent process's environment.
+#[cfg(any(windows, test))]
+pub(crate) fn windows_shell_path(
+    shell: &Path,
+    existing: Option<&OsStr>,
+) -> Result<OsString, std::env::JoinPathsError> {
+    let bin = shell.parent().unwrap_or_else(|| Path::new("."));
+    let root = bin.parent().unwrap_or(bin);
+    let root = if root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("usr"))
+    {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
+    let mut paths = vec![root.join("usr/bin"), root.join("bin")];
+    if let Some(existing) = existing {
+        paths.extend(std::env::split_paths(existing));
+    }
+    std::env::join_paths(paths)
 }
 
 /// Is `path` a file this process may execute? (The `installed` test
@@ -156,8 +304,9 @@ pub enum DetachTier<'a> {
 
 /// The spawn order for this process: `SetsidBinary`, then `HelperReexec` when
 /// a helper is installed, then `Attached`. Never empty. Non-Unix has no
-/// controlling-terminal concept to escape (and no `setsid`), so it is
-/// `Attached` only.
+/// controlling-terminal concept to escape. Windows prefers its Job-owning
+/// helper when available, then falls back to a helperless child; other
+/// non-Unix platforms use `Attached` only.
 #[must_use]
 pub fn tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
     #[cfg(unix)]
@@ -169,7 +318,19 @@ pub fn tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
         order.push(DetachTier::Attached);
         order
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // The helper joins a kill-on-close Job Object before spawning Bash.
+        // Keep a helperless tier for library embedders, with best-effort
+        // taskkill tree cleanup rather than claiming Job Object ownership.
+        let mut order = Vec::new();
+        if let Some(helper) = detach_helper {
+            order.push(DetachTier::HelperReexec(helper));
+        }
+        order.push(DetachTier::Attached);
+        order
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = detach_helper;
         vec![DetachTier::Attached]
@@ -181,7 +342,7 @@ pub fn tiers(detach_helper: Option<&Path>) -> Vec<DetachTier<'_>> {
 /// argv/config — the caller (or [`spawn_detached_shell`]) spawns it.
 #[must_use]
 pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
-    command_in(tier, Path::new(DEFAULT_SHELL), command)
+    command_in(tier, default_shell(), command)
 }
 
 /// [`command_for`] under `shell` — [`tool_shell`] for a model command.
@@ -217,6 +378,16 @@ pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command
             c
         }
     };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No inherited console: opening CONIN$/CONOUT$ must not reach the
+        // user's live TUI. The ConPTY path deliberately does not set this.
+        cmd.creation_flags(windows_child_flags(false));
+        if let Ok(path) = windows_shell_path(shell, std::env::var_os("PATH").as_deref()) {
+            cmd.env("PATH", path);
+        }
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -333,7 +504,7 @@ pub fn spawn_shell_with(
     command: &str,
     configure: impl Fn(&mut Command),
 ) -> io::Result<Child> {
-    spawn_tiers(detach_helper, Path::new(DEFAULT_SHELL), command, configure)
+    spawn_tiers(detach_helper, default_shell(), command, configure)
 }
 
 /// The tier walk every detached spawn shares, under `shell`.
@@ -343,6 +514,7 @@ fn spawn_tiers(
     command: &str,
     configure: impl Fn(&mut Command),
 ) -> io::Result<Child> {
+    validate_tool_shell()?;
     let order = tiers(detach_helper);
     let (last, rest) = order.split_last().expect("tiers is never empty");
     let build = |tier: &DetachTier<'_>| {
@@ -486,9 +658,46 @@ pub fn group_outlives(_child: &Child) -> bool {
     false
 }
 
-/// Non-unix fallback: no process groups — just kill and reap the direct child.
+/// Kill the Windows process tree using the system tool, never a command
+/// string interpreted by cmd. Production helpers additionally own a
+/// kill-on-close Job Object, so helper termination reaps descendants even
+/// if their original Bash parent already exited.
+///
+/// # Errors
+/// Invalid PID, unavailable system directory, or taskkill failure.
+#[cfg(windows)]
+pub fn kill_windows_tree(pid: u32) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    if pid == 0 || pid == std::process::id() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to kill this process",
+        ));
+    }
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is unavailable"))?;
+    let status = Command::new(root.join("System32/taskkill.exe"))
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(0x0800_0000)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("taskkill failed: {status}")))
+    }
+}
+
+/// Windows tree cleanup, followed by the owned direct-child fallback;
+/// other non-Unix platforms retain direct-child cleanup.
 #[cfg(not(unix))]
 pub fn kill_process_group(child: &mut Child) {
+    #[cfg(windows)]
+    let _ = kill_windows_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -542,17 +751,75 @@ pub fn run_detached_exec_if_requested() {
         );
         std::process::exit(127);
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // No controlling terminal to escape (and no TTY sessions off Unix);
-        // run the command and mirror its exit so the waiting parent sees the
-        // same status.
+        // Join before the first user-command process exists. Every Bash
+        // descendant inherits this non-breakaway job; the helper is its sole
+        // handle owner. process::exit closes OS handles without an early
+        // Rust Drop that would terminate the helper before propagating status.
+        let mut limits = win32job::ExtendedLimitInfo::new();
+        limits.limit_kill_on_job_close();
+        let job = win32job::Job::create_with_limit_info(&limits)
+            .and_then(|job| job.assign_current_process().map(|()| job));
+        let _job = match job {
+            Ok(job) => job,
+            Err(error) => {
+                eprintln!(
+                    "alter-zero: cannot safely contain the command in a Windows job: {error}"
+                );
+                std::process::exit(126);
+            }
+        };
+        if let Err(error) =
+            prepare_windows_console(tty, || ctrlc::set_handler(|| {}).map_err(io::Error::other))
+        {
+            eprintln!("alter-zero: cannot safely handle console interrupts: {error}");
+            std::process::exit(126);
+        }
+        let selected = if shell == OsStr::new(DEFAULT_SHELL) {
+            if let Err(error) = validate_tool_shell() {
+                eprintln!("alter-zero: {error}");
+                std::process::exit(127);
+            }
+            default_shell().as_os_str()
+        } else {
+            shell.as_os_str()
+        };
+        use std::os::windows::process::CommandExt;
+        let mut child = Command::new(selected);
+        child
+            .arg("-c")
+            .arg(&command)
+            .creation_flags(windows_child_flags(tty));
+        match windows_shell_path(Path::new(selected), std::env::var_os("PATH").as_deref()) {
+            Ok(path) => {
+                child.env("PATH", path);
+            }
+            Err(error) => {
+                eprintln!("alter-zero: cannot prepare Git for Windows PATH: {error}");
+                std::process::exit(126);
+            }
+        }
+        let status = child.status();
+        match status {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => {
+                eprintln!(
+                    "alter-zero: failed to run {}: {error}",
+                    selected.to_string_lossy()
+                );
+                std::process::exit(127);
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         let _ = tty;
         match Command::new(&shell).arg("-c").arg(&command).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(err) => {
+            Err(error) => {
                 eprintln!(
-                    "alter-zero: failed to run {}: {err}",
+                    "alter-zero: failed to run {}: {error}",
                     shell.to_string_lossy()
                 );
                 std::process::exit(127);
@@ -674,6 +941,118 @@ mod tests {
         let planted = |p: &Path| p == Path::new("relative/bash") || p == Path::new("bash");
         assert_eq!(find_on_path("bash", Some(&path), planted), None);
         assert_eq!(find_on_path("bash", None, |_| true), None);
+    }
+
+    #[test]
+    fn windows_bash_discovery_uses_native_git_and_ignores_wsl() {
+        let root = tempfile::tempdir().expect("fixture");
+        let windows = root.path().join("Windows");
+        let git = root.path().join("Program Files/Git");
+        let path = std::env::join_paths([windows.join("System32"), git.join("cmd")])
+            .expect("absolute PATH");
+        let vars = |key: &str| match key {
+            "PATH" => Some(path.clone()),
+            "SystemRoot" => Some(windows.clone().into_os_string()),
+            _ => None,
+        };
+        let bash = git.join("bin/bash.exe");
+        let found = windows_bash(vars, |candidate| {
+            candidate == windows.join("System32/bash.exe") || candidate == bash
+        })
+        .expect("native Git Bash");
+        assert_eq!(found, bash, "never choose the Windows WSL launcher");
+    }
+
+    #[test]
+    fn windows_bash_override_is_absolute_and_fails_closed() {
+        let root = tempfile::tempdir().expect("fixture");
+        let bash = root.path().join("Git with spaces/bin/bash.exe");
+        assert_eq!(
+            windows_bash(
+                |key| (key == "ALTER_ZERO_BASH").then(|| bash.clone().into_os_string()),
+                |candidate| candidate == bash,
+            )
+            .expect("explicit native Bash"),
+            bash
+        );
+        for invalid in [
+            OsString::from("relative/bash.exe"),
+            root.path().join("missing.exe").into_os_string(),
+        ] {
+            let result = windows_bash(
+                |key| (key == "ALTER_ZERO_BASH").then(|| invalid.clone()),
+                |_| false,
+            );
+            assert!(
+                result.is_err(),
+                "invalid override must not silently fall back"
+            );
+            assert!(result.unwrap_err().contains("ALTER_ZERO_BASH"));
+        }
+    }
+
+    #[test]
+    fn windows_bash_commands_can_find_gits_posix_utilities_without_a_login_profile() {
+        let root = tempfile::tempdir().expect("fixture");
+        let git = root.path().join("Git with spaces");
+        let existing = root.path().join("other programs");
+        let path = std::env::join_paths([&existing]).unwrap();
+        let found = windows_shell_path(&git.join("bin/bash.exe"), Some(&path)).unwrap();
+        assert_eq!(
+            std::env::split_paths(&found).collect::<Vec<_>>(),
+            [git.join("usr/bin"), git.join("bin"), existing]
+        );
+        let same = windows_shell_path(&git.join("usr/bin/bash.exe"), Some(&path)).unwrap();
+        assert_eq!(
+            found, same,
+            "Git's wrapper and real Bash share the utility path"
+        );
+    }
+
+    #[test]
+    fn windows_pipe_children_are_console_isolated_but_tty_children_inherit_conpty() {
+        assert_eq!(
+            windows_child_flags(false),
+            0x0800_0000,
+            "CREATE_NO_WINDOW on pipe children"
+        );
+        assert_eq!(
+            windows_child_flags(true),
+            0,
+            "ConPTY children keep their own console"
+        );
+    }
+
+    #[test]
+    fn windows_tty_helper_protects_its_job_from_console_interrupts_before_spawning() {
+        let installed = std::cell::Cell::new(false);
+        prepare_windows_console(true, || {
+            installed.set(true);
+            Ok(())
+        })
+        .expect("handler installed before the user command");
+        assert!(
+            installed.get(),
+            "the helper must survive Ctrl+C so Bash can handle it"
+        );
+        installed.set(false);
+        prepare_windows_console(false, || {
+            installed.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(!installed.get(), "pipe helper has no console to protect");
+        assert!(
+            prepare_windows_console(true, || Err(io::Error::other("handler failed"))).is_err(),
+            "do not spawn a command without a safe control-event owner"
+        );
+    }
+
+    #[test]
+    fn windows_bash_missing_names_the_prerequisite() {
+        let error = windows_bash(|_| None, |_| false).expect_err("no Git installed");
+        assert!(error.contains("Git for Windows"), "{error}");
+        assert!(error.contains("ALTER_ZERO_BASH"), "{error}");
     }
 
     #[test]

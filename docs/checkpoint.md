@@ -26,10 +26,12 @@ pure logic from boundary I/O.
   transcript loads *and* the working directory is restored to that session's
   **final** checkpoint — even if the files diverged since. A `Restored files to
   this session's checkpoint` toast confirms it.
-- **Your real git is never touched.** Snapshots live in a private object store
+- **Your real git is never touched.** Snapshots live in a separate object store
   under `~/.alter-zero/checkpoints`, with its own `GIT_DIR`, index, config, and
-  branch. Your `.git`, staging area, branches, and commits are never read or
-  written. A restore's cleanup never deletes your `.git` or vendored dirs.
+  branch. This is repository isolation, not an owner-only filesystem-access
+  guarantee (see `docs/windows.md` for native Windows ACL limits). Your `.git`,
+  staging area, branches, and commits are never read or written. A restore's
+  cleanup never deletes your `.git` or vendored dirs.
 - **Nothing is truly lost.** A restore is destructive to the current working
   tree, so the current state is snapshotted into the store *first* — recoverable
   via the store's `git reflog`.
@@ -139,16 +141,27 @@ that were never this session's to touch. Refused, each with its own
   legitimate project is the worse default.
 - **`SharedDirectory`** — a `SHARED_PARENTS` entry (`/tmp`, `/var/tmp`, `/var`,
   `/opt`, `/srv`, `/mnt`, `/media`, `/home`, `/net`, `/export`, `/Users`,
-  `/Volumes`, and macOS's `/private/tmp`, `/private/var`) or `$TMPDIR`, and
-  **only the directory itself**: `/tmp` holds
+  `/Volumes`, and macOS's `/private/tmp`, `/private/var`) or the native
+  temporary directory, and **only the directory itself**: `/tmp` holds
   every program on the box's scratch files, while `/tmp/my-project` is an
   ordinary project and checkpoints exactly as before (the smoke suite's
-  `mktemp -d` work dirs depend on this). `$TMPDIR` is injected because macOS
-  puts it at an unpredictable `/var/folders/xx/yyy/T`.
+  `mktemp -d` work dirs depend on this). The boundary injects
+  `std::env::temp_dir()`, honoring the OS's temporary-directory policy:
+  macOS's unpredictable `/var/folders/xx/yyy/T` and native Windows temp paths
+  are covered without depending on Unix's `$TMPDIR` alone.
 
 Matching is component-wise throughout, so a `/home/username` sibling of
 `/home/user` still checkpoints and a trailing slash never matters; an empty
 injected path counts as unknown rather than as a prefix of everything.
+
+**Native Windows limitation:** the fixed system/shared lists above remain
+Unix/macOS-specific. The boundary injects the native profile, state and temp
+paths, but does not discover Windows installation directories through
+`SystemRoot` or `ProgramFiles`; locations such as `C:\Windows` and
+`C:\Program Files` are not categorically refused by those lists. Checkpoints
+are off by default: enable them only in an intended project, never a system
+or shared installation directory. A cost budget or permission error does not
+replace this missing scope guard (`docs/windows.md`).
 
 ### The store never snapshots itself
 

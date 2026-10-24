@@ -10,8 +10,8 @@
 # `cargo build --release --locked --target T --config
 # profile.release.incremental=false` (the incremental release profile is a
 # developer's rebuild speed, not a shipped layout; docs/build-time.md) — and
-# the binary lands in dist/ as {name}-v{version}-{target}.tar.gz beside its
-# .sha256 (lib.sh's package_dist). Cross-compiling a Linux GNU target from
+# the binary lands in dist/ as {name}-v{version}-{target}.tar.gz (Unix) or
+# .zip (Windows) beside its .sha256 (lib.sh's package_dist). Cross-compiling a Linux GNU target from
 # another Linux CPU needs that target's gcc (for oniguruma's and ring's C
 # sources as much as for linking): with `aarch64-linux-gnu-gcc` on PATH the
 # linker and `cc`-crate variables are set here, honouring any the caller
@@ -44,9 +44,12 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$target" ] || target="$(host_target)"
+archive_ext "$target" >/dev/null || die "build: unsupported release target $target"
 host="$(host_target)"
+if [ "$target" = x86_64-pc-windows-msvc ] && [ "$host" != "$target" ]; then
+	die "build: $target needs native Windows x64, Git Bash, and an x64 MSVC developer environment"
+fi
 version="$(manifest_version)"
-name="$(manifest_name)"
 cargo_target_dir="${CARGO_TARGET_DIR:-$RELEASE_ROOT/target}"
 
 # Set one variable unless the caller already did.
@@ -90,7 +93,7 @@ fi
 info "cargo build --release --locked --target $target (profile.release.incremental=false)"
 (cd "$RELEASE_ROOT" && cargo build --release --locked --target "$target" --config profile.release.incremental=false)
 
-bin="$cargo_target_dir/$target/release/$name"
-[ -x "$bin" ] || die "build: expected the binary at $bin"
+bin="$cargo_target_dir/$target/release/$(asset_binary "$target")"
+[ -f "$bin" ] || die "build: expected the binary at $bin"
 archive="$(package_dist "$bin" "$version" "$target" "$dist")"
 ok "built $archive ($(du -h "$archive" | awk '{ print $1 }'))"

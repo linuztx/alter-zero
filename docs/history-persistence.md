@@ -142,8 +142,10 @@ and `save_settings`):
   instance's append is accepted (codex accepts eventual consistency here too).
 - **`append(texts)`**: build every `history_line(session_id, now, text)` + `\n`
   into one buffer and write it with a single `O_APPEND` `write_all` (atomic up to
-  `PIPE_BUF`), creating the parent dir + a `0o600` file on first write. An input
-  over `HISTORY_MAX_ENTRY_BYTES` (100 KiB) is **skipped** — a large paste is
+  `PIPE_BUF` on Unix), creating the parent dir and, on Unix, a `0o600` file on
+  first write. Native Windows relies on inherited filesystem ACLs instead of
+  enforcing owner-only access (`docs/windows.md`). An input over
+  `HISTORY_MAX_ENTRY_BYTES` (100 KiB) is **skipped** — a large paste is
   expanded in the composer, so its full text would otherwise be written, and the
   entry-*count* cap can't bound the file's *bytes*; a giant blob still recalls
   this session (from `entries`) but isn't worth a reverse-search entry (codex

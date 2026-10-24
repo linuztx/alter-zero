@@ -5,7 +5,7 @@
 #   scripts/release.sh verify                      # dist/, for Cargo.toml's version
 #   scripts/release.sh verify out/ --version 0.1.0
 #
-# For every archive: its name is {name}-v{version}-{target}.tar.gz for THIS
+# For every archive: its name is {name}-v{version}-{target}.{tar.gz,zip} for THIS
 # version; its .sha256 names it and matches; it holds exactly one top-level
 # directory of the same stem with the binary, LICENSE, README.md and
 # CHANGELOG.md and nothing else; the binary is executable and `file` reports
@@ -51,39 +51,55 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
 count=0
-for archive in "$dist"/*.tar.gz; do
+for archive in "$dist"/*.tar.gz "$dist"/*.zip; do
 	base="$(basename "$archive")"
-	stem="${base%.tar.gz}"
 	if ! target="$(asset_target "$base" "$version")"; then
-		fail "$base: not an asset of $name $version (expected $(asset_archive "$version" '<target>'))"
+		fail "$base: not a supported asset of $name $version (unknown target, extension, or version)"
 		continue
 	fi
 
+	stem="$(asset_stem "$version" "$target")"
+	ext="$(archive_ext "$target")"
+	binary="$(asset_binary "$target")"
 	if ! check_sha256 "$archive"; then
 		fail "$base: .sha256 is missing, names another file, or does not match"
+		continue
 	fi
 
-	entries="$(tar -tzf "$archive" | sed 's#/$##' | sort -u)"
-	expected="$(printf '%s\n' "$stem"
-		for f in $(asset_files); do printf '%s/%s\n' "$stem" "$f"; done)"
-	expected="$(printf '%s\n' "$expected" | sort -u)"
-	if [ "$entries" != "$expected" ]; then
-		fail "$base: unexpected layout —
+	if [ "$ext" = tar.gz ]; then
+		if ! entries="$(tar -tzf "$archive" | sed 's#/$##' | sort)"; then
+			fail "$base: cannot read archive layout"
+			continue
+		fi
+		expected="$(printf '%s\n' "$stem"
+			for f in $(asset_files "$target"); do printf '%s/%s\n' "$stem" "$f"; done)"
+		expected="$(printf '%s\n' "$expected" | sort)"
+		if [ "$entries" != "$expected" ]; then
+			fail "$base: unexpected layout —
     have: $(printf '%s' "$entries" | tr '\n' ' ')
     want: $(printf '%s' "$expected" | tr '\n' ' ')"
-		continue
+			continue
+		fi
 	fi
 
 	rm -rf "$scratch/x"
 	mkdir -p "$scratch/x"
-	tar -xzf "$archive" -C "$scratch/x"
-	bin="$scratch/x/$stem/$name"
-	if [ ! -x "$bin" ]; then
-		fail "$base: $stem/$name is not executable"
+	if ! extract_asset "$target" "$archive" "$stem" "$scratch/x"; then
+		fail "$base: unsafe or invalid archive layout"
+		continue
+	fi
+	bin="$scratch/x/$stem/$binary"
+	if [ ! -f "$bin" ] || [ -L "$bin" ] || { [ "$ext" = tar.gz ] && [ ! -x "$bin" ]; }; then
+		fail "$base: $stem/$binary is not a regular executable file"
 		continue
 	fi
 
-	if words="$(binary_format_words "$target")"; then
+	if [ "$target" = x86_64-pc-windows-msvc ]; then
+		if ! windows_archive pe "$bin"; then
+			fail "$base: invalid Windows x64 PE executable"
+			continue
+		fi
+	elif words="$(binary_format_words "$target")"; then
 		desc="$(file -b "$bin")"
 		for w in $(printf '%s' "$words" | tr '|' ' '); do
 			case "$desc" in
@@ -92,7 +108,8 @@ for archive in "$dist"/*.tar.gz; do
 			esac
 		done
 	else
-		warn "$base: no format rule for $target — skipping the CPU check"
+		fail "$base: no format rule for $target"
+		continue
 	fi
 
 	if [ "$target" = "$host" ]; then
@@ -106,7 +123,7 @@ for archive in "$dist"/*.tar.gz; do
 	fi
 	count=$((count + 1))
 done
-[ "$count" -gt 0 ] || fail "no $name-v$version-*.tar.gz archives in $dist"
+[ "$count" -gt 0 ] || fail "no supported $name-v$version archives (.tar.gz or .zip) in $dist"
 
 # Every checksum file belongs to an archive; SHA256SUMS agrees with them all.
 for sums in "$dist"/*.sha256; do
@@ -116,6 +133,10 @@ if [ -f "$dist/SHA256SUMS" ]; then
 	listed=0
 	while read -r hash file; do
 		[ -n "$hash" ] || continue
+		if ! [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || ! asset_target "$file" "$version" >/dev/null; then
+			fail "SHA256SUMS: invalid checksum or unsupported asset name '$file'"
+			continue
+		fi
 		if [ ! -f "$dist/$file" ]; then
 			fail "SHA256SUMS names $file, which is not in $dist"
 		elif [ "$hash" != "$(sha256_of "$dist/$file")" ]; then
@@ -124,17 +145,22 @@ if [ -f "$dist/SHA256SUMS" ]; then
 		listed=$((listed + 1))
 	done <"$dist/SHA256SUMS"
 	archives=0
-	for archive in "$dist"/*.tar.gz; do
+	for archive in "$dist"/*.tar.gz "$dist"/*.zip; do
 		archives=$((archives + 1))
-		grep -qF "  $(basename "$archive")" "$dist/SHA256SUMS" || fail "SHA256SUMS does not list $(basename "$archive")"
+		matches="$(awk -v n="$(basename "$archive")" '$2 == n { count++ } END { print count+0 }' "$dist/SHA256SUMS")"
+		[ "$matches" -eq 1 ] || fail "SHA256SUMS must list $(basename "$archive") exactly once"
 	done
-	[ "$listed" -eq "$archives" ] && ok "SHA256SUMS covers all $archives archive(s)"
+	if [ "$listed" -eq "$archives" ]; then
+		ok "SHA256SUMS covers all $archives archive(s)"
+	else
+		fail "SHA256SUMS lists $listed lines for $archives archive(s)"
+	fi
 fi
 
 # Nothing a release should not carry.
 for f in "$dist"/*; do
 	case "$(basename "$f")" in
-	*.tar.gz | *.tar.gz.sha256 | SHA256SUMS) ;;
+	*.tar.gz | *.tar.gz.sha256 | *.zip | *.zip.sha256 | SHA256SUMS) ;;
 	*) fail "$(basename "$f"): stray file in $dist — publish uploads everything here" ;;
 	esac
 done

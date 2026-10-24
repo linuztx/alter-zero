@@ -124,6 +124,17 @@ section() { printf '%s%s%s\n' "$_c_dim" "$*" "$_c_off"; }
 # TARGET's (an ELF or Mach-O header and zeros): a binary `verify` accepts for
 # a target this machine cannot build, since it runs only the host's.
 craft_header() {
+	if [ "$1" = x86_64-pc-windows-msvc ]; then
+		python3 -B - "$STEPS" "$2" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+from test_windows import pe_image
+with open(sys.argv[2], 'wb') as output:
+    output.write(pe_image())
+EOF
+		chmod 755 "$2"
+		return
+	fi
 	case "$1" in
 	x86_64-unknown-linux-gnu) printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\076\000\001\000\000\000' ;;
 	aarch64-unknown-linux-gnu) printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000\001\000\000\000' ;;
@@ -261,9 +272,11 @@ expect_eq "npm package version (not a dependency's, nor engines')" "0.4.2" "$(np
 expect_eq "npm pins, one per platform package" "@example/alter-zero-darwin-arm64 0.4.2
 @example/alter-zero-darwin-x64 0.4.2
 @example/alter-zero-linux-arm64 0.4.2
-@example/alter-zero-linux-x64 0.4.2" "$(npm_pins)"
+@example/alter-zero-linux-x64 0.4.2
+@example/alter-zero-win32-x64 0.4.2" "$(npm_pins)"
 expect_eq "npm platform of a Linux target" "linux-arm64" "$(npm_platform aarch64-unknown-linux-gnu)"
 expect_eq "npm platform of a macOS target" "darwin-x64" "$(npm_platform x86_64-apple-darwin)"
+expect_eq "npm platform of native Windows" "win32-x64" "$(npm_platform x86_64-pc-windows-msvc)"
 expect_fail "npm_platform refuses a target the release does not build" npm_platform x86_64-unknown-linux-musl
 expect_eq "npm package of a target" "@example/alter-zero-linux-x64" "$(npm_package_of x86_64-unknown-linux-gnu)"
 expect_eq "a release is published as latest" "latest" "$(npm_dist_tag 0.4.2)"
@@ -298,6 +311,14 @@ expect_eq "empty [Unreleased]" "" "$(changelog_section Unreleased)"
 expect_eq "link reference" "https://github.com/example/alter-zero/releases/tag/v0.4.1" "$(changelog_link 0.4.1)"
 
 # ---------------------------------------------------------------------------
+section "Windows ZIP/PE and installer fixtures"
+if command -v python3 >/dev/null 2>&1; then
+	expect_ok "Windows packaging, unsafe ZIP, numeric PE, and installer contracts" \
+		python3 -B -m unittest discover -s "$STEPS" -p 'test_*.py'
+else
+	flunk "Python 3 is required for the Windows ZIP/PE release fixtures"
+fi
+
 section "assets"
 expect_eq "asset archive name" "alter-zero-v0.4.2-x86_64-unknown-linux-gnu.tar.gz" "$(asset_archive 0.4.2 x86_64-unknown-linux-gnu)"
 expect_eq "asset_target parses the triple back" "aarch64-apple-darwin" "$(asset_target alter-zero-v0.4.2-aarch64-apple-darwin.tar.gz 0.4.2)"
@@ -593,21 +614,22 @@ EOF
 				fi
 				package_dist "$bin" 0.4.2 "$target" "$T/npm-dist" >/dev/null
 			done
-			expect_ok "a four-target fixture release verifies" bash "$STEPS/verify.sh" "$T/npm-dist"
+			expect_ok "a five-target fixture release verifies" bash "$STEPS/verify.sh" "$T/npm-dist"
 
 			expect_ok "npm --dry-run stages every package" bash "$STEPS/npm.sh" 0.4.2 "$T/npm-dist" --out "$T/npm-out" --dry-run
 			expect_contains "…publishing nothing" "$OUT" "nothing published"
 			expect_contains "…naming each command it would run" "$OUT" "npm publish $T/npm-out/alter-zero-linux-x64 --tag latest"
 			for target in $NPM_TARGETS; do
 				key="$(npm_platform "$target")"
+				binary="$(asset_binary "$target")"
 				dir="$T/npm-out/alter-zero-$key"
 				libc=""
 				[ "${key%-*}" = linux ] && libc=glibc
 				expect_eq "…$key: name, version, os, cpu, libc and files" \
-					"@example/alter-zero-$key 0.4.2 ${key%-*} ${key#*-} $libc bin/alter-zero" \
+					"@example/alter-zero-$key 0.4.2 ${key%-*} ${key#*-} $libc bin/$binary" \
 					"$(json "$dir/package.json" '[m.name, m.version, m.os.join(), m.cpu.join(), (m.libc || []).join(), m.files.join()].join(" ")')"
-				expect_eq "…$key: packing the binary, its README and the LICENSE" "LICENSE README.md bin/alter-zero package.json" "$(packed "$dir")"
-				if [ -x "$dir/bin/alter-zero" ]; then pass "…$key: the binary is executable"; else flunk "$dir/bin/alter-zero is not executable"; fi
+				expect_eq "…$key: packing the binary, its README and the LICENSE" "LICENSE README.md bin/$binary package.json" "$(packed "$dir")"
+				if [ -x "$dir/bin/$binary" ]; then pass "…$key: the binary is executable"; else flunk "$dir/bin/$binary is not executable"; fi
 			done
 			expect_eq "…the host's package holds the host's binary" "alter-zero 0.4.2" "$("$T/npm-out/alter-zero-$(npm_platform "$host")/bin/alter-zero" --version 2>&1)"
 			expect_contains "…its README pointing at the launcher" "$(cat "$T/npm-out/alter-zero-linux-x64/README.md")" "npm install -g @example/alter-zero"
@@ -636,10 +658,11 @@ EOF
 @example/alter-zero-linux-arm64@0.4.2
 @example/alter-zero-darwin-x64@0.4.2
 @example/alter-zero-darwin-arm64@0.4.2
+@example/alter-zero-win32-x64@0.4.2
 @example/alter-zero@0.4.2" "$(cat "$T/registry/published.log")"
 			expect_ok "a second run publishes nothing" "${npm_env[@]}" bash "$STEPS/npm.sh" 0.4.2 "$T/npm-dist" --out "$T/npm-out"
 			expect_contains "…finding each version already there" "$OUT" "@example/alter-zero@0.4.2 is already on the registry"
-			expect_eq "…and the registry as it was" "5" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
+			expect_eq "…and the registry as it was" "6" "$(wc -l <"$T/registry/published.log" | tr -d ' ')"
 			expect_ok "npm install -g installs the launcher from the registry" "${npm_env[@]}" npm install -g --prefix "$T/npm-prefix" @example/alter-zero
 			expect_eq "…whose alter-zero runs the host's binary" "alter-zero 0.4.2" "$("$T/npm-prefix/bin/alter-zero" --version 2>&1)"
 			expect_eq "…the one platform package installed beside it" "alter-zero-$(npm_platform "$host")" "$(ls "$T/npm-prefix/lib/node_modules/@example/alter-zero/node_modules/@example")"
@@ -722,7 +745,7 @@ expect_eq "…older sections intact" "**A fixed thing**
 expect_eq "…compare link added" "https://github.com/example/alter-zero/compare/v0.4.2...v0.5.0" "$(RELEASE_ROOT="$T/prep" changelog_link 0.5.0)"
 expect_eq "…[Unreleased] re-pointed" "https://github.com/example/alter-zero/compare/v0.5.0...HEAD" "$(RELEASE_ROOT="$T/prep" changelog_link Unreleased)"
 expect_eq "…npm/package.json bumped" "0.5.0" "$(RELEASE_ROOT="$T/prep" npm_version)"
-expect_eq "…every platform package re-pinned" "0.5.0 0.5.0 0.5.0 0.5.0" "$(RELEASE_ROOT="$T/prep" npm_pins | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "…every platform package re-pinned" "0.5.0 0.5.0 0.5.0 0.5.0 0.5.0" "$(RELEASE_ROOT="$T/prep" npm_pins | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ $//')"
 expect_eq "…its engines range untouched" "1" "$(grep -c '"node": ">=18"' "$T/prep/npm/package.json")"
 expect_contains "…and the commit it prints adds it" "$OUT" "git add Cargo.toml Cargo.lock README.md CHANGELOG.md npm/package.json"
 if command -v node >/dev/null 2>&1; then

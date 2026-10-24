@@ -80,8 +80,9 @@ while read -r hash name; do
 	[ -n "$hash$name" ] || continue
 	[[ "$hash" =~ ^[0-9a-f]{64}$ ]] || die "download: SHA256SUMS has a line that is not '<sha256>  <name>': $hash $name"
 	case "$name" in
-	"" | .* | */*) die "download: SHA256SUMS names '$name', which is not an asset's file name" ;;
+	"" | .* | */* | *\\* | *:*) die "download: SHA256SUMS names '$name', which is not an asset's file name" ;;
 	esac
+	asset_target "$name" "$version" >/dev/null || die "download: unsupported asset name '$name'"
 	count=$((count + 1))
 done <<<"$listing"
 [ "$count" -gt 0 ] || die "download: the SHA256SUMS at $url lists no assets"

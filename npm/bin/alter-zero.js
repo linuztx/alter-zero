@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // The `alter-zero` command an npm install puts on PATH (docs/npm.md).
 //
-// npm installs this launcher and exactly one of its four optional
-// dependencies — @linuztx/alter-zero-{linux,darwin}-{x64,arm64}, each
+// npm installs this launcher and exactly one of its five optional
+// dependencies — Linux/macOS x64/arm64 or native Windows x64, each
 // holding that platform's release binary and chosen by its os/cpu/libc
 // fields — and this file finds that binary and becomes it. Nothing is
 // downloaded and nothing runs at install time, so --ignore-scripts, pnpm
 // and bun install it like any other package.
 //
-// "Becomes it" is literal where Node can (process.execve, Node 22.15+ and
+// Windows spawns the native .exe with inherited stdio, without a shell or
+// POSIX signal emulation. "Becomes it" is literal on Unix where Node can
+// (process.execve, Node 22.15+ and
 // 23.11+): this process is replaced by the binary, which then owns the
 // terminal, its signals, its job control and its exit status as if it had
 // been run directly, and no Node process stays resident beside a TUI that
@@ -27,7 +29,7 @@ const REPO = 'https://github.com/linuztx/alter-zero';
 const SOURCE_BUILD = `${REPO}#build-from-source`;
 
 // `${process.platform}-${process.arch}` → the release target its platform
-// package carries. These are the four targets the release builds
+// package carries. These are the five targets the release builds
 // (docs/release.md); scripts/release/lib.sh's npm_platform maps them back
 // and package.json's optionalDependencies names one package per key — the
 // tests hold all three together.
@@ -36,6 +38,7 @@ const PLATFORMS = {
   'darwin-x64': 'x86_64-apple-darwin',
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'linux-x64': 'x86_64-unknown-linux-gnu',
+  'win32-x64': 'x86_64-pc-windows-msvc',
 };
 
 function platformKey(platform, arch) {
@@ -140,7 +143,8 @@ function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
     return {
       error:
         `there is no Alter Zero build for ${platform} ${arch}.\n` +
-        'It runs on Linux and macOS, on x64 and arm64 — on Windows, inside WSL.\n',
+        'It runs on Linux and macOS (x64 and arm64), and native Windows x64\n' +
+        '(Windows 10 1809 or newer, with Git for Windows). Windows ARM64 and ia32 are not supported.\n',
     };
   }
   const pkg = platformPackage(name, key);
@@ -162,7 +166,7 @@ function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
         again,
     };
   }
-  const binary = path.join(path.dirname(manifest), 'bin', COMMAND);
+  const binary = path.join(path.dirname(manifest), 'bin', platform === 'win32' ? `${COMMAND}.exe` : COMMAND);
   let stat;
   try {
     stat = fs.statSync(binary);
@@ -172,16 +176,18 @@ function locate({ name, platform, arch, resolve, report, manager = 'npm' }) {
   if (!stat || !stat.isFile()) {
     return { error: `${binary} is missing — the ${pkg} install is incomplete.\n${again}` };
   }
-  try {
-    fs.accessSync(binary, fs.constants.X_OK);
-  } catch (_) {
-    // A package manager that unpacked the file without its mode: give it
-    // back the 0755 it was published with, if this user may.
+  if (platform !== 'win32') {
     try {
-      fs.chmodSync(binary, 0o755);
       fs.accessSync(binary, fs.constants.X_OK);
-    } catch (err) {
-      return { error: `${binary} is not executable and could not be made so (${err.code || err.message}).\n${again}` };
+    } catch (_) {
+      // A package manager that unpacked the file without its mode: give it
+      // back the 0755 it was published with, if this user may.
+      try {
+        fs.chmodSync(binary, 0o755);
+        fs.accessSync(binary, fs.constants.X_OK);
+      } catch (err) {
+        return { error: `${binary} is not executable and could not be made so (${err.code || err.message}).\n${again}` };
+      }
     }
   }
   if (platform === 'linux') {
@@ -231,7 +237,16 @@ const CORE_SIGNALS = new Set([
 // Become the binary (execve), or — on a Node without it — run it as a
 // child that owns the terminal, relay the signals sent to this process,
 // and end the way it ended.
-function launch(binary, args, { execve = process.execve, spawn = require('child_process').spawn } = {}) {
+function launch(binary, args, { platform = process.platform, execve = process.execve, spawn = require('child_process').spawn } = {}) {
+  if (platform === 'win32') {
+    // Native .exe, never cmd.exe / shell quoting. The attached console and
+    // stdio belong to the child too; do not install Unix signal handlers or
+    // re-raise POSIX signals on Windows. Node remains as a small parent.
+    const child = spawn(binary, args, { stdio: 'inherit', shell: false });
+    child.on('error', (err) => fail(`could not run ${binary}: ${err.message}\n`));
+    child.on('exit', (code) => process.exit(code === null ? 1 : code));
+    return;
+  }
   if (typeof execve === 'function') {
     // Node ignores SIGPIPE and SIGXFSZ, and an ignored signal stays ignored
     // across exec, while a caught one is reset to its default. Catching both

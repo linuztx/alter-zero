@@ -4,7 +4,11 @@
 //! stdin/stdout/stderr **and** controlling terminal, and give the caller the
 //! master side to read the program's output from and write its input to.
 //!
-//! This crate forbids `unsafe`, so the terminal comes from `rustix`'s safe
+//! Windows uses ConPTY through `portable-pty`'s safe API, with separate
+//! reader/writer streams and the real executable's helper owning the Job before
+//! it starts Bash. Unix keeps the rustix backend described below.
+//!
+//! This crate forbids `unsafe`, so the Unix terminal comes from `rustix`'s safe
 //! wrappers (`openpt`/`grantpt`/`unlockpt`, then Linux's `TIOCGPTPEER` or the
 //! portable `ptsname` path), and the controlling terminal from the same tier
 //! chain the detach uses, in its TTY form ([`crate::subprocess::tty_tiers`]):
@@ -19,11 +23,18 @@
 //! pattern): a real terminal of the right size, a working `/dev/tty`, the
 //! exit status through the layers.
 
+#[cfg(not(windows))]
 use std::path::Path;
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 
 use super::screen::{COLUMNS, ROWS};
+
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub use windows::{PtyProcess, spawn};
 
 /// What a session's environment says about its terminal — the one it
 /// actually has — and the pagers turned into plain printing, so `git log`,
@@ -414,16 +425,16 @@ fn open_slave(master: &std::os::fd::OwnedFd) -> std::io::Result<std::os::fd::Own
     )?)
 }
 
-/// Pseudo-terminals are a Unix facility.
+/// No terminal backend is available on this platform.
 ///
 /// # Errors
 /// Always.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn spawn(detach_helper: Option<&Path>, command: &str) -> std::io::Result<()> {
     let _ = (detach_helper, command, ROWS, COLUMNS);
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "interactive sessions need a Unix pseudo-terminal",
+        "interactive sessions need a Unix pseudo-terminal or Windows ConPTY",
     ))
 }
 

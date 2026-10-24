@@ -364,65 +364,40 @@ pub fn osc8_open(id: u32, url: &str) -> String {
 /// when it cannot be placed: a relative path with no absolute `cwd`, or an
 /// empty one. The path is normalized lexically the way `header_path` reads
 /// it (`.` dropped, `..` collapsed and saturating at the root, symlinks never
-/// consulted) and percent-encoded by `Path.as_uri()`'s rule: `/` and the
-/// unreserved `A-Za-z0-9-._~` pass, every other byte — a space, `#`, `?`,
-/// `%`, each UTF-8 byte of a non-ASCII name — is `%XX`, so the terminal
-/// decodes the exact name back and nothing in it can read as a fragment or
-/// a query. [`osc8_open`] passes `%` through, so the two encodings compose.
+/// consulted). [`url::Url::from_file_path`] encodes the native path without
+/// losing Unix path bytes, preserving Windows drive and UNC semantics (also
+/// for their verbatim forms), and refusing device namespaces. Spaces, `#`,
+/// `?`, `%` and non-ASCII bytes are encoded so nothing in a file name can
+/// become a URL delimiter. [`osc8_open`] passes `%` through, so the two
+/// encodings compose.
 #[must_use]
 pub fn file_url(path: &str, cwd: Option<&Path>) -> Option<String> {
     if path.is_empty() {
         return None;
     }
     let given = Path::new(path);
+    // `C:notes.txt` depends on a drive's hidden current directory, not this
+    // session's cwd. Do not guess even when that cwd happens to use C:.
+    if !given.is_absolute() && matches!(given.components().next(), Some(Component::Prefix(_))) {
+        return None;
+    }
     let resolved = if given.is_absolute() {
         given.to_path_buf()
     } else {
         cwd.filter(|cwd| cwd.is_absolute())?.join(given)
     };
-    let mut prefix = String::new();
-    let mut parts: Vec<String> = Vec::new();
+    let mut normalized = std::path::PathBuf::new();
     for component in resolved.components() {
         match component {
-            Component::Prefix(p) => prefix = p.as_os_str().to_string_lossy().into_owned(),
-            Component::RootDir | Component::CurDir => {}
+            Component::CurDir => {}
             Component::ParentDir => {
-                parts.pop();
+                // pop() cannot climb past a drive/UNC root (or Unix's `/`).
+                normalized.pop();
             }
-            Component::Normal(seg) => parts.push(seg.to_string_lossy().into_owned()),
+            component => normalized.push(component.as_os_str()),
         }
     }
-    let mut url = String::from("file://");
-    if !prefix.is_empty() {
-        // A Windows drive rides as `file:///C:/…`, its own spelling kept.
-        url.push('/');
-        url.push_str(&prefix);
-    }
-    if parts.is_empty() {
-        url.push('/');
-    }
-    for part in &parts {
-        url.push('/');
-        push_percent_encoded(&mut url, part);
-    }
-    Some(url)
-}
-
-/// Append `segment` to `out` percent-encoded for a `file://` path: the
-/// unreserved bytes (`A-Za-z0-9-._~`) as they are, every other byte as
-/// uppercase `%XX` — per byte of the UTF-8, the form every decoder reads.
-fn push_percent_encoded(out: &mut String, segment: &str) {
-    for &b in segment.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{b:02X}"));
-            }
-        }
-    }
+    url::Url::from_file_path(normalized).ok().map(Into::into)
 }
 
 // --- The env gate ---
@@ -706,34 +681,54 @@ mod tests {
 
     // --- `file://` targets for the file tool headers (docs/links.md) ---
 
+    // The same normalization/encoding matrix runs on both native path APIs.
+    // Windows absolute files need a drive; `/tmp` alone is drive-relative there.
+    fn absolute_file_fixture(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_string()
+        }
+    }
+
+    fn expected_file_fixture(url: &str) -> String {
+        if cfg!(windows) {
+            url.replacen("file:///", "file:///C:/", 1)
+        } else {
+            url.to_string()
+        }
+    }
+
     #[test]
     fn an_absolute_path_becomes_a_file_url() {
-        assert_eq!(
-            file_url("/tmp/notes.txt", None).as_deref(),
-            Some("file:///tmp/notes.txt")
-        );
+        let path = absolute_file_fixture("/tmp/notes.txt");
+        let cwd = absolute_file_fixture("/home/u/proj");
+        let expected = expected_file_fixture("file:///tmp/notes.txt");
+        assert_eq!(file_url(&path, None).as_deref(), Some(expected.as_str()));
         // The cwd is irrelevant to an absolute path.
         assert_eq!(
-            file_url("/tmp/notes.txt", Some(Path::new("/home/u/proj"))).as_deref(),
-            Some("file:///tmp/notes.txt")
+            file_url(&path, Some(Path::new(&cwd))).as_deref(),
+            Some(expected.as_str())
         );
     }
 
     #[test]
     fn a_relative_path_resolves_against_the_cwd_and_needs_one() {
-        let cwd = Path::new("/home/linuztx/Codes/tests");
-        assert_eq!(
-            file_url("hello.py", Some(cwd)).as_deref(),
-            Some("file:///home/linuztx/Codes/tests/hello.py")
-        );
-        assert_eq!(
-            file_url("./src/../hello.py", Some(cwd)).as_deref(),
-            Some("file:///home/linuztx/Codes/tests/hello.py")
-        );
-        assert_eq!(
-            file_url("../sib/f.txt", Some(cwd)).as_deref(),
-            Some("file:///home/linuztx/Codes/sib/f.txt")
-        );
+        let cwd = absolute_file_fixture("/home/linuztx/Codes/tests");
+        let cwd = Path::new(&cwd);
+        for (path, expected) in [
+            ("hello.py", "file:///home/linuztx/Codes/tests/hello.py"),
+            (
+                "./src/../hello.py",
+                "file:///home/linuztx/Codes/tests/hello.py",
+            ),
+            ("../sib/f.txt", "file:///home/linuztx/Codes/sib/f.txt"),
+        ] {
+            assert_eq!(
+                file_url(path, Some(cwd)),
+                Some(expected_file_fixture(expected))
+            );
+        }
         assert_eq!(
             file_url("hello.py", None),
             None,
@@ -749,20 +744,18 @@ mod tests {
 
     #[test]
     fn a_file_url_is_normalized_lexically() {
-        assert_eq!(
-            file_url("/tmp/./a/../x.py", None).as_deref(),
-            Some("file:///tmp/x.py")
-        );
-        assert_eq!(
-            file_url("/tmp/dir/", None).as_deref(),
-            Some("file:///tmp/dir")
-        );
-        assert_eq!(file_url("/", None).as_deref(), Some("file:///"));
-        assert_eq!(
-            file_url("/../..", None).as_deref(),
-            Some("file:///"),
-            "a climb saturates at the root"
-        );
+        for (path, expected) in [
+            ("/tmp/./a/../x.py", "file:///tmp/x.py"),
+            ("/tmp/dir/", "file:///tmp/dir"),
+            ("/", "file:///"),
+            ("/../..", "file:///"),
+        ] {
+            assert_eq!(
+                file_url(&absolute_file_fixture(path), None),
+                Some(expected_file_fixture(expected)),
+                "{path} (a climb saturates at the root)"
+            );
+        }
     }
 
     #[test]
@@ -771,30 +764,108 @@ mod tests {
         // byte — space, `#`, `?`, `%`, each UTF-8 byte of a non-ASCII char —
         // is `%XX`, so the terminal decodes back to the exact file name and a
         // `#` or `?` in it can never read as a fragment or a query.
+        for (path, expected) in [
+            ("/tmp/my file#1?.txt", "file:///tmp/my%20file%231%3F.txt"),
+            ("/tmp/100%.txt", "file:///tmp/100%25.txt"),
+            ("/tmp/café.txt", "file:///tmp/caf%C3%A9.txt"),
+            ("/home/u/a-b_c.d~e", "file:///home/u/a-b_c.d~e"),
+        ] {
+            assert_eq!(
+                file_url(&absolute_file_fixture(path), None),
+                Some(expected_file_fixture(expected))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_url_preserves_non_utf8_bytes_in_its_cwd() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let cwd = Path::new(OsStr::from_bytes(b"/tmp/project-\xff"));
         assert_eq!(
-            file_url("/tmp/my file#1?.txt", None).as_deref(),
-            Some("file:///tmp/my%20file%231%3F.txt")
+            file_url("./sub/../notes.txt", Some(cwd)).as_deref(),
+            Some("file:///tmp/project-%FF/notes.txt")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_urls_handle_drives_and_relative_paths_lexically() {
+        let cwd = Path::new(r"C:\Users\Me\project");
+        for (path, expected) in [
+            (
+                r"C:\Users\Me\my file#1.txt",
+                "file:///C:/Users/Me/my%20file%231.txt",
+            ),
+            (r"C:\a\.\b\..\notes.txt", "file:///C:/a/notes.txt"),
+            (r"C:\..\..\notes.txt", "file:///C:/notes.txt"),
+            (
+                r".\src\..\notes.txt",
+                "file:///C:/Users/Me/project/notes.txt",
+            ),
+            (r"..\notes.txt", "file:///C:/Users/Me/notes.txt"),
+            (r"\notes.txt", "file:///C:/notes.txt"),
+            (r"C:\", "file:///C:/"),
+        ] {
+            assert_eq!(
+                file_url(path, Some(cwd)).as_deref(),
+                Some(expected),
+                "{path}"
+            );
+        }
         assert_eq!(
-            file_url("/tmp/100%.txt", None).as_deref(),
-            Some("file:///tmp/100%25.txt")
+            file_url(r"C:notes.txt", Some(cwd)),
+            None,
+            "drive-relative is ambiguous"
         );
+        assert_eq!(file_url(r"D:notes.txt", Some(cwd)), None);
         assert_eq!(
-            file_url("/tmp/café.txt", None).as_deref(),
-            Some("file:///tmp/caf%C3%A9.txt")
+            file_url(r"\notes.txt", None),
+            None,
+            "a root without a drive needs a cwd"
         );
-        assert_eq!(
-            file_url("/home/u/a-b_c.d~e", None).as_deref(),
-            Some("file:///home/u/a-b_c.d~e")
-        );
+        assert_eq!(file_url("notes.txt", None), None);
+        assert_eq!(file_url("", Some(cwd)), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unc_and_verbatim_files_are_urls_not_device_names() {
+        for (path, expected) in [
+            (
+                r"\\server\share\dir\..\my file.txt",
+                "file://server/share/my%20file.txt",
+            ),
+            (
+                r"\\server\share\..\..\notes.txt",
+                "file://server/share/notes.txt",
+            ),
+            (r"\\?\C:\dir\.\sub\..\notes.txt", "file:///C:/dir/notes.txt"),
+            (
+                r"\\?\UNC\server\share\dir\..\notes.txt",
+                "file://server/share/notes.txt",
+            ),
+        ] {
+            assert_eq!(file_url(path, None).as_deref(), Some(expected), "{path}");
+        }
+        for path in [
+            r"\\.\COM1",
+            r"\\.\C:\notes.txt",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\notes.txt",
+        ] {
+            assert_eq!(file_url(path, None), None, "not a normal file: {path}");
+        }
     }
 
     #[test]
     fn a_file_url_rides_the_osc8_frame_without_double_encoding() {
-        let url = file_url("/tmp/my file.txt", None).expect("an absolute path links");
+        let url = file_url(&absolute_file_fixture("/tmp/my file.txt"), None)
+            .expect("an absolute path links");
+        let expected = expected_file_fixture("file:///tmp/my%20file.txt");
         assert_eq!(
             osc8_open(3, &url),
-            "\x1b]8;id=az3;file:///tmp/my%20file.txt\x1b\\"
+            format!("\x1b]8;id=az3;{expected}\x1b\\")
         );
     }
 }

@@ -662,8 +662,34 @@ const SUBCOMMAND_TOOLS: &[&str] = &[
 /// escalators, wrappers. A prefix like `sudo` or `sh` would allow-list every
 /// command they can carry, so a segment led by one is never summarized.
 const COMMAND_WRAPPERS: &[&str] = &[
-    "bash", "busybox", "command", "dash", "doas", "env", "eval", "exec", "fish", "ksh", "nohup",
-    "setsid", "sh", "source", "su", "sudo", "time", "timeout", "watch", "xargs", "zsh",
+    "bash",
+    "bash.exe",
+    "busybox",
+    "cmd",
+    "cmd.exe",
+    "command",
+    "dash",
+    "doas",
+    "env",
+    "eval",
+    "exec",
+    "fish",
+    "ksh",
+    "nohup",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "setsid",
+    "sh",
+    "source",
+    "su",
+    "sudo",
+    "time",
+    "timeout",
+    "watch",
+    "xargs",
+    "zsh",
 ];
 
 /// Is this token a bare subcommand word (letters/digits/`-`/`_`) rather than a
@@ -1394,6 +1420,25 @@ mod tests {
             CommandScope::Exact("ls && sudo rm x".to_string()),
             "one unsummarizable segment degrades the whole command"
         );
+    }
+
+    #[test]
+    fn windows_command_interpreters_never_become_broad_allowlist_prefixes() {
+        for command in [
+            "cmd /c echo hello",
+            "cmd.exe /c del important.txt",
+            "powershell -Command Get-Content secret.txt",
+            "powershell.exe -NoProfile -Command Remove-Item important.txt",
+            "pwsh -Command Get-ChildItem",
+            "pwsh.exe -Command Remove-Item important.txt",
+            "bash.exe -c 'rm important.txt'",
+        ] {
+            assert_eq!(
+                command_scope(command),
+                CommandScope::Exact(command.to_string()),
+                "an interpreter carries arbitrary code: {command}"
+            );
+        }
     }
 
     #[test]

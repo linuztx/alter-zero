@@ -250,16 +250,7 @@ fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize, truncated: &mut bo
 /// `llm::exec::kill_process_group` pattern (the crate forbids `unsafe`, so the
 /// shell's POSIX `kill` handles the negative-pgid form). Best-effort.
 fn kill_shell_group(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pgid = child.id();
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
-            .status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    alter_zero::subprocess::kill_process_group(child);
 }
 
 /// How often [`spawn_shell_command`] polls a running child for completion while

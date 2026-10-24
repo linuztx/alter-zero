@@ -146,7 +146,7 @@ pub(crate) fn load_project_layer(cwd: &Path) -> (Option<ProjectLayer>, Option<St
     // launched in `~` the fallback root makes `{root}/.alter-zero` the
     // user's own config home, and the layer would ask the user to trust
     // their own files.
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = alter_zero::platform::profile_dir();
     if !trust::is_project_root(&root, home.as_deref()) {
         return (None, None);
     }
@@ -251,7 +251,7 @@ impl Session<'_> {
             self.toast(message, ToastKind::Info);
             return;
         };
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = alter_zero::platform::profile_dir();
         let mut files = Vec::new();
         if let Some(file) = &layer.hooks {
             files.push(TrustFileReview {

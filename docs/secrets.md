@@ -18,9 +18,11 @@ the model, in the bubble and in the record (*What the user types*).
 
 A value lives in exactly three places:
 
-1. **`{config_home}/secrets.json`**, written owner-only (`0600`) through a
-   temp file and a rename — the `.env` key store's write
-   (`llm::keystore::EnvFile::update_if`), never a plain `fs::write`.
+1. **`{config_home}/secrets.json`**, written through a temp file and a rename
+   — the `.env` key store's write (`llm::keystore::EnvFile::update_if`), never a
+   plain `fs::write`. On Unix the file is owner-only (`0600`). Native Windows
+   relies on inherited filesystem ACLs; no owner-only ACL is established or
+   verified (`docs/windows.md`).
 2. **The shared [`SecretRegistry`](../src/secrets.rs)** in memory — the
    `SkillRegistry` shape: one `Arc<Mutex<SecretStore>>`, cloned by handle into
    the backend, the subagents, the background registry and the `!` runner.
@@ -31,9 +33,11 @@ Beyond the store, a value reaches disk only where a tool puts it on the
 user's behalf: a file the agent wrote it into (the point of `.env`), and the
 session's raw task logs (`{tmp}/alter-zero-{uid}/{session}/tasks/*.output`),
 which keep a command's output as it was printed — `read` back through the
-tool, a log comes out redacted like any other output. Those logs are created
-owner-only (`0600`), since a temp directory's default mode would let every
-user on the machine read them.
+tool, a log comes out redacted like any other output. On Unix those logs are
+created owner-only (`0600`); native Windows uses inherited ACLs, not an
+owner-only guarantee. A session-specific temp path alone does not prevent
+another account from reading raw output, so keep it under a suitably
+restricted parent directory.
 
 It is never in a message — the user's own included — a tool cell, the
 Ctrl+O transcript, the Ctrl+D context, the rollout, a request body, the

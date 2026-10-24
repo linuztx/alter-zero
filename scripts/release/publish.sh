@@ -75,7 +75,7 @@ fi
 # only the archives and the one SHA256SUMS are published: four extra rows
 # of checksum files pushed the builds themselves down the asset list, and
 # `install.sh` reads SHA256SUMS for exactly this reason.
-assets=("$dist"/*.tar.gz "$dist/SHA256SUMS")
+assets=("$dist"/*.tar.gz "$dist"/*.zip "$dist/SHA256SUMS")
 create=(gh release create "$tag" -R "$slug" --draft --verify-tag --title "$tag" --notes-file "$notes")
 if is_prerelease "$version"; then
 	create+=(--prerelease)

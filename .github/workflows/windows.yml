@@ -1,0 +1,202 @@
+# Shared by CI and Release: real Windows processes, MSVC and Git for Windows,
+# never WSL. Initial support is x64, Windows 10 1809+ (docs/windows.md).
+# Keep this blocking: broad compile/lint coverage plus an explicit, non-vacuous
+# runtime subset. The unported suite is inventoried, not reported as passing.
+name: Windows
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PYTHONUTF8: "1"
+
+jobs:
+  native:
+    name: native · compile · clippy · doc · runtime · package
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Require native x64 and Git for Windows Bash
+        run: |
+          if (-not [Environment]::Is64BitProcess -or [Environment]::OSVersion.Version.Build -lt 17763) {
+            throw 'Native x64 Windows 10 1809+ is required'
+          }
+          $gitRoot = Join-Path $env:ProgramFiles 'Git'
+          $bash = Join-Path $gitRoot 'bin\bash.exe'
+          $usr = Join-Path $gitRoot 'usr\bin'
+          if (-not (Test-Path -LiteralPath $bash -PathType Leaf) -or -not (Test-Path -LiteralPath $usr -PathType Container)) {
+            throw 'Install Git for Windows; the WSL Bash launcher is not supported'
+          }
+          "ALTER_ZERO_BASH=$bash" >> $env:GITHUB_ENV
+          # Deliberate prerequisite for POSIX shell fixtures. Pin the MSVC
+          # linker below: Git's usr/bin also contains an unrelated link.exe.
+          (Join-Path $gitRoot 'bin') >> $env:GITHUB_PATH
+          $usr >> $env:GITHUB_PATH
+          & $bash --noprofile --norc -c 'case "$(uname -s)" in MINGW*|MSYS*) ;; *) exit 1 ;; esac; test -x /usr/bin/awk && test -x /usr/bin/sed && bash --version'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Set up the x64 MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Pin native MSVC tools ahead of Git fixture utilities
+        run: |
+          $tools = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
+          foreach ($tool in @('cl.exe', 'link.exe', 'lib.exe', 'dumpbin.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $tools $tool) -PathType Leaf)) {
+              throw "Missing x64 MSVC tool: $tool"
+            }
+          }
+          # GITHUB_PATH entries are prepended on every step. Exporting PATH
+          # alone from the setup action cannot outrank earlier Git entries.
+          $tools >> $env:GITHUB_PATH
+          $linker = Join-Path $tools 'link.exe'
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+      - name: Install the pinned toolchain
+        run: |
+          # Read rust-toolchain.toml, including its components; never float stable.
+          rustup show active-toolchain
+          if ($LASTEXITCODE -ne 0) {
+            rustup toolchain install
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Compile every target, including examples and tests
+        run: cargo check --locked --all-targets --target x86_64-pc-windows-msvc
+      - name: Clippy on every target (warnings are errors)
+        run: cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Link every test target without running Unix-only fixtures
+        run: cargo test --locked --all-targets --no-run --target x86_64-pc-windows-msvc
+      - name: Public documentation and intra-doc links
+        run: cargo doc --locked --no-deps --lib --target x86_64-pc-windows-msvc
+      - name: Inventory and run the portable library tests
+        id: pure
+        run: |
+          New-Item -ItemType Directory -Force target/windows-ci | Out-Null
+          # Positive filters, not broad skips: remaining modules still contain
+          # Unix path, permissions and process fixtures. No ignore flag or
+          # allowed failure may turn a broken selected test into a green check.
+          $filters = @(
+            'cli::tests::', 'platform::tests::', 'frontmatter::tests::', 'reminder::tests::', 'context_usage::tests::',
+            'term::tests::', 'term::query::', 'links::tests::',
+            'pty::charset::', 'pty::keys::', 'pty::screen::', 'pty::transcript::',
+            'pty::report::', 'pty::settle::', 'pty::pace::', 'pty::fold::',
+            'subprocess::tests::windows_bash_', 'subprocess::tests::windows_pipe_children_', 'subprocess::tests::windows_tty_helper_',
+            'llm::mcp::transport::tests::windows_mcp_', 'llm::mcp::manager::tests::windows_mcp_',
+            'permission::tests::windows_command_interpreters_', 'update::windows_contract_tests::'
+          )
+          $listed = @(cargo test --locked --target x86_64-pc-windows-msvc --lib -- --list --format terse)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $catalog = @($listed | ForEach-Object { if ($_ -match '^(.+): test$') { $Matches[1] } })
+          if ($catalog.Count -eq 0) { throw 'No library tests were discovered' }
+          foreach ($filter in $filters) {
+            $found = @($catalog | Where-Object { $_.Contains($filter, [StringComparison]::Ordinal) })
+            if ($found.Count -eq 0) { throw "Empty Windows test filter: $filter" }
+          }
+          # libtest uses case-sensitive substring matching, not path prefixes.
+          $selected = @($catalog | Where-Object {
+            $name = $_
+            @($filters | Where-Object { $name.Contains($_, [StringComparison]::Ordinal) }).Count -gt 0
+          })
+          $unselected = @($catalog | Where-Object { $_ -notin $selected })
+          $filters | Set-Content target/windows-ci/library-filters.txt
+          $selected | Set-Content target/windows-ci/selected-lib-tests.txt
+          $unselected | Set-Content target/windows-ci/unselected-lib-tests.txt
+          $arguments = @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '--lib', '--') + $filters
+          & cargo @arguments | Tee-Object target/windows-ci/library-results.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $required = "test result: ok. $($selected.Count) passed; 0 failed; 0 ignored;"
+          if (-not (Select-String -SimpleMatch -Quiet -Path target/windows-ci/library-results.txt -Pattern $required)) {
+            throw "Gate requires all selected tests to execute (not ignored): $required"
+          }
+      - name: Native ConPTY, descendant cancellation, CLI and public API tests
+        run: |
+          # A cfg(windows) test binary running zero tests must fail this lane,
+          # rather than silently claiming runtime coverage from compilation.
+          foreach ($test in @('windows_runtime', 'windows_mcp', 'cli_help', 'mcp_cli', 'api_surface')) {
+            $listed = @(cargo test --locked --target x86_64-pc-windows-msvc --test $test -- --list --format terse)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $listed | Set-Content "target/windows-ci/$test-inventory.txt"
+            $count = @($listed | Where-Object { $_ -match ': test$' }).Count
+            if ($count -eq 0) { throw "No native integration tests discovered in $test" }
+            cargo test --locked --target x86_64-pc-windows-msvc --test $test -- --test-threads=1 | Tee-Object "target/windows-ci/$test-results.txt"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $required = "test result: ok. $count passed; 0 failed; 0 ignored;"
+            if (-not (Select-String -SimpleMatch -Quiet -Path "target/windows-ci/$test-results.txt" -Pattern $required)) {
+              throw "Gate requires every $test test to execute (not ignored): $required"
+            }
+          }
+      - name: Windows npm launcher, including real executable argument boundaries
+        working-directory: npm
+        run: node --test test/windows.test.js
+      - name: Build the Windows release ZIP with a static CRT
+        shell: bash
+        # Target-specific release policy only. Do not set this on Unix, on the
+        # debug test gate, or in Cargo.toml's shared release profile.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: bash scripts/release.sh build x86_64-pc-windows-msvc
+      - name: Verify the Windows archive and run its executable natively
+        shell: bash
+        run: bash scripts/release.sh verify dist
+      - name: Refuse a Windows release needing the MSVC redistributable
+        run: |
+          $binary = 'target/x86_64-pc-windows-msvc/release/alter-zero.exe'
+          $imports = @(dumpbin /nologo /dependents $binary)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $imports | Tee-Object target/windows-ci/dll-imports.txt
+          if ($imports -match '(?i)\b(?:vcruntime\d*[^\s]*|msvcp\d*[^\s]*|msvcr\d+[^\s]*|ucrtbase[d]?|api-ms-win-crt-[^\s]+)\.dll\b') {
+            throw 'Release imports a dynamic MSVC CRT; build with -C target-feature=+crt-static'
+          }
+      - name: Offline packaged executable and installation tests
+        run: ./scripts/windows/test.ps1 -Dist dist
+      - name: Record actual Windows coverage and limitations
+        if: always()
+        env:
+          PURE_OUTCOME: ${{ steps.pure.outcome }}
+        run: |
+          '## Native Windows x64 MSVC coverage' >> $env:GITHUB_STEP_SUMMARY
+          'Full Windows Rust suite is not run. Many unported library/integration fixtures assume Unix paths, permissions, signals or a Unix terminal. Unselected tests (including pure tests outside the explicit filters) are NOT passes.' >> $env:GITHUB_STEP_SUMMARY
+          'Gate requires all targets to compile and pass Clippy, documentation to build, and all test targets to link. The selected portable library tests, windows_runtime, windows_mcp, cli_help, mcp_cli, api_surface and Windows package tests must each succeed; no allowed failure is used. See each step outcome for this run, not just the inventory counts.' >> $env:GITHUB_STEP_SUMMARY
+          'Native runtime coverage uses Git for Windows Bash, not WSL. Windows Server 2022 CI does not by itself validate the minimum Windows 10 1809 OS. The Unix tmux smoke suite and real Windows interactive-console/clipboard coverage are not run by this lane.' >> $env:GITHUB_STEP_SUMMARY
+          "Portable library step outcome: $env:PURE_OUTCOME" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($kind in @('selected', 'unselected')) {
+            $file = "target/windows-ci/$kind-lib-tests.txt"
+            if (Test-Path $file) {
+              $count = @(Get-Content $file).Count
+              "Library tests ${kind}: $count (see Windows CI evidence artifact for names)." >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+      - name: Keep native coverage inventories and release ZIP
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-ci-evidence
+          path: |
+            target/windows-ci/
+            dist/
+          if-no-files-found: warn
+          retention-days: 7

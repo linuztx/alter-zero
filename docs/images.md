@@ -161,10 +161,11 @@ is not negotiable.
 
 So, like the reference harness, the environment decides first:
 
-* **cell size** from the tty's own `ws_xpixel`/`ws_ypixel` (`TIOCGWINSZ` via
-  `rustix`), which is an ioctl and not a round trip. Zeroes mean "unknown" and
-  fall back to a 1:2 cell — only the *ratio* matters, since it is what decides
-  a picture's row count;
+* **cell size** on Unix from the tty's own `ws_xpixel`/`ws_ypixel`
+  (`TIOCGWINSZ` via `rustix`), which is an ioctl and not a round trip. Native
+  Windows leaves cell-pixel dimensions unknown. Unknown dimensions fall back
+  to a 1:2 cell — only the *ratio* matters, since it is what decides a
+  picture's row count;
 * **protocol** from `ratatui_image`'s own env sniff (the iTerm2 family, plus a
   multiplexer's outer terminal) plus kitty/ghostty, which announce themselves
   in `TERM` / `TERM_PROGRAM` / `KITTY_WINDOW_ID` — and *not* under a
@@ -172,6 +173,11 @@ So, like the reference harness, the environment decides first:
   exactly that answer goes stale.
 
 ### Asking the terminal
+
+This startup query is **Unix-only**. Native Windows uses crossterm's safe
+console cursor position API before the sole `EventStream` exists: no Unix
+DSR/graphics requests and no extra stdin reader. Protocol detection there is
+from the environment or explicit overrides, falling back to half-blocks.
 
 Where the environment names no protocol, it has nothing to go on — and that is
 not only an unknown terminal. **herdr** gives each pane `TERM=xterm-256color`

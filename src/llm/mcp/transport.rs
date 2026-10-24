@@ -199,7 +199,7 @@ impl StdioTransport {
         env: &BTreeMap<String, String>,
         cwd: Option<&std::path::Path>,
     ) -> Result<Self, TransportError> {
-        let mut child = stdio_command(command, args, env, cwd)
+        let mut child = stdio_command(command, args, env, cwd)?
             .spawn()
             .map_err(|e| TransportError::Failed(format!("could not start `{command}`: {e}")))?;
         let stdin = child
@@ -343,6 +343,11 @@ impl StdioTransport {
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
+        // Direct MCP launches do not yet own a pre-spawn Windows Job Object.
+        // taskkill is best-effort tree cleanup (not orphan ownership); always
+        // retain the owned direct-child kill/reap fallback as well.
+        #[cfg(windows)]
+        let _ = crate::subprocess::kill_windows_tree(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -959,10 +964,43 @@ fn stdio_command(
     args: &[String],
     env: &BTreeMap<String, String>,
     cwd: Option<&std::path::Path>,
-) -> Command {
-    let mut cmd = Command::new(command);
-    cmd.args(args)
-        .stdin(Stdio::piped())
+) -> Result<Command, TransportError> {
+    #[cfg(windows)]
+    let mut cmd = windows_stdio_command(
+        command,
+        args,
+        || {
+            crate::subprocess::validate_tool_shell()
+                .map_err(|error| TransportError::Failed(error.to_string()))?;
+            Ok(crate::subprocess::tool_shell().to_path_buf())
+        },
+        |name| {
+            let current = std::env::current_dir()
+                .map_err(|error| TransportError::Failed(error.to_string()))?;
+            let directory = cwd.map_or_else(|| current.clone(), |cwd| current.join(cwd));
+            // Match the child's PATH overlay, rather than resolving the parent
+            // PATH and then silently launching some other installation.
+            let path = env
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                .map(|(_, value)| std::ffi::OsString::from(value))
+                .or_else(|| std::env::var_os("PATH"));
+            resolve_windows_stdio_program(name, path.as_deref(), &directory, |path| path.is_file())
+        },
+    )?;
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        cmd
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // A pipe server must not open a second console or access the TUI's.
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd.env_remove(crate::herdr::PANE_ID_ENV);
@@ -972,7 +1010,106 @@ fn stdio_command(
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    cmd
+    Ok(cmd)
+}
+
+/// Windows argv planning, injectable so Linux tests prove argument boundaries
+/// without pretending to execute a Windows program. Never interpolate config
+/// data into Bash source or a `cmd /c` command string.
+#[cfg(any(windows, test))]
+fn windows_stdio_command(
+    command: &str,
+    args: &[String],
+    bash: impl FnOnce() -> Result<std::path::PathBuf, TransportError>,
+    resolve: impl FnOnce(&str) -> Result<std::path::PathBuf, TransportError>,
+) -> Result<Command, TransportError> {
+    let program = resolve(command)?;
+    let name = program.to_string_lossy();
+    let extension = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&name)
+        .rsplit_once('.')
+        .map(|(_, extension)| extension);
+    if extension.is_some_and(|extension| extension.eq_ignore_ascii_case("exe")) {
+        let mut cmd = Command::new(&program);
+        cmd.args(args);
+        return Ok(cmd);
+    }
+    if extension.is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    }) {
+        // std::process documents special batch-aware escaping, but also warns
+        // that cmd parsing cannot represent arbitrary argv safely. Keep only
+        // a conservative subset, including spaces/Unicode/empty arguments.
+        // Reject expansion, quote, redirection and control characters before
+        // spawning; do not guess at escaping or depend on PATHEXT dispatch.
+        let safe = |value: &str| {
+            !value
+                .chars()
+                .any(|ch| ch.is_control() || "\"%!^&|<>()".contains(ch))
+        };
+        if !safe(&name) || args.iter().any(|arg| !safe(arg)) {
+            return Err(TransportError::Failed(format!(
+                "cannot safely pass these arguments to Windows batch server `{command}`; use its .exe or extensionless Git Bash shim instead"
+            )));
+        }
+        let mut cmd = Command::new(&program);
+        cmd.args(args);
+        return Ok(cmd);
+    }
+    let mut cmd = Command::new(bash()?);
+    cmd.args(["--noprofile", "--norc", "-c", r#"exec -- "$@""#, "--"])
+        .arg(name.replace('\\', "/"))
+        .args(args);
+    // Git Bash must not rewrite e.g. /literal/path, URLs or --flag=/value in
+    // a native server's argv. These are launcher policy, not shell source.
+    cmd.env("MSYS2_ARG_CONV_EXCL", "*")
+        .env("MSYS_NO_PATHCONV", "1");
+    Ok(cmd)
+}
+
+/// Find an extensionless npm shell shim before its native exe/batch siblings.
+/// Bare names search only absolute PATH entries; explicit relative paths still
+/// resolve against the configured server cwd, as they do on Unix.
+#[cfg(any(windows, test))]
+fn resolve_windows_stdio_program(
+    command: &str,
+    path: Option<&std::ffi::OsStr>,
+    cwd: &std::path::Path,
+    installed: impl Fn(&std::path::Path) -> bool,
+) -> Result<std::path::PathBuf, TransportError> {
+    let named = std::path::Path::new(command);
+    let explicit = named.is_absolute() || command.contains(['/', '\\', ':']);
+    let bases = if explicit {
+        vec![cwd.join(named)]
+    } else {
+        path.map(|path| {
+            std::env::split_paths(path)
+                .filter(|directory| directory.is_absolute())
+                .map(|directory| directory.join(named))
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    for base in bases {
+        if installed(&base) {
+            return Ok(base);
+        }
+        if named.extension().is_none() {
+            for extension in ["exe", "cmd", "bat"] {
+                let mut candidate = base.as_os_str().to_os_string();
+                candidate.push(format!(".{extension}"));
+                let candidate = std::path::PathBuf::from(candidate);
+                if installed(&candidate) {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+    Err(TransportError::Failed(format!(
+        "could not start `{command}`: executable or Git Bash shim not found on absolute PATH entries"
+    )))
 }
 
 /// Flatten a body to one bounded line for an error message.
@@ -991,12 +1128,193 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn windows_mcp_command(
+        command: &str,
+        args: &[&str],
+        resolved: &str,
+    ) -> Result<Command, TransportError> {
+        windows_stdio_command(
+            command,
+            &args
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>(),
+            || {
+                Ok(std::path::PathBuf::from(
+                    r"C:\Program Files\Git\bin\bash.exe",
+                ))
+            },
+            |_| Ok(std::path::PathBuf::from(resolved)),
+        )
+    }
+
+    #[test]
+    fn windows_mcp_executables_keep_direct_argv_without_a_shell() {
+        let program = r"C:\Program Files\MCP\server.EXE";
+        let args = [
+            "two words",
+            "",
+            "東京",
+            "a\"b",
+            "%PATH%",
+            "!x!",
+            "x&y",
+            "/literal/path",
+        ];
+        let command = windows_mcp_command(program, &args, program).expect("native executable");
+        assert_eq!(command.get_program(), program);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), args);
+        assert!(
+            !command
+                .get_envs()
+                .any(|(key, _)| key == "MSYS2_ARG_CONV_EXCL")
+        );
+    }
+
+    #[test]
+    fn windows_mcp_npx_shims_forward_positional_arguments_not_shell_source() {
+        let args = [
+            "-y",
+            "@fixture/server",
+            "two words",
+            "",
+            "東京",
+            "$(touch owned)",
+            "a\"b",
+            "%PATH%",
+            "!x!",
+            "x&y",
+            "/literal/path",
+        ];
+        let command = windows_mcp_command("npx", &args, r"C:\Program Files\nodejs\npx")
+            .expect("Git Bash shim");
+        assert_eq!(command.get_program(), r"C:\Program Files\Git\bin\bash.exe");
+        let expected = [
+            "--noprofile",
+            "--norc",
+            "-c",
+            r#"exec -- "$@""#,
+            "--",
+            "C:/Program Files/nodejs/npx",
+        ]
+        .into_iter()
+        .chain(args)
+        .collect::<Vec<_>>();
+        assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+        for (key, value) in [("MSYS2_ARG_CONV_EXCL", "*"), ("MSYS_NO_PATHCONV", "1")] {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, set)| name == key && set == Some(std::ffi::OsStr::new(value)))
+            );
+        }
+    }
+
+    #[test]
+    fn windows_mcp_batch_commands_use_std_command_with_bounded_arguments() {
+        for program in [r"C:\MCP tools\npx.cmd", r"C:\MCP tools\server.BAT"] {
+            let args = [
+                "-y",
+                "@fixture/server",
+                "two words",
+                "",
+                "東京",
+                r"C:\a path\",
+            ];
+            let command = windows_mcp_command(program, &args, program).expect("safe batch argv");
+            assert_eq!(command.get_program(), program);
+            assert_eq!(command.get_args().collect::<Vec<_>>(), args);
+        }
+        // A bare PATH name resolving to a batch file cannot bypass validation.
+        let command =
+            windows_mcp_command("server", &["--port", "4000"], r"C:\MCP\server.cmd").unwrap();
+        assert_eq!(command.get_program(), r"C:\MCP\server.cmd");
+    }
+
+    #[test]
+    fn windows_mcp_batch_rejects_unsafe_arguments_instead_of_guessing_cmd_quoting() {
+        for arg in [
+            "a\"b",
+            "%PATH%",
+            "!expanded!",
+            "x&echo owned",
+            "x|y",
+            "x>file",
+            "x<file",
+            "x^y",
+            "(x)",
+            "x\ny",
+            "x\ry",
+            "x\0y",
+        ] {
+            for configured in ["npx.cmd", "npx"] {
+                let error = windows_mcp_command(configured, &[arg], r"C:\nodejs\npx.cmd")
+                    .expect_err("unsafe batch argument must be refused");
+                assert!(
+                    matches!(error, TransportError::Failed(ref detail) if detail.contains("batch") && detail.contains(".exe")),
+                    "{error}"
+                );
+            }
+        }
+        assert!(windows_mcp_command("bad.cmd", &[], r"C:\bad&name\server.cmd").is_err());
+    }
+
+    #[test]
+    fn windows_mcp_missing_bash_explains_the_prerequisite_without_blocking_exes() {
+        let missing = || Err(TransportError::Failed("Git for Windows is required".into()));
+        assert!(windows_stdio_command("server.exe", &[], missing, |name| Ok(name.into())).is_ok());
+        assert_eq!(
+            windows_stdio_command("npx", &[], missing, |name| Ok(name.into())).unwrap_err(),
+            TransportError::Failed("Git for Windows is required".into())
+        );
+    }
+
+    #[test]
+    fn windows_mcp_resolution_prefers_a_shim_then_exe_then_batch_on_absolute_path() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("Node with spaces");
+        let path =
+            std::env::join_paths([std::path::PathBuf::from("relative"), bin.clone()]).unwrap();
+        let shim = bin.join("npx");
+        let exe = bin.join("npx.exe");
+        let batch = bin.join("npx.cmd");
+        for (installed, expected) in [
+            (vec![shim.clone(), exe.clone(), batch.clone()], shim),
+            (vec![exe.clone(), batch.clone()], exe),
+            (vec![batch.clone()], batch),
+        ] {
+            let resolved = resolve_windows_stdio_program("npx", Some(&path), root.path(), |p| {
+                installed.iter().any(|candidate| candidate == p)
+            })
+            .unwrap();
+            assert_eq!(resolved, expected);
+        }
+        let error = resolve_windows_stdio_program("npx", Some(&path), root.path(), |p| {
+            p == std::path::Path::new("relative/npx.cmd")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("npx"));
+        let explicit = root.path().join("local/server.bat");
+        assert_eq!(
+            resolve_windows_stdio_program("./local/server.bat", None, root.path(), |p| p
+                == explicit)
+            .unwrap(),
+            root.path().join("./local/server.bat")
+        );
+    }
+
     #[test]
     fn a_stdio_server_never_inherits_the_herdr_pane() {
         // A server can be an agent of its own (`codex mcp-server`), whose
         // herdr hook would take the TUI's pane over (`docs/herdr.md`).
         let pane = std::ffi::OsStr::new(crate::herdr::PANE_ID_ENV);
-        let command = stdio_command("codex", &["mcp-server".to_string()], &BTreeMap::new(), None);
+        // Only inspect environment setup; no installed server is needed.
+        #[cfg(not(windows))]
+        let server = "codex";
+        #[cfg(windows)]
+        let server = crate::subprocess::tool_shell().to_str().unwrap();
+        let command =
+            stdio_command(server, &["mcp-server".to_string()], &BTreeMap::new(), None).unwrap();
         assert!(
             command
                 .get_envs()
@@ -1006,7 +1324,7 @@ mod tests {
         );
         // What the server's own config sets is still what it gets.
         let env = BTreeMap::from([(crate::herdr::PANE_ID_ENV.to_string(), "w1:p9".to_string())]);
-        let command = stdio_command("codex", &[], &env, None);
+        let command = stdio_command(server, &[], &env, None).unwrap();
         assert!(
             command
                 .get_envs()

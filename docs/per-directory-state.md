@@ -15,6 +15,12 @@ redraw every other project's banner at its next launch.
 
 ## The rule
 
+The shared `platform` resolver puts per-user state under
+`{profile}/.alter-zero`: `USERPROFILE` on native Windows, `HOME` on Unix.
+A nonempty `ALTER_ZERO_CONFIG_DIR` still wins unchanged; empty profile and
+config-override values count as unset. Trust, skills and home-relative path
+display use that same native profile, independently of the config override.
+
 Every file here keeps a **`projects` map keyed by the cwd's absolute path**,
 read and written as a **read-modify-write** (re-read the file, replace this
 directory's entry, write it back), so two sessions in two directories never

@@ -150,9 +150,9 @@ survives the trip.
    header's path is a link to the **file**: `tool_header_lines` stamps the
    path's spans with `links::file_url` — the file's *absolute* `file://` URI
    (a relative argument resolved against the session's cwd through
-   `app::PathDisplay::file_url`, `.`/`..` collapsed, every byte outside `/`
-   and `A-Za-z0-9-._~` percent-encoded, `Path.as_uri()`'s rule, so a space
-   or a `#` in a name can never read as a delimiter) — whatever short form
+   `app::PathDisplay::file_url`, `.`/`..` collapsed lexically, then encoded
+   by `url::Url::from_file_path`, so a space or a `#` in a name can never
+   read as a delimiter) — whatever short form
    the row paints (`cat_poem.txt`, `~/hello.py`, `/tmp/x.py`; `docs/tools.md`
    *Path display*). The target is stamped **before** the header wraps, so a
    long path hard-broken across continuation rows, or cut to the collapsed
@@ -168,6 +168,14 @@ survives the trip.
    unlinked. Every surface sharing the header builder links alike: the
    inline cell, the live strip's running cell (a `Write` waiting on the
    permission gate), the Ctrl+O transcript and a subagent session view.
+
+Native file URLs use the platform path API after lexical normalization:
+Windows drive paths become `file:///C:/…`, UNC shares become
+`file://server/share/…`, and their `\\?\` verbatim forms resolve to the
+same targets. A drive-relative `C:notes.txt` is ambiguous and remains
+unlinked; device namespaces such as `\\.\COM1` are rejected. Unix path
+bytes are preserved, including a non-UTF8 cwd, without touching symlinks or
+requiring the file to exist.
 
 `ALTER_ZERO_HYPERLINKS` gates it (default **on**; a falsy value — `0`,
 `false`, `no` — turns emission off for a terminal that misbehaves, the

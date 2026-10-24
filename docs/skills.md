@@ -82,7 +82,9 @@ reason project keeps it over personal: the more specific root wins.
 The personal root hangs off the **config home**, so it follows
 `ALTER_ZERO_CONFIG_DIR` exactly like `hooks.json`, `permissions.json`,
 `settings.json` and `config.json` do — one rule for where per-user state
-lives, rather than a second one reading `$HOME` directly.
+lives, rather than a second one reading `$HOME` directly. The compatibility
+root (`~/.claude/skills`) uses the same native profile as path display and
+trust: `USERPROFILE` on Windows, `HOME` on Unix (`platform::profile_dir`).
 
 `ALTER_ZERO_SKILLS_DIR` **replaces** the whole list rather than adding to it.
 That is the convention every other `*_DIR`/`*_FILE` override here follows

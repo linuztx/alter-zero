@@ -1351,6 +1351,7 @@ mod tests {
         assert!(message.images.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_non_utf8_image_path_records_lossily_instead_of_panicking() {
         // Serializing a non-UTF8 PathBuf is a serde_json error — it must not

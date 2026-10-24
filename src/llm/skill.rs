@@ -276,7 +276,7 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
 
 /// [`discover_skills`] over the roots this environment resolves to —
 /// `ALTER_ZERO_SKILLS_DIR` alone when it is set, else the project's, the
-/// config home's, and `$HOME`'s. `config_home` is passed in rather than read
+/// config home's, and the native profile's. `config_home` is passed in rather than read
 /// here so the override that moves it (`ALTER_ZERO_CONFIG_DIR`) resolves once,
 /// at the boundary, the way `llm::hooks::hooks_file_path` takes it.
 #[must_use]
@@ -288,15 +288,15 @@ pub fn load_skills(
 }
 
 /// The roots this environment resolves to — [`skill_roots`] with the two
-/// environment reads (`$HOME`, `ALTER_ZERO_SKILLS_DIR`) and the `.git`
-/// walk-up applied.
+/// native-profile lookup (`USERPROFILE` on Windows, `HOME` on Unix),
+/// `ALTER_ZERO_SKILLS_DIR`, and the `.git` walk-up applied.
 ///
 /// The **one** place those reads happen, so the `/skills` menu can name
 /// exactly the roots the walk used: two call sites resolving them separately
 /// is how a menu comes to advertise a directory nothing was ever read from.
 #[must_use]
 pub fn resolved_skill_roots(cwd: &Path, config_home: Option<&Path>) -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = crate::platform::profile_dir();
     let override_dir = override_dir();
     let project_root = crate::project_doc::find_project_root(cwd);
     skill_roots(

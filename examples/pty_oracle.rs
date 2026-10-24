@@ -36,12 +36,21 @@ fn main() {
     let mut process = spawn(None, &command).expect("the program starts");
     let screen = Arc::new(Mutex::new(Screen::default()));
     let raw = Arc::new(Mutex::new(Vec::<u8>::new()));
+    #[cfg(unix)]
     let mut reader = process.master.try_clone().expect("a reader");
+    #[cfg(unix)]
     let mut writer = process.master.try_clone().expect("a writer");
+    #[cfg(windows)]
+    let mut reader = process.reader;
+    #[cfg(windows)]
+    let writer = Arc::new(Mutex::new(process.writer));
     let pump = {
         let screen = Arc::clone(&screen);
         let raw = Arc::clone(&raw);
+        #[cfg(unix)]
         let mut replies = process.master.try_clone().expect("a reply writer");
+        #[cfg(windows)]
+        let replies = Arc::clone(&writer);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -63,7 +72,10 @@ fn main() {
                             }
                         }
                         if !reply.is_empty() {
+                            #[cfg(unix)]
                             let _ = replies.write_all(&reply);
+                            #[cfg(windows)]
+                            let _ = replies.lock().unwrap().write_all(&reply);
                         }
                     }
                 }
@@ -86,7 +98,14 @@ fn main() {
         } else if let Some(keys) = step.get("keys").and_then(Value::as_str) {
             let modes = screen.lock().unwrap().modes();
             for chunk in encode(&parse_input(keys), modes) {
+                #[cfg(unix)]
                 writer.write_all(&chunk.bytes).expect("typed");
+                #[cfg(windows)]
+                writer
+                    .lock()
+                    .unwrap()
+                    .write_all(&chunk.bytes)
+                    .expect("typed");
                 if std::env::var_os("ORACLE_TRACE").is_some() {
                     eprintln!("IN {:?}", String::from_utf8_lossy(&chunk.bytes));
                 }
@@ -108,12 +127,29 @@ fn main() {
         std::thread::sleep(Duration::from_millis(20));
     }
     // The whole session, not just its leader: a program under `sh -c`.
+    #[cfg(unix)]
     let _ = std::process::Command::new("kill")
         .args(["-KILL", "--", &format!("-{}", process.child.id())])
         .stderr(std::process::Stdio::null())
         .status();
+    #[cfg(windows)]
+    {
+        // The oracle is a library-only caller: no real helper, so taskkill
+        // is a fallback, not a guarantee of race-free Job ownership.
+        if let Some(pid) = process.child.process_id() {
+            let _ = alter_zero::subprocess::kill_windows_tree(pid);
+        }
+        let _ = process.child.kill();
+    }
     let _ = process.child.wait();
     drop(writer);
+    #[cfg(windows)]
+    {
+        std::thread::sleep(Duration::from_millis(150));
+        // Closing the console releases the reader. Do not join a read that
+        // needs the still-live pseudoconsole to close first.
+        drop(process.master);
+    }
     let _ = pump.join();
 
     std::fs::write(&raw_path, &*raw.lock().unwrap()).expect("the recording");

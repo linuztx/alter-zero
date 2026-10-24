@@ -114,12 +114,41 @@ pub fn package_manager(exe: &Path) -> Option<PackageManager> {
 /// newest [`NPM_PACKAGE`].
 #[must_use]
 pub fn update_command(manager: Option<PackageManager>) -> String {
+    update_command_for(manager, cfg!(windows))
+}
+
+/// Platform-explicit update advice, also testable without a Windows host.
+/// A running Windows executable is not overwritten synchronously: unmanaged
+/// installs rerun the installer after closing the application.
+#[must_use]
+pub fn update_command_for(manager: Option<PackageManager>, windows: bool) -> String {
     match manager {
+        None if windows => {
+            format!("irm {DEFAULT_REPO_URL}/raw/refs/heads/{INSTALLER_BRANCH}/install.ps1 | iex")
+        }
         None => format!("{} update", env!("CARGO_PKG_NAME")),
         Some(PackageManager::Npm) => format!("npm install -g {NPM_PACKAGE}@latest"),
         Some(PackageManager::Pnpm) => format!("pnpm add -g {NPM_PACKAGE}@latest"),
         Some(PackageManager::Yarn) => format!("yarn global add {NPM_PACKAGE}@latest"),
         Some(PackageManager::Bun) => format!("bun add -g {NPM_PACKAGE}@latest"),
+    }
+}
+
+#[cfg(test)]
+mod windows_contract_tests {
+    #[test]
+    fn unmanaged_windows_updates_name_the_external_installer() {
+        let command = super::update_command_for(None, true);
+        assert!(command.contains("install.ps1"), "{command}");
+        assert!(
+            !command.contains("alter-zero update"),
+            "cannot replace a running exe: {command}"
+        );
+        assert_eq!(super::update_command_for(None, false), "alter-zero update");
+        assert_eq!(
+            super::update_command_for(Some(super::PackageManager::Npm), true),
+            "npm install -g @linuztx/alter-zero@latest"
+        );
     }
 }
 

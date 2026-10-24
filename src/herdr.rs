@@ -595,6 +595,7 @@ pub fn reply_outcome(reply: &[u8]) -> Result<(), String> {
 }
 
 /// The most of herdr's reply read back — its replies are one short line.
+#[cfg(unix)]
 const REPLY_MAX_BYTES: u64 = 64 * 1024;
 
 /// May a request be written to this socket? Only to a socket, and only to
@@ -1785,6 +1786,7 @@ mod tests {
     /// or, given `None`, holding the connection open without a word. Every
     /// wait in it is bounded, so a client that never connects fails the test
     /// instead of hanging the suite.
+    #[cfg(unix)]
     fn stub(
         reply: Option<&'static str>,
     ) -> (
@@ -1825,9 +1827,11 @@ mod tests {
         (dir, path, server)
     }
 
+    #[cfg(unix)]
     const OK: &str = "{\"id\":\"alter-zero:1\",\"result\":{\"type\":\"ok\"}}\n";
 
     #[test]
+    #[cfg(unix)]
     fn send_writes_one_line_and_reads_the_reply() {
         let (_dir, path, server) = stub(Some(OK));
         let request = release_request(&test_pane(), 1);
@@ -1839,6 +1843,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn send_reports_herdrs_refusal() {
         let (_dir, path, _server) = stub(Some(
             "{\"id\":\"x\",\"error\":{\"code\":\"pane_not_found\",\"message\":\"pane w1:p3 not found\"}}\n",
@@ -1848,6 +1853,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn send_gives_up_on_a_silent_herdr() {
         // A wedged server must cost the worker its timeout, never a hang.
         let (_dir, path, _server) = stub(None);
@@ -1869,6 +1875,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn send_never_follows_a_symlink_to_a_socket() {
         // What is checked is what is connected to: the path's own entry. A
         // link, wherever it points, is not a socket this user owns.
@@ -1891,6 +1898,7 @@ mod tests {
     // ===== the worker, against a real socket =====
 
     /// How the stand-in answers one request.
+    #[cfg(unix)]
     enum Answer {
         /// `ok` — a healthy herdr.
         Ok,
@@ -1905,6 +1913,7 @@ mod tests {
     /// channel, then answered as `answer` decides for it by its index.
     /// `answer` may block — waiting on a token from the test — to hold the
     /// worker in a send while more work queues behind it.
+    #[cfg(unix)]
     fn server(
         mut answer: impl FnMut(usize) -> Answer + Send + 'static,
     ) -> (
@@ -1970,27 +1979,32 @@ mod tests {
         Reporter::spawn_with(pane_at(socket), timing).expect("a reporter")
     }
 
+    #[cfg(unix)]
     fn next(requests: &std::sync::mpsc::Receiver<serde_json::Value>) -> serde_json::Value {
         requests
             .recv_timeout(Duration::from_secs(5))
             .expect("a request")
     }
 
+    #[cfg(unix)]
     fn nothing_more(requests: &std::sync::mpsc::Receiver<serde_json::Value>, within: Duration) {
         if let Ok(request) = requests.recv_timeout(within) {
             panic!("nothing more was due, got {request}");
         }
     }
 
+    #[cfg(unix)]
     fn state_of(request: &serde_json::Value) -> &str {
         request["params"]["state"].as_str().unwrap_or("")
     }
 
+    #[cfg(unix)]
     fn seq_of(request: &serde_json::Value) -> u64 {
         request["params"]["seq"].as_u64().expect("a seq")
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_reporter_sends_each_report_then_releases_last() {
         let (_dir, socket, requests) = server(|_| Answer::Ok);
         let mut reporter = reporter_on(socket, quick());
@@ -2019,6 +2033,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reports_queued_behind_a_slow_send_collapse_to_the_newest() {
         // herdr's own advice: send only the latest state, and drop the older
         // ones that queued while a report was in flight.
@@ -2043,6 +2058,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_release_supersedes_a_report_still_waiting_to_go_out() {
         // Quitting mid-turn: the release clears the pane's state anyway, so a
         // report it overtook is not worth a round trip.
@@ -2067,6 +2083,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dropping_the_reporter_releases_the_pane() {
         // A loop that bails out on an error never reaches the shutdown's
         // release; the drop still hands the pane back.
@@ -2079,6 +2096,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_release_waits_no_longer_than_it_is_told_to() {
         // herdr gone silent: the quit must not hang on it.
         let (_dir, socket, requests) = server(|_| Answer::Hold);
@@ -2117,6 +2135,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_refused_report_is_sent_again_soon() {
         // A report herdr did not take leaves the pane showing the state
         // before it: the worker tries again within the first retry, under a
@@ -2140,6 +2159,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_delivered_report_is_sent_again_on_the_keepalive() {
         // herdr keeps no expiry on a self-reported state but loses it on a
         // live upgrade: the keepalive puts it back within one period.
@@ -2158,6 +2178,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn nothing_is_sent_before_the_first_report() {
         let (_dir, socket, requests) = server(|_| Answer::Ok);
         let timing = Timing {

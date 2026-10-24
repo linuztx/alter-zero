@@ -57,7 +57,7 @@ Alter Zero is an open-source AI coding agent written in Rust. It works directly 
 
 ## Quick start
 
-Alter Zero runs on **Linux** (x86_64, arm64) and **macOS** (Intel, Apple silicon) in a modern terminal.
+Alter Zero runs on **Linux** (x86_64, arm64), **macOS** (Intel, Apple silicon), and **Windows** (x64, Windows 10 1809+). Native Windows requires [Git for Windows](https://gitforwindows.org); Windows Terminal is recommended, and WSL is not required.
 
 ### Install
 
@@ -68,6 +68,14 @@ curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh 
 ```
 
 It picks the build for your machine, verifies its SHA-256 against the checksum published with the release, installs `alter-zero` into `~/.local/bin`, and tells you if that directory is not on your `PATH`.
+
+On Windows, run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/linuztx/alter-zero/main/install.ps1 | iex
+```
+
+The installer verifies the release checksum, installs into `%LOCALAPPDATA%\Alter Zero\bin`, and prints PATH guidance. See the [Windows guide](docs/windows.md) for prerequisites and update limitations.
 
 Or install the same build with npm:
 
@@ -114,7 +122,7 @@ ready-to-run Podman example.
 
 ### Build from source
 
-You need [rustup](https://rustup.rs) and a C compiler. The repository pins the Rust toolchain, which rustup installs automatically.
+You need [rustup](https://rustup.rs) and a C compiler. On Windows use the MSVC Rust toolchain, Visual Studio Build Tools with C++/Windows SDK, and Git for Windows. The repository pins the Rust toolchain, which rustup installs automatically.
 
 ```bash
 git clone https://github.com/linuztx/alter-zero.git
@@ -321,13 +329,13 @@ alter-zero "fix the failing test"
 alter-zero -c "now review the changes"
 ```
 
-Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
+Run `alter-zero mcp --help` for MCP server management commands. On Linux/macOS, `alter-zero update` installs the newest release over the running binary; on Windows it explains how to reinstall after closing the app. An npm install updates with `npm install -g @linuztx/alter-zero@latest`.
 
 </details>
 
 ## Where things live
 
-Your sign-ins, saved sessions, input history, and per-directory settings live under `~/.alter-zero/`. Keep shared extensions there, or add project-specific ones alongside your code.
+Your sign-ins, saved sessions, input history, and per-directory settings live under `~/.alter-zero/` (`%USERPROFILE%\.alter-zero\` on Windows). Keep shared extensions there, or add project-specific ones alongside your code.
 
 <details>
 <summary><strong>Configuration and extension paths</strong></summary>

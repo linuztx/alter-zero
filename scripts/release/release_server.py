@@ -2,7 +2,7 @@
 """A stand-in for github.com's release pages, so install.sh can be tested
 offline against real archives (docs/release.md).
 
-    python3 scripts/release/release_server.py DIST TAG [INSTALLER]
+    python3 scripts/release/release_server.py DIST TAG [INSTALL_SH] [INSTALL_PS1]
 
 Serves DIST's files at /releases/download/TAG/<name>, redirects
 /releases/latest to /releases/tag/TAG the way GitHub does (the installer and
@@ -21,6 +21,7 @@ import sys
 
 DIST, TAG = sys.argv[1], sys.argv[2]
 INSTALLER = sys.argv[3] if len(sys.argv) > 3 else None
+POWERSHELL_INSTALLER = sys.argv[4] if len(sys.argv) > 4 else None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -46,6 +47,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/install.sh" and INSTALLER and os.path.isfile(INSTALLER):
             with open(INSTALLER, "rb") as fh:
                 return self._send(200, fh.read(), "text/x-shellscript", head)
+        if path == "/install.ps1" and POWERSHELL_INSTALLER and os.path.isfile(POWERSHELL_INSTALLER):
+            with open(POWERSHELL_INSTALLER, "rb") as fh:
+                return self._send(200, fh.read(), "text/plain", head)
         prefix = f"/releases/download/{TAG}/"
         if path.startswith(prefix):
             name = os.path.basename(path[len(prefix):])

@@ -13,7 +13,8 @@ what was tried and refused; then the steps that publish a release to npm.
 
 ## The shape
 
-Five packages per release, all at the release's version:
+Six packages per release, all at the release's version (currently **0.15.0**;
+adding Windows does not bump it):
 
 ```
 @linuztx/alter-zero                  npm/ — the launcher: bin/alter-zero.js, README.md
@@ -22,18 +23,24 @@ Five packages per release, all at the release's version:
     @linuztx/alter-zero-linux-arm64   os linux   cpu arm64  libc glibc   ← aarch64-unknown-linux-gnu
     @linuztx/alter-zero-darwin-x64    os darwin  cpu x64                 ← x86_64-apple-darwin
     @linuztx/alter-zero-darwin-arm64  os darwin  cpu arm64               ← aarch64-apple-darwin
+    @linuztx/alter-zero-win32-x64     os win32   cpu x64                 ← x86_64-pc-windows-msvc
 ```
 
 Each platform package holds one release archive's binary at
-`bin/alter-zero` (mode 755), the LICENSE and a README pointing at the
+`bin/alter-zero` (mode 755), or Windows' `bin/alter-zero.exe`, the LICENSE and a README pointing at the
 launcher. npm reads the `os`/`cpu`/`libc` of every optional dependency and
 installs only the one that matches, so an install downloads the launcher
 (a few kilobytes) and one ~10 MB binary package; an optional dependency that
 does not match is skipped rather than failed. The launcher's own `os`/`cpu`
-make npm refuse an unsupported platform (Windows, a 32-bit CPU) at install
-time instead of at first run. The packages are built from the **same
+make npm refuse unsupported OSes and 32-bit CPUs at install time. npm cannot
+express supported OS/CPU pairs in those two separate arrays: native Windows
+ARM64 reaches the launcher's clear unsupported-architecture error, not an x64
+emulation promise. Windows x64 requires Windows 10 1809+ / Windows 11 and
+**Git for Windows**, not WSL; Windows Terminal is recommended. The packages are built from the **same
 verified archives** the GitHub release carries (`docs/release.md`), so an npm
-install, `install.sh` and `alter-zero-bin` all run one binary.
+install, `install.sh` / `install.ps1` and `alter-zero-bin` use the release's
+binary for their target. Windows npm staging reads the same verified ZIP as
+the PowerShell installer; the four Unix tarball paths are unchanged.
 
 The names are Node's own words for the platform — `process.platform` and
 `process.arch` — because those are what the `os`/`cpu` fields are written in
@@ -53,7 +60,7 @@ Three ways to put a native binary behind `npm install -g` were weighed:
   with no binary in it: under `--ignore-scripts`, under pnpm and bun (which
   skip dependencies' install scripts by default), from a registry mirror or
   through a proxy npm is configured for, and from npm's cache offline. The
-  registry's integrity hash covers the binary itself. The cost is five
+  registry's integrity hash covers the binary itself. The cost is six
   packages per release instead of one, which the release workflow publishes.
 - **Download on install** — one package whose `postinstall` fetches the
   GitHub archive. Refused: the script does not run under `--ignore-scripts`,
@@ -62,7 +69,7 @@ Three ways to put a native binary behind `npm install -g` were weighed:
   `https` does not read `HTTPS_PROXY` unless told to); and the binary's
   integrity then rests on a checksum fetched from the same place as the
   binary.
-- **All four binaries in one package** — no script, one publish. Refused:
+- **All binaries in one package** — no script, one publish. Refused:
   every install downloads ~38 MB and unpacks ~90 MB to run one of them.
 
 ## The launcher
@@ -90,7 +97,7 @@ first, and answers each with a message instead:
 
 | check | what the user is told |
 |---|---|
-| a platform package exists for this OS and CPU | the supported platforms, and WSL for Windows |
+| a platform package exists for this OS and CPU | Linux/macOS x64/arm64 and native Windows x64 with Git for Windows |
 | the platform package resolves | it is an optional dependency: reinstall, without `--omit=optional` — in the installing manager's words |
 | …and on musl | the Linux build needs glibc; build from source |
 | `bin/alter-zero` is a file | the install is incomplete: reinstall |
@@ -146,6 +153,25 @@ mislead: a signal whose default action dumps core (`SIGABRT`, `SIGSEGV`, …)
 would dump Node's core too, a crash report about `node` rather than the
 binary, and `SIGUSR1` starts Node's inspector.
 
+### Native Windows launcher
+
+On `win32-x64`, `locate` resolves `bin/alter-zero.exe`; Unix executable-bit
+repair and ELF-loader checks do not apply. The launcher always uses direct
+`spawn(exe, args, { stdio: 'inherit', shell: false })`, even if Node exposes an
+`execve` function. It preserves argument boundaries (spaces, empty strings,
+Unicode, quotes and shell metacharacters), environment and the numeric child
+exit status. It installs no POSIX signal handlers and never re-raises a child
+signal as a Windows `process.kill`. A spawn error or missing exit status is a
+failure, not a success. The console handles native console events; no shell
+wrapper or WSL process sits between Node and the executable.
+
+Unlike modern Unix, Node remains resident as a parent on Windows. The package
+still has no install scripts; npm supplies its usual Windows command shim.
+Close running instances before updating: Windows locks running `.exe` files,
+so a package manager or the separate PowerShell installer can fail until the
+old process exits. A manager-owned installation is never updated by overwriting
+its binary behind the manager's back.
+
 ## Updating
 
 A package manager owns the files it installed, so `alter-zero update` —
@@ -176,12 +202,12 @@ environment of every command the agent runs.
 step the way the other four are (`docs/release.md`): `scripts/release.sh
 check` requires its version and each platform package's pin to equal
 Cargo.toml's (rule 7, which also refuses a pin for a platform no release
-target builds), and `prepare` rewrites the version and the four pins in
+target builds), and `prepare` rewrites the version and the five pins in
 place.
 
 ```bash
 scripts/release.sh npm X.Y.Z dist --dry-run   # verify, stage into target/npm, `npm publish --dry-run` each
-scripts/release.sh npm X.Y.Z dist             # …and publish: four platform packages, then the launcher
+scripts/release.sh npm X.Y.Z dist             # …and publish: five platform packages, then the launcher
 ```
 
 The command first runs `verify` over the archives: a release **as built**,
@@ -198,7 +224,7 @@ GitHub account — writes each asset's own line of it beside the asset as its
 `.sha256`, and runs `verify` over the lot (`--from` names another
 repository root, or a stand-in for github.com). It refuses a directory that
 is not empty and an asset name that is a path rather than a file name. The
-`npm` command then stages the five packages under `target/npm/` (`--out`
+`npm` command then stages the six packages under `target/npm/` (`--out`
 elsewhere): each platform package from its archive, and the launcher as
 `npm/` with the LICENSE added and its `scripts` removed. Publishing is
 ordered — **the launcher last** — so its optional dependencies are on the
@@ -252,7 +278,7 @@ environment `npm`. Set that up once, in the repository's **Settings**:
   tags*, allow only the tag pattern `v*`, so no branch and no pull request
   can run a job in it (a required reviewer can be added as well).
 - In that environment's secrets, `NPM_TOKEN`: an npm granular access token
-  with read and write access to the five packages, allowed to publish
+  with read and write access to the six packages, allowed to publish
   without a one-time password. An environment secret is readable only by a
   job running in the environment, which the rule above keeps to release
   tags.
@@ -268,7 +294,7 @@ Without the variable only the rehearsal runs, so a release is never held up
 by npm.
 
 npm limits how long a token that can publish stays valid, so the lasting
-setup is **trusted publishing**: on npmjs.com, open each of the five
+setup is **trusted publishing**: on npmjs.com, open each of the six
 packages' settings and add a trusted publisher — GitHub Actions, repository
 `linuztx/alter-zero`, workflow `release.yml`, environment `npm` — then
 delete the `NPM_TOKEN` secret. `npm-publish` alone holds `id-token: write`,
@@ -297,7 +323,7 @@ published is skipped.
   `download` from `release_server.py`, the stand-in github.com — with curl
   and with wget only, refusing an unpublished version, a checksum that does
   not match, a path in `SHA256SUMS` and a directory that is not empty — and
-  a four-target fixture release (the host's binary real, the others headers
+  a five-target fixture release (the host's binary real, the others headers
   `file(1)` accepts) staged, dry-run, published to
   `scripts/release/npm_registry.py` — a stand-in registry that serves
   packuments and tarballs and takes `npm publish`'s PUT — in order, re-run
@@ -323,4 +349,11 @@ published is skipped.
   explains why), so Alpine gets the launcher's explanation; a glibc older
   than 2.35 installs and then fails in the dynamic loader. Building from
   source covers both.
-- **Windows** is refused at install time, as by `install.sh`; WSL works.
+- **Windows ARM64 and ia32** are not supported. Windows x64 is native MSVC,
+  Windows 10 1809+ / Windows 11 with Git for Windows; it does not need WSL.
+  Linux PE/ZIP fixtures and injected spawn tests do not prove native execution.
+  `node --test test/windows.test.js` must run on Windows (its real-executable
+  argument test uses Node's own `.exe`), and `scripts/windows/test.ps1 -Dist dist`
+  runs the real packaged executable, the checksum-verified PowerShell installer
+  (including locked `.exe` refusal), and an `npm install -g --ignore-scripts`
+  from the loopback fixture registry through npm's real `.cmd` shim.

@@ -320,8 +320,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   against the discovered issuer (byte-for-byte, absence rejected when the
   metadata advertised the parameter) before the code is redeemed → the
   token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
-  server URL (0600, best-effort), and ride every HTTP request as
+  server URL (`0600` on Unix, best-effort; inherited filesystem ACLs on native
+  Windows, not an owner-only guarantee), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+  See `docs/windows.md` before placing this plaintext token store in a shared
+  location.
 
   Two things the flow must get right or the grant is born unrenewable:
   **`offline_access`** is what actually buys a refresh token, and SEP-2207
