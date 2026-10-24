@@ -113,7 +113,7 @@ jobs:
           shared-key: windows-debug
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --test windows --test cli_help
-      - run: cargo test --lib -- platform:: update:: llm::mcp::transport::tests::windows_stdio
+      - run: 'cargo test --lib -- platform:: update:: llm::mcp::transport::tests::windows_stdio'
       - run: cargo doc --no-deps --lib
       - uses: actions/setup-node@v6
         with:

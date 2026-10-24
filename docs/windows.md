@@ -7,7 +7,9 @@ Git for Windows is required: the existing `bash` tools, hooks and `!` commands
 keep their Bash syntax. Set `ALTER_ZERO_BASH` to an absolute `bash.exe` path to
 override discovery; otherwise absolute PATH entries and Git's installation directories are
 searched. The Windows system-directory `bash.exe` (the legacy WSL launcher) is
-never selected automatically.
+never selected automatically. Captured shells and ConPTY sessions prepend the
+chosen Git installation's utility directories to the inherited PATH, so
+PowerShell launches can run Unix utilities without loading a login profile.
 
 ## Design
 

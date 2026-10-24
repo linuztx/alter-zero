@@ -242,6 +242,9 @@ pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command
         use std::os::windows::process::CommandExt;
         // Captured commands cannot read or paint the TUI's console.
         cmd.creation_flags(0x0800_0000 | 0x0000_0200);
+        if let Some(path) = crate::platform::windows_shell_path(shell) {
+            cmd.env("PATH", path);
+        }
     }
     cmd.env_remove(crate::herdr::PANE_ID_ENV);
     cmd

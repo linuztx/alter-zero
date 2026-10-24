@@ -73,6 +73,9 @@ pub fn spawn(command: &str) -> io::Result<PtyProcess> {
         .map_err(|err| io::Error::other(err.to_string()))?;
     let mut cmd = CommandBuilder::new(crate::subprocess::tool_shell());
     cmd.args(["-c", command]);
+    if let Some(path) = crate::platform::windows_shell_path(crate::subprocess::tool_shell()) {
+        cmd.env("PATH", path);
+    }
     cmd.cwd(std::env::current_dir()?);
     for name in super::spawn::FOREIGN_TERMINAL_VARS {
         cmd.env_remove(name);
