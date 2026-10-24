@@ -264,7 +264,11 @@ drives the **real** backend against a stub provider that streams a 30-line
 `write` six characters at a time, sampling the cell as it moves. Past ten
 lines the window's bottom row must keep moving down the file and line 1 must
 never show. Once the content closes, the cell must show lines 1 to 10, and the
-committed cell must keep them over `… +20 lines`.
+committed cell must keep them over `… +20 lines`. Phase 138b streams one long
+paragraph line the same way and reads the file back: the streaming cell must
+show more than three rows of it with no row ending in `…`, and the committed
+`Write` and `Read` cells must both show its last word (`docs/long-lines.md`
+§7).
 
 ## What it does not do
 

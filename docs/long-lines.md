@@ -439,4 +439,8 @@ screen, the fold is Phase 38's settled `Bash(ping …)` cells (`… +3 lines
 the same three shapes — a 750-character single line, four wrapping lines, a
 blank-shaped output — through `!` commands, which since
 `docs/shell-command.md` retired the shell cell's fold assert the opposite
-contract: every row inline, no hint, and Ctrl+O agreeing row for row.
+contract: every row inline, no hint, and Ctrl+O agreeing row for row. §7 is
+Phase 138b's: the real backend, against a stub provider, streams a `write` of
+a 467-character paragraph line and reads the file back, and neither the
+streaming cell nor the committed `Write` and `Read` cells may cut a file row
+with a `…`.
