@@ -21,6 +21,15 @@ $target = switch ($architecture) {
     default { throw "Unsupported Windows architecture: $architecture (x64 or ARM64 required)" }
 }
 
+# Git Bash puts GNU tar ahead of Windows tar on PATH. GNU tar interprets a
+# drive-letter path as a remote archive ("Cannot connect to C"). Always use
+# the OS implementation, including from a 32-bit PowerShell on 64-bit Windows.
+$systemDirectory = if ([Environment]::Is64BitProcess) { 'System32' } else { 'Sysnative' }
+$nativeTar = Join-Path $env:SystemRoot "$systemDirectory\tar.exe"
+if (-not (Test-Path -LiteralPath $nativeTar -PathType Leaf)) {
+    throw "Windows tar.exe is unavailable at $nativeTar (Windows 10 version 1809 or newer is required)"
+}
+
 if (-not $Version) {
     $reply = Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/releases/latest"
     $uri = $reply.BaseResponse.ResponseUri
@@ -51,14 +60,14 @@ try {
     }
     # Refuse extra entries and paths before extracting. The shared release
     # verifier enforces this same one-directory, four-file contract.
-    $entries = @(& tar.exe -tzf $archive)
+    $entries = @(& $nativeTar -tzf $archive)
     if ($LASTEXITCODE -ne 0) { throw "Cannot read $asset" }
     $allowed = @($stem, "$stem/alter-zero.exe", "$stem/LICENSE", "$stem/README.md", "$stem/CHANGELOG.md")
     $normal = @($entries | ForEach-Object { $_.TrimEnd('/') })
     if ($normal.Count -ne 5 -or (Compare-Object ($normal | Sort-Object) ($allowed | Sort-Object))) {
         throw "Unexpected archive layout in $asset; nothing was extracted"
     }
-    & tar.exe -xzf $archive -C $scratch
+    & $nativeTar -xzf $archive -C $scratch
     if ($LASTEXITCODE -ne 0) { throw "Cannot extract $asset" }
     $binary = Join-Path $scratch "$stem/alter-zero.exe"
     $reported = & $binary --version

@@ -34,7 +34,9 @@ Windows has no `execve`.
 The existing release workflow builds both Windows targets, verifies the PE CPU
 and checksums, and stages the same binaries into npm. Archives keep the project's
 `.tar.gz` layout, with `alter-zero.exe` beside LICENSE, README and CHANGELOG.
-Windows includes `tar.exe`; npm is the recommended installer. `install.ps1`
+Windows includes `tar.exe`; the PowerShell installer resolves it from the
+Windows system directory so Git's GNU tar cannot misinterpret drive-letter
+paths. npm is the recommended installer. `install.ps1`
 provides a native PowerShell install and is also used by `alter-zero update`,
 with SHA-256 and archive-layout checks before replacing an executable. A running
 old executable is renamed first; if Windows still holds it open, the
