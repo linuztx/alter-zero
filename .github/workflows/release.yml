@@ -122,16 +122,18 @@ jobs:
       - name: Native CLI, ConPTY, TUI and installer tests
         run: |
           set +e
-          cargo test --test windows --test cli_help > windows-tests.log 2>&1
+          CARGO_TERM_COLOR=never cargo test --test windows --test cli_help > windows-tests.log 2>&1
           windows_test_status=$?
           cat windows-tests.log
           if [ "$windows_test_status" -ne 0 ]; then
             python - <<'PY_REPORT'
           from pathlib import Path
-          tail = Path("windows-tests.log").read_text(encoding="utf-8", errors="replace")[-14000:]
+          tail = Path("windows-tests.log").read_text(encoding="utf-8", errors="replace")[-7500:]
           tail = tail.encode("ascii", errors="backslashreplace").decode("ascii")
-          message = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::error title=Native Windows test failure::" + message)
+          for index in range(0, len(tail), 2500):
+              part = tail[index:index + 2500]
+              message = part.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title=Native Windows failure part {index // 2500 + 1}::" + message)
           PY_REPORT
           fi
           exit "$windows_test_status"
