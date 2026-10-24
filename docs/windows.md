@@ -74,7 +74,7 @@ Download and run the installer from PowerShell (5.1 or newer):
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/linuztx/alter-zero/main/install.ps1 -OutFile "$env:TEMP/alter-zero-install.ps1"
-& "$env:TEMP/alter-zero-install.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP/alter-zero-install.ps1"
 ```
 
 It defaults to `%LOCALAPPDATA%\Programs\Alter Zero` and prints a PATH hint.
