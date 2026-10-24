@@ -1,0 +1,2 @@
+# Git Bash must receive LF scripts even when Windows Git enables autocrlf.
+*.sh text eol=lf

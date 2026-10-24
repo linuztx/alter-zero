@@ -97,10 +97,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-11-arm]
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
     defaults:
       run:
         shell: bash
@@ -108,11 +113,28 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-debug
+          cache-on-failure: true
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --test windows --test cli_help
+      - name: Native CLI, ConPTY, TUI and installer tests
+        run: |
+          set +e
+          cargo test --test windows --test cli_help > windows-tests.log 2>&1
+          windows_test_status=$?
+          cat windows-tests.log
+          if [ "$windows_test_status" -ne 0 ]; then
+            python - <<'PY_REPORT'
+          from pathlib import Path
+          tail = Path("windows-tests.log").read_text(encoding="utf-8", errors="replace")[-14000:]
+          tail = tail.encode("ascii", errors="backslashreplace").decode("ascii")
+          message = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=Native Windows test failure::" + message)
+          PY_REPORT
+          fi
+          exit "$windows_test_status"
       - run: 'cargo test --lib -- platform:: update:: llm::mcp::transport::tests::windows_stdio'
       - run: cargo doc --no-deps --lib
       - uses: actions/setup-node@v6
