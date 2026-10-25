@@ -150,7 +150,10 @@ can't choose the list it would be read off, which has not arrived yet.
 
 Quota is measured against rolling 5-hour, weekly and monthly windows; the
 dashboard is
-[app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true).
+[app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true),
+and `/usage` shows each window's share and reset from the account's own
+`GET /api/v1/users/me/plan/usage-limits`, with `/api/v1/users/me/plan` read
+beside it only for the plan's name (`docs/usage-limits.md`).
 When a window runs out the server says which (*You have reached your 5-hour
 Clinepass limit. Please try again later.*), and the advice names that window
 and points at the usage-billed models, which the key row reaches (`/login` →

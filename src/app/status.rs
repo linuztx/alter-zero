@@ -440,7 +440,7 @@ impl App {
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
     /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/secrets`,
-    /// `/export`) own every key the same way, so the running cell they keep
+    /// `/export`, `/context`, `/usage`) own every key the same way, so the running cell they keep
     /// visible above themselves stays hintless while one is open
     /// (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
     /// `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`, `docs/donate.md`,
@@ -461,6 +461,7 @@ impl App {
             || self.secrets_page.is_some()
             || self.export_picker.is_some()
             || self.context_usage.is_some()
+            || self.usage_limits.is_some()
         {
             return None;
         }

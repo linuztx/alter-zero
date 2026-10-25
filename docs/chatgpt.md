@@ -576,6 +576,17 @@ A `403` is also what an unrecognised `originator` earns, with a message that
 does not say so — which is why that header is pinned in `providers.toml`
 rather than left to a default.
 
+## Usage limits
+
+`/usage` reads the account's limits from `GET
+https://chatgpt.com/backend-api/wham/usage`, the read behind Codex's own
+rate-limit display: the 5-hour and weekly windows, any per-model extra
+limits, the code-review window, a workspace's spend cap and the credit
+balance, each window with its share used and its reset. It authenticates
+through `auth::request_auth` like every other call — the minted bearer and
+the `chatgpt-account-id` header — and a base not under `/backend-api` gets
+Codex's `{base}/api/codex/usage` instead (`docs/usage-limits.md`).
+
 ## Environment
 
 | variable | effect |
@@ -595,6 +606,7 @@ rather than left to a default.
 | `src/llm/service_tier.rs` | the speed tiers a record lists, each tier's command name, and the toggle its command runs (pure) — `docs/fast-mode.md` |
 | `src/llm/openai.rs` | `request_url`/`request_payload` (the wire branch), `drain_responses`, `pump_lines` |
 | `src/llm/models.rs` | the `{"models": …}` envelope and the three record sniffs |
+| `src/llm/usage_limits.rs` | the `wham/usage` URL rule and parse (pure) and its fetch (boundary) — `docs/usage-limits.md` |
 | `src/app/login.rs` | `SigninKind` and its method rows, `SubscriptionChoice::kinds`, the `KeyStep::SigninMethod` choice and its keys, `DeviceLogin::copy_target` |
 | `src/ui/login_view.rs` | the choice's page and the browser page's wording |
 | `src/tui/config.rs` | `signin_kinds` — which pages a scheme offers; `openai_issuer` — the override |

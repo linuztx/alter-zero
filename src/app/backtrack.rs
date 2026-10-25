@@ -77,16 +77,18 @@ impl App {
     /// — while a tool thread is still blocked on the gate. Nothing is
     /// rewindable while something is blocked on the user.
     ///
-    /// The read-only `/context` page lets the same two overlays through, and
-    /// a rewind begun from one would land back on a page still open over the
-    /// draft it recalled (`docs/context-usage.md`): the overlay opened from
-    /// it is a look, so its Esc goes back to the page.
+    /// The read-only `/context` and `/usage` pages let the same two overlays
+    /// through, and a rewind begun from one would land back on a page still
+    /// open over the draft it recalled (`docs/context-usage.md`,
+    /// `docs/usage-limits.md`): the overlay opened from it is a look, so its
+    /// Esc goes back to the page.
     #[must_use]
     pub fn overlay_esc_backtracks(&self) -> bool {
         !self.turn_active()
             && !self.modal_open()
             && self.agent_view.is_none()
             && self.context_usage.is_none()
+            && self.usage_limits.is_none()
             && self.has_backtrack_target()
     }
 

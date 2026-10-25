@@ -123,6 +123,11 @@ use alter_zero::app::{
     TurnSummary,
     View,
     DebugPage,
+    SubscriptionEntry,
+    SubscriptionLimits,
+    UsageLimitsPage,
+    USAGE_LIMITS_EMPTY_NOTICE,
+    USAGE_LIMITS_REFRESH_SECS,
     AGENT_STOPPED_OUTPUT,
     CHECKPOINT_RESTORED_NOTICE,
     CHECKPOINT_REWOUND_NOTICE,
@@ -226,6 +231,26 @@ use alter_zero::skills::{
     skill_section,
     unreported_errors,
     validate_skill_name,
+};
+
+// --- `llm::usage_limits` — the `/usage` page's model, parsers and fetch (docs/usage-limits.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::llm::usage_limits::{
+    LimitNote,
+    LimitWindow,
+    PlanLimits,
+    USAGE_BODY_MAX_BYTES,
+    chatgpt_usage_url,
+    dashboard_url,
+    error_text,
+    fetch_plan_limits,
+    parse_chatgpt_usage,
+    parse_clinepass_usage,
+    parse_copilot_usage,
+    pay_as_you_go,
+    refusal,
+    window_label,
 };
 
 // --- `subagents` — the agent definitions' pure model (docs/subagents.md) ---
@@ -500,6 +525,9 @@ use alter_zero::ui::{
     transcript_selection,
     trust_menu_height,
     trust_view_lines,
+    render_usage_limits,
+    usage_limits_height,
+    usage_limits_lines,
     view_body_skip,
     view_flow,
     view_flow_signature,

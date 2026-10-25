@@ -636,6 +636,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::context_usage_height(app, screen.width, screen.height) {
         return height;
     }
+    // The read-only `/usage` page, likewise (docs/usage-limits.md).
+    if let Some(height) = ui::usage_limits_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The `/trust` review menu, likewise (docs/project-config.md).
     if let Some(height) = ui::trust_menu_height(app, screen.width, screen.height) {
         return height;
@@ -730,6 +734,9 @@ impl Session<'_> {
         // Before the paint: a question whose idle clock ran out closes in
         // this very frame (docs/ask.md).
         self.tick_ask_clock();
+        // …and the `/usage` page its wall clock, refreshing it once a minute
+        // while it stays open (docs/usage-limits.md).
+        self.tick_usage_limits();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty
@@ -750,6 +757,13 @@ impl Session<'_> {
         // shimmer over the page (`docs/copilot.md`).
         if self.app.device_login_active() {
             self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
+        }
+        // The `/usage` page keeps the same slow chain for its countdowns —
+        // not under an overlay, where it is not on screen; the return's draw
+        // re-seeds it (docs/usage-limits.md).
+        if self.app.usage_limits.is_some() && !self.app.view.is_overlay() {
+            self.frame
+                .schedule_frame_in(super::usage_limits::USAGE_LIMITS_TICK);
         }
         Ok(())
     }

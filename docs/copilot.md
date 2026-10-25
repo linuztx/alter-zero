@@ -410,11 +410,24 @@ Every poll answers **HTTP 200**, error or not: the verdict is in the body's
 why an unreadable body is terminal rather than "keep waiting" — the latter
 loops until the code expires.
 
+## Usage limits
+
+`/usage` reads the account's quotas from `GET
+https://api.github.com/copilot_internal/user` — premium requests (AI credits
+on the newer plans), chat and code completions, each with its entitlement,
+what remains and the date it resets — sent with the **stored OAuth token**
+under GitHub's `token` scheme and the same editor headers the exchange
+sends, never the exchanged bearer, which only the Copilot API host takes
+(`docs/usage-limits.md`).
+
 ## Environment
 
-Nothing new. The Copilot provider is an ordinary `providers.toml` entry, so
+The Copilot provider is an ordinary `providers.toml` entry, so
 `ALTER_ZERO_PROVIDER=github_copilot` selects it, `ALTER_ZERO_MODEL` picks the
 model, and `GITHUB_COPILOT_TOKEN` in the real environment outranks the `.env`
 store exactly as every other provider's key does — which is also how a machine
 that already has a Copilot login (a CI box, a dotfiles export) skips `/login`
-entirely.
+entirely. `ALTER_ZERO_GITHUB_API_BASE` points both calls this provider makes
+to GitHub's API — the bearer exchange and the `/usage` quota read — at
+another host (`https://api.github.com` by default), which is how `smoke.sh`
+Phase 145 reaches its local stub.

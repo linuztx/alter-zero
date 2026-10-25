@@ -94,6 +94,9 @@ impl Session<'_> {
                 // A `/login` device flow's worker parks on a poll for minutes;
                 // cancel it so the process can actually exit (`docs/copilot.md`).
                 self.cancel_device_login();
+                // …and the `/usage` page's fetches, which have nothing left
+                // to report to (`docs/usage-limits.md`).
+                self.cancel_usage_limits();
                 return Ok(Flow::Quit);
             }
             Action::Submit(text) => {
@@ -280,6 +283,17 @@ impl Session<'_> {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
                 // collapses back to the composer on the next draw.
             }
+            // Only the boundary knows which subscriptions are signed in, so it
+            // opens the page and fetches each one's limits — or toasts that
+            // none is (docs/usage-limits.md).
+            Action::OpenUsageLimits => self.open_usage_limits(),
+            Action::CloseUsageLimits => {
+                // The pure close already dropped the refresh it owed; reap
+                // the fetches still out.
+                self.cancel_usage_limits();
+            }
+            Action::RefreshUsageLimits => self.refresh_usage_limits(),
+            Action::CopyUsageLink(url) => self.copy_usage_link(&url),
             Action::OpenExportPicker => {
                 // The pure open already happened (the rows are a const —
                 // nothing to fetch or inject); after_key schedules the frame
@@ -573,6 +587,7 @@ impl Session<'_> {
             View::Conversation if self.app.export_picker.is_some() => {}
             // …nor the `/context` page (docs/context-usage.md).
             View::Conversation if self.app.context_usage.is_some() => {}
+            View::Conversation if self.app.usage_limits.is_some() => {}
             // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
             // composer draft underneath (docs/secrets.md).

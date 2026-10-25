@@ -245,6 +245,15 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.usage_limits.is_some() {
+        // The `/usage` page's countdowns move by the minute, but it never
+        // flows — every terminal gets a page that fits — so it signs its
+        // rows like its siblings (`docs/usage-limits.md`).
+        return Some(FlowPage::framed(
+            super::usage_limits_view::usage_limits_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.trust_menu.is_some() {
         return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),

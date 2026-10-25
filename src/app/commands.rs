@@ -104,6 +104,11 @@ pub enum CommandEffect {
     /// the cache. Works **mid-turn** like `/donate` — it only replaces the
     /// composer, and it is live. See `docs/context-usage.md`.
     Context,
+    /// Open the read-only `/usage` page: every signed-in subscription's
+    /// usage limits. Works **mid-turn** like `/context` — it only replaces
+    /// the composer. The boundary opens it, since only it knows which
+    /// subscriptions are signed in. See `docs/usage-limits.md`.
+    Usage,
     /// Open the `/resume` session picker — or reject with a
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
     /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
@@ -289,6 +294,12 @@ pub const COMMANDS: &[SlashCommand] = &[
         "login",
         "Sign in, add an API key, or connect a local model",
         CommandEffect::Login,
+    ),
+    // What a sign-in has left, right after the command that makes one.
+    SlashCommand::builtin(
+        "usage",
+        "Show your subscriptions' usage limits",
+        CommandEffect::Usage,
     ),
     SlashCommand::builtin("settings", "Open settings menu", CommandEffect::Settings),
     SlashCommand::builtin("theme", "Choose the colour theme", CommandEffect::Theme),
@@ -508,6 +519,13 @@ impl App {
                 // the backend sends and keeps it live (docs/context-usage.md).
                 self.open_context_usage();
                 Action::OpenContextUsage
+            }
+            CommandEffect::Usage => {
+                // /usage works mid-turn like /context: a read-only page that
+                // only replaces the composer. Which subscriptions are signed
+                // in is the boundary's to know, so the *loop* opens the page
+                // and fetches each one's limits (docs/usage-limits.md).
+                Action::OpenUsageLimits
             }
             CommandEffect::Init => {
                 // Codex's /init is submit_user_message(INIT_PROMPT): the canned

@@ -316,6 +316,13 @@ The pasted-key provider gets the same mapping, minus the sign-in-shaped
 advice, since the module tells the cases apart by status and code rather than
 by which provider asked.
 
+## Usage limits
+
+The Console sign-in is in `/login`'s subscription list, but it is billed per
+token to an API organisation with no plan limits behind it, so `/usage`
+lists it as **Pay as you go** without sending a request, its `c` link
+pointing at the Console's own usage page (`docs/usage-limits.md`).
+
 ## Environment
 
 | variable | effect |

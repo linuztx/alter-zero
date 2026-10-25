@@ -207,7 +207,14 @@ the highlighted address alone, its numbered label saying where it stands
 usage rows down to the last request, then its bar and subtitle — the title
 folding into one row with the window's fill — and the usage row before its
 legend, which then windows around the highlight on the compact pages'
-ladder with that title row as its anchor (`docs/context-usage.md`). The `AskUserQuestion` modal walks the same kind of
+ladder with that title row as its anchor (`docs/context-usage.md`), and
+`/usage`, whose list is of sections rather than rows, so like `/donate` it
+collapses before it windows: the windows' counts and the usage link go, then
+every section the highlight is not on folds to one row naming its tightest
+window — an accordion — then the subtitle, the title folding into one row
+with the freshness, which every rung keeps; below that the folded rows
+window around the highlight on the compact pages' ladder with that title row
+as its anchor (`docs/usage-limits.md`). The `AskUserQuestion` modal walks the same kind of
 ladder (`docs/ask.md`): its options' descriptions yield, then its rows
 window around the selection, and its chip strip of question tabs goes last,
 codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
@@ -216,7 +223,7 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
-  menus (`/mcp`, `/hooks`, `/trust`, `/donate`, `/export`, `/context`, `/secrets`) *and* the windowed pickers (`/model`,
+  menus (`/mcp`, `/hooks`, `/trust`, `/donate`, `/export`, `/context`, `/usage`, `/secrets`) *and* the windowed pickers (`/model`,
   `/login`, `/settings`, `/skills`), all of them line builders now
   (`*_view_lines` / `key_onboarding_lines`, their heights the built line
   count). Their content is **static per state**: it changes only on a user
@@ -228,6 +235,9 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
   conversation does — but only on an event, never per frame, so it signs on
   its rows like the rest; its ladder ends on its title row alone, so like
   the search-line pickers it never actually flows (`docs/context-usage.md`).
+  `/usage` is the same case: its rows move when an answer lands and its
+  countdowns by the minute, never per frame, and its ladder too ends on its
+  title row (`docs/usage-limits.md`).
 
   The search-line pickers stay eligible but never actually flow: their `❯`
   search line sits in the page **top**, where a flow would take it into

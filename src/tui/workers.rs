@@ -18,6 +18,8 @@
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
+//! - [`spawn_limits_fetch`] — one signed-in subscription's usage limits, for
+//!   the `/usage` page (`docs/usage-limits.md`).
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
 //!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
@@ -32,6 +34,7 @@ use std::thread::JoinHandle;
 use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files};
+use alter_zero::llm::usage_limits::PlanLimits;
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
 
@@ -384,6 +387,36 @@ pub(crate) fn spawn_update_check(
     std::thread::spawn(move || {
         if let Ok(latest) = alter_zero::update::fetch_latest(&repo, &version) {
             let _ = tx.send(latest);
+        }
+    });
+}
+
+/// A finished `/usage` fetch: the subscription it is for, the refresh it
+/// answers (`App::set_plan_limits` drops an answer to any older one), and
+/// the provider's limits or the one line saying why there are none. Carried
+/// on the usage worker's channel. See `docs/usage-limits.md`.
+pub(crate) type LimitsFetch = (String, u64, Result<PlanLimits, String>);
+
+/// Read one signed-in subscription's usage limits on a worker thread —
+/// `llm::usage_limits::fetch_plan_limits`, which authenticates the way every
+/// request does — and report it, unless `cancel` tripped meanwhile (the page
+/// closed, or a newer refresh replaced this one). The page fetches every
+/// listed subscription in parallel and paints each as it lands.
+pub(crate) fn spawn_limits_fetch(
+    id: String,
+    generation: u64,
+    cfg: Option<ModelConfig>,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<LimitsFetch>,
+) {
+    std::thread::spawn(move || {
+        let result = match cfg {
+            Some(cfg) => llm::usage_limits::fetch_plan_limits(&cfg, &cancel)
+                .map_err(|e| llm::usage_limits::error_text(&e)),
+            None => Err("This subscription is no longer configured — run /login".to_string()),
+        };
+        if !cancel.is_cancelled() {
+            let _ = tx.send((id, generation, result));
         }
     });
 }

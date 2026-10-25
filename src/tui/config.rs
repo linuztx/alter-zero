@@ -1013,6 +1013,14 @@ pub(crate) fn cline_api_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::API_BASE_ENV)
 }
 
+/// Where GitHub Copilot's two GitHub API calls go — the token exchange and
+/// the `/usage` quota read: `ALTER_ZERO_GITHUB_API_BASE` when set and
+/// non-empty (Phase 145's local stub), else `None` — `https://api.github.com`
+/// stands (`docs/usage-limits.md`).
+pub(crate) fn github_api_base() -> Option<String> {
+    nonempty_env(alter_zero::llm::copilot::GITHUB_API_ENV)
+}
+
 /// A trimmed, non-empty environment value, or `None` — the shape every
 /// override reader in this module keeps.
 fn nonempty_env(name: &str) -> Option<String> {

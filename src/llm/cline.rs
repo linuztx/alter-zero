@@ -97,6 +97,12 @@ const RECOMMENDED_MODELS_PATH: &str = "/api/v1/ai/cline/recommended-models";
 /// `/models` (ids and nothing else) does not.
 const CATALOG_PATH: &str = "/api/v1/ai/cline/models";
 
+/// The ClinePass windows and the plan they belong to — what Cline's own
+/// dashboard reads for its *Usage Limits* card (`docs/usage-limits.md`).
+/// Both take the sign-in's `workos:` bearer.
+const USAGE_LIMITS_PATH: &str = "/api/v1/users/me/plan/usage-limits";
+const PLAN_PATH: &str = "/api/v1/users/me/plan";
+
 /// RFC 8628's device-code grant type.
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -1121,6 +1127,19 @@ fn refresh_url() -> String {
 #[must_use]
 pub fn catalog_url() -> String {
     format!("{}{CATALOG_PATH}", api_base())
+}
+
+/// Where ClinePass's usage windows are read from, on the API host in force
+/// ([`set_api_base`]) — the `/usage` page's source (`docs/usage-limits.md`).
+#[must_use]
+pub fn usage_limits_url() -> String {
+    format!("{}{USAGE_LIMITS_PATH}", api_base())
+}
+
+/// Where the account's ClinePass plan is read from, on the same host.
+#[must_use]
+pub fn plan_url() -> String {
+    format!("{}{PLAN_PATH}", api_base())
 }
 
 /// GET the ClinePass list Cline publishes (boundary — real HTTP), from the API

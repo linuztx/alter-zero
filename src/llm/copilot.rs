@@ -37,10 +37,67 @@ const SCOPE: &str = "read:user";
 /// RFC 8628's device-code grant type.
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// Where the flow's three calls go.
+/// Where the flow's three calls go — the exchange on the GitHub API host in
+/// force ([`github_api_base`]).
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
-const EXCHANGE_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+const EXCHANGE_PATH: &str = "/copilot_internal/v2/token";
+
+/// The account's quota buckets and plan — what VS Code's Copilot status menu
+/// reads, and the `/usage` page's source (`docs/usage-limits.md`). It takes
+/// the GitHub OAuth token itself, not an exchanged bearer.
+const USER_INFO_PATH: &str = "/copilot_internal/user";
+
+/// GitHub's API host, until the boundary names another.
+pub const DEFAULT_GITHUB_API: &str = "https://api.github.com";
+
+/// The environment variable that points both GitHub API calls — the token
+/// exchange and the quota read — at another host: the smoke suite's local
+/// stand-in (`smoke.sh` Phase 145). Read at the boundary and handed in once
+/// through [`set_github_api_base`], the `chatgpt::set_issuer` pattern.
+pub const GITHUB_API_ENV: &str = "ALTER_ZERO_GITHUB_API_BASE";
+
+fn github_api_slot() -> &'static Mutex<Option<String>> {
+    static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Point the exchange and the quota read at `url` instead of
+/// [`DEFAULT_GITHUB_API`]. A trailing slash is dropped so the paths built on
+/// it never double one up, and an empty `url` restores the default.
+/// Boundary-only; called once at startup when [`GITHUB_API_ENV`] is set.
+pub fn set_github_api_base(url: impl Into<String>) {
+    let url = url.into();
+    let trimmed = url.trim().trim_end_matches('/').to_string();
+    if let Ok(mut slot) = github_api_slot().lock() {
+        *slot = (!trimmed.is_empty()).then_some(trimmed);
+    }
+}
+
+/// The GitHub API host in force.
+#[must_use]
+pub fn github_api_base() -> String {
+    github_api_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| DEFAULT_GITHUB_API.to_string())
+}
+
+/// Where the token exchange goes.
+fn exchange_url() -> String {
+    format!("{}{EXCHANGE_PATH}", github_api_base())
+}
+
+/// Where the account's quota buckets are read from.
+#[must_use]
+pub fn user_info_url() -> String {
+    format!("{}{USER_INFO_PATH}", github_api_base())
+}
+
+/// The `X-GitHub-Api-Version` the quota read pins — the one VS Code's own
+/// quota service sends.
+pub(crate) const GITHUB_API_VERSION: &str = "2025-04-01";
 
 /// The individual-seat API host, and the fallback when the exchange names none.
 pub const DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
@@ -52,9 +109,9 @@ pub const DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
 /// same pair on the chat request; these are for the two calls that go to
 /// `github.com`/`api.github.com` instead, which the provider's headers don't
 /// reach.
-const EDITOR_VERSION: &str = "vscode/1.104.3";
-const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
-const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
+pub(crate) const EDITOR_VERSION: &str = "vscode/1.104.3";
+pub(crate) const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
+pub(crate) const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
 
 /// The poll cadence GitHub falls back to when the device-code response names
 /// none, and the penalty a `slow_down` adds to it (both RFC 8628's).
@@ -739,7 +796,7 @@ fn github_message(body: &str) -> Option<String> {
 fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
-        .get(EXCHANGE_URL)
+        .get(exchange_url())
         // `token`, not `Bearer` — Microsoft's own client's scheme, and the one
         // every third-party implementation converged on.
         .header("authorization", format!("token {oauth_token}"))
@@ -858,6 +915,31 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_github_api_calls_follow_the_host_the_boundary_names() {
+        // One test owns the global slot, restoring the default at its end:
+        // nothing else reads it.
+        assert_eq!(
+            user_info_url(),
+            "https://api.github.com/copilot_internal/user"
+        );
+        assert_eq!(
+            exchange_url(),
+            "https://api.github.com/copilot_internal/v2/token"
+        );
+        set_github_api_base("http://127.0.0.1:9145/");
+        assert_eq!(
+            user_info_url(),
+            "http://127.0.0.1:9145/copilot_internal/user"
+        );
+        assert_eq!(
+            exchange_url(),
+            "http://127.0.0.1:9145/copilot_internal/v2/token"
+        );
+        set_github_api_base("");
+        assert_eq!(github_api_base(), DEFAULT_GITHUB_API);
+    }
 
     #[test]
     fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {

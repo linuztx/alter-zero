@@ -81,6 +81,11 @@ impl App {
         if self.view == View::Conversation && self.context_usage.is_some() {
             return self.on_key_context_usage(key);
         }
+        // …and the read-only `/usage` page, the same family. See
+        // `docs/usage-limits.md`.
+        if self.view == View::Conversation && self.usage_limits.is_some() {
+            return self.on_key_usage_limits(key);
+        }
         // …and the `/secrets` page, whose form takes text of its own — never
         // the composer's. See `docs/secrets.md`.
         if self.view == View::Conversation && self.secrets_page.is_some() {

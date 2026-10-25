@@ -255,19 +255,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage_limits`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage_limits`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_limits_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -539,7 +539,49 @@ tool-set revision moves, each text's count read from a per-page
 short terminal, ending on the compact pages' legend window under the title
 row and then that row alone, so it never flows; an overlay opened from the
 page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
-`smoke.sh` Phase 144) in `docs/context-usage.md`; the
+`smoke.sh` Phase 144) in `docs/context-usage.md`; the **`/usage` page**
+(`docs/usage-limits.md`: what each signed-in **subscription** has left —
+the `/context` page's family, read-only and composer-replacing, open idle
+or mid-turn under the strip, listing only the `/login` → **Use a
+subscription** rows that resolve a credential, in that list's order, since
+a pasted key or a local server has no plan limits to show; none signed in
+is a `No subscription signed in — use /login → Use a subscription` toast
+and nothing opens. Each section is the provider's bold name over its plan
+(`in use` at the right edge for the running model's provider, a real
+backend only), a bar per limit window — the share used and `resets in 2h
+14m · 5:12 PM`, local time off the injected UTC offset
+(`App::set_local_offset`), the bars and their columns aligned page-wide,
+amber from 75%, red from 90% or once the provider says the limit is
+reached — dim counts under each bar (`148 of 300 requests`), notes
+(credits, an unlimited quota) in the same columns, the provider's alerts in
+red; a failed refresh shows its reason under the answer it keeps.
+`llm::usage_limits` is the whole provider half: one `PlanLimits` per answer
+from each provider's own usage endpoint — ChatGPT's `wham/usage` (the
+5-hour and weekly windows Codex reads, per-model extra limits, code review,
+the spend cap and credits), Copilot's `copilot_internal/user` (premium
+requests or AI credits, chat, completions; the stored OAuth token under
+GitHub's `token` scheme rather than the exchanged bearer, the host
+`ALTER_ZERO_GITHUB_API_BASE`), ClinePass's `plan/usage-limits` beside its
+`plan` — while the Console sign-in is pay-as-you-go, billed per token with
+no plan to read, and so sends nothing; each body capped
+(`USAGE_BODY_MAX_BYTES`, 64 KiB) and read straight into typed structs
+whose lenient readers cost one odd value rather than the answer, never a
+`Value` tree; a window named by its length (`window_label`), refusals
+worded per provider (`refusal`). The fetch is `fetch_plan_limits` through
+the one `auth::request_auth` seam, one worker per subscription
+(`tui::workers::spawn_limits_fetch`) on the open, on `r` and once a minute
+while the page stays open (`USAGE_LIMITS_REFRESH_SECS`), every answer
+carrying its refresh's generation so a late answer to an earlier refresh,
+or to a page since closed, is dropped (`App::set_plan_limits`), the wall
+clock handed in before each draw and the page on a one-second frame chain.
+↑/↓ select, `r` refreshes, `c` copies the highlighted provider's usage page
+— shown under the sections as an OSC 8 `Full usage: …` link — through
+`/copy`'s clipboard path, Esc/Ctrl+C close, Ctrl+O/Ctrl+D pass through; on
+a short terminal the counts and the link go, then the other sections fold
+to one row naming their tightest window, then the title folds into one row
+with the freshness that every rung keeps, so it never flows; `smoke.sh`
+Phase 145 against a stub of all three endpoints) in
+`docs/usage-limits.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription**, **Use an
 API key** or **Use a local model** — because GitHub Copilot is not a key you
@@ -3299,7 +3341,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/diff`, `/login`, `/usage`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

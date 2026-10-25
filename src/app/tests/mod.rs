@@ -47,6 +47,7 @@ mod tools;
 mod trust_menu;
 mod turn;
 mod types;
+mod usage_limits;
 mod views;
 
 pub(super) fn key(code: KeyCode) -> KeyEvent {

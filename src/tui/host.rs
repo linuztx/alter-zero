@@ -8,7 +8,8 @@
 //! running on.
 //!
 //! - the wall clock: [`local_timestamp`] (the Ctrl+O transcript's stamp,
-//!   `docs/timestamps.md`), [`utc_stamp`] (rollout write stamps,
+//!   `docs/timestamps.md`), [`local_offset`] (the `/usage` page's reset
+//!   times, `docs/usage-limits.md`), [`utc_stamp`] (rollout write stamps,
 //!   `docs/resume.md`), [`unix_secs`] (input-history `ts`,
 //!   `docs/history-persistence.md`),
 //! - the agent's environment context: [`local_date`], [`os_context`] and
@@ -144,6 +145,19 @@ pub(crate) fn unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The local UTC offset, in seconds east, in force at Unix time `at` — what
+/// the `/usage` page says reset times in (`docs/usage-limits.md`), injected via
+/// [`App::set_local_offset`](alter_zero::app::App::set_local_offset). Asked per
+/// instant rather than once, so a reset on the far side of a DST change lands
+/// on its own hour. `0` (UTC) for an instant the zone cannot place.
+pub(crate) fn local_offset(at: i64) -> i32 {
+    use chrono::{Offset, TimeZone};
+    chrono::Local
+        .timestamp_opt(at, 0)
+        .single()
+        .map_or(0, |stamp| stamp.offset().fix().local_minus_utc())
 }
 
 /// This process's effective uid — the one its permissions are checked

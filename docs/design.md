@@ -223,8 +223,9 @@ which Ctrl+V reads the clipboard from.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, `/export`, `/diff`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/login`, `/settings`,
-  `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit`),
+  `/copy`, `/export`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/diff`, `/login`, `/usage`,
+  `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`,
+  and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
   time — the registry has outgrown the window, so a bare `/` shows the first eight,
@@ -281,7 +282,12 @@ which Ctrl+V reads the clipboard from.
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
   cache hit, kept live by the boundary — see `docs/context-usage.md`,
-  `smoke.sh` Phase 144). A `Notice` is recorded as
+  `smoke.sh` Phase 144), and `/usage` → `OpenUsageLimits` idle or
+  mid-turn (the read-only page of every signed-in subscription's usage
+  limits — a bar per window with the share used and when it resets, fetched
+  from each provider's own usage endpoint and refreshed once a minute while
+  it stays open; with no subscription signed in a toast says so — see
+  `docs/usage-limits.md`, `smoke.sh` Phase 145). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't

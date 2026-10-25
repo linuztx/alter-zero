@@ -253,6 +253,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/model` | Switch the active model |
 | `/fast`, `/ultrafast`, … | Switch the model's speed tier — one command per tier its listing names, shown only on a model that lists it |
 | `/login` | Sign in, add an API key, or connect a local model |
+| `/usage` | See what your subscriptions have left: each usage limit's share used and when it resets |
 | `/settings` | Open the settings menu |
 | `/theme` | Choose the colour theme |
 | `/mascot` | Choose the banner mascot |

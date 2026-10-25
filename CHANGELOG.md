@@ -12,6 +12,26 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/usage` shows what your subscriptions have left.** A subscription you
+  sign in to through `/login` (GitHub Copilot, ChatGPT or ClinePass) comes
+  with usage limits: a 5-hour window, a week, a month of premium requests.
+  `/usage` lists every subscription you are signed in to, each limit as a bar
+  with the share used and when it resets, in your local time (`resets in 2h
+  14m · 5:12 PM`), with the counts under it when the provider reports them
+  and any credits or included quotas beside it. A bar turns amber at 75% and
+  red at 90% or once the limit is reached, and the provider's own warnings,
+  such as an organization's Copilot budget running out, show in red. The
+  figures come from each provider's own usage endpoint. They are fetched when
+  the page opens and every minute while it stays open, `r` fetches them
+  again, and `c` copies a link to the provider's full usage page. The Console
+  sign-in is billed per token, so it has no limits to show and says so;
+  providers reached with an API key or a local server aren't listed, and with
+  no subscription signed in `/usage` says so instead of opening. The page
+  opens mid-turn too, fits a terminal of any height by folding the other
+  subscriptions to one row each, and Esc closes it (`docs/usage-limits.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

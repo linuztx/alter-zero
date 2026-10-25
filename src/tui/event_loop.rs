@@ -1,12 +1,13 @@
 //! The async event loop: a `select!` over every source that can wake the app.
 //!
-//! Eleven sources fan onto one thread — terminal input, the streamed reply,
-//! coalesced draw ticks, `@` file-search results, finished Ctrl+V clipboard
-//! reads, the `/login` sign-in worker, `/model` list fetches, the startup
-//! capability probe, background-shell events, subagent events, MCP server
-//! events and the telemetry ping's report. `select!` polls its branches in
-//! randomized order, so input and draws can't starve each other — the
-//! round-robin fairness codex builds explicitly.
+//! Fifteen sources fan onto one thread — terminal input, the streamed
+//! reply, coalesced draw ticks, `@` file-search results, finished Ctrl+V
+//! clipboard reads, the `/diff` loader, the `/login` sign-in worker, `/model`
+//! list fetches, the startup capability probe, background-shell events,
+//! subagent events, MCP server events, the telemetry ping's and the update
+//! check's reports, and the `/usage` page's fetches. `select!` polls its
+//! branches in randomized order, so input and draws can't starve each other
+//! — the round-robin fairness codex builds explicitly.
 //!
 //! Every branch is one call on the [`Session`] that owns both ends of all the
 //! channels, then [`Session::after_iteration`] for the loop-bottom bookkeeping.
@@ -28,7 +29,7 @@
 //! keyboard / resize ──► EventStream ─┐
 //! reply backend ─────► tokio mpsc ───┼─► select! ─► Session::on_* ─► schedule_frame
 //! frame scheduler ───► draw-tick ────┤
-//! file / image / model workers ──────┤
+//! file / image / model / usage workers ┤
 //! background shells + subagents ─────┘
 //!                                    └─ turn active? re-arm a frame in 32ms
 //! ```
@@ -127,6 +128,12 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 12. The update check answered: record what it found and, if
             //     newer, announce it once the session is idle (docs/update.md).
             Some(latest) = session.update_rx.recv() => session.on_update_result(&latest),
+
+            // 13. A `/usage` fetch answered for one subscription: into the
+            //     page's store (docs/usage-limits.md).
+            Some((id, generation, result)) = session.limits_rx.recv() => {
+                session.on_limits_result(&id, generation, result);
+            }
         }
         session.after_iteration();
     }

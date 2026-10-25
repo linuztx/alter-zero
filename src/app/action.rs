@@ -307,6 +307,26 @@ pub enum Action {
     /// [`App::context_usage`] is already cleared; the loop repaints the
     /// collapsed region.
     CloseContextUsage,
+    /// `/usage`: open the read-only usage page — every signed-in
+    /// subscription's limits, what is used and when it resets. Like
+    /// `/context` it works mid-turn — it only replaces the composer. The
+    /// *loop* knows which subscriptions are signed in, so it opens the page
+    /// ([`App::open_usage_limits`]) and fetches each one's limits — or, with
+    /// none signed in, raises the [`USAGE_LIMITS_EMPTY_NOTICE`] toast. See
+    /// `docs/usage-limits.md`.
+    ///
+    /// [`USAGE_LIMITS_EMPTY_NOTICE`]: crate::app::USAGE_LIMITS_EMPTY_NOTICE
+    OpenUsageLimits,
+    /// The usage page was dismissed (Esc, or Ctrl+C): [`App::usage_limits`]
+    /// is already cleared and the refresh it owed dropped; the loop cancels
+    /// the fetches still out and repaints the collapsed region.
+    CloseUsageLimits,
+    /// `r` on the usage page, with no refresh out: fetch every listed
+    /// subscription's limits again.
+    RefreshUsageLimits,
+    /// `c` on the usage page: copy the highlighted subscription's own usage
+    /// page link to the clipboard, through `/copy`'s path.
+    CopyUsageLink(String),
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

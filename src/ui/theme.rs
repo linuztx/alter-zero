@@ -1810,6 +1810,96 @@ pub(super) fn context_usage_full_color() -> Color {
     error_color()
 }
 
+// --- the read-only /usage page (docs/usage-limits.md). The /context page's
+// family: the picker accents for the selection and the dim, the pages' title
+// dress, the frame's rules — and a bar whose cells say how full a window is
+// in the accent, then the caution amber, then the error red. ---
+
+/// The page's title.
+pub(super) const USAGE_LIMITS_TITLE: &str = "Usage limits";
+
+/// The key hint, and its shape with a lone subscription — nothing to select.
+pub(super) const USAGE_LIMITS_HINT: &str = "↑↓ select  r refresh  c copy link  esc close";
+pub(super) const USAGE_LIMITS_HINT_LONE: &str = "r refresh  c copy link  esc close";
+
+/// The section body's inset past the page's own — under the section's name,
+/// two columns in.
+pub(super) const USAGE_LIMITS_BODY_INDENT: &str = "    ";
+
+/// The gap between a window row's columns.
+pub(super) const USAGE_LIMITS_GAP: &str = "  ";
+
+/// The widest a label column grows; a longer label is `…`-cut.
+pub(super) const USAGE_LIMITS_LABEL_MAX: usize = 22;
+
+/// The bar's cells — the `/context` bar's glyphs.
+pub(super) const USAGE_LIMITS_BAR_FILL: &str = "█";
+pub(super) const USAGE_LIMITS_BAR_EMPTY: &str = "░";
+
+/// The bar's bounds: never shorter than this while it fits, never longer
+/// than that however wide the terminal.
+pub(super) const USAGE_LIMITS_BAR_MIN: usize = 8;
+pub(super) const USAGE_LIMITS_BAR_MAX: usize = 32;
+
+/// The share past which a window's bar and share turn the caution amber,
+/// then the error red — the thresholds Copilot's own status menu warns at.
+pub(super) const USAGE_LIMITS_WARN_PERCENT: f64 = 75.0;
+pub(super) const USAGE_LIMITS_FULL_PERCENT: f64 = 90.0;
+
+/// The share column's suffix.
+pub(super) const USAGE_LIMITS_USED: &str = " used";
+
+/// A used-up window's reset clause opens on this, in red.
+pub(super) const USAGE_LIMITS_REACHED: &str = "limit reached";
+
+/// The separator between a reset clause's parts.
+pub(super) const USAGE_LIMITS_DOT: &str = " · ";
+
+/// What the section of the subscription the session runs on says at its
+/// right edge.
+pub(super) const USAGE_LIMITS_IN_USE: &str = "in use";
+
+/// A section whose first answer is still out.
+pub(super) const USAGE_LIMITS_LOADING: &str = "Loading…";
+
+/// A folded section's clause while loading, and after a failure.
+pub(super) const USAGE_LIMITS_LOADING_SUMMARY: &str = "loading…";
+pub(super) const USAGE_LIMITS_FAILED_SUMMARY: &str = "couldn't load";
+
+/// The subtitle's clause while a fetch is out.
+pub(super) const USAGE_LIMITS_REFRESHING: &str = "refreshing…";
+
+/// The link row's lead, before the highlighted subscription's own page.
+pub(super) const USAGE_LIMITS_LINK_PREFIX: &str = "Full usage: ";
+
+/// A window's filled cells: the accent while it has room, the caution amber
+/// past [`USAGE_LIMITS_WARN_PERCENT`], the error red past
+/// [`USAGE_LIMITS_FULL_PERCENT`] or once it is used up.
+pub(super) fn usage_limits_bar_color(used: f64, reached: bool) -> Color {
+    if reached || used >= USAGE_LIMITS_FULL_PERCENT {
+        error_color()
+    } else if used >= USAGE_LIMITS_WARN_PERCENT {
+        ask_warning_color()
+    } else {
+        model_selected_color()
+    }
+}
+
+/// A window's share text: the reply ink while it has room, then the bar's
+/// own caution and error hues.
+pub(super) fn usage_limits_share_color(used: f64, reached: bool) -> Color {
+    if reached || used >= USAGE_LIMITS_WARN_PERCENT {
+        usage_limits_bar_color(used, reached)
+    } else {
+        ai_color()
+    }
+}
+
+/// The bar's empty cells — the dim everything empty wears.
+pub(super) fn usage_limits_empty_color() -> Color {
+    tool_dim_color()
+}
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

@@ -27,6 +27,9 @@ there" and fades it after a few seconds.
 | `/copy` with no reply yet | `No agent response to copy` | info |
 | `/copy` clipboard write fails | `Copy failed: {reason}` | error |
 | `/export` with an empty conversation | `Nothing to export` | info |
+| `/usage` with no subscription signed in | `No subscription signed in — use /login → Use a subscription` | info |
+| `c` on the `/usage` page | `Copied the usage link to clipboard` | info |
+| `c` on the `/usage` page, clipboard write fails | `Copy failed: {reason}` | error |
 | `/model` switch succeeds | `Switched model to {id}` | info |
 | `/model` switch with no key | `Can't switch to {id}: run /login to set {ENV}` | error |
 | `/login` key saved | `Saved {ENV} — run /model to use {provider}` | info |

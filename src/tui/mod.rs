@@ -45,13 +45,14 @@
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
+//! | [`usage_limits`] | The `/usage` page's fetches, answers and wall clock (`docs/usage-limits.md`). |
 //! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/telemetry.md`). |
 //! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
 //! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/update.md`). |
 //! | [`herdr`] | Telling the herdr pane this session runs in what it is doing: the loop-bottom sync into the library's tracker and worker, and the failed-turn hold (`docs/herdr.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
-//! | [`workers`] | The off-thread file-search / clipboard / model-list jobs. |
+//! | [`workers`] | The off-thread file-search / clipboard / model-list / usage-limits jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
 use std::collections::HashMap;
@@ -76,7 +77,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
+use self::workers::{DeviceEvent, FileSearchResult, LimitsFetch, ModelFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -114,6 +115,7 @@ pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod update;
 pub(crate) mod update_cli;
+pub(crate) mod usage_limits;
 pub(crate) mod view;
 pub(crate) mod workers;
 
@@ -241,6 +243,12 @@ pub(crate) struct Session<'t> {
     /// this session never learned (`docs/session-model.md`).
     probe_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     probe_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    /// The `/usage` page's fetch results (`docs/usage-limits.md`): one per
+    /// listed subscription per refresh, each echoing the refresh it answers —
+    /// and the `CancelToken` closing the page (or a newer refresh) trips.
+    limits_tx: tokio::sync::mpsc::UnboundedSender<LimitsFetch>,
+    limits_rx: tokio::sync::mpsc::UnboundedReceiver<LimitsFetch>,
+    limits_cancel: Option<CancelToken>,
     /// Background shells (`docs/background.md`) and subagents
     /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
     bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,

@@ -63,6 +63,7 @@ mod tools;
 mod trust_menu;
 mod turn;
 mod types;
+mod usage_limits;
 mod views;
 
 pub use self::action::{Action, McpOp};
@@ -127,6 +128,10 @@ pub use self::turn::{
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+};
+pub use self::usage_limits::{
+    SubscriptionEntry, SubscriptionLimits, USAGE_LIMITS_EMPTY_NOTICE, USAGE_LIMITS_REFRESH_SECS,
+    UsageLimitsPage,
 };
 
 /// All mutable conversation state: the editable input line, the reply currently
@@ -537,6 +542,27 @@ pub struct App {
     /// when it opens and re-counted at the loop bottom whenever its inputs
     /// change. See `docs/context-usage.md`.
     pub context_usage: Option<ContextUsagePage>,
+    /// The open `/usage` page; `None` when closed. The `/context` page's
+    /// sibling (no text entry) over the session's store of each signed-in
+    /// subscription's limits, which the boundary fills as each fetch lands.
+    /// See `docs/usage-limits.md`.
+    pub usage_limits: Option<UsageLimitsPage>,
+    /// What each subscription listed on the `/usage` page last answered —
+    /// kept for the session, so a reopened page shows the last answer while
+    /// the next is fetched ([`App::subscription_limits`]).
+    subscription_limits: Vec<SubscriptionLimits>,
+    /// The newest `/usage` refresh: an answer echoing any other is dropped
+    /// ([`App::set_plan_limits`]).
+    usage_limits_generation: u64,
+    /// When that refresh began (Unix seconds) — the open page's minute tick
+    /// counts from it ([`App::usage_limits_refresh_due`]).
+    usage_limits_refreshed_at: Option<i64>,
+    /// The wall clock the `/usage` page draws with (Unix seconds), injected
+    /// per draw while it is open ([`App::set_usage_limits_now`]).
+    usage_limits_now: Option<i64>,
+    /// The local UTC offset at a given Unix time, injected once
+    /// ([`App::set_local_offset`]); `None` reads as UTC.
+    local_offset: Option<fn(i64) -> i32>,
     /// The tools the main session's next request offers, as the client
     /// sends them — pulled from the backend while the `/context` page is
     /// open ([`App::set_tool_definitions`]), empty for the dummy.

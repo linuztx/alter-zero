@@ -40,7 +40,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind};
+use alter_zero::app::{
+    LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, SubscriptionEntry, ToastKind,
+};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
@@ -272,6 +274,11 @@ impl ModelSession {
         }
         if let Some(base) = config::cline_api_base() {
             llm::cline::set_api_base(base);
+        }
+        // Copilot's exchange and quota read go to GitHub's API, moved the
+        // same way for the `/usage` smoke stub (`docs/usage-limits.md`).
+        if let Some(base) = config::github_api_base() {
+            llm::copilot::set_github_api_base(base);
         }
         // The persisted `/model` selection (`~/.alter-zero/config.json`), per
         // working directory (docs/per-directory-state.md): this directory's
@@ -654,6 +661,38 @@ impl ModelSession {
     /// whether it is already signed in.
     pub(crate) fn subscription_choices(&self) -> Vec<SubscriptionChoice> {
         config::subscription_choices(&self.providers, &self.env_file)
+    }
+
+    /// The signed-in subscriptions, as the `/usage` page lists them: the
+    /// `/login` subscription rows a token resolves for, in the same order,
+    /// the one the session runs on marked — only while a real model runs:
+    /// the dummy fallback still names a provider, but runs on none — each
+    /// with its provider's own usage page (`docs/usage-limits.md`).
+    pub(crate) fn subscription_entries(&self) -> Vec<SubscriptionEntry> {
+        let running = self
+            .active_provider
+            .as_deref()
+            .filter(|_| self.real_backend);
+        self.subscription_choices()
+            .into_iter()
+            .filter(|choice| choice.configured)
+            .map(|choice| SubscriptionEntry {
+                active: running == Some(choice.id.as_str()),
+                dashboard: self
+                    .subscription_auth(&choice.id)
+                    .and_then(llm::usage_limits::dashboard_url)
+                    .map(str::to_string),
+                id: choice.id,
+                name: choice.name,
+            })
+            .collect()
+    }
+
+    /// The config a `/usage` fetch authenticates with: the provider's own,
+    /// its stored token resolved the way every request resolves it. The
+    /// model is the session's — the usage endpoints take none.
+    pub(crate) fn subscription_config(&self, provider: &str) -> Option<ModelConfig> {
+        self.config_for(provider, &self.active_model, None, None, None, None)
     }
 
     /// The **local model** rows the `/login` flow shows — the servers whose

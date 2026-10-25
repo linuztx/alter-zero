@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, spawn_file_search_worker};
+use super::workers::{LimitsFetch, ModelFetch, spawn_file_search_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -78,6 +78,9 @@ impl<'t> Session<'t> {
         // sees a clock. Recorded items are stamped with the local time; the stamp
         // is shown only in the Ctrl+O transcript (see docs/timestamps.md).
         app.set_clock(host::local_timestamp);
+        // …and the local time zone the `/usage` page says reset times in, as
+        // the offset in force at a given instant (docs/usage-limits.md).
+        app.set_local_offset(host::local_offset);
         // The persistent input history (docs/history-persistence.md): load the
         // JSONL file and seed `App::input_history` before the first paint, so ↑/↓
         // recall and Ctrl+R search span past sessions. New submissions are
@@ -422,6 +425,9 @@ impl<'t> Session<'t> {
         // below): a `--resume` may replace the queued probe with its own
         // model's (docs/session-model.md).
         let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        // The `/usage` page's fetches (docs/usage-limits.md): one worker per
+        // listed subscription per refresh, reporting here.
+        let (limits_tx, limits_rx) = tokio::sync::mpsc::unbounded_channel::<LimitsFetch>();
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
@@ -517,6 +523,9 @@ impl<'t> Session<'t> {
             model_rx,
             probe_tx,
             probe_rx,
+            limits_tx,
+            limits_rx,
+            limits_cancel: None,
             bg_rx,
             agent_rx,
             mcp_rx,

@@ -889,6 +889,7 @@ pub fn cursor_visible(app: &App) -> bool {
         || app.donate_picker.is_some()
         || app.export_picker.is_some()
         || app.context_usage.is_some()
+        || app.usage_limits.is_some()
         || app.background_view.is_some()
     {
         return false;
@@ -1176,6 +1177,12 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // (docs/context-usage.md).
     if app.context_usage.is_some() {
         let lines = super::context_usage_view::context_usage_lines(app, area.width, area.height);
+        return menu_marker_seat(&lines, area);
+    }
+    // …and the read-only `/usage` page, on its highlighted section
+    // (docs/usage-limits.md).
+    if app.usage_limits.is_some() {
+        let lines = super::usage_limits_view::usage_limits_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
     // The `/secrets` page: its list seats on the highlighted `❯` like
