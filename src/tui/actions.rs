@@ -377,14 +377,17 @@ impl Session<'_> {
             .clocks
             .turn_start
             .map_or(0, |start| start.elapsed().as_secs());
-        self.abandon_inflight();
         // A thinking phase caught mid-thought settles first, so its
         // `Thought for …` cell sits ahead of everything the interrupt keeps.
         // Recording it is also what makes this a *Kept* interrupt: real work
         // streamed, and codex never retracts what streamed. With nothing
         // thought (or the display off) it is a no-op and the undo path is
-        // untouched (docs/thinking-stream.md).
+        // untouched. It runs before `abandon_inflight` too, which stops the
+        // thinking clock with the others: settled after it, the cell read
+        // `Thought for 0s` however long the model had thought
+        // (docs/thinking-stream.md).
         self.settle_reasoning();
+        self.abandon_inflight();
         // The interrupt takes a live foreground agent group down with it, and
         // a member may be the conversation on screen — the `Error` arm's rule
         // (`docs/agent-view-streaming.md`). A no-op with no agent view open,

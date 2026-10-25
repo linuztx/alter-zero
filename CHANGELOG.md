@@ -25,6 +25,12 @@ release heading when a version is cut.
   finished, the number is the provider's own and has no `≈`. A `!` command
   and an interrupted `/compact` still end without one (`docs/interrupt.md`).
 
+### Fixed
+
+- **A thought cut short by Esc keeps its duration.** Pressing Esc while the
+  model was thinking settled the thought as `Thought for 0s`, however long it
+  had been thinking. It now says how long the model actually thought.
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

@@ -90,3 +90,24 @@ printf '%s\n' "$nothink"
 expect_has "$nothink" -E "^$SUMMARY_RE" "the turn never settled with the thinking display off"
 expect_lacks "$nothink" -E "Thinking…|Thought for" "ALTER_ZERO_SHOW_THINKING=0 still showed the model's thinking"
 tmux kill-session -t "$S66B" 2>/dev/null
+
+# Esc MID-THOUGHT settles the open phase as a cell that keeps its own
+# duration (docs/thinking-stream.md). The interrupt used to stop the turn's
+# clocks first — the thinking clock with them — so the phase it then settled
+# read `Thought for 0s` however long the model had thought, right above the
+# receipt saying how long the turn ran (docs/interrupt.md). The dummy's
+# canned reasoning takes ≈1.8s, so Esc lands once the status line has
+# counted a whole second of it.
+S66C="${S}_thinkint"
+launch "$S66C" 80 24
+submit "$S66C" "$USER_MSG"
+if ! wait_for 15 "$S66C" -F "Thinking for 1s"; then
+	fail "the status line never counted a second of thinking, so the mid-thought Esc was not probed"
+fi
+keys "$S66C" Escape
+thinkint="$(wait_settled 5 "$S66C" -S -80 -- -F "Conversation interrupted")"
+echo "==== Phase 66: captured pane (Esc mid-thought) ===="
+printf '%s\n' "$thinkint"
+tmux kill-session -t "$S66C" 2>/dev/null
+expect_has "$thinkint" -F "Conversation interrupted" "Esc mid-thought did not interrupt the turn"
+expect_has "$thinkint" -E "^Thought for [1-9][0-9]*s · " "the thought settled by the Esc lost its duration (it read 'Thought for 0s' after a second of thinking)"
