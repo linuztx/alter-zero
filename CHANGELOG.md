@@ -12,6 +12,25 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/usage` shows what is left of your subscriptions.** Until now the first
+  you heard of a plan's limit was a refused turn. `/usage` opens a page with a
+  section for every subscription you are signed in to, the one in use first:
+  ChatGPT's 5-hour and weekly windows, its credits and the limit resets you
+  can redeem, GitHub Copilot's monthly allowance in premium requests or
+  credits, and ClinePass's 5-hour, weekly and monthly windows. Each limit is a
+  bar of the share used, green until it turns amber at 75% and red at 90%, with
+  the counts behind it and when it resets, both as a countdown and as a local
+  time (`resets in 1d 23h · Tue 2:36 PM`). A spent window says requests are
+  paused and what to switch to, and each section links to the provider's own
+  usage page. An Anthropic Console sign-in has no plan, so its section names
+  the organisation it bills per token. The page opens mid-turn, re-reads every
+  minute while it is open and at once with `r`, keeps the last numbers if a
+  refresh fails, and fits a short terminal by folding the other subscriptions
+  to one line each. API-key providers bill per token and are not listed
+  (`docs/usage.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

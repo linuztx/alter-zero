@@ -255,19 +255,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -540,6 +540,30 @@ short terminal, ending on the compact pages' legend window under the title
 row and then that row alone, so it never flows; an overlay opened from the
 page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
 `smoke.sh` Phase 144) in `docs/context-usage.md`; the
+**`/usage` page** (`docs/usage.md`: what is left of every **subscription**
+the app is signed in to — `/context`'s family, read-only, composer-replacing,
+working mid-turn under the strip — a section per subscription, the one in use
+first and tagged, each limit a bar of the share **used** (green, amber from
+75%, red from 90%; one bar length for the whole page, `bar_length`, so the
+column lines up), the counts behind it and when it resets as a countdown and a
+local time (`resets in 1d 23h · Tue 2:36 PM` — `App::set_usage_now` per draw
+and `App::set_local_offset` once, a `fn(i64) -> i32` so a reset across a DST
+change reads the right hour), the provider's notes and its usage page as an
+OSC 8 link; every subscription read on a worker of its own
+(`tui::workers::spawn_usage_fetch` → `llm::usage::fetch_usage`) through the
+chat request's own credential seam — ChatGPT's `wham/usage` on the backend's
+root, Copilot's `copilot_internal/user` with the stored GitHub token itself
+(`ALTER_ZERO_GITHUB_API_BASE` moves it and the token exchange), ClinePass's
+plan then `usage-limits`, a Console sign-in only minted for the organisation
+it bills — each parsed leniently, section by section, into one
+`llm::usage::UsageReport`; results keyed on **rounds** the pure core hands out
+(`App::begin_usage_round`/`finish_usage_fetch`, the counter on `App` so a
+reopened page never takes an old round's answer); re-read every minute while
+open (`App::usage_refresh_due`, the slow `USAGE_TICK_INTERVAL` frame) and on
+`r`, a failed refresh keeping the last report under an amber reason; the
+family's ladder on a short terminal, folding every section but the
+highlighted one to its fullest limit; `smoke.sh` Phase 145) in
+`docs/usage.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription**, **Use an
 API key** or **Use a local model** — because GitHub Copilot is not a key you
@@ -3299,7 +3323,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

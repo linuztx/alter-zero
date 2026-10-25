@@ -307,6 +307,15 @@ pub enum Action {
     /// [`App::context_usage`] is already cleared; the loop repaints the
     /// collapsed region.
     CloseContextUsage,
+    /// `/usage`: open the read-only usage page. The pure open shows it
+    /// checking; the loop finds the signed-in subscriptions and reads each
+    /// one off its provider (`docs/usage.md`).
+    OpenUsagePage,
+    /// `r` on the usage page: read every subscription again.
+    RefreshUsagePage,
+    /// The usage page was dismissed (Esc, or Ctrl+C): [`App::usage_page`]
+    /// is already cleared; the loop cancels the reads still in flight.
+    CloseUsagePage,
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

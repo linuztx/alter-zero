@@ -207,7 +207,12 @@ the highlighted address alone, its numbered label saying where it stands
 usage rows down to the last request, then its bar and subtitle — the title
 folding into one row with the window's fill — and the usage row before its
 legend, which then windows around the highlight on the compact pages'
-ladder with that title row as its anchor (`docs/context-usage.md`). The `AskUserQuestion` modal walks the same kind of
+ladder with that title row as its anchor (`docs/context-usage.md`), and
+`/usage`, which drops its providers' links, then folds every subscription
+but the highlighted one to its fullest limit — `/donate`'s accordion — then
+its title and subtitle, and ends on the compact pages' ladder, the
+highlighted subscription's rows windowed under one header row
+(`docs/usage.md`). The `AskUserQuestion` modal walks the same kind of
 ladder (`docs/ask.md`): its options' descriptions yield, then its rows
 window around the selection, and its chip strip of question tabs goes last,
 codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
@@ -216,7 +221,7 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
-  menus (`/mcp`, `/hooks`, `/trust`, `/donate`, `/export`, `/context`, `/secrets`) *and* the windowed pickers (`/model`,
+  menus (`/mcp`, `/hooks`, `/trust`, `/donate`, `/export`, `/context`, `/usage`, `/secrets`) *and* the windowed pickers (`/model`,
   `/login`, `/settings`, `/skills`), all of them line builders now
   (`*_view_lines` / `key_onboarding_lines`, their heights the built line
   count). Their content is **static per state**: it changes only on a user
@@ -228,6 +233,9 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
   conversation does — but only on an event, never per frame, so it signs on
   its rows like the rest; its ladder ends on its title row alone, so like
   the search-line pickers it never actually flows (`docs/context-usage.md`).
+  `/usage` is the same: its rows move with its reads and its countdowns, on
+  an event or a slow clock frame, and its ladder ends on one header row
+  (`docs/usage.md`).
 
   The search-line pickers stay eligible but never actually flow: their `❯`
   search line sits in the page **top**, where a flow would take it into

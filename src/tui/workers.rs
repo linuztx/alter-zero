@@ -18,6 +18,8 @@
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
+//! - [`spawn_usage_fetch`] — one subscription's usage, for the `/usage` page
+//!   (`docs/usage.md`).
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
 //!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
@@ -529,6 +531,26 @@ pub(crate) fn spawn_model_fetch(
         // Don't deliver a result the picker no longer wants.
         if !cancel.is_cancelled() {
             let _ = tx.send((label, result));
+        }
+    });
+}
+
+/// Read one subscription's usage on a background thread (the `/model` fetch's
+/// pattern), sending the result — tagged with the page's `round` and the
+/// provider it read — to the loop. One of these runs per signed-in
+/// subscription, so they read in parallel; a cancelled read (the page closed,
+/// a newer round began) sends nothing. See `docs/usage.md`.
+pub(crate) fn spawn_usage_fetch(
+    round: u64,
+    provider: String,
+    cfg: ModelConfig,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<super::usage::UsageResult>,
+) {
+    std::thread::spawn(move || {
+        let result = llm::usage::fetch_usage(&cfg, &cancel).map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send((round, provider, result));
         }
     });
 }

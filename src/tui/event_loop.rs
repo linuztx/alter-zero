@@ -94,6 +94,9 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             //     the sign-in's verdict (`docs/copilot.md`).
             Some(event) = session.device_rx.recv() => session.on_device_event(event),
 
+            // 5c. One subscription's `/usage` read (docs/usage.md).
+            Some(result) = session.usage_rx.recv() => session.on_usage_result(result),
+
             // 6. A finished `/model` fetch from one provider's worker thread.
             Some((label, result)) = session.model_rx.recv() => {
                 session.on_model_fetch(label, result);

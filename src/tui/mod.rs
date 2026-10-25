@@ -51,7 +51,8 @@
 //! | [`herdr`] | Telling the herdr pane this session runs in what it is doing: the loop-bottom sync into the library's tracker and worker, and the failed-turn hold (`docs/herdr.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
-//! | [`workers`] | The off-thread file-search / clipboard / model-list jobs. |
+//! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
+//! | [`workers`] | The off-thread file-search / clipboard / model-list / usage jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
 use std::collections::HashMap;
@@ -114,6 +115,7 @@ pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod update;
 pub(crate) mod update_cli;
+pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod workers;
 
@@ -236,6 +238,12 @@ pub(crate) struct Session<'t> {
     /// can't confuse the results (`docs/reasoning.md`).
     model_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     model_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    /// The `/usage` page's reads (`docs/usage.md`): one worker per signed-in
+    /// subscription reports here, and the token a closed page or a newer
+    /// round cancels them with.
+    usage_tx: tokio::sync::mpsc::UnboundedSender<usage::UsageResult>,
+    usage_rx: tokio::sync::mpsc::UnboundedReceiver<usage::UsageResult>,
+    usage_cancel: Option<CancelToken>,
     /// The probe's sender is kept because a probe is spawned more than
     /// once: at bootstrap, and by a resume whose recorded model has facts
     /// this session never learned (`docs/session-model.md`).
