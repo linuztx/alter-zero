@@ -218,7 +218,7 @@ fn an_interrupt_after_thinking_keeps_the_thought() {
     app.push_thinking("weighing the options");
     app.finish_reasoning(30);
     assert!(matches!(
-        app.interrupt_turn(),
+        app.interrupt_turn(0),
         Some(InterruptedTurn::Kept { .. })
     ));
     assert!(matches!(app.history[1], HistoryItem::Reasoning(_)));
@@ -236,7 +236,7 @@ fn an_interrupt_before_any_thinking_still_undoes_the_submission() {
     app.begin_stream();
     app.begin_reasoning();
     assert!(app.finish_reasoning(0).is_none(), "nothing streamed");
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "hello");
 }
 

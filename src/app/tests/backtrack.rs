@@ -77,7 +77,7 @@ fn interrupt_undo_stops_at_a_backtrack_rewind_boundary() {
     assert_eq!(app.input.text(), "second");
     app.record_user_message("new");
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "new");
     assert_eq!(roles(&app), vec![Role::User]);
     assert_eq!(message_at(&app, 0).text, "first");

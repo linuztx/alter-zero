@@ -2775,7 +2775,10 @@ codex's `shimmer_spans` and moving on to the next verb every 30 s; on finish a d
 the backend, drain the channel, keep the partial, resolve every tool call in
 flight as failed — a parallel batch's running call and each `⎿ Waiting…`
 sibling alike, every one keeping its red cell and its place in the next
-request — commit the red `Conversation interrupted` notice, **no** summary — but
+request — commit the red `Conversation interrupted` notice and, under it, the
+turn's **receipt** (`Worked for 8s · ≈24.3k tokens` — the summary a finished
+turn ends on, over the tally the line last showed, `≈` marking the share the
+round the Esc cut never reported; `TurnSummary::estimated`) — but
 when **nothing had streamed** (no partial, no tool, empty queue) it instead
 **undoes** the submission, the message back in the composer and no notice, and a
 **`!` shell interrupt** commits no notice either (its `⎿ Interrupted by user`
@@ -3276,7 +3279,9 @@ either `Kept` — keep the partial, resolve every call in flight as failed
 (`Interrupted by user` — the running one and each `⎿ Waiting…` sibling, all
 recorded, committed and replayed in the next request's context,
 `docs/interrupt.md`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
-turn** — its cell is the record), clear the status with no summary — **or**
+turn** — its cell is the record), clear the status and hand back the turn's
+receipt, which the boundary records under the notice once the held
+background completions settle (none for a shell or `/compact` turn) — **or**
 `Undone` when nothing had streamed and nothing is queued: the submission rolls
 back, its message returned to the composer and dropped from history (the loop
 purge-repaints, no notice; `docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc

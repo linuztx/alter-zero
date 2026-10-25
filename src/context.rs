@@ -1879,6 +1879,7 @@ mod tests {
         let history = vec![HistoryItem::Summary(TurnSummary {
             verb: "Done",
             tokens: 0,
+            estimated: 0,
             cached: 0,
             cache_write: 0,
             secs: 3,
@@ -1962,6 +1963,7 @@ mod tests {
                 vec![HistoryItem::Summary(TurnSummary {
                     verb: "Done",
                     tokens: 0,
+                    estimated: 0,
                     cached: 0,
                     cache_write: 0,
                     secs: 3,
@@ -2057,6 +2059,7 @@ mod tests {
                     HistoryItem::Summary(TurnSummary {
                         verb: "Done",
                         tokens: 0,
+                        estimated: 0,
                         cached: 0,
                         cache_write: 0,
                         secs: 3,

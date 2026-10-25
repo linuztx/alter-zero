@@ -571,7 +571,7 @@ fn every_turn_edge_drops_the_drafts() {
     app.fail_stream("boom");
     assert!(app.tool_drafts().is_empty(), "a failed turn");
     let mut app = streaming();
-    app.interrupt_turn();
+    app.interrupt_turn(0);
     assert!(app.tool_drafts().is_empty(), "an interrupted turn");
     let mut app = streaming();
     app.block_prompt("no");
@@ -590,7 +590,7 @@ fn an_esc_after_a_previewed_write_streamed_interrupts_rather_than_undoing() {
         app.push_tool_call_fragment(&piece);
     }
     assert!(matches!(
-        app.interrupt_turn(),
+        app.interrupt_turn(0),
         Some(InterruptedTurn::Kept { .. })
     ));
     assert_eq!(roles(&app).first(), Some(&Role::User), "the message stays");
@@ -599,7 +599,7 @@ fn an_esc_after_a_previewed_write_streamed_interrupts_rather_than_undoing() {
     // leaves the undo in place: nothing was shown.
     let mut app = turn();
     app.push_tool_call_fragment(&piece(0, "bash", r#"{"command":"ls"}"#));
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
 }
 
 #[test]

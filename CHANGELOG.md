@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **An interrupted turn now shows what it cost.** Pressing Esc mid-turn used
+  to leave only the red `Conversation interrupted` line, and the status
+  line's running time and token count vanished with it. The summary a
+  finished turn ends on now appears under the notice:
+  `Worked for 8s · ≈24.3k tokens`. The `≈` means part of the count is the
+  app's own estimate: a provider reports a request's usage only when the
+  request finishes, so the one you interrupted never does. With nothing
+  estimated, as when you stop a running command after the model's request
+  finished, the number is the provider's own and has no `≈`. A `!` command
+  and an interrupted `/compact` still end without one (`docs/interrupt.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

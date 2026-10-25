@@ -61,6 +61,12 @@ if ! [ "${google:-0}" -gt 0 ] || ! [ "${google:-0}" -lt "${facebook:-0}" ] ||
 	! [ "${facebook:-0}" -lt "${invalid:-0}" ] || ! [ "${invalid:-0}" -lt "${notice:-0}" ]; then
 	fail "the interrupted cells are not in batch order above the notice (google=$google facebook=$facebook x.invalid=$invalid notice=$notice)"
 fi
+# …and the turn's receipt closes it, under the notice (docs/interrupt.md).
+receipt="$(printf '%s\n' "$interrupted" | grep -nE "^$SUMMARY_RE" | head -1 | cut -d: -f1)"
+if ! [ "${receipt:-0}" -gt "${notice:-0}" ]; then
+	fail "the interrupted batch's receipt does not sit under the notice (notice=$notice receipt=$receipt)"
+fi
+expect_has "$interrupted" -E "^${SUMMARY_RE}[0-9]*s · ≈[0-9][0-9.]*k? tokens$" "the receipt does not carry the turn's estimated tally"
 
 # The context replays the whole round: three calls, three answers.
 calls=$(printf '%s\n' "$context" | grep -cF '→ bash(')
@@ -68,6 +74,7 @@ expect_eq "${calls:-0}" 3 "Ctrl+D does not carry every call of the interrupted b
 answers=$(printf '%s\n' "$context" | grep -cF "Interrupted by user")
 expect_eq "${answers:-0}" 3 "Ctrl+D does not answer every interrupted call"
 expect_has "$context" -F "[error] Conversation interrupted" "Ctrl+D lost the interrupt notice"
+expect_lacks "$context" -E "$SUMMARY_RE" "the receipt reached the model's context — a summary is chrome"
 
 # The rebuild agrees with the live commit: every cell, each exactly once — no
 # record duplicated, nothing the purge left behind.
@@ -79,6 +86,8 @@ for cmd in "ping -c 20 google.com" "ping -c 20 facebook.com" "ping -c 20 x.inval
 done
 rebuilt_notices=$(printf '%s\n' "$rebuilt" | grep -cF "Conversation interrupted")
 expect_eq "${rebuilt_notices:-0}" 1 "the rebuild does not show the notice exactly once"
+rebuilt_receipts=$(count_summaries "$rebuilt")
+expect_eq "${rebuilt_receipts:-0}" 1 "the rebuild does not show the receipt exactly once"
 
 # ---- the reported case: Esc on the batch's PERMISSION prompt ----
 # The approve seam runs before a call's ToolStart, so while the first call
@@ -114,6 +123,9 @@ for cmd in "sudo whoami" "ping -c 4 google.com"; do
 done
 perm_cells=$(printf '%s\n' "$cancelled" | grep -cF "Interrupted by user")
 expect_eq "${perm_cells:-0}" 2 "the asked-about call and its sibling each resolve to '⎿ Interrupted by user'"
+# The prompt's close purge-rebuilds from history, where the receipt now is.
+perm_receipts=$(count_summaries "$cancelled")
+expect_eq "${perm_receipts:-0}" 1 "Esc on the prompt does not leave exactly one receipt under the notice"
 expect_has "$perm_context" -F 'bash({"command":"sudo whoami"})' "Ctrl+D lost the call the prompt asked about"
 expect_has "$perm_context" -F 'bash({"command":"ping -c 4 google.com"})' "Ctrl+D lost the waiting sibling — the model would never know it asked for it"
 perm_answers=$(printf '%s\n' "$perm_context" | grep -cF "Interrupted by user")

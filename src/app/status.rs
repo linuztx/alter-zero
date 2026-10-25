@@ -162,6 +162,14 @@ pub struct TurnSummary {
     /// the backend reported none (the dummy, a `!` shell), which hides the
     /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
     pub tokens: usize,
+    /// Tokens the turn's live tally counted on top of [`tokens`](Self::tokens)
+    /// that no usage frame ever reported — the tokenizer's share. Only an
+    /// **interrupted** turn has any: a provider reports a round's usage when
+    /// the round ends, so the round the Esc cut short never does
+    /// (`docs/interrupt.md`). Folded into the receipt's total, which is then
+    /// marked `≈`; always `0` for a finished turn, whose receipt is never a
+    /// guess. Persisted with the summary.
+    pub estimated: usize,
     /// How many of those input tokens were served from the provider's prompt
     /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the
     /// visible proof caching is working. See `docs/prompt-caching.md`.

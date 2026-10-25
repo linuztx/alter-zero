@@ -293,7 +293,7 @@ fn transcript_cache_rebuilds_when_history_is_replaced_at_the_same_length() {
 
     app.begin_stream();
     assert_eq!(
-        app.interrupt_turn(),
+        app.interrupt_turn(0),
         Some(crate::app::InterruptedTurn::Undone),
         "the no-output interrupt undoes the submission"
     );

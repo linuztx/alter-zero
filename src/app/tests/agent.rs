@@ -116,7 +116,7 @@ fn interrupt_resolves_a_live_agent_group_locally() {
     app.push_chunk("spawning ");
     app.flush_streaming_segment();
     app.start_agent_group(false, &agent_specs(false));
-    let Some(InterruptedTurn::Kept { agents, notice, .. }) = app.interrupt_turn() else {
+    let Some(InterruptedTurn::Kept { agents, notice, .. }) = app.interrupt_turn(0) else {
         panic!("a live group forces the keep path");
     };
     let group = agents.expect("the group resolved with the turn");
@@ -138,7 +138,7 @@ fn a_live_agent_group_blocks_the_interrupt_undo() {
     // Nothing streamed, but a group is live: undo would orphan it.
     app.start_agent_group(false, &agent_specs(false));
     assert!(matches!(
-        app.interrupt_turn(),
+        app.interrupt_turn(0),
         Some(InterruptedTurn::Kept { .. })
     ));
 }

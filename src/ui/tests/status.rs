@@ -67,6 +67,7 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
             timestamp: STAMP.to_string(),
             shells: 0,
             tokens: 0,
+            estimated: 0,
             cached: 0,
             cache_write: 0,
         }),
@@ -190,6 +191,7 @@ fn summary_humanizes_a_long_turn() {
         timestamp: String::new(),
         shells: 0,
         tokens: 0,
+        estimated: 0,
         cached: 0,
         cache_write: 0,
     };
@@ -240,6 +242,7 @@ fn summary_lines_append_the_real_token_usage() {
         timestamp: String::new(),
         shells: 0,
         tokens: 8_203,
+        estimated: 0,
         cached: 8_063,
         cache_write: 0,
     };
@@ -273,6 +276,43 @@ fn summary_lines_append_the_real_token_usage() {
         plain(&summary_lines(&summary, 80)[0]),
         "Done for 12s",
         "a usage-less turn (the dummy) keeps the bare summary"
+    );
+}
+
+#[test]
+fn summary_lines_mark_an_estimated_share_with_approx() {
+    // An interrupted turn's receipt (docs/interrupt.md): the round the Esc cut
+    // never reported its usage, so its share is the tokenizer's count. The
+    // line shows one total, marked the way the /context page marks a count it
+    // made itself, so a bare number on a receipt is always the provider's.
+    let mut summary = TurnSummary {
+        verb: "Worked",
+        secs: 8,
+        timestamp: String::new(),
+        shells: 0,
+        tokens: 20_000,
+        estimated: 4_300,
+        cached: 8_000,
+        cache_write: 0,
+    };
+    assert_eq!(
+        plain(&summary_lines(&summary, 80)[0]),
+        "Worked for 8s · ≈24.3k tokens (8k cached)",
+        "the frames' tokens and the cut round's estimate, one marked total"
+    );
+    summary.tokens = 0;
+    summary.cached = 0;
+    assert_eq!(
+        plain(&summary_lines(&summary, 80)[0]),
+        "Worked for 8s · ≈4.3k tokens",
+        "nothing reported (the offline demo): all of it estimated"
+    );
+    summary.tokens = 24_300;
+    summary.estimated = 0;
+    assert_eq!(
+        plain(&summary_lines(&summary, 80)[0]),
+        "Worked for 8s · 24.3k tokens",
+        "nothing estimated reads bare"
     );
 }
 
@@ -588,6 +628,7 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
         timestamp: String::new(),
         shells: 0,
         tokens: 0,
+        estimated: 0,
         cached: 0,
         cache_write: 0,
     };
@@ -608,6 +649,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
             timestamp: String::new(),
             shells: 0,
             tokens: 0,
+            estimated: 0,
             cached: 0,
             cache_write: 0,
         }),
@@ -695,6 +737,7 @@ fn summary_lines_append_the_still_running_shell_count() {
         timestamp: String::new(),
         shells: 3,
         tokens: 0,
+        estimated: 0,
         cached: 0,
         cache_write: 0,
     };
@@ -842,6 +885,7 @@ fn the_turn_summary_wraps_to_the_width() {
         timestamp: String::new(),
         shells: 2,
         tokens: 1_500_000,
+        estimated: 0,
         cached: 1_200_000,
         cache_write: 0,
     };

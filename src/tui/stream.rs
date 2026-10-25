@@ -550,11 +550,7 @@ impl Session<'_> {
         // (invariant 4), so the notice sits above the summary either way.
         self.settle_bg_completions();
         if let Some(summary) = summary {
-            self.app.record_turn_summary(summary.clone());
-            if committing {
-                self.term.insert_before(ui::summary_lines(&summary, width));
-                self.term.insert_before(vec![Line::default()]); // blank spacer
-            }
+            self.commit_turn_summary(summary);
         }
         self.render.reset();
         self.clocks.end_turn();

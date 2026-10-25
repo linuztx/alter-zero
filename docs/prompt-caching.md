@@ -36,6 +36,7 @@ provider, by `tests/live_caching.rs` (the table at the end).
 | --- | --- |
 | the status line's `↓ N tokens` **between** usage frames | the app-side `o200k_base` estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — exact for OpenAI models, close for the rest |
 | the tally **at every round boundary**, the `Done … · N tokens` receipt, its `(N cached · N written)` | the provider's own usage frame — never estimated; a provider that reports none (the dummy, a shim that drops usage) leaves the receipt bare rather than guessing |
+| an **interrupted** turn's receipt, `Worked for 8s · ≈24.3k tokens` | the tally the status line showed as Esc landed: the frames of the rounds that finished, plus the estimate for the round the Esc cut short, which never sends its frame — the total marked `≈` whenever that estimate is in it, the cache halves still the frames' own (`docs/interrupt.md`) |
 | the footer's context gauge after a round | real: the last round's `input + output` |
 | the gauge after a history mutation (`/clear`, backtrack, `/resume`, compaction) or with no frame yet | the tokenizer estimate of the derived context, until the next frame |
 | the `Thought for … · N tokens` cell | snapped to the provider's `reasoning_tokens` when the frame carries one (OpenAI, OpenRouter, the Responses wire); the estimate where none does (Anthropic folds thinking into `output_tokens`, Ollama reports none) |

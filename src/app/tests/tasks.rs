@@ -79,7 +79,7 @@ fn a_turn_with_a_task_call_interrupts_kept_not_undone() {
     app.record_user_message("plan it");
     app.begin_stream();
     record(&mut app, true, &store_of(&["a"]));
-    let interrupted = app.interrupt_turn().expect("a live turn was interrupted");
+    let interrupted = app.interrupt_turn(0).expect("a live turn was interrupted");
     assert!(
         matches!(interrupted, InterruptedTurn::Kept { .. }),
         "a task record is output — never the undo: {interrupted:?}"

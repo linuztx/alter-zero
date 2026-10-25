@@ -80,8 +80,9 @@ pub const SHELL_VERB: &str = "Running";
 
 /// The notice committed when the user interrupts a turn (Esc mid-generation) —
 /// codex's wording, minus its `/feedback` plug. Recorded as a [`Role::Error`]
-/// message: like a backend failure, the notice is the turn's terminal state
-/// (no `Done for Ns` summary). See `docs/interrupt.md`.
+/// message: like a backend failure, the notice is the turn's terminal state,
+/// with the turn's receipt (`Worked for 8s · ≈24.3k tokens`) committed under
+/// it. See `docs/interrupt.md`.
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
 
@@ -369,6 +370,7 @@ impl App {
             // The turn's real billed usage (`apply_usage`) — 0 (hidden) when
             // the backend reported none. See docs/prompt-caching.md.
             tokens: self.turn_usage_tokens,
+            estimated: 0,
             cached: self.turn_usage_cached,
             cache_write: self.turn_usage_cache_write,
         })
@@ -430,8 +432,9 @@ impl App {
         })
     }
 
-    /// End the in-progress turn because the user interrupted it (Esc). Returns
-    /// the [`InterruptedTurn`] telling the loop how to settle the screen, or
+    /// End the in-progress turn because the user interrupted it (Esc), which
+    /// had run `elapsed_secs` by the boundary's clock. Returns the
+    /// [`InterruptedTurn`] telling the loop how to settle the screen, or
     /// `None` if no turn was in flight. Two outcomes (see `docs/interrupt.md`):
     ///
     /// - **No output yet** — nothing streamed (no non-empty partial reply, no
@@ -452,13 +455,14 @@ impl App {
     ///   started is still one the model made (`docs/interrupt.md`) — and
     ///   record the [`INTERRUPT_NOTICE`] as a [`Role::Error`] message —
     ///   **except for a `!` shell turn**, whose `⎿ Interrupted by user` cell
-    ///   already says it, so no redundant notice is committed. The live
-    ///   status clears **without** a `Done for Ns` summary (like
-    ///   [`App::fail_stream`], the notice — or the shell cell — is the turn's
-    ///   terminal state). History gains them in that order: the partial, the
-    ///   calls in the model's order, the interrupted agent group, the notice.
-    ///
-    pub fn interrupt_turn(&mut self) -> Option<InterruptedTurn> {
+    ///   already says it, so no redundant notice is committed. History gains
+    ///   them in that order: the partial, the calls in the model's order, the
+    ///   interrupted agent group, the notice. The live status clears after
+    ///   handing over the turn's **receipt** — `Worked for 8s · ≈24.3k
+    ///   tokens`, the summary a finished turn ends on, over the tally the line
+    ///   was showing — which the boundary records under the notice
+    ///   ([`InterruptedTurn::Kept`]).
+    pub fn interrupt_turn(&mut self, elapsed_secs: u64) -> Option<InterruptedTurn> {
         if !self.is_streaming() && !self.turn_active() {
             return None;
         }
@@ -549,6 +553,10 @@ impl App {
             return Some(InterruptedTurn::Undone);
         }
 
+        // The receipt reads the live status before anything below charges the
+        // tally: the `Interrupted by user` answers the calls resolve with are
+        // the next request's upload, not this turn's (docs/interrupt.md).
+        let summary = self.interrupted_turn_summary(elapsed_secs, compacting);
         // Keep what streamed, in stream order: the partial (Assistant) before
         // the calls the interrupt resolves (a ToolStart flushes the buffer, so
         // the two are never both non-empty — but the order holds regardless).
@@ -580,6 +588,33 @@ impl App {
             tools,
             notice,
             agents,
+            summary,
+        })
+    }
+
+    /// The receipt an interrupted turn keeps under its notice — the summary a
+    /// finished turn ends on ([`take_turn_summary`](App::take_turn_summary)),
+    /// over the tally the status line shows as the Esc lands. The usage
+    /// frames' share stays [`TurnSummary::tokens`]; the rest, the round the
+    /// Esc cut short, never reports, so it is the tokenizer's count,
+    /// [`TurnSummary::estimated`]. `None` for a `!` shell or a `/compact`
+    /// turn, whose cells are their own records. Built, never recorded: the
+    /// boundary records it once the completions held during the turn have
+    /// settled above it (`docs/interrupt.md`).
+    fn interrupted_turn_summary(&self, elapsed_secs: u64, compacting: bool) -> Option<TurnSummary> {
+        let status = self.status.as_ref()?;
+        if status.shell || compacting {
+            return None;
+        }
+        Some(TurnSummary {
+            verb: status.done_verb,
+            secs: elapsed_secs,
+            timestamp: self.now_stamp(),
+            shells: self.background.len(),
+            tokens: self.turn_usage_tokens,
+            estimated: status.tokens.saturating_sub(self.turn_usage_tokens),
+            cached: self.turn_usage_cached,
+            cache_write: self.turn_usage_cache_write,
         })
     }
 
@@ -730,8 +765,8 @@ pub enum InterruptedTurn {
     Undone,
     /// Some output had streamed — a partial reply and/or tool calls — so it
     /// is **kept** in the transcript (codex never retracts what streamed).
-    /// All of it is also recorded in [`App::history`] so a later resize
-    /// repaints it.
+    /// All of it but the receipt is also recorded in [`App::history`] so a
+    /// later resize repaints it; the boundary records the receipt itself.
     Kept {
         /// The reply text streamed before the interrupt, if any non-empty text
         /// arrived since the last flush.
@@ -754,5 +789,15 @@ pub enum InterruptedTurn {
         /// group's subagents via the registry. `None` when no group was live.
         /// See `docs/agent-tool.md`.
         agents: Option<AgentGroup>,
+        /// The turn's receipt, to commit under the notice: the summary a
+        /// finished turn ends on, its tokens the tally the line was showing
+        /// (`≈`-marked for the share no usage frame reported). **Built, not
+        /// recorded** — [`App::take_turn_summary`]'s split: the boundary
+        /// settles the background completions held during the turn first, so
+        /// they land above the receipt as they do above a finished turn's,
+        /// then records it with [`App::record_turn_summary`]. `None` for a
+        /// `!` shell or a `/compact` turn, whose cells are their own records
+        /// (`docs/interrupt.md`).
+        summary: Option<TurnSummary>,
     },
 }

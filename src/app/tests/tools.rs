@@ -794,7 +794,7 @@ fn an_interrupted_round_replays_every_call_the_model_made() {
         summary("Bash", "ls -la"),
     ]);
     app.start_tool("Bash", "ping google.com -c 10", Some(ping));
-    app.interrupt_turn().expect("a turn was active");
+    app.interrupt_turn(0).expect("a turn was active");
 
     use crate::context::{ContextMessage, ContextRole, ContextToolCall};
     assert_eq!(
