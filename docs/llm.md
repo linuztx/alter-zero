@@ -91,10 +91,15 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
 - **`retry_backoff`** — exponential from 500 ms, doubling each retry and capped at
   8 s, so the three retries wait **500 ms → 1 s → 2 s**. Interruptible
   (`sleep_cancellable`), so an Esc/quit during a backoff still reaps within ~50 ms.
-- **`next_step`** — retry only a retryable failure that **emitted no content yet**
-  (`emitted == false`) and still has budget (`attempt < max`). This is the
-  correctness gate: once any byte has streamed, restarting the request would
-  **duplicate** it, so a mid-stream drop is surfaced rather than retried.
+- **`next_step`** — retry a retryable failure that **emitted no content yet**
+  (`emitted == false`) while budget remains (`attempt < max`), and a
+  **transport** failure (`LlmError::Http`) that did — a connection lost
+  mid-reply. Restarting a request after bytes have streamed would
+  **duplicate** them, so that retry is announced as a voiding one: every
+  consumer of `StreamEvent::Retrying` withdraws what the failed attempt
+  streamed before the next attempt's first byte (`docs/offline.md` *A
+  connection lost mid-reply*). Anything else that fails mid-reply — an
+  in-band error frame, a decode failure — is surfaced rather than retried.
 - **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
   streaming attempt in: it announces each retry as a
   [`StreamEvent::Retrying { attempt, max }`](../src/stream/event.rs), backs off, and
@@ -102,10 +107,11 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
   on a cancel). It is generic over the attempt and the sleep, so the whole loop is
   unit-tested with fakes and **no network**.
 
-The loop turns `Retrying` into `App::set_retry`, which sets `TurnStatus::retry`;
-the next streamed `Chunk`/`ThinkingChunk` clears it (the request recovered). The
-turn stays alive throughout — nothing commits to scrollback during the retries,
-so a resize/Ctrl+O repaint is unaffected.
+The loop turns `Retrying` into `App::withdraw_attempt` — taking back whatever the
+failed attempt streamed, and purge-rebuilding any of it that had reached
+scrollback — and `App::set_retry`, which sets `TurnStatus::retry`; the next
+streamed `Chunk`/`ThinkingChunk` clears it (the request recovered). The turn
+stays alive throughout.
 
 **A connection that cannot be made at all takes a different policy**
 (`docs/offline.md`). A failed send is classified at the one seam that still

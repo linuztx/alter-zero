@@ -10,6 +10,7 @@ use super::*;
 
 mod cancel;
 mod dummy;
+mod event;
 mod gated;
 mod scenario;
 mod script;

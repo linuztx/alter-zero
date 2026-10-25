@@ -351,6 +351,12 @@ pub struct AgentRun {
     /// `reasoning_tokens` (`app::reasoning::snap_reasoning_tokens`). Cleared by
     /// each frame — one frame ends one round.
     round_reasoning: Vec<usize>,
+    /// Where the reply attempt now streaming began on
+    /// [`history`](Self::history) — the mark a [`StreamEvent::Retrying`]
+    /// withdraws back to, taken at the attempt's first piece of output since
+    /// an event of any other kind (`App::track_attempt`'s rule, over this
+    /// transcript; `docs/offline.md` *A connection lost mid-reply*).
+    attempt_floor: Option<usize>,
     /// How long the open thinking phase has run — boundary-injected each
     /// frame from `Session::agent_thinking_clocks`, the
     /// [`runtime`](Self::runtime) pattern — so the session view's status line
@@ -451,6 +457,7 @@ impl AgentRun {
             paragraph: ParagraphStart::default(),
             reasoning: None,
             round_reasoning: Vec::new(),
+            attempt_floor: None,
             thinking: None,
             command_elapsed: None,
             retry: None,
@@ -535,6 +542,14 @@ impl AgentRun {
         }
         if self.status == AgentStatus::Pending && !matches!(event, StreamEvent::StreamDone) {
             self.status = AgentStatus::Running;
+        }
+        // Where the attempt now streaming began (`App::track_attempt`'s rule):
+        // marked at its first piece of output, closed by any other event —
+        // a `Retrying` leaves it for the withdrawal below.
+        if event.is_attempt_output() {
+            self.attempt_floor.get_or_insert(self.history.len());
+        } else if !matches!(event, StreamEvent::Retrying { .. }) {
+            self.attempt_floor = None;
         }
         match event {
             StreamEvent::Chunk(chunk) => {
@@ -925,11 +940,14 @@ impl AgentRun {
             // agent's own state changes while it waits. An ask request would
             // be too (docs/ask.md) — unreachable, since subagents never get
             // the tool.
-            // This agent's request failed before any content streamed and is
-            // being retried: its session view's status line says so, exactly
-            // like the main turn's (`docs/llm.md`). Nothing commits — the run
-            // is still in flight.
+            // This agent's request failed and is being retried: its session
+            // view's status line says so, exactly like the main turn's
+            // (`docs/llm.md`). The failed attempt is void — whatever it
+            // streamed is withdrawn before the next one's first byte, so a
+            // reply restarted after its connection dropped is never shown
+            // twice (`docs/offline.md` *A connection lost mid-reply*).
             StreamEvent::Retrying { attempt, max } => {
+                let _ = self.withdraw_attempt();
                 // The host answered (badly): any outage is over.
                 self.recovered();
                 self.retry = Some(crate::app::RetryInfo {
@@ -1105,6 +1123,52 @@ impl AgentRun {
     fn recovered(&mut self) {
         self.retry = None;
         self.offline = None;
+    }
+
+    /// The failed reply attempt is void: take back what it streamed — the
+    /// main session's [`App::withdraw_attempt`](crate::app::App::withdraw_attempt)
+    /// over this agent's transcript and strip (`docs/offline.md` *A
+    /// connection lost mid-reply*). The reply text and where its newest
+    /// paragraph starts (the activity row reads the buffer at those offsets),
+    /// an open thought and its injected clock, the calls being generated, and
+    /// the transcript items recorded since the attempt's mark — only reply
+    /// text and thoughts, never an item of any other kind. A withdrawn run of
+    /// text takes the `Agent: …` update it set with it. What
+    /// [`apply`](Self::apply) does at a [`StreamEvent::Retrying`]; the session
+    /// view runs it first to learn what went (`tui::agent`), and the fold's
+    /// own call then finds nothing.
+    pub fn withdraw_attempt(&mut self) -> crate::app::Withdrawn {
+        let live = self
+            .streaming
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+            || self.reasoning.is_some()
+            || self.drafts.previews().next().is_some();
+        self.streaming = None;
+        self.paragraph = ParagraphStart::default();
+        self.reasoning = None;
+        self.thinking = None;
+        self.drafts.clear();
+        let mut records = 0;
+        if let Some(floor) = self.attempt_floor.take() {
+            while self.history.len() > floor
+                && let Some(item) = self.history.last()
+            {
+                match item {
+                    HistoryItem::Reasoning(_) => {}
+                    HistoryItem::Message(message) if message.role == Role::Assistant => {
+                        // The update it set quoted text that is gone now.
+                        self.last_update = None;
+                    }
+                    _ => break,
+                }
+                self.history.pop();
+                records += 1;
+            }
+        }
+        let len = self.history.len();
+        self.round_reasoning.retain(|&index| index < len);
+        crate::app::Withdrawn { records, live }
     }
 
     /// The status verb its session view's line wears now — the synthesized
@@ -1522,6 +1586,10 @@ impl RunRecorder {
                 self.said();
                 self.registry.announce_read(&self.id);
             }
+            // The attempt that streamed it is void and its request is being
+            // sent again (docs/offline.md *A connection lost mid-reply*): the
+            // text is neither the answer nor something said on the way.
+            StreamEvent::Retrying { .. } => self.text.clear(),
             _ => {}
         }
     }
@@ -4886,6 +4954,73 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_withdraws_what_the_agents_failed_attempt_streamed() {
+        // Main parity (docs/offline.md *A connection lost mid-reply*): the
+        // agent's connection died under its reply, and the restart takes the
+        // partial back off its transcript and strip — the text a thinking
+        // phase finalised and the thought it settled included — so the reply
+        // that gets through is the only one its session view shows.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("First, "));
+        // The boundary's half of a shown phase: opened (the text before it
+        // finalised), then settled into a cell.
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingStart);
+        run.apply(&StreamEvent::ThinkingChunk("weighing".into()));
+        assert!(run.finish_reasoning(2).is_some());
+        run.apply(&StreamEvent::ThinkingEnd);
+        run.apply(&chunk("so the\n\nparser"));
+        assert_eq!(
+            run.history.len(),
+            3,
+            "the prompt, the finalised text, the thought"
+        );
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        assert_eq!(run.history.len(), 1, "the prompt alone: {:?}", run.history);
+        assert!(
+            run.streaming.as_deref().is_none_or(str::is_empty),
+            "the partial reply went with it"
+        );
+        assert_eq!(
+            run.retry,
+            Some(crate::app::RetryInfo { attempt: 1, max: 3 })
+        );
+        assert_eq!(
+            run.activity(),
+            "Working…",
+            "the roster row no longer quotes what was withdrawn"
+        );
+        run.apply(&chunk("The whole reply."));
+        assert_eq!(run.streaming.as_deref(), Some("The whole reply."));
+        assert_eq!(
+            run.activity(),
+            format!("{AGENT_UPDATE_LABEL}: The whole reply."),
+            "the row reads the new attempt from its start"
+        );
+    }
+
+    #[test]
+    fn a_retry_drops_the_agents_open_thought_and_half_made_call() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingStart);
+        run.apply(&StreamEvent::ThinkingChunk("weighing".into()));
+        run.set_thinking(Some(Duration::from_secs(3)));
+        run.apply(&StreamEvent::ToolCallDelta(
+            crate::stream::ToolCallFragment {
+                index: 0,
+                name: "write".into(),
+                arguments: r##"{"path": "notes.md", "content": "# No"##.into(),
+            },
+        ));
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        assert_eq!(run.reasoning(), None, "dropped, never settled");
+        assert_eq!(run.thinking, None, "its `Thinking for Ns` clause goes too");
+        assert!(run.drafts().is_empty(), "the half-made call goes too");
+        assert_eq!(run.history.len(), 1, "nothing was recorded for it");
+    }
+
+    #[test]
     fn an_agent_waiting_for_the_connection_says_so_until_content_arrives() {
         // Main parity (`docs/offline.md`): the wait begins at the runtime the
         // first announcement lands on, later announcements move the count
@@ -6280,6 +6415,25 @@ mod tests {
             "It has 42 repos.",
             "the run of text nothing followed is the answer, whole"
         );
+    }
+
+    #[test]
+    fn a_restarted_reply_hands_the_lead_only_the_attempt_that_got_through() {
+        // docs/offline.md *A connection lost mid-reply*: the forwarder had
+        // been collecting the failed attempt's text as the agent's answer.
+        // The retry voids it — neither glued to the reply that replaces it
+        // nor kept as something the agent said on the way.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        recorder.observe(&chunk("It has 4"));
+        recorder.observe(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        recorder.observe(&chunk("It has 42 repos."));
+        assert!(
+            registry.snapshot(&id).unwrap().updates.is_empty(),
+            "the withdrawn text was never said on the way"
+        );
+        assert_eq!(recorder.into_answer(), "It has 42 repos.");
     }
 
     /// A call's start, as the forwarder relays it.

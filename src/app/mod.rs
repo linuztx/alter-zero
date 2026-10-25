@@ -121,8 +121,8 @@ pub use self::tools::{
 };
 pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
-    INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS, StatusVerb, StreamError,
-    VERB_ROTATION, format_elapsed, format_timeout,
+    CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,
+    StatusVerb, StreamError, VERB_ROTATION, Withdrawn, format_elapsed, format_timeout,
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
@@ -238,6 +238,18 @@ pub struct App {
     /// without. Cleared by every [`apply_usage`](App::apply_usage) (one frame
     /// ends one round) and by every turn start.
     round_reasoning: Vec<usize>,
+    /// Where the reply attempt now streaming began: the [`history`](Self::history)
+    /// length at its first piece of output — the mark a
+    /// [`StreamEvent::Retrying`] withdraws back to
+    /// ([`withdraw_attempt`](App::withdraw_attempt), `docs/offline.md` *A
+    /// connection lost mid-reply*). Set by [`track_attempt`](App::track_attempt)
+    /// at the first piece of [attempt output] since an event of any other kind,
+    /// and closed by the next such event — every round boundary is one, so a
+    /// mark never reaches back into an earlier round.
+    ///
+    /// [`StreamEvent::Retrying`]: crate::stream::StreamEvent::Retrying
+    /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
+    attempt_floor: Option<usize>,
     /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
     /// crossed the threshold) vs the manual command — recorded onto the marker
     /// so its cell can say `· auto`. Meaningful only while

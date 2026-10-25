@@ -115,7 +115,12 @@ inline — the text since the agent last did anything else, the call record at
 each `ToolStart`, and now the update at each point that ends a run of text
 before more work — so the rule is unit-tested rather than living in a
 thread body. The forwarder keeps only the outcome and the held terminal event
-(`docs/agent-tools.md` *One notice per answer*).
+(`docs/agent-tools.md` *One notice per answer*). A `StreamEvent::Retrying`
+drops the text gathered so far: the attempt that streamed it is void, its
+request being sent again after the connection was lost under the reply, so
+the text is neither the answer — which would hand the lead the partial glued
+to the reply that replaced it — nor an update (`docs/offline.md` *A
+connection lost mid-reply*).
 
 ## The report
 

@@ -2,7 +2,7 @@
 //! committed summary (`docs/status-indicator.md`, `docs/interrupt.md`).
 
 use super::*;
-use crate::stream::ToolCallSummary;
+use crate::stream::{StreamEvent, TokenUsage, ToolCallFragment, ToolCallSummary};
 
 #[test]
 fn ctrl_c_clears_the_draft_even_mid_stream() {
@@ -1539,6 +1539,329 @@ fn a_lost_connection_and_a_bounded_retry_never_show_together() {
     assert_eq!(
         app.status().unwrap().retry,
         Some(RetryInfo { attempt: 1, max: 3 })
+    );
+}
+
+// ===== a connection lost mid-reply (docs/offline.md) =====
+
+/// Fold one reply event the way the boundary does (`tui::stream`) for the
+/// events these tests stream: noted by [`App::track_attempt`] first, then
+/// applied — with the thinking display on, so a phase opens and settles.
+fn stream_event(app: &mut App, event: StreamEvent) {
+    app.track_attempt(&event);
+    match event {
+        StreamEvent::Chunk(text) => app.push_chunk(&text),
+        StreamEvent::ThinkingStart => {
+            app.flush_streaming_segment();
+            app.begin_reasoning();
+        }
+        StreamEvent::ThinkingChunk(text) => app.push_thinking(&text),
+        StreamEvent::ThinkingEnd => {
+            app.flush_streaming_segment();
+            app.finish_reasoning(2);
+        }
+        StreamEvent::ToolCallDelta(piece) => {
+            if app.push_tool_call_fragment(&piece) {
+                app.flush_streaming_segment();
+            }
+        }
+        StreamEvent::Usage(usage) => app.apply_usage(&usage),
+        StreamEvent::ToolBatch(items) => {
+            app.flush_streaming_segment();
+            app.start_tool_batch(&items);
+        }
+        StreamEvent::ToolStart {
+            name,
+            args,
+            arguments,
+            ..
+        } => {
+            app.flush_streaming_segment();
+            app.start_tool(&name, &args, arguments.as_deref());
+        }
+        StreamEvent::ToolEnd { output, ok, .. } => {
+            app.end_tool(&output, ok);
+        }
+        other => panic!("these tests do not stream {other:?}"),
+    }
+}
+
+/// A turn on the user's message, its first request streaming.
+fn streaming_turn() -> App {
+    let mut app = App::new();
+    app.record_user_message("explain the parser");
+    app.begin_stream();
+    app
+}
+
+/// The history, one line per item — what a withdrawal may and may not take.
+fn history_lines(app: &App) -> Vec<String> {
+    app.history
+        .iter()
+        .map(|item| match item {
+            HistoryItem::Message(message) => format!("{:?}: {}", message.role, message.text),
+            HistoryItem::Reasoning(thought) => format!("thought: {}", thought.text),
+            HistoryItem::Tool(call) => format!("tool: {}", call.name),
+            _ => "other".to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_retry_withdraws_the_reply_the_failed_attempt_streamed() {
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::Chunk("Half a rep".into()));
+    assert_eq!(
+        app.withdraw_attempt(),
+        Withdrawn {
+            records: 0,
+            live: true
+        }
+    );
+    assert_eq!(
+        app.streaming_text(),
+        Some(""),
+        "the stream stays open for the attempt that follows"
+    );
+    assert_eq!(history_lines(&app), ["User: explain the parser"]);
+    // The next attempt streams onto a clean buffer: nothing to duplicate.
+    stream_event(&mut app, StreamEvent::Chunk("The whole reply.".into()));
+    assert_eq!(app.streaming_text(), Some("The whole reply."));
+}
+
+#[test]
+fn a_retry_takes_back_what_the_failed_attempt_recorded() {
+    // Text a thinking phase finalised and the thought it settled are history
+    // the attempt wrote: withdrawn with it, so the reply that replaces them is
+    // the only one a later turn's context replays.
+    let mut app = streaming_turn();
+    let generation = app.history_generation();
+    stream_event(&mut app, StreamEvent::Chunk("First, ".into()));
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("weighing it".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    stream_event(&mut app, StreamEvent::Chunk("so the".into()));
+    assert_eq!(
+        history_lines(&app),
+        [
+            "User: explain the parser",
+            "Assistant: First, ",
+            "thought: weighing it"
+        ]
+    );
+    assert_eq!(
+        app.withdraw_attempt(),
+        Withdrawn {
+            records: 2,
+            live: true
+        }
+    );
+    assert_eq!(history_lines(&app), ["User: explain the parser"]);
+    assert_eq!(app.streaming_text(), Some(""));
+    assert!(
+        app.history_generation() > generation,
+        "a non-append mutation: the Ctrl+O cache and the rollout rewrite must see it"
+    );
+}
+
+#[test]
+fn a_retry_drops_an_open_thought_and_a_call_being_generated() {
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("weighing".into()));
+    assert!(app.withdraw_attempt().live);
+    assert_eq!(app.reasoning(), None, "dropped, never settled into a cell");
+    assert_eq!(history_lines(&app), ["User: explain the parser"]);
+
+    let arguments = r##"{"path": "notes.md", "content": "# Notes\n"}"##;
+    let (head, tail) = arguments.split_at(arguments.len() / 2);
+    for (name, piece) in [("write", head), ("", tail)] {
+        stream_event(
+            &mut app,
+            StreamEvent::ToolCallDelta(ToolCallFragment {
+                index: 0,
+                name: name.into(),
+                arguments: piece.into(),
+            }),
+        );
+    }
+    assert!(
+        app.tool_drafts().previews().next().is_some(),
+        "the write previews"
+    );
+    assert!(app.withdraw_attempt().live);
+    assert!(
+        app.tool_drafts().is_empty(),
+        "the half-made call goes with the attempt"
+    );
+}
+
+#[test]
+fn a_retry_never_reaches_back_into_an_earlier_round() {
+    // Round one said something, called a tool and got its result; the
+    // second round's request then lost its connection. Only the second
+    // round's reply is withdrawn.
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::Chunk("Let me look.".into()));
+    stream_event(
+        &mut app,
+        StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Bash".into(),
+            args: "ls".into(),
+        }]),
+    );
+    stream_event(
+        &mut app,
+        StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    stream_event(
+        &mut app,
+        StreamEvent::ToolEnd {
+            output: "src\n".into(),
+            ok: true,
+            truncated: false,
+        },
+    );
+    stream_event(&mut app, StreamEvent::Chunk("The tree has".into()));
+    assert_eq!(
+        app.withdraw_attempt(),
+        Withdrawn {
+            records: 0,
+            live: true
+        }
+    );
+    assert_eq!(
+        history_lines(&app),
+        [
+            "User: explain the parser",
+            "Assistant: Let me look.",
+            "tool: Bash"
+        ]
+    );
+}
+
+#[test]
+fn a_round_boundary_closes_the_mark_even_when_it_records_nothing() {
+    // A round that thought and said something, then ended on its usage
+    // frame: the frame is the end of that request. An attempt streaming after
+    // it is a new one, and its withdrawal leaves the finished round's text
+    // and thought where they are.
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::Chunk("Part one.".into()));
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("weighing".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    stream_event(&mut app, StreamEvent::Usage(TokenUsage::default()));
+    stream_event(&mut app, StreamEvent::Chunk("Half".into()));
+    assert_eq!(
+        app.withdraw_attempt(),
+        Withdrawn {
+            records: 0,
+            live: true
+        }
+    );
+    assert_eq!(
+        history_lines(&app),
+        [
+            "User: explain the parser",
+            "Assistant: Part one.",
+            "thought: weighing"
+        ]
+    );
+}
+
+#[test]
+fn a_retry_before_any_content_withdraws_nothing() {
+    // The bounded retry of a request that got nothing through: the same
+    // event, nothing to take back.
+    let mut app = streaming_turn();
+    let generation = app.history_generation();
+    let withdrawn = app.withdraw_attempt();
+    assert_eq!(withdrawn, Withdrawn::default());
+    assert!(!withdrawn.anything());
+    assert_eq!(history_lines(&app), ["User: explain the parser"]);
+    assert_eq!(app.history_generation(), generation);
+}
+
+#[test]
+fn a_withdrawn_thought_is_no_snap_target_for_the_round_that_replaces_it() {
+    // The provider's reasoning tokens belong to the attempt that got
+    // through: a withdrawn thought must not keep a claim on them.
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("first try".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    stream_event(&mut app, StreamEvent::Chunk("Half".into()));
+    let _ = app.withdraw_attempt();
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("second try".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    stream_event(
+        &mut app,
+        StreamEvent::Usage(TokenUsage {
+            input: 100,
+            output: 60,
+            reasoning: 40,
+            ..TokenUsage::default()
+        }),
+    );
+    let thoughts: Vec<usize> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Reasoning(thought) => Some(thought.tokens),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        thoughts,
+        [40],
+        "the one thought left takes the round's count"
+    );
+}
+
+#[test]
+fn a_retry_restarts_a_compaction_summary() {
+    // The summary streams invisibly into its own buffer; a dropped one
+    // starts over rather than land half a summary glued to a whole one.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("Half a summ".into()));
+    assert!(
+        !app.withdraw_attempt().anything(),
+        "nothing the user could see went"
+    );
+    stream_event(&mut app, StreamEvent::Chunk("The whole summary.".into()));
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(compaction.summary, "The whole summary.");
+}
+
+#[test]
+fn a_withdrawal_never_pops_an_item_no_attempt_records() {
+    // An attempt records only reply text and thoughts. Were the mark ever
+    // stale — a round boundary folded without being tracked — the
+    // withdrawal stops at the first item of any other kind: it can take back
+    // too little, never a tool cell, a notice or the user's own message.
+    let mut app = streaming_turn();
+    stream_event(&mut app, StreamEvent::Chunk("Let me look.".into()));
+    app.flush_streaming_segment();
+    app.start_tool("Bash", "ls", None);
+    app.end_tool("src\n", true);
+    app.push_chunk("The tree has");
+    let _ = app.withdraw_attempt();
+    assert_eq!(
+        history_lines(&app),
+        [
+            "User: explain the parser",
+            "Assistant: Let me look.",
+            "tool: Bash"
+        ]
     );
 }
 

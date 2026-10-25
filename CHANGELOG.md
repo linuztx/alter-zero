@@ -12,6 +12,21 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A connection lost in the middle of a reply no longer ends the turn.** When
+  the network dropped while a reply was streaming — Wi-Fi changing, a VPN
+  reconnecting, a laptop waking from sleep — the turn died on `request
+  failed: request or response body error: error reading a body from
+  connection: Connection timed out (os error 110)`, or a reset, however far
+  into a task it was. Now the reply starts over: what had streamed of it is
+  taken back off the screen, a toast says the connection was lost, the status
+  line shows `retrying 1/3`, and the request is sent again, waiting for the
+  network first if it is still gone. The reply then streams once, whole.
+  Subagents start over the same way, and hand back only the reply that got
+  through. A reply that keeps dropping still stops after the attempts the
+  `/settings` **Error retry** row allows (`docs/offline.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added
