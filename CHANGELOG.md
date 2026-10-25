@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-25
+
 ### Added
 
 - **`/context` shows what fills the context window.** The footer's gauge says
@@ -1531,7 +1533,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/linuztx/alter-zero/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/linuztx/alter-zero/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/linuztx/alter-zero/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/linuztx/alter-zero/compare/v0.12.0...v0.13.0
