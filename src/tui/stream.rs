@@ -433,14 +433,16 @@ impl Session<'_> {
                 self.render.reset();
                 self.clocks.thinking_start = None;
                 self.app.set_retry(attempt, max);
-                if shown || withdrawn.records > 0 {
-                    self.retract_withdrawn_rows();
-                }
                 // Said only where it was seen: inside an agent's session view
                 // the main reply is not on screen, and a toast there would
-                // blame the agent's (`tui::agent` says so for its own).
+                // blame the agent's (`tui::agent` says so for its own). Raised
+                // before the rebuild below, which paints the live region at
+                // once — so the frame that takes the text away says why.
                 if withdrawn.anything() && self.app.agent_view.is_none() {
                     self.toast(CONNECTION_LOST_NOTICE, ToastKind::Info);
+                }
+                if shown || withdrawn.records > 0 {
+                    self.retract_withdrawn_rows();
                 }
                 false
             }

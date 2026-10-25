@@ -234,13 +234,14 @@ impl Session<'_> {
         }
         // What the withdrawal took had reached the view's scrollback: rebuild
         // it from the agent's transcript, which no longer holds any of it —
-        // and say why the text went (the main view's rule, `tui::stream`).
+        // saying why the text went first, since the rebuild paints the live
+        // region at once (the main view's rule, `tui::stream`).
         if viewing && let Some((withdrawn, shown)) = retracted {
-            if shown || withdrawn.records > 0 {
-                let _ = self.repaint_agent_view();
-            }
             if withdrawn.anything() {
                 self.toast(CONNECTION_LOST_NOTICE, ToastKind::Info);
+            }
+            if shown || withdrawn.records > 0 {
+                let _ = self.repaint_agent_view();
             }
         }
         // A message delivered into a settled run reopened it — the lead's
