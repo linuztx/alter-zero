@@ -374,6 +374,11 @@ Package docs, man pages and translations are skipped by a dpkg rule. To get a
 package's pages back, delete `/etc/dpkg/dpkg.cfg.d/90alter-zero-slim` and
 reinstall it.
 
+apt asks Kali's redirector first, and fetches any file the mirror it picked
+cannot deliver from `kali.download`, Kali's CDN, so one mirror being down
+fails neither the build nor an `apt install`. The order is
+`/etc/apt/kali-mirrors.txt`.
+
 ### Privileges
 
 The container gets the engine's default capabilities plus **`NET_RAW`**, and
@@ -528,6 +533,7 @@ Your own off switches still work, and are yours to use: `/settings` →
 | `a container called alter-zero-kali already exists` | Enter it, or recreate it with `--replace`. Nothing is removed unless you say so. |
 | `docker could not start …` | Usually 8080 or 8888 is taken on your machine. `--port 18080:8080`, or `--no-ports`. |
 | `container … is not running` | `docker start alter-zero-kali`. |
+| `Unable to fetch some archives` while building | Every mirror apt tried failed for those files: the one Kali's redirector picked, then `kali.download`. Check your connection, then build again. |
 | `nmap: Operation not permitted` | Kali ships it with file capabilities a container cannot grant. The image strips them and re-strips after every `apt` run; by hand: `setcap -r /usr/lib/nmap/nmap`. |
 | `Couldn't open a raw socket … Operation not permitted` | A SYN scan needs `NET_RAW`. `docker/run.sh` grants it, so this means the container was made another way, or with `--no-net-raw`. Recreate it: `docker/run.sh --replace …`, or use `nmap -sT`. See [Privileges](#privileges). |
 | Files in my folder belong to root | Rootful Docker. See [Who owns the files](#who-owns-the-files). |

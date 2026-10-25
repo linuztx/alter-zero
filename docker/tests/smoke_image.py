@@ -48,6 +48,10 @@ VENV = "/opt/az-venv"
 PIP_CACHE = "/var/cache/pip"
 # Setting any of these in the image would change what the app reports home.
 TELEMETRY_KEYS = ("ALTER_ZERO_TELEMETRY", "DO_NOT_TRACK", "ALTER_ZERO_TELEMETRY_URL")
+# kali.sources names this list: Kali's redirector, then Kali's CDN for any file
+# the redirector's pick cannot deliver (docs/docker.md *Mirrors*).
+MIRROR_LIST = "/etc/apt/kali-mirrors.txt"
+MIRRORS = ("http://http.kali.org/kali/", "http://kali.download/kali/")
 
 
 def run(*args, **kwargs):
@@ -236,6 +240,32 @@ def check_scanner_runs():
     assert run("nmap", "--version").returncode == 0
 
 
+def check_apt_falls_back_to_kalis_cdn():
+    """A file the redirector's mirror cannot deliver comes from Kali's CDN.
+
+    http.kali.org hands each file to a mirror of its choosing, and a pick
+    that had stopped answering used to fail the build outright: "Unable to
+    fetch some archives". kali.sources names a mirror list instead, which
+    apt works down file by file. With no network every mirror fails here,
+    and that is what shows the order: the request goes to the redirector,
+    then to kali.download."""
+    sources = Path("/etc/apt/sources.list.d/kali.sources").read_text()
+    assert re.search(rf"^URIs: mirror\+file:{re.escape(MIRROR_LIST)}$", sources, re.M), \
+        f"kali.sources does not name the mirror list:\n{sources}"
+    entries = [line.split("\t") for line in Path(MIRROR_LIST).read_text().splitlines()
+               if line and not line.startswith("#")]
+    assert entries == [[MIRRORS[0], "priority:1"], [MIRRORS[1], "priority:2"]], entries
+    with tempfile.TemporaryDirectory(prefix="alter-zero-apt-") as scratch:
+        (Path(scratch) / "partial").mkdir()
+        # The image's own lists are left alone, and a mirror that failed is
+        # not retried: apt moves to the next one at once.
+        update = run("apt-get", "-o", f"Dir::State::Lists={scratch}", "-o", "Acquire::Retries=0", "update")
+    tried = re.findall(r"^(?:Ign|Err):\d+ (\S+) kali-rolling InRelease$", update.stdout, re.M)
+    expected = [mirror.rstrip("/") for mirror in MIRRORS]
+    assert list(dict.fromkeys(tried)) == expected, \
+        f"apt tried {tried}, not {expected}:\n{update.stdout}{update.stderr}"
+
+
 def check_nothing_listens():
     listeners = run("ss", "-H", "-lntu").stdout.strip()
     assert not listeners, f"the idle image has listeners: {listeners}"
@@ -397,6 +427,7 @@ def main():
     check_custom_venv()
     check_pip_cache()
     check_scanner_runs()
+    check_apt_falls_back_to_kalis_cdn()
     check_nothing_listens()
     ping = check_telemetry_is_on(version)
     print(json.dumps({"result": "passed", "alter_zero": version, "ping": ping}, indent=2))

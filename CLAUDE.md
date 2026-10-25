@@ -102,6 +102,11 @@ and 9000–9009, and idles under `tini` so the container is
 somewhere to `exec` into. Kali's `nmap` carries forced file capabilities a
 container cannot grant, so it would not even exec — `setcap -r` plus a
 `DPkg::Post-Invoke` hook that re-strips after every `apt` run.
+**apt reads a `mirror+file:` list** (`/etc/apt/kali-mirrors.txt`): Kali's
+redirector at priority 1, `kali.download` (its Cloudflare mirror) at 2,
+each priority after a **tab** — a redirector pick that had stopped
+answering failed whole builds, since apt retries the mirror it was sent to,
+never the redirector (`docs/docker.md` *Mirrors*).
 **Python is a virtualenv at `/opt/az-venv`** activated by `ENV`
 (`VIRTUAL_ENV` + `PATH`), so the agent's own `sh -c` commands inherit it too;
 `/bin/sh` is dash and never reads `.bashrc`. Kali's system Python is PEP 668

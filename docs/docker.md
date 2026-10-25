@@ -107,6 +107,81 @@ Before Node.js/npm were added: **409 MB on disk, 278 MB over the 131 MB Kali
 base** — the 393 MB that leaves, plus the 16 MB of `python3-venv` and the
 virtualenv it builds.
 
+## Mirrors: Kali's redirector, then its CDN
+
+Kali's sources name `http.kali.org`, which Kali's documentation calls "our
+load balancer, which will direct you to the best mirror". It answers each
+request with a redirect to a mirror it draws by distance and weight, and its
+`?mirrorlist` page gives the odds. For a US client in October 2026:
+Cloudflare (`kali.download`) 60%, IONOS 21%, kali.darklab.sh 9%, ColoCrossing
+(`mirror.us.cdn-perfprod.com`) 7%, Berkeley's OCF 3%.
+
+ColoCrossing had stopped answering. From 23 October the container workflow
+failed in the tools layer on whichever engine drew it — Docker, then both,
+then Podman, then Docker again — with `Unable to connect to
+mirror.us.cdn-perfprod.com:80`. apt follows a redirect and then retries the
+address it was sent to, never the redirector, so a file drawn there is lost.
+A healthy build fetched its 134 MB in 4 s; the failing one spent 1 min 42 s,
+most of it waiting on the dead mirror, and lost 108 files: `Unable to fetch
+some archives`. When the draw was the index rather than a package, `apt-get
+update` only warned and exited 0, and the install then reported all 32 of
+its packages missing — the same fault under a misleading name.
+
+So `kali.sources` names a mirror list instead —
+`mirror+file:/etc/apt/kali-mirrors.txt`, apt-transport-mirror(1) — with the
+redirector at priority 1 and `kali.download` at priority 2. Each request
+still goes to the redirector first, and a file its pick cannot deliver is
+fetched from Kali's CDN once apt's retries on the pick run out. Each index is
+still downloaded once. Only the `URIs:` line changes, and only when it is the
+one Kali ships, so a base image laid out otherwise builds as it always did;
+`smoke_image.py` fails if *this* image's apt does not try the two mirrors in
+that order. The list stays in force for every `apt install` in the container.
+
+Measured with Kali's own apt (3.3.3) and a stand-in redirector on loopback
+that sent files to an address refusing connections — or, in one run,
+ignoring them, as ColoCrossing did:
+
+| Sent to the dead mirror | `kali.sources` as shipped | Through the list |
+| --- | --- | --- |
+| one package | `Unable to fetch some archives` | fetched from the second mirror |
+| the index | `update` exits 0, then `Unable to locate package` | fetched from the second mirror |
+| every file | as for the index | every file from the second mirror |
+| the redirector itself is down | as for the index | every file from the second mirror |
+
+A real build of the tools layer, through the live redirector, then drew
+ColoCrossing for 26 of its 544 requests. All 26 came from `kali.download`,
+and the build finished.
+
+Two details bite:
+
+- A mirror's metadata follows a **tab**. After a space, `priority:1` is read
+  as part of the URI and the line names no mirror at all, so the Dockerfile
+  writes it with `printf '%s\tpriority:%s\n'` rather than a literal tab an
+  editor could turn into spaces.
+- apt's http method remembers every **address** that failed to connect
+  (`bad_addr` in `methods/connect.cc`) and does not try it again in that run.
+  That is why only the first file sent to a dead mirror waits out the
+  30-second connect timeout, and why a stand-in for this needs the dead
+  mirror on an address of its own: on the good mirror's address, apt writes
+  the good one off too.
+
+The fallback costs time, not the build. A build that draws a dead mirror
+still waits out apt's three retries of those files, 1, 2 and 4 seconds
+apart, before taking them from the CDN: about a minute and a half, in the
+failing run's numbers.
+
+Refused:
+
+- **Pinning `kali.download` outright.** Deterministic, but it trades one
+  mirror for another single point of failure, and bypasses the load balancer
+  Kali says to use.
+- **Both URIs in `kali.sources`.** deb822 allows several, but each is then a
+  source of its own: every index — 21.8 MB for `main` alone — downloaded
+  twice, on every build and every `apt update`.
+- **Retrying the build in CI.** The draw is per request, so a re-run rolls
+  the same dice, and a user's `docker/build.sh` would go on failing the same
+  way.
+
 ## Root, and no user
 
 Kali's image is root already, and the container stays that way: no `useradd`,
@@ -543,7 +618,8 @@ home) without one test run landing in the production numbers.
 | | Needs | Covers |
 | --- | --- | --- |
 | `docker/tests/test_scripts.py` | nothing | `build.sh` and `run.sh` under a `PATH` holding only symlinked coreutils and recording stubs named `docker`, `podman`, `curl`, `wget`, `xauth` — the exact argv the engine would get; a bug can never reach a real engine or the network |
-| `docker/tests/smoke_image.py` | the image | run inside it, no network: root and no added user, tools, terminfo, the scanner and its dpkg hook, no listeners, telemetry on |
+| `docker/tests/test_dockerfile.py` | nothing | the Dockerfile itself: the default packages, the exposed ports, and the mirror list — its order, its tab, and that it is in place before the build's own `apt-get update` |
+| `docker/tests/smoke_image.py` | the image | run inside it, no network: root and no added user, tools, terminfo, the scanner and its dpkg hook, the mirrors apt tries and their order, no listeners, telemetry on |
 | `docker/tests/smoke.sh` | an engine | the above, then `run.sh` for real: files cross the mount both ways, a server inside answers on the published port, everything it made is removed |
 
 They run in **`container.yml`**, a workflow of their own: the stub suite and
