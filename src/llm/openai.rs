@@ -710,10 +710,12 @@ fn run_transport(
                 }
             }
             Err(e) => {
-                // The connection existed, so this never waits — but the
-                // cause (a reset, a stream closed early) is what the user
-                // reads, not the client's bare `body error`.
-                let _ = tx.send(Err(LlmError::body_read(&e)));
+                // The connection died under the reply (docs/reconnect.md):
+                // never an outage to wait for — the host had answered — but
+                // a reply the agent loop reconnects and carries on, so the
+                // failure names the host and the socket's own cause, not the
+                // client's bare `body error`.
+                let _ = tx.send(Err(LlmError::body_read(&e, reach.url.as_ref())));
                 return;
             }
         }
@@ -2042,6 +2044,88 @@ mod tests {
                 assert_eq!(host, format!("127.0.0.1:{port}"));
             }
             other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    /// Read one request off `stream` — its headers, then the body their
+    /// `content-length` names — so closing afterwards sends a FIN rather than
+    /// the reset a socket with unread data would.
+    fn read_request(stream: &mut std::net::TcpStream) {
+        use std::io::Read;
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let Ok(n) = stream.read(&mut buf) else { return };
+            if n == 0 {
+                return;
+            }
+            seen.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&seen).to_ascii_lowercase();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if seen.len() >= end + 4 + length {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn a_reply_whose_connection_dies_mid_body_is_a_lost_connection() {
+        // The reported failure (docs/reconnect.md): the reply began — a 200
+        // and its first frame — and the connection died before the body
+        // ended. Here the server closes in the middle of a chunk, the
+        // deterministic stand-in for a keepalive giving up on a dead link.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            if let Ok((mut stream, _)) = listener.accept() {
+                read_request(&mut stream);
+                let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n";
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\n",
+                );
+                let _ = write!(stream, "{:x}\r\n", frame.len());
+                let _ = stream.write_all(frame);
+                let _ = stream.write_all(b"\r\n40\r\ndata: {\"choi");
+                let _ = stream.flush();
+            }
+        });
+        let client = no_proxy_client();
+        let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+        let body = b"{\"model\":\"m\"}".to_vec();
+        let len = body.len() as u64;
+        let req = client.post(&url).body(reqwest::blocking::Body::sized(
+            std::io::Cursor::new(body),
+            len,
+        ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_transport(req, &tx, &Reachability::new(client, &url));
+        drop(tx);
+        let events: Vec<Result<Vec<u8>>> = rx.into_iter().collect();
+        let streamed: Vec<u8> = events
+            .iter()
+            .filter_map(|event| event.as_ref().ok())
+            .flatten()
+            .copied()
+            .collect();
+        assert!(
+            String::from_utf8_lossy(&streamed).contains("Hel"),
+            "the frame before the drop still arrives"
+        );
+        match events.last() {
+            Some(Err(LlmError::ConnectionLost { host, message })) => {
+                assert_eq!(host, &format!("127.0.0.1:{port}"));
+                assert!(!message.is_empty(), "the cause is named");
+            }
+            other => panic!("expected the lost connection last, got {other:?}"),
         }
     }
 

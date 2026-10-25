@@ -469,6 +469,13 @@ pub(super) fn bg_notice_waiting_color() -> Color {
     palette().warning
 }
 
+/// The bullet of the marker a connection lost mid-reply leaves between the
+/// cut-off text and its continuation (`docs/reconnect.md`): the caution
+/// amber — the turn goes on, so neither an outcome's green nor an error's red.
+pub(super) fn connection_lost_color() -> Color {
+    palette().warning
+}
+
 /// A subagent the user's message started again (`docs/agent-tools.md` *A
 /// resume is news when it starts*): running, so neither an outcome's green
 /// nor its red — the accent a system notice wears.
@@ -2649,6 +2656,11 @@ pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 /// The `/compact` marker cell's text — codex's "Context compacted" info cell,
 /// verbatim. See `docs/compact.md`.
 pub const COMPACTED_NOTICE: &str = "Context compacted";
+
+/// The connection-lost marker's headline around its host — `Lost the
+/// connection to {host} · reconnecting` (`docs/reconnect.md`).
+pub(super) const CONNECTION_LOST_LEAD: &str = "Lost the connection to";
+pub(super) const CONNECTION_LOST_TAIL: &str = " · reconnecting";
 
 // --- The `Agent` tool (docs/agent-tool.md) ---
 

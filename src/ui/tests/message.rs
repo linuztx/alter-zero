@@ -148,6 +148,97 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
     );
 }
 
+/// A connection lost mid-reply (docs/reconnect.md).
+fn lost_connection(cause: &str, note: Option<&str>) -> HistoryItem {
+    HistoryItem::Reconnect(crate::app::Reconnect {
+        host: "api.venice.ai".to_string(),
+        cause: cause.to_string(),
+        note: note.map(str::to_string),
+        timestamp: String::new(),
+    })
+}
+
+#[test]
+fn a_lost_connection_shows_inline_as_an_amber_marker_over_its_cause() {
+    // Between the cut-off reply and its continuation, the screen says what
+    // happened: the host the reply was coming from, that the turn is
+    // reconnecting, and the socket's own words in the gutter a tool's
+    // output hangs from.
+    let item = lost_connection("Connection timed out (os error 110)", Some("[system] note"));
+    let lines = conversation_lines(&[item], 80, &PathDisplay::VERBATIM);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "● Lost the connection to api.venice.ai · reconnecting",
+            "  ⎿  Connection timed out (os error 110)",
+            "",
+        ]
+    );
+    assert_eq!(
+        lines[0].spans[0].style.fg,
+        Some(crate::ui::theme::connection_lost_color()),
+        "the caution amber, not an error's red: the turn goes on"
+    );
+}
+
+#[test]
+fn a_lost_connections_note_shows_only_in_the_transcript() {
+    // What the model was told is the record's business (Ctrl+O), the way a
+    // hook note is; the inline view keeps to the marker.
+    let note = "[system] The connection dropped while you were replying.";
+    let history = [
+        msg(Role::Assistant, "First, split the lex"),
+        lost_connection("Connection reset by peer", Some(note)),
+    ];
+    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!inline.contains("[system]"), "{inline}");
+    let mut app = crate::app::App::new();
+    app.history.extend(history);
+    let transcript: String = transcript_lines(&app, 80)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        transcript.contains("● Lost the connection to api.venice.ai · reconnecting")
+            && transcript.contains("⎿  Connection reset by peer")
+            && transcript.contains(note),
+        "{transcript}"
+    );
+}
+
+#[test]
+fn a_long_cause_wraps_under_its_own_column() {
+    let cause = "error reading a body from connection: Connection timed out (os error 110)";
+    let lines = conversation_lines(&[lost_connection(cause, None)], 30, &PathDisplay::VERBATIM);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let gutter = texts
+        .iter()
+        .position(|row| row.starts_with("  ⎿  "))
+        .expect("the cause row");
+    let continued = &texts[gutter + 1..texts.len() - 1];
+    assert!(!continued.is_empty(), "it wraps at 30 columns: {texts:?}");
+    for row in continued {
+        assert!(row.starts_with("     ") && cols(row) <= 30, "{row:?}");
+    }
+    let rejoined: Vec<&str> = texts[gutter..texts.len() - 1]
+        .iter()
+        .map(|row| row.trim_start_matches("  ⎿  ").trim())
+        .collect();
+    assert_eq!(rejoined.join(" "), cause, "nothing lost to the wrap");
+}
+
 #[test]
 fn conversation_lines_lays_out_a_turn_with_a_trailing_blank() {
     let history = [msg(Role::User, "hi"), msg(Role::Assistant, "hello")];

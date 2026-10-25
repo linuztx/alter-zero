@@ -95,6 +95,28 @@ pub enum HistoryItem {
     /// under its `label`, and [`crate::context::context_messages`] replays
     /// `text` verbatim as the user-role message the model actually read.
     HookNote(HookNote),
+    /// The connection carrying a reply **died mid-reply** and the turn
+    /// carried on (`docs/reconnect.md`): the marker between the cut-off text
+    /// and its continuation, over the note the model read there.
+    Reconnect(Reconnect),
+}
+
+/// One connection lost mid-reply — see [`HistoryItem::Reconnect`] and
+/// `docs/reconnect.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconnect {
+    /// The host (and non-default port) the reply was coming from.
+    pub host: String,
+    /// The socket's own account of the drop (`Connection timed out (os
+    /// error 110)`), shown under the marker.
+    pub cause: String,
+    /// Verbatim the user-role note the continuing round was sent, which every
+    /// later context replays where it was read — `None` when no visible text
+    /// was kept and the round was simply sent again, so the wire carried no
+    /// note and the marker is the screen's record alone.
+    pub note: Option<String>,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
 }
 
 /// One hook-injected conversation entry — see

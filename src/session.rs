@@ -129,6 +129,11 @@ enum ItemRecord {
     /// mid-turn. Old builds skip the unknown record type (the
     /// forward-compatibility contract).
     HookNote(HookNoteRecord),
+    /// A connection lost mid-reply (`docs/reconnect.md`) — persists so a
+    /// `/resume` shows where the reply was cut off and its derived context
+    /// still carries the note the model read there. Old builds skip the
+    /// unknown record type (the forward-compatibility contract).
+    Reconnect(ReconnectRecord),
     /// The session's own model selection (`docs/session-model.md`) — not a
     /// [`HistoryItem`] but recorded in the same file, so a resume brings the
     /// conversation back on the model it ran on. The payload is the
@@ -144,6 +149,18 @@ enum ItemRecord {
 struct HookNoteRecord {
     label: String,
     text: String,
+    #[serde(default)]
+    timestamp: String,
+}
+
+/// A [`crate::app::Reconnect`] on disk (`docs/reconnect.md`): the marker's
+/// host and cause, and the note — omitted when the drop kept nothing.
+#[derive(Serialize, Deserialize)]
+struct ReconnectRecord {
+    host: String,
+    cause: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     #[serde(default)]
     timestamp: String,
 }
@@ -597,6 +614,12 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             text: note.text.clone(),
             timestamp: note.timestamp.clone(),
         }),
+        HistoryItem::Reconnect(drop) => ItemRecord::Reconnect(ReconnectRecord {
+            host: drop.host.clone(),
+            cause: drop.cause.clone(),
+            note: drop.note.clone(),
+            timestamp: drop.timestamp.clone(),
+        }),
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
             summary: compaction.summary.clone(),
             timestamp: compaction.timestamp.clone(),
@@ -834,6 +857,14 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     label: note.label,
                     text: note.text,
                     timestamp: note.timestamp,
+                }));
+            }
+            ItemRecord::Reconnect(drop) => {
+                items.push(HistoryItem::Reconnect(crate::app::Reconnect {
+                    host: drop.host,
+                    cause: drop.cause,
+                    note: drop.note,
+                    timestamp: drop.timestamp,
                 }));
             }
             ItemRecord::Compaction(compaction) => {
@@ -1082,6 +1113,32 @@ mod tests {
         assert_eq!(value["payload"]["label"], "Stop hook");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_lost_connection_round_trips_with_and_without_its_note() {
+        // The drop persists so a /resume shows where the reply was cut off
+        // and its derived context still carries the note the model read
+        // (docs/reconnect.md); a drop that kept nothing has no note to keep.
+        for note in [Some("[system] cut off".to_string()), None] {
+            let item = HistoryItem::Reconnect(crate::app::Reconnect {
+                host: "api.venice.ai".into(),
+                cause: "Connection timed out (os error 110)".into(),
+                note: note.clone(),
+                timestamp: "03:20 PM".into(),
+            });
+            let line = item_line(&item, "t");
+            let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+            assert_eq!(value["type"], "reconnect");
+            assert_eq!(value["payload"]["host"], "api.venice.ai");
+            assert_eq!(
+                value["payload"].get("note").is_some(),
+                note.is_some(),
+                "an absent note is omitted, not null"
+            );
+            let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+            assert_eq!(parsed, vec![item]);
+        }
     }
 
     #[test]

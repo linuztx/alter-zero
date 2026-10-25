@@ -70,6 +70,9 @@ pub fn conversation_lines(
             HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
             HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
             HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
+            // Where a reply the connection cut off was carried on — the
+            // marker alone; its note is Ctrl+O's (docs/reconnect.md).
+            HistoryItem::Reconnect(r) => lines.extend(reconnect_lines(r, width)),
             // Collapsed: only the `Thought for …` line reaches scrollback —
             // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
             HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),

@@ -126,7 +126,7 @@ pub use self::turn::{
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
-    DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+    DebugPage, HistoryItem, HookNote, Message, Reconnect, Role, SessionInfo, Toast, ToastKind, View,
 };
 
 /// All mutable conversation state: the editable input line, the reply currently
@@ -1060,11 +1060,25 @@ impl App {
         let history = self
             .viewed_agent()
             .map_or(self.history.as_slice(), |run| run.history.as_slice());
-        let latest = history.iter().rev().find_map(|item| match item {
-            HistoryItem::Message(m) if m.role == Role::Assistant => Some(&m.text),
-            _ => None,
-        })?;
-        (!latest.is_empty()).then(|| latest.clone())
+        let at = history.iter().rposition(
+            |item| matches!(item, HistoryItem::Message(m) if m.role == Role::Assistant),
+        )?;
+        let HistoryItem::Message(latest) = &history[at] else {
+            return None;
+        };
+        let mut text = latest.text.clone();
+        // A reply carried on after its connection dropped is one response in
+        // two messages (docs/reconnect.md): walk back over each drop that
+        // kept the text before it, joining the halves where the repeat begins.
+        let mut head = at;
+        while let Some(before) = resumed_from(history, head) {
+            let HistoryItem::Message(earlier) = &history[before] else {
+                break;
+            };
+            text = crate::llm::agent::join_resumed(&earlier.text, &text);
+            head = before;
+        }
+        (!text.is_empty()).then_some(text)
     }
 
     /// Inject the active backend's system prompt (from
@@ -1264,6 +1278,26 @@ fn wrap_step(selected: usize, len: usize, delta: isize) -> usize {
     };
     let current = selected.min(last) as isize;
     (current + delta).rem_euclid(len as isize) as usize
+}
+
+/// The assistant message the one at `at` carries on, when a dropped
+/// connection split a reply there (`docs/reconnect.md`): a
+/// [`HistoryItem::Reconnect`] that kept the text before it — its note — with
+/// that text's message behind it. A settled thought on either side (the
+/// continuation can think first) is no break between the halves.
+fn resumed_from(history: &[HistoryItem], at: usize) -> Option<usize> {
+    let mut before = history[..at]
+        .iter()
+        .rposition(|item| !matches!(item, HistoryItem::Reasoning(_)))?;
+    let HistoryItem::Reconnect(drop) = &history[before] else {
+        return None;
+    };
+    drop.note.as_ref()?;
+    before = history[..before]
+        .iter()
+        .rposition(|item| !matches!(item, HistoryItem::Reasoning(_)))?;
+    matches!(&history[before], HistoryItem::Message(m) if m.role == Role::Assistant)
+        .then_some(before)
 }
 
 #[cfg(test)]

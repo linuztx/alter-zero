@@ -8,7 +8,9 @@ use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::cached_lines::CachedLines;
 use super::conversation::is_shell_header;
 use super::file_cell::draft_cell_lines;
-use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
+use super::message::{
+    compaction_full_lines, hook_note_lines, reconnect_full_lines, user_stamp_lines,
+};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
 use super::tool::tool_full_lines;
@@ -106,6 +108,9 @@ fn transcript_item_lines(
         // Hook-injected conversation text (docs/hooks.md): invisible inline,
         // the transcript is its record.
         HistoryItem::HookNote(n) => lines.extend(hook_note_lines(n, width)),
+        // A connection lost mid-reply: the marker, and under it the note the
+        // continuing round was sent (docs/reconnect.md).
+        HistoryItem::Reconnect(r) => lines.extend(reconnect_full_lines(r, width)),
     }
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them

@@ -161,7 +161,10 @@ impl Session<'_> {
         // and the order does not arise.
         if matches!(
             event,
-            StreamEvent::ThinkingEnd | StreamEvent::StreamDone | StreamEvent::Error(_)
+            StreamEvent::ThinkingEnd
+                | StreamEvent::StreamDone
+                | StreamEvent::Error(_)
+                | StreamEvent::ConnectionLost { .. }
         ) {
             self.settle_agent_reasoning(id, viewing, width);
         }
@@ -491,6 +494,10 @@ impl Session<'_> {
                 HistoryItem::Message(message) if message.role == Role::User => {
                     Some(ui::message_lines(Role::User, &message.text, width))
                 }
+                // Where the connection cut the agent's reply off and its loop
+                // carried on — under the text the flush above committed
+                // (`docs/reconnect.md`).
+                HistoryItem::Reconnect(drop) => Some(ui::reconnect_lines(drop, width)),
                 _ => None,
             })
             .filter(|lines| !lines.is_empty())

@@ -432,6 +432,28 @@ pub enum StreamEvent {
     /// streamed content clears it; nothing commits. Only a real backend sends
     /// it (`llm::retry`). See `docs/offline.md`.
     Offline { host: String, attempts: u32 },
+    /// The connection carrying the round's reply **died after the model had
+    /// begun replying** — the TCP keepalive gave up on a link that went dead,
+    /// a reset, a stream closed early — and the turn **carries on** rather
+    /// than ending (`docs/reconnect.md`). Sent by the agent loop between the
+    /// cut-off round and the one that continues it.
+    ///
+    /// The loop drops whatever call the round was still generating (never
+    /// received, so never recorded), finalises the streamed text as its own
+    /// message, and records the drop — the marker naming `host` and the
+    /// socket's own `cause`, over `note`, verbatim the user-role text the
+    /// model reads next (`None` when no visible text was kept and the round is
+    /// simply sent again, so there is nothing to replay). `attempt`/`max` are
+    /// the resume's number against the `Error retry` budget, shown live as
+    /// `retrying {attempt}/{max}` until the continuation streams. Only a real
+    /// backend sends it.
+    ConnectionLost {
+        host: String,
+        cause: String,
+        note: Option<String>,
+        attempt: u32,
+        max: u32,
+    },
     /// The provider's real token usage for one completed request round (the
     /// final usage frame of the stream — sent once per round by a real
     /// backend, so an agentic turn reports one per tool round). The loop

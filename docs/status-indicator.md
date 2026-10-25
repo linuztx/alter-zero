@@ -123,8 +123,11 @@ real backend's own latency plays the same role.
   non-dim clause) *only while a failed request is being retried*: the
   connection/send failed (or a transient `429`/`5xx` came back) before any
   content streamed, so the real backend is reconnecting (`llm::retry`, see
-  `docs/llm.md`). `App::set_retry` sets it from a `StreamEvent::Retrying`; the
-  next streamed chunk clears it (the request recovered). The dummy never retries.
+  `docs/llm.md`) — or the connection died under the reply and the turn is
+  carrying it on (`docs/reconnect.md`). `App::set_retry` sets it from a
+  `StreamEvent::Retrying`, `App::record_connection_lost` from a
+  `StreamEvent::ConnectionLost`; the next streamed chunk clears it (the
+  request recovered). The dummy never retries.
 - **Thinking for {m}** — shown *only while actively thinking* (the `{m}`
   humanized by `format_elapsed` like the elapsed); dropped once thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line

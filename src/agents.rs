@@ -487,6 +487,7 @@ impl AgentRun {
                 | StreamEvent::ToolStart { .. }
                 | StreamEvent::HookNote { .. }
                 | StreamEvent::Steered { .. }
+                | StreamEvent::ConnectionLost { .. }
                 | StreamEvent::StreamDone
                 | StreamEvent::Error(_)
         )
@@ -957,6 +958,39 @@ impl AgentRun {
             // The round's calls are all made: nothing more of them streams
             // (docs/write-streaming.md).
             StreamEvent::RoundCalls(_) => self.drafts.seal(),
+            // The connection under this agent's reply died and its loop
+            // carries the run on (docs/reconnect.md) — the main turn's dance
+            // on the agent's own transcript: an open thought settles, the
+            // call it was still generating goes, what streamed becomes its
+            // message, and the marker lands where the agent reads the note.
+            // Its session view counts the reconnect until the continuation
+            // streams. Not an outcome: the run goes on.
+            StreamEvent::ConnectionLost {
+                host,
+                cause,
+                note,
+                attempt,
+                max,
+            } => {
+                self.settle_thinking();
+                self.drafts.clear();
+                self.flush_segment();
+                self.history
+                    .push(HistoryItem::Reconnect(crate::app::Reconnect {
+                        host: host.clone(),
+                        cause: cause.clone(),
+                        note: note.clone(),
+                        timestamp: String::new(),
+                    }));
+                if let Some(note) = note {
+                    self.tokens += crate::app::count_tokens(note) as u64;
+                }
+                self.recovered();
+                self.retry = Some(crate::app::RetryInfo {
+                    attempt: *attempt,
+                    max: *max,
+                });
+            }
             StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
@@ -1480,6 +1514,10 @@ pub struct RunRecorder {
     registry: AgentRegistry,
     id: String,
     text: String,
+    /// Where each continuation of a reply the connection cut off begins in
+    /// `text` (`docs/reconnect.md`) — the seams the run's answer is joined
+    /// across, the repeat the continuation opens on taken out once.
+    seams: Vec<usize>,
 }
 
 impl RunRecorder {
@@ -1490,6 +1528,7 @@ impl RunRecorder {
             registry,
             id: id.into(),
             text: String::new(),
+            seams: Vec::new(),
         }
     }
 
@@ -1522,21 +1561,41 @@ impl RunRecorder {
                 self.said();
                 self.registry.announce_read(&self.id);
             }
+            // The connection cut the reply off and the run carries it on
+            // (docs/reconnect.md): no more work, the same reply — the text
+            // goes on from here, and is joined across the seam.
+            StreamEvent::ConnectionLost { note: Some(_), .. } => {
+                self.seams.push(self.text.len());
+            }
             _ => {}
         }
     }
 
     /// The run's answer: the text since the agent last did anything else.
     #[must_use]
-    pub fn into_answer(self) -> String {
-        self.text
+    pub fn into_answer(mut self) -> String {
+        self.take_text()
     }
 
     /// The text so far was said on the way: a progress update, not the
     /// answer.
     fn said(&mut self) {
-        self.registry
-            .record_update(&self.id, &std::mem::take(&mut self.text));
+        let text = self.take_text();
+        self.registry.record_update(&self.id, &text);
+    }
+
+    /// The text since the agent last did anything else, joined across every
+    /// seam a dropped connection left in it — each continuation's repeat of
+    /// the text before it taken out once (`llm::agent::join_resumed`).
+    fn take_text(&mut self) -> String {
+        let text = std::mem::take(&mut self.text);
+        let mut joined = String::new();
+        let mut from = 0;
+        for seam in std::mem::take(&mut self.seams) {
+            joined = crate::llm::agent::join_resumed(&joined, &text[from..seam]);
+            from = seam;
+        }
+        crate::llm::agent::join_resumed(&joined, &text[from..])
     }
 }
 
@@ -4542,6 +4601,10 @@ mod tests {
             ),
             ("StreamDone", StreamEvent::StreamDone),
             ("Error", StreamEvent::Error("boom".to_string())),
+            // The drop finalises what streamed as its own message — the
+            // continuation streams a fresh one (docs/reconnect.md).
+            ("ConnectionLost", lost_connection(Some("[system] cut off"))),
+            ("ConnectionLost, nothing kept", lost_connection(None)),
         ]
     }
 
@@ -4664,6 +4727,84 @@ mod tests {
                 "{name}: the predicate and the fold disagree about the segment"
             );
         }
+    }
+
+    /// A connection lost mid-reply, as the agent's own loop announces it
+    /// (docs/reconnect.md).
+    fn lost_connection(note: Option<&str>) -> StreamEvent {
+        StreamEvent::ConnectionLost {
+            host: "api.venice.ai".to_string(),
+            cause: "Connection timed out (os error 110)".to_string(),
+            note: note.map(str::to_string),
+            attempt: 1,
+            max: 3,
+        }
+    }
+
+    #[test]
+    fn a_subagents_reply_the_connection_cut_off_lands_on_its_own_transcript() {
+        // The lead's dance on the agent's own transcript: what streamed is
+        // its message, the drop is recorded after it — where the agent's
+        // next round reads the note — and its session view counts the
+        // reconnect until the continuation streams. Not an outcome: the run
+        // goes on.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        let before = run.history.len();
+        run.apply(&StreamEvent::Chunk("First, split the lex".to_string()));
+        assert!(!run.apply(&lost_connection(Some("[system] cut off"))));
+        match &run.history[before..] {
+            [HistoryItem::Message(reply), HistoryItem::Reconnect(drop)] => {
+                assert_eq!(reply.text, "First, split the lex");
+                assert_eq!(drop.host, "api.venice.ai");
+                assert_eq!(drop.note.as_deref(), Some("[system] cut off"));
+            }
+            other => panic!("the reply, then the drop: {other:?}"),
+        }
+        assert_eq!(
+            run.retry,
+            Some(crate::app::RetryInfo { attempt: 1, max: 3 })
+        );
+        assert_eq!(run.status, AgentStatus::Running);
+        run.apply(&StreamEvent::Chunk("First, split the lexer.".to_string()));
+        assert_eq!(run.retry, None, "the continuation streaming ends the wait");
+    }
+
+    #[test]
+    fn a_call_a_subagents_drop_cut_off_leaves_no_preview() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolCallDelta(
+            crate::stream::ToolCallFragment {
+                index: 0,
+                name: "write".to_string(),
+                arguments: r#"{"path":"a.py","content":"print("#.to_string(),
+            },
+        ));
+        assert!(run.drafts().previews().next().is_some(), "previewing");
+        run.apply(&lost_connection(None));
+        assert!(run.drafts().previews().next().is_none());
+    }
+
+    #[test]
+    fn a_reply_the_connection_cut_off_is_one_answer_with_its_continuation() {
+        // The continuation starts again at the sentence the cut fell in
+        // (`llm::agent::resume_note`), so the answer the lead is handed joins
+        // the two where the repeat begins — whole, nothing doubled — and the
+        // drop is no "more work" that turns the text into an update.
+        let registry = test_registry();
+        let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
+        let mut recorder = RunRecorder::new(registry.clone(), id.clone());
+        for event in [
+            chunk("Two steps. First, split the lex"),
+            lost_connection(Some("[system] cut off")),
+            chunk("First, split the lexer. Then test it."),
+        ] {
+            recorder.observe(&event);
+        }
+        assert!(registry.snapshot(&id).unwrap().updates.is_empty());
+        assert_eq!(
+            recorder.into_answer(),
+            "Two steps. First, split the lexer. Then test it."
+        );
     }
 
     #[test]

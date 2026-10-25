@@ -403,9 +403,31 @@ slot, and `ui::offline`'s `⎿ ((·)) No connection to {host} — trying again �
 N attempts` row hanging off the line through `ui::hang_rows`, the ripple
 fading with distance on the status line's own clock, the tip giving way to
 it; a refused loopback Ollama stays `ollama serve` advice on the bounded
-retry (`ollama::is_local_base`); a drop mid-reply is still surfaced; Esc
+retry (`ollama::is_local_base`); a drop mid-reply is carried on (below); Esc
 interrupts and the undo hands the unsent message back; `smoke.sh` Phase
-129), and the **`/theme` picker** that switches
+129), the **reconnect after a drop mid-reply** (`docs/reconnect.md`: every
+failed body read — the keepalive's `Connection timed out (os error 110)`, a
+reset, a stream closed before its last chunk — is
+`LlmError::ConnectionLost { host, message }`, the message the cause chain's
+**root**, the socket's own words; before content it is the bounded retry,
+and after content `retry::resume_number` carries the turn on rather than
+surfacing it — only a lost connection, only within the `Error retry` budget,
+counted over drops **in a row** by the caller of `backend::stream_round`,
+which waits `retry_backoff` before the round that carries on and reports
+`RoundOutcome::Dropped { partial, cut_call, … }`; `agent::run_agent` sends
+`StreamEvent::ConnectionLost` and pushes the visible partial as the
+assistant message with `agent::resume_note` — restart at the sentence or
+code line the cut fell in, reopen a block, make a cut-off call again — as a
+user message, or re-sends the round as it was when nothing visible
+streamed; the boundary settles a thought, drops the cut-off call's draft,
+flushes the partial and commits the amber `● Lost the connection to {host}
+· reconnecting` marker over its `⎿ {cause}` (`HistoryItem::Reconnect`, its
+note replayed by the context where it was read, a `reconnect` rollout
+record, the status line's `retrying n/max` until the continuation streams,
+an outage after it the offline wait); subagents the same on their own
+transcripts, a declared flush point; `/copy` and a subagent's answer joining
+the halves with `agent::join_resumed`; `smoke.sh` Phase 145), and the
+**`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
 — the accent the pickers select with, the success/error/warning hues, the
 dim, the user bubble, the diff tints, the banner gradient — plus the

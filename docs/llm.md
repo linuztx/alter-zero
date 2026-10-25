@@ -84,8 +84,10 @@ attempt live in the status line (`… · retrying 2/3 · …`, in amber).
 
 The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
 
-- **`is_retryable`** — transport failures (`LlmError::Http`) and the transient
-  server statuses (`408`, `429`, `500`, `502`, `503`, `504`) retry; a client
+- **`is_retryable`** — transport failures (`LlmError::Http`, and
+  `LlmError::ConnectionLost` — a body read that failed, `docs/reconnect.md`)
+  and the transient server statuses (`408`, `429`, `500`, `502`, `503`,
+  `504`) retry; a client
   error (`4xx` auth/not-found/bad-request), a decode failure, and a cancellation
   do not (retrying those just fails the same way).
 - **`retry_backoff`** — exponential from 500 ms, doubling each retry and capped at
@@ -94,7 +96,10 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
 - **`next_step`** — retry only a retryable failure that **emitted no content yet**
   (`emitted == false`) and still has budget (`attempt < max`). This is the
   correctness gate: once any byte has streamed, restarting the request would
-  **duplicate** it, so a mid-stream drop is surfaced rather than retried.
+  **duplicate** it, so a mid-stream failure is never retried — a connection
+  that died under the reply is **carried on** from what streamed instead, in
+  a round of its own (`resume_number`, `docs/reconnect.md`), and anything
+  else is surfaced.
 - **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
   streaming attempt in: it announces each retry as a
   [`StreamEvent::Retrying { attempt, max }`](../src/stream/event.rs), backs off, and
@@ -612,8 +617,10 @@ Retheme there.
   own — at its next channel send, or after at most one op-timeout if parked on
   the silent socket. A failure before any content streamed retries as usual
   (`llm::retry`; a connection that cannot be made at all is waited for
-  instead, `docs/offline.md`); one after content is surfaced, never retried
-  (a retry would duplicate the streamed text).
+  instead, `docs/offline.md`); one after content is never re-sent (a retry
+  would duplicate the streamed text) — a connection that died under it is
+  carried on from what streamed (`docs/reconnect.md`), and anything else is
+  surfaced.
 - A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
   read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`

@@ -128,7 +128,7 @@ pub use self::menu::{
     band_rows, centered_window, command_menu_lines, file_menu_lines, file_menu_rows, menu_rows,
     menu_window, shortcuts_lines, shortcuts_rows, skill_menu_lines, skill_menu_rows,
 };
-pub use self::message::{compaction_lines, message_lines};
+pub use self::message::{compaction_lines, message_lines, reconnect_lines};
 pub use self::model_view::render_model_picker;
 pub use self::offline::{offline_lines, offline_rows};
 pub use self::palette::{activate_theme, active_theme, with_theme};

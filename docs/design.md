@@ -716,6 +716,15 @@ which Ctrl+V reads the clipboard from.
   over a ripple row naming the host and counting the attempts; content ends
   it, Esc interrupts it (and hands an unsent message back to the composer),
   a refused local Ollama still says to start the server.
+- **Carrying a reply on after its connection drops** (`docs/reconnect.md`):
+  a reply whose connection dies mid-stream — the keepalive's `Connection
+  timed out`, a reset, a stream closed early — no longer ends the turn. The
+  half that streamed stays, an amber `● Lost the connection to {host} ·
+  reconnecting` marker commits under it with the socket's own words, and
+  the model continues the reply in a round of its own, told where it was
+  cut off (nothing visible kept: the round is simply sent again) — within
+  the `Error retry` budget, counted over drops in a row, and waiting out an
+  outage like any request. `/copy` and a subagent's answer join the halves.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on

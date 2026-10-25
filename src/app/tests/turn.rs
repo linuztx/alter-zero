@@ -847,6 +847,42 @@ fn last_assistant_text_skips_trailing_non_assistant_items() {
 }
 
 #[test]
+fn last_assistant_text_joins_a_reply_the_connection_cut_off() {
+    // `/copy` copies the model's last response — and a reply carried on
+    // after a drop is one response in two messages (docs/reconnect.md), so
+    // both halves come back as one, joined where the repeat begins.
+    let mut app = App::new();
+    app.record_user_message("plan it");
+    app.begin_stream();
+    app.push_chunk("Two steps. First, split the lex");
+    app.flush_streaming_segment();
+    app.record_connection_lost(LOST_HOST, LOST_CAUSE, Some("[system] cut off"), 1, 3);
+    app.push_chunk("First, split the lexer. Then test it.");
+    app.finish_stream();
+    assert_eq!(
+        app.last_assistant_text().as_deref(),
+        Some("Two steps. First, split the lexer. Then test it.")
+    );
+}
+
+#[test]
+fn a_drop_that_kept_nothing_joins_nothing_onto_the_reply() {
+    // No note means the round went out again from scratch: the reply after
+    // the marker stands alone, and an earlier turn's answer is not glued on.
+    let mut app = App::new();
+    app.record_user_message("q1");
+    app.begin_stream();
+    app.push_chunk("an earlier answer");
+    app.finish_stream();
+    app.record_user_message("q2");
+    app.begin_stream();
+    app.record_connection_lost(LOST_HOST, LOST_CAUSE, None, 1, 3);
+    app.push_chunk("the answer");
+    app.finish_stream();
+    assert_eq!(app.last_assistant_text().as_deref(), Some("the answer"));
+}
+
+#[test]
 fn enter_runs_copy_returning_the_last_assistant_text() {
     let mut app = App::new();
     app.begin_stream();
@@ -1649,6 +1685,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::Reasoning(_) => "reasoning",
             HistoryItem::TaskCall(_) => "task_call",
             HistoryItem::HookNote(_) => "hook_note",
+            HistoryItem::Reconnect(_) => "reconnect",
         })
         .collect();
     assert_eq!(
@@ -1995,6 +2032,125 @@ fn record_hook_note_slots_after_the_flushed_segment() {
             "Assistant:second answer",
         ]
     );
+}
+
+// --- a connection lost mid-reply (docs/reconnect.md) ---
+
+const LOST_HOST: &str = "api.venice.ai";
+const LOST_CAUSE: &str = "Connection timed out (os error 110)";
+
+/// The history's shape, one label per item.
+fn history_kinds(app: &App) -> Vec<String> {
+    app.history
+        .iter()
+        .map(|item| match item {
+            HistoryItem::Message(m) => format!("{:?}:{}", m.role, m.text),
+            HistoryItem::Reconnect(r) => format!("reconnect:{}", r.host),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_lost_connection_lands_between_the_cut_off_reply_and_its_continuation() {
+    // The loop's dance (the Stop hook's): flush the text that streamed,
+    // record the drop where the model reads its note, and the continuation
+    // streams as a message of its own after it.
+    let mut app = App::new();
+    app.record_user_message("plan it");
+    app.begin_stream();
+    app.push_chunk("First, split the lex");
+    app.flush_streaming_segment();
+    let marker = app
+        .record_connection_lost(LOST_HOST, LOST_CAUSE, Some("[system] cut off"), 1, 3)
+        .expect("a reply in flight records its drop");
+    assert_eq!(marker.host, LOST_HOST);
+    assert_eq!(marker.cause, LOST_CAUSE);
+    assert_eq!(marker.note.as_deref(), Some("[system] cut off"));
+    app.push_chunk("First, split the lexer.");
+    app.finish_stream();
+    assert_eq!(
+        history_kinds(&app),
+        vec![
+            "User:plan it",
+            "Assistant:First, split the lex",
+            "reconnect:api.venice.ai",
+            "Assistant:First, split the lexer.",
+        ]
+    );
+}
+
+#[test]
+fn the_status_line_counts_the_reconnect_until_the_reply_resumes() {
+    // `retrying 2/3` while the continuation is on its way — the status
+    // line's own clause — and gone with its first word.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("cut");
+    app.record_connection_lost(LOST_HOST, LOST_CAUSE, None, 2, 3);
+    assert_eq!(
+        app.status().expect("in flight").retry,
+        Some(RetryInfo { attempt: 2, max: 3 })
+    );
+    app.push_chunk("back");
+    assert_eq!(app.status().expect("in flight").retry, None);
+}
+
+#[test]
+fn a_call_the_drop_cut_off_is_never_recorded() {
+    // A `write` streaming into its live cell when the connection died: the
+    // call never reached the loop, so its preview goes and nothing of it is
+    // kept — the continuation makes it again (docs/write-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+        index: 0,
+        name: "write".to_string(),
+        arguments: r#"{"path":"a.py","content":"print("#.to_string(),
+    });
+    assert!(app.tool_drafts().previews().next().is_some(), "previewing");
+    app.record_connection_lost(LOST_HOST, LOST_CAUSE, None, 1, 3);
+    assert!(app.tool_drafts().previews().next().is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Tool(_))),
+        "no cell for a call that never arrived"
+    );
+}
+
+#[test]
+fn a_compact_turns_lost_connection_keeps_nothing_in_the_conversation() {
+    // The summarization request's text is not the conversation's
+    // (docs/compact.md): a drop under it records nothing, while the status
+    // line still says it is reconnecting.
+    let mut app = App::new();
+    app.record_user_message("hi");
+    app.begin_stream();
+    app.push_chunk("hello");
+    app.finish_stream();
+    let before = app.history.len();
+    app.begin_compact(false);
+    app.push_chunk("The user said hi and the assist");
+    assert!(
+        app.record_connection_lost(LOST_HOST, LOST_CAUSE, Some("[system] cut off"), 1, 3)
+            .is_none()
+    );
+    assert_eq!(app.history.len(), before);
+    assert_eq!(
+        app.status().expect("compacting").retry,
+        Some(RetryInfo { attempt: 1, max: 3 })
+    );
+}
+
+#[test]
+fn no_reply_in_flight_records_no_drop() {
+    let mut app = App::new();
+    assert!(
+        app.record_connection_lost(LOST_HOST, LOST_CAUSE, None, 1, 3)
+            .is_none()
+    );
+    assert!(app.history.is_empty());
 }
 
 #[test]

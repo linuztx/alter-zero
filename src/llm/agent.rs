@@ -87,7 +87,93 @@ pub enum RoundOutcome {
     Cancelled,
     /// The request failed.
     Failed(LlmError),
+    /// The connection carrying the round **died after the model had begun
+    /// replying**, and the retry policy says to carry the turn on
+    /// ([`super::retry::resume_number`], `docs/reconnect.md`). Nothing of the
+    /// round is lost that the user saw: `partial` is the visible text it had
+    /// streamed — empty when only reasoning or a call's pieces had — and
+    /// `cut_call` whether a tool call was being generated, which never
+    /// reached the loop. `host`/`cause` name the drop for the marker;
+    /// `attempt`/`max` number it against the `Error retry` budget.
+    Dropped {
+        partial: String,
+        cut_call: bool,
+        host: String,
+        cause: String,
+        attempt: u32,
+        max: u32,
+    },
 }
+
+/// What the model reads after a reply the connection cut off — the user-role
+/// note between its cut-off message and the round that continues it
+/// (`docs/reconnect.md`). `[system]`-prefixed like every note the app writes to
+/// the model, so it never reads as the user.
+///
+/// The continuation lands under the marker as a message of its own, so it is
+/// asked to **start again at the sentence or code line** the cut fell in,
+/// copying that text exactly: the new message then opens on a whole sentence
+/// rather than half a word, and a reader joining the two pieces finds the
+/// repeated text where the second begins. A block the cut fell inside is
+/// reopened, since the new message renders on its own. `cut_call` adds the
+/// one thing the model cannot see from its own text: the call it was making
+/// never arrived, so it has to be made again.
+#[must_use]
+pub fn resume_note(cut_call: bool) -> String {
+    let mut note = String::from(RESUME_NOTE);
+    if cut_call {
+        note.push(' ');
+        note.push_str(RESUME_NOTE_CUT_CALL);
+    }
+    note
+}
+
+/// One reply a dropped connection split in two, joined back into the text the
+/// model meant (`docs/reconnect.md`) — what `/copy` copies and what a
+/// subagent's answer is, where the transcript and the context keep the two
+/// pieces apart as the wire carried them.
+///
+/// [`resume_note`] asks the continuation to start again at the sentence or
+/// code line the cut fell in, so where it complied, the longest opening of
+/// `after` that `before` already ends with — beginning at a sentence or a
+/// line there — is the repeat, and is taken out once. A continuation that
+/// carried straight on instead has no such opening and is joined as it came.
+/// Leading whitespace the continuation opens on is not part of the repeat.
+#[must_use]
+pub fn join_resumed(before: &str, after: &str) -> String {
+    let rest = after.trim_start();
+    let longest = rest.len().min(before.len()).min(JOIN_SCAN_MAX_BYTES);
+    for len in (1..=longest).rev() {
+        if !rest.is_char_boundary(len) {
+            continue;
+        }
+        let repeat = &rest[..len];
+        if before.ends_with(repeat) && opens_sentence(&before[..before.len() - len]) {
+            return format!("{before}{}", &rest[len..]);
+        }
+    }
+    format!("{before}{after}")
+}
+
+/// How far into a continuation [`join_resumed`] looks for the repeat — a
+/// paragraph's worth, so a reply that is one long line costs a bounded scan.
+const JOIN_SCAN_MAX_BYTES: usize = 4096;
+
+/// Whether text after `head` opens a sentence or a line: nothing before it, or
+/// a line break or a sentence's closing mark, with only spaces between.
+fn opens_sentence(head: &str) -> bool {
+    let head = head.trim_end_matches([' ', '\t']);
+    head.is_empty() || head.ends_with(['\n', '.', '!', '?', ':', ';'])
+}
+
+/// [`resume_note`]'s body.
+const RESUME_NOTE: &str = "[system] The connection dropped while you were replying, so your \
+     message above was cut off where it ends. Continue it: start again at the beginning of the \
+     sentence or code line it stopped in, copying that text exactly, and don't repeat anything \
+     before it. If it stopped inside a code block, reopen the block first.";
+
+/// [`resume_note`]'s closing sentence when a tool call was being generated.
+const RESUME_NOTE_CUT_CALL: &str = "The tool call you were making was not received; make it again.";
 
 /// One thing waiting to be folded into the next round's context, taken at
 /// every round boundary by [`run_agent`]'s `pending_inputs` seam. Both
@@ -249,6 +335,35 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::Cancelled => return,
+            // The connection died under the reply (docs/reconnect.md). What
+            // the user already has stays: the visible text is the assistant
+            // message it was, the note tells the model where it was cut off,
+            // and the turn runs another round — which waits out an outage
+            // like any request (docs/offline.md). With nothing visible kept
+            // (only reasoning, or a call's pieces) there is nothing to go on
+            // from, and the round simply goes out again. The event comes
+            // first, so the loop records the drop where the model reads it.
+            RoundOutcome::Dropped {
+                partial,
+                cut_call,
+                host,
+                cause,
+                attempt,
+                max,
+            } => {
+                let note = (!partial.trim().is_empty()).then(|| resume_note(cut_call));
+                let _ = tx.send(StreamEvent::ConnectionLost {
+                    host,
+                    cause,
+                    note: note.clone(),
+                    attempt,
+                    max,
+                });
+                if let Some(note) = note {
+                    messages.push(ChatMessage::assistant(partial));
+                    messages.push(ChatMessage::user(note));
+                }
+            }
             RoundOutcome::Failed(err) => {
                 // `StopFailure` (docs/hooks.md): the turn ends on an error.
                 // Fired BEFORE the Error goes out, as Stop is before
@@ -2217,6 +2332,245 @@ mod tests {
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
         assert_eq!(*seen_lens.borrow(), vec![1, 3]);
+    }
+
+    // --- a connection lost mid-reply (docs/reconnect.md) ---
+
+    /// A round the connection dropped under: `partial` the visible text it
+    /// had streamed, `cut_call` whether a call was being generated.
+    fn dropped(partial: &str, cut_call: bool) -> RoundOutcome {
+        RoundOutcome::Dropped {
+            partial: partial.to_string(),
+            cut_call,
+            host: "api.venice.ai".to_string(),
+            cause: "Connection timed out (os error 110)".to_string(),
+            attempt: 1,
+            max: 3,
+        }
+    }
+
+    /// Drive a turn through scripted rounds, returning the events and every
+    /// message list a round was sent.
+    fn scripted_rounds(
+        cancel: &CancelToken,
+        rounds: Vec<RoundOutcome>,
+    ) -> (Vec<StreamEvent>, Vec<Vec<ChatMessage>>) {
+        let (tx, mut rx) = unbounded_channel();
+        let rounds = RefCell::new(std::collections::VecDeque::from(rounds));
+        let sent = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("plan the refactor")],
+            |msgs| {
+                sent.borrow_mut().push(msgs.to_vec());
+                rounds
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("a scripted round for every request")
+            },
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        (drain(&mut rx), sent.into_inner())
+    }
+
+    #[test]
+    fn a_reply_the_connection_dropped_is_carried_on_from_where_it_stopped() {
+        // The reported failure ended the turn on a red error with the reply
+        // half-written. Now the turn goes on: what the user already has is
+        // the assistant message it was, a note says where it was cut off,
+        // and the next round continues it — one turn, no error.
+        let (events, sent) = scripted_rounds(
+            &CancelToken::new(),
+            vec![
+                dropped("First, split the lex", false),
+                RoundOutcome::Complete {
+                    text: "First, split the lexer.".to_string(),
+                },
+            ],
+        );
+        let note = resume_note(false);
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ConnectionLost {
+                    host: "api.venice.ai".to_string(),
+                    cause: "Connection timed out (os error 110)".to_string(),
+                    note: Some(note.clone()),
+                    attempt: 1,
+                    max: 3,
+                },
+                StreamEvent::StreamDone,
+            ]
+        );
+        assert_eq!(sent.len(), 2, "one more round, not a new turn");
+        assert_eq!(
+            sent[1],
+            vec![
+                ChatMessage::user("plan the refactor"),
+                ChatMessage::assistant("First, split the lex"),
+                ChatMessage::user(&note),
+            ],
+            "the continuation reads its own cut-off text, then the note"
+        );
+    }
+
+    #[test]
+    fn a_round_dropped_before_any_visible_text_is_simply_sent_again() {
+        // Only reasoning, or a call's pieces, had streamed: nothing the
+        // model said is on screen to go on from, so the round goes out again
+        // exactly as it was — no message, no note.
+        for partial in ["", "\n\n"] {
+            let (events, sent) = scripted_rounds(
+                &CancelToken::new(),
+                vec![
+                    dropped(partial, true),
+                    RoundOutcome::Complete {
+                        text: "done".to_string(),
+                    },
+                ],
+            );
+            assert!(
+                matches!(&events[0], StreamEvent::ConnectionLost { note: None, .. }),
+                "{events:?}"
+            );
+            assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+            assert_eq!(sent[0], sent[1], "the same request, again ({partial:?})");
+        }
+    }
+
+    #[test]
+    fn the_note_asks_again_for_a_tool_call_the_drop_cut_off() {
+        // A call the model was generating never reached the loop — no half
+        // of it is kept — so the note tells the model to make it again, and
+        // says nothing of calls when none was being made.
+        let (_, sent) = scripted_rounds(
+            &CancelToken::new(),
+            vec![
+                dropped("Let me write the parser:", true),
+                RoundOutcome::Complete {
+                    text: "ok".to_string(),
+                },
+            ],
+        );
+        let note = sent[1].last().expect("the note").clone();
+        assert_eq!(note, ChatMessage::user(resume_note(true)));
+        assert!(resume_note(true).contains("tool call"));
+        assert!(!resume_note(false).contains("tool call"));
+        // Both read as the app's note to the model, never as the user.
+        assert!(resume_note(false).starts_with("[system] "));
+    }
+
+    #[test]
+    fn a_drop_never_fires_stop_and_the_continuation_still_can() {
+        // The cut-off round did not finish answering, so `Stop` waits for the
+        // round that does — once, with that round's reply.
+        let (tx, _rx) = unbounded_channel();
+        let hooks = FakeHooks::default();
+        let rounds = RefCell::new(std::collections::VecDeque::from(vec![
+            dropped("Half an ans", false),
+            RoundOutcome::Complete {
+                text: "Half an answer, then the rest.".to_string(),
+            },
+        ]));
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| rounds.borrow_mut().pop_front().expect("scripted"),
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+            &no_sessions,
+        );
+        assert_eq!(
+            hooks.stop_seen(),
+            vec![(false, "Half an answer, then the rest.".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_continuation_that_starts_the_cut_sentence_again_joins_where_the_repeat_begins() {
+        // What the note asks for: the sentence, or the code line, the cut fell
+        // in, repeated from its start — so the joined reply is whole and says
+        // nothing twice.
+        assert_eq!(
+            join_resumed("Two steps. First, split the lex", "First, split the lexer."),
+            "Two steps. First, split the lexer."
+        );
+        assert_eq!(
+            join_resumed("fn main() {\n    let x = fo", "    let x = foo();\n}"),
+            "fn main() {\n    let x = foo();\n}"
+        );
+        assert_eq!(
+            join_resumed("- one\n- tw", "\n- two\n- three"),
+            "- one\n- two\n- three",
+            "space the continuation opens on is not part of the repeat"
+        );
+    }
+
+    #[test]
+    fn a_continuation_that_picks_up_mid_word_joins_as_it_came() {
+        // A model that ignores the note and carries straight on: no repeat to
+        // find, so the two pieces simply meet.
+        assert_eq!(
+            join_resumed("Two steps. First, split the lex", "er. Then test it."),
+            "Two steps. First, split the lexer. Then test it."
+        );
+    }
+
+    #[test]
+    fn a_word_that_only_happens_to_repeat_is_not_a_repeat() {
+        // " the" ends the cut text and opens the continuation, but it does
+        // not start a sentence there — so it is the continuation's own word,
+        // not a restart, and nothing is taken out.
+        assert_eq!(
+            join_resumed("I saw the", " theater, then left."),
+            "I saw the theater, then left."
+        );
+    }
+
+    #[test]
+    fn a_cancel_after_a_drop_stops_silently() {
+        // Esc while the turn reconnects: no further round, and no terminal
+        // event — the loop's interrupt path owns the outcome.
+        let cancel = CancelToken::new();
+        let (tx, mut rx) = unbounded_channel();
+        let mut rounds = 0;
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| {
+                rounds += 1;
+                cancel.cancel();
+                dropped("cut", false)
+            },
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        assert_eq!(rounds, 1);
+        let events = drain(&mut rx);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, StreamEvent::StreamDone | StreamEvent::Error(_))),
+            "{events:?}"
+        );
     }
 
     #[test]

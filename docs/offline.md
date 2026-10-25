@@ -86,14 +86,16 @@ comes back. So that failure gets no budget and no deadline:
   is back opens on its first number. A host that answers at all, even with
   an error, resets the outage count, so the next outage counts from one.
 - **The same two gates as a retry.** A failure after content has streamed is
-  surfaced, never re-sent — restarting the request would duplicate the
-  streamed text — so a connection that drops *mid-reply* still ends the turn
-  with the red notice and the partial; only the request that got nothing
-  through waits. (In an agentic turn that is every round's request: a tool
-  round that comes back to find the network gone waits, and the turn
-  continues where it was.) And `/settings` **Error retry** at `0` means
-  *never retry*, the wait included: the `could not reach {host}: …` error
-  surfaces at once, in the words of the transport.
+  never re-sent — restarting the request would duplicate the streamed text —
+  and only the request that got nothing through waits. A connection that
+  drops *mid-reply* is **carried on** instead (`docs/reconnect.md`): the turn
+  keeps what streamed, marks the cut, and continues the reply in a round of
+  its own — an ordinary request, so if the network is gone it is that
+  request that waits here. (In an agentic turn that is every round's
+  request: a tool round that comes back to find the network gone waits, and
+  the turn continues where it was.) And `/settings` **Error retry** at `0`
+  means *never retry*, the wait included: the `could not reach {host}: …`
+  error surfaces at once, in the words of the transport.
 - **Esc is the way out**, as for any wait: the sleep is `sleep_cancellable`'s
   50 ms slices, so the interrupt lands at once, and the cancel is silent.
   Then the ordinary interrupt rule applies (`docs/interrupt.md`): with nothing
@@ -184,7 +186,8 @@ over `No connection to localhost:8080`, which names what is actually gone
 - A stall: a provider that accepts the connection and sits on the headers
   past `NET_OP_TIMEOUT` (120 s) is a bounded, counted retry — it answered,
   slowly.
-- A drop mid-reply is surfaced, never re-sent (above).
+- A drop mid-reply is never re-sent; it is carried on from what streamed
+  (above, `docs/reconnect.md`).
 - The `/model` picker's fetch does not retry; its failure now reads `could
   not reach {host}: …` instead of `request failed: error sending request for
   url (…)`.

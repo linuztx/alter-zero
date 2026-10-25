@@ -423,6 +423,41 @@ impl Session<'_> {
                 self.app.set_retry(attempt, max);
                 false
             }
+            StreamEvent::ConnectionLost {
+                host,
+                cause,
+                note,
+                attempt,
+                max,
+            } => {
+                // The connection under the reply died and the turn carries on
+                // (docs/reconnect.md). An open thought settles first — the
+                // backend already closed the phase, so this is the defensive
+                // no-op it is at an error — then the text that streamed
+                // becomes its own message (flush before you interleave) and
+                // the marker commits under it, where the model reads the
+                // note; the continuation streams as a message of its own. A
+                // compact turn's text is not the conversation's (the HookNote
+                // rule): nothing is flushed, and the app records nothing.
+                self.settle_reasoning();
+                if !self.app.is_compacting() {
+                    self.flush_segment(committing, width);
+                    self.render.reset();
+                }
+                if let Some(marker) =
+                    self.app
+                        .record_connection_lost(&host, &cause, note.as_deref(), attempt, max)
+                    && committing
+                {
+                    // A `write` preview the drop cut off just left the strip,
+                    // so reseat before committing (invariant 3).
+                    let height = self.live_region_height();
+                    self.term.set_view_height(height);
+                    self.term.insert_before(ui::reconnect_lines(&marker, width));
+                    self.term.insert_before(vec![Line::default()]);
+                }
+                false
+            }
             StreamEvent::Offline { host, attempts } => {
                 // No connection could be made and the backend is waiting for
                 // one, re-sending the request every few seconds for as long

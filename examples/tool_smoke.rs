@@ -227,6 +227,19 @@ fn main() {
             StreamEvent::Offline { host, attempts } => {
                 println!("\x1b[33m[no connection to {host} — waiting, {attempts} attempts]\x1b[0m");
             }
+            // The connection died under the reply and the turn carries it on
+            // (docs/reconnect.md).
+            StreamEvent::ConnectionLost {
+                host,
+                cause,
+                attempt,
+                max,
+                ..
+            } => {
+                println!(
+                    "\n\x1b[33m[lost the connection to {host}: {cause} — reconnecting {attempt}/{max}]\x1b[0m"
+                );
+            }
             // A message queued mid-turn, folded in at a round boundary
             // (docs/queue.md) — this probe queues none, but print it if one
             // ever arrives rather than swallowing it.

@@ -12,6 +12,25 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A reply whose connection drops mid-stream carries on instead of failing
+  the turn.** When the network dropped while a reply was streaming, the
+  connection died about a minute later and the turn ended with `request
+  failed: request or response body error: error reading a body from
+  connection: Connection timed out (os error 110)` and the reply half
+  written. The part that streamed now stays on screen, a marker under it
+  says `Lost the connection to {host} · reconnecting` with the cause, and
+  the model continues the reply where it was cut off, in the same turn. If
+  the network is still down, the turn waits for it the way it already waits
+  for a connection it can't make. A tool call that was being written when
+  the connection dropped is made again, and if the model had only been
+  thinking, the request is sent again as it was. This uses the `/settings`
+  **Error retry** budget: after that many drops in a row the turn ends with
+  `lost the connection to {host}: {cause}`, and at `0` it ends on the first
+  drop. `/copy` copies a continued reply whole, and subagents carry on the
+  same way (`docs/reconnect.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

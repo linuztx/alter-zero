@@ -157,6 +157,67 @@ pub(super) fn hook_note_lines(note: &crate::app::HookNote, width: u16) -> Vec<Li
     lines
 }
 
+/// A connection lost mid-reply (`docs/reconnect.md`): the amber `● Lost the
+/// connection to {host} · reconnecting` marker between the cut-off text and
+/// its continuation, over the socket's own words in the `⎿` gutter a tool's
+/// output hangs from — both wrapped, never clipped, every wrapped row under
+/// its own column. The inline cell; the note the model read there shows in
+/// the Ctrl+O transcript (`reconnect_full_lines`).
+#[must_use]
+pub fn reconnect_lines(drop: &crate::app::Reconnect, width: u16) -> Vec<Line<'static>> {
+    let bullet_style = Style::new()
+        .fg(connection_lost_color())
+        .add_modifier(Modifier::BOLD);
+    let headline = format!("{CONNECTION_LOST_LEAD} {}{CONNECTION_LOST_TAIL}", drop.host);
+    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    let mut lines: Vec<Line<'static>> = wrap_text(&headline, content_width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let lead = if i == 0 {
+                Span::styled(AI_BULLET.to_string(), bullet_style)
+            } else {
+                Span::raw(INDENT.to_string())
+            };
+            Line::from(vec![lead, Span::raw(row)])
+        })
+        .collect();
+    let dim = Style::new().fg(tool_dim_color());
+    let gutter = cols(TOOL_RESULT_PREFIX);
+    let cause_width = width.saturating_sub(gutter as u16).max(1);
+    for (i, row) in wrap_text(&drop.cause, cause_width).into_iter().enumerate() {
+        let lead = if i == 0 {
+            TOOL_RESULT_PREFIX.to_string()
+        } else {
+            " ".repeat(gutter)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(lead, dim),
+            Span::styled(row, dim),
+        ]));
+    }
+    lines
+}
+
+/// The Ctrl+O transcript's connection-lost cell: the inline marker, then the
+/// note the continuing round was sent — dim and indented, what the model read
+/// there, readable in place (`docs/reconnect.md`). A drop that kept nothing
+/// sent no note, and shows the marker alone.
+pub(super) fn reconnect_full_lines(drop: &crate::app::Reconnect, width: u16) -> Vec<Line<'static>> {
+    let mut lines = reconnect_lines(drop, width);
+    if let Some(note) = &drop.note {
+        let dim = Style::new().fg(tool_dim_color());
+        let body_width = width.saturating_sub(BULLET_WIDTH).max(1);
+        for row in wrap_text(note, body_width) {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT.to_string()),
+                Span::styled(row, dim),
+            ]));
+        }
+    }
+    lines
+}
+
 /// The stamp footer under a **user** message in the transcript: a blank row,
 /// then the dim timestamp right-aligned flush to `width`. Empty for an empty
 /// timestamp (no clock injected). Only user messages get this — the other item

@@ -82,7 +82,7 @@ pub struct Attempts {
 #[must_use]
 pub fn is_retryable(err: &LlmError) -> bool {
     match err {
-        LlmError::Http(_) | LlmError::Unreachable { .. } => true,
+        LlmError::Http(_) | LlmError::Unreachable { .. } | LlmError::ConnectionLost { .. } => true,
         LlmError::Api { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
         LlmError::Decode(_) | LlmError::Cancelled => false,
     }
@@ -159,6 +159,24 @@ pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max:
         };
     }
     RetryStep::Proceed
+}
+
+/// Whether a round whose stream failed **after** it began streaming is carried
+/// on rather than ended, and as which resume (1-based) — `None` to surface the
+/// error (`docs/reconnect.md`).
+///
+/// [`next_step`] never re-sends such a request: the reply would stream twice.
+/// But a reply the connection cut off ([`LlmError::ConnectionLost`]) is not a
+/// reply the provider refused — the agent loop keeps what streamed and asks
+/// the model to go on from it, in a request of its own. That spends the same
+/// `Error retry` budget a re-send would, counted over the drops in a row
+/// (`dropped`, reset by any round that finishes), so `max == 0` still means
+/// never and a link that drops again and again still ends the turn. Anything
+/// else after content — the provider's own error frame, a decode failure — is
+/// surfaced as before.
+#[must_use]
+pub fn resume_number(err: &LlmError, dropped: u32, max: u32) -> Option<u32> {
+    (matches!(err, LlmError::ConnectionLost { .. }) && dropped < max).then(|| dropped + 1)
 }
 
 /// Drive one streamed turn with retries. `attempt` performs a single streaming
@@ -326,6 +344,74 @@ mod tests {
             host: host.into(),
             message: "tcp connect error: Network is unreachable".into(),
         })
+    }
+
+    #[test]
+    fn a_connection_lost_before_any_content_takes_the_bounded_retry() {
+        // A body read that failed before the first delta: the host answered,
+        // then the connection died — re-sending duplicates nothing, so it is
+        // the ordinary bounded retry (docs/reconnect.md).
+        let lost = LlmError::ConnectionLost {
+            host: "api.venice.ai".into(),
+            message: "Connection timed out (os error 110)".into(),
+        };
+        assert!(is_retryable(&lost));
+        assert_eq!(
+            next_step(&AttemptResult::Failed(lost), retried(0), false, MAX_RETRIES),
+            RetryStep::Retry {
+                number: 1,
+                wait: retry_backoff(1)
+            }
+        );
+    }
+
+    fn connection_lost() -> LlmError {
+        LlmError::ConnectionLost {
+            host: "api.venice.ai".into(),
+            message: "Connection timed out (os error 110)".into(),
+        }
+    }
+
+    #[test]
+    fn a_connection_lost_mid_reply_is_resumed_within_the_budget() {
+        // After content has streamed the request is never re-sent as it was
+        // (that would duplicate the reply) — the agent loop carries the turn
+        // on from what streamed instead (docs/reconnect.md), numbered against
+        // the same `Error retry` budget, one drop at a time.
+        assert_eq!(resume_number(&connection_lost(), 0, MAX_RETRIES), Some(1));
+        assert_eq!(resume_number(&connection_lost(), 2, MAX_RETRIES), Some(3));
+        assert_eq!(
+            resume_number(&connection_lost(), MAX_RETRIES, MAX_RETRIES),
+            None,
+            "drop after drop with no round finishing between them runs out"
+        );
+    }
+
+    #[test]
+    fn retries_off_never_resume_a_dropped_reply() {
+        // `Error retry` 0 means never retry — a drop mid-reply included.
+        assert_eq!(resume_number(&connection_lost(), 0, 0), None);
+    }
+
+    #[test]
+    fn only_a_lost_connection_is_resumed() {
+        // A provider's own error frame, a stall before the reply began, a
+        // decode failure: none of them is a reply the connection cut off.
+        for err in [
+            LlmError::Http("operation timed out".into()),
+            LlmError::Api {
+                status: 0,
+                body: "overloaded".into(),
+            },
+            LlmError::Decode("bad frame".into()),
+            LlmError::Unreachable {
+                host: "api.venice.ai".into(),
+                message: "refused".into(),
+            },
+            LlmError::Cancelled,
+        ] {
+            assert_eq!(resume_number(&err, 0, MAX_RETRIES), None, "{err:?}");
+        }
     }
 
     #[test]

@@ -258,8 +258,18 @@ impl ChatMessage {
 #[derive(Debug)]
 pub enum LlmError {
     /// A transport failure on a connection that **was** made — a stall past the
-    /// per-operation timeout, a reset mid-exchange, a body read that failed.
+    /// per-operation timeout before the response began, a reset mid-exchange.
     Http(String),
+    /// The connection carrying a response **died while its body was being
+    /// read**: the TCP keepalive gave up on a link that went dead
+    /// (`Connection timed out`), a reset, a stream closed before it ended, a
+    /// read that stalled past the per-operation timeout. The host had
+    /// answered, so this is never an outage to wait for — but a reply cut off
+    /// this way is one the agent loop **reconnects and carries on**
+    /// (`docs/reconnect.md`). `host` is the host (and non-default port) the
+    /// request was for; `message` the socket's own account, the root of the
+    /// cause chain.
+    ConnectionLost { host: String, message: String },
     /// No connection could be made to `host` at all: the name would not
     /// resolve, the TCP connect was refused or timed out, the TLS handshake
     /// failed, or the proxy in front of it could not be reached. The machine
@@ -281,6 +291,9 @@ impl std::fmt::Display for LlmError {
         match self {
             Self::Http(e) => write!(f, "request failed: {e}"),
             Self::Unreachable { host, message } => write!(f, "could not reach {host}: {message}"),
+            Self::ConnectionLost { host, message } => {
+                write!(f, "lost the connection to {host}: {message}")
+            }
             Self::Api { status, body } => {
                 let body = body.trim();
                 if body.is_empty() {
@@ -329,13 +342,20 @@ impl LlmError {
         Self::Http(message)
     }
 
-    /// A failed read of a response body: the `io::Error` the blocking client
-    /// wraps its own error in, the cause — a reset, a stream closed early —
-    /// further down. Always [`Http`](LlmError::Http): the connection existed,
-    /// so there is nothing to wait for; the message walks the chain the way
-    /// [`transport`](Self::transport) does for a send.
-    pub(crate) fn body_read(error: &std::io::Error) -> Self {
-        Self::Http(error_chain_message(error))
+    /// A failed read of a response body — always
+    /// [`ConnectionLost`](LlmError::ConnectionLost), naming the host of `url`
+    /// (the request's own). The blocking client hands the failure over as an
+    /// `io::Error` around its own body error, around hyper's, around the
+    /// socket's: `request or response body error: error reading a body from
+    /// connection: Connection timed out (os error 110)`. The first two layers
+    /// only say a body was being read, which the sentence already says, so
+    /// the message is the **root cause** alone — the part a user can act on
+    /// (`docs/reconnect.md`).
+    pub(crate) fn body_read(error: &std::io::Error, url: Option<&reqwest::Url>) -> Self {
+        Self::ConnectionLost {
+            host: url.map_or_else(|| "the provider".to_string(), host_label),
+            message: root_cause_message(error),
+        }
     }
 }
 
@@ -355,6 +375,21 @@ pub(crate) fn host_label(url: &reqwest::Url) -> String {
 /// ([`error_chain_message`]).
 pub(crate) fn transport_message(error: &reqwest::Error) -> String {
     error_chain_message(error)
+}
+
+/// The deepest cause under `error` — what the socket itself said — or, when
+/// that layer prints nothing, the whole chain ([`error_chain_message`]).
+fn root_cause_message(error: &dyn std::error::Error) -> String {
+    let mut root = error;
+    while let Some(cause) = root.source() {
+        root = cause;
+    }
+    let text = root.to_string();
+    if text.trim().is_empty() {
+        error_chain_message(error)
+    } else {
+        text
+    }
 }
 
 /// An error and every cause under it, joined `: ` — a layer whose own text
@@ -721,42 +756,76 @@ mod tests {
         }
     }
 
+    /// One layer of an error chain: its own words, and the cause under it.
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    /// A streamed body's read failure the way the blocking client hands it
+    /// over: an `io::Error` around `reqwest`'s body error, around hyper's,
+    /// around the socket's own — the reported `Connection timed out`.
+    fn timed_out_body_read() -> std::io::Error {
+        std::io::Error::other(Layer(
+            "request or response body error",
+            Some(Box::new(Layer(
+                "error reading a body from connection",
+                Some(Box::new(Layer("Connection timed out (os error 110)", None))),
+            ))),
+        ))
+    }
+
     #[test]
-    fn a_body_read_failure_names_its_cause_chain() {
-        // A streamed body's read error reaches the transport as an
-        // `io::Error` wrapping the HTTP client's own error, whose cause — the
-        // connection reset, the stream closed early — is further down. The
-        // message walks the whole chain, as `transport` does for a send.
-        #[derive(Debug)]
-        struct Reset;
-        impl std::fmt::Display for Reset {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("connection reset by peer")
-            }
+    fn a_body_read_failure_is_a_lost_connection_naming_the_host() {
+        // The connection carrying the reply existed and then died — the TCP
+        // keepalive gave up on it, a reset, a stream closed early. That is a
+        // connection lost mid-reply, not a request that failed
+        // (`docs/reconnect.md`), and it names the host it was to.
+        let url = reqwest::Url::parse("https://api.venice.ai/api/v1/chat/completions").unwrap();
+        match LlmError::body_read(&timed_out_body_read(), Some(&url)) {
+            LlmError::ConnectionLost { host, .. } => assert_eq!(host, "api.venice.ai"),
+            other => panic!("a failed body read is a lost connection, got {other:?}"),
         }
-        impl std::error::Error for Reset {}
-        #[derive(Debug)]
-        struct BodyError(Reset);
-        impl std::fmt::Display for BodyError {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("request or response body error")
-            }
-        }
-        impl std::error::Error for BodyError {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                Some(&self.0)
-            }
-        }
-        let io = std::io::Error::other(BodyError(Reset));
+    }
+
+    #[test]
+    fn a_lost_connection_says_what_the_socket_said_and_not_the_wrappers() {
+        // `request or response body error: error reading a body from
+        // connection` is the client saying it was reading the body — which
+        // the sentence already says. The socket's own words are the cause.
+        let url = reqwest::Url::parse("https://api.venice.ai/v1").unwrap();
         assert_eq!(
-            LlmError::body_read(&io).to_string(),
-            "request failed: request or response body error: connection reset by peer"
+            LlmError::body_read(&timed_out_body_read(), Some(&url)).to_string(),
+            "lost the connection to api.venice.ai: Connection timed out (os error 110)"
         );
-        // A bare I/O error keeps its one line.
+        // A bare I/O error is its own cause, and a request without a URL
+        // still reads as a sentence.
         let plain = std::io::Error::new(std::io::ErrorKind::TimedOut, "operation timed out");
         assert_eq!(
-            LlmError::body_read(&plain).to_string(),
-            "request failed: operation timed out"
+            LlmError::body_read(&plain, None).to_string(),
+            "lost the connection to the provider: operation timed out"
+        );
+    }
+
+    #[test]
+    fn a_cause_with_nothing_to_say_falls_back_to_the_whole_chain() {
+        // A deepest layer that prints nothing would leave the user an empty
+        // reason; the chain above it is the next best account.
+        let io = std::io::Error::other(Layer("stream error", Some(Box::new(Layer("", None)))));
+        let url = reqwest::Url::parse("http://127.0.0.1:8080/v1").unwrap();
+        assert_eq!(
+            LlmError::body_read(&io, Some(&url)).to_string(),
+            "lost the connection to 127.0.0.1:8080: stream error"
         );
     }
 

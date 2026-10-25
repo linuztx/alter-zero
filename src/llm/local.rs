@@ -211,8 +211,14 @@ pub fn verdict(name: &str, server: &str, result: &Result<Vec<ModelEntry>>) -> Ve
         }
         LlmError::Api { .. } => format!("{name} at {server} answered {error}"),
         LlmError::Unreachable { message, .. } => connect_failure(name, server, message),
-        LlmError::Http(message) if timed_out(message) => no_answer(server),
-        LlmError::Http(message) => format!("The connection to {server} failed: {message}"),
+        LlmError::Http(message) | LlmError::ConnectionLost { message, .. }
+            if timed_out(message) =>
+        {
+            no_answer(server)
+        }
+        LlmError::Http(message) | LlmError::ConnectionLost { message, .. } => {
+            format!("The connection to {server} failed: {message}")
+        }
         LlmError::Cancelled => "The test was stopped.".to_string(),
     };
     Verdict::Failed(text)
@@ -664,6 +670,23 @@ mod tests {
         ));
         assert!(text.contains("did not answer in time"), "{text}");
         let stalled = failed(LlmError::Http("operation timed out".to_string()));
+        assert!(stalled.contains("did not answer in time"), "{stalled}");
+    }
+
+    #[test]
+    fn a_connection_lost_mid_listing_reads_like_any_failed_connection() {
+        // The server answered and the connection died under its listing:
+        // the test failed on the connection, said in the transport's words —
+        // and a stall is still a server that did not answer in time.
+        let lost = |message: &str| LlmError::ConnectionLost {
+            host: "127.0.0.1:1234".to_string(),
+            message: message.to_string(),
+        };
+        assert_eq!(
+            failed(lost("Connection reset by peer (os error 104)")),
+            "The connection to 127.0.0.1:1234 failed: Connection reset by peer (os error 104)"
+        );
+        let stalled = failed(lost("operation timed out"));
         assert!(stalled.contains("did not answer in time"), "{stalled}");
     }
 

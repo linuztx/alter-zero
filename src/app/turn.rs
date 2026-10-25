@@ -176,6 +176,45 @@ impl App {
             }));
     }
 
+    /// The connection under the reply died and the turn carries on
+    /// (`docs/reconnect.md`, [`crate::stream::StreamEvent::ConnectionLost`]).
+    /// The call the round was still generating never arrived, so its draft
+    /// goes, and the status line counts the reconnect —
+    /// `retrying {attempt}/{max}` — until the continuation streams. The drop
+    /// itself is recorded as the [`HistoryItem::Reconnect`] marker, returned
+    /// for the boundary to commit: the caller flushes the streamed text first
+    /// (the Stop hook's dance), so the marker slots between the cut-off text
+    /// and its continuation, where the model reads the `note`.
+    ///
+    /// Nothing is recorded — `None` — with no reply in flight, or in a
+    /// `/compact` turn, whose request is not the conversation's (the
+    /// [`record_hook_note`](Self::record_hook_note) rule, `docs/compact.md`).
+    pub fn record_connection_lost(
+        &mut self,
+        host: &str,
+        cause: &str,
+        note: Option<&str>,
+        attempt: u32,
+        max: u32,
+    ) -> Option<Reconnect> {
+        self.tool_drafts.clear();
+        if let Some(status) = self.status.as_mut() {
+            status.recovered();
+            status.retry = Some(RetryInfo { attempt, max });
+        }
+        if self.streaming.is_none() || self.is_compacting() {
+            return None;
+        }
+        let marker = Reconnect {
+            host: host.to_string(),
+            cause: cause.to_string(),
+            note: note.map(str::to_string),
+            timestamp: self.now_stamp(),
+        };
+        self.history.push(HistoryItem::Reconnect(marker.clone()));
+        Some(marker)
+    }
+
     /// Begin a reply: open an empty streaming buffer so the live region can
     /// show the assistant is responding even before the first chunk arrives, and
     /// start the live turn status (open on the next status verb, reset the

@@ -842,6 +842,10 @@ impl ReplySource for LlmBackend {
             if let Ok(mut log) = turn_context.lock() {
                 log.push_request(&prompt);
             }
+            // The rounds in a row whose connection died mid-reply — one count
+            // for the whole turn, so a link that keeps dropping spends the
+            // `Error retry` budget once (docs/reconnect.md).
+            let mut dropped = 0;
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -854,7 +858,8 @@ impl ReplySource for LlmBackend {
             // background shell that finished (or was killed) since the last
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
-            // subagent launcher instead (docs/agent-tool.md).
+            // subagent launcher instead (docs/agent-tool.md). A round whose
+            // connection dies mid-reply is carried on (docs/reconnect.md).
             agent::run_agent(
                 &tx,
                 &cancel,
@@ -864,7 +869,7 @@ impl ReplySource for LlmBackend {
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
-                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                    stream_round(&client, msgs, &tx, &cancel, max_retries, &mut dropped)
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
@@ -1808,12 +1813,15 @@ fn spawn_subagent_run(
                 super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
             })
             .unwrap_or_default();
+        // The run's own drop count — a subagent's reply the connection cut
+        // off carries on exactly as the lead's does (docs/reconnect.md).
+        let mut dropped = 0;
         agent::run_agent(
             &tx2,
             &cancel,
             max_tool_calls,
             &mut messages,
-            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
+            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries, &mut dropped),
             |call, on_output| {
                 // The agent companions are the lead's alone — never offered
                 // here, and a hallucinated call is declined recoverably, like
@@ -1984,23 +1992,48 @@ fn spawn_subagent_run(
 /// per-request retry), emitting the `Chunk`/`Thinking*` events as text and
 /// reasoning arrive, and reporting the [`RoundOutcome`] the agent loop acts on
 /// — `Complete` (plain answer), `ToolCalls` (the model wants to run tools),
+/// `Dropped` (the connection died under the reply and the turn carries on),
 /// `Cancelled`, or `Failed`. Boundary code (real HTTP); the loop that calls it
-/// and the retry it wraps are unit-tested separately.
+/// and the policies it applies are unit-tested separately.
+///
+/// `dropped` counts the rounds in a row whose connection died mid-reply — the
+/// caller keeps it for the whole turn, and any round that finishes resets it
+/// — so a link that drops again and again spends the `Error retry` budget
+/// once, not once per round (`docs/reconnect.md`).
 fn stream_round(
     client: &OpenAiClient,
     messages: &[ChatMessage],
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     max_retries: u32,
+    dropped: &mut u32,
 ) -> RoundOutcome {
+    // A round carrying on from a dropped one waits the bounded retry's
+    // backoff first, so a link that drops at once again is not hammered —
+    // and Esc lands mid-wait, as during any retry's (docs/reconnect.md).
+    if *dropped > 0 {
+        retry::sleep_cancellable(retry::retry_backoff(*dropped), cancel);
+        if cancel.is_cancelled() {
+            return RoundOutcome::Cancelled;
+        }
+    }
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
+    // What the last attempt streamed, for a reply the connection cuts off
+    // (docs/reconnect.md): its visible text, whether it was generating a
+    // call, and whether it emitted anything at all — only an attempt that
+    // emitted nothing is ever re-sent, so the last one is the one that did.
+    let mut partial = String::new();
+    let mut cut_call = false;
+    let mut streamed = false;
     // One streaming attempt: stream the deltas as events and report the outcome
     // plus whether it emitted any content. `retry::run_attempts` re-runs it —
     // after a `Retrying` announcement + backoff — only for a retryable failure
     // that emitted nothing, so a retry can never duplicate streamed text.
     let attempt = || {
+        partial.clear();
+        cut_call = false;
         let mut emitted = false;
         // Track the thinking phase so a reasoning burst opens exactly one
         // ThinkingStart and the first response text after it closes with a
@@ -2021,6 +2054,7 @@ fn stream_round(
                     thinking = false;
                     let _ = tx.send(StreamEvent::ThinkingEnd);
                 }
+                partial.push_str(&delta.response);
                 let _ = tx.send(StreamEvent::Chunk(delta.response));
             }
             if !delta.tool_calls.is_empty() {
@@ -2030,6 +2064,7 @@ fn stream_round(
                 // content arrives (docs/write-streaming.md). Close the
                 // thinking phase first if a reasoning burst preceded the call.
                 emitted = true;
+                cut_call = true;
                 if thinking {
                     thinking = false;
                     let _ = tx.send(StreamEvent::ThinkingEnd);
@@ -2044,6 +2079,7 @@ fn stream_round(
         if thinking {
             let _ = tx.send(StreamEvent::ThinkingEnd);
         }
+        streamed = emitted;
         match result {
             Ok(outcome) => {
                 // A tool-calling round emits no visible reply text, so treat it
@@ -2059,6 +2095,8 @@ fn stream_round(
     };
     match retry::run_attempts(tx, cancel, max_retries, attempt, retry::sleep_cancellable) {
         AttemptResult::Ok => {
+            // A round that finished: the next drop is a first one again.
+            *dropped = 0;
             let outcome = captured.unwrap_or_default();
             // The round's real usage frame (stream_options.include_usage):
             // forward it so the app snaps its tally to the provider's own
@@ -2083,7 +2121,27 @@ fn stream_round(
             }
         }
         AttemptResult::Cancelled => RoundOutcome::Cancelled,
-        AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+        // The connection died after the reply had begun: re-sending it would
+        // stream it twice, so the turn carries on from what streamed instead
+        // — while the budget lasts (docs/reconnect.md).
+        AttemptResult::Failed(e) => match retry::resume_number(&e, *dropped, max_retries) {
+            Some(attempt) if streamed => {
+                *dropped = attempt;
+                let (host, cause) = match e {
+                    LlmError::ConnectionLost { host, message } => (host, message),
+                    other => ("the provider".to_string(), other.to_string()),
+                };
+                RoundOutcome::Dropped {
+                    partial,
+                    cut_call,
+                    host,
+                    cause,
+                    attempt,
+                    max: max_retries,
+                }
+            }
+            _ => RoundOutcome::Failed(e),
+        },
     }
 }
 

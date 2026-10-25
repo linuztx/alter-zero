@@ -135,7 +135,9 @@ pub fn stop_failure_kind(error: &super::LlmError) -> &'static str {
             400..=499 => "invalid_request",
             _ => "server_error",
         },
-        LlmError::Http(_) | LlmError::Unreachable { .. } => "server_error",
+        LlmError::Http(_) | LlmError::Unreachable { .. } | LlmError::ConnectionLost { .. } => {
+            "server_error"
+        }
         LlmError::Decode(_) | LlmError::Cancelled => "unknown",
     }
 }
@@ -2030,6 +2032,15 @@ mod tests {
         assert_eq!(stop_failure_kind(&api(500)), "server_error");
         assert_eq!(
             stop_failure_kind(&LlmError::Http("reset".into())),
+            "server_error"
+        );
+        // A connection lost mid-reply that no reconnect could carry on
+        // (docs/reconnect.md) is the server side failing, like a reset.
+        assert_eq!(
+            stop_failure_kind(&LlmError::ConnectionLost {
+                host: "api.venice.ai".into(),
+                message: "Connection timed out (os error 110)".into(),
+            }),
             "server_error"
         );
         assert_eq!(

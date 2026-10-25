@@ -490,6 +490,9 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
         // The compacted shape always pushes the summary bridge, even over an
         // empty summary ("(no summary available)").
         | HistoryItem::Compaction(_) => true,
+        // A drop derives its note — and nothing at all when the round was
+        // simply sent again (docs/reconnect.md).
+        HistoryItem::Reconnect(drop) => drop.note.is_some(),
         // One `agent` call per entry — an entryless group derives nothing.
         HistoryItem::AgentGroup(group) => !group.agents.is_empty(),
         // TUI chrome / private chain-of-thought — never conversation.
@@ -894,6 +897,15 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
         HistoryItem::HookNote(note) => {
             push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
         }
+        // A reply the connection cut off (docs/reconnect.md): the model read
+        // the note between its cut-off text and the round that continued it,
+        // so every later turn replays it there — the marker alone, with no
+        // note, was the screen's record and never reached the wire.
+        HistoryItem::Reconnect(drop) => {
+            if let Some(note) = &drop.note {
+                push_user_text(out, note.clone(), vec![], TextOrigin::Notice);
+            }
+        }
         HistoryItem::Message(message) => match message.role {
             // A pasted picture's placeholder names the file it was saved
             // at *here*, not in the request builder: the derived context
@@ -1138,6 +1150,63 @@ mod tests {
                 (ContextRole::Assistant, "done"),
                 (ContextRole::User, "Stop hook feedback:\ntests are red"),
                 (ContextRole::Assistant, "fixed for real"),
+            ]
+        );
+    }
+
+    /// A connection lost mid-reply (docs/reconnect.md), with the note the
+    /// model read after it — or none, when nothing visible was kept.
+    fn reconnect(note: Option<&str>) -> HistoryItem {
+        HistoryItem::Reconnect(crate::app::Reconnect {
+            host: "api.venice.ai".into(),
+            cause: "Connection timed out (os error 110)".into(),
+            note: note.map(str::to_string),
+            timestamp: String::new(),
+        })
+    }
+
+    #[test]
+    fn a_lost_connection_replays_its_note_where_the_model_read_it() {
+        // The cut-off reply, the note, the continuation: exactly the messages
+        // the continuing round was sent, so every later turn — and the
+        // prompt cache behind it — reads what the wire carried.
+        let history = vec![
+            message(Role::User, "plan it"),
+            message(Role::Assistant, "First, split the lex"),
+            reconnect(Some("[system] cut off")),
+            message(Role::Assistant, "First, split the lexer."),
+        ];
+        let context = context_messages(&history);
+        let roles_texts: Vec<(ContextRole, &str)> =
+            context.iter().map(|m| (m.role, m.text.as_str())).collect();
+        assert_eq!(
+            roles_texts,
+            vec![
+                (ContextRole::User, "plan it"),
+                (ContextRole::Assistant, "First, split the lex"),
+                (ContextRole::User, "[system] cut off"),
+                (ContextRole::Assistant, "First, split the lexer."),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lost_connection_with_nothing_kept_replays_nothing() {
+        // Only reasoning had streamed, so the round was sent again as it was:
+        // the marker is the screen's record, and the wire never saw a note.
+        let history = vec![
+            message(Role::User, "plan it"),
+            reconnect(None),
+            message(Role::Assistant, "Here is the plan."),
+        ];
+        let context = context_messages(&history);
+        let roles_texts: Vec<(ContextRole, &str)> =
+            context.iter().map(|m| (m.role, m.text.as_str())).collect();
+        assert_eq!(
+            roles_texts,
+            vec![
+                (ContextRole::User, "plan it"),
+                (ContextRole::Assistant, "Here is the plan."),
             ]
         );
     }
@@ -1987,6 +2056,11 @@ mod tests {
                     timestamp: String::new(),
                 })],
             ),
+            (
+                "connection lost, the reply kept",
+                vec![reconnect(Some("[system] cut off"))],
+            ),
+            ("connection lost, nothing kept", vec![reconnect(None)]),
             (
                 "background notice",
                 vec![HistoryItem::Background(crate::app::BackgroundNotice {
