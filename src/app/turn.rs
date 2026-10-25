@@ -202,6 +202,10 @@ impl App {
         // (docs/write-streaming.md).
         self.drop_reasoning();
         self.tool_drafts.clear();
+        // An Esc closes no attempt (it sends no event), so the last turn's
+        // mark could still stand; a restart in this turn must never reach
+        // back past it (docs/offline.md).
+        self.attempt = None;
         // The walk picks up one past the last verb a line wore, and
         // `set_status_times` moves it on from here (docs/status-indicator.md).
         let start = self.verb_cursor;
@@ -254,6 +258,7 @@ impl App {
         self.turn_usage_cache_write = 0;
         self.drop_reasoning();
         self.tool_drafts.clear();
+        self.attempt = None;
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
             // Never rendered: a shell turn ends without a summary (end_turn
@@ -428,6 +433,81 @@ impl App {
             agents,
             error: error.to_string(),
         })
+    }
+
+    /// Note `event` against the streaming attempt in flight: the first
+    /// content event ([`StreamEvent::is_attempt_content`]) marks where the
+    /// attempt began, and any other event closes it — attempts are separated
+    /// by the events between them. The boundary calls this ahead of every
+    /// reply event, so a [`StreamEvent::Restarting`] finds the mark of the
+    /// attempt it drops (`docs/offline.md`).
+    pub fn track_attempt(&mut self, event: &StreamEvent) {
+        if event.is_attempt_content() {
+            if self.attempt.is_none() {
+                self.attempt = Some(AttemptMark {
+                    history: self.history.len(),
+                    tokens: self.status.as_ref().map_or(0, |status| status.tokens),
+                    arrow: self
+                        .status
+                        .as_ref()
+                        .map_or(TokenArrow::Up, |status| status.arrow),
+                });
+            }
+        } else if !matches!(event, StreamEvent::Restarting { .. }) {
+            self.attempt = None;
+        }
+    }
+
+    /// The connection dropped mid-reply and the backend is sending the
+    /// request again from the start ([`StreamEvent::Restarting`]): take back
+    /// everything the dropped attempt streamed, so the attempt that follows
+    /// is the round's only copy, and show `retrying {attempt}/{max}`.
+    ///
+    /// The live state goes whole: the open thinking phase, the calls being
+    /// generated, and the reply and summary buffers — an attempt always opens
+    /// on empty ones, since every round boundary flushes the reply. The tally
+    /// returns to where the attempt found it, and what the attempt
+    /// **recorded** leaves history — a thought settled as its phase ended, a
+    /// reply segment flushed ahead of a previewed `write` or a slash
+    /// command's notice. Anything else recorded meanwhile, that notice
+    /// included, stays.
+    ///
+    /// Returns whether anything recorded was taken back. Its rows reached
+    /// scrollback when it was recorded, so the boundary purge-repaints — the
+    /// interrupt-undo's rewind (`docs/interrupt.md`). Whether the reply
+    /// buffer's own rows were committed is the boundary's render to know.
+    pub fn restart_attempt(&mut self, attempt: u32, max: u32) -> bool {
+        self.tool_drafts.clear();
+        self.reasoning = None;
+        // Both buffers stay open for the retried attempt.
+        if let Some(buffer) = self.streaming.as_mut() {
+            buffer.clear();
+        }
+        if let Some(buffer) = self.compact_buffer.as_mut() {
+            buffer.clear();
+        }
+        let taken = self
+            .attempt
+            .take()
+            .is_some_and(|mark| self.rewind_attempt(mark));
+        self.set_retry(attempt, max);
+        taken
+    }
+
+    /// [`restart_attempt`](App::restart_attempt)'s rewind to `mark`. Returns
+    /// whether history lost anything.
+    fn rewind_attempt(&mut self, mark: AttemptMark) -> bool {
+        let taken = take_back_attempt(&mut self.history, mark.history);
+        // The dropped thoughts must not take the round's reasoning tokens.
+        self.round_reasoning.retain(|&index| index < mark.history);
+        if let Some(status) = self.status.as_mut() {
+            status.tokens = mark.tokens;
+            status.arrow = mark.arrow;
+        }
+        if taken {
+            self.history_generation += 1;
+        }
+        taken
     }
 
     /// End the in-progress turn because the user interrupted it (Esc). Returns
@@ -680,6 +760,41 @@ impl App {
         self.history_generation += 1;
         rolled
     }
+}
+
+/// Where a streaming attempt began ([`App::track_attempt`]): history's
+/// length and the tally with its arrow, as its first content event found
+/// them — what [`App::restart_attempt`] rewinds to.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AttemptMark {
+    history: usize,
+    tokens: usize,
+    arrow: TokenArrow,
+}
+
+/// Take a dropped attempt's records back out of `history`: from index `from`
+/// on, everything it recorded as it streamed — the reply segments it
+/// flushed, the thoughts it settled — leaving whatever else landed meanwhile
+/// in order. One rule for every transcript a restart rewinds, the main
+/// conversation's ([`App::restart_attempt`]) and a subagent's
+/// ([`crate::agents::AgentRun`]'s), as for the reasoning snap
+/// (`docs/offline.md`). Returns whether anything was taken: the rows those
+/// records committed are on screen.
+pub(crate) fn take_back_attempt(history: &mut Vec<HistoryItem>, from: usize) -> bool {
+    if from >= history.len() {
+        return false;
+    }
+    let since = history.split_off(from);
+    let recorded = since.len();
+    history.extend(since.into_iter().filter(|item| !is_attempt_output(item)));
+    history.len() < from + recorded
+}
+
+/// What a streaming attempt records as it streams — the reply segments it
+/// flushed and the thoughts it settled — and so what a restart takes back.
+fn is_attempt_output(item: &HistoryItem) -> bool {
+    matches!(item, HistoryItem::Reasoning(_))
+        || matches!(item, HistoryItem::Message(m) if m.role == Role::Assistant)
 }
 
 /// What a backend error leaves behind, handed to the event loop to flush to

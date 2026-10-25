@@ -403,7 +403,17 @@ slot, and `ui::offline`'s `⎿ ((·)) No connection to {host} — trying again �
 N attempts` row hanging off the line through `ui::hang_rows`, the ripple
 fading with distance on the status line's own clock, the tip giving way to
 it; a refused loopback Ollama stays `ollama serve` advice on the bounded
-retry (`ollama::is_local_base`); a drop mid-reply is still surfaced; Esc
+retry (`ollama::is_local_base`); a drop **mid-reply** — `Connection timed
+out (os error 110)` as keepalive gives up, a reset, a stall — is a bounded,
+counted `RetryStep::Restart`: `StreamEvent::Restarting` makes the consumer
+take back what the dropped attempt streamed — `App::track_attempt` marks
+where each attempt's content began (`StreamEvent::is_attempt_content`),
+`App::restart_attempt` empties the buffers and drafts (an attempt opens on
+empty ones), rewinds the tally, and drops the attempt's recorded thoughts
+and flushed segments (`take_back_attempt`, shared with
+`AgentRun`), and the boundary purge-repaints whatever reached scrollback
+(`StreamRender::has_committed`; deferred under an overlay) — then re-sends
+from the start, so the reply lands once (`smoke.sh` Phase 145); Esc
 interrupts and the undo hands the unsent message back; `smoke.sh` Phase
 129), and the **`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints

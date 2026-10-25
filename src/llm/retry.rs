@@ -18,6 +18,13 @@
 //! ([`StreamEvent::Offline`]), waits a few seconds ([`offline_backoff`]), and
 //! tries again, for as long as it takes — Esc is the way out, and the attempt
 //! that gets through is the one that streams. See `docs/offline.md`.
+//!
+//! A failure **after content streamed** — the connection dropped mid-reply —
+//! takes the bounded retry too, as a *restart*: re-sending would duplicate
+//! what streamed, so the driver announces [`StreamEvent::Restarting`], the
+//! consumer takes the dropped attempt's output back, and the request goes out
+//! again from the start. If the network is what went, that request cannot
+//! connect, and waits for it like any other.
 
 use std::time::Duration;
 
@@ -49,6 +56,11 @@ pub enum RetryStep {
     Proceed,
     /// Announce this retry `number`, wait `wait`, then attempt again.
     Retry { number: u32, wait: Duration },
+    /// The attempt failed **after streaming content**: announce retry
+    /// `number` as a restart — the consumer takes back everything the attempt
+    /// streamed — wait `wait`, then attempt again from the start. Counted
+    /// against the bounded budget like a [`Retry`](Self::Retry).
+    Restart { number: u32, wait: Duration },
     /// No connection could be made to `host`: announce the outage with the
     /// running count of failed attempts (`attempt`, 1-based), wait `wait`,
     /// then try again — **never counted** against the bounded budget
@@ -127,12 +139,13 @@ pub fn offline_backoff(attempt: u32) -> Duration {
         .min(OFFLINE_BACKOFF_CAP)
 }
 
-/// Decide what to do after an attempt. Only a failure that has **not yet
-/// emitted any content** (`emitted == false`) is ever re-sent — restarting a
-/// request after bytes have streamed would duplicate them, so once anything
-/// is emitted the error is surfaced instead — and with retries turned off
-/// (`max == 0`) nothing is. Then: a host that could not be reached is
-/// **waited for** ([`RetryStep::AwaitConnection`], the count running on
+/// Decide what to do after an attempt. With retries turned off (`max == 0`)
+/// nothing is re-sent. A retryable failure after the attempt **emitted
+/// content** (`emitted`) is restarted while `attempts.retried < max`
+/// ([`RetryStep::Restart`]): sent again as it was, it would duplicate what
+/// streamed, so the consumer takes that output back first. Otherwise a host
+/// that could not be reached is **waited for**
+/// ([`RetryStep::AwaitConnection`], the count running on
 /// `attempts.unreachable` and no budget spent), and any other retryable
 /// failure takes the bounded retry while `attempts.retried < max`.
 #[must_use]
@@ -140,7 +153,17 @@ pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max:
     let AttemptResult::Failed(err) = result else {
         return RetryStep::Proceed;
     };
-    if emitted || max == 0 {
+    if max == 0 {
+        return RetryStep::Proceed;
+    }
+    if emitted {
+        if attempts.retried < max && is_retryable(err) {
+            let number = attempts.retried + 1;
+            return RetryStep::Restart {
+                number,
+                wait: retry_backoff(number),
+            };
+        }
         return RetryStep::Proceed;
     }
     if let LlmError::Unreachable { host, .. } = err {
@@ -191,8 +214,9 @@ pub fn run_stream(
 }
 
 /// Drive the retry sequence and **return** the final disposition instead of
-/// sending a terminal event — announcing each [`StreamEvent::Retrying`] and
-/// each [`StreamEvent::Offline`] on the way. This is the reusable core of
+/// sending a terminal event — announcing each [`StreamEvent::Retrying`], each
+/// [`StreamEvent::Restarting`] and each [`StreamEvent::Offline`] on the way.
+/// This is the reusable core of
 /// [`run_stream`]; the agentic tool loop ([`crate::llm::agent::run_agent`])
 /// uses it directly, because *it* decides when the turn is really done (a
 /// successful round that requested tool calls is not the end). Generic over
@@ -207,9 +231,9 @@ pub fn run_attempts(
     sleep: impl Fn(Duration, &CancelToken),
 ) -> AttemptResult {
     let mut attempts = Attempts::default();
-    // Cumulative: once any attempt streams a byte we never retry (retrying
-    // would duplicate the content). So the attempt that emits is always the
-    // last one — succeed or give up.
+    // Whether what the consumer holds of this round includes streamed
+    // content. Only a restart clears it — the consumer takes that content
+    // back — so a plain retry can never re-send over bytes still on screen.
     let mut emitted = false;
     loop {
         let (result, this_emitted) = attempt();
@@ -224,6 +248,19 @@ pub fn run_attempts(
                 attempts.retried = number;
                 // The host answered (badly): a later outage is a new one.
                 attempts.unreachable = 0;
+                wait
+            }
+            RetryStep::Restart { number, wait } => {
+                let _ = tx.send(StreamEvent::Restarting {
+                    attempt: number,
+                    max,
+                });
+                attempts.retried = number;
+                // The host answered — it streamed — so a later outage is a
+                // new one; and what it streamed is taken back with this
+                // announcement, so the next attempt starts with nothing.
+                attempts.unreachable = 0;
+                emitted = false;
                 wait
             }
             RetryStep::AwaitConnection {
@@ -396,12 +433,16 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_lost_after_content_streamed_is_surfaced() {
-        // Only a request that emitted nothing can be re-sent; a drop after
-        // bytes streamed would duplicate them (the bounded rule's twin).
+    fn a_connection_lost_after_content_streamed_restarts_on_the_budget() {
+        // Only a request that got nothing through waits without spending the
+        // budget: one that streamed content is restarted — its output taken
+        // back — and counted like any retry.
         assert_eq!(
             next_step(&unreachable("api.venice.ai"), retried(0), true, MAX_RETRIES),
-            RetryStep::Proceed
+            RetryStep::Restart {
+                number: 1,
+                wait: retry_backoff(1)
+            }
         );
     }
 
@@ -423,16 +464,82 @@ mod tests {
     }
 
     #[test]
-    fn next_step_stops_once_content_has_streamed() {
-        // A failure after any bytes streamed can't be retried (it would
-        // duplicate), so we surface it.
+    fn next_step_restarts_a_transport_failure_after_content_has_streamed() {
+        // The connection died mid-reply — the kernel's keepalive gave up on
+        // a peer that stopped answering. Re-sending would duplicate what
+        // streamed, so the attempt is *restarted*: the consumer takes its
+        // output back and the request goes out again (docs/offline.md).
         let step = next_step(
-            &AttemptResult::Failed(LlmError::Http("mid-stream drop".into())),
+            &AttemptResult::Failed(LlmError::Http(
+                "request or response body error: error reading a body from \
+                 connection: Connection timed out (os error 110)"
+                    .into(),
+            )),
             retried(0),
             true,
             MAX_RETRIES,
         );
-        assert_eq!(step, RetryStep::Proceed);
+        assert_eq!(
+            step,
+            RetryStep::Restart {
+                number: 1,
+                wait: retry_backoff(1)
+            }
+        );
+    }
+
+    #[test]
+    fn a_restart_spends_the_bounded_budget() {
+        // Every restart re-sends a request that already cost a generation,
+        // so it counts like any retry, and past the budget the error stands.
+        let dropped = AttemptResult::Failed(LlmError::Http("mid-stream drop".into()));
+        assert_eq!(
+            next_step(&dropped, retried(2), true, MAX_RETRIES),
+            RetryStep::Restart {
+                number: 3,
+                wait: retry_backoff(3)
+            }
+        );
+        assert_eq!(
+            next_step(&dropped, retried(MAX_RETRIES), true, MAX_RETRIES),
+            RetryStep::Proceed
+        );
+    }
+
+    #[test]
+    fn content_changes_how_a_failure_is_retried_never_which() {
+        // An in-band refusal, a client error and a decode failure end the
+        // attempt as they always did, streamed content or not.
+        for err in [
+            LlmError::Api {
+                status: 0,
+                body: "Model unloaded.".into(),
+            },
+            LlmError::Api {
+                status: 400,
+                body: String::new(),
+            },
+            LlmError::Decode("bad shape".into()),
+        ] {
+            assert_eq!(
+                next_step(&AttemptResult::Failed(err), retried(0), true, MAX_RETRIES),
+                RetryStep::Proceed
+            );
+        }
+    }
+
+    #[test]
+    fn retries_turned_off_surface_a_drop_mid_reply() {
+        // `Error retry` 0 means never retry, a restart included.
+        assert_eq!(
+            next_step(
+                &AttemptResult::Failed(LlmError::Http("reset".into())),
+                retried(0),
+                true,
+                0
+            ),
+            RetryStep::Proceed
+        );
     }
 
     #[test]
@@ -789,5 +896,190 @@ mod tests {
         );
         assert_eq!(calls, 1, "an auth error is not retried");
         assert!(matches!(drain(&mut rx).as_slice(), [StreamEvent::Error(_)]));
+    }
+
+    /// One attempt that streams `text` and then loses its connection.
+    fn dropped_after(tx: &UnboundedSender<StreamEvent>, text: &str) -> (AttemptResult, bool) {
+        let _ = tx.send(StreamEvent::Chunk(text.into()));
+        (
+            AttemptResult::Failed(LlmError::Http(
+                "request or response body error: error reading a body from connection: \
+                 Connection timed out (os error 110)"
+                    .into(),
+            )),
+            true,
+        )
+    }
+
+    #[test]
+    fn a_reply_dropped_mid_stream_restarts_and_completes() {
+        // Half a reply streamed, then the connection died. The driver
+        // announces the restart — the consumer's cue to take back what the
+        // dropped attempt streamed — and the next attempt's reply is the
+        // turn's, with no error.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                if calls == 1 {
+                    dropped_after(&tx, "half a")
+                } else {
+                    let _ = tx.send(StreamEvent::Chunk("whole reply".into()));
+                    (AttemptResult::Ok, true)
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(calls, 2, "restarted once, then succeeded");
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Chunk("half a".into()),
+                StreamEvent::Restarting {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Chunk("whole reply".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restart_into_a_lost_connection_waits_for_it() {
+        // The usual cause of the drop is a network that is gone, so the
+        // re-sent request cannot connect — and waits for the connection like
+        // any request that got nothing through (docs/offline.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                match calls {
+                    1 => dropped_after(&tx, "half a"),
+                    2 | 3 => (unreachable("api.venice.ai"), false),
+                    _ => {
+                        let _ = tx.send(StreamEvent::Chunk("whole reply".into()));
+                        (AttemptResult::Ok, true)
+                    }
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Chunk("half a".into()),
+                StreamEvent::Restarting {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Offline {
+                    host: "api.venice.ai".into(),
+                    attempts: 1
+                },
+                StreamEvent::Offline {
+                    host: "api.venice.ai".into(),
+                    attempts: 2
+                },
+                StreamEvent::Chunk("whole reply".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restarted_attempt_is_judged_on_its_own_content() {
+        // The restart took back what the dropped attempt streamed, so the
+        // next attempt starts with nothing emitted: a failure before it
+        // streams anything takes the ordinary retry, on the same budget.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                match calls {
+                    1 => dropped_after(&tx, "half a"),
+                    2 => (
+                        AttemptResult::Failed(LlmError::Api {
+                            status: 503,
+                            body: String::new(),
+                        }),
+                        false,
+                    ),
+                    _ => {
+                        let _ = tx.send(StreamEvent::Chunk("whole reply".into()));
+                        (AttemptResult::Ok, true)
+                    }
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Chunk("half a".into()),
+                StreamEvent::Restarting {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Retrying {
+                    attempt: 2,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Chunk("whole reply".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn restarts_exhaust_the_budget_then_surface_the_error() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                dropped_after(&tx, "half a")
+            },
+            no_sleep,
+        );
+        assert_eq!(
+            calls,
+            1 + MAX_RETRIES as usize,
+            "initial + MAX_RETRIES tries"
+        );
+        let events = drain(&mut rx);
+        let restarts: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::Restarting { attempt, .. } => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(restarts, [1, 2, 3]);
+        match events.last() {
+            Some(StreamEvent::Error(message)) => {
+                assert!(message.contains("os error 110"), "{message}");
+            }
+            other => panic!("ends with the surfaced error, got {other:?}"),
+        }
     }
 }

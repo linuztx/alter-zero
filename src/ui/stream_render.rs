@@ -115,6 +115,15 @@ impl StreamRender {
         *self = Self::new();
     }
 
+    /// Whether any row of the reply has reached scrollback since the last
+    /// [`reset`](Self::reset) — rows a restart must purge to take back
+    /// (`docs/offline.md`). `false` while the only line is still growing in
+    /// the preview.
+    #[must_use]
+    pub const fn has_committed(&self) -> bool {
+        self.committed > 0
+    }
+
     /// Fold every source line that has become **complete** (is newline-terminated)
     /// since the last call into `frozen`, advancing the renderer. Cheap: only the
     /// lines past `consumed`. A width change rebuilds from scratch first.

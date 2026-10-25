@@ -120,6 +120,9 @@ pub use self::tools::{
     ToolStatus, apply_tool_screen,
 };
 pub use self::trust_menu::TrustMenu;
+// Crate-internal: `agents::AgentRun` takes a restarted attempt back out of
+// its own transcript by the same rule (`docs/offline.md`).
+pub(crate) use self::turn::take_back_attempt;
 pub use self::turn::{
     INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS, StatusVerb, StreamError,
     VERB_ROTATION, format_elapsed, format_timeout,
@@ -238,6 +241,14 @@ pub struct App {
     /// without. Cleared by every [`apply_usage`](App::apply_usage) (one frame
     /// ends one round) and by every turn start.
     round_reasoning: Vec<usize>,
+    /// Where the **streaming attempt** in flight began, set by its first
+    /// content event and cleared by any other ([`track_attempt`]) — what a
+    /// [`StreamEvent::Restarting`] takes the turn back to
+    /// ([`restart_attempt`], `docs/offline.md`). `None` between attempts.
+    ///
+    /// [`track_attempt`]: App::track_attempt
+    /// [`restart_attempt`]: App::restart_attempt
+    attempt: Option<turn::AttemptMark>,
     /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
     /// crossed the threshold) vs the manual command — recorded onto the marker
     /// so its cell can say `· auto`. Meaningful only while
@@ -1191,6 +1202,8 @@ impl App {
         // An open thinking phase goes with the rest of the in-flight turn —
         // the user asked for a blank screen (docs/thinking-stream.md).
         self.drop_reasoning();
+        // The attempt's mark points into the history that just went.
+        self.attempt = None;
         // A fresh slate — but the system prompt and the standing AGENTS.md
         // instructions still ride the next request, so the gauge re-seats on
         // the estimate rather than hard-zeroing (a bare session still reads

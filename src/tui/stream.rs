@@ -46,6 +46,9 @@ impl Session<'_> {
     pub(crate) fn on_stream_event(&mut self, event: StreamEvent) -> bool {
         let width = self.term.screen().width;
         let committing = self.commits_allowed();
+        // Where the streaming attempt's content begins — what a `Restarting`
+        // takes back (docs/offline.md).
+        self.app.track_attempt(&event);
         match event {
             StreamEvent::AgentBatch { background, agents } => {
                 // The model launched a group of subagents: finalise the text
@@ -423,6 +426,23 @@ impl Session<'_> {
                 self.app.set_retry(attempt, max);
                 false
             }
+            StreamEvent::Restarting { attempt, max } => {
+                // The connection dropped mid-reply and the backend sends the
+                // request again from the start (docs/offline.md): everything
+                // the dropped attempt streamed is taken back, so the attempt
+                // that follows is the round's only copy. What of it reached
+                // scrollback — the reply's committed rows, a settled thought,
+                // a flushed segment — leaves with a purge-rebuild, the
+                // interrupt-undo's rewind; the status line shows the retry.
+                let on_screen = self.render.has_committed();
+                let recorded = self.app.restart_attempt(attempt, max);
+                self.render.reset();
+                self.clocks.thinking_start = None;
+                if committing && (recorded || on_screen) {
+                    self.repaint_after_rewind();
+                }
+                false
+            }
             StreamEvent::Offline { host, attempts } => {
                 // No connection could be made and the backend is waiting for
                 // one, re-sending the request every few seconds for as long
@@ -710,9 +730,17 @@ impl Session<'_> {
         self.clocks.command_start = None;
         // The hook answers on the backend thread, so the block can land while
         // an alternate-screen overlay covers the inline view (the user hit
-        // Ctrl+O right after Enter): a reflow now would write onto the alt
-        // screen, so defer — the flag makes the overlay's return take the
-        // purge-rebuild this rollback needs (history shrank).
+        // Ctrl+O right after Enter) — the repaint defers to its return then.
+        self.repaint_after_rewind();
+    }
+
+    /// Purge-rebuild the inline view after history lost rows scrollback still
+    /// shows — a blocked prompt's rollback, a restarted attempt's take-back
+    /// (docs/offline.md). Under an alternate-screen overlay a reflow would
+    /// write onto the alt screen, so it defers instead: the flag makes the
+    /// overlay's return take the purge-rebuild, which also drops whatever
+    /// commits queued meanwhile.
+    fn repaint_after_rewind(&mut self) {
         if self.app.view != alter_zero::app::View::Conversation {
             self.overlay_resized = true;
             return;

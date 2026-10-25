@@ -91,10 +91,12 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
 - **`retry_backoff`** — exponential from 500 ms, doubling each retry and capped at
   8 s, so the three retries wait **500 ms → 1 s → 2 s**. Interruptible
   (`sleep_cancellable`), so an Esc/quit during a backoff still reaps within ~50 ms.
-- **`next_step`** — retry only a retryable failure that **emitted no content yet**
-  (`emitted == false`) and still has budget (`attempt < max`). This is the
-  correctness gate: once any byte has streamed, restarting the request would
-  **duplicate** it, so a mid-stream drop is surfaced rather than retried.
+- **`next_step`** — retry a retryable failure that still has budget
+  (`attempt < max`). Whether the attempt **emitted content** (`emitted`)
+  decides *how*: a failure before any byte streamed is simply re-sent
+  (`RetryStep::Retry`), while one after content is a **restart**
+  (`RetryStep::Restart`) — re-sent as it was, the request would duplicate
+  what streamed, so the consumer takes that output back first (below).
 - **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
   streaming attempt in: it announces each retry as a
   [`StreamEvent::Retrying { attempt, max }`](../src/stream/event.rs), backs off, and
@@ -120,6 +122,18 @@ of 1 s doubling to a 5 s cap, and another attempt — **not counted** against
 connection to {host}` row under the line. `Error retry` at `0` surfaces it
 at once like everything else; the Ollama wire keeps its `ollama serve`
 advice for a refused local server.
+
+**A connection that drops mid-reply is restarted** (`docs/offline.md` *A
+drop mid-reply*). The body read fails — `Connection timed out (os error
+110)` once the kernel's keepalive gives up on a silent peer, a reset, a
+stall past `NET_OP_TIMEOUT` — after the attempt has streamed, so
+`next_step` answers `RetryStep::Restart`: the driver announces
+`StreamEvent::Restarting { attempt, max }`, counted against the same budget
+and backoff as a retry, and the loop takes back everything the dropped
+attempt streamed (its reply rows, a settled thought, the calls being
+generated) before the request goes out again from the start. When the
+network is what went, that request cannot connect, and waits for it as
+above.
 
 ### Reasoning (`ThinkingSplitter`)
 
@@ -612,8 +626,9 @@ Retheme there.
   own — at its next channel send, or after at most one op-timeout if parked on
   the silent socket. A failure before any content streamed retries as usual
   (`llm::retry`; a connection that cannot be made at all is waited for
-  instead, `docs/offline.md`); one after content is surfaced, never retried
-  (a retry would duplicate the streamed text).
+  instead, `docs/offline.md`); one after content is restarted, what it
+  streamed taken back first so nothing duplicates (`docs/offline.md` *A drop
+  mid-reply*).
 - A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
   read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`

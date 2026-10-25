@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A connection lost mid-reply no longer fails the turn.** When the
+  connection dropped while a reply was streaming — the Wi-Fi went, the
+  laptop slept, a VPN reconnected — the turn ended with `request failed:
+  request or response body error: error reading a body from connection:
+  Connection timed out (os error 110)` under half a reply, and an agent
+  task stopped where it was. The request is now sent again from the start,
+  on the `/settings` **Error retry** budget, with `retrying 1/3` in the
+  status line. What streamed before the drop is removed first, along with
+  any `Thought for …` line it left, so the reply appears once. If the
+  network is still down, the request waits for it the way a request sent
+  offline does. Subagents recover the same way (`docs/offline.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

@@ -421,6 +421,18 @@ pub enum StreamEvent {
     /// `retrying {attempt}/{max}`. Only a real backend sends this (see
     /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
     Retrying { attempt: u32, max: u32 },
+    /// A request that failed **after content streamed** — the connection
+    /// dropped or stalled mid-reply — is being sent again from the start, as
+    /// retry `attempt` of `max` (`docs/offline.md`). Everything the dropped
+    /// attempt streamed is void: the loop takes it back — the reply text, a
+    /// settled `Thought for …` cell, the calls being generated, the tally
+    /// they ticked — repainting if any of it had reached scrollback, so the
+    /// attempt that follows is the round's only copy. The status line then
+    /// shows `retrying {attempt}/{max}`, exactly as for
+    /// [`Retrying`](Self::Retrying). What an attempt streamed is everything
+    /// since the last event [`is_attempt_content`](Self::is_attempt_content)
+    /// does not count. Only a real backend sends it (`llm::retry`).
+    Restarting { attempt: u32, max: u32 },
     /// No connection could be made to the provider — the machine is offline,
     /// or `host` (the host the request was for, with its port when the URL
     /// names one) is — and the backend is **waiting for it to come back**,
@@ -460,4 +472,25 @@ pub enum StreamEvent {
     Error(String),
     /// The reply is complete.
     StreamDone,
+}
+
+impl StreamEvent {
+    /// Is this an event one **streaming attempt** emits — the reply text, the
+    /// thinking phase, the calls being generated? Those, and nothing else,
+    /// are what an attempt streams (`llm::backend::stream_round`), so they
+    /// are what a [`Restarting`](Self::Restarting) takes back. Every other
+    /// event lands between attempts, which is what lets a consumer find where
+    /// an attempt began: at the first of these after any other event
+    /// (`docs/offline.md`).
+    #[must_use]
+    pub const fn is_attempt_content(&self) -> bool {
+        matches!(
+            self,
+            Self::Chunk(_)
+                | Self::ThinkingStart
+                | Self::ThinkingChunk(_)
+                | Self::ThinkingEnd
+                | Self::ToolCallDelta(_)
+        )
+    }
 }

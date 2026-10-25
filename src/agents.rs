@@ -351,6 +351,11 @@ pub struct AgentRun {
     /// `reasoning_tokens` (`app::reasoning::snap_reasoning_tokens`). Cleared by
     /// each frame — one frame ends one round.
     round_reasoning: Vec<usize>,
+    /// Where the agent's **streaming attempt** in flight began — set by its
+    /// first content event, cleared by any other — what a
+    /// [`StreamEvent::Restarting`] takes the run back to: the main
+    /// session's mark, over this transcript (`docs/offline.md`).
+    attempt: Option<AttemptMark>,
     /// How long the open thinking phase has run — boundary-injected each
     /// frame from `Session::agent_thinking_clocks`, the
     /// [`runtime`](Self::runtime) pattern — so the session view's status line
@@ -451,6 +456,7 @@ impl AgentRun {
             paragraph: ParagraphStart::default(),
             reasoning: None,
             round_reasoning: Vec::new(),
+            attempt: None,
             thinking: None,
             command_elapsed: None,
             retry: None,
@@ -536,6 +542,7 @@ impl AgentRun {
         if self.status == AgentStatus::Pending && !matches!(event, StreamEvent::StreamDone) {
             self.status = AgentStatus::Running;
         }
+        self.track_attempt(event);
         match event {
             StreamEvent::Chunk(chunk) => {
                 let buffer = self.streaming.get_or_insert_with(String::new);
@@ -954,6 +961,18 @@ impl AgentRun {
                     began,
                 });
             }
+            // This agent's request dropped mid-reply and goes out again from
+            // the start: what the dropped attempt streamed is taken back, and
+            // its view's status line says it is retrying — the main turn's
+            // rule (`docs/offline.md`).
+            StreamEvent::Restarting { attempt, max } => {
+                self.restart_attempt();
+                self.recovered();
+                self.retry = Some(crate::app::RetryInfo {
+                    attempt: *attempt,
+                    max: *max,
+                });
+            }
             // The round's calls are all made: nothing more of them streams
             // (docs/write-streaming.md).
             StreamEvent::RoundCalls(_) => self.drafts.seal(),
@@ -1304,6 +1323,45 @@ impl AgentRun {
         self.finish_reasoning(secs);
     }
 
+    /// Note `event` against the streaming attempt in flight, the main
+    /// session's rule (`App::track_attempt`): the first content event marks
+    /// where the attempt began, any other closes it.
+    fn track_attempt(&mut self, event: &StreamEvent) {
+        if event.is_attempt_content() {
+            if self.attempt.is_none() {
+                self.attempt = Some(AttemptMark {
+                    history: self.history.len(),
+                    tokens: self.tokens,
+                    last_update: self.last_update.clone(),
+                });
+            }
+        } else if !matches!(event, StreamEvent::Restarting { .. }) {
+            self.attempt = None;
+        }
+    }
+
+    /// Take back everything the dropped attempt streamed (`App::restart_attempt`
+    /// over this transcript): the open phase, the calls being generated and
+    /// the reply buffer go whole — an attempt opens with none, every round
+    /// boundary flushing it; the tally and the activity row return to where
+    /// the attempt found them; and what it recorded — a settled thought, a
+    /// segment flushed ahead of a previewed `write` — leaves the transcript.
+    fn restart_attempt(&mut self) {
+        self.drafts.clear();
+        self.reasoning = None;
+        self.thinking = None;
+        self.streaming = None;
+        self.paragraph = ParagraphStart::default();
+        let Some(mark) = self.attempt.take() else {
+            return;
+        };
+        crate::app::take_back_attempt(&mut self.history, mark.history);
+        self.last_update = mark.last_update;
+        self.tokens = mark.tokens;
+        // The dropped thoughts must not take the round's reasoning tokens.
+        self.round_reasoning.retain(|&index| index < mark.history);
+    }
+
     /// Take the front call off the live queue — it resolved — and, with it,
     /// the draft a previewed one owns (`docs/write-streaming.md`): both are
     /// front-first in queue order, so the pair stays aligned.
@@ -1327,6 +1385,16 @@ impl AgentRun {
             self.history.push(HistoryItem::Tool(call));
         }
     }
+}
+
+/// Where an agent's streaming attempt began ([`AgentRun`]'s `track_attempt`):
+/// its transcript's length, the tally and the activity row's last update —
+/// what a restart rewinds the run to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttemptMark {
+    history: usize,
+    tokens: u64,
+    last_update: Option<String>,
 }
 
 /// The call an agent's sticky activity row names ([`AgentRun::last_call`]):
@@ -4927,6 +4995,107 @@ mod tests {
             "the host answered: a retry ends the wait"
         );
         assert!(run.retry.is_some());
+    }
+
+    #[test]
+    fn a_restarted_agent_takes_back_what_its_dropped_attempt_streamed() {
+        // Main parity (`docs/offline.md`): the connection dropped mid-reply
+        // and the agent's request goes out again from the start, so its
+        // buffer, tally and activity row return to where the attempt found
+        // them, its earlier rounds stand, and its view says it is retrying.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolEnd {
+            output: "a.py".into(),
+            ok: true,
+            truncated: false,
+        });
+        let (history, tokens) = (run.history.len(), run.tokens);
+        run.apply(&chunk("There is one file.\n\nIt is a.py and"));
+        assert!(run.activity().contains("It is a.py and"));
+
+        let restart = StreamEvent::Restarting { attempt: 1, max: 3 };
+        assert!(
+            !run.will_flush_segment(&restart),
+            "a restart discards the segment — the view must not finish it"
+        );
+        run.apply(&restart);
+        assert_eq!(run.streaming, None);
+        assert_eq!(run.history.len(), history);
+        assert_eq!(run.tokens, tokens);
+        assert_eq!(
+            run.retry,
+            Some(crate::app::RetryInfo { attempt: 1, max: 3 })
+        );
+        assert!(
+            !run.activity().contains("a.py and"),
+            "the row no longer quotes the dropped reply: {}",
+            run.activity()
+        );
+
+        // The retried attempt's reply is the run's only copy.
+        run.apply(&chunk("One file: a.py."));
+        run.apply(&StreamEvent::StreamDone);
+        assert_eq!(run.result.as_deref(), Some("One file: a.py."));
+    }
+
+    #[test]
+    fn a_restarted_agent_takes_back_its_settled_thought_and_flushed_text() {
+        // In the boundary's order: the view opens the phase before the fold
+        // sees `ThinkingStart` and settles it before `ThinkingEnd`, and a
+        // previewed `write` flushes the text ahead of it. Both records were
+        // made on the agent's transcript while the attempt streamed; both go.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        let history = run.history.len();
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingStart);
+        run.apply(&StreamEvent::ThinkingChunk("Plan it.".into()));
+        run.finish_reasoning(2);
+        run.apply(&StreamEvent::ThinkingEnd);
+        run.apply(&chunk("Writing it.\n"));
+        run.apply(&StreamEvent::ToolCallDelta(
+            crate::stream::ToolCallFragment {
+                index: 0,
+                name: "write".into(),
+                arguments: "{\"path\":\"a.py\"".into(),
+            },
+        ));
+        assert_eq!(
+            run.history.len(),
+            history + 2,
+            "the thought and the flushed segment"
+        );
+        assert!(run.drafts().previews().next().is_some());
+
+        run.apply(&StreamEvent::Restarting { attempt: 1, max: 3 });
+        assert_eq!(run.history.len(), history);
+        assert_eq!(run.reasoning(), None);
+        assert!(run.drafts().previews().next().is_none());
+
+        // The round's usage frame snaps the retried attempt's thought alone.
+        run.begin_reasoning();
+        run.apply(&StreamEvent::ThinkingStart);
+        run.apply(&StreamEvent::ThinkingChunk("Plan it again.".into()));
+        run.finish_reasoning(2);
+        run.apply(&StreamEvent::ThinkingEnd);
+        run.apply(&StreamEvent::Usage(crate::stream::TokenUsage {
+            reasoning: 42,
+            ..Default::default()
+        }));
+        let thoughts: Vec<(&str, usize)> = run
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Reasoning(r) => Some((r.text.as_str(), r.tokens)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, [("Plan it again.", 42)]);
     }
 
     #[test]

@@ -85,15 +85,15 @@ comes back. So that failure gets no budget and no deadline:
   still to wait, and the `retrying 1/3` that follows a `503` once the host
   is back opens on its first number. A host that answers at all, even with
   an error, resets the outage count, so the next outage counts from one.
-- **The same two gates as a retry.** A failure after content has streamed is
-  surfaced, never re-sent — restarting the request would duplicate the
-  streamed text — so a connection that drops *mid-reply* still ends the turn
-  with the red notice and the partial; only the request that got nothing
-  through waits. (In an agentic turn that is every round's request: a tool
-  round that comes back to find the network gone waits, and the turn
-  continues where it was.) And `/settings` **Error retry** at `0` means
-  *never retry*, the wait included: the `could not reach {host}: …` error
-  surfaces at once, in the words of the transport.
+- **The same two gates as a retry.** Only a request that got nothing
+  through waits: a connection that drops *mid-reply* is restarted on the
+  bounded budget instead, its streamed output taken back first (*A drop
+  mid-reply*, below) — and when the network is what went, the restarted
+  request waits here like any other. (In an agentic turn that is every
+  round's request: a tool round that comes back to find the network gone
+  waits, and the turn continues where it was.) And `/settings` **Error
+  retry** at `0` means *never retry*, the wait included: the `could not
+  reach {host}: …` error surfaces at once, in the words of the transport.
 - **Esc is the way out**, as for any wait: the sleep is `sleep_cancellable`'s
   50 ms slices, so the interrupt lands at once, and the cancel is silent.
   Then the ordinary interrupt rule applies (`docs/interrupt.md`): with nothing
@@ -176,6 +176,80 @@ service, which comes back by itself. That one shows `Waiting for internet…`
 over `No connection to localhost:8080`, which names what is actually gone
 (Phase 129's `flaky` stub is one).
 
+## A drop mid-reply
+
+The wait is for a request that got nothing through. A connection can also
+die *under* a reply — the Wi-Fi drops, the laptop sleeps, a NAT forgets the
+mapping — and the stream simply goes quiet. `reqwest` turns TCP keepalive
+on (15 s idle, then three probes 15 s apart), so about a minute later the
+kernel gives up on the silent peer and the next body read fails:
+
+```
+request failed: request or response body error: error reading a body from
+  connection: Connection timed out (os error 110)
+```
+
+That used to end the turn — the half reply on screen, the red notice under
+it, an agentic task stopped wherever it was — because a failure after
+content had streamed was never re-sent: sent again as it was, the request
+would duplicate what streamed. Now it is **restarted**: what the dropped
+attempt streamed is taken back, then the request goes out again from the
+start, so the reply lands once. A reset (`os error 104`), a body cut short
+and a stall past `NET_OP_TIMEOUT` take the same path.
+
+- **The policy.** `retry::next_step` answers a retryable failure after
+  content (`emitted`) with `RetryStep::Restart { number, wait }` — the
+  bounded retry's budget and backoff, counted like any retry, since every
+  restart re-sends a request that already cost a generation. Content changes
+  *how* a failure is retried, never *which*: an in-band refusal, a client
+  error, a decode failure still end the turn. `run_attempts` announces
+  `StreamEvent::Restarting { attempt, max }` and starts the next attempt
+  with nothing emitted, so a failure before it streams anything takes the
+  ordinary retry. With **Error retry** at `0` nothing is restarted.
+- **What an attempt streamed.** A round's attempt emits its reply text, its
+  thinking phase and the calls it is generating (`Chunk`, `Thinking*`,
+  `ToolCallDelta` — `StreamEvent::is_attempt_content`) and nothing else;
+  every other event lands between attempts. So a consumer finds where an
+  attempt began without being told: `App::track_attempt`, called ahead of
+  every reply event, marks the first content event after any other —
+  history's length, the tally and its arrow (`AttemptMark`) — and any other
+  event clears the mark. A turn's start and `/clear` clear it too, since an
+  Esc ends an attempt without an event.
+- **Taking it back.** `App::restart_attempt` drops the live state whole —
+  an open thinking phase, the calls being generated, and the reply and
+  summary buffers, which an attempt always opens empty (every round
+  boundary flushes the reply), so they are emptied rather than cut back to
+  a length that could split a character. It returns the tally to the mark
+  and takes out of history what the attempt *recorded* as it streamed —
+  the `Thought for …` cell its phase settled
+  into, a reply segment flushed ahead of a previewed `write` or of a slash
+  command's notice (`take_back_attempt`). Anything else recorded meanwhile —
+  that notice, a background agent's cell — stays. The round's reasoning
+  snap targets go with the cells, so its usage frame snaps the retried
+  attempt's thought alone, and a `/compact` turn's half summary goes too.
+  The status line shows `retrying {n}/{max}` until the retried attempt's
+  first content.
+- **The screen.** Rows of the dropped attempt that reached scrollback leave
+  with a purge-rebuild, the interrupt-undo's rewind: the loop repaints when
+  the restart took a record back or its render had committed rows of the
+  reply (`StreamRender::has_committed`) — a reply still on its first line,
+  only ever in the preview, costs no purge. Under the Ctrl+O overlay the
+  purge waits for the overlay to close (`overlay_resized`, the resize's
+  deferral), and its return drops the commits queued meanwhile; while an
+  agent session view covers the conversation, the return to it rebuilds
+  from history anyway.
+- **Subagents** follow the same rule over their own transcripts
+  (`AgentRun`'s own mark and restart, through the same `take_back_attempt`),
+  the paragraph its activity row quotes and its last update included.
+  Inside that agent's session view the render starts over, purging the
+  transcript when rows of the attempt had reached scrollback.
+
+When the network is what went, the restarted request cannot connect and
+waits like any other — `retrying 1/3` gives way to `Waiting for internet…`
+— so a drop mid-reply ends the way a request sent offline does: the turn
+carries on when the network is back. A printed stream cannot be taken back,
+so `examples/tool_smoke.rs` says the output above it is void instead.
+
 ## What stays as it was
 
 - The bounded retry: `is_retryable`, `retry_backoff`, the `retrying n/N`
@@ -184,7 +258,6 @@ over `No connection to localhost:8080`, which names what is actually gone
 - A stall: a provider that accepts the connection and sits on the headers
   past `NET_OP_TIMEOUT` (120 s) is a bounded, counted retry — it answered,
   slowly.
-- A drop mid-reply is surfaced, never re-sent (above).
 - The `/model` picker's fetch does not retry; its failure now reads `could
   not reach {host}: …` instead of `request failed: error sending request for
   url (…)`.
@@ -207,7 +280,24 @@ over `No connection to localhost:8080`, which names what is actually gone
   `Offline` per failed connect with the running count, spends no retry on
   them, opens the bounded retry on `1` after an outage and restarts the
   outage count after an answer, stops silently on a cancel mid-wait, and
-  surfaces the error with retries off.
+  surfaces the error with retries off. A drop mid-reply: `next_step`
+  restarts a retryable failure after content (the `os error 110` read) on
+  the budget, surfaces it once the budget is spent or with retries off, and
+  never makes a refusal, a client error or a decode failure retryable; the
+  driver announces `Restarting`, judges the next attempt on its own content,
+  restarts into a lost connection that then waits, and surfaces the error
+  once the restarts are spent.
+- `app::tests::turn`: an attempt's content is exactly what one streaming
+  attempt emits; a restart takes the reply, the tally and its arrow back to
+  where the attempt found them and shows the retry; takes a settled thought
+  and a flushed segment out of history, saying so; keeps a notice recorded
+  beside the attempt; takes back only the round it dropped; leaves the
+  round's reasoning tokens to the retried thought; takes back a `/compact`
+  turn's half summary; never reaches back into an interrupted turn's kept
+  partial. `agents::tests`: the same over a subagent's run — buffer, tally,
+  activity row, transcript, reasoning snap — and a restart is no segment
+  flush. `ui::tests::stream_render`: a render says whether any row reached
+  scrollback.
 - `llm::openai::tests`: a refused local Ollama is advice, a remote one is
   waited for; `ollama::is_local_base`. A refused keyless server on this
   machine is the `/login` test's sentence, while the same server elsewhere
@@ -233,6 +323,13 @@ over `No connection to localhost:8080`, which names what is actually gone
   finds the message back in the composer. To see it against a real provider,
   run under `HTTPS_PROXY=http://127.0.0.1:1` (every connect refused) — or
   behind a local forwarding proxy you can stop and start.
+- `scripts/smoke.sh` **Phase 145** drives it against a stub that resets the
+  connection mid-reply once the phase has seen the rows on screen: twice in
+  one turn — over committed reply rows, then over a settled thought — before
+  the reply streams. The screen and the scrollback hold neither dropped
+  attempt, the reply lands once with no error, and `retrying 1/3` and `2/3`
+  read on the way; a second half drops under the Ctrl+O overlay and finds
+  the purge done on its return.
 
 ## Where the pieces live
 
@@ -240,6 +337,10 @@ over `No connection to localhost:8080`, which names what is actually gone
 | --- | --- |
 | The classification, `LlmError::Unreachable`, `host_label`, the cause chain | `src/llm/mod.rs` (`LlmError::transport`), applied in `openai.rs`, `models.rs`, `copilot.rs`, `chatgpt.rs`, `claude.rs` |
 | The policy: `Attempts`, `RetryStep::AwaitConnection`, `offline_backoff`, the driver | `src/llm/retry.rs` |
+| A drop mid-reply: `RetryStep::Restart`, the `Restarting` announcement | `src/llm/retry.rs` |
+| What an attempt streams (`StreamEvent::is_attempt_content`), `StreamEvent::Restarting` | `src/stream/event.rs` |
+| The take-back: `track_attempt`, `restart_attempt`, `AttemptMark`, `take_back_attempt` | `src/app/turn.rs`; a subagent's in `src/agents.rs` |
+| The purge-repaint | `src/tui/stream.rs` (`repaint_after_rewind`), `src/tui/agent.rs` (`agent_restarted`), `src/ui/stream_render.rs` (`has_committed`) |
 | The local-server exception | `src/llm/ollama.rs` (`is_local_base`), `src/llm/local.rs` (`refused_advice`), `src/llm/openai.rs` (`explain`) |
 | The event | `src/stream/event.rs` (`StreamEvent::Offline`) |
 | The state | `src/app/status.rs` (`OfflineInfo`, `TurnStatus::offline`, `set_offline`, `offline`, `recovered`), `src/agents.rs` (`AgentRun::offline`) |

@@ -54,6 +54,8 @@ impl App {
         // by design) — `begin_reasoning` no-ops while the buffer below is
         // open; this only clears anything a previous turn abandoned.
         self.drop_reasoning();
+        // Nor may a restart reach back into the turn before (docs/offline.md).
+        self.attempt = None;
         self.status = Some(TurnStatus {
             verb: COMPACT_VERB,
             // Never rendered: a compact turn ends without a summary (the

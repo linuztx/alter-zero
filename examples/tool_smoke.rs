@@ -224,6 +224,13 @@ fn main() {
             StreamEvent::Retrying { attempt, max } => {
                 println!("\x1b[33m[retrying {attempt}/{max}]\x1b[0m");
             }
+            // Printed output cannot be taken back: say that what streamed
+            // since the last round is void (docs/offline.md).
+            StreamEvent::Restarting { attempt, max } => {
+                println!(
+                    "\n\x1b[33m[connection dropped mid-reply — restarting {attempt}/{max}; the output above is void]\x1b[0m"
+                );
+            }
             StreamEvent::Offline { host, attempts } => {
                 println!("\x1b[33m[no connection to {host} — waiting, {attempts} attempts]\x1b[0m");
             }

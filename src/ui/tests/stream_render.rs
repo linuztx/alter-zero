@@ -541,6 +541,21 @@ fn stream_render_matches_batch_render_on_every_prefix() {
 }
 
 #[test]
+fn a_render_says_whether_any_row_reached_scrollback() {
+    // What a restart asks before it purges (docs/offline.md): a reply whose
+    // only line is still growing sits in the preview with nothing committed;
+    // once lines complete, their rows are in scrollback; a reset forgets.
+    let mut render = StreamRender::new();
+    assert!(render.commit("The parser rea", 40).is_empty());
+    assert!(!render.has_committed());
+    let text = "The parser reads.\nIt reads lines.\nOne at a";
+    assert!(!render.commit(text, 40).is_empty());
+    assert!(render.has_committed());
+    render.reset();
+    assert!(!render.has_committed());
+}
+
+#[test]
 fn incremental_commits_reconstruct_the_whole_reply() {
     // Stream a reply word-by-word, committing stable lines as we go, and
     // confirm the committed lines (plus the final flush) exactly equal the

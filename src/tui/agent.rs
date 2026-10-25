@@ -207,10 +207,17 @@ impl Session<'_> {
         // owes it — see `commit_agent_view_event`.
         let recorded = self.app.agent(id).map_or(0, |run| run.history.len());
         let was_final = self.app.agent(id).is_some_and(|run| run.status.is_final());
+        // A restart takes back what the dropped attempt streamed, the rows of
+        // its reply this view committed among them — which only the render
+        // knows of, so it is asked before the fold (docs/offline.md).
+        let restarting = matches!(event, StreamEvent::Restarting { .. });
+        let committed_reply = viewing && restarting && self.agent_render.has_committed();
         let mut settled =
             self.app
                 .apply_agent_settled(id, &event, matches!(settle, Some((true, _))));
-        if viewing {
+        if restarting {
+            self.agent_restarted(id, viewing, recorded, committed_reply);
+        } else if viewing {
             self.commit_agent_view_event(&event, width, recorded);
         }
         // A message delivered into a settled run reopened it — the lead's
@@ -293,6 +300,31 @@ impl Session<'_> {
         };
         if let Some(seq) = posted {
             self.app.defer_agent_notice(notice, Some(seq));
+        }
+    }
+
+    /// Agent `id`'s request dropped mid-reply and its fold took back what the
+    /// dropped attempt streamed (`AgentRun`'s restart, `docs/offline.md`):
+    /// the void phase's clock stops, and inside its session view the render
+    /// starts over — purge-rebuilding the transcript when rows of the attempt
+    /// had reached scrollback, the main screen's rewind. `recorded` is the
+    /// transcript's length before the fold (shorter now if it took back a
+    /// thought or a flushed segment), `committed_reply` whether the render had
+    /// committed rows of the dropped reply.
+    fn agent_restarted(&mut self, id: &str, viewing: bool, recorded: usize, committed_reply: bool) {
+        self.agent_thinking_clocks.remove(id);
+        if !viewing {
+            return;
+        }
+        self.agent_render.reset();
+        let shrank = self
+            .app
+            .agent(id)
+            .is_some_and(|run| run.history.len() < recorded);
+        if shrank || committed_reply {
+            // Best-effort like every mid-event repaint: the next draw tick
+            // repaints anyway.
+            let _ = self.repaint_agent_view();
         }
     }
 

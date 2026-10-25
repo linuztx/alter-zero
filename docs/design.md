@@ -715,7 +715,12 @@ which Ctrl+V reads the clipboard from.
   status line wears an amber `Waiting for internet…` with `offline for Ns`
   over a ripple row naming the host and counting the attempts; content ends
   it, Esc interrupts it (and hands an unsent message back to the composer),
-  a refused local Ollama still says to start the server.
+  a refused local Ollama still says to start the server. A connection that
+  drops **mid-reply** — `Connection timed out (os error 110)` as keepalive
+  gives up, a reset, a stall — is restarted on the bounded budget instead
+  (`StreamEvent::Restarting`): the loop takes back what the dropped attempt
+  streamed, purging any of it that reached scrollback, so the reply lands
+  once — and a restart into a network that is gone waits like the rest.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on

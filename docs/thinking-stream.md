@@ -229,6 +229,7 @@ the detail) simply keeps the estimate.
 | Esc interrupt, **kept** | recorded + committed, ahead of the partial reply (codex never retracts what streamed) |
 | Esc interrupt, **undone** | dropped with the rest of the submission |
 | backend `Error` | recorded + committed, ahead of the partial |
+| `Restarting` — a drop mid-reply | dropped; a cell the dropped attempt already settled leaves history, purged from scrollback with the rest of the attempt (`docs/offline.md`) |
 | `/clear` | dropped |
 | a `/compact` turn | never opened — the summarization turn is invisible by design (`docs/compact.md`) |
 

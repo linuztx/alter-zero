@@ -1542,6 +1542,331 @@ fn a_lost_connection_and_a_bounded_retry_never_show_together() {
     );
 }
 
+// ===== a reply dropped mid-stream (docs/offline.md) =====
+
+/// Fold `event` into `app` as the loop does, minus the screen
+/// (`tui::stream`): mark where the attempt's content begins, then make the
+/// `App` calls its arm makes. Only the events these tests stream.
+fn fold(app: &mut App, event: StreamEvent) {
+    app.track_attempt(&event);
+    match event {
+        StreamEvent::Chunk(text) => app.push_chunk(&text),
+        StreamEvent::ThinkingStart => {
+            app.flush_streaming_segment();
+            app.begin_reasoning();
+        }
+        StreamEvent::ThinkingChunk(text) => app.push_thinking(&text),
+        StreamEvent::ThinkingEnd => {
+            app.flush_streaming_segment();
+            app.finish_reasoning(3);
+        }
+        StreamEvent::ToolCallDelta(piece) => {
+            if app.push_tool_call_fragment(&piece) {
+                app.flush_streaming_segment();
+            }
+        }
+        StreamEvent::ToolBatch(items) => {
+            app.flush_streaming_segment();
+            app.start_tool_batch(&items);
+        }
+        StreamEvent::ToolStart {
+            name,
+            args,
+            arguments,
+            ..
+        } => {
+            app.flush_streaming_segment();
+            app.start_tool(&name, &args, arguments.as_deref());
+        }
+        StreamEvent::ToolEnd { output, ok, .. } => {
+            app.end_tool(&output, ok);
+        }
+        other => panic!("not streamed by these tests: {other:?}"),
+    }
+}
+
+/// The roles of `app`'s recorded messages, in order (other items skipped).
+fn message_roles(app: &App) -> Vec<Role> {
+    app.history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Message(m) => Some(m.role),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_attempts_content_is_what_one_streaming_attempt_emits() {
+    // A round's attempt streams its reply, its thinking and the calls it is
+    // generating, and nothing else (`llm::backend::stream_round`): these are
+    // what a restart takes back, and any other event closes the attempt.
+    let piece = crate::stream::ToolCallFragment::default();
+    for event in [
+        StreamEvent::Chunk("a".into()),
+        StreamEvent::ThinkingStart,
+        StreamEvent::ThinkingChunk("hm".into()),
+        StreamEvent::ThinkingEnd,
+        StreamEvent::ToolCallDelta(piece),
+    ] {
+        assert!(event.is_attempt_content(), "{event:?}");
+    }
+    for event in [
+        StreamEvent::Retrying { attempt: 1, max: 3 },
+        StreamEvent::Restarting { attempt: 1, max: 3 },
+        StreamEvent::Offline {
+            host: "api.venice.ai".into(),
+            attempts: 1,
+        },
+        StreamEvent::Usage(crate::stream::TokenUsage::default()),
+        StreamEvent::RoundCalls(Vec::new()),
+        StreamEvent::ToolBatch(Vec::new()),
+        StreamEvent::StreamDone,
+        StreamEvent::Error("boom".into()),
+    ] {
+        assert!(!event.is_attempt_content(), "{event:?}");
+    }
+}
+
+#[test]
+fn a_restart_takes_back_the_reply_the_dropped_attempt_streamed() {
+    // The connection died mid-reply and the request goes out again from the
+    // start: what the dropped attempt streamed is void, so the reply buffer
+    // and the tally it ticked are back where the attempt found them, and the
+    // status says the request is being retried.
+    let mut app = App::new();
+    app.record_user_message("explain the parser");
+    app.begin_stream();
+    app.count_user_input("explain the parser");
+    let before = app.status().unwrap().tokens;
+    fold(
+        &mut app,
+        StreamEvent::Chunk("The parser reads\nline by".into()),
+    );
+    assert!(app.status().unwrap().tokens > before);
+
+    assert!(
+        !app.restart_attempt(1, 3),
+        "nothing the attempt streamed was recorded"
+    );
+    assert_eq!(
+        app.streaming_text(),
+        Some(""),
+        "the reply stays open for the retried attempt"
+    );
+    let status = app.status().unwrap();
+    assert_eq!(status.tokens, before);
+    assert_eq!(
+        status.arrow,
+        TokenArrow::Up,
+        "nothing has streamed down yet: the prompt's upload is the tally"
+    );
+    assert_eq!(status.retry, Some(RetryInfo { attempt: 1, max: 3 }));
+    assert_eq!(message_roles(&app), [Role::User]);
+}
+
+#[test]
+fn a_restart_takes_back_what_the_attempt_recorded() {
+    // A settled thought, and the reply segment flushed ahead of a previewed
+    // `write`, were recorded — and committed — while the attempt streamed.
+    // The restart drops them from history along with the live drafts, and
+    // says it did, so the loop purge-repaints the screen and the recorder
+    // rewrites the rollout.
+    let mut app = App::new();
+    app.record_user_message("write the script");
+    app.begin_stream();
+    let generation = app.history_generation();
+    for event in [
+        StreamEvent::ThinkingStart,
+        StreamEvent::ThinkingChunk("Plan it first.".into()),
+        StreamEvent::ThinkingEnd,
+        StreamEvent::Chunk("Writing it now.\n".into()),
+        StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+            index: 0,
+            name: "write".into(),
+            arguments: "{\"path\":\"a.py\",\"content\":\"pri".into(),
+        }),
+    ] {
+        fold(&mut app, event);
+    }
+    assert_eq!(app.history.len(), 3, "user, thought, flushed segment");
+    assert!(app.tool_drafts().previews().next().is_some());
+
+    assert!(app.restart_attempt(1, 3), "recorded output was taken back");
+    assert_eq!(app.history.len(), 1);
+    assert_eq!(message_roles(&app), [Role::User]);
+    assert_eq!(app.reasoning(), None);
+    assert!(app.tool_drafts().previews().next().is_none());
+    assert_ne!(
+        app.history_generation(),
+        generation,
+        "a non-append mutation of history"
+    );
+}
+
+#[test]
+fn a_restart_keeps_what_was_recorded_beside_the_attempt() {
+    // A slash command's notice landing mid-reply flushes the segment ahead of
+    // it: the restart takes that segment back and leaves the notice.
+    let mut app = App::new();
+    app.record_user_message("explain the parser");
+    app.begin_stream();
+    fold(&mut app, StreamEvent::Chunk("First half.\n".into()));
+    app.flush_streaming_segment();
+    app.record_system_message("Shortcuts: …");
+    fold(&mut app, StreamEvent::Chunk("Second half".into()));
+
+    assert!(app.restart_attempt(1, 3));
+    assert_eq!(message_roles(&app), [Role::User, Role::System]);
+    assert_eq!(app.streaming_text(), Some(""));
+}
+
+#[test]
+fn a_restart_takes_back_only_the_round_it_dropped() {
+    // Round one's reply and its tool call settled before round two began, and
+    // any event between attempts closes the one before — so a drop in round
+    // two takes back round two's text alone.
+    let mut app = App::new();
+    app.record_user_message("list the files");
+    app.begin_stream();
+    for event in [
+        StreamEvent::Chunk("Let me look.\n".into()),
+        StreamEvent::ToolBatch(vec![ToolCallSummary {
+            name: "Bash".into(),
+            args: "ls".into(),
+        }]),
+        StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "ls".into(),
+            detail: None,
+            arguments: None,
+        },
+        StreamEvent::ToolEnd {
+            output: "a.py".into(),
+            ok: true,
+            truncated: false,
+        },
+        StreamEvent::Chunk("There is one fi".into()),
+    ] {
+        fold(&mut app, event);
+    }
+
+    assert!(!app.restart_attempt(1, 3));
+    assert_eq!(message_roles(&app), [Role::User, Role::Assistant]);
+    assert!(matches!(app.history.last(), Some(HistoryItem::Tool(_))));
+    assert_eq!(app.streaming_text(), Some(""));
+}
+
+#[test]
+fn the_retried_attempts_thought_takes_the_rounds_reasoning_tokens() {
+    // The dropped attempt's thought left history with the restart, so the
+    // round's usage frame snaps the retried attempt's thought alone.
+    let mut app = App::new();
+    app.record_user_message("think hard");
+    app.begin_stream();
+    for event in [
+        StreamEvent::ThinkingStart,
+        StreamEvent::ThinkingChunk("first try".into()),
+        StreamEvent::ThinkingEnd,
+    ] {
+        fold(&mut app, event);
+    }
+    app.restart_attempt(1, 3);
+    for event in [
+        StreamEvent::ThinkingStart,
+        StreamEvent::ThinkingChunk("second try".into()),
+        StreamEvent::ThinkingEnd,
+    ] {
+        fold(&mut app, event);
+    }
+    app.apply_usage(&crate::stream::TokenUsage {
+        reasoning: 99,
+        ..Default::default()
+    });
+    let thoughts: Vec<(&str, usize)> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Reasoning(r) => Some((r.text.as_str(), r.tokens)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(thoughts, [("second try", 99)]);
+}
+
+#[test]
+fn a_restart_takes_back_a_compactions_half_summary() {
+    // The summary streams into its own buffer; the retried request's summary
+    // must not land behind the dropped one's (docs/compact.md).
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    fold(&mut app, StreamEvent::Chunk("Half a summ".into()));
+    app.restart_attempt(1, 3);
+    fold(&mut app, StreamEvent::Chunk("The whole summary.".into()));
+    let compaction = app.finish_compact(4).expect("a compact turn was running");
+    assert_eq!(compaction.summary, "The whole summary.");
+}
+
+#[test]
+fn a_new_turn_never_reaches_back_into_the_last_turns_attempt() {
+    // Esc mid-reply keeps the partial (docs/interrupt.md) and sends no event
+    // that would close the attempt it cut short. The next turn's restart
+    // takes back that turn's own reply, never the kept partial.
+    let mut app = App::new();
+    app.record_user_message("one");
+    app.begin_stream();
+    fold(&mut app, StreamEvent::Chunk("kept partial".into()));
+    app.interrupt_turn();
+    app.record_user_message("two");
+    app.begin_stream();
+    fold(&mut app, StreamEvent::Chunk("dropped".into()));
+
+    app.restart_attempt(1, 3);
+    assert!(
+        app.history.iter().any(
+            |item| matches!(item, HistoryItem::Message(m) if m.role == Role::Assistant && m.text == "kept partial")
+        ),
+        "the interrupted turn's partial stands"
+    );
+    assert_eq!(app.streaming_text(), Some(""));
+}
+
+#[test]
+fn a_restart_with_no_turn_in_flight_changes_nothing() {
+    let mut app = App::new();
+    app.record_user_message("hello");
+    assert!(!app.restart_attempt(1, 3));
+    assert!(app.status().is_none());
+    assert_eq!(message_roles(&app), [Role::User]);
+}
+
+#[test]
+fn a_restart_empties_the_reply_whatever_it_holds() {
+    // An attempt opens on an empty reply buffer — every round boundary
+    // flushes it — so the take-back empties the buffer rather than cutting
+    // it back to a remembered length, a cut that could land inside a
+    // character. Even a buffer that opened on a whitespace run, which a
+    // previewed `write` flushed away unrecorded before wide text arrived,
+    // simply empties.
+    let mut app = App::new();
+    app.record_user_message("write it");
+    app.begin_stream();
+    app.push_chunk("\n\n");
+    fold(
+        &mut app,
+        StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
+            index: 0,
+            name: "write".into(),
+            arguments: String::new(),
+        }),
+    );
+    fold(&mut app, StreamEvent::Chunk("日本".into()));
+
+    app.restart_attempt(1, 3);
+    assert_eq!(app.streaming_text(), Some(""));
+}
+
 #[test]
 fn end_turn_records_a_summary_and_clears_the_status() {
     let mut app = App::new();
