@@ -358,7 +358,25 @@ impl App {
         if status.shell {
             return None;
         }
-        Some(TurnSummary {
+        // A finished turn's tokens are its frames' alone: the receipt is
+        // never a guess (docs/prompt-caching.md).
+        Some(self.turn_summary(&status, elapsed_secs, 0))
+    }
+
+    /// The summary closing a turn whose line was `status`, `elapsed_secs`
+    /// long — the one builder both turn ends share,
+    /// [`take_turn_summary`](App::take_turn_summary) for a finished turn and
+    /// [`interrupt_turn`](App::interrupt_turn) for a kept interrupt, so the
+    /// two differ only in the `estimated` share each hands it: nothing for a
+    /// finished turn, the tokenizer's count of the round the Esc cut short
+    /// for an interrupted one (`docs/interrupt.md`).
+    fn turn_summary(
+        &self,
+        status: &TurnStatus,
+        elapsed_secs: u64,
+        estimated: usize,
+    ) -> TurnSummary {
+        TurnSummary {
             verb: status.done_verb,
             secs: elapsed_secs,
             timestamp: self.now_stamp(),
@@ -370,15 +388,15 @@ impl App {
             // The turn's real billed usage (`apply_usage`) — 0 (hidden) when
             // the backend reported none. See docs/prompt-caching.md.
             tokens: self.turn_usage_tokens,
-            estimated: 0,
+            estimated,
             cached: self.turn_usage_cached,
             cache_write: self.turn_usage_cache_write,
-        })
+        }
     }
 
-    /// Record a summary built by [`take_turn_summary`](App::take_turn_summary) into
-    /// history (so it
-    /// survives a resize and lists in the transcript).
+    /// Record a summary built by [`take_turn_summary`](App::take_turn_summary)
+    /// or handed back by [`interrupt_turn`](App::interrupt_turn) into history
+    /// (so it survives a resize and lists in the transcript).
     pub fn record_turn_summary(&mut self, summary: TurnSummary) {
         self.history.push(HistoryItem::Summary(summary));
     }
@@ -593,29 +611,22 @@ impl App {
     }
 
     /// The receipt an interrupted turn keeps under its notice — the summary a
-    /// finished turn ends on ([`take_turn_summary`](App::take_turn_summary)),
-    /// over the tally the status line shows as the Esc lands. The usage
-    /// frames' share stays [`TurnSummary::tokens`]; the rest, the round the
-    /// Esc cut short, never reports, so it is the tokenizer's count,
-    /// [`TurnSummary::estimated`]. `None` for a `!` shell or a `/compact`
-    /// turn, whose cells are their own records. Built, never recorded: the
-    /// boundary records it once the completions held during the turn have
-    /// settled above it (`docs/interrupt.md`).
+    /// finished turn ends on, from the same builder
+    /// ([`turn_summary`](App::turn_summary)), over the tally the status line
+    /// shows as the Esc lands. The usage frames' share stays
+    /// [`TurnSummary::tokens`]; the rest, the round the Esc cut short, never
+    /// reports, so it is the tokenizer's count, [`TurnSummary::estimated`].
+    /// `None` for a `!` shell or a `/compact` turn, whose cells are their own
+    /// records. Built, never recorded: the boundary records it once the
+    /// completions held during the turn have settled above it
+    /// (`docs/interrupt.md`).
     fn interrupted_turn_summary(&self, elapsed_secs: u64, compacting: bool) -> Option<TurnSummary> {
         let status = self.status.as_ref()?;
         if status.shell || compacting {
             return None;
         }
-        Some(TurnSummary {
-            verb: status.done_verb,
-            secs: elapsed_secs,
-            timestamp: self.now_stamp(),
-            shells: self.background.len(),
-            tokens: self.turn_usage_tokens,
-            estimated: status.tokens.saturating_sub(self.turn_usage_tokens),
-            cached: self.turn_usage_cached,
-            cache_write: self.turn_usage_cache_write,
-        })
+        let estimated = status.tokens.saturating_sub(self.turn_usage_tokens);
+        Some(self.turn_summary(status, elapsed_secs, estimated))
     }
 
     /// Remove and return the turn's just-submitted user message(s) — the
