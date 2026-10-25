@@ -49,6 +49,7 @@ pub mod task;
 pub mod thinking;
 mod tool_arguments;
 pub mod tools;
+pub mod usage;
 mod wire_history;
 
 use std::time::Duration;
