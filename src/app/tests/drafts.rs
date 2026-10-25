@@ -378,6 +378,27 @@ fn clear_drops_the_round_and_the_queue_alike() {
 }
 
 #[test]
+fn a_restart_drops_the_calls_being_made_and_keeps_the_queue() {
+    // The round's request is being sent again (docs/dropped-reply.md): the
+    // calls the dropped attempt was making will never finish, while a queued
+    // call's preview belongs to a cell that is still there.
+    let mut drafts = ToolDrafts::default();
+    drafts.push(&piece(0, "write", r#"{"path":"a.py","content":"A"}"#));
+    drafts.adopt(["Write"]);
+    drafts.push(&piece(0, "write", r#"{"path":"b.py","content":"hal"#));
+    let revision = drafts.revision();
+    drafts.restart();
+    assert!(drafts.revision() > revision, "a restart moves the revision");
+    assert_eq!(drafts.previews().count(), 0, "the half-made call is gone");
+    let queued: Vec<Option<&str>> = drafts.queued().map(ToolDraft::path).collect();
+    assert_eq!(queued, [Some("a.py")], "the queued cell keeps its preview");
+    // The call made again opens fresh under the same slot.
+    assert!(drafts.push(&piece(0, "write", r#"{"path":"b.py","content":"whole"#)));
+    let contents: Vec<&str> = drafts.previews().map(ToolDraft::content).collect();
+    assert_eq!(contents, ["whole"]);
+}
+
+#[test]
 fn every_change_moves_the_revision() {
     let mut drafts = ToolDrafts::default();
     let mut last = drafts.revision();
@@ -579,6 +600,30 @@ fn every_turn_edge_drops_the_drafts() {
     let mut app = streaming();
     app.clear_conversation();
     assert!(app.tool_drafts().is_empty(), "/clear");
+}
+
+#[test]
+fn a_retry_drops_the_call_the_dropped_attempt_was_making() {
+    // The connection dropped while the model was making a `write`, and the
+    // round is being sent again (docs/dropped-reply.md). The call made again
+    // arrives under the same slot: folded into the old draft, its pieces
+    // would continue the cut-off arguments instead of starting their own.
+    let mut app = turn();
+    app.push_tool_call_fragment(&piece(0, "write", r#"{"path":"a.py","content":"hal"#));
+    app.set_retry(1, 3);
+    assert!(
+        app.tool_drafts().is_empty(),
+        "the half-made call went with its attempt"
+    );
+    for piece in write_pieces("a.py", "whole\n") {
+        app.push_tool_call_fragment(&piece);
+    }
+    let contents: Vec<&str> = app
+        .tool_drafts()
+        .previews()
+        .map(ToolDraft::content)
+        .collect();
+    assert_eq!(contents, ["whole\n"]);
 }
 
 #[test]

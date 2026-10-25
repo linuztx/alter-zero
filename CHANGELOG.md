@@ -12,6 +12,23 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A reply the connection drops mid-stream carries on where it stopped.**
+  When the connection died while a reply was streaming, the turn ended on
+  the half that had arrived and a red `request failed: request or response
+  body error: error reading a body from connection: Connection timed out (os
+  error 110)` (or `Connection reset by peer`), and you had to ask for the
+  rest. Now the status line shows `retrying 1/3`, the model is shown what it
+  had already written and asked to go on from there, and the rest of the
+  reply streams in after it with nothing repeated. If the network went down
+  with the connection, the turn waits for it under `Waiting for internet…`,
+  as for any request. A tool call that was being written when the
+  connection dropped never ran, so its preview is cleared and the model
+  makes the call again. `/settings` **Error retry** sets how many times a
+  reply is carried on, and at `0` the error shows as before
+  (`docs/dropped-reply.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added

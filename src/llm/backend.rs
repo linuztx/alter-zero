@@ -2,8 +2,10 @@
 //! app's [`StreamEvent`] protocol so a real model is a drop-in for `DummyAi`.
 //!
 //! Boundary code (it spawns the streaming thread), but the message assembly is
-//! factored into the pure [`build_messages`] so it's unit-tested. See
-//! `docs/llm.md`.
+//! factored into the pure [`build_messages`] so it's unit-tested, and a round's
+//! attempts — the retries, and carrying on a reply a dropped connection cut
+//! off (`docs/dropped-reply.md`) — into `drive_round`, which the tests drive
+//! with a fake request. See `docs/llm.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,9 +17,10 @@ use super::agent::{self, RoundOutcome};
 use super::approval;
 use super::classifier::{ClassifierContext, SafetyClassifier};
 use super::config::ModelConfig;
+use super::continuation::CutOff;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
-use super::openai::{Delta, OpenAiClient};
+use super::openai::{Delta, OpenAiClient, StreamOutcome};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
@@ -1984,8 +1987,8 @@ fn spawn_subagent_run(
 /// per-request retry), emitting the `Chunk`/`Thinking*` events as text and
 /// reasoning arrive, and reporting the [`RoundOutcome`] the agent loop acts on
 /// — `Complete` (plain answer), `ToolCalls` (the model wants to run tools),
-/// `Cancelled`, or `Failed`. Boundary code (real HTTP); the loop that calls it
-/// and the retry it wraps are unit-tested separately.
+/// `Cancelled`, or `Failed`. Boundary code (real HTTP): the round itself is
+/// [`drive_round`]'s, over the client's request, and unit-tested there.
 fn stream_round(
     client: &OpenAiClient,
     messages: &[ChatMessage],
@@ -1993,22 +1996,49 @@ fn stream_round(
     cancel: &CancelToken,
     max_retries: u32,
 ) -> RoundOutcome {
+    drive_round(
+        messages,
+        tx,
+        cancel,
+        max_retries,
+        |request, on_delta| client.stream_chat(request, cancel, on_delta),
+        retry::sleep_cancellable,
+    )
+}
+
+/// [`stream_round`] over any `stream` — one attempt's request, handed the
+/// messages to send and the sink its deltas go to: the client's real request
+/// in the backend, a fake in the tests — and any `sleep` for the backoffs.
+/// Pure with respect to the network.
+fn drive_round(
+    messages: &[ChatMessage],
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_retries: u32,
+    mut stream: impl FnMut(Vec<ChatMessage>, &mut dyn FnMut(Delta)) -> super::Result<StreamOutcome>,
+    sleep: impl Fn(std::time::Duration, &CancelToken),
+) -> RoundOutcome {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
-    // One streaming attempt: stream the deltas as events and report the outcome
-    // plus whether it emitted any content. `retry::run_attempts` re-runs it —
-    // after a `Retrying` announcement + backoff — only for a retryable failure
-    // that emitted nothing, so a retry can never duplicate streamed text.
+    // What a dropped connection has cut off of the round's reply: the text
+    // the next attempt asks the model to carry on from (docs/dropped-reply.md).
+    let mut cut = CutOff::default();
+    // One streaming attempt: stream the deltas as events and report the
+    // outcome. `retry::run_attempts` re-runs it — after a `Retrying`
+    // announcement + backoff — for a retryable failure, and a re-run never
+    // repeats what streamed: before any content there is nothing to repeat,
+    // and after it the attempt sends the continuation rather than the round
+    // again. So every outcome reports `false`: nothing a re-send repeats.
     let attempt = || {
-        let mut emitted = false;
+        // This attempt's reply text, kept if the connection drops under it.
+        let mut text = String::new();
         // Track the thinking phase so a reasoning burst opens exactly one
         // ThinkingStart and the first response text after it closes with a
         // ThinkingEnd — the pairing the status line expects.
         let mut thinking = false;
-        let result = client.stream_chat(messages.to_vec(), cancel, |delta: Delta| {
+        let result = stream(cut.request(messages), &mut |delta: Delta| {
             if !delta.reasoning.is_empty() {
-                emitted = true;
                 if !thinking {
                     thinking = true;
                     let _ = tx.send(StreamEvent::ThinkingStart);
@@ -2016,11 +2046,11 @@ fn stream_round(
                 let _ = tx.send(StreamEvent::ThinkingChunk(delta.reasoning));
             }
             if !delta.response.is_empty() {
-                emitted = true;
                 if thinking {
                     thinking = false;
                     let _ = tx.send(StreamEvent::ThinkingEnd);
                 }
+                text.push_str(&delta.response);
                 let _ = tx.send(StreamEvent::Chunk(delta.response));
             }
             if !delta.tool_calls.is_empty() {
@@ -2029,7 +2059,6 @@ fn stream_round(
                 // (docs/status-indicator.md) and a `write` previews as its
                 // content arrives (docs/write-streaming.md). Close the
                 // thinking phase first if a reasoning burst preceded the call.
-                emitted = true;
                 if thinking {
                     thinking = false;
                     let _ = tx.send(StreamEvent::ThinkingEnd);
@@ -2045,19 +2074,22 @@ fn stream_round(
             let _ = tx.send(StreamEvent::ThinkingEnd);
         }
         match result {
+            // The round's whole reply: whatever earlier attempts streamed
+            // before their connections dropped, then this one's.
             Ok(outcome) => {
-                // A tool-calling round emits no visible reply text, so treat it
-                // as "emitted" too — a retry would re-run tools, which we never
-                // want (it can never duplicate here since Ok isn't retried).
-                let had_tools = !outcome.tool_calls.is_empty();
-                captured = Some(outcome);
-                (AttemptResult::Ok, emitted || had_tools)
+                captured = Some(cut.finish(outcome));
+                (AttemptResult::Ok, false)
             }
-            Err(LlmError::Cancelled) => (AttemptResult::Cancelled, emitted),
-            Err(e) => (AttemptResult::Failed(e), emitted),
+            Err(LlmError::Cancelled) => (AttemptResult::Cancelled, false),
+            Err(e) => {
+                // Whether it is retried is the driver's to decide; if it is,
+                // the next attempt carries on from here.
+                cut.extend(&text);
+                (AttemptResult::Failed(e), false)
+            }
         }
     };
-    match retry::run_attempts(tx, cancel, max_retries, attempt, retry::sleep_cancellable) {
+    match retry::run_attempts(tx, cancel, max_retries, attempt, sleep) {
         AttemptResult::Ok => {
             let outcome = captured.unwrap_or_default();
             // The round's real usage frame (stream_options.include_usage):
@@ -2120,6 +2152,7 @@ mod tests {
 
     use crate::context::{ContextMessage, ContextRole, ContextToolCall};
     use crate::llm::MessageContent;
+    use crate::llm::continuation::CONTINUE_NOTE;
 
     /// A fake encoder for the pure tests: every path "encodes" to a data URL
     /// naming its file, so assertions can tell attachments apart.
@@ -3064,5 +3097,358 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         assert_eq!(specs[0].id, "c1");
         assert_eq!(specs[0].function.name, "bash");
         assert_eq!(specs[0].function.arguments, r#"{"command":"ls"}"#);
+    }
+
+    // --- a reply the connection drops (docs/dropped-reply.md) -------------
+
+    /// What a streamed body's read fails with when the connection dies under
+    /// it — the report this behaviour was built for.
+    fn dropped() -> LlmError {
+        LlmError::Http(
+            "request or response body error: error reading a body from connection: \
+             Connection timed out (os error 110)"
+                .into(),
+        )
+    }
+
+    /// A delta of reply text.
+    fn said(text: &str) -> Delta {
+        Delta {
+            response: text.into(),
+            ..Delta::default()
+        }
+    }
+
+    /// A stream that finished, answering `text`.
+    fn answered(text: &str) -> StreamOutcome {
+        StreamOutcome {
+            text: crate::llm::thinking::ChatStreamResult {
+                response: text.into(),
+                reasoning: String::new(),
+            },
+            finish_reason: Some("stop".into()),
+            ..StreamOutcome::default()
+        }
+    }
+
+    /// The round a test drives: the persona and one question.
+    fn round_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::system("persona"),
+            ChatMessage::user("explain the drop"),
+        ]
+    }
+
+    /// The backoffs pass at once.
+    fn no_sleep(_: std::time::Duration, _: &CancelToken) {}
+
+    /// Every event the round sent.
+    fn sent(rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            out.push(event);
+        }
+        out
+    }
+
+    /// The text a round that should have answered plainly answered.
+    fn completed(outcome: RoundOutcome) -> String {
+        match outcome {
+            RoundOutcome::Complete { text } => text,
+            RoundOutcome::Failed(err) => panic!("the round failed: {err}"),
+            RoundOutcome::ToolCalls { .. } => panic!("the round asked for tools"),
+            RoundOutcome::Cancelled => panic!("the round was cancelled"),
+        }
+    }
+
+    /// The messages a continuation adds to the round's own: asserts it opens
+    /// with exactly the round's messages and returns the rest.
+    fn continued(request: &[ChatMessage]) -> &[ChatMessage] {
+        let round = round_messages();
+        assert!(request.len() >= round.len(), "the request lost the round");
+        let (head, tail) = request.split_at(round.len());
+        assert_eq!(head, round.as_slice(), "it opens with the round's messages");
+        tail
+    }
+
+    #[test]
+    fn a_reply_the_connection_drops_carries_on_where_it_stopped() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            retry::MAX_RETRIES,
+            |request, on_delta| {
+                requests.push(request);
+                if requests.len() == 1 {
+                    on_delta(said("The connection "));
+                    on_delta(said("drops in the mid"));
+                    return Err(dropped());
+                }
+                on_delta(said("dle of it."));
+                Ok(answered("dle of it."))
+            },
+            no_sleep,
+        );
+        // The round reads as one reply, as the screen does: what streamed
+        // before the drop, then what the continuation streamed after it.
+        assert_eq!(
+            completed(outcome),
+            "The connection drops in the middle of it."
+        );
+        assert_eq!(requests.len(), 2, "one attempt dropped, one carried on");
+        assert_eq!(requests[0], round_messages(), "the round as it is");
+        let added = continued(&requests[1]);
+        assert_eq!(added.len(), 2, "the reply so far, then the note");
+        assert_eq!(
+            added[0],
+            ChatMessage::assistant("The connection drops in the mid"),
+            "the reply so far is the assistant's own message"
+        );
+        assert_eq!(
+            added[1],
+            ChatMessage::user(CONTINUE_NOTE),
+            "a note asks for the rest"
+        );
+        // Nothing streamed twice: the retry is announced between the halves.
+        assert_eq!(
+            sent(&mut rx),
+            vec![
+                StreamEvent::Chunk("The connection ".into()),
+                StreamEvent::Chunk("drops in the mid".into()),
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: retry::MAX_RETRIES
+                },
+                StreamEvent::Chunk("dle of it.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_cut_off_mid_generation_is_made_again_after_the_text_before_it() {
+        // The call never finished, so it never ran: the continuation asks
+        // for the rest of the reply, which makes the call whole this time.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let piece = |arguments: &str| crate::stream::ToolCallFragment {
+            index: 0,
+            name: if arguments.is_empty() { "write" } else { "" }.into(),
+            arguments: arguments.into(),
+        };
+        let call = ToolCallRequest {
+            id: "call_1".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"a.py","content":"A\n"}"#.into(),
+        };
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            retry::MAX_RETRIES,
+            |request, on_delta| {
+                requests.push(request);
+                if requests.len() == 1 {
+                    on_delta(said("Writing it now."));
+                    on_delta(Delta {
+                        tool_calls: vec![piece(""), piece(r#"{"path":"a.py","con"#)],
+                        ..Delta::default()
+                    });
+                    return Err(dropped());
+                }
+                on_delta(Delta {
+                    tool_calls: vec![piece(""), piece(&call.arguments)],
+                    ..Delta::default()
+                });
+                Ok(StreamOutcome {
+                    tool_calls: vec![call.clone()],
+                    finish_reason: Some("tool_calls".into()),
+                    ..StreamOutcome::default()
+                })
+            },
+            no_sleep,
+        );
+        let RoundOutcome::ToolCalls { assistant, calls } = outcome else {
+            panic!("the round should end asking for the call");
+        };
+        assert_eq!(calls, vec![call.clone()], "the call, made once, whole");
+        assert_eq!(
+            assistant,
+            ChatMessage::assistant_tool_calls("Writing it now.", to_tool_call_specs(&[call])),
+            "the text before the drop stays the round's own"
+        );
+        let added = continued(&requests[1]);
+        assert_eq!(added[0], ChatMessage::assistant("Writing it now."));
+        assert_eq!(added[1], ChatMessage::user(CONTINUE_NOTE));
+        let events = sent(&mut rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::Retrying { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_drop_mid_thought_closes_the_phase_and_asks_the_round_again() {
+        // Only reasoning streamed: there is no reply on screen to continue,
+        // so the round is simply sent again.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            retry::MAX_RETRIES,
+            |request, on_delta| {
+                requests.push(request);
+                if requests.len() == 1 {
+                    on_delta(Delta {
+                        reasoning: "Hmm, the link".into(),
+                        ..Delta::default()
+                    });
+                    return Err(dropped());
+                }
+                on_delta(said("Answer."));
+                Ok(answered("Answer."))
+            },
+            no_sleep,
+        );
+        assert_eq!(completed(outcome), "Answer.");
+        assert_eq!(requests, vec![round_messages(), round_messages()]);
+        assert_eq!(
+            sent(&mut rx),
+            vec![
+                StreamEvent::ThinkingStart,
+                StreamEvent::ThinkingChunk("Hmm, the link".into()),
+                StreamEvent::ThinkingEnd,
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: retry::MAX_RETRIES
+                },
+                StreamEvent::Chunk("Answer.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_continuation_that_cannot_connect_waits_for_the_network() {
+        // The link that dropped is often the whole network: the continuation
+        // waits for it like any request (docs/offline.md), unbounded, and
+        // goes out unchanged once it is back.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            retry::MAX_RETRIES,
+            |request, on_delta| {
+                requests.push(request);
+                match requests.len() {
+                    1 => {
+                        on_delta(said("Half"));
+                        Err(dropped())
+                    }
+                    2 => Err(LlmError::Unreachable {
+                        host: "api.venice.ai".into(),
+                        message: "tcp connect error: Network is unreachable".into(),
+                    }),
+                    _ => {
+                        on_delta(said(" and the rest."));
+                        Ok(answered(" and the rest."))
+                    }
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(completed(outcome), "Half and the rest.");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1], requests[2], "the same continuation, re-sent");
+        assert_eq!(continued(&requests[2])[0], ChatMessage::assistant("Half"));
+        assert_eq!(
+            sent(&mut rx),
+            vec![
+                StreamEvent::Chunk("Half".into()),
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: retry::MAX_RETRIES
+                },
+                StreamEvent::Offline {
+                    host: "api.venice.ai".into(),
+                    attempts: 1
+                },
+                StreamEvent::Chunk(" and the rest.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_drops_spend_the_bounded_retry_and_carry_everything_streamed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            retry::MAX_RETRIES,
+            |request, on_delta| {
+                requests.push(request);
+                on_delta(said(&format!("w{} ", requests.len())));
+                Err(dropped())
+            },
+            no_sleep,
+        );
+        assert!(
+            matches!(outcome, RoundOutcome::Failed(LlmError::Http(_))),
+            "past the budget the drop is the round's error"
+        );
+        assert_eq!(requests.len(), 1 + retry::MAX_RETRIES as usize);
+        // Each continuation carries everything every attempt before it streamed.
+        assert_eq!(continued(&requests[1])[0], ChatMessage::assistant("w1 "));
+        assert_eq!(continued(&requests[2])[0], ChatMessage::assistant("w1 w2 "));
+        assert_eq!(
+            continued(&requests[3])[0],
+            ChatMessage::assistant("w1 w2 w3 ")
+        );
+        let retries: Vec<u32> = sent(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                StreamEvent::Retrying { attempt, .. } => Some(attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retries, [1, 2, 3]);
+    }
+
+    #[test]
+    fn with_retries_off_a_dropped_reply_fails_the_round() {
+        // `Error retry` at 0 means never retry, a continuation included.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        let outcome = drive_round(
+            &round_messages(),
+            &tx,
+            &cancel,
+            0,
+            |_request, on_delta| {
+                calls += 1;
+                on_delta(said("Half"));
+                Err(dropped())
+            },
+            no_sleep,
+        );
+        assert!(matches!(outcome, RoundOutcome::Failed(LlmError::Http(_))));
+        assert_eq!(calls, 1, "nothing was sent again");
+        assert_eq!(sent(&mut rx), vec![StreamEvent::Chunk("Half".into())]);
     }
 }

@@ -28,6 +28,7 @@ pub mod classifier;
 pub mod claude;
 pub mod cline;
 pub mod config;
+mod continuation;
 pub mod copilot;
 pub mod exec;
 pub mod hooks;

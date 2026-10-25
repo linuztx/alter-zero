@@ -484,7 +484,8 @@ impl ToolDraft {
 /// [`crate::agents::AgentRun`] its own. The lifecycle is the round's — pieces
 /// [`push`](Self::push) in, the announcement [`seal`](Self::seal)s the round
 /// and the batch [`adopt`](Self::adopt)s its previews, each queued call's
-/// resolution [`resolve`](Self::resolve)s its own, and every turn edge
+/// resolution [`resolve`](Self::resolve)s its own, a retry
+/// [`restart`](Self::restart)s the round's generation, and every turn edge
 /// [`clear`](Self::clear)s it all. A half-generated call is never recorded:
 /// its JSON is incomplete and the model never finished asking for it, so a
 /// later request has nothing to replay.
@@ -604,6 +605,18 @@ impl ToolDrafts {
         if previewed_display(display) && self.queued.pop_front().is_some() {
             self.revision += 1;
         }
+    }
+
+    /// The round's request is being sent again — a retry, or the
+    /// continuation of a reply the connection dropped
+    /// (`docs/dropped-reply.md`): the calls the failed attempt was making
+    /// will never finish, and the model makes them again from their first
+    /// piece, under the same slots. The queued drafts stay: they belong to
+    /// cells already on screen.
+    pub fn restart(&mut self) {
+        self.generating.clear();
+        self.sealed = false;
+        self.revision += 1;
     }
 
     /// Drop everything — a turn edge: its start, its end, an interrupt, an

@@ -416,10 +416,14 @@ pub enum StreamEvent {
     /// begins executing the call.
     ToolCallDelta(ToolCallFragment),
     /// A failed request is being retried (the connection/send failed before any
-    /// content streamed, or the server returned a transient status). Carries the
-    /// 1-based retry number and the ceiling, shown live in the status line as
-    /// `retrying {attempt}/{max}`. Only a real backend sends this (see
-    /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
+    /// content streamed, the server returned a transient status, or the
+    /// connection dropped mid-reply and the retry carries the reply on —
+    /// `docs/dropped-reply.md`). Carries the 1-based retry number and the
+    /// ceiling, shown live in the status line as `retrying {attempt}/{max}`.
+    /// The round's request goes out again, so whatever call the failed attempt
+    /// was still generating ([`StreamEvent::ToolCallDelta`]) is void: the model
+    /// makes it again. Only a real backend sends this (see `llm::retry`); the
+    /// loop shows it in the status and keeps the turn alive.
     Retrying { attempt: u32, max: u32 },
     /// No connection could be made to the provider — the machine is offline,
     /// or `host` (the host the request was for, with its port when the URL

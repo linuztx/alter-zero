@@ -18,6 +18,11 @@
 //! ([`StreamEvent::Offline`]), waits a few seconds ([`offline_backoff`]), and
 //! tries again, for as long as it takes — Esc is the way out, and the attempt
 //! that gets through is the one that streams. See `docs/offline.md`.
+//!
+//! A connection that drops **mid-reply** answered badly too, and takes the
+//! bounded retry like any other: the backend's round sends the next attempt
+//! as a continuation of the reply already on screen, never the round again,
+//! so nothing streams twice (`docs/dropped-reply.md`).
 
 use std::time::Duration;
 
@@ -127,20 +132,23 @@ pub fn offline_backoff(attempt: u32) -> Duration {
         .min(OFFLINE_BACKOFF_CAP)
 }
 
-/// Decide what to do after an attempt. Only a failure that has **not yet
-/// emitted any content** (`emitted == false`) is ever re-sent — restarting a
-/// request after bytes have streamed would duplicate them, so once anything
-/// is emitted the error is surfaced instead — and with retries turned off
-/// (`max == 0`) nothing is. Then: a host that could not be reached is
-/// **waited for** ([`RetryStep::AwaitConnection`], the count running on
-/// `attempts.unreachable` and no budget spent), and any other retryable
-/// failure takes the bounded retry while `attempts.retried < max`.
+/// Decide what to do after an attempt. A failure is re-sent only when
+/// sending it again **repeats nothing** (`repeats == false`) — restarting a
+/// request after bytes have streamed would duplicate them, so an attempt
+/// that cannot carry on from what it streamed reports `repeats` and its
+/// error is surfaced instead (the backend's round carries on from a reply a
+/// dropped connection cut off, so it never does: `docs/dropped-reply.md`) —
+/// and with retries turned off (`max == 0`) nothing is. Then: a host that
+/// could not be reached is **waited for** ([`RetryStep::AwaitConnection`],
+/// the count running on `attempts.unreachable` and no budget spent), and any
+/// other retryable failure takes the bounded retry while
+/// `attempts.retried < max`.
 #[must_use]
-pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max: u32) -> RetryStep {
+pub fn next_step(result: &AttemptResult, attempts: Attempts, repeats: bool, max: u32) -> RetryStep {
     let AttemptResult::Failed(err) = result else {
         return RetryStep::Proceed;
     };
-    if emitted || max == 0 {
+    if repeats || max == 0 {
         return RetryStep::Proceed;
     }
     if let LlmError::Unreachable { host, .. } = err {
@@ -163,10 +171,11 @@ pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max:
 
 /// Drive one streamed turn with retries. `attempt` performs a single streaming
 /// attempt — it sends the `Chunk`/`Thinking*` events itself and returns its
-/// outcome plus whether it emitted any content — and `sleep` is an interruptible
-/// wait. On a retryable, content-free failure the driver announces a
-/// [`StreamEvent::Retrying`], waits, and calls `attempt` again, up to `max`
-/// times; then it sends the terminal `StreamDone` (success) / `Error` (give-up)
+/// outcome plus whether sending the request again would **repeat** what it
+/// streamed ([`next_step`]'s `repeats`) — and `sleep` is an interruptible
+/// wait. On a retryable failure a re-send repeats nothing of, the driver
+/// announces a [`StreamEvent::Retrying`], waits, and calls `attempt` again, up
+/// to `max` times; then it sends the terminal `StreamDone` (success) / `Error` (give-up)
 /// or nothing (cancelled). Generic over `attempt`/`sleep` so it is unit-testable
 /// with fakes and no network.
 pub fn run_stream(
@@ -207,14 +216,14 @@ pub fn run_attempts(
     sleep: impl Fn(Duration, &CancelToken),
 ) -> AttemptResult {
     let mut attempts = Attempts::default();
-    // Cumulative: once any attempt streams a byte we never retry (retrying
-    // would duplicate the content). So the attempt that emits is always the
-    // last one — succeed or give up.
-    let mut emitted = false;
+    // Cumulative: once any attempt streams a byte a re-send would repeat we
+    // never retry (retrying would duplicate the content). So the attempt that
+    // does is always the last one — succeed or give up.
+    let mut repeats = false;
     loop {
-        let (result, this_emitted) = attempt();
-        emitted |= this_emitted;
-        let wait = match next_step(&result, attempts, emitted, max) {
+        let (result, this_repeats) = attempt();
+        repeats |= this_repeats;
+        let wait = match next_step(&result, attempts, repeats, max) {
             RetryStep::Proceed => return result,
             RetryStep::Retry { number, wait } => {
                 let _ = tx.send(StreamEvent::Retrying {
@@ -397,8 +406,8 @@ mod tests {
 
     #[test]
     fn a_connection_lost_after_content_streamed_is_surfaced() {
-        // Only a request that emitted nothing can be re-sent; a drop after
-        // bytes streamed would duplicate them (the bounded rule's twin).
+        // An attempt whose re-send would repeat what streamed is never sent
+        // again, the wait included (the bounded rule's twin).
         assert_eq!(
             next_step(&unreachable("api.venice.ai"), retried(0), true, MAX_RETRIES),
             RetryStep::Proceed
@@ -424,8 +433,10 @@ mod tests {
 
     #[test]
     fn next_step_stops_once_content_has_streamed() {
-        // A failure after any bytes streamed can't be retried (it would
-        // duplicate), so we surface it.
+        // A failure whose re-send would repeat the bytes that streamed can't
+        // be retried (it would duplicate), so we surface it. The backend's
+        // round never reports one: it carries a cut-off reply on instead
+        // (docs/dropped-reply.md).
         let step = next_step(
             &AttemptResult::Failed(LlmError::Http("mid-stream drop".into())),
             retried(0),

@@ -248,7 +248,10 @@ The static half rides `extra_headers` in `providers.toml`. Three headers are
   premium request for a user-initiated round and nothing for the agent's own
   tool round trips. The rule is the last message's role — a round the user's
   own text closes is theirs; one closing on a tool result (or on the
-  assistant's own text, as a continuation does) is the agent's. Marking every
+  assistant's own text, as a continuation does) is the agent's. So is one
+  closing on the note that carries on a reply a dropped connection cut off
+  (`docs/dropped-reply.md`): user-role, but the harness's words, and billed
+  as the user's every drop would cost a premium request. Marking every
   round `user` would bill the user several times over for one question.
 - **`Copilot-Vision-Request: true`** whenever a round carries an image part,
   without which the API answers `400 missing required Copilot-Vision-Request

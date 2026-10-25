@@ -136,7 +136,15 @@ A draft's lifecycle is the round's:
    subagent fold's resolutions). A `Write` gives up the front adopted draft. The
    adopted drafts are front-first in queue order, so the k-th queued `Write` is
    always paired with the k-th adopted draft.
-5. **`clear`**: every turn edge drops it all (`begin_stream`, `begin_shell`,
+5. **`restart`**: the round's request is being sent again (`App::set_retry`,
+   the subagent fold's `Retrying` arm) — after a failure, or to carry on a
+   reply the connection dropped (`docs/dropped-reply.md`). The calls the
+   failed attempt was making will never finish: the model makes them again
+   from their first piece, under the same slots, and folded into the old
+   drafts those pieces would continue the cut-off arguments. So the calls
+   being made are dropped and the next piece opens fresh. The adopted drafts
+   stay, since their cells are on screen.
+6. **`clear`**: every turn edge drops it all (`begin_stream`, `begin_shell`,
    `finish_stream`, `fail_stream`, an interrupt, a blocked prompt, the end of a
    `/compact` turn, `/clear`). A half-generated call is never recorded. Its
    JSON is incomplete and the model never finished asking for it, so there is

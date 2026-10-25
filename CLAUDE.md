@@ -403,7 +403,15 @@ slot, and `ui::offline`'s `⎿ ((·)) No connection to {host} — trying again �
 N attempts` row hanging off the line through `ui::hang_rows`, the ripple
 fading with distance on the status line's own clock, the tip giving way to
 it; a refused loopback Ollama stays `ollama serve` advice on the bounded
-retry (`ollama::is_local_base`); a drop mid-reply is still surfaced; Esc
+retry (`ollama::is_local_base`); a drop mid-reply takes the bounded retry
+as a **continuation** of the reply on screen (`docs/dropped-reply.md`:
+`llm::continuation::CutOff` keeps what the round's failed attempts
+streamed and builds the next request — the round's messages, the reply so
+far as the assistant's, `CONTINUE_NOTE` — `backend::drive_round` is
+`stream_round` over a fake-able request, `retry::next_step`'s gate asks
+whether a re-send would **repeat** what streamed (`repeats`), never true
+for the round, and every `Retrying` restarts the round's tool-call drafts,
+`ToolDrafts::restart`; `smoke.sh` Phase 145); Esc
 interrupts and the undo hands the unsent message back; `smoke.sh` Phase
 129), and the **`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
@@ -603,7 +611,8 @@ records this client cannot call at all (embeddings, and the `/responses`-only
 reasoning family). On the wire the mode is a top-level `reasoning_effort`
 string *instead of* the `reasoning` object, whose unknown-field 400 blames the
 model, and three per-request headers ride along: `X-Initiator` (billing —
-GitHub charges the user's round and not the agent's tool loop),
+GitHub charges the user's round and not the agent's tool loop, nor the
+continuation of a dropped reply, `continuation::is_note`),
 `Copilot-Vision-Request` with an image, and `X-Request-Id`) in
 `docs/copilot.md`; the **OpenAI ChatGPT sign-in** — the subscription list's
 second row, and the two things a second subscription turned out to need

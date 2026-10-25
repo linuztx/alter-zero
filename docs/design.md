@@ -716,6 +716,16 @@ which Ctrl+V reads the clipboard from.
   over a ripple row naming the host and counting the attempts; content ends
   it, Esc interrupts it (and hands an unsent message back to the composer),
   a refused local Ollama still says to start the server.
+- **Carrying on a dropped reply** (`docs/dropped-reply.md`): a connection
+  that dies while a reply streams — `request or response body error: error
+  reading a body from connection: …`, a timeout or a reset — no longer ends
+  the turn. The bounded `Error retry` sends the round again as a
+  continuation: the reply so far as the assistant's own message, then a
+  note asking for the rest from exactly where it stopped, and what comes
+  back streams on after what is on screen — one reply, nothing repeated. A
+  call cut off while it was being made never ran: its preview goes with
+  the attempt and the model makes it again. A continuation whose connect
+  fails waits for the network like any request.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on

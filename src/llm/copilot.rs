@@ -339,11 +339,13 @@ impl ExchangedToken {
 ///
 /// The rule is the last message's role: a round the user's own text closes is
 /// theirs; a round closing on a tool result (or the assistant's own text, as a
-/// continuation does) is the agent's.
+/// continuation does) is the agent's — and so is one closing on the note that
+/// carries on a reply a dropped connection cut off, user-role though it is:
+/// the words are the harness's (`docs/dropped-reply.md`).
 #[must_use]
 pub fn initiator(messages: &[ChatMessage]) -> &'static str {
-    match messages.last().map(|m| m.role.as_str()) {
-        Some("user") => "user",
+    match messages.last() {
+        Some(last) if last.role == "user" && !super::continuation::is_note(last) => "user",
         _ => "agent",
     }
 }
@@ -1424,6 +1426,19 @@ mod tests {
             "agent"
         );
         assert_eq!(initiator(&[]), "agent", "no messages is not a user turn");
+    }
+
+    #[test]
+    fn carrying_on_a_dropped_reply_is_agent_initiated() {
+        // The note asking for the rest of a reply the connection cut off
+        // (docs/dropped-reply.md) is the harness's words, not the user's:
+        // billed as theirs, every drop would cost a premium request.
+        let messages = vec![
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("The connection drops in the mid"),
+            ChatMessage::user(crate::llm::continuation::CONTINUE_NOTE),
+        ];
+        assert_eq!(initiator(&messages), "agent");
     }
 
     #[test]

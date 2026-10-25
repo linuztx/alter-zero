@@ -64,8 +64,10 @@ pub struct TurnStatus {
     /// `docs/shell-command.md`.
     pub shell: bool,
     /// Set while a failed request is being retried — the connection/send failed
-    /// (or a transient status came back) before any content streamed, so the
-    /// backend is reconnecting. Rendered as a `retrying {attempt}/{max}` clause
+    /// (or a transient status came back) before any content streamed, or the
+    /// connection dropped mid-reply and the retry carries the reply on
+    /// (`docs/dropped-reply.md`), so the backend is reconnecting. Rendered as a
+    /// `retrying {attempt}/{max}` clause
     /// in the status line and cleared the moment content arrives ([`App::push_chunk`]
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
@@ -304,12 +306,16 @@ impl App {
     /// `attempt` and the ceiling `max` come straight from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. Cleared by the next
     /// [`push_chunk`](App::push_chunk)/[`push_thinking`](App::push_thinking) once
-    /// content arrives. No-op when no turn is in flight. See `docs/llm.md`.
+    /// content arrives. The round's request goes out again, so a call the
+    /// failed attempt was making is dropped: the model makes it again from
+    /// its first piece (`docs/dropped-reply.md`). No-op when no turn is in
+    /// flight. See `docs/llm.md`.
     pub fn set_retry(&mut self, attempt: u32, max: u32) {
         if let Some(status) = self.status.as_mut() {
             // A retry means the host answered (badly): any outage is over.
             status.recovered();
             status.retry = Some(RetryInfo { attempt, max });
+            self.tool_drafts.restart();
         }
     }
     /// Record that no connection could be made to `host` and the backend is

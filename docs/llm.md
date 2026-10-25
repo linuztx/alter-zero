@@ -27,6 +27,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/mod.rs` | `ChatMessage`, module glue, `LlmError`/`Result` | mostly |
 | `llm/cache.rs` | prompt-cache request shaping — which models need explicit `cache_control` breakpoints, and the wire-JSON rewrite that places them (`docs/prompt-caching.md`) | **pure** |
 | `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, the user's own file laid over the built-ins with every problem in it worded for a toast (`docs/user-providers.md`), `ModelConfig`, key/model resolution, the `AuthScheme` that splits a pasted key from a subscription sign-in (`docs/copilot.md`) | **pure** |
+| `llm/continuation.rs` | `CutOff` — what a dropped connection cut a round's reply short at, and the continuation request that asks for the rest (`docs/dropped-reply.md`) | **pure** |
 | `llm/copilot.rs` | GitHub Copilot: the device flow's wire shapes and poll verdict, the OAuth→bearer exchange every request resolves through, and the request identity its API insists on (`docs/copilot.md`) | split |
 | `llm/cline.rs` | Cline's account sign-in: the WorkOS device flow's shapes and verdicts, the register/refresh envelope, the `workos:` bearer spelling, the freshness rule (pure); the flow's HTTP calls, the access-token cache and the rotation write-back (`docs/cline.md`) | split |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
@@ -91,10 +92,14 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
 - **`retry_backoff`** — exponential from 500 ms, doubling each retry and capped at
   8 s, so the three retries wait **500 ms → 1 s → 2 s**. Interruptible
   (`sleep_cancellable`), so an Esc/quit during a backoff still reaps within ~50 ms.
-- **`next_step`** — retry only a retryable failure that **emitted no content yet**
-  (`emitted == false`) and still has budget (`attempt < max`). This is the
-  correctness gate: once any byte has streamed, restarting the request would
-  **duplicate** it, so a mid-stream drop is surfaced rather than retried.
+- **`next_step`** — retry a retryable failure that still has budget
+  (`attempt < max`) only when sending again **repeats nothing**
+  (`repeats == false`). This is the correctness gate: once any byte has
+  streamed, restarting the request would **duplicate** it. The backend's
+  round never restarts one: after a drop mid-reply its next attempt is a
+  **continuation** — the reply so far as the assistant's message and a note
+  asking for the rest — so the reply carries on where it stopped instead of
+  ending the turn (`docs/dropped-reply.md`).
 - **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
   streaming attempt in: it announces each retry as a
   [`StreamEvent::Retrying { attempt, max }`](../src/stream/event.rs), backs off, and
@@ -612,8 +617,9 @@ Retheme there.
   own — at its next channel send, or after at most one op-timeout if parked on
   the silent socket. A failure before any content streamed retries as usual
   (`llm::retry`; a connection that cannot be made at all is waited for
-  instead, `docs/offline.md`); one after content is surfaced, never retried
-  (a retry would duplicate the streamed text).
+  instead, `docs/offline.md`); one after content is carried on rather than
+  restarted — the retry continues the reply on screen
+  (`docs/dropped-reply.md`).
 - A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
   read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`

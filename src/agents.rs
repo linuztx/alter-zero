@@ -925,10 +925,12 @@ impl AgentRun {
             // agent's own state changes while it waits. An ask request would
             // be too (docs/ask.md) — unreachable, since subagents never get
             // the tool.
-            // This agent's request failed before any content streamed and is
-            // being retried: its session view's status line says so, exactly
-            // like the main turn's (`docs/llm.md`). Nothing commits — the run
-            // is still in flight.
+            // This agent's request failed — before any content streamed, or
+            // mid-reply, which the retry carries on (`docs/dropped-reply.md`)
+            // — and is being retried: its session view's status line says
+            // so, exactly like the main turn's (`docs/llm.md`). Nothing
+            // commits — the run is still in flight — but a call the failed
+            // attempt was making is dropped, to be made again.
             StreamEvent::Retrying { attempt, max } => {
                 // The host answered (badly): any outage is over.
                 self.recovered();
@@ -936,6 +938,7 @@ impl AgentRun {
                     attempt: *attempt,
                     max: *max,
                 });
+                self.drafts.restart();
             }
             // No connection could be made for this agent's request and its
             // loop is waiting for one: the session view says so, exactly
@@ -4883,6 +4886,27 @@ mod tests {
         );
         run.apply(&chunk("here we go"));
         assert!(run.retry.is_none(), "content ends the reconnect");
+    }
+
+    #[test]
+    fn a_retry_drops_the_call_the_agents_dropped_attempt_was_making() {
+        // Main parity (`docs/dropped-reply.md`): the round is sent again, and
+        // the call made again must open its own draft rather than continue
+        // the cut-off one under the same slot.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&piece(0, "write", r#"{"path":"a.py","content":"hal"#));
+        run.apply(&StreamEvent::Retrying { attempt: 1, max: 3 });
+        assert!(
+            run.drafts().is_empty(),
+            "the half-made call went with its attempt"
+        );
+        run.apply(&piece(0, "write", r#"{"path":"a.py","content":"whole"#));
+        let contents: Vec<&str> = run
+            .drafts()
+            .previews()
+            .map(crate::app::ToolDraft::content)
+            .collect();
+        assert_eq!(contents, ["whole"]);
     }
 
     #[test]

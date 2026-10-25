@@ -85,15 +85,17 @@ comes back. So that failure gets no budget and no deadline:
   still to wait, and the `retrying 1/3` that follows a `503` once the host
   is back opens on its first number. A host that answers at all, even with
   an error, resets the outage count, so the next outage counts from one.
-- **The same two gates as a retry.** A failure after content has streamed is
-  surfaced, never re-sent — restarting the request would duplicate the
-  streamed text — so a connection that drops *mid-reply* still ends the turn
-  with the red notice and the partial; only the request that got nothing
-  through waits. (In an agentic turn that is every round's request: a tool
-  round that comes back to find the network gone waits, and the turn
-  continues where it was.) And `/settings` **Error retry** at `0` means
-  *never retry*, the wait included: the `could not reach {host}: …` error
-  surfaces at once, in the words of the transport.
+- **The same two gates as a retry.** A request is never sent again in a
+  way that repeats what streamed — restarting it would duplicate the
+  streamed text — so a connection that drops *mid-reply* never gets the
+  round sent again: it takes the bounded retry, whose next attempt is a
+  continuation of the reply on screen (`docs/dropped-reply.md`). That
+  continuation is a request like any other, so if the network went with the
+  link, *it* is what waits here. (In an agentic turn that is every round's
+  request: a tool round that comes back to find the network gone waits, and
+  the turn continues where it was.) And `/settings` **Error retry** at `0`
+  means *never retry*, the wait included: the `could not reach {host}: …`
+  error surfaces at once, in the words of the transport.
 - **Esc is the way out**, as for any wait: the sleep is `sleep_cancellable`'s
   50 ms slices, so the interrupt lands at once, and the cancel is silent.
   Then the ordinary interrupt rule applies (`docs/interrupt.md`): with nothing
@@ -184,7 +186,8 @@ over `No connection to localhost:8080`, which names what is actually gone
 - A stall: a provider that accepts the connection and sits on the headers
   past `NET_OP_TIMEOUT` (120 s) is a bounded, counted retry — it answered,
   slowly.
-- A drop mid-reply is surfaced, never re-sent (above).
+- A drop mid-reply is never re-sent from the start (above): it is carried
+  on, under the bounded retry (`docs/dropped-reply.md`).
 - The `/model` picker's fetch does not retry; its failure now reads `could
   not reach {host}: …` instead of `request failed: error sending request for
   url (…)`.
@@ -202,8 +205,9 @@ over `No connection to localhost:8080`, which names what is actually gone
   is `Unreachable` with the probe's own cause; a failure `reqwest` blames on
   the connect needs no probe.
 - `llm::retry::tests`: `next_step` answers `Unreachable` with
-  `AwaitConnection` at every budget state, `Proceed` once content streamed or
-  with retries off; the backoff doubles to the cap; the driver announces one
+  `AwaitConnection` at every budget state, `Proceed` once a re-send would
+  repeat what streamed or with retries off; the backoff doubles to the cap;
+  the driver announces one
   `Offline` per failed connect with the running count, spends no retry on
   them, opens the bounded retry on `1` after an outage and restarts the
   outage count after an answer, stops silently on a cancel mid-wait, and
