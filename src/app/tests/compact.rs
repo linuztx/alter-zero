@@ -122,13 +122,15 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
     // The swap lives only at StreamDone (codex: replace-at-the-very-end) —
     // an interrupt drops the half summary and leaves the context as it was.
     // The tail being a user message must NOT trigger the interrupt-undo
-    // (that would pull an unrelated old message into the composer).
+    // (that would pull an unrelated old message into the composer). And no
+    // `… for Ns` summary: a finished compaction's record is its marker cell,
+    // and an interrupted one compacted nothing.
     let mut app = App::new();
     app.record_user_message("hello");
     let before = app.history.clone();
     app.begin_compact(false);
     app.push_chunk("half a summ");
-    let outcome = app.interrupt_turn().expect("an interrupt outcome");
+    let outcome = app.interrupt_turn(3).expect("an interrupt outcome");
     assert!(
         matches!(
             &outcome,
@@ -136,6 +138,7 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
                 partial: None,
                 tools,
                 notice: Some(_),
+                summary: None,
                 ..
             } if tools.is_empty()
         ),
@@ -391,7 +394,7 @@ fn an_interrupted_compaction_blocks_the_auto_retrigger() {
     assert!(app.should_auto_compact(), "precondition: over threshold");
     app.begin_compact(true);
     app.push_chunk("half");
-    app.interrupt_turn();
+    app.interrupt_turn(0);
     assert!(!app.should_auto_compact(), "an Esc'd compaction stays down");
 }
 

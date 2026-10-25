@@ -69,7 +69,7 @@ fn interrupt_turn_keeps_the_notice_when_a_message_is_queued() {
     app.record_user_message("Hi");
     app.begin_stream();
     app.queued.push_back(QueuedTurn::Shell("ls".to_string()));
-    let outcome = app.interrupt_turn().expect("a turn was active");
+    let outcome = app.interrupt_turn(0).expect("a turn was active");
     assert!(
         matches!(
             outcome,
@@ -601,7 +601,7 @@ fn a_message_handed_to_the_turn_blocks_the_interrupt_undo() {
     app.input = TextArea::from_text("wait, also this");
     app.on_key(key(KeyCode::Enter));
     assert!(
-        matches!(app.interrupt_turn(), Some(InterruptedTurn::Kept { .. })),
+        matches!(app.interrupt_turn(0), Some(InterruptedTurn::Kept { .. })),
         "the turn is kept so the reclaim can send what it never read"
     );
     assert_eq!(app.input.text(), "", "the submission is not pulled back");
@@ -643,7 +643,7 @@ fn a_delivered_message_also_blocks_the_interrupt_undo() {
     app.deliver_steered("also check the tests");
     // The next round's request is in flight: nothing streamed, no tool live.
     assert!(
-        matches!(app.interrupt_turn(), Some(InterruptedTurn::Kept { .. })),
+        matches!(app.interrupt_turn(0), Some(InterruptedTurn::Kept { .. })),
         "the turn produced output — Esc interrupts it, it does not undo it"
     );
     assert_eq!(
@@ -671,7 +671,7 @@ fn a_fresh_turn_can_be_undone_again_after_one_that_was_steered() {
     app.record_user_message("second");
     app.begin_stream();
     assert!(
-        matches!(app.interrupt_turn(), Some(InterruptedTurn::Undone)),
+        matches!(app.interrupt_turn(0), Some(InterruptedTurn::Undone)),
         "a turn that produced nothing still undoes"
     );
 }

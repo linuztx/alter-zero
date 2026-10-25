@@ -7,10 +7,11 @@ Date: 2026-06-10
 Pressing **Esc while a turn is generating** stops the turn immediately — the
 way openai/codex interrupts a running task — instead of quitting the app. The
 partial reply stays in the conversation, a notice tells the user what
-happened, and the input box is ready for the next message at once.
+happened, the turn's summary under it says what the work cost, and the input
+box is ready for the next message at once.
 
-Two deliberate divergences from codex tune what happens when there is nothing
-worth keeping:
+Three deliberate divergences from codex. The first two tune what happens when
+there is nothing worth keeping:
 
 - **No output yet → undo, don't notify.** If Esc lands before the turn has
   produced anything (no partial reply, no tool, no `write` that had begun
@@ -27,6 +28,14 @@ worth keeping:
   interrupted` line under it would be redundant, so the shell turn skips the
   notice (its cell is the record — like the `Ran for Ns` summary it also omits).
 
+The third is about what was kept:
+
+- **A kept interrupt closes on its summary.** codex ends an interrupted turn
+  on the notice alone. Here the turn still gets the dim line a finished turn
+  ends on, under the notice — `Worked for 8s · 24.3k tokens (20k cached)` — so
+  the user knows how long the work ran and what it used before they stopped
+  it. See *The summary under the notice* below.
+
 ## What codex does (ported from `/tmp/codex/codex-rs/tui`)
 
 - **A single Esc interrupts immediately** while a task is running — no
@@ -38,7 +47,8 @@ worth keeping:
 - An **error-styled cell** is committed:
   `"Conversation interrupted - tell the model what to do differently. …"`
   (`chatwidget/turn_runtime.rs::interrupted_turn_message`). There is **no**
-  "done" summary for an interrupted turn — the notice is its terminal state.
+  "done" summary for an interrupted turn — the notice is its terminal state
+  (this codebase adds one under it — the third divergence above).
 - The live status row carries the hint while a task runs:
   `(0m 00s • Esc to interrupt)` (`status_indicator_widget.rs`).
 - Esc when idle is codex's backtrack ("edit previous message") — now ported
@@ -81,6 +91,8 @@ pub enum InterruptedTurn {
                                      // ⎿ Waiting… sibling — resolved Failed, in order
         notice: Option<&'static str>,// INTERRUPT_NOTICE, or None for a shell turn
         agents: Option<AgentGroup>,  // the live agent group, resolved interrupted
+        summary: Option<TurnSummary>,// the closing `Worked for 8s · …` line, built
+                                     // but not recorded — None for a shell or /compact
     },
 }
 ```
@@ -139,8 +151,10 @@ Then:
   differently."` (codex's wording minus its `/feedback` plug) — **unless it is
   a `!` shell turn** (`status.shell`), whose `⎿ Interrupted by user` cell is its
   own record, so `notice` is `None` and no `Role::Error` message is recorded.
-- Clears the live status **without** a `Done for Ns` summary (like
-  `fail_stream`: the notice — or the shell cell — is the summary).
+- Clears the live status into the turn's **summary**, built from it and the
+  `elapsed_secs` the loop hands in (`interrupt_turn(elapsed_secs)`, the
+  `end_turn` shape) but left for the loop to record — see *The summary under
+  the notice*. `None` for a shell turn and a `/compact` turn.
 
 `None` (recording nothing) when no turn is in flight.
 
@@ -165,26 +179,30 @@ regardless.
    its old sender, whose receiver we just dropped, so it can never reach the
    next turn (which spawns on the new sender). The detached handle is parked
    in `reaping` and swept when finished (`is_finished()`, non-blocking).
-2. Reset `committed` / `turn_start` / `thinking_start`, then `app.interrupt_turn()`
-   and branch on the outcome:
+2. Reset `committed` / `turn_start` / `thinking_start`, then
+   `app.interrupt_turn(elapsed)` — the turn's seconds, read off `turn_start`
+   *before* step 1 clears it — and branch on the outcome:
    - **`Undone`** — the submission was rolled back (message back in the composer,
      dropped from history). `repaint_conversation(ReflowClear::Purge)` rebuilds
      scrollback from the now-truncated history, so the user bubble vanishes and
      the composer shows the restored draft. No commit, and no queue flush (the
      empty queue is the undo's precondition).
-   - **`Kept { partial, tools, notice, agents }`** — commit like `StreamDone`
-     does: reseat the viewport to its idle height first (the streaming strip is
-     gone — invariant 3), then `insert_before` the partial, every cancelled
-     call (collapsed, red, blank-separated), the agent group, and the notice
-     (`commit_turn_failure`, each with a blank spacer). The calls are read back
-     off the history by count (`ui::resolved_tools_commit_lines`): the notice
-     is already recorded behind them, so `ui::tool_commit_lines` — which
-     commits the one call that just resolved, the last history item — would
-     find a message there and commit nothing, the screen showing the notice
-     with no cell above it at all. `notice` is `None` for a shell turn, so its
-     `⎿ Interrupted by user` cell stands alone. Then flush the front queued
-     batch (`flush_next_queued`) onto the **new** channel — Esc sends the queue
-     right away.
+   - **`Kept { partial, tools, notice, agents, summary }`** — commit like
+     `StreamDone` does: reseat the viewport to its idle height first (the
+     streaming strip is gone — invariant 3), then `insert_before` the partial,
+     every cancelled call (collapsed, red, blank-separated), the agent group,
+     and the notice (`commit_turn_failure`, each with a blank spacer). The
+     calls are read back off the history by count
+     (`ui::resolved_tools_commit_lines`): the notice is already recorded
+     behind them, so `ui::tool_commit_lines` — which commits the one call that
+     just resolved, the last history item — would find a message there and
+     commit nothing, the screen showing the notice with no cell above it at
+     all. `notice` is `None` for a shell turn, so its `⎿ Interrupted by user`
+     cell stands alone. Then settle the background completions held during
+     the turn and record + commit the `summary` under them
+     (`commit_turn_summary`, the `StreamDone` arm's own helper). Then flush
+     the front queued batch (`flush_next_queued`) onto the **new** channel —
+     Esc sends the queue right away.
 
 `Action::Interrupt` can only originate in the conversation view (overlay Esc
 returns instead), so the commits never touch the alternate screen.
@@ -198,6 +216,58 @@ slate, not a finished turn. See `docs/design.md` (the `/clear` paragraph) and
 `smoke.sh` Phase 16. **Quit mid-turn** likewise cancels without joining, so
 the terminal restore isn't delayed by a wedged backend thread — the process
 exits right after and the OS reaps it.
+
+### The summary under the notice
+
+A kept interrupt ends the way a finished turn does: on the dim summary line
+(`ui::summary_lines`, `docs/status-indicator.md`), committed under the red
+notice —
+
+```
+● Here is the part of the answer that strea
+
+● Conversation interrupted - tell the model what to do differently.
+
+Worked for 8s · 24.3k tokens (20k cached)
+```
+
+— so the user sees how long the work ran and what it used before they stopped
+it, not only that it stopped.
+
+- **The verb and the seconds are a finished turn's**: the past tense of the
+  verb the status line wore last, and the turn's wall clock, read by the loop
+  before `abandon_inflight` stops it and handed to
+  `interrupt_turn(elapsed_secs)`, the `end_turn(elapsed_secs)` shape. The two
+  turn ends share one builder (`App::turn_summary`), so the lines differ only
+  in the token count each is handed.
+- **The tokens are the tally the status line showed at the Esc**, not a
+  provider receipt. A finished turn's `· N tokens` is the sum of its rounds'
+  usage frames (`docs/prompt-caching.md`), but the round the Esc cuts off
+  never sends its frame — its stream is dropped mid-flight — so a receipt
+  alone would leave out the very round the user stopped, and would show no
+  tokens at all for an answer cut off in its first round. The tally is the
+  number the user was watching: every frame that did arrive plus the live
+  estimate of the cut-off round, so nothing jumps as the line turns into the
+  summary. Like the status line, it under-counts that last round's re-sent
+  input, which only its frame would have reported. The `(N cached · N
+  written)` beside it stays the arrived frames' own: a cached share is never
+  estimated.
+- **It closes the turn.** `interrupt_turn` builds the summary but does not
+  record it (`InterruptedTurn::Kept::summary`): the loop commits the remains,
+  settles the background completions held during the turn, and only then
+  records and commits the summary (`Session::commit_turn_summary`, shared with
+  the `StreamDone` arm). That is the finished turn's order (its
+  `take_turn_summary` split, `docs/background.md`), so a late completion lands
+  above the line and the summary stays the turn's last row in history and
+  scrollback alike. Being history, it survives a resize rebuild and shows in
+  the Ctrl+O transcript, `/export` and a `/resume`; the derived context skips
+  it as chrome, like every summary, so the model never reads it.
+- **None where a finished turn has none**: a `!` shell turn (its `⎿
+  Interrupted by user` cell is the record, and a finished command has no `Ran
+  for Ns` line either) and a `/compact` turn (it compacted nothing; a finished
+  one's record is its marker cell). The undo path records nothing at all, summary included — the turn is
+  rolled back as if it was never sent. A backend error still ends on its red
+  notice alone.
 
 ### The interrupt-lag freeze (why we detach instead of join)
 
@@ -244,8 +314,19 @@ segment (lowercase, matching this codebase's hint convention —
   quits; Esc with the palette open still only dismisses it (turn keeps
   running); `interrupt_turn` — the **keep** path — keeps the partial + records
   the notice (`Kept { notice: Some(_) }`), resolves a running tool as Failed
-  with `"Interrupted by user"`, records **no** summary, clears the status,
-  stamps with the injected clock, and is a `None` no-op when idle.
+  with `"Interrupted by user"`, clears the status, stamps with the injected
+  clock, and is a `None` no-op when idle.
+- `app` (the summary): a kept interrupt hands back its summary without
+  recording it — the done verb, the boundary's seconds, the clock's stamp —
+  and once recorded it closes the turn under the notice
+  (`an_interrupted_turn_hands_back_its_summary_without_recording_it`); its
+  tokens are the tally the line showed, billed rounds plus the cut-off
+  round's estimate, beside the billed cache halves
+  (`an_interrupted_turns_summary_keeps_the_tally_its_line_showed`), the
+  estimate alone with no frame (`…_with_no_usage_frame_keeps_its_estimate`);
+  it counts the running shells, names the verb a rotation moved the line to
+  (`an_interrupted_turn_hands_on_its_last_verb_too`), and is `None` for a `!`
+  shell and a `/compact` turn.
 - `app` (the **undo** path, req 1): interrupting with no output (`Kept`'s
   opposite, `Undone`) drops the turn's user message(s) from history, restores
   their text (a batch rejoined by `\n`) to the composer, records **no** notice,
@@ -253,7 +334,7 @@ segment (lowercase, matching this codebase's hint convention —
   (back to the keep path, notice committed).
 - `app` (the shell notice skip, req 2): interrupting a `!` shell turn resolves
   the command Failed with `"Interrupted by user"` and returns `notice: None` —
-  no `Role::Error` `Conversation interrupted` message.
+  no `Role::Error` `Conversation interrupted` message — and `summary: None`.
 - `app` (a parallel batch): Esc mid-batch resolves the running call **and**
   every `⎿ Waiting…` sibling, in order, each recorded ahead of the notice
   (`interrupt_mid_batch_resolves_the_running_call_and_every_waiting_sibling`);
@@ -275,8 +356,11 @@ segment (lowercase, matching this codebase's hint convention —
   streams a normal reply when left to run.
 - `src/tui/` (smoke, Phase 8): mid-stream Esc (after a partial streamed) leaves
   the partial text and the `Conversation interrupted` notice on screen, clears
-  the status line (no `tokens`), commits no `Done for`, and the app still
-  completes a following turn normally.
+  the status line (no `esc to interrupt`), commits the turn's `Worked for Ns ·
+  N tokens` summary under the notice, and the app still completes a following
+  turn normally, its summary the second on screen. Phase 13: with a message
+  queued, the interrupted turn's summary lands between its notice and the
+  queued `❯ world` that Esc sends.
 - `src/tui/` (smoke, Phase 32 — the interrupt-lag regression guard, req 1): with a
   backend stalled 3 s (`ALTER_ZERO_STALL_MS`, ignoring the cancel and streaming
   nothing), Esc **undoes** the turn — the status line clears **within a frame**
@@ -289,8 +373,9 @@ segment (lowercase, matching this codebase's hint convention —
   `⎿ Interrupted by user` with **no** `Conversation interrupted` notice.
 - `src/tui/` (smoke, Phase 123 — a parallel batch): Esc while the dummy's
   three-call `Bash(ping …)` batch runs commits all three red
-  `⎿ Interrupted by user` cells, in batch order, above the notice, Ctrl+D
-  shows all three calls answered, and a resize's purge rebuild shows each cell
-  exactly once; Esc on the batch's permission prompt (both cells still
-  `⎿ Waiting…`) resolves both calls, on screen and in Ctrl+D. Before the fix
-  the pane showed the notice alone and Ctrl+D the first call alone.
+  `⎿ Interrupted by user` cells, in batch order, above the notice, the turn's
+  summary under it, Ctrl+D shows all three calls answered, and a resize's
+  purge rebuild shows each cell — and the summary — exactly once; Esc on the
+  batch's permission prompt (both cells still `⎿ Waiting…`) resolves both
+  calls, on screen and in Ctrl+D, and closes on the summary too. Before the
+  fix the pane showed the notice alone and Ctrl+D the first call alone.

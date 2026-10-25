@@ -371,6 +371,13 @@ impl Session<'_> {
     /// ToolStart that would otherwise wedge a phantom running tool) lands on the
     /// dropped receiver and can't reach the next turn. See `docs/interrupt.md`.
     fn interrupt_turn(&mut self) -> std::io::Result<()> {
+        // How long the turn worked, read before `abandon_inflight` stops its
+        // clock: a kept interrupt closes on the turn's own `Worked for Ns`
+        // summary, as a finished turn does (docs/interrupt.md).
+        let elapsed = self
+            .clocks
+            .turn_start
+            .map_or(0, |start| start.elapsed().as_secs());
         self.abandon_inflight();
         // A thinking phase caught mid-thought settles first, so its
         // `Thought for …` cell sits ahead of everything the interrupt keeps.
@@ -387,7 +394,7 @@ impl Session<'_> {
         let owed = self.begin_turn_agent_settle(width);
         // Interrupt only arises in the conversation view (overlay Esc returns
         // instead), so nothing here touches the alternate screen.
-        let interrupted = self.app.interrupt_turn();
+        let interrupted = self.app.interrupt_turn(elapsed);
         self.finish_turn_agent_settle(owed, width);
         match interrupted {
             Some(alter_zero::app::InterruptedTurn::Undone) => {
@@ -407,6 +414,7 @@ impl Session<'_> {
                 tools,
                 notice,
                 agents,
+                summary,
             }) => {
                 // Something streamed — keep it, commit the notice (None for a `!`
                 // shell turn, whose `⎿ Interrupted by user` cell already says it
@@ -425,12 +433,23 @@ impl Session<'_> {
                 }
                 self.commit_turn_failure(partial, &tools, agents, notice);
                 self.render.reset();
+                // Then the turn's summary closes it — `Worked for 8s · 24.3k
+                // tokens`, what the work cost — in StreamDone's order: the
+                // completions held during the turn settle above it first
+                // (docs/background.md), so the summary stays the turn's last
+                // line. None for a `!` shell or a `/compact` turn.
+                self.settle_bg_completions();
+                if let Some(summary) = summary {
+                    let committing = self.commits_allowed();
+                    self.commit_turn_summary(summary, committing, width);
+                }
                 // The user interrupted to send their queued follow-ups right away
                 // (their spec; codex's submit-pending-steers-after-interrupt).
                 // The front entry — the first queue — goes out now (a text batch
                 // to the model, or a `!` command run locally); any later batches
-                // iterate at the following turn-ends. Held background completions
-                // settle first, like every turn end (docs/background.md).
+                // iterate at the following turn-ends. The held completions
+                // already settled above, so the turn-end dispatch's own settle
+                // finds none (docs/background.md).
                 self.dispatch_after_turn();
             }
             None => self.render.reset(),

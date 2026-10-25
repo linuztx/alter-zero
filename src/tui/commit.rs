@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
-use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall};
+use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall, TurnSummary};
 use alter_zero::ui;
 
 use super::Session;
@@ -205,6 +205,27 @@ impl Session<'_> {
             self.term
                 .insert_before(ui::message_lines(Role::Error, notice, width));
             self.term.insert_before(vec![Line::default()]);
+        }
+    }
+
+    /// Record + commit a turn's closing summary — the dim `Worked for 20s ·
+    /// 8.2k tokens` line — the one site both turn ends share, a finished
+    /// turn (`StreamDone`) and an interrupted one (`docs/interrupt.md`), so
+    /// the two can never drift. Recorded always; committed when
+    /// `committing` (invariant 4 — an agent view or a flowed page rebuilds
+    /// it from history). Each caller has already reseated the viewport for
+    /// the turn's end with the commits before it, so this one writes
+    /// straight in.
+    pub(crate) fn commit_turn_summary(
+        &mut self,
+        summary: TurnSummary,
+        committing: bool,
+        width: u16,
+    ) {
+        self.app.record_turn_summary(summary.clone());
+        if committing {
+            self.term.insert_before(ui::summary_lines(&summary, width));
+            self.term.insert_before(vec![Line::default()]); // blank spacer
         }
     }
 }

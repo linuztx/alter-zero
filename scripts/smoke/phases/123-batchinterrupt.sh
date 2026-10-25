@@ -61,6 +61,12 @@ if ! [ "${google:-0}" -gt 0 ] || ! [ "${google:-0}" -lt "${facebook:-0}" ] ||
 	! [ "${facebook:-0}" -lt "${invalid:-0}" ] || ! [ "${invalid:-0}" -lt "${notice:-0}" ]; then
 	fail "the interrupted cells are not in batch order above the notice (google=$google facebook=$facebook x.invalid=$invalid notice=$notice)"
 fi
+# …and the turn closes on its own summary, under the notice (docs/interrupt.md).
+summary="$(printf '%s\n' "$interrupted" | grep -nE "^$SUMMARY_RE" | head -1 | cut -d: -f1)"
+if ! [ "${summary:-0}" -gt "${notice:-0}" ]; then
+	fail "the interrupted turn's summary is not under its notice (notice=$notice summary=${summary:-none})"
+fi
+expect_eq "$(count_summaries "$interrupted")" 1 "the interrupted batch's turn does not close on exactly one summary"
 
 # The context replays the whole round: three calls, three answers.
 calls=$(printf '%s\n' "$context" | grep -cF '→ bash(')
@@ -79,6 +85,8 @@ for cmd in "ping -c 20 google.com" "ping -c 20 facebook.com" "ping -c 20 x.inval
 done
 rebuilt_notices=$(printf '%s\n' "$rebuilt" | grep -cF "Conversation interrupted")
 expect_eq "${rebuilt_notices:-0}" 1 "the rebuild does not show the notice exactly once"
+# The summary is history too, so the rebuild repaints it — once.
+expect_eq "$(count_summaries "$rebuilt")" 1 "the rebuild does not show the interrupted turn's summary exactly once"
 
 # ---- the reported case: Esc on the batch's PERMISSION prompt ----
 # The approve seam runs before a call's ToolStart, so while the first call
@@ -114,6 +122,7 @@ for cmd in "sudo whoami" "ping -c 4 google.com"; do
 done
 perm_cells=$(printf '%s\n' "$cancelled" | grep -cF "Interrupted by user")
 expect_eq "${perm_cells:-0}" 2 "the asked-about call and its sibling each resolve to '⎿ Interrupted by user'"
+expect_eq "$(count_summaries "$cancelled")" 1 "Esc on the prompt did not close the turn on its summary"
 expect_has "$perm_context" -F 'bash({"command":"sudo whoami"})' "Ctrl+D lost the call the prompt asked about"
 expect_has "$perm_context" -F 'bash({"command":"ping -c 4 google.com"})' "Ctrl+D lost the waiting sibling — the model would never know it asked for it"
 perm_answers=$(printf '%s\n' "$perm_context" | grep -cF "Interrupted by user")

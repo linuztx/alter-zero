@@ -49,7 +49,7 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
 | waiting for the network | `( ·•●  ) Waiting for internet… (2m 3s · ↑ 42 tokens · offline for 1m 10s · esc to interrupt)` — verb and clause amber, over a `⎿ ((·)) No connection to {host} — trying again · N attempts` row (`docs/offline.md`) |
 | finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
-| interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
+| interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary under it — `Worked for 8s · 24.3k tokens`, its tokens the tally the line showed (see `docs/interrupt.md`) |
 
 The turn opens with a **pre-stream pause** (the backend waits `STARTUP_DELAY`,
 3s, before its first chunk — so the indicator is visibly *working* before any
@@ -129,9 +129,10 @@ real backend's own latency plays the same role.
   humanized by `format_elapsed` like the elapsed); dropped once thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
   shows: codex's discoverability hint for the Esc interrupt
-  (`docs/interrupt.md`). An interrupted turn gets **no** `Done for Ns` summary —
-  the committed `Conversation interrupted` notice is its terminal state, like a
-  backend error.
+  (`docs/interrupt.md`). An interrupted turn that kept its output commits the
+  red `Conversation interrupted` notice and then its summary under it, the
+  tokens being the tally this line showed when Esc landed (the cut-off round
+  never sends its usage frame); a backend error ends on its notice alone.
 
 Under the line, once the turn has run **three seconds**, hangs Claude Code's
 dim **spinner tip** — `  ⎿  Tip: Press ctrl+o to see the whole transcript and
@@ -212,8 +213,9 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   internet…` verb, the `offline for` clause and the row under the line (from
   a `StreamEvent::Offline`), and content, a tool round or a retry clears
   either (`TurnStatus::recovered`); `end_tool` adds tokens (`↑`); `fail_stream`
-  clears the status (an error is the summary — no "Done" line); `interrupt_turn`
-  clears it the same way (the `Conversation interrupted` notice is the summary);
+  clears the status (an error is the summary — no "Done" line);
+  `interrupt_turn(secs)` clears it into a summary under the `Conversation
+  interrupted` notice, built for the loop to record (`docs/interrupt.md`);
   `end_turn(secs)` records the summary and clears the status.
 
 ## The "Done for Ns" summary
@@ -231,6 +233,12 @@ transcript (stamp-free there — only user messages display a timestamp):
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
   flush-at-the-bottom dance the final reply line already uses.
+- An **Esc interrupt** that keeps its output ends on one too, under the red
+  notice: `App::interrupt_turn(elapsed_secs)` builds it from the same status
+  (one builder for both ends), with the tally the line showed as its tokens,
+  and the loop records + commits it through the same
+  `Session::commit_turn_summary` (`docs/interrupt.md` *The summary under the
+  notice*).
 
 ## Strip geometry
 
@@ -481,8 +489,9 @@ ahead of the round's batch.
   `↑` (no-op when idle) and the first chunk flips the arrow back to `↓`; tokens
   accumulate (`↓`) and survive a tool (`↑`, not reset); thinking chunks grow the
   tally (`↓`) without touching the reply buffer; `end_turn` records the summary
-  and clears status; `fail_stream` clears status; `set_status_times` writes the
-  boundary durations.
+  and clears status; `fail_stream` clears status; `interrupt_turn` hands back a
+  summary carrying the tally the line showed (`docs/interrupt.md`);
+  `set_status_times` writes the boundary durations.
 - `ui`: `format_elapsed` buckets (bare seconds under a minute, `{m}m {s}s`
   under an hour, `{h}h {m}m` past one) and that `status_line`/`summary_lines`
   humanize a long elapsed / thinking / done time through it; `status_line` for

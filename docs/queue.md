@@ -551,8 +551,9 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   ends with its own summary — exactly **one** summary line: a second turn
   must **not** run.
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
-  press Esc — `Conversation interrupted` commits and what the turn never read is
-  sent right away.
+  press Esc — `Conversation interrupted` commits with the interrupted turn's
+  summary under it (`docs/interrupt.md`), and what the turn never read is sent
+  right away, after that summary.
 - `scripts/smoke.sh` Phase 14 (Alt+Up restore): queue `world` with **Enter**
   (into the running turn) and `again` with **Tab** (a follow-up), press Alt+Up —
   only `again` returns to the box as the draft while `world` keeps its inset row.

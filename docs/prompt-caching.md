@@ -36,6 +36,7 @@ provider, by `tests/live_caching.rs` (the table at the end).
 | --- | --- |
 | the status line's `↓ N tokens` **between** usage frames | the app-side `o200k_base` estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — exact for OpenAI models, close for the rest |
 | the tally **at every round boundary**, the `Done … · N tokens` receipt, its `(N cached · N written)` | the provider's own usage frame — never estimated; a provider that reports none (the dummy, a shim that drops usage) leaves the receipt bare rather than guessing |
+| an **interrupted** turn's summary (`docs/interrupt.md`) | the status line's tally at the Esc — every frame that arrived plus the live estimate of the round the Esc cut off, whose frame never comes; its `(N cached · N written)` still only the arrived frames' |
 | the footer's context gauge after a round | real: the last round's `input + output` |
 | the gauge after a history mutation (`/clear`, backtrack, `/resume`, compaction) or with no frame yet | the tokenizer estimate of the derived context, until the next frame |
 | the `Thought for … · N tokens` cell | snapped to the provider's `reasoning_tokens` when the frame carries one (OpenAI, OpenRouter, the Responses wire); the estimate where none does (Anthropic folds thinking into `output_tokens`, Ollama reports none) |
@@ -295,7 +296,9 @@ TurnSummary { tokens, cached, cache_write }
   `1.2M`; bare below a thousand, so the dummy's small estimates render as
   before).
 - The dummy sends no `Usage` events: `smoke.sh` output — including the bare
-  `Done for Ns` summaries its phases assert on — is unchanged.
+  `Done for Ns` summaries its phases assert on — is unchanged. Only an
+  interrupted turn's summary carries a count there, its tally being the
+  status line's own estimate (`docs/interrupt.md`).
 
 ## Configuration
 

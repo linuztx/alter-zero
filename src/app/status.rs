@@ -135,9 +135,11 @@ impl TurnStatus {
     }
 }
 
-/// A finished turn's summary, committed to scrollback as a dim `"{verb} for
-/// {secs}s"` line and kept in [`App::history`] so it survives a resize and lists
-/// in the Ctrl+O transcript (with a timestamp, like every other item).
+/// A turn's summary — a finished turn's, or an interrupted one's under its
+/// notice ([`App::interrupt_turn`]) — committed to scrollback as a dim
+/// `"{verb} for {secs}s"` line and kept in [`App::history`] so it survives a
+/// resize and lists in the Ctrl+O transcript (with a timestamp, like every
+/// other item).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSummary {
     /// The past tense of the verb the turn's status line wore last (e.g.
@@ -153,14 +155,17 @@ pub struct TurnSummary {
     /// How many background shells were still running when the turn ended —
     /// rendered as a `· {n} shells still running` suffix when non-zero
     /// (`Done for 22s · 3 shells still running`). Snapshotted at
-    /// [`App::end_turn`]; not persisted to the session file (a resumed
-    /// session's shells are gone). See `docs/background.md`.
+    /// [`App::end_turn`] (or the interrupt); not persisted to the session
+    /// file (a resumed session's shells are gone). See `docs/background.md`.
     pub shells: usize,
     /// The turn's **real** billed tokens (input + output summed over the
     /// turn's request rounds), from the provider's usage frames
     /// ([`App::apply_usage`]) — rendered as a `· {n} tokens` suffix. `0` when
     /// the backend reported none (the dummy, a `!` shell), which hides the
-    /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
+    /// clause. An **interrupted** turn's is instead the tally its status line
+    /// showed at the Esc — the billed rounds plus the live estimate of the
+    /// round the Esc cut off, whose frame never arrives (`docs/interrupt.md`).
+    /// Persisted with the summary. See `docs/prompt-caching.md`.
     pub tokens: usize,
     /// How many of those input tokens were served from the provider's prompt
     /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the

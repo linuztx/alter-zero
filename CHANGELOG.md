@@ -12,6 +12,17 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **An interrupted turn now says what it cost.** Pressing Esc mid-turn used
+  to leave only the red `Conversation interrupted` notice. The turn now ends
+  with the same dim summary a finished turn gets, under the notice: `Worked
+  for 8s · 24.3k tokens (20k cached)`. The token count is the one the status
+  line was showing when you pressed Esc, since the provider never reports
+  usage for the request Esc cut off. A turn Esc undoes (nothing had streamed
+  yet), a `!` command and `/compact` still end without one
+  (`docs/interrupt.md`).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added
