@@ -576,11 +576,19 @@ fn the_interrupted_receipt_is_built_not_recorded() {
         "interrupt_turn records the notice, not the receipt"
     );
     app.record_turn_summary(summary.clone());
-    assert_eq!(roles(&app), vec![Role::Assistant, Role::Error]);
-    assert_eq!(
-        app.history.last(),
-        Some(&HistoryItem::Summary(summary)),
-        "the receipt closes the turn, under the notice"
+    assert!(
+        matches!(
+            app.history.as_slice(),
+            [
+                HistoryItem::Message(partial),
+                HistoryItem::Message(notice),
+                HistoryItem::Summary(closing),
+            ] if partial.role == Role::Assistant
+                && notice.text == INTERRUPT_NOTICE
+                && *closing == summary
+        ),
+        "the partial, the notice, then the receipt closing the turn: {:?}",
+        app.history
     );
 }
 
@@ -1229,15 +1237,18 @@ fn the_next_turn_opens_on_the_verb_after_the_last_one_shown() {
 
 #[test]
 fn an_interrupted_turn_hands_on_its_last_verb_too() {
-    // The walk moves when the line does, not at whichever turn end runs.
+    // The walk moves when the line does, not at whichever turn end runs —
+    // and the interrupted turn's receipt names the verb it moved to, as a
+    // finished turn's summary does.
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("partial");
     verbs_at(&mut app, Duration::from_secs(31));
-    assert!(matches!(
-        app.interrupt_turn(0),
-        Some(InterruptedTurn::Kept { .. })
-    ));
+    let summary = interrupted_receipt(&mut app, 31).expect("a receipt");
+    assert_eq!(
+        summary.verb, "Generated",
+        "the line last said `Generating…`"
+    );
     app.begin_stream();
     assert_eq!(app.status().unwrap().verb, "Pondering");
 }

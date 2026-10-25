@@ -276,7 +276,10 @@ Worked for 8s · ≈24.3k tokens (8k cached)
 
 - **Verb and time** follow the finished turn's rule
   (`docs/status-indicator.md`): the past tense of the verb the line last wore,
-  and the boundary's own clock, read before `abandon_inflight` stops it.
+  and the boundary's own clock, read before `abandon_inflight` stops it. Both
+  turn ends build their summary with the one `App::turn_summary`, so the two
+  differ only in the estimated share each hands it, and the loop commits both
+  through `Session::commit_turn_summary`.
 - **Tokens** are the status line's tally at the moment of the Esc: the
   provider's usage frames for the rounds that finished, plus the tokenizer's
   count of the round the Esc cut short. A provider sends a round's `usage`
@@ -337,12 +340,14 @@ no receipt (`docs/agent-tool.md`).
   with `"Interrupted by user"`, clears the status, stamps with the injected
   clock, and is a `None` no-op when idle.
 - `app` (the receipt): a kept turn hands back the summary a finished turn
-  ends on — its verb the one the last frame drew, its seconds the
-  boundary's, the running shells counted
+  ends on — its verb the one the last frame drew, a rotated one included,
+  its seconds the boundary's, the running shells counted
   (`an_interrupted_turn_hands_back_its_receipt`,
   `the_interrupted_receipt_names_the_verb_the_last_frame_drew`,
+  `an_interrupted_turn_hands_on_its_last_verb_too`,
   `the_interrupted_receipt_counts_the_shells_still_running`) — built, not
-  recorded, so the boundary can settle held completions above it
+  recorded, so the boundary can settle held completions above it, and once
+  recorded the history reads partial, notice, receipt
   (`the_interrupted_receipt_is_built_not_recorded`); the frames' tokens stay
   `tokens` and the cut round's share is `estimated`, the cache halves the
   frames' alone (`the_interrupted_receipt_keeps_reported_usage_apart_from_the_estimate`);
@@ -389,8 +394,8 @@ no receipt (`docs/agent-tool.md`).
   the notice — `Worked for Ns · ≈N tokens`, all of it estimated, since the
   dummy reports no usage — and the app still completes a following turn
   normally, its summary the second on screen. Phase 13 waits for that second
-  summary too, and checks that turn 1's receipt sits above the queued message
-  the Esc sent.
+  summary too, requires exactly two, and checks that turn 1's receipt sits
+  between its notice and the queued message the Esc sent.
 - `src/tui/` (smoke, Phase 32 — the interrupt-lag regression guard, req 1): with a
   backend stalled 3 s (`ALTER_ZERO_STALL_MS`, ignoring the cancel and streaming
   nothing), Esc **undoes** the turn — the status line clears **within a frame**

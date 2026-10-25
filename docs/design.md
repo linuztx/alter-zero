@@ -1069,7 +1069,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error;
   `interrupt_turn` keeps the partial, resolves every call in flight as failed
   (a batch's running call and each waiting sibling, in order), records the
-  notice with no summary, and is a no-op when idle.
+  notice, hands back the turn's receipt for the loop to record under it (its
+  tokenizer share kept apart as `estimated`), and is a no-op when idle.
 - `app` (tools & view): `start_tool`/`end_tool` move a tool through running →
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty

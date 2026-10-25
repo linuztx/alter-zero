@@ -3280,8 +3280,10 @@ either `Kept` — keep the partial, resolve every call in flight as failed
 recorded, committed and replayed in the next request's context,
 `docs/interrupt.md`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
 turn** — its cell is the record), clear the status and hand back the turn's
-receipt, which the boundary records under the notice once the held
-background completions settle (none for a shell or `/compact` turn) — **or**
+receipt (built by the one `App::turn_summary` a finished turn's summary
+comes from), which the boundary records under the notice through the shared
+`Session::commit_turn_summary` once the held background completions settle
+(none for a shell or `/compact` turn) — **or**
 `Undone` when nothing had streamed and nothing is queued: the submission rolls
 back, its message returned to the composer and dropped from history (the loop
 purge-repaints, no notice; `docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc

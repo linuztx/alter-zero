@@ -237,6 +237,12 @@ transcript (stamp-free there — only user messages display a timestamp):
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
   flush-at-the-bottom dance the final reply line already uses.
+- An **Esc interrupt** that keeps its output ends on one too, under the red
+  notice: `App::interrupt_turn(elapsed_secs)` builds it with the same
+  `App::turn_summary` (one builder for both ends, handed the estimated share
+  only here), and the loop records and commits it through the same
+  `Session::commit_turn_summary` (`docs/interrupt.md` *The receipt an
+  interrupted turn keeps*).
 
 ## Strip geometry
 
@@ -487,7 +493,9 @@ ahead of the round's batch.
   `↑` (no-op when idle) and the first chunk flips the arrow back to `↓`; tokens
   accumulate (`↓`) and survive a tool (`↑`, not reset); thinking chunks grow the
   tally (`↓`) without touching the reply buffer; `end_turn` records the summary
-  and clears status; `fail_stream` clears status; `set_status_times` writes the
+  and clears status; `fail_stream` clears status; `interrupt_turn` hands back a
+  receipt over the tally the line showed, the frames' tokens apart from the
+  estimated rest (`docs/interrupt.md`); `set_status_times` writes the
   boundary durations.
 - `ui`: `format_elapsed` buckets (bare seconds under a minute, `{m}m {s}s`
   under an hour, `{h}h {m}m` past one) and that `status_line`/`summary_lines`

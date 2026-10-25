@@ -26,12 +26,14 @@ tmux kill-session -t "$S10" 2>/dev/null
 # queued one right away (the user's spec; codex's steer-after-interrupt).
 expect_has "$queueint" -F "Conversation interrupted" "Esc with a queued message did not interrupt the current turn"
 expect_has "$queueint" -F "❯ world" "Esc did not send the queued 'world' right away ('❯ world' missing)"
-if [ "$(count_summaries "$queueint")" -lt 2 ]; then
-	fail "the queued message sent on interrupt never finished its turn"
-fi
-# Turn 1's receipt is committed before "world" goes out: it closes turn 1.
+# Exactly two: turn 1's receipt and the "world" turn's summary — a third would
+# be a receipt committed twice.
+expect_eq "$(count_summaries "$queueint")" 2 "the queued message sent on interrupt never finished its turn, or a summary was committed twice"
+# Turn 1's receipt closes turn 1: under its notice, before "world" goes out.
+notice_row="$(printf '%s\n' "$queueint" | grep -nF "Conversation interrupted" | head -1 | cut -d: -f1)"
 receipt_row="$(printf '%s\n' "$queueint" | grep -nE "^$SUMMARY_RE" | head -1 | cut -d: -f1)"
 world_row="$(printf '%s\n' "$queueint" | grep -nF "❯ world" | head -1 | cut -d: -f1)"
-if ! [ "${receipt_row:-0}" -gt 0 ] || ! [ "${world_row:-0}" -gt "${receipt_row:-0}" ]; then
-	fail "turn 1's receipt does not sit above the queued 'world' it sent (receipt row=$receipt_row world row=$world_row)"
+if ! [ "${notice_row:-0}" -gt 0 ] || ! [ "${receipt_row:-0}" -gt "${notice_row:-0}" ] ||
+	! [ "${world_row:-0}" -gt "${receipt_row:-0}" ]; then
+	fail "turn 1's receipt is not between its notice and the queued 'world' (notice row=${notice_row:-none} receipt row=${receipt_row:-none} world row=${world_row:-none})"
 fi
