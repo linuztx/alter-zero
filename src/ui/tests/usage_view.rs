@@ -472,7 +472,7 @@ fn a_narrow_row_gives_up_the_clock_time_then_the_counts() {
         wide.contains("420 of 1,000 credits · resets in 6d 8h · Nov 1, 12:00 AM"),
         "{wide}"
     );
-    let medium = plain(row_with(&usage_view_lines(&app, 90, TALL), "42% used"));
+    let medium = plain(row_with(&usage_view_lines(&app, 100, TALL), "42% used"));
     assert!(
         medium.contains("420 of 1,000 credits · resets in 6d 8h"),
         "{medium}"
@@ -537,6 +537,81 @@ fn every_bar_on_the_page_is_one_length() {
             "{width}: {lengths:?}"
         );
     }
+}
+
+/// The length of the first bar on the page at `width`.
+fn bar_length_at(app: &App, width: u16) -> usize {
+    let lines = usage_view_lines(app, width, TALL);
+    let row = lines
+        .iter()
+        .find(|line| plain(line).contains("% used"))
+        .expect("a limit row");
+    let (spent, left) = bar_cells(row);
+    spent + left
+}
+
+#[test]
+fn the_bar_is_full_length_whenever_the_terminal_has_room_for_it() {
+    // A long row — Copilot's counts, a far reset's date — costs only
+    // itself: it gives up its own clock time, never a cell of every bar.
+    let app = loaded();
+    for width in [80u16, 100, 150] {
+        for line in usage_view_lines(&app, width, TALL)
+            .iter()
+            .filter(|line| plain(line).contains("% used"))
+        {
+            let (spent, left) = bar_cells(line);
+            assert_eq!(spent + left, 20, "{width}: {:?}", plain(line));
+        }
+    }
+    let lines = usage_view_lines(&app, 100, TALL);
+    let copilot = plain(row_with(&lines, "42% used"));
+    assert!(
+        copilot.contains("420 of 1,000 credits · resets in 6d 8h"),
+        "{copilot}"
+    );
+    assert!(!copilot.contains("Nov 1,"), "{copilot}");
+    let monthly = plain(row_with(&lines, "81% used"));
+    assert!(monthly.contains("Nov 12, 1:26 PM"), "{monthly}");
+}
+
+#[test]
+fn the_bar_holds_its_length_as_the_countdowns_tick() {
+    // Sized by the terminal, never by the text beside it: a countdown
+    // gaining or losing a column never moves every bar on the page.
+    let mut app = loaded();
+    for width in [64u16, 80, 100, 120] {
+        app.set_usage_now(NOW);
+        let before = bar_length_at(&app, width);
+        app.set_usage_now(NOW + 9 * 3_600);
+        assert_eq!(bar_length_at(&app, width), before, "{width}");
+    }
+}
+
+#[test]
+fn a_wider_terminal_never_shortens_the_bar() {
+    let app = loaded();
+    let lengths: Vec<usize> = (40u16..=160)
+        .map(|width| bar_length_at(&app, width))
+        .collect();
+    assert!(lengths.windows(2).all(|w| w[0] <= w[1]), "{lengths:?}");
+}
+
+#[test]
+fn a_narrow_terminal_shortens_the_bar_to_keep_a_countdown_beside_it() {
+    // Too narrow for a full bar and a countdown, the bar gives way — down
+    // to its floor — before the widest countdown has to leave its row.
+    let mut report = chatgpt();
+    report
+        .meters
+        .insert(0, limit("Day limit", 40.0, Some(NOW + 86_399)));
+    let app = with_chatgpt(report);
+    let lines = usage_view_lines(&app, 64, TALL);
+    let day = plain(row_with(&lines, "Day limit"));
+    assert!(day.contains("40% used  resets in 23h 59m"), "{day}");
+    let length = bar_length_at(&app, 64);
+    assert!((8..20).contains(&length), "{length}");
+    assert_eq!(bar_length_at(&app, 44), 8, "never below its floor");
 }
 
 #[test]

@@ -30,19 +30,19 @@ page: a toast says so and points at `/login` → *Use a subscription* — the
   3 subscriptions · updated just now
 
   ❯ ChatGPT Codex  Pro · dev@example.com                                                      in use
-      Weekly limit      █░░░░░░░░░░░   7% used  resets in 6d 18h · Sat 3:58 PM
-      Credits           62,500 credits · ≈ 15.6k–81.3k local messages
-      Limit resets      2 available
+      Weekly limit   █░░░░░░░░░░░░░░░░░░░   7% used  resets in 6d · Sat 3:58 PM
+      Credits        62,500 credits · ≈ 15.6k–81.3k local messages
+      Limit resets   2 available
 
     ClinePass  Monthly
-      5-hour limit      ░░░░░░░░░░░░   0% used
-      Weekly limit      ████████████ 100% used  limit reached · resets in 1d 4h · Tue 2:36 PM
-      Monthly limit     ██████████░░  81% used  resets in 17d · Nov 12, 1:26 PM
+      5-hour limit   ░░░░░░░░░░░░░░░░░░░░   0% used
+      Weekly limit   ████████████████████ 100% used  limit reached · resets in 1d 23h · Tue 2:36 PM
+      Monthly limit  ████████████████░░░░  81% used  resets in 17d · Nov 12, 1:26 PM
       ⚠ Paused until the weekly limit resets — switch with /model meanwhile.
 
-    GitHub Copilot  Free
-      Chat              ██████████░░  86% used  172 of 200 credits · resets in 5d 14h · Sun 12:00 AM
-      Code completions  Unlimited
+    GitHub Copilot  Pro
+      AI credits     ████████░░░░░░░░░░░░  42% used  420 of 1,000 credits · resets in 6d 8h
+      Chat           Unlimited
 
   Details at https://chatgpt.com/settings/usage
   ↑↓ select  r refresh  c copy link  esc close
@@ -94,12 +94,22 @@ provider says so (Copilot's and ClinePass's answers can run past it; the bar
 stops at full). The bar keeps the same promise: any use at all fills at least
 one cell, and a share short of the whole leaves at least one empty.
 
-**One bar length for the whole page**, so the column of meters lines up: the
-longest bar, up to 20 cells, that leaves every limit room for its trailer
-beside it, down to 8. **Used, not left.** Codex's `/status` bars show what is
-*left*; GitHub's, Cline's and Claude Code's own usage pages show what is
-*used*. A page called *Usage limits* reads one way, and a bar that fills as
-the week goes is the one that needs no legend.
+**One bar length for the whole page**, so the column of meters lines up —
+set by the terminal's width alone, never by the text beside a bar: 20 cells
+(the segments codex's `/status` draws) wherever a row has room for that and
+a countdown beside it, shorter only on a terminal too narrow for both, and
+never below 8. The bar is the one thing on a row that keeps its size, the
+text beside it giving way instead: at 20 cells a bar moves in 5% steps, so
+81% and 86% look different; a long row costs only itself (Copilot's, above,
+gave up its reset's clock time and no other row lost a cell); and the bars
+hold their length while the countdowns tick. Sizing every bar to the widest
+row's text was the first version's rule, and it drew 81% and 86% the same at
+100 columns.
+
+**Used, not left.** Codex's `/status` bars show what is *left*; GitHub's,
+Cline's and Claude Code's own usage pages show what is *used*. A page called
+*Usage limits* reads one way, and a bar that fills as the week goes is the
+one that needs no legend.
 
 **When it resets** is both relative and absolute: `resets in 2h 14m` says how
 long to wait, `· Tue 2:36 PM` (local time — `3:58 PM` today, a weekday within

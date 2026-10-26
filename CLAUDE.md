@@ -547,8 +547,11 @@ first and tagged, its rows indented under its name, each limit a bar of the
 share **used** (green, amber from 75%, red from 90% or once the provider says
 the limit is reached, `Limit::reached`, which also writes a red `limit
 reached` on the row — a note only for a stop no row explains; one bar length
-for the whole page, `bar_length`, so the column lines up, any use filling a
-cell), the counts behind it in their unit and when it resets as a countdown
+for the whole page, `bar_length`, so the column lines up — set by the
+terminal's width alone, 20 cells wherever a countdown fits beside it and
+never below 8, never sized to a row's text, so a long row costs only itself
+and the bars hold still as the countdowns tick — any use filling a cell),
+the counts behind it in their unit and when it resets as a countdown
 and a local time (`resets in 1d 23h · Tue 2:36 PM` — `App::set_usage_now` per
 draw and `App::set_local_offset` once, a `fn(i64) -> i32` so a reset across a
 DST change reads the right hour; a narrow row gives up the clock time, then

@@ -1874,8 +1874,9 @@ pub(super) const USAGE_LABEL_GAP: &str = "  ";
 /// in 6d`), a balance and its detail, and the parts of a section's head.
 pub(super) const USAGE_SEPARATOR: &str = " · ";
 
-/// A limit's bar: the `/context` meter's cells, as long as the room allows
-/// between these bounds — the trailer giving way first.
+/// A limit's bar: the `/context` meter's cells, the longest on any terminal
+/// with room for it and a countdown beside it, shorter only on a narrower
+/// one, and never below the shortest — the text beside it giving way first.
 pub(super) const USAGE_BAR_MIN: usize = 8;
 pub(super) const USAGE_BAR_MAX: usize = 20;
 

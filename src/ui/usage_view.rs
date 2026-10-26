@@ -264,38 +264,26 @@ struct Columns {
     bar: usize,
 }
 
-/// **One** bar length for the whole page, so a column of meters lines up:
-/// the longest bar, up to [`USAGE_BAR_MAX`], that leaves every limit room
-/// for its trailer at the most complete level they can all keep beside a
-/// bar of at least [`USAGE_BAR_MIN`] cells — each row then shows the most
-/// of its own trailer that fits, so a short one keeps its clock time where
-/// a long one gives it up. With no level that fits, every trailer moves
-/// under its bar ([`limit_rows`]) and the bar takes the row.
-fn bar_length(page: &UsagePage, app: &App, width: u16, label: usize) -> usize {
+/// The widest reset countdown a limit shows — a day or more reads shorter
+/// (`6d 23h`, `17d`) — which a bar shortened for a narrow terminal leaves
+/// room for beside it.
+const WIDEST_COUNTDOWN: &str = "resets in 23h 59m";
+
+/// **One** bar length for the whole page, so a column of meters lines up —
+/// set by the terminal and the label column alone, never by the text beside
+/// a bar: [`USAGE_BAR_MAX`] wherever the row has room for it and a countdown
+/// beside it, shorter only on a terminal too narrow for that, and never
+/// below [`USAGE_BAR_MIN`] unless the row cannot hold even that. A long row
+/// costs only itself — it gives up its clock time, or moves its counts under
+/// its bar ([`limit_rows`]) — and the bars hold their length as the
+/// countdowns tick.
+fn bar_length(width: u16, label: usize) -> usize {
     let head = cols(&row_indent()) + label + cols(USAGE_LABEL_GAP);
     let row = (width as usize).saturating_sub(head + share_cols());
-    let beside = row.saturating_sub(cols(USAGE_LABEL_GAP));
-    let trailers: Vec<Trailer> = page
-        .sections
-        .iter()
-        .filter_map(|section| section.report.as_ref())
-        .flat_map(|report| &report.meters)
-        .filter_map(|meter| match &meter.value {
-            MeterValue::Limit(limit) => Some(Trailer::of(limit, app, page.now)),
-            _ => None,
-        })
-        .collect();
-    for level in 0..3 {
-        let needed = trailers
-            .iter()
-            .map(|trailer| cols(&trailer.at(level)))
-            .max()
-            .unwrap_or(0);
-        if beside >= USAGE_BAR_MIN + needed {
-            return (beside - needed).min(USAGE_BAR_MAX);
-        }
-    }
-    row.clamp(1, USAGE_BAR_MAX)
+    row.saturating_sub(cols(USAGE_LABEL_GAP) + cols(WIDEST_COUNTDOWN))
+        .clamp(USAGE_BAR_MIN, USAGE_BAR_MAX)
+        .min(row)
+        .max(1)
 }
 
 /// A limit's rows: the label, a `length`-cell bar of the share used (the
@@ -810,7 +798,7 @@ pub fn usage_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>
     let label = label_width(page);
     let columns = Columns {
         label,
-        bar: bar_length(page, app, width, label),
+        bar: bar_length(width, label),
     };
     let header = || {
         let mut rows = vec![page_title_line(USAGE_TITLE, width)];
