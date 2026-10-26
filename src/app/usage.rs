@@ -4,12 +4,15 @@
 //! The `/context` page's sibling — a read-only composer-replacing page with
 //! no text entry, the hardware cursor hidden and seated on the `❯` — whose
 //! content arrives over the network rather than from App. So the page is a
-//! set of **rounds**: the boundary says which subscriptions there are and
-//! starts one read per subscription ([`App::begin_usage_round`]), each result
-//! lands against the round it was asked for ([`App::finish_usage_fetch`]),
-//! and anything naming another round — a page closed and reopened since, a
-//! refresh that replaced it — is dropped here, where it can be tested,
-//! rather than at the boundary.
+//! set of **rounds**: the boundary says which subscriptions there are, the
+//! page opens over them and starts one read per subscription
+//! ([`App::open_usage_page`], then [`App::begin_usage_round`] for each
+//! refresh), each result lands against the round it was asked for
+//! ([`App::finish_usage_fetch`]), and anything naming another round — a page
+//! closed and reopened since, a refresh that replaced it — is dropped here,
+//! where it can be tested, rather than at the boundary. What the last page
+//! read outlives it, so a reopened page shows those numbers at once while it
+//! reads them again.
 
 use super::*;
 
@@ -19,13 +22,19 @@ use crate::llm::usage::UsageReport;
 /// subscription again — the cadence codex polls the same ChatGPT endpoint at.
 pub const USAGE_REFRESH_SECS: i64 = 60;
 
+/// The toast `/usage` raises with no subscription signed in — nothing to
+/// show, so no page (the `/export` and `/compact` empty rule).
+pub const USAGE_EMPTY_NOTICE: &str = "No subscription signed in — use /login → Use a subscription";
+
 /// A subscription the page reads, as the boundary found it: the provider's
-/// id and name, and whether it is the one the session is running on.
+/// id and name, whether it is the one the session is running on, and its
+/// own usage page (`llm::usage::dashboard_url`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageTarget {
     pub provider: String,
     pub name: String,
     pub in_use: bool,
+    pub dashboard: Option<String>,
 }
 
 /// One subscription's section of the page.
@@ -37,8 +46,13 @@ pub struct UsageSection {
     pub name: String,
     /// Whether the session is running on this subscription.
     pub in_use: bool,
-    /// The last report read — kept through a refresh, so the section never
-    /// blanks while its replacement is on the way.
+    /// The provider's own usage page — what the page links under the
+    /// highlighted section and `c` copies. Known before any report is, so a
+    /// section still loading, or one that could not load, has it too.
+    pub dashboard: Option<String>,
+    /// The last report read — kept through a refresh, and through a close
+    /// and reopen, so the section never blanks while its replacement is on
+    /// the way.
     pub report: Option<UsageReport>,
     /// Whether a read for this section is in flight.
     pub loading: bool,
@@ -53,9 +67,6 @@ pub struct UsagePage {
     pub sections: Vec<UsageSection>,
     /// Index of the highlighted section.
     pub selected: usize,
-    /// Whether the boundary has said which subscriptions there are — before
-    /// it has, the page is checking.
-    pub ready: bool,
     /// The round of reads in flight, or the last one.
     pub round: u64,
     /// When the last round finished, in Unix seconds.
@@ -72,47 +83,26 @@ impl UsagePage {
     pub fn loading(&self) -> bool {
         self.sections.iter().any(|section| section.loading)
     }
-}
 
-impl App {
-    /// Open the `/usage` page, checking — the boundary then says which
-    /// subscriptions there are and starts reading them. Abandons any `?`
-    /// band / palette / picker band (they share the composer the page takes
-    /// over) — every picker's open rule.
-    pub fn open_usage_page(&mut self) {
-        self.shortcuts_open = false;
-        self.command_menu = None;
-        self.file_search = None;
-        self.skill_picker = None;
-        self.backtrack = Backtrack::default();
-        self.usage_page = Some(UsagePage::default());
+    /// The highlighted section, if there is one.
+    #[must_use]
+    pub fn highlighted(&self) -> Option<&UsageSection> {
+        self.sections.get(self.selected)
     }
 
-    /// Dismiss the page (Esc, Ctrl+C): the composer returns. No view change
-    /// — it was never an overlay.
-    pub fn close_usage_page(&mut self) {
-        self.usage_page = None;
-    }
-
-    /// Start a round of reads over `targets` — the open page's subscriptions,
-    /// the one in use first — returning the round every result must name, or
-    /// `None` when the page is closed. A subscription already on the page
-    /// keeps its last report through the round; the highlight stays on the
-    /// subscription it was on.
-    pub fn begin_usage_round(&mut self, targets: Vec<UsageTarget>) -> Option<u64> {
-        let page = self.usage_page.as_mut()?;
-        self.usage_rounds += 1;
-        let round = self.usage_rounds;
-        let highlighted = page
-            .sections
-            .get(page.selected)
-            .map(|section| section.provider.clone());
-        let mut previous = std::mem::take(&mut page.sections);
-        // The subscription in use first — the one whose limits stop this
-        // session — then the rest in the order the boundary found them.
+    /// Lay the page over `targets` — the one in use first, then the rest in
+    /// the order the boundary found them — every section reading, each one
+    /// already on the page keeping its last report, a subscription no longer
+    /// listed dropped. `keep_highlight` keeps the `❯` on the subscription it
+    /// was on (a refresh); otherwise it opens on the first, the one in use.
+    fn lay_out(&mut self, targets: Vec<UsageTarget>, round: u64, keep_highlight: bool) {
+        let highlighted = keep_highlight
+            .then(|| self.highlighted().map(|section| section.provider.clone()))
+            .flatten();
+        let mut previous = std::mem::take(&mut self.sections);
         let (in_use, others): (Vec<_>, Vec<_>) =
             targets.into_iter().partition(|target| target.in_use);
-        page.sections = in_use
+        self.sections = in_use
             .into_iter()
             .chain(others)
             .map(|target| {
@@ -124,23 +114,73 @@ impl App {
                     provider: target.provider,
                     name: target.name,
                     in_use: target.in_use,
+                    dashboard: target.dashboard,
                     report,
                     loading: true,
                     error: None,
                 }
             })
             .collect();
-        page.selected = highlighted
+        self.selected = highlighted
             .and_then(|provider| {
-                page.sections
+                self.sections
                     .iter()
                     .position(|section| section.provider == provider)
             })
             .unwrap_or(0)
-            .min(page.sections.len().saturating_sub(1));
-        page.ready = true;
-        page.round = round;
-        Some(round)
+            .min(self.sections.len().saturating_sub(1));
+        self.round = round;
+    }
+}
+
+impl App {
+    /// Open the `/usage` page over `targets` — the signed-in subscriptions —
+    /// and start its first round, returning the round every result must
+    /// name. `None`, and nothing opens, when there is no subscription to
+    /// show: the boundary toasts [`USAGE_EMPTY_NOTICE`] instead. What the
+    /// last page read is shown again at once while it is read anew, and the
+    /// highlight opens on the subscription in use. Abandons any `?` band /
+    /// palette / picker band (they share the composer the page takes over)
+    /// — every picker's open rule.
+    pub fn open_usage_page(&mut self, targets: Vec<UsageTarget>) -> Option<u64> {
+        if targets.is_empty() {
+            return None;
+        }
+        self.shortcuts_open = false;
+        self.command_menu = None;
+        self.file_search = None;
+        self.skill_picker = None;
+        self.backtrack = Backtrack::default();
+        let mut page = self.usage_kept.take().unwrap_or_default();
+        page.now = 0;
+        self.usage_rounds += 1;
+        page.lay_out(targets, self.usage_rounds, false);
+        self.usage_page = Some(page);
+        Some(self.usage_rounds)
+    }
+
+    /// Dismiss the page (Esc, Ctrl+C): the composer returns, and what it
+    /// read is kept for the next open — every read still out is abandoned
+    /// with it (the boundary cancels them, and a late answer names a round
+    /// no open page has). No view change — it was never an overlay.
+    pub fn close_usage_page(&mut self) {
+        if let Some(mut page) = self.usage_page.take() {
+            for section in &mut page.sections {
+                section.loading = false;
+            }
+            self.usage_kept = Some(page);
+        }
+    }
+
+    /// Start a round of reads over `targets` on the open page — a refresh —
+    /// returning the round every result must name, or `None` when the page
+    /// is closed. A subscription already on the page keeps its last report
+    /// through the round; the highlight stays on the subscription it was on.
+    pub fn begin_usage_round(&mut self, targets: Vec<UsageTarget>) -> Option<u64> {
+        let page = self.usage_page.as_mut()?;
+        self.usage_rounds += 1;
+        page.lay_out(targets, self.usage_rounds, true);
+        Some(self.usage_rounds)
     }
 
     /// One subscription's read finished. Dropped when the page has closed or
@@ -182,8 +222,7 @@ impl App {
     #[must_use]
     pub fn usage_refresh_due(&self) -> bool {
         self.usage_page.as_ref().is_some_and(|page| {
-            page.ready
-                && !page.sections.is_empty()
+            !page.sections.is_empty()
                 && !page.loading()
                 && page
                     .updated_at
@@ -215,8 +254,10 @@ impl App {
     /// Keys while the `/usage` page is open. Owns **every** key (routed at
     /// the top of [`on_key`]): ↑/↓ move between subscriptions wrapping at the
     /// ends, Home/End jump, `r` reads every subscription again (not while a
-    /// read is in flight), Esc and Ctrl+C close. Everything else is
-    /// swallowed — the `/donate` rule.
+    /// read is in flight), `c` copies the highlighted subscription's usage
+    /// page, Esc and Ctrl+C close. Ctrl+O and Ctrl+D open their read-only
+    /// overlays over it — the `/context` page's rule, the page waiting
+    /// behind them. Everything else is swallowed.
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_usage_page(&mut self, key: KeyEvent) -> Action {
@@ -224,6 +265,15 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.close_usage_page();
             return Action::CloseUsagePage;
+        }
+        if let Some(action) = self.on_key_overlay_toggle(key) {
+            return action;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return Action::None;
         }
         let Some(page) = self.usage_page.as_mut() else {
             return Action::None;
@@ -234,14 +284,18 @@ impl App {
                 self.close_usage_page();
                 return Action::CloseUsagePage;
             }
-            KeyCode::Char('r' | 'R')
-                if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
-            {
-                return if page.ready && !page.loading() {
-                    Action::RefreshUsagePage
-                } else {
+            KeyCode::Char('r' | 'R') => {
+                return if page.loading() {
                     Action::None
+                } else {
+                    Action::RefreshUsagePage
                 };
+            }
+            KeyCode::Char('c' | 'C') => {
+                return page
+                    .highlighted()
+                    .and_then(|section| section.dashboard.clone())
+                    .map_or(Action::None, Action::CopyUsageLink);
             }
             KeyCode::Up => page.selected = wrap_step(page.selected, count, -1),
             KeyCode::Down => page.selected = wrap_step(page.selected, count, 1),

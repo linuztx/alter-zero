@@ -4,28 +4,35 @@
 //! the `❯` on the highlighted section, the pages' title dress, the dim hint
 //! — over every signed-in subscription:
 //!
+//! - a **subtitle** counting the subscriptions and saying how fresh the
+//!   numbers are (`updated just now`, `updated 3m ago`, `refreshing…`);
 //! - a **section** per subscription, its head naming the provider, the plan
-//!   and the account, the one in use tagged flush right;
-//! - a **meter** per limit — a bar of the share used, green until it warns,
-//!   the share, the counts behind it, and when it resets, both as a
-//!   countdown and as a local time — or a balance, or `Unlimited`, labels in
-//!   one aligned column across the page;
-//! - the provider's **notes** and a link to its own usage page.
+//!   and the account, the one in use tagged flush right, its rows indented
+//!   under the name;
+//! - a **meter** per limit — a bar of the share used, green until it warns
+//!   and red once it is spent, the share, `limit reached` when it is, the
+//!   counts behind it, and when it resets, both as a countdown and as a
+//!   local time — or a balance, or `Unlimited`, labels in one aligned column
+//!   across the page; a per-model limit sits under its model's own heading,
+//!   so neither is ever cut to fit a column;
+//! - the provider's **notes**, and the **highlighted** subscription's own
+//!   usage page linked over the hint, which `c` copies.
 //!
 //! [`usage_view_lines`] builds the whole framed page line by line, so its
 //! height is content-driven — and on a terminal too short for it, the first
 //! of its shorter pages that fits. The page reads no clock: the countdowns
-//! come off [`UsagePage::now`] and the local times off
+//! and the freshness come off [`UsagePage::now`] and the local times off
 //! [`App::local_offset`], both injected at the boundary.
 
 use chrono::{DateTime, Datelike, FixedOffset};
 
 use super::header::{page_title_line, page_title_spans};
 use super::model_view::{
-    compact_page, first_page_that_fits, model_placeholder_row, model_rule, model_wrapped_rows,
+    compact_page, first_page_that_fits, list_window, model_placeholder_row, model_rule,
+    model_wrapped_rows, placeholder_window,
 };
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, ellipsize, wrap_text};
+use super::wrap::{clamp_spans, cols, wrap_text};
 use super::*;
 
 use crate::app::{UsagePage, UsageSection};
@@ -47,7 +54,7 @@ fn spans_cols(spans: &[Span<'static>]) -> usize {
 }
 
 /// What a section's rows sit under: the page's inset plus the marker's
-/// width, so they line up under the provider's name.
+/// width and two more, so they read as one block under the provider's name.
 fn row_indent() -> String {
     format!("{MODEL_INDENT}{USAGE_SECTION_INDENT}")
 }
@@ -67,15 +74,30 @@ fn percent_text(used: f64) -> String {
 }
 
 /// The colour a share is drawn in: the success green while it is healthy,
-/// amber past [`USAGE_WARN_PERCENT`], red past [`USAGE_FULL_PERCENT`].
-fn share_color(used: f64) -> Color {
-    if used >= USAGE_FULL_PERCENT {
+/// amber past [`USAGE_WARN_PERCENT`], red past [`USAGE_FULL_PERCENT`] — or
+/// red once the provider says the limit is spent, whatever its share.
+fn share_color(used: f64, reached: bool) -> Color {
+    if reached || used >= USAGE_FULL_PERCENT {
         usage_full_color()
     } else if used >= USAGE_WARN_PERCENT {
         usage_warn_color()
     } else {
         usage_meter_color()
     }
+}
+
+/// The spent cells of a `length`-cell bar at `used` percent: its share,
+/// rounded — any use at all keeps one cell, a share short of the whole never
+/// fills the bar, and a limit used up always does.
+fn filled_cells(used: f64, length: usize) -> usize {
+    if length == 0 || used <= 0.0 {
+        return 0;
+    }
+    if used >= 100.0 {
+        return length;
+    }
+    let cells = (used / 100.0 * length as f64).round() as usize;
+    cells.clamp(1, length.saturating_sub(1).max(1))
 }
 
 /// How long until `at`, from `now` (both Unix seconds): `<1m`, `26m`,
@@ -116,9 +138,22 @@ fn clock_time(at: i64, now: i64, at_offset: i32, now_offset: i32) -> Option<Stri
     })
 }
 
-/// The parts of a limit's trailer, most important first: the counts behind
-/// the share, how long until it resets, and when that is on the local clock.
+/// How long ago the numbers were read, in one unit: `just now`, `3m ago`,
+/// `2h ago`, `1d ago`.
+fn age_text(seconds: i64) -> String {
+    match seconds.max(0) {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3_600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3_600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
+
+/// The parts of a limit's trailer, most important first: that it is spent,
+/// the counts behind the share, how long until it resets, and when that is
+/// on the local clock.
 struct Trailer {
+    reached: bool,
     counts: Option<String>,
     countdown: Option<String>,
     clock: Option<String>,
@@ -149,16 +184,17 @@ impl Trailer {
             None => (None, None),
         };
         Self {
+            reached: limit.reached,
             counts,
             countdown: countdown_text,
             clock,
         }
     }
 
-    /// The trailer at `level` of detail: everything (`0`), without the clock
-    /// time (`1`), the countdown alone (`2`) — what a narrowing page gives
-    /// up, in that order.
-    fn at(&self, level: usize) -> String {
+    /// What follows `limit reached` at `level` of detail: everything (`0`),
+    /// without the clock time (`1`), the countdown alone (`2`) — what a
+    /// narrowing page gives up, in that order.
+    fn rest(&self, level: usize) -> String {
         let keep: &[&Option<String>] = match level {
             0 => &[&self.counts, &self.countdown, &self.clock],
             1 => &[&self.counts, &self.countdown],
@@ -170,12 +206,48 @@ impl Trailer {
             .join(USAGE_SEPARATOR)
     }
 
-    /// The trailer's forms, most complete first, each one shorter.
-    fn candidates(&self) -> Vec<String> {
-        let mut forms: Vec<String> = (0..3).map(|level| self.at(level)).collect();
-        forms.retain(|form| !form.is_empty());
-        forms.dedup();
-        forms
+    /// The whole trailer at `level`, as wide as the page shows it.
+    fn at(&self, level: usize) -> String {
+        let rest = self.rest(level);
+        match (self.reached, rest.is_empty()) {
+            (true, true) => USAGE_REACHED.to_string(),
+            (true, false) => format!("{USAGE_REACHED}{USAGE_SEPARATOR}{rest}"),
+            (false, _) => rest,
+        }
+    }
+
+    /// The trailer at `level` as spans: `limit reached` in red, the rest dim.
+    fn spans(&self, level: usize) -> Vec<Span<'static>> {
+        let dim = Style::new().fg(model_meta_color());
+        let rest = self.rest(level);
+        let mut spans = Vec::new();
+        if self.reached {
+            spans.push(Span::styled(
+                USAGE_REACHED,
+                Style::new().fg(usage_full_color()),
+            ));
+            if !rest.is_empty() {
+                spans.push(Span::styled(USAGE_SEPARATOR, dim));
+            }
+        }
+        if !rest.is_empty() {
+            spans.push(Span::styled(rest, dim));
+        }
+        spans
+    }
+
+    /// The levels of detail with something to show, most complete first,
+    /// each one shorter than the last.
+    fn levels(&self) -> Vec<usize> {
+        let mut levels: Vec<usize> = Vec::new();
+        for level in 0..3 {
+            let form = self.at(level);
+            let repeats = levels.last().is_some_and(|&last| self.at(last) == form);
+            if !form.is_empty() && !repeats {
+                levels.push(level);
+            }
+        }
+        levels
     }
 }
 
@@ -229,8 +301,9 @@ fn bar_length(page: &UsagePage, app: &App, width: u16, label: usize) -> usize {
 /// A limit's rows: the label, a `length`-cell bar of the share used (the
 /// page's one length, [`bar_length`]), the share, and the most of its
 /// [`Trailer`] that fits beside them. A trailer with no room beside the bar
-/// at all moves to a row of its own under it, so how long until it resets
-/// is never lost to a narrow terminal.
+/// at all moves to a row of its own under it, and counts given up beside the
+/// bar move under it too — whether the limit is spent, how much of it, and
+/// how long until it resets are never lost to a narrow terminal.
 fn limit_rows(
     head: Vec<Span<'static>>,
     limit: &Limit,
@@ -241,27 +314,23 @@ fn limit_rows(
 ) -> Vec<Line<'static>> {
     let width = width as usize;
     let used = limit.used_percent;
-    let color = share_color(used);
+    let color = share_color(used, limit.reached);
     let percent = pad_left(&percent_text(used), 4);
-    let room =
-        width.saturating_sub(spans_cols(&head) + length + share_cols() + cols(USAGE_LABEL_GAP));
-    let forms = Trailer::of(limit, app, now).candidates();
-    let fitting = forms.iter().find(|form| cols(form) <= room);
-    // A bar short of the whole never looks full, and a spent one always does.
-    let mut filled =
-        ((used.clamp(0.0, 100.0) / 100.0 * length as f64).round() as usize).min(length);
-    if used < 100.0 && filled == length && length > 1 {
-        filled -= 1;
-    }
-    if used >= 100.0 {
-        filled = length;
-    }
-    let percent_style = if used >= USAGE_WARN_PERCENT {
+    let head_cols = spans_cols(&head);
+    let room = width.saturating_sub(head_cols + length + share_cols() + cols(USAGE_LABEL_GAP));
+    let trailer = Trailer::of(limit, app, now);
+    let levels = trailer.levels();
+    let fitting = levels
+        .iter()
+        .copied()
+        .find(|&level| cols(&trailer.at(level)) <= room);
+    let filled = filled_cells(used, length);
+    let percent_style = if limit.reached || used >= USAGE_WARN_PERCENT {
         Style::new().fg(color)
     } else {
         Style::new().fg(ai_color())
     };
-    let mut spans = head.clone();
+    let mut spans = head;
     spans.push(Span::styled(
         CONTEXT_USAGE_METER_FILL.repeat(filled),
         Style::new().fg(color),
@@ -274,33 +343,42 @@ fn limit_rows(
     spans.push(Span::raw(" "));
     spans.push(Span::styled(percent, percent_style));
     spans.push(Span::styled(" used", Style::new().fg(model_meta_color())));
-    let dim = Style::new().fg(model_meta_color());
     let mut lines = Vec::new();
-    match fitting {
-        Some(form) => {
+    // Under the bar, at the bar's own column.
+    let under = |spans: Vec<Span<'static>>| {
+        let mut row = vec![Span::raw(" ".repeat(head_cols))];
+        row.extend(spans);
+        clamp_spans(row, width)
+    };
+    let shown = match fitting {
+        Some(level) => {
             spans.push(Span::raw(USAGE_LABEL_GAP));
-            spans.push(Span::styled(form.clone(), dim));
+            spans.extend(trailer.spans(level));
             lines.push(clamp_spans(spans, width));
+            Some(level)
         }
         None => {
             lines.push(clamp_spans(spans, width));
-            // The trailer under the bar, at the bar's own column.
-            let under = spans_cols(&head);
-            let room = width.saturating_sub(under);
-            if let Some(form) = forms
+            let room = width.saturating_sub(head_cols);
+            let level = levels
                 .iter()
-                .find(|form| cols(form) <= room)
-                .or(forms.last())
-            {
-                lines.push(clamp_spans(
-                    vec![
-                        Span::raw(" ".repeat(under)),
-                        Span::styled(form.clone(), dim),
-                    ],
-                    width,
-                ));
+                .copied()
+                .find(|&level| cols(&trailer.at(level)) <= room)
+                .or(levels.last().copied());
+            if let Some(level) = level {
+                lines.push(under(trailer.spans(level)));
             }
+            level
         }
+    };
+    // The countdown alone (level 2) gave the counts up: they sit under it.
+    if let Some(counts) = &trailer.counts
+        && shown.is_none_or(|level| level >= 2)
+    {
+        lines.push(under(vec![Span::styled(
+            counts.clone(),
+            Style::new().fg(model_meta_color()),
+        )]));
     }
     lines
 }
@@ -338,13 +416,11 @@ fn meter_rows(
             spans.push(Span::styled(value.clone(), Style::new().fg(ai_color())));
             if let Some(detail) = detail {
                 let fits =
-                    spans_cols(&spans) + cols(USAGE_LABEL_GAP) + cols(detail) <= width as usize;
+                    spans_cols(&spans) + cols(USAGE_SEPARATOR) + cols(detail) <= width as usize;
                 if fits {
-                    spans.push(Span::raw(USAGE_LABEL_GAP));
-                    spans.push(Span::styled(
-                        detail.clone(),
-                        Style::new().fg(model_meta_color()),
-                    ));
+                    let dim = Style::new().fg(model_meta_color());
+                    spans.push(Span::styled(USAGE_SEPARATOR, dim));
+                    spans.push(Span::styled(detail.clone(), dim));
                 }
             }
             vec![clamp_spans(spans, width as usize)]
@@ -397,14 +473,14 @@ fn note_rows(report: &UsageReport, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The link to the provider's own usage page — the URL a real OSC 8 link
-/// (`docs/links.md`), underlined, the rest of the row dim.
+/// The link to the highlighted subscription's own usage page — the URL a
+/// real OSC 8 link (`docs/links.md`), underlined, the rest of the row dim.
 fn dashboard_row(url: &str, width: u16) -> Line<'static> {
     let dim = Style::new().fg(model_meta_color());
     let link = crate::links::linked(dim.add_modifier(Modifier::UNDERLINED), url);
     clamp_spans(
         vec![
-            Span::raw(row_indent()),
+            Span::raw(MODEL_INDENT),
             Span::styled(USAGE_DETAILS_PREFIX, dim),
             Span::styled(url.to_string(), link),
         ],
@@ -412,27 +488,35 @@ fn dashboard_row(url: &str, width: u16) -> Line<'static> {
     )
 }
 
-/// The fullest limit a report has, as `{label} {share} used` — a folded
-/// section's summary.
-fn fullest(report: &UsageReport) -> Option<(String, f64)> {
+/// The fullest limit a report has, as `{label} {share} used` with its share
+/// and whether it is spent — a folded section's summary.
+fn fullest(report: &UsageReport) -> Option<(String, f64, bool)> {
     report
         .meters
         .iter()
         .filter_map(|meter| match &meter.value {
-            MeterValue::Limit(limit) => Some((meter, limit.used_percent)),
+            MeterValue::Limit(limit) => Some((meter, limit)),
             _ => None,
         })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(meter, used)| (format!("{} {} used", meter.label, percent_text(used)), used))
+        .max_by(|a, b| {
+            (a.1.reached, a.1.used_percent)
+                .partial_cmp(&(b.1.reached, b.1.used_percent))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(meter, limit)| {
+            (
+                format!("{} {} used", meter.label, percent_text(limit.used_percent)),
+                limit.used_percent,
+                limit.reached,
+            )
+        })
 }
 
 /// How much of a section the page keeps open.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fold {
-    /// Every row, the provider's link included.
+    /// Every row.
     Open,
-    /// Every row but the link.
-    NoLink,
     /// The head row alone, with a summary of the fullest limit.
     Folded,
 }
@@ -469,9 +553,9 @@ fn head_row(section: &UsageSection, selected: bool, fold: Fold, width: u16) -> L
     match fold {
         Fold::Folded => {
             let summary = match (report, &section.error, section.loading) {
-                (Some(report), _, _) => fullest(report).map(|(text, used)| {
-                    let color = if used >= USAGE_WARN_PERCENT {
-                        share_color(used)
+                (Some(report), _, _) => fullest(report).map(|(text, used, reached)| {
+                    let color = if reached || used >= USAGE_WARN_PERCENT {
+                        share_color(used, reached)
                     } else {
                         model_meta_color()
                     };
@@ -489,7 +573,7 @@ fn head_row(section: &UsageSection, selected: bool, fold: Fold, width: u16) -> L
                 tail.push(summary);
             }
         }
-        Fold::Open | Fold::NoLink => {
+        Fold::Open => {
             if let Some(account) = report.and_then(|report| report.account.as_deref()) {
                 tail.push(Span::styled(USAGE_SEPARATOR, dim));
                 tail.push(Span::styled(account.to_string(), dim));
@@ -506,7 +590,7 @@ fn head_row(section: &UsageSection, selected: bool, fold: Fold, width: u16) -> L
         .map_or(0, |tag| cols(&tag.content) + cols(USAGE_LABEL_GAP));
     if with_tail + tag_cols <= width {
         spans.extend(tail);
-    } else if fold != Fold::Folded && spans_cols(&spans) + tag_cols <= width {
+    } else if fold == Fold::Open && spans_cols(&spans) + tag_cols <= width {
         // The account gives way first.
     } else {
         spans.extend(tail);
@@ -577,11 +661,6 @@ fn section_rows(
                     width,
                 ));
             }
-            if fold == Fold::Open
-                && let Some(url) = &report.dashboard
-            {
-                lines.push(dashboard_row(url, width));
-            }
         }
     }
     lines
@@ -607,48 +686,93 @@ fn label_width(page: &UsagePage) -> usize {
         .unwrap_or(0)
 }
 
-/// The subtitle: how many subscriptions, when they were last read, and
-/// whether a read is in flight — or that the page is still checking.
-fn subtitle(page: &UsagePage, app: &App, width: u16) -> Option<Line<'static>> {
-    let text = if !page.ready {
-        USAGE_CHECKING.to_string()
-    } else if page.sections.is_empty() {
-        return None;
-    } else {
-        let count = page.sections.len();
-        let mut parts = vec![format!(
-            "{count} subscription{}",
-            if count == 1 { "" } else { "s" }
-        )];
-        if let Some(at) = page.updated_at {
-            let time =
-                clock_time(at, at, app.local_offset(at), app.local_offset(at)).unwrap_or_default();
-            parts.push(format!("updated {time}"));
-        }
-        if page.loading() {
-            let any_report = page.sections.iter().any(|section| section.report.is_some());
-            parts.push(
-                if any_report {
-                    "refreshing…"
-                } else {
-                    "loading…"
-                }
-                .to_string(),
-            );
-        }
-        parts.join(USAGE_SEPARATOR)
-    };
-    Some(model_placeholder_row(&text, model_meta_color(), width))
+/// How fresh the page's numbers are: how long ago they were read (`updated
+/// 3m ago`) and whether a read is in flight — `refreshing…` over the
+/// numbers an earlier round left, `loading…` while the first round is still
+/// landing (a subscription read in it is new, not refreshed). What the
+/// subtitle and the compact title say after their own words.
+fn freshness(page: &UsagePage) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(at) = page.updated_at {
+        parts.push(format!("updated {}", age_text(page.now - at)));
+    }
+    if page.loading() {
+        parts.push(
+            if page.updated_at.is_some() {
+                USAGE_REFRESHING
+            } else {
+                USAGE_LOADING_ALL
+            }
+            .to_string(),
+        );
+    }
+    parts
 }
 
-/// The dim key hint — without ↑↓ on a page with nothing to move between.
+/// The subtitle: how many subscriptions, and how fresh their numbers are —
+/// none on a page with no subscription left on it, where the advice stands.
+fn subtitle(page: &UsagePage, width: u16) -> Option<Line<'static>> {
+    if page.sections.is_empty() {
+        return None;
+    }
+    let count = page.sections.len();
+    let mut parts = vec![format!(
+        "{count} subscription{}",
+        if count == 1 { "" } else { "s" }
+    )];
+    parts.extend(freshness(page));
+    Some(model_placeholder_row(
+        &parts.join(USAGE_SEPARATOR),
+        model_meta_color(),
+        width,
+    ))
+}
+
+/// The header folded into one row for a short terminal — a page never loses
+/// its name: the title in its dress, then how fresh the numbers are.
+fn compact_title(page: &UsagePage, width: u16) -> Line<'static> {
+    let mut spans = vec![Span::raw(MODEL_INDENT)];
+    spans.extend(page_title_spans(USAGE_TITLE));
+    for part in freshness(page) {
+        spans.push(Span::styled(
+            format!("{USAGE_SEPARATOR}{part}"),
+            Style::new().fg(model_meta_color()),
+        ));
+    }
+    clamp_spans(spans, width as usize)
+}
+
+/// The dim key hint — `↑↓ select` only with more than one subscription to
+/// move between, `c copy link` only with a link to copy.
 fn hint(page: &UsagePage, width: u16) -> Line<'static> {
-    let text = if page.sections.len() > 1 {
-        USAGE_HINT
-    } else {
-        USAGE_HINT_SINGLE
-    };
-    model_placeholder_row(text, model_meta_color(), width)
+    let mut parts = Vec::new();
+    if page.sections.len() > 1 {
+        parts.push(USAGE_HINT_SELECT);
+    }
+    parts.push(USAGE_HINT_REFRESH);
+    if page
+        .highlighted()
+        .is_some_and(|section| section.dashboard.is_some())
+    {
+        parts.push(USAGE_HINT_COPY);
+    }
+    parts.push(USAGE_HINT_CLOSE);
+    model_placeholder_row(&parts.join(USAGE_LABEL_GAP), model_meta_color(), width)
+}
+
+/// The page's foot: the highlighted subscription's own usage page — when
+/// `link` and it has one — over the key hint.
+fn tail(page: &UsagePage, link: bool, width: u16) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    if link
+        && let Some(url) = page
+            .highlighted()
+            .and_then(|section| section.dashboard.as_deref())
+    {
+        rows.push(dashboard_row(url, width));
+    }
+    rows.push(hint(page, width));
+    rows
 }
 
 /// Join `blocks` into the framed page: a top rule, the blocks with exactly
@@ -666,33 +790,17 @@ fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The header folded into one row for a short terminal: the title in its
-/// dress, then the highlighted subscription's name.
-fn compact_header(page: &UsagePage, width: u16) -> Line<'static> {
-    let mut spans = vec![Span::raw(MODEL_INDENT)];
-    spans.extend(page_title_spans(USAGE_TITLE));
-    if let Some(section) = page.sections.get(page.selected) {
-        spans.push(Span::styled(
-            USAGE_SEPARATOR,
-            Style::new().fg(model_meta_color()),
-        ));
-        spans.push(Span::styled(
-            ellipsize(&section.name, width as usize),
-            Style::new().fg(model_id_color()),
-        ));
-    }
-    clamp_spans(spans, width as usize)
-}
-
 /// The whole framed page as lines — the first of its pages that fits
 /// `height` rows (`first_page_that_fits`, `docs/view-flow.md` *A page that
-/// sheds rows before it flows*), yielding in this order: the providers'
-/// links; every section but the highlighted one, folded to its head row and
-/// its fullest limit (`/donate`'s accordion); the title and the subtitle;
-/// and then the compact page, the highlighted section's rows windowed under
-/// one header row, its ladder shedding down to that row alone — so no
-/// terminal is too short and nothing flows. What [`render_usage_page`]
-/// paints and `usage_menu_rows` counts. Empty when the page is closed.
+/// sheds rows before it flows*), yielding in this order: the link; every
+/// section but the highlighted one, folded to its head row and its fullest
+/// limit (`/donate`'s accordion); the subtitle, the title folding into one
+/// row with how fresh the numbers are, since a page never loses its name;
+/// and then the compact page, one folded row per subscription riding the
+/// highlight under that title row, its ladder shedding down to the title row
+/// alone — so no terminal is too short and nothing flows. What
+/// [`render_usage_page`] paints and `usage_menu_rows` counts. Empty when the
+/// page is closed.
 #[must_use]
 pub fn usage_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
     let Some(page) = app.usage_page.as_ref() else {
@@ -706,83 +814,85 @@ pub fn usage_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>
     };
     let header = || {
         let mut rows = vec![page_title_line(USAGE_TITLE, width)];
-        rows.extend(subtitle(page, app, width));
+        rows.extend(subtitle(page, width));
         rows
     };
-    let tail = || vec![hint(page, width)];
-    let empty = || {
-        if page.ready && page.sections.is_empty() {
-            vec![model_wrapped_rows(
-                USAGE_NO_SUBSCRIPTION,
-                model_selected_color(),
-                width,
-            )]
+    let empty = || -> Vec<Line<'static>> {
+        if page.sections.is_empty() {
+            model_wrapped_rows(USAGE_NO_SUBSCRIPTION, model_selected_color(), width)
         } else {
             Vec::new()
         }
     };
-    let open = |fold: Fold| -> Vec<Vec<Line<'static>>> {
+    let open = || -> Vec<Vec<Line<'static>>> {
         page.sections
             .iter()
             .enumerate()
             .map(|(i, section)| {
+                section_rows(
+                    section,
+                    i == page.selected,
+                    Fold::Open,
+                    columns,
+                    app,
+                    now,
+                    width,
+                )
+            })
+            .collect()
+    };
+    let accordion = || -> Vec<Line<'static>> {
+        page.sections
+            .iter()
+            .enumerate()
+            .flat_map(|(i, section)| {
+                let fold = if i == page.selected {
+                    Fold::Open
+                } else {
+                    Fold::Folded
+                };
                 section_rows(section, i == page.selected, fold, columns, app, now, width)
             })
             .collect()
     };
-    let accordion = || -> Vec<Vec<Line<'static>>> {
-        vec![
-            page.sections
-                .iter()
-                .enumerate()
-                .flat_map(|(i, section)| {
-                    let fold = if i == page.selected {
-                        Fold::NoLink
-                    } else {
-                        Fold::Folded
-                    };
-                    section_rows(section, i == page.selected, fold, columns, app, now, width)
-                })
-                .collect(),
-        ]
+    let whole = |link: bool| {
+        let mut blocks = vec![header(), empty()];
+        blocks.extend(open());
+        blocks.push(tail(page, link, width));
+        framed(blocks, width)
     };
-    let selected_rows = || {
-        page.sections
-            .get(page.selected)
-            .map(|section| section_rows(section, true, Fold::NoLink, columns, app, now, width))
-            .unwrap_or_default()
+    let folded = |top: Vec<Line<'static>>| {
+        framed(
+            vec![top, empty(), accordion(), tail(page, false, width)],
+            width,
+        )
     };
-    let compact_header_line = compact_header(page, width);
+    let heads: Vec<Line<'static>> = page
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(i, section)| head_row(section, i == page.selected, Fold::Folded, width))
+        .collect();
+    let placeholder = empty();
+    let title_row = compact_title(page, width);
+    let hint_row = [hint(page, width)];
     let pages: [&dyn Fn() -> Vec<Line<'static>>; 5] = [
+        &|| whole(true),
+        &|| whole(false),
+        &|| folded(header()),
+        &|| folded(vec![compact_title(page, width)]),
         &|| {
-            framed(
-                [vec![header()], empty(), open(Fold::Open), vec![tail()]].concat(),
-                width,
-            )
-        },
-        &|| {
-            framed(
-                [vec![header()], empty(), open(Fold::NoLink), vec![tail()]].concat(),
-                width,
-            )
-        },
-        &|| {
-            framed(
-                [vec![header()], empty(), accordion(), vec![tail()]].concat(),
-                width,
-            )
-        },
-        &|| framed([empty(), accordion(), vec![tail()]].concat(), width),
-        &|| {
-            let rows = selected_rows();
             compact_page(
                 height,
-                &compact_header_line,
+                &title_row,
                 &|max| {
-                    let shown = rows.len().min(max);
-                    (0, rows[..shown].to_vec(), rows.len() - shown)
+                    if heads.is_empty() {
+                        return placeholder_window(&placeholder, max);
+                    }
+                    let (above, range, below) = list_window(heads.len(), page.selected, max);
+                    (above, heads[range].to_vec(), below)
                 },
-                &tail(),
+                &hint_row,
                 width,
             )
         },

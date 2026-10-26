@@ -1,8 +1,10 @@
-//! Live `/usage` verification, one test per subscription sign-in
-//! (`docs/usage.md`): the provider's config resolved through
-//! `ProvidersFile::model_config` exactly as the boundary resolves it, then
-//! `llm::usage::fetch_usage` against the real endpoint. Each test prints the
-//! report and asserts what every real answer carries.
+//! Live `/usage` verification, one test per subscription sign-in that is
+//! read over the network (`docs/usage.md` — a Console sign-in is answered
+//! without a request, so it has nothing to verify live): the provider's
+//! config resolved through `ProvidersFile::model_config` exactly as the
+//! boundary resolves it, then `llm::usage::fetch_usage` against the real
+//! endpoint. Each test prints the report and asserts what every real answer
+//! carries.
 //!
 //! All `#[ignore]`d so `cargo test` stays offline and deterministic. Run on
 //! purpose with real credentials, never committed — read from the
@@ -14,11 +16,9 @@
 //!                              cargo test --test live_usage -- --ignored --nocapture live_chatgpt
 //! CLINE_ACCOUNT_REFRESH_TOKEN=… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
 //!                              cargo test --test live_usage -- --ignored --nocapture live_clinepass
-//! ANTHROPIC_CONSOLE_REFRESH_TOKEN=sk-ant-ort01-… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
-//!                              cargo test --test live_usage -- --ignored --nocapture live_anthropic_console
 //! ```
 //!
-//! The three sign-ins whose refresh token **rotates** refuse to run without
+//! The two sign-ins whose refresh token **rotates** refuse to run without
 //! `ALTER_ZERO_LIVE_TOKEN_STORE`, the `live_caching` rule: the mint may
 //! retire the token it was given, and the rotated one is written back only
 //! to a store path. After such a run, the value under that file's
@@ -134,17 +134,4 @@ fn live_clinepass_reports_its_windows() {
         report.plan.is_none() || labels.contains(&"5-hour limit"),
         "a subscribed account reports its 5-hour window: {labels:?}"
     );
-}
-
-#[test]
-#[ignore = "hits the network; needs ANTHROPIC_CONSOLE_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
-fn live_anthropic_console_names_the_organisation_it_bills() {
-    seed_store("ANTHROPIC_CONSOLE_REFRESH_TOKEN");
-    alter_zero::llm::claude::set_store_path(token_store());
-    let report = fetch("anthropic_console", "ANTHROPIC_CONSOLE_REFRESH_TOKEN");
-    assert!(
-        report.meters.is_empty(),
-        "a Console sign-in has no plan limits"
-    );
-    assert!(!report.notes.is_empty());
 }

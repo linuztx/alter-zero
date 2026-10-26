@@ -1516,8 +1516,8 @@ impl ModelSession {
     /// The signed-in subscriptions the `/usage` page reads (`docs/usage.md`):
     /// every provider `/login` lists under *Use a subscription* whose stored
     /// credential resolves, by name, each with the config its read resolves
-    /// its credential through — and whether it is the one the session is
-    /// running on, which the dummy never is.
+    /// its credential through, its own usage page — and whether it is the
+    /// one the session is running on, which the dummy never is.
     pub(crate) fn usage_targets(&self) -> Vec<(UsageTarget, ModelConfig)> {
         let mut targets: Vec<(UsageTarget, ModelConfig)> =
             config::subscription_choices(&self.providers, &self.env_file)
@@ -1533,6 +1533,7 @@ impl ModelSession {
                             provider: choice.id,
                             name: choice.name,
                             in_use,
+                            dashboard: llm::usage::dashboard_url(cfg.auth).map(str::to_string),
                         },
                         cfg,
                     ))

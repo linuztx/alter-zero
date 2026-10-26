@@ -1816,15 +1816,23 @@ pub(super) fn context_usage_full_color() -> Color {
 // — green, amber, red at the /context thresholds — and when it resets. ---
 
 /// The page's title.
-pub(super) const USAGE_TITLE: &str = "Usage";
+pub(super) const USAGE_TITLE: &str = "Usage limits";
 
-/// The dim key hint — the page's whole grammar — and its form for a page
-/// with no more than one subscription, where ↑↓ have nothing to move.
-pub(super) const USAGE_HINT: &str = "↑↓ select  r refresh  esc close";
-pub(super) const USAGE_HINT_SINGLE: &str = "r refresh  esc close";
+/// The dim key hint's parts — the page's whole grammar — joined by
+/// [`USAGE_LABEL_GAP`]: `↑↓ select` only with more than one subscription to
+/// move between, `c copy link` only with a link to copy.
+pub(super) const USAGE_HINT_SELECT: &str = "↑↓ select";
+pub(super) const USAGE_HINT_REFRESH: &str = "r refresh";
+pub(super) const USAGE_HINT_COPY: &str = "c copy link";
+pub(super) const USAGE_HINT_CLOSE: &str = "esc close";
 
-/// The subtitle before the boundary has said which subscriptions there are.
-pub(super) const USAGE_CHECKING: &str = "Checking your subscriptions…";
+/// The subtitle's word for a read in flight: over numbers already shown,
+/// and before any are.
+pub(super) const USAGE_REFRESHING: &str = "refreshing…";
+pub(super) const USAGE_LOADING_ALL: &str = "loading…";
+
+/// What a spent limit's row says first, in red.
+pub(super) const USAGE_REACHED: &str = "limit reached";
 
 /// A section whose first read is in flight.
 pub(super) const USAGE_LOADING: &str = "Loading usage…";
@@ -1840,7 +1848,8 @@ pub(super) const USAGE_IN_USE: &str = "in use";
 /// A meter with no limit.
 pub(super) const USAGE_UNLIMITED: &str = "Unlimited";
 
-/// What leads the link to a provider's own usage page.
+/// What leads the link to the highlighted subscription's own usage page,
+/// over the hint.
 pub(super) const USAGE_DETAILS_PREFIX: &str = "Details at ";
 
 /// What leads a failed read's reason: before anything was shown, and over a
@@ -1851,9 +1860,9 @@ pub(super) const USAGE_REFRESH_FAILED: &str = "Couldn't refresh: ";
 /// The mark a warning or error note opens with.
 pub(super) const USAGE_NOTE_MARK: &str = "⚠ ";
 
-/// What a section's rows sit under: the marker's width, so they line up
-/// under the provider's name.
-pub(super) const USAGE_SECTION_INDENT: &str = "  ";
+/// What a section's rows sit under: the marker's width and two columns
+/// more, so they read as one block under the provider's name.
+pub(super) const USAGE_SECTION_INDENT: &str = "    ";
 
 /// The extra inset of a per-model limit's rows under its sub-heading.
 pub(super) const USAGE_GROUP_INDENT: &str = "  ";
@@ -1861,8 +1870,8 @@ pub(super) const USAGE_GROUP_INDENT: &str = "  ";
 /// Between a label and its value, and between a bar's parts.
 pub(super) const USAGE_LABEL_GAP: &str = "  ";
 
-/// Between the parts of a meter's trailer (`420 of 1,000 · resets in 6d`)
-/// and of a section's head.
+/// Between the parts of a meter's trailer (`420 of 1,000 credits · resets
+/// in 6d`), a balance and its detail, and the parts of a section's head.
 pub(super) const USAGE_SEPARATOR: &str = " · ";
 
 /// A limit's bar: the `/context` meter's cells, as long as the room allows

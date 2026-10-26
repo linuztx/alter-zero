@@ -15,9 +15,11 @@ smoke_begin
 # points ChatGPT at it, ALTER_ZERO_GITHUB_API_BASE GitHub's API, and
 # ALTER_ZERO_CLINE_API_BASE Cline's), the session running on ClinePass:
 #   (a) the palette lists /usage; it opens with the three sections, ClinePass
-#       first and tagged in use, every limit's share, the spent weekly
-#       window's red note, ChatGPT's plan and account, Copilot's counts —
-#       and no footer under it;
+#       first and tagged in use, every limit's share, the spent weekly window
+#       saying `limit reached` on its row in red over one line of advice,
+#       ChatGPT's plan and account, Copilot Free named off its SKU with its
+#       credits counted — one link, the highlighted section's — and no
+#       footer under it;
 #   (b) every read carried its credential: ChatGPT's minted bearer and its
 #       account header, Copilot's stored token under the `token` scheme,
 #       Cline's `workos:` bearer — and Cline's plan was read before its
@@ -25,12 +27,16 @@ smoke_begin
 #   (c) `r` reads every subscription again and the page shows the new
 #       numbers; a refresh the provider refuses keeps the last numbers
 #       under an amber reason;
-#   (d) ↓ moves the highlight; Esc closes the page back to the composer;
-#   (e) a 12-row pane folds every section but the highlighted one, the
-#       whole page on screen;
-# Then against the offline dummy with nothing signed in:
-#   (f) /usage opens mid-turn with the status line still above it, and says
-#       how to sign in.
+#   (d) ↓ moves the highlight and the link with it; `c` copies that link,
+#       the page staying open; Ctrl+O opens the transcript over the page
+#       and Ctrl+O brings the page back; Esc closes it to the composer;
+#   (e) reopened, the page shows the last numbers at once, `refreshing…`
+#       while it reads them again;
+#   (f) a 12-row pane keeps the title on one row and folds every section
+#       but the highlighted one;
+# Then against the offline dummy:
+#   (g) /usage opens mid-turn with the status line still above it;
+#   (h) with nothing signed in, /usage opens nothing and says how to sign in.
 S145="${S}_usage"
 U_LOG="$SMOKE_TMP/usage.log"
 U_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -45,6 +51,9 @@ in_days = lambda days: datetime.datetime.fromtimestamp(now + days * 86400, datet
 reset_day = in_days(9).strftime("%Y-%m-%d")
 reset_instant = in_days(2).strftime("%Y-%m-%dT%H:%M:%SZ")
 seen = {"chatgpt": 0}
+# The fourth ChatGPT read — the one a reopened page starts — is held back a
+# moment, so the page's kept numbers can be caught `refreshing…`.
+SLOW_READ = 4
 
 def b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -70,17 +79,24 @@ def chatgpt(five_hour):
         "rate_limit_reset_credits": {"available_count": 2},
     }
 
+# A Copilot Free seat on credit billing: `copilot_plan` reads Pro's own
+# slug, and only the SKU says Free.
 copilot = {
+    "access_type_sku": "free_limited_copilot",
     "copilot_plan": "individual",
+    "token_based_billing": True,
     "quota_reset_date": reset_day,
     "quota_snapshots": {
-        "premium_interactions": {"entitlement": 300, "remaining": 207, "percent_remaining": 69.0,
-                                 "unlimited": False, "overage_count": 0, "overage_permitted": False},
-        "chat": {"entitlement": 0, "percent_remaining": 100, "unlimited": True},
+        "premium_interactions": {"entitlement": 0, "quota_remaining": 0, "percent_remaining": 0,
+                                 "unlimited": False, "has_quota": False},
+        "chat": {"entitlement": 300, "quota_remaining": 207, "percent_remaining": 69.0,
+                 "unlimited": False, "has_quota": True, "overage_permitted": False},
+        "completions": {"entitlement": 0, "percent_remaining": 100, "unlimited": True},
     },
 }
 
-cline_plan = {"success": True, "data": {"plan": {"displayName": "Cline Pass (Monthly)"}}}
+cline_plan = {"success": True, "data": {"plan": {"displayName": "Cline Pass (Monthly)",
+                                                 "interval": "Monthly"}}}
 cline_limits = {"success": True, "data": {"limits": [
     {"type": "five_hour", "percentUsed": 3},
     {"type": "weekly", "percentUsed": 100, "resetsAt": reset_instant},
@@ -109,6 +125,8 @@ class Stub(BaseHTTPRequestHandler):
         self.note()
         if self.path == "/api/codex/usage":
             seen["chatgpt"] += 1
+            if seen["chatgpt"] == SLOW_READ:
+                time.sleep(2)
             if seen["chatgpt"] == 3:
                 self.reply(503, {"error": {"message": "usage service down"}})
             else:
@@ -128,11 +146,14 @@ class Stub(BaseHTTPRequestHandler):
 
     def reply(self, status, obj):
         data = json.dumps(obj).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass # a read the page cancelled (it closed, or a newer round began) hung up
 
     def log_message(self, *_args):
         pass
@@ -192,34 +213,42 @@ palette="$(wait_pane 5 "$S145" -F "Show your subscriptions' usage limits")" ||
 	fail "/usage is missing from the slash-command palette"
 dump "the palette filtered to /usa" "$palette"
 keys "$S145" Enter
-page="$(wait_pane 10 "$S145" -E "Premium requests .* 31% used")" || fail "the page never showed every subscription"
-page="$(wait_pane 10 "$S145" -F "3 subscriptions · updated")" || fail "the page never finished its first round"
+page="$(wait_pane 10 "$S145" -E "Chat +(█|░)+ +31% used")" || fail "the page never showed every subscription"
+page="$(wait_pane 10 "$S145" -F "3 subscriptions · updated just now")" || fail "the page never finished its first round"
 dump "the page, read" "$page"
-expect_has "$page" -E "^  Usage" "the page has no title"
-expect_has "$page" -E "❯ ClinePass +Cline Pass \(Monthly\) +in use$" \
-	"ClinePass is not first, highlighted and tagged in use"
+expect_has "$page" -E "^  Usage limits$" "the page has no title"
+expect_has "$page" -E "❯ ClinePass +Monthly +in use$" \
+	"ClinePass is not first, highlighted and tagged in use under its plan's interval"
 # (A glyph is several bytes and the suite's grep counts bytes, so a run of
 # them is a group: `(█)+`, never `█+`.)
-expect_has "$page" -E "5-hour limit +(█|░)+ +3% used" "ClinePass's 5-hour window is missing"
-expect_has "$page" -E "Weekly limit +(█){20} 100% used +resets in (1d 23h|2d)" \
-	"ClinePass's spent weekly window is not a full bar with its countdown"
+expect_has "$page" -E "^      5-hour limit +(█|░)+ +3% used" "ClinePass's 5-hour window is missing or not under its name"
+expect_has "$page" -E "Weekly limit +(█){20} 100% used  limit reached · resets in (1d 23h|2d)" \
+	"ClinePass's spent weekly window is not a full bar saying so with its countdown"
 expect_has "$page" -E "Monthly limit +(█|░)+ +81% used +resets in 1[67]d" "ClinePass's monthly window is missing"
-expect_has "$page" -F "⚠ Your weekly limit has been reached." "the spent window has no note"
+expect_has "$page" -F "⚠ Paused until the weekly limit resets — switch with /model meanwhile." \
+	"the spent window has no advice"
 expect_has "$page" -E "ChatGPT Codex +Pro · smoke@example\.com" "ChatGPT's plan and account are missing"
 expect_has "$page" -E "5-hour limit +(█|░)+ +12% used +resets in (1h 59m|2h)" \
 	"ChatGPT's 5-hour window or its countdown is missing"
 expect_has "$page" -E "Weekly limit +(█|░)+ +42% used +resets in (3d 23h|4d)" "ChatGPT's weekly window is missing"
 expect_has "$page" -E "Credits +62,500 credits" "ChatGPT's credits are missing"
 expect_has "$page" -E "Limit resets +2 available" "ChatGPT's limit resets are missing"
-expect_has "$page" -E "GitHub Copilot +Pro" "Copilot's plan is missing"
-expect_has "$page" -E "Premium requests .* 31% used +93 of 300 · resets in 8d" "Copilot's counts or reset are missing"
-expect_has "$page" -E "Chat messages +Unlimited" "Copilot's unlimited chat is missing"
-expect_has "$page" -F "Details at https://chatgpt.com/settings/usage" "the providers' own pages are not linked"
+expect_has "$page" -E "GitHub Copilot +Free" "Copilot Free is not named off its SKU"
+expect_has "$page" -E "Chat +(█|░)+ +31% used +93 of 300 credits · resets in 8d" \
+	"Copilot's credits or reset are missing"
+expect_has "$page" -E "Code completions +Unlimited" "Copilot's unlimited completions are missing"
+expect_lacks "$page" -F "Premium requests" "Copilot's premium bucket outside the plan was listed"
+expect_has "$page" -F "Details at https://app.cline.bot/dashboard/subscription?personal=true" \
+	"the highlighted section's own page is not linked"
+[ "$(printf '%s\n' "$page" | grep -c "Details at")" -eq 1 ] || fail "the page links more than the highlighted section"
+expect_has "$page" -F "↑↓ select  r refresh  c copy link  esc close" "the hint does not name c"
 expect_lacks "$page" -F "cline-pass/glm-5.3 medium" "the footer is still showing under the page"
 expect_lacks "$page" -F "cline-pass/glm-5.3 ·" "the footer is still showing under the page"
-# The spent window is red and the 81% one amber — read off the raw SGR.
+# The spent window is red, its `limit reached` too, and the 81% one amber —
+# read off the raw SGR.
 sgr="$(tmux capture-pane -t "$S145" -p -e)"
 expect_has "$sgr" -E "38;2;243;139;168m(█){20}" "the spent window's bar is not red"
+expect_has "$sgr" -E "38;2;243;139;168mlimit reached" "the spent window's words are not red"
 expect_has "$sgr" -E "38;2;249;226;175m(█){8,}" "the 81% bar is not amber"
 
 # ---- (b) every read carried its credential ----
@@ -249,41 +278,73 @@ dump "a refused refresh" "$refused"
 expect_has "$refused" -F "Couldn't refresh: HTTP 503" "the refusal does not name the provider's answer"
 expect_has "$refused" -E "5-hour limit +(█|░)+ +13% used" "a refused refresh dropped the last numbers"
 
-# ---- (d) ↓ moves the highlight; Esc closes ----
+# ---- (d) ↓ moves the highlight and its link; c copies it; Ctrl+O; Esc ----
 keys "$S145" Down
 moved="$(wait_pane 5 "$S145" -E "❯ ChatGPT Codex")" || fail "↓ did not move the highlight to ChatGPT"
 dump "↓ on the page" "$moved"
+expect_has "$moved" -F "Details at https://chatgpt.com/settings/usage" "the link did not follow the highlight"
+keys "$S145" c
+copied="$(wait_pane 5 "$S145" -F "Copied the usage link to clipboard")" || fail "c did not copy the usage link"
+expect_has "$copied" -F "3 subscriptions" "copying closed the page"
+keys "$S145" C-o
+wait_for 5 "$S145" -F "T R A N S C R I P T" || fail "Ctrl+O did not open the transcript over the page"
+keys "$S145" C-o
+back="$(wait_pane 5 "$S145" -F "3 subscriptions")" || fail "Ctrl+O did not bring the page back"
+expect_has "$back" -E "❯ ChatGPT Codex" "the page lost its highlight behind the overlay"
 keys "$S145" Escape
 closed="$(wait_pane 5 "$S145" -F "cline-pass/glm-5.3")" || fail "Esc did not close the page back to the composer"
 expect_lacks "$closed" -F "3 subscriptions" "the page is still on screen after Esc"
+
+# ---- (e) reopened: the last numbers at once, refreshing ----
+submit "$S145" "/usage"
+reopened="$(wait_pane 3 "$S145" -F "refreshing…")" || fail "the reopened page did not show its last numbers refreshing"
+dump "reopened" "$reopened"
+expect_has "$reopened" -E "5-hour limit +(█|░)+ +13% used" "the reopened page did not keep the last numbers"
+expect_has "$reopened" -E "❯ ClinePass" "the reopened page did not open on the subscription in use"
+expect_lacks "$reopened" -F "Loading usage…" "the reopened page blanked a section"
+wait_for 10 "$S145" -F "3 subscriptions · updated just now" || fail "the reopened page never finished reading"
+keys "$S145" Escape
 tmux kill-session -t "$S145" 2>/dev/null
 
-# ---- (e) a short pane folds the other sections ----
+# ---- (f) a short pane keeps the title and folds the other sections ----
 S145S="${S}_usageshort"
 launch -c "$U_DIR" "$S145S" 110 12 "$U_APP"
 submit "$S145S" "/usage"
-short="$(wait_pane 10 "$S145S" -E "ChatGPT Codex +Pro · .*% used")" || fail "the short page did not fold ChatGPT to a summary"
+# Every read landed first: a section still loading is one row, so the page
+# can fit its whole header until the last of them lands.
+short="$(wait_pane 10 "$S145S" -F "Usage limits · updated")" || fail "the short page lost its title"
 dump "the page on 12 rows" "$short"
+expect_has "$short" -E "ChatGPT Codex +Pro · .*% used" "the short page did not fold ChatGPT to a summary"
 expect_has "$short" -E "❯ ClinePass" "the highlighted section is not on screen"
-expect_has "$short" -E "GitHub Copilot +Pro · Premium requests 31% used" "Copilot is not folded to its fullest limit"
-expect_lacks "$short" -F "Details at" "a 12-row page kept the links"
+expect_has "$short" -E "GitHub Copilot +Free · Chat 31% used" "Copilot is not folded to its fullest limit"
+expect_lacks "$short" -F "Details at" "a 12-row page kept the link"
 tmux kill-session -t "$S145S" 2>/dev/null
 
-# ---- (f) the dummy, mid-turn, nothing signed in ----
+# ---- (g) the dummy, mid-turn, the subscriptions still read ----
 S145D="${S}_usagedummy"
-launch -c "$U_DIR" "$S145D" 100 30 "env -u GITHUB_COPILOT_TOKEN -u CHATGPT_CODEX_REFRESH_TOKEN -u CLINE_ACCOUNT_REFRESH_TOKEN -u ANTHROPIC_CONSOLE_REFRESH_TOKEN -u OPENAI_CHATGPT_REFRESH_TOKEN $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2500 $BIN_ABS"
+launch -c "$U_DIR" "$S145D" 110 44 "env -u ANTHROPIC_CONSOLE_REFRESH_TOKEN -u OPENAI_CHATGPT_REFRESH_TOKEN NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST ALTER_ZERO_DUMMY=1 ALTER_ZERO_STARTUP_DELAY_MS=2500 ALTER_ZERO_PROVIDERS_FILE=$U_PROVIDERS ALTER_ZERO_OPENAI_ISSUER=$U_BASE ALTER_ZERO_GITHUB_API_BASE=$U_BASE ALTER_ZERO_CLINE_API_BASE=$U_BASE CHATGPT_CODEX_REFRESH_TOKEN=rt-145 GITHUB_COPILOT_TOKEN=ghu_smoke145 CLINE_ACCOUNT_REFRESH_TOKEN=clr-145 $BIN_ABS"
 submit "$S145D" "$USER_MSG"
 wait_for 5 "$S145D" -F "esc to interrupt" || fail "the dummy's turn never started"
 submit "$S145D" "/usage"
-mid="$(wait_pane 5 "$S145D" -F "No subscription is signed in")" || fail "/usage did not open mid-turn"
+mid="$(wait_pane 10 "$S145D" -F "3 subscriptions")" || fail "/usage did not open mid-turn"
 dump "the page mid-turn" "$mid"
 expect_has "$mid" -F "esc to interrupt" "the status line left the strip above the page"
+expect_lacks "$mid" -F "in use" "the offline dummy was tagged as running on a subscription"
 status_row="$(printf '%s\n' "$mid" | grep -n "esc to interrupt" | head -n 1 | cut -d: -f1)"
-title_row="$(printf '%s\n' "$mid" | grep -nE "^  Usage$" | head -n 1 | cut -d: -f1)"
+title_row="$(printf '%s\n' "$mid" | grep -nE "^  Usage limits$" | head -n 1 | cut -d: -f1)"
 if [ -z "$status_row" ] || [ -z "$title_row" ] || [ "$status_row" -gt "$title_row" ]; then
 	fail "the status line (row ${status_row:-none}) is not above the page (row ${title_row:-none})"
 fi
-expect_has "$mid" -F "/login" "the page does not say how to sign in"
 keys "$S145D" Escape
 wait_for 5 "$S145D" -F "esc to interrupt" || fail "Esc closed more than the page"
 tmux kill-session -t "$S145D" 2>/dev/null
+
+# ---- (h) nothing signed in: no page, a toast ----
+S145E="${S}_usageempty"
+launch -c "$U_DIR" "$S145E" 100 24 "env -u GITHUB_COPILOT_TOKEN -u CHATGPT_CODEX_REFRESH_TOKEN -u CLINE_ACCOUNT_REFRESH_TOKEN -u ANTHROPIC_CONSOLE_REFRESH_TOKEN -u OPENAI_CHATGPT_REFRESH_TOKEN $CFG_ENV_NOHIST $BIN_ABS"
+submit "$S145E" "/usage"
+empty="$(wait_pane 5 "$S145E" -F "No subscription signed in — use /login → Use a subscription")" ||
+	fail "/usage with nothing signed in raised no toast"
+dump "nothing signed in" "$empty"
+expect_lacks "$empty" -F "Usage limits" "/usage opened a page with nothing on it"
+tmux kill-session -t "$S145E" 2>/dev/null

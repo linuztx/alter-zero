@@ -543,27 +543,39 @@ page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
 **`/usage` page** (`docs/usage.md`: what is left of every **subscription**
 the app is signed in to — `/context`'s family, read-only, composer-replacing,
 working mid-turn under the strip — a section per subscription, the one in use
-first and tagged, each limit a bar of the share **used** (green, amber from
-75%, red from 90%; one bar length for the whole page, `bar_length`, so the
-column lines up), the counts behind it and when it resets as a countdown and a
-local time (`resets in 1d 23h · Tue 2:36 PM` — `App::set_usage_now` per draw
-and `App::set_local_offset` once, a `fn(i64) -> i32` so a reset across a DST
-change reads the right hour), the provider's notes and its usage page as an
-OSC 8 link; every subscription read on a worker of its own
-(`tui::workers::spawn_usage_fetch` → `llm::usage::fetch_usage`) through the
-chat request's own credential seam — ChatGPT's `wham/usage` on the backend's
-root, Copilot's `copilot_internal/user` with the stored GitHub token itself
-(`ALTER_ZERO_GITHUB_API_BASE` moves it and the token exchange), ClinePass's
-plan then `usage-limits`, a Console sign-in only minted for the organisation
-it bills — each parsed leniently, section by section, into one
+first and tagged, its rows indented under its name, each limit a bar of the
+share **used** (green, amber from 75%, red from 90% or once the provider says
+the limit is reached, `Limit::reached`, which also writes a red `limit
+reached` on the row — a note only for a stop no row explains; one bar length
+for the whole page, `bar_length`, so the column lines up, any use filling a
+cell), the counts behind it in their unit and when it resets as a countdown
+and a local time (`resets in 1d 23h · Tue 2:36 PM` — `App::set_usage_now` per
+draw and `App::set_local_offset` once, a `fn(i64) -> i32` so a reset across a
+DST change reads the right hour; a narrow row gives up the clock time, then
+moves the counts under the bar), every bar before every balance, the
+provider's notes, and the **highlighted** subscription's usage page as one
+OSC 8 link over the hint that `c` copies (`llm::usage::dashboard_url`);
+the subtitle's freshness relative (`updated 3m ago`, `refreshing…`); every
+subscription read on a worker of its own (`tui::workers::spawn_usage_fetch`
+→ `llm::usage::fetch_usage`) through the chat request's own credential seam —
+ChatGPT's `wham/usage` on the backend's root, Copilot's
+`copilot_internal/user` with the stored GitHub token itself (the plan off
+`access_type_sku` first, since a Free seat reports Pro's `individual` slug;
+`ALTER_ZERO_GITHUB_API_BASE` moves it and the token exchange), ClinePass's
+plan (named by its billing interval) then `usage-limits`, and **no request at
+all** for a Console sign-in, which bills per token and has nothing to read —
+each parsed leniently, section by section, into one
 `llm::usage::UsageReport`; results keyed on **rounds** the pure core hands out
 (`App::begin_usage_round`/`finish_usage_fetch`, the counter on `App` so a
-reopened page never takes an old round's answer); re-read every minute while
-open (`App::usage_refresh_due`, the slow `USAGE_TICK_INTERVAL` frame) and on
-`r`, a failed refresh keeping the last report under an amber reason; the
-family's ladder on a short terminal, folding every section but the
-highlighted one to its fullest limit; `smoke.sh` Phase 145) in
-`docs/usage.md`; the
+reopened page never takes an old round's answer); a closed page's reports
+kept (`App::usage_kept`) so a reopen shows them at once, `refreshing…`;
+re-read every minute while open (`App::usage_refresh_due`, the slow
+`USAGE_TICK_INTERVAL` frame) and on `r`, a failed refresh keeping the last
+report under an amber reason; nothing signed in a toast, never an empty
+page; Ctrl+O/Ctrl+D passing through over it, `/context`'s rule; the family's
+ladder on a short terminal, folding every section but the highlighted one to
+its fullest limit, then the header into one title row, ending on one folded
+row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — **Use a subscription**, **Use an
 API key** or **Use a local model** — because GitHub Copilot is not a key you

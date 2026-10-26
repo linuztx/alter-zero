@@ -41,6 +41,7 @@ use alter_zero::app::{
     UsagePage,
     UsageSection,
     UsageTarget,
+    USAGE_EMPTY_NOTICE,
     USAGE_REFRESH_SECS,
     FileSearch,
     DeviceLogin,

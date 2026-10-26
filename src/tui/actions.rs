@@ -276,10 +276,14 @@ impl Session<'_> {
             // it the backend's tool set before the first frame
             // (docs/context-usage.md).
             Action::OpenContextUsage => self.sync_context_usage(),
-            // The usage page: the pure open showed it checking; read every
-            // signed-in subscription — and again on `r` (docs/usage.md).
-            Action::OpenUsagePage | Action::RefreshUsagePage => self.fetch_usage(),
+            // Only the boundary knows which subscriptions are signed in, so
+            // it opens the usage page over them and reads each one — or
+            // toasts that none is — and reads them again on `r`
+            // (docs/usage.md).
+            Action::OpenUsagePage => self.open_usage_page(),
+            Action::RefreshUsagePage => self.refresh_usage_page(),
             Action::CloseUsagePage => self.cancel_usage_fetch(),
+            Action::CopyUsageLink(url) => self.copy_usage_link(&url),
             Action::CloseContextUsage => {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
                 // collapses back to the composer on the next draw.

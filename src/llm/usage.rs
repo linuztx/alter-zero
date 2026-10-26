@@ -29,10 +29,9 @@ pub struct UsageReport {
     pub account: Option<String>,
     /// The meters, in the order the page lists them.
     pub meters: Vec<UsageMeter>,
-    /// What the meters can't say: a limit reached, a plan with no limits.
+    /// What the meters can't say: why requests stop when no window does, what
+    /// to do about a spent one, a plan with no limits.
     pub notes: Vec<UsageNote>,
-    /// The provider's own usage page, linked under the report.
-    pub dashboard: Option<String>,
 }
 
 /// One row of a report: a label and what it measures.
@@ -71,6 +70,9 @@ pub struct Limit {
     pub counts: Option<Counts>,
     /// When the window starts over, in Unix seconds.
     pub resets_at: Option<i64>,
+    /// Whether the provider says it is spent — requests stop until it
+    /// resets. The page says so on the row itself, in red.
+    pub reached: bool,
 }
 
 /// The units behind a [`Limit`]'s share: `used` of `total`, in `unit`.
@@ -372,7 +374,7 @@ fn reset_time(reset_at: Option<f64>, reset_after: Option<f64>, now: i64) -> Opti
         .or_else(|| reset_after.map(|after| now + after.round() as i64))
 }
 
-/// One window's meter, labelled by its length.
+/// One window's meter, labelled by its length — reached once it is all used.
 fn wham_window_meter(group: Option<&str>, window: &WhamWindow, now: i64) -> UsageMeter {
     UsageMeter {
         group: group.map(str::to_string),
@@ -381,8 +383,14 @@ fn wham_window_meter(group: Option<&str>, window: &WhamWindow, now: i64) -> Usag
             used_percent: window.used_percent,
             counts: None,
             resets_at: reset_time(window.reset_at, window.reset_after_seconds, now),
+            reached: window.used_percent >= 100.0,
         }),
     }
+}
+
+/// Whether a meter is a limit the provider says is spent.
+fn is_reached(meter: &UsageMeter) -> bool {
+    matches!(&meter.value, MeterValue::Limit(limit) if limit.reached)
 }
 
 /// A limit's windows, primary then secondary — each one read on its own.
@@ -434,8 +442,13 @@ fn wham_credits_meter(credits: &WhamCredits<'_>) -> Option<UsageMeter> {
 }
 
 /// The member's monthly credit limit a workspace's spend controls set:
-/// credits used of the limit, codex's `Monthly credit limit` row.
-fn wham_credit_limit_meter(limit: &WhamIndividualLimit<'_>, now: i64) -> Option<UsageMeter> {
+/// credits used of the limit, codex's `Monthly credit limit` row — reached
+/// when the workspace says its cap is, or every credit is used.
+fn wham_credit_limit_meter(
+    limit: &WhamIndividualLimit<'_>,
+    cap_reached: bool,
+    now: i64,
+) -> Option<UsageMeter> {
     let used = number(Some(limit.used))?;
     let total = number(Some(limit.limit))?;
     let used_percent = limit
@@ -453,15 +466,20 @@ fn wham_credit_limit_meter(limit: &WhamIndividualLimit<'_>, now: i64) -> Option<
                 unit: Some("credits"),
             }),
             resets_at: reset_time(limit.reset_at, limit.reset_after_seconds, now),
+            reached: cap_reached || used_percent >= 100.0,
         }),
     })
 }
 
-/// Why requests are stopped, in codex's words for who can lift it.
+/// Why requests are stopped, in codex's words for who can lift it. A
+/// workspace's reason is always worth its sentence — it names who can act —
+/// while a bare `limit reached` (or a reason this build doesn't know) is
+/// worded only when no row already says it: `unexplained_limit` when no plan
+/// window is reached, `unexplained_cap` when no credit limit row is shown.
 fn wham_reached_note(
     kind: Option<&str>,
-    limit_reached: bool,
-    cap_reached: bool,
+    unexplained_limit: bool,
+    unexplained_cap: bool,
 ) -> Option<UsageNote> {
     let text = match kind {
         Some("workspace_owner_credits_depleted") => {
@@ -476,10 +494,9 @@ fn wham_reached_note(
         Some("workspace_member_usage_limit_reached") => {
             "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue."
         }
-        Some(_) => "You've hit your usage limit.",
-        None if limit_reached => "You've hit your usage limit.",
-        None if cap_reached => "You've reached your workspace's spend cap.",
-        None => return None,
+        _ if unexplained_limit => "You've hit your usage limit.",
+        _ if unexplained_cap => "You've reached your workspace's spend cap.",
+        _ => return None,
     };
     Some(UsageNote::new(NoteTone::Error, text))
 }
@@ -487,10 +504,10 @@ fn wham_reached_note(
 /// Parse ChatGPT's `wham/usage` answer. `now` (Unix seconds) places a window
 /// that names only how long until it resets.
 ///
-/// The rows come in codex's order — the plan's own windows, its credits and
-/// the member's credit limit, then each per-model limit under its model's
-/// name, then the code-review limit — and the reset credits the account can
-/// redeem last.
+/// Every bar comes before the balances: the plan's own windows and the
+/// member's credit limit, then each per-model limit under its model's name,
+/// then the code-review limit — codex's order for the limits — and then the
+/// credits and the reset credits the account can redeem.
 ///
 /// # Errors
 /// [`LlmError::Decode`] when the body is not a JSON object. Everything inside
@@ -504,20 +521,20 @@ pub fn parse_chatgpt_usage(body: &str, now: i64) -> Result<UsageReport> {
     let account = lenient::<String>(usage.email).filter(|email| !email.trim().is_empty());
     let rate_limit = lenient::<WhamRateLimit<'_>>(usage.rate_limit);
     let spend = lenient::<WhamSpendControl<'_>>(usage.spend_control);
+    let cap_reached = spend.as_ref().is_some_and(|spend| spend.reached);
+    let reached_kind = lenient::<WhamReached>(usage.rate_limit_reached_type).map(|r| r.kind);
 
     let mut meters = Vec::new();
     if let Some(limit) = &rate_limit {
         meters.extend(wham_limit_meters(limit, None, now));
     }
-    if let Some(credits) = lenient::<WhamCredits<'_>>(usage.credits) {
-        meters.extend(wham_credits_meter(&credits));
-    }
-    if let Some(limit) = spend
+    let explained = meters.iter().any(is_reached);
+    let credit_limit = spend
         .as_ref()
         .and_then(|spend| lenient::<WhamIndividualLimit<'_>>(spend.individual_limit))
-    {
-        meters.extend(wham_credit_limit_meter(&limit, now));
-    }
+        .and_then(|limit| wham_credit_limit_meter(&limit, cap_reached, now));
+    let cap_shown = credit_limit.is_some();
+    meters.extend(credit_limit);
     for raw in lenient::<Vec<&RawValue>>(usage.additional_rate_limits).unwrap_or_default() {
         let Some(additional) = lenient::<WhamAdditional<'_>>(Some(raw)) else {
             continue;
@@ -534,6 +551,9 @@ pub fn parse_chatgpt_usage(body: &str, now: i64) -> Result<UsageReport> {
     if let Some(limit) = lenient::<WhamRateLimit<'_>>(usage.code_review_rate_limit) {
         meters.extend(wham_limit_meters(&limit, Some("Code review"), now));
     }
+    if let Some(credits) = lenient::<WhamCredits<'_>>(usage.credits) {
+        meters.extend(wham_credits_meter(&credits));
+    }
     if let Some(resets) = lenient::<WhamResetCredits>(usage.rate_limit_reset_credits)
         .filter(|resets| resets.available_count > 0)
     {
@@ -547,14 +567,16 @@ pub fn parse_chatgpt_usage(body: &str, now: i64) -> Result<UsageReport> {
         });
     }
 
-    let notes = wham_reached_note(
-        lenient::<WhamReached>(usage.rate_limit_reached_type)
-            .map(|reached| reached.kind)
-            .as_deref(),
-        rate_limit
+    // A reason the backend names is a refusal too, even one this build
+    // doesn't know by name.
+    let limit_reached = reached_kind.is_some()
+        || rate_limit
             .as_ref()
-            .is_some_and(|limit| limit.limit_reached == Some(true)),
-        spend.as_ref().is_some_and(|spend| spend.reached),
+            .is_some_and(|limit| limit.limit_reached == Some(true));
+    let notes = wham_reached_note(
+        reached_kind.as_deref(),
+        limit_reached && !explained,
+        cap_reached && !cap_shown,
     )
     .into_iter()
     .collect();
@@ -564,7 +586,6 @@ pub fn parse_chatgpt_usage(body: &str, now: i64) -> Result<UsageReport> {
         account,
         meters,
         notes,
-        dashboard: Some(CHATGPT_DASHBOARD.to_string()),
     })
 }
 
@@ -575,10 +596,12 @@ pub fn parse_chatgpt_usage(body: &str, now: i64) -> Result<UsageReport> {
 /// Where a ClinePass subscription is managed and its usage shown.
 pub const CLINEPASS_DASHBOARD: &str = "https://app.cline.bot/dashboard/subscription?personal=true";
 
-/// The plan a `GET /api/v1/users/me/plan` answer names — its display name,
-/// `Cline Pass (Monthly)` (its internal name when it has none, `ClinePass`
-/// when it has neither) — or `None` when the account has no plan: `plan` is
-/// `null`, which is how Cline says the account is not subscribed.
+/// The plan a `GET /api/v1/users/me/plan` answer names — its billing
+/// interval, `Monthly`, since the section's head already says ClinePass (its
+/// display name `Cline Pass (Monthly)` when it names no interval, its
+/// internal name when it has neither, `ClinePass` when it has none) — or
+/// `None` when the account has no plan: `plan` is `null`, which is how Cline
+/// says the account is not subscribed.
 ///
 /// # Errors
 /// [`LlmError::Decode`] when the body is not Cline's `{success, data}`
@@ -591,23 +614,25 @@ pub fn parse_clinepass_plan(body: &str) -> Result<Option<String>> {
         plan: Option<&'a RawValue>,
     }
     #[derive(Deserialize)]
-    struct Plan {
-        #[serde(rename = "displayName", default)]
-        display_name: Option<String>,
-        #[serde(default)]
-        name: Option<String>,
+    struct Plan<'a> {
+        #[serde(default, borrow)]
+        interval: Option<&'a RawValue>,
+        #[serde(rename = "displayName", default, borrow)]
+        display_name: Option<&'a RawValue>,
+        #[serde(default, borrow)]
+        name: Option<&'a RawValue>,
     }
     let data = cline_data(body)?;
     let Some(plan) = lenient::<PlanData<'_>>(Some(data)).and_then(|data| data.plan) else {
         return Ok(None);
     };
-    let Some(plan) = lenient::<Plan>(Some(plan)) else {
+    let Some(plan) = lenient::<Plan<'_>>(Some(plan)) else {
         return Ok(None);
     };
     Ok(Some(
-        [plan.display_name, plan.name]
+        [plan.interval, plan.display_name, plan.name]
             .into_iter()
-            .flatten()
+            .filter_map(lenient::<String>)
             .map(|name| name.trim().to_string())
             .find(|name| !name.is_empty())
             .unwrap_or_else(|| "ClinePass".to_string()),
@@ -674,10 +699,10 @@ fn clinepass_window_label(kind: &str) -> String {
 
 /// Parse `GET /api/v1/users/me/plan/usage-limits`: the plan's rolling
 /// windows (`five_hour`, `weekly`, `monthly`), each a share used and when it
-/// starts over — the Cline dashboard's own *Usage Limits* card. A window that
-/// is spent is a red note too, naming — like the dashboard's banner — the
-/// spent window that resets **last**, since that one is how long the pause
-/// lasts.
+/// starts over — the Cline dashboard's own *Usage Limits* card. A spent
+/// window is reached (its row says so), and one line of advice says what to
+/// do meanwhile, naming — like the dashboard's banner — the spent window
+/// that resets **last**, since that one is how long the pause lasts.
 ///
 /// # Errors
 /// [`LlmError::Decode`] when the body is not a `{success, data: {limits}}`
@@ -710,17 +735,16 @@ pub fn parse_clinepass_limits(body: &str) -> Result<UsageReport> {
                 used_percent: limit.percent_used,
                 counts: None,
                 resets_at,
+                reached: limit.percent_used >= 100.0,
             }),
         });
     }
     let notes = spent
         .map(|(_, label)| {
             UsageNote::new(
-                NoteTone::Error,
+                NoteTone::Warning,
                 format!(
-                    "Your {} has been reached. ClinePass requests are paused until it resets — \
-                     switch with /model to the usage-billed Cline row or another provider \
-                     meanwhile.",
+                    "Paused until the {} resets — switch with /model meanwhile.",
                     label.to_lowercase()
                 ),
             )
@@ -732,7 +756,6 @@ pub fn parse_clinepass_limits(body: &str) -> Result<UsageReport> {
         account: None,
         meters,
         notes,
-        dashboard: Some(CLINEPASS_DASHBOARD.to_string()),
     })
 }
 
@@ -760,17 +783,19 @@ pub const COPILOT_DASHBOARD: &str = "https://github.com/settings/copilot";
 
 /// Parse `GET https://api.github.com/copilot_internal/user`, the endpoint
 /// VS Code's own Copilot dashboard reads: the plan, and one meter per quota
-/// snapshot — the premium allowance (`Credits` on a token-billed seat), chat
-/// messages, inline suggestions — or, for a seat on the older Free plan, its
-/// `limited_user_quotas`.
+/// snapshot — the premium allowance (`AI credits` on a credit-billed seat),
+/// chat, code completions — or, for a seat on the older Free plan, its
+/// `limited_user_quotas`. Each counts in its own unit: credits on a
+/// credit-billed seat, else requests, messages and completions.
 ///
 /// # Errors
 /// [`LlmError::Decode`] when the body is not a JSON object.
 pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
     let user: CopilotUser<'_> = object(body)?;
-    let plan = lenient::<String>(user.copilot_plan)
-        .filter(|plan| !plan.trim().is_empty())
-        .map(|plan| copilot_plan_label(&plan));
+    let plan = copilot_plan_label(
+        lenient::<String>(user.access_type_sku).as_deref(),
+        lenient::<String>(user.copilot_plan).as_deref(),
+    );
     let account = lenient::<String>(user.login).filter(|login| !login.trim().is_empty());
     // The allowance's own reset when a snapshot names none: every paid SKU
     // resets at midnight UTC on the 1st (`quota_reset_date_utc` carrying the
@@ -786,26 +811,27 @@ pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
             .as_deref()
             .and_then(timestamp_seconds)
     });
-    let credits = lenient::<bool>(user.token_based_billing).unwrap_or(false);
+    let billed_in_credits = flag(user.token_based_billing) == Some(true);
 
     let mut meters = Vec::new();
     let mut notes = Vec::new();
     if let Some(snapshots) = lenient::<CopilotSnapshots<'_>>(user.quota_snapshots) {
-        let premium_label = if credits {
-            "Credits"
-        } else {
-            "Premium requests"
-        };
-        for (label, raw) in [
+        for (bucket, raw) in [
             (
-                premium_label,
+                CopilotBucket::Premium,
                 snapshots.premium_interactions.or(snapshots.premium_models),
             ),
-            ("Chat messages", snapshots.chat),
-            ("Inline suggestions", snapshots.completions),
+            (CopilotBucket::Chat, snapshots.chat),
+            (CopilotBucket::Completions, snapshots.completions),
         ] {
             if let Some(snapshot) = lenient::<CopilotSnapshot<'_>>(raw) {
-                meters.extend(copilot_meter(label, &snapshot, fallback_reset, &mut notes));
+                meters.extend(copilot_meter(
+                    bucket,
+                    &snapshot,
+                    billed_in_credits,
+                    fallback_reset,
+                    &mut notes,
+                ));
             }
         }
     }
@@ -815,9 +841,13 @@ pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
             lenient::<CopilotFreeQuotas>(user.monthly_quotas),
         )
     {
-        for (label, left, total) in [
-            ("Chat messages", left.chat, monthly.chat),
-            ("Inline suggestions", left.completions, monthly.completions),
+        for (bucket, left, total) in [
+            (CopilotBucket::Chat, left.chat, monthly.chat),
+            (
+                CopilotBucket::Completions,
+                left.completions,
+                monthly.completions,
+            ),
         ] {
             if let (Some(left), Some(total)) = (left, total)
                 && total > 0.0
@@ -825,15 +855,16 @@ pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
                 let used = (total - left).clamp(0.0, total);
                 meters.push(UsageMeter {
                     group: None,
-                    label: label.to_string(),
+                    label: bucket.label(false).to_string(),
                     value: MeterValue::Limit(Limit {
                         used_percent: used / total * 100.0,
                         counts: Some(Counts {
                             used,
                             total,
-                            unit: None,
+                            unit: Some(bucket.unit(false)),
                         }),
                         resets_at: fallback_reset,
+                        reached: left <= 0.0,
                     }),
                 });
             }
@@ -844,7 +875,6 @@ pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
         account,
         meters,
         notes,
-        dashboard: Some(COPILOT_DASHBOARD.to_string()),
     })
 }
 
@@ -853,6 +883,8 @@ pub fn parse_copilot_user(body: &str) -> Result<UsageReport> {
 /// as numbers in older answers and as numeric strings in newer ones.
 #[derive(Deserialize)]
 struct CopilotUser<'a> {
+    #[serde(default, borrow)]
+    access_type_sku: Option<&'a RawValue>,
     #[serde(default, borrow)]
     copilot_plan: Option<&'a RawValue>,
     #[serde(default, borrow)]
@@ -886,7 +918,8 @@ struct CopilotSnapshots<'a> {
     completions: Option<&'a RawValue>,
 }
 
-/// One quota bucket.
+/// One quota bucket, every field read on its own ([`number`], [`flag`]), so
+/// a count sent as a string or a flag sent as `null` costs that one value.
 #[derive(Deserialize)]
 struct CopilotSnapshot<'a> {
     #[serde(default, borrow)]
@@ -895,16 +928,20 @@ struct CopilotSnapshot<'a> {
     remaining: Option<&'a RawValue>,
     #[serde(default, borrow)]
     quota_remaining: Option<&'a RawValue>,
-    #[serde(default)]
-    percent_remaining: Option<f64>,
-    #[serde(default)]
-    unlimited: bool,
-    #[serde(default)]
-    overage_count: Option<f64>,
-    #[serde(default)]
-    overage_permitted: bool,
-    #[serde(default)]
-    quota_reset_at: Option<f64>,
+    #[serde(default, borrow)]
+    percent_remaining: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    unlimited: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    has_quota: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    overage_count: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    overage_permitted: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    quota_reset_at: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    token_based_billing: Option<&'a RawValue>,
 }
 
 /// The old Free plan's per-feature counts: what is left
@@ -917,10 +954,54 @@ struct CopilotFreeQuotas {
     completions: Option<f64>,
 }
 
-/// A plan slug as VS Code names it, without the `Copilot` every one of them
-/// would repeat beside the provider's own name.
-fn copilot_plan_label(slug: &str) -> String {
-    match slug.trim().to_ascii_lowercase().as_str() {
+/// Which of Copilot's quota buckets a meter is.
+#[derive(Debug, Clone, Copy)]
+enum CopilotBucket {
+    Premium,
+    Chat,
+    Completions,
+}
+
+impl CopilotBucket {
+    /// The row's name — the premium allowance is `AI credits` on a
+    /// credit-billed seat, GitHub's own name for what it counts there.
+    fn label(self, credits: bool) -> &'static str {
+        match self {
+            Self::Premium if credits => "AI credits",
+            Self::Premium => "Premium requests",
+            Self::Chat => "Chat",
+            Self::Completions => "Code completions",
+        }
+    }
+
+    /// What one unit of the bucket is: a credit on a credit-billed seat.
+    fn unit(self, credits: bool) -> &'static str {
+        match self {
+            _ if credits => "credits",
+            Self::Premium => "requests",
+            Self::Chat => "messages",
+            Self::Completions => "completions",
+        }
+    }
+}
+
+/// A flag the wire may send as `true`/`false` — or as `null`, which says
+/// nothing.
+fn flag(raw: Option<&RawValue>) -> Option<bool> {
+    lenient::<bool>(raw)
+}
+
+/// The plan a Copilot answer names, as VS Code names it and without the
+/// `Copilot` every one of them would repeat beside the provider's own name.
+/// The SKU is read first: a Free seat's `copilot_plan` is Pro's own
+/// `individual`, and VS Code's `copilotPlan` checks `free_limited_copilot`
+/// before it reads the plan at all.
+fn copilot_plan_label(sku: Option<&str>, plan: Option<&str>) -> Option<String> {
+    if sku.map(str::trim) == Some("free_limited_copilot") {
+        return Some("Free".to_string());
+    }
+    let slug = plan.map(str::trim).filter(|plan| !plan.is_empty())?;
+    Some(match slug.to_ascii_lowercase().as_str() {
         "free" => "Free".to_string(),
         "individual" => "Pro".to_string(),
         "individual_pro" => "Pro+".to_string(),
@@ -939,32 +1020,47 @@ fn copilot_plan_label(slug: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
-    }
+    })
 }
+
+/// The note an unlimited bucket with no quota left raises: a pooled
+/// organization budget, spent.
+const COPILOT_BUDGET_SPENT: &str = "Your organization's Copilot budget is used up.";
 
 /// One quota bucket's meter — `None` for a bucket that measures nothing (a
 /// zero allowance that isn't unlimited: a token-billed Business seat's
 /// placeholder, VS Code's `parseQuotas` rule). The share is the answer's own
 /// `percent_remaining`, which VS Code trusts over the counts; the counts are
-/// the allowance less what remains. A spent allowance the plan won't extend
-/// is a red note, and usage billed past the allowance a dim one.
+/// the allowance less what remains, in the bucket's own unit. A bucket with
+/// nothing left — or one the answer says has no quota — is reached unless
+/// the plan bills past it; usage billed past the allowance is a dim note,
+/// and an unlimited bucket with no quota left is an organization's spent
+/// budget.
 fn copilot_meter(
-    label: &str,
+    bucket: CopilotBucket,
     snapshot: &CopilotSnapshot<'_>,
+    billed_in_credits: bool,
     fallback_reset: Option<i64>,
     notes: &mut Vec<UsageNote>,
 ) -> Option<UsageMeter> {
+    let credits = billed_in_credits || flag(snapshot.token_based_billing) == Some(true);
     let meter = |value| UsageMeter {
         group: None,
-        label: label.to_string(),
+        label: bucket.label(credits).to_string(),
         value,
     };
-    if snapshot.unlimited {
+    let has_quota = flag(snapshot.has_quota);
+    if flag(snapshot.unlimited) == Some(true) {
+        let budget = UsageNote::new(NoteTone::Error, COPILOT_BUDGET_SPENT);
+        if has_quota == Some(false) && !notes.contains(&budget) {
+            notes.push(budget);
+        }
         return Some(meter(MeterValue::Unlimited));
     }
     let total = number(snapshot.entitlement).filter(|total| *total > 0.0)?;
     let remaining = number(snapshot.quota_remaining).or_else(|| number(snapshot.remaining));
-    let used_percent = match (snapshot.percent_remaining, remaining) {
+    let percent_remaining = number(snapshot.percent_remaining);
+    let used_percent = match (percent_remaining, remaining) {
         (Some(percent), _) => 100.0 - percent.clamp(0.0, 100.0),
         (None, Some(remaining)) => ((total - remaining) / total * 100.0).clamp(0.0, 100.0),
         (None, None) => return None,
@@ -972,18 +1068,16 @@ fn copilot_meter(
     let used = remaining.map_or(total * used_percent / 100.0, |remaining| {
         (total - remaining).clamp(0.0, total)
     });
-    let lower = label.to_lowercase();
-    if used_percent >= 100.0 && !snapshot.overage_permitted {
-        notes.push(UsageNote::new(
-            NoteTone::Error,
-            format!("Your {lower} are used up until the allowance resets."),
-        ));
-    }
-    if let Some(over) = snapshot.overage_count.filter(|over| *over > 0.0) {
+    let unit = bucket.unit(credits);
+    let exhausted = percent_remaining.is_some_and(|percent| percent <= 0.0)
+        || remaining.is_some_and(|remaining| remaining <= 0.0)
+        || has_quota == Some(false);
+    let overage = flag(snapshot.overage_permitted) == Some(true);
+    if let Some(over) = number(snapshot.overage_count).filter(|over| *over > 0.0) {
         notes.push(UsageNote::new(
             NoteTone::Info,
             format!(
-                "{} {lower} billed past the allowance.",
+                "{} {unit} billed past the allowance.",
                 group_thousands(over)
             ),
         ));
@@ -993,13 +1087,13 @@ fn copilot_meter(
         counts: Some(Counts {
             used,
             total,
-            unit: None,
+            unit: Some(unit),
         }),
-        resets_at: snapshot
-            .quota_reset_at
+        resets_at: number(snapshot.quota_reset_at)
             .filter(|at| *at > 0.0)
             .map(|at| at.round() as i64)
             .or(fallback_reset),
+        reached: exhausted && !overage,
     })))
 }
 
@@ -1010,22 +1104,37 @@ fn copilot_meter(
 /// Where a Console organisation's usage and spend are shown.
 pub const CONSOLE_DASHBOARD: &str = "https://platform.claude.com/usage";
 
-/// What the page says for an Anthropic Console sign-in. A Console account
-/// bills per token to its API organisation — there is no plan, so there is
-/// no window to fill — and the honest report is the organisation it bills
-/// and where its spend is shown.
+/// What the page says for an Anthropic Console sign-in — asked of nobody. A
+/// Console account bills per token to its API organisation: there is no plan
+/// and so no window to fill, and minting a token only to name the
+/// organisation would rotate the sign-in for a fact the page doesn't need.
 #[must_use]
-pub fn console_report(organization: Option<String>) -> UsageReport {
+pub fn console_report() -> UsageReport {
     UsageReport {
-        plan: None,
-        account: organization.filter(|name| !name.trim().is_empty()),
-        meters: Vec::new(),
+        plan: Some("Pay as you go".to_string()),
         notes: vec![UsageNote::new(
             NoteTone::Info,
-            "Billed per token to your API organisation — a Console sign-in has no plan \
-             limits to fill.",
+            "Billed per token to your API organisation — no plan limits.",
         )],
-        dashboard: Some(CONSOLE_DASHBOARD.to_string()),
+        ..UsageReport::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The providers' own pages (pure)
+// ---------------------------------------------------------------------------
+
+/// Where a sign-in's own usage page is — the history and the controls the
+/// page doesn't have — by its auth scheme, so a section still loading, or
+/// one that could not load, links it too. `None` for a pasted key.
+#[must_use]
+pub fn dashboard_url(auth: AuthScheme) -> Option<&'static str> {
+    match auth {
+        AuthScheme::ChatGptCodex => Some(CHATGPT_DASHBOARD),
+        AuthScheme::GithubCopilot => Some(COPILOT_DASHBOARD),
+        AuthScheme::ClineAccount => Some(CLINEPASS_DASHBOARD),
+        AuthScheme::AnthropicConsole => Some(CONSOLE_DASHBOARD),
+        AuthScheme::ApiKey | AuthScheme::OptionalKey => None,
     }
 }
 
@@ -1175,7 +1284,6 @@ fn clinepass_unsubscribed() -> UsageReport {
              app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
              an API key (/login → Use an API key → Cline).",
         )],
-        dashboard: Some(CLINEPASS_DASHBOARD.to_string()),
         ..UsageReport::default()
     }
 }
@@ -1253,12 +1361,8 @@ pub fn fetch_usage(cfg: &ModelConfig, cancel: &CancelToken) -> Result<UsageRepor
                 &bearer(auth.bearer.as_deref())?,
             )?
         }
-        // Nothing to read but who the usage bills to — which the mint names,
-        // and which proves the sign-in still works.
-        AuthScheme::AnthropicConsole => {
-            let access = super::claude::authorize(signed_in(cfg.api_key.as_deref())?)?;
-            console_report(access.organization)
-        }
+        // Nothing to read: a Console sign-in has no plan (`console_report`).
+        AuthScheme::AnthropicConsole => console_report(),
         AuthScheme::ApiKey | AuthScheme::OptionalKey => {
             return Err(refusal(format!(
                 "{} bills per token through an API key — there is no subscription plan to \
@@ -1469,7 +1573,6 @@ mod tests {
             assert!(report.meters.is_empty(), "{answer:?}");
             assert_eq!(report.notes.len(), 1, "{answer:?}");
             assert!(report.notes[0].text.contains("no ClinePass subscription"));
-            assert_eq!(report.dashboard.as_deref(), Some(CLINEPASS_DASHBOARD));
             assert_eq!(server.join().unwrap().len(), 1);
         }
     }
@@ -1480,6 +1583,22 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("subscription"), "{error}");
+    }
+
+    #[test]
+    fn a_console_sign_in_answers_without_its_credential_or_the_network() {
+        // Nothing the provider could say changes the answer, so it needs no
+        // credential and no host to reach.
+        let cfg = super::super::ModelConfig {
+            auth: AuthScheme::AnthropicConsole,
+            api_key: None,
+            api_base: "http://127.0.0.1:9".to_string(),
+            ..super::super::ModelConfig::fallback()
+        };
+        assert_eq!(
+            fetch_usage(&cfg, &CancelToken::new()).unwrap(),
+            console_report()
+        );
     }
 
     #[test]
@@ -1608,7 +1727,6 @@ mod tests {
         let report = parse_chatgpt_usage(PRO_BODY, 1_793_000_000).unwrap();
         assert_eq!(report.plan.as_deref(), Some("Pro"));
         assert_eq!(report.account.as_deref(), Some("dev@example.com"));
-        assert_eq!(report.dashboard.as_deref(), Some(CHATGPT_DASHBOARD));
         assert!(report.notes.is_empty(), "{:?}", report.notes);
         let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
         assert_eq!(labels, ["Weekly limit", "Credits", "Limit resets"]);
@@ -1616,6 +1734,7 @@ mod tests {
         assert_eq!(weekly.used_percent, 7.0);
         assert_eq!(weekly.resets_at, Some(1_793_521_139));
         assert_eq!(weekly.counts, None);
+        assert!(!weekly.reached);
         assert_eq!(report.meters[0].group, None);
         assert_eq!(
             text(&report.meters[1]),
@@ -1733,10 +1852,24 @@ mod tests {
     }
 
     #[test]
-    fn a_reached_limit_is_a_red_note_worded_for_who_can_lift_it() {
+    fn a_spent_window_is_reached_and_says_so_on_its_own_row() {
+        // The row carries it (`limit reached`, red): a note repeating it
+        // would say the same thing twice.
+        let body = r#"{"plan_type":"plus","rate_limit":{"allowed":false,"limit_reached":true,
+            "primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":9},
+            "secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":99}}}"#;
+        let report = parse_chatgpt_usage(body, 0).unwrap();
+        assert!(limit(&report.meters[0]).reached);
+        assert!(!limit(&report.meters[1]).reached);
+        assert!(report.notes.is_empty(), "{:?}", report.notes);
+    }
+
+    #[test]
+    fn a_reached_limit_no_window_explains_is_a_red_note_worded_for_who_can_lift_it() {
         let personal = r#"{"plan_type":"plus","rate_limit":{"allowed":false,"limit_reached":true,
-            "primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":9}}}"#;
+            "primary_window":{"used_percent":98,"limit_window_seconds":18000,"reset_at":9}}}"#;
         let report = parse_chatgpt_usage(personal, 0).unwrap();
+        assert!(!limit(&report.meters[0]).reached);
         assert_eq!(
             report.notes,
             [UsageNote::new(
@@ -1744,6 +1877,15 @@ mod tests {
                 "You've hit your usage limit."
             )]
         );
+
+        // A reason the backend names but this build doesn't know still says
+        // requests are stopped — unless a window already does.
+        let unknown = r#"{"plan_type":"plus","rate_limit_reached_type":{"type":"new_kind"}}"#;
+        let report = parse_chatgpt_usage(unknown, 0).unwrap();
+        assert_eq!(report.notes.len(), 1, "{:?}", report.notes);
+        let explained = r#"{"plan_type":"plus","rate_limit_reached_type":{"type":"new_kind"},
+            "rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000}}}"#;
+        assert!(parse_chatgpt_usage(explained, 0).unwrap().notes.is_empty());
 
         let member = r#"{"plan_type":"team","rate_limit":{"allowed":false,"limit_reached":true},
             "rate_limit_reached_type":{"type":"workspace_member_credits_depleted"}}"#;
@@ -1765,6 +1907,42 @@ mod tests {
             report.notes[0].text.contains("spend cap"),
             "{:?}",
             report.notes
+        );
+
+        // A cap the member's own credit limit row shows is reached there.
+        let shown = r#"{"plan_type":"team","spend_control":{"reached":true,"individual_limit":{
+            "limit":"25000","used":"25000","used_percent":100,"reset_at":9}}}"#;
+        let report = parse_chatgpt_usage(shown, 0).unwrap();
+        assert!(limit(&report.meters[0]).reached);
+        assert!(report.notes.is_empty(), "{:?}", report.notes);
+    }
+
+    #[test]
+    fn every_bar_comes_before_the_balances() {
+        let body = r#"{"plan_type":"team",
+            "rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":5}},
+            "credits":{"has_credits":true,"unlimited":false,"balance":"10"},
+            "spend_control":{"reached":false,"individual_limit":{"limit":"100","used":"10","reset_at":9}},
+            "additional_rate_limits":[{"limit_name":"codex_other","rate_limit":{"primary_window":
+              {"used_percent":3,"limit_window_seconds":1800,"reset_at":7}}}],
+            "code_review_rate_limit":{"primary_window":{"used_percent":2,"limit_window_seconds":604800,"reset_at":8}},
+            "rate_limit_reset_credits":{"available_count":1}}"#;
+        let report = parse_chatgpt_usage(body, 0).unwrap();
+        let rows: Vec<(Option<&str>, &str)> = report
+            .meters
+            .iter()
+            .map(|m| (m.group.as_deref(), m.label.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (None, "5-hour limit"),
+                (None, "Monthly credit limit"),
+                (Some("codex_other"), "30-minute limit"),
+                (Some("Code review"), "Weekly limit"),
+                (None, "Credits"),
+                (None, "Limit resets"),
+            ]
         );
     }
 
@@ -1819,20 +1997,20 @@ mod tests {
             (monthly.used_percent, monthly.resets_at),
             (81.0, Some(1_794_490_018))
         );
-        assert_eq!(report.dashboard.as_deref(), Some(CLINEPASS_DASHBOARD));
+        let reached: Vec<bool> = report.meters.iter().map(|m| limit(m).reached).collect();
+        assert_eq!(reached, [false, true, false]);
     }
 
     #[test]
-    fn a_spent_clinepass_window_says_requests_are_paused_until_it_resets() {
+    fn a_spent_clinepass_window_says_what_to_do_in_one_line() {
+        // The row itself says `limit reached`; the note is the advice.
         let report = parse_clinepass_limits(CLINEPASS_LIMITS).unwrap();
-        assert_eq!(report.notes.len(), 1, "{:?}", report.notes);
-        assert_eq!(report.notes[0].tone, NoteTone::Error);
-        assert!(
-            report.notes[0]
-                .text
-                .starts_with("Your weekly limit has been reached."),
-            "{:?}",
-            report.notes
+        assert_eq!(
+            report.notes,
+            [UsageNote::new(
+                NoteTone::Warning,
+                "Paused until the weekly limit resets — switch with /model meanwhile."
+            )]
         );
     }
 
@@ -1843,7 +2021,13 @@ mod tests {
             {"type":"weekly","percentUsed":104.5,"resetsAt":"2026-10-27T14:36:37Z"}]}}"#;
         let report = parse_clinepass_limits(body).unwrap();
         assert_eq!(report.notes.len(), 1);
-        assert!(report.notes[0].text.starts_with("Your weekly limit"));
+        assert!(
+            report.notes[0]
+                .text
+                .starts_with("Paused until the weekly limit"),
+            "{:?}",
+            report.notes
+        );
         assert_eq!(limit(&report.meters[1]).used_percent, 104.5);
     }
 
@@ -1870,12 +2054,19 @@ mod tests {
     }
 
     #[test]
-    fn the_clinepass_plan_is_named_by_its_display_name() {
+    fn the_clinepass_plan_is_named_by_its_billing_interval() {
+        // `ClinePass  Monthly`: the section already says ClinePass, so the
+        // display name would say it twice.
         let body = r#"{"data":{"planHistoryId":"iph-1","plan":{"id":"pln-1",
             "name":"Cline Pass (Monthly)[Internal]","displayName":"Cline Pass (Monthly)",
             "interval":"Monthly"},"currentPeriodEnd":"2026-11-13T13:24:06Z"},"success":true}"#;
         assert_eq!(
             parse_clinepass_plan(body).unwrap().as_deref(),
+            Some("Monthly")
+        );
+        let display = r#"{"success":true,"data":{"plan":{"displayName":"Cline Pass (Monthly)"}}}"#;
+        assert_eq!(
+            parse_clinepass_plan(display).unwrap().as_deref(),
             Some("Cline Pass (Monthly)")
         );
         let internal = r#"{"success":true,"data":{"plan":{"name":"Cline Pass"}}}"#;
@@ -1912,13 +2103,62 @@ mod tests {
           "unlimited":false,"overage_count":0,"overage_entitlement":0,"overage_permitted":false,
           "quota_reset_at":1793491200}}}"#;
 
+    /// What a Copilot Free seat on credit billing answers — a published
+    /// capture: `copilot_plan` reads `individual` (Pro's slug) and only the
+    /// SKU says Free; chat and completions are metered in credits, and the
+    /// premium bucket is outside the plan.
+    const COPILOT_FREE: &str = r#"{"access_type_sku":"free_limited_copilot",
+      "copilot_plan":"individual","token_based_billing":true,
+      "quota_reset_date":"2026-11-01","quota_reset_date_utc":"2026-11-01T00:00:00.000Z",
+      "quota_snapshots":{
+        "chat":{"overage_count":0,"overage_permitted":false,"percent_remaining":13.8,
+          "quota_id":"chat","quota_remaining":27.7,"unlimited":false,"has_quota":true,
+          "quota_reset_at":0,"token_based_billing":true,"credits_used":0,"remaining":27,
+          "entitlement":200},
+        "completions":{"overage_count":0,"overage_permitted":false,"percent_remaining":100.0,
+          "quota_id":"completions","quota_remaining":2000.0,"unlimited":false,"has_quota":true,
+          "quota_reset_at":0,"token_based_billing":true,"credits_used":0,"remaining":2000,
+          "entitlement":2000},
+        "premium_interactions":{"overage_count":0,"overage_permitted":false,
+          "percent_remaining":0.0,"quota_id":"premium_interactions","quota_remaining":0.0,
+          "unlimited":false,"has_quota":false,"quota_reset_at":0,"token_based_billing":true,
+          "credits_used":0,"remaining":0,"entitlement":0}}}"#;
+
+    fn unit(meter: &UsageMeter) -> Option<&'static str> {
+        limit(meter).counts.as_ref().and_then(|counts| counts.unit)
+    }
+
     #[test]
-    fn a_credit_billed_copilot_seat_meters_its_credits_first() {
+    fn a_free_seat_is_named_by_its_sku_and_counts_its_credits() {
+        // VS Code decides Free off the SKU before it reads the plan, since a
+        // Free seat's `copilot_plan` is Pro's own slug.
+        let report = parse_copilot_user(COPILOT_FREE).unwrap();
+        assert_eq!(report.plan.as_deref(), Some("Free"));
+        let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, ["Chat", "Code completions"]);
+        let chat = limit(&report.meters[0]);
+        assert!((chat.used_percent - 86.2).abs() < 1e-9, "{chat:?}");
+        assert_eq!(
+            chat.counts,
+            Some(Counts {
+                used: 172.3,
+                total: 200.0,
+                unit: Some("credits"),
+            })
+        );
+        // `quota_reset_at: 0` names nothing: the allowance's own reset stands.
+        assert_eq!(chat.resets_at, Some(1_793_491_200));
+        assert!(!chat.reached);
+        assert_eq!(unit(&report.meters[1]), Some("credits"));
+        assert!(report.notes.is_empty(), "{:?}", report.notes);
+    }
+
+    #[test]
+    fn a_credit_billed_copilot_seat_meters_its_ai_credits_first() {
         let report = parse_copilot_user(COPILOT_CREDITS).unwrap();
         assert_eq!(report.plan.as_deref(), Some("Pro"));
-        assert_eq!(report.dashboard.as_deref(), Some(COPILOT_DASHBOARD));
         let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
-        assert_eq!(labels, ["Credits", "Chat messages", "Inline suggestions"]);
+        assert_eq!(labels, ["AI credits", "Chat", "Code completions"]);
         let credits = limit(&report.meters[0]);
         assert_eq!(credits.used_percent, 42.0);
         assert_eq!(
@@ -1926,7 +2166,7 @@ mod tests {
             Some(Counts {
                 used: 420.0,
                 total: 1_000.0,
-                unit: None,
+                unit: Some("credits"),
             })
         );
         assert_eq!(credits.resets_at, Some(1_793_491_200));
@@ -1944,13 +2184,14 @@ mod tests {
         let report = parse_copilot_user(body).unwrap();
         assert_eq!(report.plan.as_deref(), Some("Pro+"));
         let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
-        assert_eq!(labels, ["Premium requests", "Chat messages"]);
+        assert_eq!(labels, ["Premium requests", "Chat"]);
         let premium = limit(&report.meters[0]);
         assert_eq!(premium.used_percent, 42.0);
         assert_eq!(
             premium.counts.as_ref().map(|c| (c.used, c.total)),
             Some((630.0, 1_500.0))
         );
+        assert_eq!(unit(&report.meters[0]), Some("requests"));
         assert_eq!(premium.resets_at, Some(1_793_491_200));
     }
 
@@ -1963,31 +2204,61 @@ mod tests {
         let report = parse_copilot_user(body).unwrap();
         assert_eq!(report.plan.as_deref(), Some("Business"));
         let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
-        assert_eq!(labels, ["Chat messages"]);
+        assert_eq!(labels, ["Chat"]);
     }
 
     #[test]
-    fn a_spent_allowance_is_red_unless_overage_is_allowed() {
+    fn a_spent_allowance_is_reached_unless_overage_is_allowed() {
+        // The row says `limit reached`; no note repeats it.
         let spent = r#"{"copilot_plan":"individual","quota_reset_date":"2026-11-01",
           "quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":0,
             "percent_remaining":0,"unlimited":false,"overage_count":0,"overage_permitted":false}}}"#;
         let report = parse_copilot_user(spent).unwrap();
         assert_eq!(limit(&report.meters[0]).used_percent, 100.0);
-        assert_eq!(report.notes.len(), 1);
-        assert_eq!(report.notes[0].tone, NoteTone::Error);
-        assert!(
-            report.notes[0].text.contains("used up"),
-            "{:?}",
-            report.notes
-        );
+        assert!(limit(&report.meters[0]).reached);
+        assert!(report.notes.is_empty(), "{:?}", report.notes);
 
         let overage = r#"{"copilot_plan":"individual",
           "quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":0,
             "percent_remaining":0,"unlimited":false,"overage_count":42,"overage_permitted":true}}}"#;
         let report = parse_copilot_user(overage).unwrap();
-        assert_eq!(report.notes.len(), 1);
-        assert_eq!(report.notes[0].tone, NoteTone::Info);
-        assert!(report.notes[0].text.contains("42"), "{:?}", report.notes);
+        assert!(!limit(&report.meters[0]).reached);
+        assert_eq!(
+            report.notes,
+            [UsageNote::new(
+                NoteTone::Info,
+                "42 requests billed past the allowance."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_bucket_with_no_quota_left_is_reached_and_an_unlimited_one_names_the_budget() {
+        let body = r#"{"copilot_plan":"business","quota_snapshots":{
+            "premium_interactions":{"entitlement":300,"remaining":60,"percent_remaining":20,
+              "unlimited":false,"has_quota":false,"overage_permitted":false},
+            "chat":{"entitlement":0,"percent_remaining":100,"unlimited":true,"has_quota":false}}}"#;
+        let report = parse_copilot_user(body).unwrap();
+        assert!(limit(&report.meters[0]).reached);
+        assert_eq!(report.meters[1].value, MeterValue::Unlimited);
+        assert_eq!(
+            report.notes,
+            [UsageNote::new(
+                NoteTone::Error,
+                "Your organization's Copilot budget is used up."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_quota_number_sent_as_a_string_or_null_still_reads() {
+        let body = r#"{"copilot_plan":"individual","quota_snapshots":{"premium_interactions":
+            {"entitlement":"300","remaining":"150","percent_remaining":"50","unlimited":null,
+             "overage_permitted":null,"quota_reset_at":"1793491200"}}}"#;
+        let report = parse_copilot_user(body).unwrap();
+        let premium = limit(&report.meters[0]);
+        assert_eq!(premium.used_percent, 50.0);
+        assert_eq!(premium.resets_at, Some(1_793_491_200));
     }
 
     #[test]
@@ -1999,13 +2270,15 @@ mod tests {
         let report = parse_copilot_user(body).unwrap();
         assert_eq!(report.plan.as_deref(), Some("Free"));
         let labels: Vec<&str> = report.meters.iter().map(|m| m.label.as_str()).collect();
-        assert_eq!(labels, ["Chat messages", "Inline suggestions"]);
+        assert_eq!(labels, ["Chat", "Code completions"]);
         let chat = limit(&report.meters[0]);
         assert_eq!(chat.used_percent, 16.0);
         assert_eq!(
             chat.counts.as_ref().map(|c| (c.used, c.total)),
             Some((8.0, 50.0))
         );
+        assert_eq!(unit(&report.meters[0]), Some("messages"));
+        assert_eq!(unit(&report.meters[1]), Some("completions"));
         assert_eq!(chat.resets_at, Some(1_793_491_200));
         assert_eq!(limit(&report.meters[1]).used_percent, 10.0);
     }
@@ -2047,19 +2320,42 @@ mod tests {
     // --- Anthropic Console ---
 
     #[test]
-    fn a_console_sign_in_reports_its_organisation_and_no_plan_limits() {
-        let report = console_report(Some("Acme Labs".to_string()));
-        assert_eq!(report.account.as_deref(), Some("Acme Labs"));
-        assert_eq!(report.plan, None);
+    fn a_console_sign_in_is_pay_as_you_go_with_no_plan_limits() {
+        let report = console_report();
+        assert_eq!(report.plan.as_deref(), Some("Pay as you go"));
+        assert_eq!(report.account, None);
         assert!(report.meters.is_empty());
-        assert_eq!(report.notes.len(), 1);
-        assert_eq!(report.notes[0].tone, NoteTone::Info);
-        assert!(
-            report.notes[0].text.contains("per token"),
-            "{:?}",
-            report.notes
+        assert_eq!(
+            report.notes,
+            [UsageNote::new(
+                NoteTone::Info,
+                "Billed per token to your API organisation — no plan limits."
+            )]
         );
-        assert_eq!(report.dashboard.as_deref(), Some(CONSOLE_DASHBOARD));
+    }
+
+    // --- The providers' own pages ---
+
+    #[test]
+    fn every_sign_in_links_its_providers_usage_page_and_a_key_none() {
+        assert_eq!(
+            dashboard_url(AuthScheme::ChatGptCodex),
+            Some(CHATGPT_DASHBOARD)
+        );
+        assert_eq!(
+            dashboard_url(AuthScheme::GithubCopilot),
+            Some(COPILOT_DASHBOARD)
+        );
+        assert_eq!(
+            dashboard_url(AuthScheme::ClineAccount),
+            Some(CLINEPASS_DASHBOARD)
+        );
+        assert_eq!(
+            dashboard_url(AuthScheme::AnthropicConsole),
+            Some(CONSOLE_DASHBOARD)
+        );
+        assert_eq!(dashboard_url(AuthScheme::ApiKey), None);
+        assert_eq!(dashboard_url(AuthScheme::OptionalKey), None);
     }
 
     #[test]

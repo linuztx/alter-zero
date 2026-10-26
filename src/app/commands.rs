@@ -522,10 +522,10 @@ impl App {
             }
             CommandEffect::Usage => {
                 // /usage works mid-turn like /context: a read-only page that
-                // only replaces the composer. The pure open is all App can do
-                // — the boundary knows the subscriptions and reads them
+                // only replaces the composer. Which subscriptions are signed
+                // in is the boundary's to know, so the loop opens the page
+                // over them and reads each one — or toasts that none is
                 // (docs/usage.md).
-                self.open_usage_page();
                 Action::OpenUsagePage
             }
             CommandEffect::Init => {

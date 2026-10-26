@@ -129,7 +129,9 @@ pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
 };
-pub use self::usage::{USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget};
+pub use self::usage::{
+    USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
+};
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
@@ -543,6 +545,10 @@ pub struct App {
     /// sibling (no text entry) over every signed-in subscription's usage,
     /// read off the providers by the boundary. See `docs/usage.md`.
     pub usage_page: Option<UsagePage>,
+    /// What the last `/usage` page read, kept from its close for the next
+    /// open — which shows those numbers at once while it reads them again
+    /// ([`App::open_usage_page`]).
+    usage_kept: Option<UsagePage>,
     /// The last `/usage` round handed out — kept here rather than on the
     /// page, so a result from a page closed and reopened since can never
     /// name the new page's round.

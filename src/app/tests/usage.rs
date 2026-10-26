@@ -9,6 +9,7 @@ fn target(provider: &str, name: &str, in_use: bool) -> UsageTarget {
         provider: provider.to_string(),
         name: name.to_string(),
         in_use,
+        dashboard: Some(format!("https://{provider}.example/usage")),
     }
 }
 
@@ -32,6 +33,7 @@ fn report(used: f64) -> UsageReport {
                 used_percent: used,
                 counts: None,
                 resets_at: Some(10_000),
+                reached: used >= 100.0,
             }),
         }],
         ..UsageReport::default()
@@ -41,9 +43,17 @@ fn report(used: f64) -> UsageReport {
 /// An open page whose first round over [`three`] has begun.
 fn open_reading() -> (App, u64) {
     let mut app = App::new();
-    app.open_usage_page();
-    let round = app.begin_usage_round(three()).expect("the page is open");
+    let round = app.open_usage_page(three()).expect("something to read");
     (app, round)
+}
+
+/// [`open_reading`], every read landed at `at` with a `used` share.
+fn open_read(used: f64, at: i64) -> App {
+    let (mut app, round) = open_reading();
+    for provider in ["chatgpt_codex", "cline_pass", "github_copilot"] {
+        app.finish_usage_fetch(round, provider, Ok(report(used)), at);
+    }
+    app
 }
 
 fn page(app: &App) -> &UsagePage {
@@ -84,32 +94,49 @@ fn the_palette_lists_usage_right_after_context() {
 }
 
 #[test]
-fn slash_usage_opens_the_page_checking_idle_and_mid_turn() {
+fn slash_usage_hands_the_open_to_the_boundary_idle_and_mid_turn() {
+    // Only the boundary knows which subscriptions are signed in, so the
+    // command opens nothing itself (`App::open_usage_page`).
     for mid_turn in [false, true] {
         let mut app = App::new();
         if mid_turn {
             app.begin_stream();
         }
-        app.shortcuts_open = true;
         type_str(&mut app, "/usage");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::OpenUsagePage,
             "mid-turn {mid_turn}"
         );
-        let page = page(&app);
-        assert!(!page.ready, "checking until the boundary says what to read");
-        assert!(page.sections.is_empty());
+        assert!(app.usage_page.is_none());
         assert!(app.input.is_empty(), "the command token is consumed");
         assert!(app.command_menu.is_none());
-        assert!(!app.shortcuts_open, "the bands sharing the composer close");
     }
+}
+
+#[test]
+fn with_no_subscription_signed_in_nothing_opens() {
+    // The `/export` empty rule: no page with nothing on it — the boundary
+    // raises USAGE_EMPTY_NOTICE instead.
+    let mut app = App::new();
+    assert_eq!(app.open_usage_page(Vec::new()), None);
+    assert!(app.usage_page.is_none());
+    assert!(USAGE_EMPTY_NOTICE.contains("/login"));
+}
+
+#[test]
+fn opening_abandons_the_bands_that_share_the_composer() {
+    let mut app = App::new();
+    app.shortcuts_open = true;
+    app.open_usage_page(three());
+    assert!(!app.shortcuts_open);
+    assert!(app.command_menu.is_none());
 }
 
 // ===== rounds =====
 
 #[test]
-fn a_round_puts_the_subscription_in_use_first_and_reads_them_all() {
+fn opening_reads_every_subscription_the_one_in_use_first() {
     let (app, round) = open_reading();
     assert!(round > 0);
     assert_eq!(
@@ -117,11 +144,15 @@ fn a_round_puts_the_subscription_in_use_first_and_reads_them_all() {
         ["cline_pass", "chatgpt_codex", "github_copilot"]
     );
     let page = page(&app);
-    assert!(page.ready);
     assert_eq!(page.round, round);
     assert!(page.loading());
     assert!(page.sections.iter().all(|section| section.loading));
     assert_eq!(page.selected, 0, "the highlight opens on the one in use");
+    assert_eq!(
+        section(&app, "cline_pass").dashboard.as_deref(),
+        Some("https://cline_pass.example/usage"),
+        "each section links its own provider's page"
+    );
 }
 
 #[test]
@@ -164,8 +195,7 @@ fn a_result_for_another_round_or_a_closed_page_is_dropped() {
     app.close_usage_page();
     app.finish_usage_fetch(second, "github_copilot", Ok(report(1.0)), 5);
     assert!(app.usage_page.is_none());
-    app.open_usage_page();
-    let third = app.begin_usage_round(three()).unwrap();
+    let third = app.open_usage_page(three()).unwrap();
     assert!(third > second);
     app.finish_usage_fetch(second, "github_copilot", Ok(report(1.0)), 5);
     assert_eq!(section(&app, "github_copilot").report, None);
@@ -173,10 +203,7 @@ fn a_result_for_another_round_or_a_closed_page_is_dropped() {
 
 #[test]
 fn a_refresh_keeps_every_report_until_its_replacement_lands() {
-    let (mut app, round) = open_reading();
-    for provider in ["chatgpt_codex", "cline_pass", "github_copilot"] {
-        app.finish_usage_fetch(round, provider, Ok(report(10.0)), 100);
-    }
+    let mut app = open_read(10.0, 100);
     let next = app.begin_usage_round(three()).unwrap();
     let copilot = section(&app, "github_copilot");
     assert!(copilot.loading);
@@ -194,6 +221,44 @@ fn a_refresh_keeps_every_report_until_its_replacement_lands() {
     let copilot = section(&app, "github_copilot");
     assert_eq!(copilot.report, Some(report(20.0)));
     assert_eq!(copilot.error, None);
+}
+
+#[test]
+fn a_reopened_page_shows_the_last_reports_while_it_reads_them_again() {
+    // Codex polls the same numbers; the page never opens blank twice.
+    let mut app = open_read(10.0, 100);
+    app.on_key(key(KeyCode::End));
+    app.close_usage_page();
+    assert!(app.usage_page.is_none());
+
+    let round = app.open_usage_page(three()).unwrap();
+    let copilot = section(&app, "github_copilot");
+    assert_eq!(
+        copilot.report,
+        Some(report(10.0)),
+        "the last report, at once"
+    );
+    assert!(copilot.loading, "…and read again");
+    assert_eq!(page(&app).updated_at, Some(100));
+    assert_eq!(page(&app).round, round);
+    assert_eq!(
+        page(&app).selected,
+        0,
+        "a page opens on the subscription in use, wherever it was left"
+    );
+}
+
+#[test]
+fn a_reopened_page_follows_the_sign_ins_made_since() {
+    let mut app = open_read(10.0, 100);
+    app.close_usage_page();
+    app.open_usage_page(vec![
+        target("github_copilot", "GitHub Copilot", true),
+        target("claude_console", "Anthropic Console", false),
+    ]);
+    assert_eq!(providers(&app), ["github_copilot", "claude_console"]);
+    assert_eq!(section(&app, "github_copilot").report, Some(report(10.0)));
+    assert_eq!(section(&app, "claude_console").report, None, "new: empty");
 }
 
 #[test]
@@ -224,12 +289,10 @@ fn the_highlight_follows_its_subscription_across_a_round() {
 }
 
 #[test]
-fn no_subscription_is_a_ready_page_with_nothing_to_read() {
-    let mut app = App::new();
-    app.open_usage_page();
+fn a_refresh_that_finds_every_subscription_signed_out_empties_the_page() {
+    let mut app = open_read(10.0, 100);
     app.begin_usage_round(Vec::new()).unwrap();
     let page = page(&app);
-    assert!(page.ready);
     assert!(page.sections.is_empty());
     assert!(!page.loading());
     assert!(!app.usage_refresh_due(), "nothing to re-read");
@@ -255,7 +318,7 @@ fn the_page_is_due_a_refresh_a_minute_after_its_last_read() {
 fn the_clock_reaches_only_an_open_page() {
     let mut app = App::new();
     app.set_usage_now(42);
-    app.open_usage_page();
+    app.open_usage_page(three());
     assert_eq!(page(&app).now, 0, "a fresh page has not been told yet");
     app.set_usage_now(43);
     assert_eq!(page(&app).now, 43);
@@ -300,22 +363,42 @@ fn r_asks_for_a_refresh_only_once_the_reads_have_landed() {
         app.on_key(key(KeyCode::Char('r'))),
         Action::RefreshUsagePage
     );
-    // Before the boundary has said what there is, there is nothing to re-read.
-    let mut app = App::new();
-    app.open_usage_page();
-    assert_eq!(app.on_key(key(KeyCode::Char('r'))), Action::None);
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('R'))),
+        Action::RefreshUsagePage
+    );
 }
 
 #[test]
-fn r_refreshes_a_page_with_no_subscription_too() {
+fn r_refreshes_a_page_emptied_by_a_sign_out_too() {
     // A sign-in made in another terminal shows up without reopening.
-    let mut app = App::new();
-    app.open_usage_page();
+    let mut app = open_read(10.0, 100);
     app.begin_usage_round(Vec::new());
     assert_eq!(
         app.on_key(key(KeyCode::Char('r'))),
         Action::RefreshUsagePage
     );
+}
+
+#[test]
+fn c_copies_the_highlighted_subscriptions_usage_page() {
+    let (mut app, _) = open_reading();
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('c'))),
+        Action::CopyUsageLink("https://cline_pass.example/usage".to_string())
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('C'))),
+        Action::CopyUsageLink("https://chatgpt_codex.example/usage".to_string())
+    );
+    assert!(app.usage_page.is_some(), "the page stays open");
+
+    let mut unlinked = App::new();
+    let mut lone = target("custom", "Custom", true);
+    lone.dashboard = None;
+    unlinked.open_usage_page(vec![lone]);
+    assert_eq!(unlinked.on_key(key(KeyCode::Char('c'))), Action::None);
 }
 
 #[test]
@@ -340,11 +423,33 @@ fn every_other_key_is_swallowed() {
     ] {
         assert_eq!(app.on_key(key(code)), Action::None, "{code:?}");
     }
+    assert_eq!(app.on_key(ctrl('r')), Action::None, "no search over it");
     assert!(app.input.is_empty(), "nothing reached the composer");
     assert!(app.usage_page.is_some());
     assert_eq!(page(&app).selected, 0);
-    assert_eq!(app.on_key(ctrl('d')), Action::None, "no overlay over it");
     assert_eq!(app.view, View::Conversation);
+}
+
+#[test]
+fn ctrl_o_and_ctrl_d_open_their_overlays_over_the_page() {
+    // The `/context` page's rule: the two read-only views are a look, and
+    // the page waits behind them.
+    let (mut app, _) = open_reading();
+    app.record_user_message("an earlier message");
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::ToolOutput);
+    assert!(
+        app.usage_page.is_some(),
+        "the page waits behind the overlay"
+    );
+    assert!(
+        !app.overlay_esc_backtracks(),
+        "an Esc in the overlay goes back to the page, never into a rewind"
+    );
+    assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+    assert_eq!(app.view, View::Conversation);
+    assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+    assert_eq!(app.view, View::ContextDebug);
 }
 
 #[test]
@@ -352,6 +457,6 @@ fn the_page_blanks_the_ctrl_b_hint_it_would_swallow() {
     let mut app = App::new();
     app.set_command_elapsed(Some(std::time::Duration::from_secs(9)));
     assert!(app.background_hint_elapsed().is_some());
-    app.open_usage_page();
+    app.open_usage_page(three());
     assert_eq!(app.background_hint_elapsed(), None);
 }
