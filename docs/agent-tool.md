@@ -270,8 +270,11 @@ again (`docs/agent-tools.md` *A resume is news when it starts*).
   the turn's elapsed), the view commits it at StreamDone
   (`Session::commit_agent_view_event`), every rebuild and the Ctrl+O agent
   transcript render it from history, the derived context skips it as chrome
-  like any summary, and a failed or interrupted run records none (main
-  parity — the red notice is that record). The composer keeps its **full functionality** inside the
+  like any summary, and a failed run records none (main parity — the red
+  notice is that record). An interrupted run records none either, though the
+  main session's interrupted turn now commits a receipt under its notice
+  (`docs/interrupt.md`): a stopped agent's red roster row keeps its elapsed
+  and tally in view for `AGENT_STOPPED_LINGER` instead. The composer keeps its **full functionality** inside the
   view: the `/` palette (commands act on the main session, as everywhere),
   the `?` shortcuts band, Ctrl+R history search, and the `@` file picker all
   work with the roster still below them; **Ctrl+O shows the viewed agent's

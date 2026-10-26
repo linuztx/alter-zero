@@ -2467,7 +2467,7 @@ use crate::ui::tool::resolved_tools_commit_lines;
 
 /// Esc on `app`'s turn, returning how many calls the interrupt resolved.
 fn interrupt_count(app: &mut App) -> usize {
-    match app.interrupt_turn() {
+    match app.interrupt_turn(0) {
         Some(crate::app::InterruptedTurn::Kept { tools, .. }) => tools.len(),
         other => panic!("a turn with calls in flight is kept: {other:?}"),
     }

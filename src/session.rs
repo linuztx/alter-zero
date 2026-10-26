@@ -444,6 +444,10 @@ struct SummaryRecord {
     timestamp: String,
     #[serde(default)]
     tokens: usize,
+    /// An interrupted turn's estimated share (`docs/interrupt.md`) — omitted
+    /// when zero, so every finished turn's line is the one it always was.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    estimated: usize,
     #[serde(default)]
     cached: usize,
     #[serde(default)]
@@ -579,6 +583,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             secs: summary.secs,
             timestamp: summary.timestamp.clone(),
             tokens: summary.tokens,
+            estimated: summary.estimated,
             cached: summary.cached,
             cache_write: summary.cache_write,
         }),
@@ -775,6 +780,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 // suffix must not claim they still run (docs/background.md).
                 shells: 0,
                 tokens: summary.tokens,
+                estimated: summary.estimated,
                 cached: summary.cached,
                 cache_write: summary.cache_write,
             })),
@@ -1679,6 +1685,7 @@ mod tests {
                 timestamp: "03:22 PM".into(),
                 shells: 0,
                 tokens: 0,
+                estimated: 0,
                 cached: 0,
                 cache_write: 0,
             });
@@ -2047,6 +2054,7 @@ mod tests {
             timestamp: String::new(),
             shells: 3,
             tokens: 0,
+            estimated: 0,
             cached: 0,
             cache_write: 0,
         });
@@ -2070,11 +2078,48 @@ mod tests {
             timestamp: String::new(),
             shells: 0,
             tokens: 8_203,
+            estimated: 0,
             cached: 8_063,
             cache_write: 1_204,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
         assert_eq!(parsed, vec![summary]);
+    }
+
+    #[test]
+    fn an_interrupted_summarys_estimate_round_trips() {
+        // The share no usage frame reported (docs/interrupt.md) is part of
+        // the record, so a resumed interrupted turn keeps its `≈`.
+        let summary = HistoryItem::Summary(TurnSummary {
+            verb: STATUS_VERBS[0].done,
+            secs: 8,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 20_000,
+            estimated: 4_300,
+            cached: 8_000,
+            cache_write: 0,
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
+        assert_eq!(parsed, vec![summary]);
+    }
+
+    #[test]
+    fn a_summary_with_nothing_estimated_writes_the_line_it_always_did() {
+        // Every finished turn estimates nothing, and its line keeps the shape
+        // older builds wrote and read.
+        let summary = HistoryItem::Summary(TurnSummary {
+            verb: STATUS_VERBS[0].done,
+            secs: 3,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 900,
+            estimated: 0,
+            cached: 0,
+            cache_write: 0,
+        });
+        let file = file_of(std::slice::from_ref(&summary));
+        assert!(!file.contains("estimated"), "{file}");
     }
 
     #[test]

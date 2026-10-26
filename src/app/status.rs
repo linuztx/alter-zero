@@ -135,9 +135,11 @@ impl TurnStatus {
     }
 }
 
-/// A finished turn's summary, committed to scrollback as a dim `"{verb} for
-/// {secs}s"` line and kept in [`App::history`] so it survives a resize and lists
-/// in the Ctrl+O transcript (with a timestamp, like every other item).
+/// A turn's summary — a finished turn's, or an interrupted one's receipt under
+/// its notice ([`App::interrupt_turn`]) — committed to scrollback as a dim
+/// `"{verb} for {secs}s"` line and kept in [`App::history`] so it survives a
+/// resize and lists in the Ctrl+O transcript (with a timestamp, like every
+/// other item).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSummary {
     /// The past tense of the verb the turn's status line wore last (e.g.
@@ -153,8 +155,8 @@ pub struct TurnSummary {
     /// How many background shells were still running when the turn ended —
     /// rendered as a `· {n} shells still running` suffix when non-zero
     /// (`Done for 22s · 3 shells still running`). Snapshotted at
-    /// [`App::end_turn`]; not persisted to the session file (a resumed
-    /// session's shells are gone). See `docs/background.md`.
+    /// [`App::end_turn`] (or the interrupt); not persisted to the session
+    /// file (a resumed session's shells are gone). See `docs/background.md`.
     pub shells: usize,
     /// The turn's **real** billed tokens (input + output summed over the
     /// turn's request rounds), from the provider's usage frames
@@ -162,6 +164,14 @@ pub struct TurnSummary {
     /// the backend reported none (the dummy, a `!` shell), which hides the
     /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
     pub tokens: usize,
+    /// Tokens the turn's live tally counted on top of [`tokens`](Self::tokens)
+    /// that no usage frame ever reported — the tokenizer's share. Only an
+    /// **interrupted** turn has any: a provider reports a round's usage when
+    /// the round ends, so the round the Esc cut short never does
+    /// (`docs/interrupt.md`). Folded into the receipt's total, which is then
+    /// marked `≈`; always `0` for a finished turn, whose receipt is never a
+    /// guess. Persisted with the summary.
+    pub estimated: usize,
     /// How many of those input tokens were served from the provider's prompt
     /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the
     /// visible proof caching is working. See `docs/prompt-caching.md`.

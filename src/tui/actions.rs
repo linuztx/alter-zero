@@ -371,14 +371,23 @@ impl Session<'_> {
     /// ToolStart that would otherwise wedge a phantom running tool) lands on the
     /// dropped receiver and can't reach the next turn. See `docs/interrupt.md`.
     fn interrupt_turn(&mut self) -> std::io::Result<()> {
-        self.abandon_inflight();
+        // The turn's clock, read before `abandon_inflight` stops it: a kept
+        // turn's receipt says how long the turn ran (docs/interrupt.md).
+        let elapsed = self
+            .clocks
+            .turn_start
+            .map_or(0, |start| start.elapsed().as_secs());
         // A thinking phase caught mid-thought settles first, so its
         // `Thought for …` cell sits ahead of everything the interrupt keeps.
         // Recording it is also what makes this a *Kept* interrupt: real work
         // streamed, and codex never retracts what streamed. With nothing
         // thought (or the display off) it is a no-op and the undo path is
-        // untouched (docs/thinking-stream.md).
+        // untouched. It runs before `abandon_inflight` too, which stops the
+        // thinking clock with the others: settled after it, the cell read
+        // `Thought for 0s` however long the model had thought
+        // (docs/thinking-stream.md).
         self.settle_reasoning();
+        self.abandon_inflight();
         // The interrupt takes a live foreground agent group down with it, and
         // a member may be the conversation on screen — the `Error` arm's rule
         // (`docs/agent-view-streaming.md`). A no-op with no agent view open,
@@ -387,7 +396,7 @@ impl Session<'_> {
         let owed = self.begin_turn_agent_settle(width);
         // Interrupt only arises in the conversation view (overlay Esc returns
         // instead), so nothing here touches the alternate screen.
-        let interrupted = self.app.interrupt_turn();
+        let interrupted = self.app.interrupt_turn(elapsed);
         self.finish_turn_agent_settle(owed, width);
         match interrupted {
             Some(alter_zero::app::InterruptedTurn::Undone) => {
@@ -407,6 +416,7 @@ impl Session<'_> {
                 tools,
                 notice,
                 agents,
+                summary,
             }) => {
                 // Something streamed — keep it, commit the notice (None for a `!`
                 // shell turn, whose `⎿ Interrupted by user` cell already says it
@@ -425,6 +435,14 @@ impl Session<'_> {
                 }
                 self.commit_turn_failure(partial, &tools, agents, notice);
                 self.render.reset();
+                // The receipt closes the turn, under the notice: a background
+                // completion no round read settles above it first — the
+                // `StreamDone` order — and `dispatch_after_turn`'s own settle
+                // below then finds nothing left (docs/interrupt.md).
+                self.settle_bg_completions();
+                if let Some(summary) = summary {
+                    self.commit_turn_summary(summary);
+                }
                 // The user interrupted to send their queued follow-ups right away
                 // (their spec; codex's submit-pending-steers-after-interrupt).
                 // The front entry — the first queue — goes out now (a text batch

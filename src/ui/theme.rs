@@ -2134,6 +2134,12 @@ pub(super) fn status_done_color() -> Color {
     tool_dim_color()
 }
 
+/// Marks a summary's token total as partly the tokenizer's count: an
+/// interrupted turn's receipt, whose cut round never reported its usage
+/// (`docs/interrupt.md`). The `/context` page's mark for a count it made
+/// itself, so a bare number on a receipt is always the provider's own.
+pub(super) const SUMMARY_ESTIMATE_MARK: &str = CONTEXT_USAGE_ESTIMATE_MARK;
+
 /// The status line's row in the streaming strip.
 pub(super) const STATUS_ROWS: u16 = 1;
 

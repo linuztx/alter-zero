@@ -1260,7 +1260,7 @@ fn history_generation_bumps_on_every_non_append_mutation() {
     // The interrupt-undo pops the just-submitted user message.
     app.record_user_message("new");
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     let after_undo = app.history_generation();
     assert_ne!(after_undo, after_rewind, "an interrupt-undo pop bumps");
 

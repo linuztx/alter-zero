@@ -495,7 +495,7 @@ fn interrupt_turn_undo_restores_the_submissions_image_attachments() {
         .collect();
     app.record_user_message_with_images("[Image #1] look", paths);
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "[Image #1] look");
     assert_eq!(
         app.images,
@@ -514,7 +514,7 @@ fn interrupt_turn_undo_rekeys_a_batchs_duplicate_placeholders_per_message() {
     app.record_user_message_with_images("[Image #1] first", vec![PathBuf::from("/a.png")]);
     app.record_user_message_with_images("[Image #1] second", vec![PathBuf::from("/b.png")]);
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "[Image #1] first\n[Image #1] second");
     assert_eq!(
         app.images,
@@ -886,7 +886,7 @@ fn deleting_one_duplicate_named_placeholder_keeps_the_other_pair() {
     app.record_user_message_with_images("[Image #1] first", vec![PathBuf::from("/a.png")]);
     app.record_user_message_with_images("[Image #1] second", vec![PathBuf::from("/b.png")]);
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     // Seat the cursor right after the SECOND [Image #1] and Backspace it.
     let text = app.input.text().to_string();
     let second_end = text.rfind("[Image #1]").unwrap() + "[Image #1]".len();

@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
-use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall};
+use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall, TurnSummary};
 use alter_zero::ui;
 
 use super::Session;
@@ -206,5 +206,19 @@ impl Session<'_> {
                 .insert_before(ui::message_lines(Role::Error, notice, width));
             self.term.insert_before(vec![Line::default()]);
         }
+    }
+
+    /// Record a turn's receipt — the dim `Worked for 12s · …` summary — and
+    /// commit it under a blank spacer: the last thing a turn adds, whether it
+    /// finished (`StreamDone`) or was interrupted under its notice
+    /// (`docs/interrupt.md`). The caller settles the turn's held background
+    /// completions first, so they land above it (`docs/background.md`).
+    pub(crate) fn commit_turn_summary(&mut self, summary: TurnSummary) {
+        if self.commits_allowed() {
+            let width = self.term.screen().width;
+            self.term.insert_before(ui::summary_lines(&summary, width));
+            self.term.insert_before(vec![Line::default()]);
+        }
+        self.app.record_turn_summary(summary);
     }
 }

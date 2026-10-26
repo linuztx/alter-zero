@@ -465,8 +465,10 @@ pub fn styled_status_line(
 /// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
 /// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
 /// running` suffix when either applies (`docs/background.md`,
-/// `docs/prompt-caching.md`). Shown inline (it flows into scrollback) and in
-/// the transcript like any other [`HistoryItem`]. **Word-wrapped** to
+/// `docs/prompt-caching.md`); an interrupted turn's total carries the
+/// tokenizer's share too, marked `≈` (`docs/interrupt.md`). Shown inline (it
+/// flows into scrollback) and in the transcript like any other
+/// [`HistoryItem`]. **Word-wrapped** to
 /// `width`: the full chain runs past 60 columns and the rows are permanent
 /// scrollback, so a narrow terminal keeps the whole receipt instead of
 /// paint-clipping its tail (the old `_width` was ignored on a "the line
@@ -474,14 +476,22 @@ pub fn styled_status_line(
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
-    if summary.tokens > 0 {
+    let total = summary.tokens.saturating_add(summary.estimated);
+    if total > 0 {
         // The turn's real billed tokens, with the cache-served share beside
         // them — the visible proof prompt caching worked — and the share
         // this turn *wrote* to the cache, so the turn that primed it shows
         // it did (an explicit-caching provider bills that write at a
         // premium). A zero half is omitted; absent usage (the dummy, a `!`
-        // shell) keeps the bare shape. See docs/prompt-caching.md.
-        text.push_str(&format!(" · {} tokens", format_token_count(summary.tokens)));
+        // shell) keeps the bare shape. See docs/prompt-caching.md. An
+        // interrupted turn adds the share its cut round never reported, and
+        // the mark says the total is partly a guess (docs/interrupt.md).
+        let mark = if summary.estimated > 0 {
+            SUMMARY_ESTIMATE_MARK
+        } else {
+            ""
+        };
+        text.push_str(&format!(" · {mark}{} tokens", format_token_count(total)));
         let mut cache: Vec<String> = Vec::new();
         if summary.cached > 0 {
             cache.push(format!("{} cached", format_token_count(summary.cached)));

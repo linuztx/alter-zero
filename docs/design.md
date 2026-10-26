@@ -924,7 +924,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   and commit like `StreamDone` does: reseat the viewport to its idle height,
   flush the kept partial, every cancelled call (collapsed, red — a batch's
   running call and each waiting sibling, in order), and the red
-  `Conversation interrupted` notice. No `Done for Ns` summary.
+  `Conversation interrupted` notice; then settle the held background
+  completions and commit the turn's receipt under them — the summary a
+  finished turn ends on, over the tally the line last showed (`Worked for 8s ·
+  ≈24.3k tokens`, `docs/interrupt.md`).
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), and the commit-to-scrollback steps above still run — the
   lines merely **queue** in `term` (nothing flushes onto the alternate screen).
@@ -1066,7 +1069,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error;
   `interrupt_turn` keeps the partial, resolves every call in flight as failed
   (a batch's running call and each waiting sibling, in order), records the
-  notice with no summary, and is a no-op when idle.
+  notice, hands back the turn's receipt for the loop to record under it (its
+  tokenizer share kept apart as `estimated`), and is a no-op when idle.
 - `app` (tools & view): `start_tool`/`end_tool` move a tool through running →
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty

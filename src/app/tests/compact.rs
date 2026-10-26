@@ -128,7 +128,7 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
     let before = app.history.clone();
     app.begin_compact(false);
     app.push_chunk("half a summ");
-    let outcome = app.interrupt_turn().expect("an interrupt outcome");
+    let outcome = app.interrupt_turn(0).expect("an interrupt outcome");
     assert!(
         matches!(
             &outcome,
@@ -150,6 +150,22 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
         "no marker on interrupt"
     );
     assert!(app.input.is_empty(), "no interrupt-undo composer refill");
+}
+
+#[test]
+fn an_interrupted_compaction_keeps_no_receipt() {
+    // A compaction's record is its `● Context compacted` cell, which an Esc
+    // never earns — and its fixed `Compacting` verb has no past tense for a
+    // summary to open with (docs/interrupt.md).
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    app.push_chunk("half a summ");
+    let outcome = app.interrupt_turn(6).expect("an interrupt outcome");
+    assert!(
+        matches!(&outcome, InterruptedTurn::Kept { summary: None, .. }),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -391,7 +407,7 @@ fn an_interrupted_compaction_blocks_the_auto_retrigger() {
     assert!(app.should_auto_compact(), "precondition: over threshold");
     app.begin_compact(true);
     app.push_chunk("half");
-    app.interrupt_turn();
+    app.interrupt_turn(0);
     assert!(!app.should_auto_compact(), "an Esc'd compaction stays down");
 }
 

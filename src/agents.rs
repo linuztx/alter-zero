@@ -838,8 +838,11 @@ impl AgentRun {
                 // from here, while the derived context skips it as chrome
                 // like any summary (docs/agent-tool.md). The runtime was
                 // frozen at its live value just before this event
-                // (`tui::agent`), so it is the turn's elapsed; a failure or
-                // interrupt records none, main parity.
+                // (`tui::agent`), so it is the turn's elapsed. A failure
+                // records none, main parity; a stop records none either — the
+                // main turn's interrupt receipt has no twin here, the stopped
+                // agent's red roster row keeping its elapsed and tally in view
+                // instead (docs/interrupt.md).
                 self.history.push(HistoryItem::Summary(TurnSummary {
                     // The past tense of the verb the view's line last wore.
                     verb: self.status_verb().done,
@@ -847,6 +850,7 @@ impl AgentRun {
                     timestamp: String::new(),
                     shells: 0,
                     tokens: usize::try_from(self.turn_usage_tokens).unwrap_or(usize::MAX),
+                    estimated: 0,
                     cached: usize::try_from(self.turn_usage_cached).unwrap_or(usize::MAX),
                     cache_write: usize::try_from(self.turn_usage_cache_write).unwrap_or(usize::MAX),
                 }));

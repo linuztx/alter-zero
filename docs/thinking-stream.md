@@ -235,7 +235,11 @@ the detail) simply keeps the estimate.
 `Session::settle_reasoning` is the one boundary helper: it closes the buffer
 with the thinking clock's elapsed, commits the cell (view-gated like every
 commit), and clears the clock. The three settle sites call it before they
-record anything else, which is what keeps stream order right.
+record anything else, which is what keeps stream order right. The interrupt
+also calls it before it stops the turn's clocks: `abandon_inflight` clears
+the thinking clock with the others, and a phase settled after it read
+`Thought for 0s` however long the model had thought, right above the
+interrupted turn's receipt (`docs/interrupt.md`, `smoke.sh` Phase 66).
 
 ### Persistence and context
 

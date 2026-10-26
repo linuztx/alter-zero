@@ -234,7 +234,7 @@ fn interrupt_turn_keeps_the_partial_and_records_the_notice() {
         tools,
         notice,
         ..
-    } = app.interrupt_turn().expect("a turn was active")
+    } = app.interrupt_turn(0).expect("a turn was active")
     else {
         panic!("a streamed partial is kept, not undone");
     };
@@ -258,7 +258,7 @@ fn interrupt_turn_with_no_output_undoes_the_submission() {
     app.record_user_message("Hi");
     app.begin_stream();
     app.count_user_input("Hi");
-    let outcome = app.interrupt_turn().expect("a turn was active");
+    let outcome = app.interrupt_turn(0).expect("a turn was active");
     assert_eq!(outcome, InterruptedTurn::Undone);
     assert_eq!(
         app.input.text(),
@@ -296,7 +296,7 @@ fn interrupt_between_tool_rounds_keeps_the_output_and_records_the_notice() {
     );
     assert!(app.current_tool().is_none());
 
-    let outcome = app.interrupt_turn().expect("a turn was active");
+    let outcome = app.interrupt_turn(0).expect("a turn was active");
     match outcome {
         InterruptedTurn::Kept { notice, .. } => {
             assert_eq!(
@@ -329,7 +329,7 @@ fn interrupt_turn_undo_discards_a_mid_turn_drafts_attachments() {
     app.record_user_message("Hi");
     app.begin_stream();
     app.attach_image(PathBuf::from("/tmp/draft.png")); // typed mid-turn
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "Hi");
     assert!(app.images.is_empty(), "no unanchored pairs survive");
     assert_eq!(
@@ -347,7 +347,7 @@ fn interrupt_turn_undo_rejoins_a_batch_with_newlines() {
     app.record_user_message("first");
     app.record_user_message("second");
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "first\nsecond");
     assert!(app.history.is_empty());
 }
@@ -361,7 +361,7 @@ fn interrupt_turn_undo_only_reclaims_the_current_turns_message() {
     app.record_message(Role::Assistant, "a reply");
     app.record_user_message("new");
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "new");
     assert_eq!(
         roles(&app),
@@ -377,7 +377,7 @@ fn interrupt_turn_resolves_a_running_tool_as_failed() {
     app.begin_stream();
     app.push_chunk("before the tool ");
     app.start_tool("Bash", "sleep 100", None); // flush happens loop-side; buffer keeps streaming
-    let InterruptedTurn::Kept { tools, .. } = app.interrupt_turn().expect("a turn was active")
+    let InterruptedTurn::Kept { tools, .. } = app.interrupt_turn(0).expect("a turn was active")
     else {
         panic!("streamed output is kept, not undone");
     };
@@ -420,7 +420,7 @@ fn interrupt_mid_batch_resolves_the_running_call_and_every_waiting_sibling() {
     app.start_tool_batch(&ping_batch());
     app.start_tool("Bash", "ping google.com", None); // the front is now Running
     let InterruptedTurn::Kept { tools, notice, .. } =
-        app.interrupt_turn().expect("a turn was active")
+        app.interrupt_turn(0).expect("a turn was active")
     else {
         panic!("a running tool means output streamed — kept, not undone");
     };
@@ -465,7 +465,7 @@ fn interrupt_while_the_whole_batch_still_waits_resolves_every_call() {
     app.record_user_message("ping them all");
     app.begin_stream();
     app.start_tool_batch(&ping_batch());
-    let Some(InterruptedTurn::Kept { tools, notice, .. }) = app.interrupt_turn() else {
+    let Some(InterruptedTurn::Kept { tools, notice, .. }) = app.interrupt_turn(0) else {
         panic!("an announced batch is output — kept, not undone");
     };
     assert_eq!(tools.len(), 3, "{tools:?}");
@@ -522,26 +522,165 @@ fn fail_stream_mid_batch_resolves_every_call_in_the_batch() {
     );
 }
 
+/// Interrupt a turn that streamed something, handing back the receipt the
+/// keep path built (`docs/interrupt.md`, "The receipt an interrupted turn
+/// keeps").
+fn interrupted_receipt(app: &mut App, elapsed_secs: u64) -> Option<TurnSummary> {
+    let InterruptedTurn::Kept { summary, .. } =
+        app.interrupt_turn(elapsed_secs).expect("a turn was active")
+    else {
+        panic!("a turn that produced output is kept, not undone");
+    };
+    summary
+}
+
 #[test]
-fn interrupt_turn_records_no_done_summary() {
-    // An interrupt has no "Done for Ns" line — the notice is the
-    // turn's terminal state, exactly like fail_stream.
+fn an_interrupted_turn_hands_back_its_receipt() {
+    // Esc on a turn that streamed: the summary a finished turn ends on — the
+    // past tense of the verb the line wore, the boundary's elapsed, and the
+    // tally the line was showing — for the boundary to commit under the
+    // notice, so stopping a turn no longer erases what it had cost.
+    let mut app = App::new();
+    app.set_clock(|| STAMP.to_string());
+    app.record_user_message("Hi");
+    app.begin_stream();
+    app.count_user_input("Hi");
+    let done_verb = app.status().unwrap().done_verb;
+    app.push_chunk("half a rep");
+    let tally = app.status().unwrap().tokens;
+    let summary = interrupted_receipt(&mut app, 8).expect("a kept turn keeps its receipt");
+    assert_eq!(summary.verb, done_verb, "the verb the line wore");
+    assert_eq!(summary.secs, 8, "the boundary-supplied duration");
+    assert_eq!(summary.timestamp, STAMP, "stamped like every recorded item");
+    assert_eq!(summary.tokens, 0, "no usage frame reported anything");
+    assert_eq!(
+        summary.estimated, tally,
+        "the line's whole tally, every token of it the tokenizer's"
+    );
+    assert!(!app.turn_active(), "the live status still clears");
+}
+
+#[test]
+fn the_interrupted_receipt_is_built_not_recorded() {
+    // The take_turn_summary split: the boundary records the receipt only once
+    // the background completions held during the turn have settled, so they
+    // land above it the way they do above a finished turn's summary.
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("text");
-    app.interrupt_turn().expect("a turn was active");
+    let summary = interrupted_receipt(&mut app, 3).expect("a receipt");
     assert!(
         !app.history
             .iter()
             .any(|item| matches!(item, HistoryItem::Summary(_))),
-        "no summary for an interrupted turn"
+        "interrupt_turn records the notice, not the receipt"
     );
+    app.record_turn_summary(summary.clone());
+    assert!(
+        matches!(
+            app.history.as_slice(),
+            [
+                HistoryItem::Message(partial),
+                HistoryItem::Message(notice),
+                HistoryItem::Summary(closing),
+            ] if partial.role == Role::Assistant
+                && notice.text == INTERRUPT_NOTICE
+                && *closing == summary
+        ),
+        "the partial, the notice, then the receipt closing the turn: {:?}",
+        app.history
+    );
+}
+
+#[test]
+fn the_interrupted_receipt_keeps_reported_usage_apart_from_the_estimate() {
+    // A round finished — its frame snapped the tally to the provider's own
+    // number — and the next one streamed until the Esc. That round never
+    // reports, so its share can only be the estimate: the receipt keeps the
+    // provider's tokens as they were and carries the rest as `estimated`,
+    // its cache halves the frame's alone (docs/prompt-caching.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.apply_usage(&crate::stream::TokenUsage {
+        input: 20_000,
+        output: 300,
+        cached: 8_000,
+        cache_write: 1_200,
+        ..crate::stream::TokenUsage::default()
+    });
+    app.push_chunk("the next round's half a reply");
+    let tally = app.status().unwrap().tokens;
+    let summary = interrupted_receipt(&mut app, 41).expect("a receipt");
+    assert_eq!(summary.tokens, 20_300, "what the frame reported");
+    assert!(summary.estimated > 0, "the cut round streamed");
+    assert_eq!(
+        summary.tokens + summary.estimated,
+        tally,
+        "the two halves add up to the line's tally"
+    );
+    assert_eq!((summary.cached, summary.cache_write), (8_000, 1_200));
+}
+
+#[test]
+fn an_interrupt_with_nothing_streamed_since_the_frame_estimates_nothing() {
+    // Esc while a lone call runs, after its round's frame snapped the tally:
+    // every token on the receipt is the provider's own. Taking the receipt
+    // after the call resolved would have counted the `Interrupted by user`
+    // answer it charges — the next request's upload, not this turn's.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("let me run it");
+    app.flush_streaming_segment();
+    app.apply_usage(&usage_of(12_000, 150));
+    app.start_tool("Bash", "sleep 100", None);
+    let summary = interrupted_receipt(&mut app, 30).expect("a receipt");
+    assert_eq!((summary.tokens, summary.estimated), (12_150, 0));
+}
+
+#[test]
+fn the_interrupted_receipt_names_the_verb_the_last_frame_drew() {
+    // The finished turn's rule: the boundary's clock may be past a rotation
+    // no frame drew, and the receipt still names the verb on screen.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("text");
+    verbs_at(&mut app, Duration::from_millis(29_990));
+    let summary = interrupted_receipt(&mut app, 30).expect("a receipt");
+    assert_eq!(
+        summary.verb, "Worked",
+        "the line never showed `Generating…`"
+    );
+    assert_eq!(summary.secs, 30, "the time is still the turn's own");
+}
+
+#[test]
+fn the_interrupted_receipt_counts_the_shells_still_running() {
+    let mut app = app_with_shells(&["a", "b"]);
+    app.begin_stream();
+    app.push_chunk("text");
+    let summary = interrupted_receipt(&mut app, 5).expect("a receipt");
+    assert_eq!(
+        summary.shells, 2,
+        "Worked for 5s · … · 2 shells still running"
+    );
+}
+
+#[test]
+fn a_finished_turn_estimates_nothing() {
+    // The receipt that is never a guess (docs/prompt-caching.md): a finished
+    // turn's tokens are the frames' alone — bare when none came — so it has
+    // no estimated share whatever its live tally said.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_chunk("a reply");
+    app.finish_stream();
+    assert_eq!(app.end_turn(4).expect("a summary").estimated, 0);
 }
 
 #[test]
 fn interrupt_turn_when_idle_returns_none_and_records_nothing() {
     let mut app = App::new();
-    assert!(app.interrupt_turn().is_none());
+    assert!(app.interrupt_turn(0).is_none());
     assert!(app.history.is_empty());
 }
 
@@ -551,7 +690,7 @@ fn interrupt_turn_stamps_the_records_with_the_clock() {
     app.set_clock(|| "03:20 AM".to_string());
     app.begin_stream();
     app.push_chunk("partial");
-    app.interrupt_turn().expect("a turn was active");
+    app.interrupt_turn(0).expect("a turn was active");
     assert_eq!(message_at(&app, 0).timestamp, "03:20 AM");
     assert_eq!(message_at(&app, 1).timestamp, "03:20 AM");
 }
@@ -730,7 +869,7 @@ fn esc_undo_of_an_init_turn_restores_the_command_not_the_prompt() {
     };
     app.record_user_message(&text); // mirror start_turn's recording
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "/init", "the command, not the prompt");
     assert!(
         app.command_menu.is_some(),
@@ -1098,15 +1237,18 @@ fn the_next_turn_opens_on_the_verb_after_the_last_one_shown() {
 
 #[test]
 fn an_interrupted_turn_hands_on_its_last_verb_too() {
-    // The walk moves when the line does, not at whichever turn end runs.
+    // The walk moves when the line does, not at whichever turn end runs —
+    // and the interrupted turn's receipt names the verb it moved to, as a
+    // finished turn's summary does.
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("partial");
     verbs_at(&mut app, Duration::from_secs(31));
-    assert!(matches!(
-        app.interrupt_turn(),
-        Some(InterruptedTurn::Kept { .. })
-    ));
+    let summary = interrupted_receipt(&mut app, 31).expect("a receipt");
+    assert_eq!(
+        summary.verb, "Generated",
+        "the line last said `Generating…`"
+    );
     app.begin_stream();
     assert_eq!(app.status().unwrap().verb, "Pondering");
 }
@@ -1805,7 +1947,7 @@ fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
     let mut app = App::new();
     app.begin_shell("sleep 5");
     let InterruptedTurn::Kept { tools, notice, .. } =
-        app.interrupt_turn().expect("a turn was in flight")
+        app.interrupt_turn(0).expect("a turn was in flight")
     else {
         panic!("a shell turn has a running tool, so it is kept, not undone");
     };
@@ -1824,6 +1966,15 @@ fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
         !roles(&app).contains(&Role::Error),
         "no `Conversation interrupted` error message for a shell interrupt"
     );
+}
+
+#[test]
+fn an_interrupted_shell_turn_keeps_no_receipt() {
+    // The cell is the record here too: a finished `!` command has no summary
+    // either (docs/shell-command.md).
+    let mut app = App::new();
+    app.begin_shell("sleep 5");
+    assert_eq!(interrupted_receipt(&mut app, 4), None);
 }
 
 #[test]

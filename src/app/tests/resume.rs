@@ -98,7 +98,7 @@ fn interrupt_undo_stops_at_a_resumed_sessions_trailing_user_message() {
     app.load_session(items);
     app.record_user_message("new");
     app.begin_stream();
-    assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "new");
     assert_eq!(roles(&app), vec![Role::User], "the resumed tail survives");
     assert_eq!(message_at(&app, 0).text, "old");
