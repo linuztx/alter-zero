@@ -78,6 +78,9 @@ impl<'t> Session<'t> {
         // sees a clock. Recorded items are stamped with the local time; the stamp
         // is shown only in the Ctrl+O transcript (see docs/timestamps.md).
         app.set_clock(host::local_timestamp);
+        // How the local clock reads an instant — the /usage page's reset
+        // times (docs/usage.md), the set_clock pattern.
+        app.set_local_offset(host::local_offset);
         // The persistent input history (docs/history-persistence.md): load the
         // JSONL file and seed `App::input_history` before the first paint, so ↑/↓
         // recall and Ctrl+R search span past sessions. New submissions are
@@ -416,6 +419,9 @@ impl<'t> Session<'t> {
         let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
         let (device_tx, device_rx) = tokio::sync::mpsc::unbounded_channel();
         let (model_tx, model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        // The `/usage` page's reads, one worker per subscription
+        // (docs/usage.md).
+        let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
         // Spawned once the startup directive is applied (`spawn_pending_probe`
@@ -515,6 +521,9 @@ impl<'t> Session<'t> {
             device_expires: None,
             model_tx,
             model_rx,
+            usage_tx,
+            usage_rx,
+            usage_cancel: None,
             probe_tx,
             probe_rx,
             bg_rx,
@@ -950,8 +959,9 @@ impl<'t> Session<'t> {
             }
         }
         // Cancel a dangling /model fetch (its detached worker exits on the
-        // cancel).
+        // cancel), and the /usage page's reads likewise.
         self.models.cancel_model_fetch();
+        self.cancel_usage_fetch();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`
         // (docs/background.md) — and cancel every subagent (their threads observe

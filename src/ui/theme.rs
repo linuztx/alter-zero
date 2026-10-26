@@ -1810,6 +1810,106 @@ pub(super) fn context_usage_full_color() -> Color {
     error_color()
 }
 
+// --- the read-only /usage page (docs/usage.md). The /context page's frame
+// and meter language over every signed-in subscription: a section each, its
+// head naming the provider and plan, a bar per limit filling as it is spent
+// — green, amber, red at the /context thresholds — and when it resets. ---
+
+/// The page's title.
+pub(super) const USAGE_TITLE: &str = "Usage limits";
+
+/// The dim key hint's parts — the page's whole grammar — joined by
+/// [`USAGE_LABEL_GAP`]: `↑↓ select` only with more than one subscription to
+/// move between, `c copy link` only with a link to copy.
+pub(super) const USAGE_HINT_SELECT: &str = "↑↓ select";
+pub(super) const USAGE_HINT_REFRESH: &str = "r refresh";
+pub(super) const USAGE_HINT_COPY: &str = "c copy link";
+pub(super) const USAGE_HINT_CLOSE: &str = "esc close";
+
+/// The subtitle's word for a read in flight: over numbers already shown,
+/// and before any are.
+pub(super) const USAGE_REFRESHING: &str = "refreshing…";
+pub(super) const USAGE_LOADING_ALL: &str = "loading…";
+
+/// What a spent limit's row says first, in red.
+pub(super) const USAGE_REACHED: &str = "limit reached";
+
+/// A section whose first read is in flight.
+pub(super) const USAGE_LOADING: &str = "Loading usage…";
+
+/// The page with no subscription signed in — advice, in `/model`'s accent.
+pub(super) const USAGE_NO_SUBSCRIPTION: &str = "No subscription is signed in — run /login and \
+     choose Use a subscription to see its plan limits here. An API key bills per token and has \
+     no plan to measure.";
+
+/// The tag on the subscription the session is running on.
+pub(super) const USAGE_IN_USE: &str = "in use";
+
+/// A meter with no limit.
+pub(super) const USAGE_UNLIMITED: &str = "Unlimited";
+
+/// What leads the link to the highlighted subscription's own usage page,
+/// over the hint.
+pub(super) const USAGE_DETAILS_PREFIX: &str = "Details at ";
+
+/// What leads a failed read's reason: before anything was shown, and over a
+/// report kept from the last good read.
+pub(super) const USAGE_LOAD_FAILED: &str = "Couldn't load usage: ";
+pub(super) const USAGE_REFRESH_FAILED: &str = "Couldn't refresh: ";
+
+/// The mark a warning or error note opens with.
+pub(super) const USAGE_NOTE_MARK: &str = "⚠ ";
+
+/// What a section's rows sit under: the marker's width and two columns
+/// more, so they read as one block under the provider's name.
+pub(super) const USAGE_SECTION_INDENT: &str = "    ";
+
+/// The extra inset of a per-model limit's rows under its sub-heading.
+pub(super) const USAGE_GROUP_INDENT: &str = "  ";
+
+/// Between a label and its value, and between a bar's parts.
+pub(super) const USAGE_LABEL_GAP: &str = "  ";
+
+/// Between the parts of a meter's trailer (`420 of 1,000 credits · resets
+/// in 6d`), a balance and its detail, and the parts of a section's head.
+pub(super) const USAGE_SEPARATOR: &str = " · ";
+
+/// A limit's bar: the `/context` meter's cells, the longest on any terminal
+/// with room for it and a countdown beside it, shorter only on a narrower
+/// one, and never below the shortest — the text beside it giving way first.
+pub(super) const USAGE_BAR_MIN: usize = 8;
+pub(super) const USAGE_BAR_MAX: usize = 20;
+
+/// The share used at which a bar turns amber, and red — the `/context`
+/// meter's thresholds, as percentages.
+pub(super) const USAGE_WARN_PERCENT: f64 = 75.0;
+pub(super) const USAGE_FULL_PERCENT: f64 = 90.0;
+
+/// A bar's spent cells while the limit is healthy — the success green.
+pub(super) fn usage_meter_color() -> Color {
+    context_usage_meter_color()
+}
+
+/// A bar's remaining cells.
+pub(super) fn usage_empty_color() -> Color {
+    context_usage_free_color()
+}
+
+/// A bar past [`USAGE_WARN_PERCENT`], and a warning note — the amber.
+pub(super) fn usage_warn_color() -> Color {
+    context_usage_warn_color()
+}
+
+/// A bar past [`USAGE_FULL_PERCENT`], an error note, a failed read — the red.
+pub(super) fn usage_full_color() -> Color {
+    context_usage_full_color()
+}
+
+/// The `in use` tag and `Unlimited` — the success green.
+pub(super) fn usage_ok_color() -> Color {
+    tool_ok_color()
+}
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

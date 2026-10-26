@@ -146,6 +146,23 @@ pub(crate) fn unix_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// [`unix_secs`] as the signed seconds the `/usage` page counts in.
+pub(crate) fn unix_secs_signed() -> i64 {
+    i64::try_from(unix_secs()).unwrap_or(i64::MAX)
+}
+
+/// The local clock's offset from UTC, in seconds, at the instant `at` (Unix
+/// seconds) — read per instant, so a time across a daylight-saving change
+/// reads the right hour. Handed to `App` once (`App::set_local_offset`): the
+/// `/usage` page's reset times (`docs/usage.md`).
+pub(crate) fn local_offset(at: i64) -> i32 {
+    use chrono::{Offset, TimeZone};
+    chrono::Local
+        .timestamp_opt(at, 0)
+        .single()
+        .map_or(0, |local| local.offset().fix().local_minus_utc())
+}
+
 /// This process's effective uid — the one its permissions are checked
 /// against: the stable per-user segment of the background tasks root (Claude
 /// Code's `claude-{uid}` pattern, `background::tasks_dir`), and what the

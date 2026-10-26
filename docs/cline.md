@@ -154,7 +154,9 @@ dashboard is
 When a window runs out the server says which (*You have reached your 5-hour
 Clinepass limit. Please try again later.*), and the advice names that window
 and points at the usage-billed models, which the key row reaches (`/login` →
-Use an API key → Cline).
+Use an API key → Cline). What each window has used, and when it resets, is
+the `/usage` page's ClinePass section — read off the dashboard's own
+`/api/v1/users/me/plan/usage-limits` (`docs/usage.md`).
 
 **Free models are deliberately not listed here.** Cline runs rotating
 `cline-free/…` promotions, but its docs are explicit that free-model usage is
@@ -278,7 +280,7 @@ with whatever came back.
 | `CLINE_ACCOUNT_REFRESH_TOKEN` | the stored refresh token (a real env var wins over `.env`, as everywhere) |
 | `CLINE_API_KEY` | the *pasted-key* provider's variable — a different credential for a different row |
 | `ALTER_ZERO_CLINE_AUTH_BASE` | the WorkOS host the sign-in talks to — a fork's own, or `smoke.sh` Phase 137's local stub; `https://api.workos.com` by default |
-| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to, and the ClinePass list and its models' facts are read from — Phase 137's stub; `https://api.cline.bot` by default |
+| `ALTER_ZERO_CLINE_API_BASE` | the Cline API host register/refresh talk to, and the ClinePass list, its models' facts and the `/usage` page's plan and usage limits (`docs/usage.md`) are read from — Phase 137's and Phase 145's stubs; `https://api.cline.bot` by default |
 
 ## Files
 

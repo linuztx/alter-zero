@@ -307,6 +307,21 @@ pub enum Action {
     /// [`App::context_usage`] is already cleared; the loop repaints the
     /// collapsed region.
     CloseContextUsage,
+    /// `/usage`: open the read-only usage page. Only the loop knows which
+    /// subscriptions are signed in, so it opens the page over them
+    /// ([`App::open_usage_page`]) and reads each one off its provider — or,
+    /// with none signed in, toasts
+    /// [`USAGE_EMPTY_NOTICE`](crate::app::USAGE_EMPTY_NOTICE) and opens nothing
+    /// (`docs/usage.md`).
+    OpenUsagePage,
+    /// `r` on the usage page: read every subscription again.
+    RefreshUsagePage,
+    /// The usage page was dismissed (Esc, or Ctrl+C): [`App::usage_page`]
+    /// is already cleared; the loop cancels the reads still in flight.
+    CloseUsagePage,
+    /// `c` on the usage page: copy the highlighted subscription's usage page
+    /// (this URL) to the clipboard, the page staying open.
+    CopyUsageLink(String),
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

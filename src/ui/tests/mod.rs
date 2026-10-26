@@ -56,6 +56,7 @@ mod tips;
 mod tool;
 mod transcript;
 mod trust_view;
+mod usage_view;
 mod view_flow;
 mod wrap;
 

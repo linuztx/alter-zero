@@ -84,6 +84,11 @@ impl Session<'_> {
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         self.app.set_pulse(self.clocks.loop_start.elapsed());
+        // The `/usage` page's countdowns run on the wall clock
+        // (docs/usage.md).
+        if self.app.usage_page.is_some() {
+            self.app.set_usage_now(super::host::unix_secs_signed());
+        }
         // How long a `/login` device code has left, when one is on screen
         // (docs/copilot.md).
         if self.app.device_login_active() {
@@ -636,6 +641,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::context_usage_height(app, screen.width, screen.height) {
         return height;
     }
+    // The read-only `/usage` page, likewise (docs/usage.md).
+    if let Some(height) = ui::usage_page_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The `/trust` review menu, likewise (docs/project-config.md).
     if let Some(height) = ui::trust_menu_height(app, screen.width, screen.height) {
         return height;
@@ -730,6 +739,9 @@ impl Session<'_> {
         // Before the paint: a question whose idle clock ran out closes in
         // this very frame (docs/ask.md).
         self.tick_ask_clock();
+        // …and an open `/usage` page due its minute refresh starts it, the
+        // page keeping its own slow frame (docs/usage.md).
+        self.tick_usage_page();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty

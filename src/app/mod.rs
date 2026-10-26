@@ -63,6 +63,7 @@ mod tools;
 mod trust_menu;
 mod turn;
 mod types;
+mod usage;
 mod views;
 
 pub use self::action::{Action, McpOp};
@@ -127,6 +128,9 @@ pub use self::turn::{
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+};
+pub use self::usage::{
+    USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
 };
 
 /// All mutable conversation state: the editable input line, the reply currently
@@ -549,6 +553,22 @@ pub struct App {
     /// when it opens and re-counted at the loop bottom whenever its inputs
     /// change. See `docs/context-usage.md`.
     pub context_usage: Option<ContextUsagePage>,
+    /// The open `/usage` page; `None` when closed. The `/context` page's
+    /// sibling (no text entry) over every signed-in subscription's usage,
+    /// read off the providers by the boundary. See `docs/usage.md`.
+    pub usage_page: Option<UsagePage>,
+    /// What the last `/usage` page read, kept from its close for the next
+    /// open — which shows those numbers at once while it reads them again
+    /// ([`App::open_usage_page`]).
+    usage_kept: Option<UsagePage>,
+    /// The last `/usage` round handed out — kept here rather than on the
+    /// page, so a result from a page closed and reopened since can never
+    /// name the new page's round.
+    usage_rounds: u64,
+    /// How the local clock reads an instant (its UTC offset there), injected
+    /// once at the I/O boundary ([`App::set_local_offset`]) — the `/usage`
+    /// page's reset times. `None` in unit tests: UTC.
+    local_offset: Option<fn(i64) -> i32>,
     /// The tools the main session's next request offers, as the client
     /// sends them — pulled from the backend while the `/context` page is
     /// open ([`App::set_tool_definitions`]), empty for the dummy.

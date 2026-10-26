@@ -40,7 +40,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind};
+use alter_zero::app::{
+    LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind, UsageTarget,
+};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
@@ -272,6 +274,11 @@ impl ModelSession {
         }
         if let Some(base) = config::cline_api_base() {
             llm::cline::set_api_base(base);
+        }
+        // GitHub's REST API — Copilot's token exchange and the `/usage`
+        // quota read — overridable the same way (docs/usage.md).
+        if let Some(base) = config::github_api_base() {
+            llm::copilot::set_github_api(base);
         }
         // The persisted `/model` selection (`~/.alter-zero/config.json`), per
         // working directory (docs/per-directory-state.md): this directory's
@@ -1504,6 +1511,36 @@ impl ModelSession {
             spawn_model_fetch(choice.name.clone(), cfg, cancel.clone(), tx.clone());
         }
         configured.len()
+    }
+
+    /// The signed-in subscriptions the `/usage` page reads (`docs/usage.md`):
+    /// every provider `/login` lists under *Use a subscription* whose stored
+    /// credential resolves, by name, each with the config its read resolves
+    /// its credential through, its own usage page — and whether it is the
+    /// one the session is running on, which the dummy never is.
+    pub(crate) fn usage_targets(&self) -> Vec<(UsageTarget, ModelConfig)> {
+        let mut targets: Vec<(UsageTarget, ModelConfig)> =
+            config::subscription_choices(&self.providers, &self.env_file)
+                .into_iter()
+                .filter(|choice| choice.configured)
+                .filter_map(|choice| {
+                    let cfg =
+                        self.config_for(&choice.id, &self.active_model, None, None, None, None)?;
+                    let in_use = self.real_backend
+                        && self.active_provider.as_deref() == Some(choice.id.as_str());
+                    Some((
+                        UsageTarget {
+                            provider: choice.id,
+                            name: choice.name,
+                            in_use,
+                            dashboard: llm::usage::dashboard_url(cfg.auth).map(str::to_string),
+                        },
+                        cfg,
+                    ))
+                })
+                .collect();
+        targets.sort_by_key(|(target, _)| target.name.to_lowercase());
+        targets
     }
 
     /// Cancel an in-flight `/model` fetch — the picker closed, a row was

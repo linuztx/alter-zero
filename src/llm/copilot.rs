@@ -37,10 +37,29 @@ const SCOPE: &str = "read:user";
 /// RFC 8628's device-code grant type.
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// Where the flow's three calls go.
+/// Where the flow's three calls go. The exchange is on GitHub's REST API,
+/// whose host [`set_github_api`] can move.
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
-const EXCHANGE_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+const EXCHANGE_PATH: &str = "/copilot_internal/v2/token";
+
+/// Where the seat's allowance and what is left of it are read — the endpoint
+/// VS Code's own Copilot dashboard reads (`docs/usage.md`).
+const USER_PATH: &str = "/copilot_internal/user";
+
+/// GitHub's REST API, where the exchange and the quota read both live, unless
+/// [`GITHUB_API_ENV`] says otherwise.
+const DEFAULT_GITHUB_API: &str = "https://api.github.com";
+
+/// The environment variable that points GitHub's REST API calls — the token
+/// exchange and the quota read — at another host: the smoke suite's local
+/// stand-in, or a fork's own. Read at the boundary and handed in once through
+/// [`set_github_api`], the `chatgpt::set_issuer` pattern.
+pub const GITHUB_API_ENV: &str = "ALTER_ZERO_GITHUB_API_BASE";
+
+/// The REST API version the quota read asks for — the one VS Code's own
+/// client pins, so the answer has the shape its dashboard reads.
+const GITHUB_API_VERSION: &str = "2025-04-01";
 
 /// The individual-seat API host, and the fallback when the exchange names none.
 pub const DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
@@ -731,6 +750,65 @@ fn github_message(body: &str) -> Option<String> {
     Some(cut)
 }
 
+/// The overridable GitHub API host — [`DEFAULT_GITHUB_API`] until the
+/// boundary sets one.
+fn github_api_slot() -> &'static Mutex<Option<String>> {
+    static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Point GitHub's REST API calls at `url` instead of `api.github.com`. A
+/// trailing slash is dropped so the paths built on it never double one up.
+/// Boundary-only; called once at startup.
+pub fn set_github_api(url: impl Into<String>) {
+    let url = url.into();
+    let trimmed = url.trim().trim_end_matches('/').to_string();
+    if let Ok(mut slot) = github_api_slot().lock() {
+        *slot = (!trimmed.is_empty()).then_some(trimmed);
+    }
+}
+
+/// The GitHub API host in force.
+fn github_api() -> String {
+    github_api_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| DEFAULT_GITHUB_API.to_string())
+}
+
+/// The quota read's URL on the GitHub API host `base`.
+#[must_use]
+pub fn user_url_for(base: &str) -> String {
+    format!("{}{USER_PATH}", base.trim().trim_end_matches('/'))
+}
+
+/// The quota read's URL on the GitHub API host in force ([`set_github_api`]).
+#[must_use]
+pub fn user_url() -> String {
+    user_url_for(&github_api())
+}
+
+/// The headers the quota read carries: the stored GitHub token itself — not
+/// the exchanged Copilot bearer, which this endpoint does not take — under
+/// the `token` scheme, the API version VS Code pins, and the editor identity
+/// the exchange sends (GitHub's REST API refuses a request with no
+/// `User-Agent`).
+#[must_use]
+pub fn user_headers(oauth_token: &str) -> Vec<(String, String)> {
+    [
+        ("authorization", format!("token {oauth_token}")),
+        ("accept", "application/json".to_string()),
+        ("x-github-api-version", GITHUB_API_VERSION.to_string()),
+        ("editor-version", EDITOR_VERSION.to_string()),
+        ("editor-plugin-version", EDITOR_PLUGIN_VERSION.to_string()),
+        ("user-agent", USER_AGENT.to_string()),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value))
+    .collect()
+}
+
 /// Exchange a GitHub OAuth token for a Copilot bearer. Boundary code.
 ///
 /// # Errors
@@ -739,7 +817,7 @@ fn github_message(body: &str) -> Option<String> {
 fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
-        .get(EXCHANGE_URL)
+        .get(format!("{}{EXCHANGE_PATH}", github_api()))
         // `token`, not `Bearer` — Microsoft's own client's scheme, and the one
         // every third-party implementation converged on.
         .header("authorization", format!("token {oauth_token}"))
@@ -858,6 +936,34 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_quota_read_is_on_github_s_api_not_copilot_s() {
+        assert_eq!(
+            user_url_for(DEFAULT_GITHUB_API),
+            "https://api.github.com/copilot_internal/user"
+        );
+        assert_eq!(
+            user_url_for("http://127.0.0.1:4100"),
+            "http://127.0.0.1:4100/copilot_internal/user"
+        );
+    }
+
+    #[test]
+    fn the_quota_read_presents_the_github_token_itself() {
+        let headers = user_headers("ghu_abc");
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(get("authorization"), Some("token ghu_abc"));
+        assert_eq!(get("x-github-api-version"), Some(GITHUB_API_VERSION));
+        assert_eq!(get("user-agent"), Some(USER_AGENT));
+        assert_eq!(get("editor-version"), Some(EDITOR_VERSION));
+        assert_eq!(get("accept"), Some("application/json"));
+    }
 
     #[test]
     fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {

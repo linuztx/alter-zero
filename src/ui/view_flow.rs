@@ -245,6 +245,15 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.usage_page.is_some() {
+        // The `/usage` page's rows move with its countdowns and its reads,
+        // never per frame, and its ladder always fits — signed on its rows
+        // like its siblings (`docs/usage.md`).
+        return Some(FlowPage::framed(
+            super::usage_view::usage_view_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.trust_menu.is_some() {
         return Some(FlowPage::framed(
             super::trust_view::trust_view_lines(app, width),

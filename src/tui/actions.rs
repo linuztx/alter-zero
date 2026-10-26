@@ -276,6 +276,14 @@ impl Session<'_> {
             // it the backend's tool set before the first frame
             // (docs/context-usage.md).
             Action::OpenContextUsage => self.sync_context_usage(),
+            // Only the boundary knows which subscriptions are signed in, so
+            // it opens the usage page over them and reads each one — or
+            // toasts that none is — and reads them again on `r`
+            // (docs/usage.md).
+            Action::OpenUsagePage => self.open_usage_page(),
+            Action::RefreshUsagePage => self.refresh_usage_page(),
+            Action::CloseUsagePage => self.cancel_usage_fetch(),
+            Action::CopyUsageLink(url) => self.copy_usage_link(&url),
             Action::CloseContextUsage => {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
                 // collapses back to the composer on the next draw.
@@ -591,6 +599,8 @@ impl Session<'_> {
             View::Conversation if self.app.export_picker.is_some() => {}
             // …nor the `/context` page (docs/context-usage.md).
             View::Conversation if self.app.context_usage.is_some() => {}
+            // …nor the `/usage` page (docs/usage.md).
+            View::Conversation if self.app.usage_page.is_some() => {}
             // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
             // composer draft underneath (docs/secrets.md).

@@ -737,6 +737,16 @@ pub fn render_live_with_preview(
         super::context_usage_view::render_context_usage(body, buf, app);
         return;
     }
+    // …and the read-only `/usage` page, its sibling. See `docs/usage.md`.
+    if app.usage_page.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::usage_view::usage_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        super::usage_view::render_usage_page(body, buf, app);
+        return;
+    }
     // …and the `/trust` review menu, its sibling. See
     // `docs/project-config.md`.
     if app.trust_menu.is_some() {

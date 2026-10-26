@@ -418,3 +418,9 @@ model, and `GITHUB_COPILOT_TOKEN` in the real environment outranks the `.env`
 store exactly as every other provider's key does — which is also how a machine
 that already has a Copilot login (a CI box, a dotfiles export) skips `/login`
 entirely.
+
+`ALTER_ZERO_GITHUB_API_BASE` points the two calls this sign-in makes to
+GitHub's REST API — the token exchange, and the `/usage` page's quota read
+(`copilot_internal/user`, `docs/usage.md`) — at another host:
+`https://api.github.com` by default, `smoke.sh` Phase 145's local stub in the
+suite. The device flow itself stays on `github.com`.

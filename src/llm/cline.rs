@@ -97,6 +97,12 @@ const RECOMMENDED_MODELS_PATH: &str = "/api/v1/ai/cline/recommended-models";
 /// `/models` (ids and nothing else) does not.
 const CATALOG_PATH: &str = "/api/v1/ai/cline/models";
 
+/// The signed-in account's ClinePass plan, and what of its rolling windows
+/// is used — the two reads behind the Cline dashboard's subscription page,
+/// and the `/usage` page's (`docs/usage.md`).
+const PLAN_PATH: &str = "/api/v1/users/me/plan";
+const USAGE_LIMITS_PATH: &str = "/api/v1/users/me/plan/usage-limits";
+
 /// RFC 8628's device-code grant type.
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -1123,6 +1129,19 @@ pub fn catalog_url() -> String {
     format!("{}{CATALOG_PATH}", api_base())
 }
 
+/// Where the signed-in account's ClinePass plan is read, on the API host in
+/// force ([`set_api_base`]).
+#[must_use]
+pub fn plan_url() -> String {
+    format!("{}{PLAN_PATH}", api_base())
+}
+
+/// Where the plan's rolling windows are read, on the API host in force.
+#[must_use]
+pub fn usage_limits_url() -> String {
+    format!("{}{USAGE_LIMITS_PATH}", api_base())
+}
+
 /// GET the ClinePass list Cline publishes (boundary — real HTTP), from the API
 /// host in force ([`set_api_base`]). See [`fetch_clinepass_models_from`].
 ///
@@ -2016,6 +2035,16 @@ mod tests {
         assert!(error.contains("503"), "{error}");
         assert!(error.contains("maintenance"), "{error}");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn the_plan_and_its_usage_are_read_from_the_api_host() {
+        // No test moves the base, so these are the defaults in force.
+        assert_eq!(plan_url(), "https://api.cline.bot/api/v1/users/me/plan");
+        assert_eq!(
+            usage_limits_url(),
+            "https://api.cline.bot/api/v1/users/me/plan/usage-limits"
+        );
     }
 
     #[test]
