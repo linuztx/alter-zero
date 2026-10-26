@@ -12,7 +12,11 @@
 //!
 //! Two kinds of failure, two policies. A host that **answers badly** — a
 //! `503`, a reset mid-exchange, a stall — gets the bounded retry: a few
-//! attempts a short backoff apart, then the error. A host that **cannot be
+//! attempts a short backoff apart, then the error. That includes a reply
+//! whose connection broke **under** it: the request is sent again, and the
+//! [`StreamEvent::Retrying`] announcing it voids the failed attempt, so what
+//! it streamed is withdrawn rather than duplicated (`docs/offline.md` *A
+//! connection lost mid-reply*). A host that **cannot be
 //! reached at all** ([`LlmError::Unreachable`]: the machine is offline, or the
 //! host is) gets no budget and no deadline: the driver announces the outage
 //! ([`StreamEvent::Offline`]), waits a few seconds ([`offline_backoff`]), and
@@ -127,21 +131,55 @@ pub fn offline_backoff(attempt: u32) -> Duration {
         .min(OFFLINE_BACKOFF_CAP)
 }
 
-/// Decide what to do after an attempt. Only a failure that has **not yet
-/// emitted any content** (`emitted == false`) is ever re-sent — restarting a
-/// request after bytes have streamed would duplicate them, so once anything
-/// is emitted the error is surfaced instead — and with retries turned off
-/// (`max == 0`) nothing is. Then: a host that could not be reached is
-/// **waited for** ([`RetryStep::AwaitConnection`], the count running on
-/// `attempts.unreachable` and no budget spent), and any other retryable
-/// failure takes the bounded retry while `attempts.retried < max`.
+/// Did the connection itself fail under a request that **had** connected —
+/// the one failure worth restarting a reply for? [`LlmError::Http`] is
+/// exactly that: a body read that failed (a reset, `Connection timed out`
+/// once the kernel gave up on a silent path, a stream closed early) or a
+/// stall past the per-operation timeout. Everything else that ends a stream
+/// mid-reply was said by the provider or the decoder, and would say it
+/// again (`docs/offline.md` *A connection lost mid-reply*).
+fn is_lost_connection(err: &LlmError) -> bool {
+    matches!(err, LlmError::Http(_))
+}
+
+/// The next bounded retry, while the budget lasts.
+fn bounded_retry(attempts: Attempts, max: u32) -> RetryStep {
+    if attempts.retried >= max {
+        return RetryStep::Proceed;
+    }
+    let number = attempts.retried + 1;
+    RetryStep::Retry {
+        number,
+        wait: retry_backoff(number),
+    }
+}
+
+/// Decide what to do after an attempt. With retries turned off (`max == 0`)
+/// nothing is re-sent. An attempt that **emitted content** before failing is
+/// re-sent only when its connection broke under it (`is_lost_connection`),
+/// on the bounded retry: restarting a request after bytes have streamed
+/// would duplicate them, so the [`StreamEvent::Retrying`] that announces it
+/// **voids** the failed attempt — every consumer withdraws what it streamed
+/// before the next attempt's first byte — while anything the provider itself
+/// reported mid-reply is surfaced. An attempt that emitted nothing: a host
+/// that could not be reached is **waited for** ([`RetryStep::AwaitConnection`],
+/// the count running on `attempts.unreachable` and no budget spent), and any
+/// other retryable failure takes the bounded retry while
+/// `attempts.retried < max`.
 #[must_use]
 pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max: u32) -> RetryStep {
     let AttemptResult::Failed(err) = result else {
         return RetryStep::Proceed;
     };
-    if emitted || max == 0 {
+    if max == 0 {
         return RetryStep::Proceed;
+    }
+    if emitted {
+        return if is_lost_connection(err) {
+            bounded_retry(attempts, max)
+        } else {
+            RetryStep::Proceed
+        };
     }
     if let LlmError::Unreachable { host, .. } = err {
         let attempt = attempts.unreachable + 1;
@@ -151,12 +189,8 @@ pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max:
             host: host.clone(),
         };
     }
-    if attempts.retried < max && is_retryable(err) {
-        let number = attempts.retried + 1;
-        return RetryStep::Retry {
-            number,
-            wait: retry_backoff(number),
-        };
+    if is_retryable(err) {
+        return bounded_retry(attempts, max);
     }
     RetryStep::Proceed
 }
@@ -164,11 +198,12 @@ pub fn next_step(result: &AttemptResult, attempts: Attempts, emitted: bool, max:
 /// Drive one streamed turn with retries. `attempt` performs a single streaming
 /// attempt — it sends the `Chunk`/`Thinking*` events itself and returns its
 /// outcome plus whether it emitted any content — and `sleep` is an interruptible
-/// wait. On a retryable, content-free failure the driver announces a
-/// [`StreamEvent::Retrying`], waits, and calls `attempt` again, up to `max`
-/// times; then it sends the terminal `StreamDone` (success) / `Error` (give-up)
-/// or nothing (cancelled). Generic over `attempt`/`sleep` so it is unit-testable
-/// with fakes and no network.
+/// wait. On a retryable failure ([`next_step`]: a content-free one, or a
+/// connection lost mid-reply) the driver announces a [`StreamEvent::Retrying`]
+/// — which voids the failed attempt's output — waits, and calls `attempt`
+/// again, up to `max` times; then it sends the terminal `StreamDone` (success)
+/// / `Error` (give-up) or nothing (cancelled). Generic over `attempt`/`sleep`
+/// so it is unit-testable with fakes and no network.
 pub fn run_stream(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
@@ -207,13 +242,12 @@ pub fn run_attempts(
     sleep: impl Fn(Duration, &CancelToken),
 ) -> AttemptResult {
     let mut attempts = Attempts::default();
-    // Cumulative: once any attempt streams a byte we never retry (retrying
-    // would duplicate the content). So the attempt that emits is always the
-    // last one — succeed or give up.
-    let mut emitted = false;
     loop {
-        let (result, this_emitted) = attempt();
-        emitted |= this_emitted;
+        // Each attempt is judged on its own output alone: the `Retrying`
+        // that follows a failed one voids it — its consumers withdraw what it
+        // streamed — so nothing of an earlier attempt is left to duplicate
+        // (docs/offline.md *A connection lost mid-reply*).
+        let (result, emitted) = attempt();
         let wait = match next_step(&result, attempts, emitted, max) {
             RetryStep::Proceed => return result,
             RetryStep::Retry { number, wait } => {
@@ -422,17 +456,69 @@ mod tests {
         );
     }
 
+    /// The failure a reply's connection dying under it reaches the driver as
+    /// — the user's report, word for word (`docs/offline.md`).
+    fn dropped_mid_reply() -> AttemptResult {
+        AttemptResult::Failed(LlmError::Http(
+            "request or response body error: error reading a body from connection: \
+             Connection timed out (os error 110)"
+                .into(),
+        ))
+    }
+
     #[test]
-    fn next_step_stops_once_content_has_streamed() {
-        // A failure after any bytes streamed can't be retried (it would
-        // duplicate), so we surface it.
-        let step = next_step(
-            &AttemptResult::Failed(LlmError::Http("mid-stream drop".into())),
-            retried(0),
-            true,
-            MAX_RETRIES,
+    fn next_step_restarts_a_reply_whose_connection_dropped() {
+        // Content had streamed, so re-sending duplicates it — unless the
+        // retry withdraws it first, which `Retrying` now announces
+        // (docs/offline.md *A connection lost mid-reply*). The bounded retry,
+        // numbered and backed off like any other.
+        let step = next_step(&dropped_mid_reply(), retried(0), true, MAX_RETRIES);
+        assert_eq!(
+            step,
+            RetryStep::Retry {
+                number: 1,
+                wait: retry_backoff(1)
+            }
         );
-        assert_eq!(step, RetryStep::Proceed);
+    }
+
+    #[test]
+    fn restarting_a_dropped_reply_spends_the_bounded_budget() {
+        // Each restart regenerates the round from its first token: the
+        // budget caps them like any retry, and `0` still means never.
+        assert_eq!(
+            next_step(
+                &dropped_mid_reply(),
+                retried(MAX_RETRIES),
+                true,
+                MAX_RETRIES
+            ),
+            RetryStep::Proceed
+        );
+        assert_eq!(
+            next_step(&dropped_mid_reply(), retried(0), true, 0),
+            RetryStep::Proceed
+        );
+    }
+
+    #[test]
+    fn a_failure_the_provider_reported_mid_reply_is_surfaced() {
+        // Only a connection that broke restarts a reply: an error the
+        // provider sent inside the stream, or a body that would not decode,
+        // is information, surfaced with the partial as before.
+        let in_band = AttemptResult::Failed(LlmError::Api {
+            status: 0,
+            body: "Model unloaded.".into(),
+        });
+        assert_eq!(
+            next_step(&in_band, retried(0), true, MAX_RETRIES),
+            RetryStep::Proceed
+        );
+        let garbled = AttemptResult::Failed(LlmError::Decode("bad frame".into()));
+        assert_eq!(
+            next_step(&garbled, retried(0), true, MAX_RETRIES),
+            RetryStep::Proceed
+        );
     }
 
     #[test]
@@ -590,6 +676,133 @@ mod tests {
             matches!(events.last(), Some(StreamEvent::Error(_))),
             "ends with the surfaced error"
         );
+    }
+
+    #[test]
+    fn a_connection_lost_mid_reply_restarts_the_round() {
+        // The reply had begun when the connection died: the driver announces
+        // the retry — whose consumers withdraw the partial — and sends the
+        // request again, and the attempt that gets through streams whole.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                if calls == 1 {
+                    let _ = tx.send(StreamEvent::Chunk("Half a rep".into()));
+                    (dropped_mid_reply(), true)
+                } else {
+                    let _ = tx.send(StreamEvent::Chunk("The whole reply.".into()));
+                    (AttemptResult::Ok, true)
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(calls, 2, "the dropped reply was sent again, once");
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Chunk("Half a rep".into()),
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Chunk("The whole reply.".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restarted_attempt_is_judged_on_its_own_output() {
+        // The restart withdrew what the first attempt streamed, so nothing
+        // is left to duplicate: a 503 before the second attempt's first byte
+        // takes the bounded retry like any content-free failure.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                match calls {
+                    1 => {
+                        let _ = tx.send(StreamEvent::Chunk("Half".into()));
+                        (dropped_mid_reply(), true)
+                    }
+                    2 => (
+                        AttemptResult::Failed(LlmError::Api {
+                            status: 503,
+                            body: String::new(),
+                        }),
+                        false,
+                    ),
+                    _ => {
+                        let _ = tx.send(StreamEvent::Chunk("Whole".into()));
+                        (AttemptResult::Ok, true)
+                    }
+                }
+            },
+            no_sleep,
+        );
+        assert_eq!(calls, 3);
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                StreamEvent::Chunk("Half".into()),
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Retrying {
+                    attempt: 2,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::Chunk("Whole".into()),
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reply_that_keeps_dropping_surfaces_the_transport_error() {
+        // A connection that dies under every attempt spends the budget and
+        // then says why, in the transport's own words — with the last
+        // attempt's partial left standing, as a surfaced failure always did.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut calls = 0;
+        run_stream(
+            &tx,
+            &cancel,
+            MAX_RETRIES,
+            || {
+                calls += 1;
+                let _ = tx.send(StreamEvent::Chunk("Half".into()));
+                (dropped_mid_reply(), true)
+            },
+            no_sleep,
+        );
+        assert_eq!(calls, 1 + MAX_RETRIES as usize);
+        let events = drain(&mut rx);
+        let retries = events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::Retrying { .. }))
+            .count();
+        assert_eq!(retries, MAX_RETRIES as usize);
+        match events.last() {
+            Some(StreamEvent::Error(message)) => assert!(
+                message.ends_with("Connection timed out (os error 110)"),
+                "{message}"
+            ),
+            other => panic!("expected the surfaced error last, got {other:?}"),
+        }
     }
 
     #[test]

@@ -416,10 +416,18 @@ pub enum StreamEvent {
     /// begins executing the call.
     ToolCallDelta(ToolCallFragment),
     /// A failed request is being retried (the connection/send failed before any
-    /// content streamed, or the server returned a transient status). Carries the
-    /// 1-based retry number and the ceiling, shown live in the status line as
-    /// `retrying {attempt}/{max}`. Only a real backend sends this (see
-    /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
+    /// content streamed, the server returned a transient status, or the
+    /// connection was lost under a reply). Carries the 1-based retry number and
+    /// the ceiling, shown live in the status line as `retrying {attempt}/{max}`.
+    /// Only a real backend sends this (see `llm::retry`); the loop shows it in
+    /// the status and keeps the turn alive.
+    ///
+    /// It **voids the failed attempt**: whatever that attempt streamed — its
+    /// [attempt output](Self::is_attempt_output) since the last event of any
+    /// other kind — is withdrawn by every consumer before the next attempt's
+    /// first byte arrives, so a request re-sent after content streamed never
+    /// duplicates it (`docs/offline.md` *A connection lost mid-reply*). After
+    /// a failure that streamed nothing there is nothing to withdraw.
     Retrying { attempt: u32, max: u32 },
     /// No connection could be made to the provider — the machine is offline,
     /// or `host` (the host the request was for, with its port when the URL
@@ -460,4 +468,53 @@ pub enum StreamEvent {
     Error(String),
     /// The reply is complete.
     StreamDone,
+}
+
+impl StreamEvent {
+    /// Is this a piece of what a streaming request emits — the output a
+    /// [`Retrying`](Self::Retrying) voids? The reply text, a thinking phase and
+    /// a call the model is still generating, and nothing else: every other
+    /// event marks where a request stopped (its usage, its calls, its end, a
+    /// retry) or a round boundary between two (a tool resolving, a message
+    /// delivered). Where an attempt began is the first of these since the last
+    /// of the others (`App::track_attempt`, `AgentRun::apply`), which is what a
+    /// retry withdraws back to (`docs/offline.md` *A connection lost
+    /// mid-reply*).
+    ///
+    /// Exhaustive on purpose: a new event has to say which side it is on.
+    #[must_use]
+    pub const fn is_attempt_output(&self) -> bool {
+        match self {
+            Self::Chunk(_)
+            | Self::ThinkingStart
+            | Self::ThinkingChunk(_)
+            | Self::ThinkingEnd
+            | Self::ToolCallDelta(_) => true,
+            Self::RoundCalls(_)
+            | Self::ToolBatch(_)
+            | Self::ToolStart { .. }
+            | Self::ToolEnd { .. }
+            | Self::ToolAnswered { .. }
+            | Self::ToolRejected { .. }
+            | Self::ToolNote(_)
+            | Self::ToolBackgrounded { .. }
+            | Self::ToolOutput(_)
+            | Self::ToolScreen { .. }
+            | Self::ToolTitle(_)
+            | Self::TaskCall { .. }
+            | Self::HookNote { .. }
+            | Self::Steered { .. }
+            | Self::NoticeDelivered { .. }
+            | Self::PromptBlocked { .. }
+            | Self::AgentBatch { .. }
+            | Self::AgentGroupDone { .. }
+            | Self::Retrying { .. }
+            | Self::Offline { .. }
+            | Self::Usage(_)
+            | Self::Permission(_)
+            | Self::AskUser(_)
+            | Self::Error(_)
+            | Self::StreamDone => false,
+        }
+    }
 }

@@ -31,7 +31,9 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{AgentNotice, AgentStop, HistoryItem, Role, ToastKind, ToolStatus, View};
+use alter_zero::app::{
+    AgentNotice, AgentStop, CONNECTION_LOST_NOTICE, HistoryItem, Role, ToastKind, ToolStatus, View,
+};
 use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
 
@@ -150,6 +152,23 @@ impl Session<'_> {
                 .insert(id.to_string(), Instant::now());
             self.app.set_agent_command_elapsed(id, Duration::ZERO);
         }
+        // A retry voids the agent's failed attempt (docs/offline.md *A
+        // connection lost mid-reply*): withdrawn here, ahead of the fold, to
+        // learn what the session view must give back — the fold's own
+        // withdrawal then finds nothing. A phase it opened goes without
+        // settling, so its clock stops; the view's render starts the next
+        // attempt clean, and is rebuilt below once the fold has run.
+        let retracted = if matches!(event, StreamEvent::Retrying { .. }) {
+            self.agent_thinking_clocks.remove(id);
+            let shown = viewing && self.agent_render.has_committed();
+            let withdrawn = self.app.withdraw_agent_attempt(id);
+            if viewing {
+                self.agent_render.reset();
+            }
+            Some((withdrawn, shown))
+        } else {
+            None
+        };
         // Settle the phase this event ends — the one settle helper, at all
         // three of its points: `ThinkingEnd`, a backend error, and a run that
         // ended still thinking. **Before** the segment flush below, because
@@ -212,6 +231,18 @@ impl Session<'_> {
                 .apply_agent_settled(id, &event, matches!(settle, Some((true, _))));
         if viewing {
             self.commit_agent_view_event(&event, width, recorded);
+        }
+        // What the withdrawal took had reached the view's scrollback: rebuild
+        // it from the agent's transcript, which no longer holds any of it —
+        // saying why the text went first, since the rebuild paints the live
+        // region at once (the main view's rule, `tui::stream`).
+        if viewing && let Some((withdrawn, shown)) = retracted {
+            if withdrawn.anything() {
+                self.toast(CONNECTION_LOST_NOTICE, ToastKind::Info);
+            }
+            if shown || withdrawn.records > 0 {
+                let _ = self.repaint_agent_view();
+            }
         }
         // A message delivered into a settled run reopened it — the lead's
         // `agentsend`, or a message typed in the settle window

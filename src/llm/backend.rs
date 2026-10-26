@@ -1998,8 +1998,10 @@ fn stream_round(
     let mut captured = None;
     // One streaming attempt: stream the deltas as events and report the outcome
     // plus whether it emitted any content. `retry::run_attempts` re-runs it —
-    // after a `Retrying` announcement + backoff — only for a retryable failure
-    // that emitted nothing, so a retry can never duplicate streamed text.
+    // after a `Retrying` announcement + backoff — for a retryable failure that
+    // emitted nothing, and for a connection lost under one that did: the
+    // `Retrying` voids the failed attempt, its consumers withdrawing what it
+    // streamed, so a retry never duplicates streamed text (docs/offline.md).
     let attempt = || {
         let mut emitted = false;
         // Track the thinking phase so a reasoning burst opens exactly one
@@ -2039,9 +2041,13 @@ fn stream_round(
                 }
             }
         });
-        // A stream that ends while still "thinking" (reasoning only, no
-        // response) must still close the phase.
-        if thinking {
+        // A stream that completed while still "thinking" (reasoning only, no
+        // response) must still close the phase. A failed one leaves it open:
+        // the error and the interrupt settle it where they land, and the
+        // retry that may follow voids it — closing it here would commit a
+        // `Thought for …` cell only for the retry to take it back
+        // (docs/offline.md *A connection lost mid-reply*).
+        if thinking && result.is_ok() {
             let _ = tx.send(StreamEvent::ThinkingEnd);
         }
         match result {
@@ -3064,5 +3070,130 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         assert_eq!(specs[0].id, "c1");
         assert_eq!(specs[0].function.name, "bash");
         assert_eq!(specs[0].function.arguments, r#"{"command":"ls"}"#);
+    }
+
+    // --- a connection lost mid-reply (docs/offline.md) ---------------------
+
+    /// One answer of [`sse_server`]: its `data:` frames, and whether the
+    /// connection is **cut** after them — a chunked body that never gets its
+    /// terminating chunk, the shape a connection dying under a stream leaves.
+    struct SseAnswer {
+        frames: Vec<String>,
+        cut: bool,
+    }
+
+    /// A loopback chat-completions server answering its `n`th connection with
+    /// `answers[n]`, then closing it.
+    fn sse_server(answers: Vec<SseAnswer>) -> u16 {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for answer in answers {
+                let Ok((stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = BufReader::new(stream);
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                // The whole request body: a socket closed over unread bytes
+                // is reset rather than closed, which could lose the frames.
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let mut stream = reader.into_inner();
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\n",
+                );
+                let mut frames = answer.frames;
+                if !answer.cut {
+                    frames.push("[DONE]".to_string());
+                }
+                for frame in frames {
+                    let data = format!("data: {frame}\n\n");
+                    let _ = write!(stream, "{:x}\r\n{data}\r\n", data.len());
+                    let _ = stream.flush();
+                }
+                if !answer.cut {
+                    let _ = stream.write_all(b"0\r\n\r\n");
+                }
+                let _ = stream.flush();
+            }
+        });
+        port
+    }
+
+    /// A chat-completions frame whose delta carries `text` under `field`.
+    fn delta_frame(field: &str, text: &str) -> String {
+        serde_json::json!({"choices": [{"index": 0, "delta": {field: text}}]}).to_string()
+    }
+
+    #[test]
+    fn a_round_whose_connection_drops_mid_thought_restarts_without_settling_it() {
+        // The first answer streams a thought and then loses its connection;
+        // the second streams the whole round. The failed attempt's phase is
+        // left open for the retry to void — closing it would commit a
+        // `Thought for …` cell the withdrawal then has to take back
+        // (docs/offline.md *A connection lost mid-reply*).
+        let port = sse_server(vec![
+            SseAnswer {
+                frames: vec![delta_frame("reasoning_content", "Weighing it")],
+                cut: true,
+            },
+            SseAnswer {
+                frames: vec![
+                    delta_frame("reasoning_content", "Weighed."),
+                    delta_frame("content", "The whole reply."),
+                    serde_json::json!({
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                    })
+                    .to_string(),
+                ],
+                cut: false,
+            },
+        ]);
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = Some("not-a-real-key".into());
+        let client = OpenAiClient::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = stream_round(
+            &client,
+            &[ChatMessage::user("hi")],
+            &tx,
+            &CancelToken::new(),
+            MAX_RETRIES,
+        );
+        let RoundOutcome::Complete { text } = outcome else {
+            panic!("the restarted round did not complete");
+        };
+        assert_eq!(text, "The whole reply.");
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ThinkingStart,
+                StreamEvent::ThinkingChunk("Weighing it".into()),
+                StreamEvent::Retrying {
+                    attempt: 1,
+                    max: MAX_RETRIES
+                },
+                StreamEvent::ThinkingStart,
+                StreamEvent::ThinkingChunk("Weighed.".into()),
+                StreamEvent::ThinkingEnd,
+                StreamEvent::Chunk("The whole reply.".into()),
+            ]
+        );
     }
 }

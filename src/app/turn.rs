@@ -86,6 +86,14 @@ pub const SHELL_VERB: &str = "Running";
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
 
+/// The toast raised when a retry withdraws a reply the user had begun to see —
+/// its connection was lost under it, and the request is being sent again
+/// ([`App::withdraw_attempt`], `docs/offline.md` *A connection lost
+/// mid-reply*). It says why the text went; the status line's amber
+/// `retrying {n}/{max}` says what is happening. A toast, never a committed
+/// line: once the reply streams again it is nothing worth keeping.
+pub const CONNECTION_LOST_NOTICE: &str = "Connection lost mid-reply — starting it over";
+
 /// Humanize an elapsed count of whole seconds — combined two-unit, so the
 /// display scales past a bare seconds counter: `{s}s` under a minute (the
 /// live seconds keep ticking so a running timer never looks frozen),
@@ -450,6 +458,81 @@ impl App {
         })
     }
 
+    /// Note where the reply attempt now streaming began — the boundary calls
+    /// this with **every** reply event, before folding it. The first piece of
+    /// [attempt output] since an event of any other kind marks the history's
+    /// length there; any other event closes the mark, because each one is a
+    /// boundary an attempt cannot span — a usage frame, the round's calls, a
+    /// tool resolving, a steered message, the turn's end. A
+    /// [`Retrying`](crate::stream::StreamEvent::Retrying) leaves it for
+    /// [`withdraw_attempt`](App::withdraw_attempt) to take
+    /// (`docs/offline.md` *A connection lost mid-reply*).
+    ///
+    /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
+    pub fn track_attempt(&mut self, event: &crate::stream::StreamEvent) {
+        if event.is_attempt_output() {
+            self.attempt_floor.get_or_insert(self.history.len());
+        } else if !matches!(event, crate::stream::StreamEvent::Retrying { .. }) {
+            self.attempt_floor = None;
+        }
+    }
+
+    /// The failed reply attempt is void — its request is being sent again
+    /// ([`crate::stream::StreamEvent::Retrying`]) — so take back everything it
+    /// streamed before the next attempt's first byte arrives: re-sent after
+    /// content, a request would otherwise **duplicate** it
+    /// (`docs/offline.md` *A connection lost mid-reply*).
+    ///
+    /// Withdrawn: the reply text it streamed (the stream itself stays open for
+    /// the next attempt), a thinking phase it opened — dropped, never settled
+    /// into a cell — the calls it was still generating, the `/compact` summary
+    /// so far, and the history items it recorded since
+    /// [`track_attempt`](App::track_attempt)'s mark: a run of its text
+    /// finalised when a phase or a `write` preview opened, and a thought it
+    /// settled. An attempt records nothing else, and the withdrawal never pops
+    /// an item of any other kind — a stale mark can only take back too little.
+    /// A retry before any content finds nothing and returns the default.
+    pub fn withdraw_attempt(&mut self) -> Withdrawn {
+        let live = self
+            .streaming
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+            || self.reasoning.is_some()
+            || self.tool_drafts.previews().next().is_some();
+        if let Some(text) = self.streaming.as_mut() {
+            text.clear();
+        }
+        if let Some(summary) = self.compact_buffer.as_mut() {
+            summary.clear();
+        }
+        self.reasoning = None;
+        self.tool_drafts.clear();
+        let mut records = 0;
+        if let Some(floor) = self.attempt_floor.take() {
+            while self.history.len() > floor
+                && self.history.last().is_some_and(|item| match item {
+                    HistoryItem::Reasoning(_) => true,
+                    HistoryItem::Message(message) => message.role == Role::Assistant,
+                    _ => false,
+                })
+            {
+                self.history.pop();
+                records += 1;
+            }
+        }
+        if records > 0 {
+            // A non-append mutation: the Ctrl+O cache's frozen prefix and the
+            // rollout's watermark both read the generation
+            // (docs/tool-view-performance.md).
+            self.history_generation += 1;
+            // A withdrawn thought is no snap target for the round's usage
+            // frame — that count belongs to the attempt that gets through.
+            let len = self.history.len();
+            self.round_reasoning.retain(|&index| index < len);
+        }
+        Withdrawn { records, live }
+    }
+
     /// End the in-progress turn because the user interrupted it (Esc), which
     /// had run `elapsed_secs` by the boundary's clock. Returns the
     /// [`InterruptedTurn`] telling the loop how to settle the screen, or
@@ -750,6 +833,30 @@ pub struct StreamError {
     pub agents: Option<AgentGroup>,
     /// The error message to show the user.
     pub error: String,
+}
+
+/// What [`App::withdraw_attempt`] took back of a failed reply attempt, for the
+/// boundary to settle the screen by (`docs/offline.md` *A connection lost
+/// mid-reply*). The default — nothing at all — is a retry before any content.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct Withdrawn {
+    /// History items the attempt had recorded and the withdrawal popped — a
+    /// finalised run of its text, a thought it settled. Whatever of them
+    /// reached scrollback is now on screen with nothing behind it, so the
+    /// boundary rebuilds from history.
+    pub records: usize,
+    /// Whether the strip was showing any of the attempt's output — reply text,
+    /// an open thought, a `write` previewing — which goes with the next frame.
+    pub live: bool,
+}
+
+impl Withdrawn {
+    /// Did the withdrawal take back anything the user could see?
+    #[must_use]
+    pub const fn anything(self) -> bool {
+        self.records > 0 || self.live
+    }
 }
 
 /// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to

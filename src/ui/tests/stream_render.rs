@@ -3,6 +3,30 @@
 use super::*;
 
 #[test]
+fn the_render_says_whether_any_of_the_reply_reached_scrollback() {
+    // What a withdrawn reply attempt needs to know (docs/offline.md *A
+    // connection lost mid-reply*): rows already committed must be rebuilt
+    // away; a reply still on its first line lives only in the strip.
+    let mut render = StreamRender::new();
+    assert!(!render.has_committed());
+    assert!(render.commit("Half a li", 80).is_empty());
+    assert!(
+        !render.has_committed(),
+        "the line still growing is withheld"
+    );
+    assert!(!render.commit("Half a line.\nAnd mo", 80).is_empty());
+    assert!(
+        render.has_committed(),
+        "the finished line went to scrollback"
+    );
+    render.reset();
+    assert!(
+        !render.has_committed(),
+        "a reset starts the next reply clean"
+    );
+}
+
+#[test]
 fn wrapped_code_and_heading_links_never_commit_partial_targets() {
     let url = format!(
         "https://example.test/?token={}",

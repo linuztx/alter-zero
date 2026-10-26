@@ -171,7 +171,10 @@ copy":
   on the floor and `agent_view_status` hard-coded `retry: None`, so a subagent
   reconnecting showed a bare spinner while the main turn says what it is doing
   (`docs/llm.md`). `AgentRun::retry` now carries it, cleared by the next
-  streamed chunk exactly as `App::push_chunk` clears the main one.
+  streamed chunk exactly as `App::push_chunk` clears the main one. A retry
+  also voids the failed attempt, here as in the main view: `AgentRun::apply`
+  withdraws what it streamed, and an open session view rebuilds without the
+  rows it had committed (`docs/offline.md` *A connection lost mid-reply*).
 - **The agent's Ctrl+O tail.** `agent_transcript_lines` rendered settled
   `HistoryItem::Reasoning` cells but not the *open* phase; the main tail shows
   it whole (`reasoning_live_full_lines` — the pager has no row budget, unlike

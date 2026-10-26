@@ -115,6 +115,16 @@ impl StreamRender {
         *self = Self::new();
     }
 
+    /// Has any row of this reply reached scrollback since the last
+    /// [`reset`](Self::reset)? A reply still on its first line lives only in
+    /// the strip's preview; one that has committed rows needs a rebuild to be
+    /// taken back — what a withdrawn reply attempt asks (`docs/offline.md` *A
+    /// connection lost mid-reply*).
+    #[must_use]
+    pub const fn has_committed(&self) -> bool {
+        self.committed > 0
+    }
+
     /// Fold every source line that has become **complete** (is newline-terminated)
     /// since the last call into `frozen`, advancing the renderer. Cheap: only the
     /// lines past `consumed`. A width change rebuilds from scratch first.

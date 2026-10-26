@@ -702,6 +702,22 @@ impl App {
         Some(settled)
     }
 
+    /// Withdraw what agent `id`'s failed reply attempt streamed
+    /// ([`AgentRun::withdraw_attempt`]) and report it — the session view runs
+    /// this ahead of folding the agent's [`StreamEvent::Retrying`] to learn
+    /// what its screen must give back (`docs/offline.md` *A connection lost
+    /// mid-reply*). The default when nothing went, or no such agent is listed.
+    pub fn withdraw_agent_attempt(&mut self, id: &str) -> Withdrawn {
+        let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
+            return Withdrawn::default();
+        };
+        let withdrawn = agent.withdraw_attempt();
+        if withdrawn.anything() {
+            self.agents_generation += 1;
+        }
+        withdrawn
+    }
+
     /// Inject one agent's **open thinking phase** elapsed before a draw (the
     /// [`set_agent_runtime`](App::set_agent_runtime) sibling), so its session
     /// view's status line shows `Thinking for Ns`.

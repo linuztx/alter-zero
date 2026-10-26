@@ -403,7 +403,17 @@ slot, and `ui::offline`'s `⎿ ((·)) No connection to {host} — trying again �
 N attempts` row hanging off the line through `ui::hang_rows`, the ripple
 fading with distance on the status line's own clock, the tip giving way to
 it; a refused loopback Ollama stays `ollama serve` advice on the bounded
-retry (`ollama::is_local_base`); a drop mid-reply is still surfaced; Esc
+retry (`ollama::is_local_base`); a connection lost **mid-reply** (`os error
+110` once reqwest's keepalive/`TCP_USER_TIMEOUT` give up on a silent path, a
+reset, a body cut short — `LlmError::Http` with content emitted) restarts the
+round on the bounded retry instead of ending the turn, the
+`StreamEvent::Retrying` announcing it **voiding** the failed attempt for
+every consumer — `App::withdraw_attempt` (back to `App::track_attempt`'s
+mark, popping only reply text and thoughts), `AgentRun::apply`, the
+subagent forwarder's `RunRecorder` — the backend leaving a failed attempt's
+open thought unclosed, the boundary purge-rebuilding whatever had reached
+scrollback under a `Connection lost mid-reply — starting it over` toast
+(`docs/offline.md` *A connection lost mid-reply*, `smoke.sh` Phase 145); Esc
 interrupts and the undo hands the unsent message back; `smoke.sh` Phase
 129), and the **`/theme` picker** that switches
 the whole **colour theme** (`docs/theme.md`: every colour the chrome paints

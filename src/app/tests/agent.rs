@@ -746,6 +746,30 @@ fn an_agents_thinking_phase_settles_onto_its_own_transcript() {
 }
 
 #[test]
+fn withdrawing_an_agents_failed_attempt_reports_what_went() {
+    // The session view runs the withdrawal ahead of the fold to learn what
+    // its screen must give back (docs/offline.md *A connection lost
+    // mid-reply*); the roster's cache hears of it, and an agent that streamed
+    // nothing — or is not on the roster — has nothing to give.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    assert_eq!(app.withdraw_agent_attempt("a1"), Withdrawn::default());
+    app.apply_agent_event("a1", &StreamEvent::Chunk("Half a rep".into()));
+    let generation = app.agents_generation();
+    assert_eq!(
+        app.withdraw_agent_attempt("a1"),
+        Withdrawn {
+            records: 0,
+            live: true
+        }
+    );
+    assert!(app.agents_generation() > generation);
+    assert_eq!(app.agent("a1").expect("listed").streaming, None);
+    assert_eq!(app.withdraw_agent_attempt("nobody"), Withdrawn::default());
+}
+
+#[test]
 fn an_empty_agent_thinking_phase_records_nothing() {
     // A provider that opens and closes a phase without a delta: no
     // `Thought for 0s` noise (the main session's rule).

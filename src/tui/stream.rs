@@ -32,7 +32,7 @@
 
 use ratatui::text::Line;
 
-use alter_zero::app::Role;
+use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View};
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -44,6 +44,10 @@ impl Session<'_> {
     /// (`StreamDone`/`Error`), so the caller can run the turn-end dispatch. The
     /// commit work mirrors how a resize repaints the same items from history.
     pub(crate) fn on_stream_event(&mut self, event: StreamEvent) -> bool {
+        // Where the reply attempt now streaming began — what a `Retrying`
+        // withdraws back to (docs/offline.md *A connection lost mid-reply*).
+        // Every event, before it is folded.
+        self.app.track_attempt(&event);
         let width = self.term.screen().width;
         let committing = self.commits_allowed();
         match event {
@@ -417,10 +421,29 @@ impl Session<'_> {
             }
             StreamEvent::StreamDone => self.on_stream_done(committing, width),
             StreamEvent::Retrying { attempt, max } => {
-                // A failed request is being retried (the connection/send failed
-                // before any content streamed). Show it live in the status line;
-                // nothing commits to scrollback — the turn is still in flight.
+                // A failed request is being retried — before any content
+                // streamed, or after its connection was lost under the reply.
+                // The failed attempt is void (docs/offline.md *A connection
+                // lost mid-reply*): what it streamed is withdrawn before the
+                // next attempt's first byte — a phase it opened goes without
+                // settling, so its clock stops, and rows it had committed are
+                // rebuilt away — then the retry shows live in the status line.
+                let shown = self.render.has_committed();
+                let withdrawn = self.app.withdraw_attempt();
+                self.render.reset();
+                self.clocks.thinking_start = None;
                 self.app.set_retry(attempt, max);
+                // Said only where it was seen: inside an agent's session view
+                // the main reply is not on screen, and a toast there would
+                // blame the agent's (`tui::agent` says so for its own). Raised
+                // before the rebuild below, which paints the live region at
+                // once — so the frame that takes the text away says why.
+                if withdrawn.anything() && self.app.agent_view.is_none() {
+                    self.toast(CONNECTION_LOST_NOTICE, ToastKind::Info);
+                }
+                if shown || withdrawn.records > 0 {
+                    self.retract_withdrawn_rows();
+                }
                 false
             }
             StreamEvent::Offline { host, attempts } => {
@@ -715,6 +738,27 @@ impl Session<'_> {
         }
         // Best-effort like every mid-event repaint: a failed write means the
         // terminal is gone, and the next draw tick repaints anyway.
+        let _ = self.repaint_conversation();
+    }
+
+    /// A withdrawn reply attempt had reached scrollback — its committed lines,
+    /// a run of its text finalised before a phase, a thought it settled — and
+    /// history no longer holds any of it: rebuild the conversation from
+    /// history, the purge every rewind takes, so the screen agrees with it
+    /// (`docs/offline.md` *A connection lost mid-reply*). Under an
+    /// alternate-screen overlay the rebuild waits for the return (the purge
+    /// drops the queued commits the attempt left), and with an agent session
+    /// view open the main conversation is not on screen at all — leaving the
+    /// view rebuilds it.
+    fn retract_withdrawn_rows(&mut self) {
+        if self.app.view != View::Conversation {
+            self.overlay_resized = true;
+            return;
+        }
+        if self.app.agent_view.is_some() {
+            return;
+        }
+        // Best-effort, `prompt_blocked`'s rule.
         let _ = self.repaint_conversation();
     }
 }
