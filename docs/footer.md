@@ -7,14 +7,14 @@ below the input box's bottom rule, giving ambient session context —
 ────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────
-  dummy_model_name · ~/alter-zero                    manual
+  dummy_model_name · ~/alter-zero                      auto
 ```
 
 — the backend's model name and the current working directory, joined with
 ` · `, and — pinned flush at the row's **right edge**, its own zone — the
-session's **permission mode** (`manual`/`edit`, the posture Shift+Tab toggles —
-`docs/permissions.md`; hidden when permissions are disabled). See `CLAUDE.md`
-for where this sits in the runtime model.
+session's **permission mode** (`auto` until a project saves another, the
+posture Shift+Tab cycles — `docs/permissions.md`; hidden when permissions are
+disabled). See `CLAUDE.md` for where this sits in the runtime model.
 
 ## What codex does (findings)
 
@@ -86,13 +86,14 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
   decimal — `docs/compact.md`) and the running **background shell** count
   (`docs/background.md`) — and one segment sits *outside* the chain, pinned
-  flush at the row's **right edge**: the **permission mode** (`manual`/`edit`
-  — `App::permission_mode`, injected by the boundary and `None` while
-  permissions are disabled, which drops it; `docs/permissions.md`). Its
+  flush at the row's **right edge**: the **permission mode**
+  (`auto`/`manual`/`edit`/`master` — `App::permission_mode`, injected by the
+  boundary and `None` while permissions are disabled, which drops it;
+  `docs/permissions.md`). Its
   columns plus a `FOOTER_MODE_GAP` gutter are reserved off the chain's budget
   up front, so the `…` truncation always eats the left content and never the
   one segment with a safety meaning. A full row reads
-  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`;
+  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     auto`;
   a selected speed tier follows the thinking mode — `gpt-5.5 medium fast ·
   ~/repo`, `gpt-5.6-sol ultrafast · ~/repo` — wearing whatever name the
   model's listing gave the tier its command selected (`/fast`,

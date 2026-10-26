@@ -533,7 +533,9 @@ mod tests {
         let dir = std::env::temp_dir().join("alter-zero-0/s1/scratchpad");
         let path = dir.join("notes.md");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let gate = PermissionGate::new();
+        // Manual: in the modes that let file changes run, the mode covers
+        // the write before the exemption is ever asked (docs/scratchpad.md).
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
         gate.set_scratchpad(Some(dir));
         let call = call(
             "write",
@@ -568,7 +570,7 @@ mod tests {
     fn a_write_outside_the_scratchpad_still_asks() {
         let dir = std::env::temp_dir().join("alter-zero-0/s1/scratchpad");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let gate = PermissionGate::new();
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
         gate.set_scratchpad(Some(dir));
         let cancel = CancelToken::new();
         let call = call(
@@ -828,7 +830,7 @@ mod tests {
     #[test]
     fn a_rejection_carries_the_short_cell_text_and_the_long_instruction() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let gate = PermissionGate::new();
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
         let cancel = CancelToken::new();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hello.py");
@@ -1631,15 +1633,15 @@ mod tests {
         crate::secrets::SecretRegistry::new(store)
     }
 
-    /// Put `call` to a fresh gate with the session's secrets, on a thread:
-    /// the request the prompt was raised with, and the approval once
-    /// `decision` answers it.
+    /// Put `call` to a fresh gate in manual mode — which asks about every
+    /// call — with the session's secrets, on a thread: the request the prompt
+    /// was raised with, and the approval once `decision` answers it.
     fn ask_with_secrets(
         call: ToolCallRequest,
         decision: PermissionDecision,
     ) -> (PermissionRequest, Approval) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let gate = PermissionGate::new();
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
         let cancel = CancelToken::new();
         let secrets = secrets();
         let waiter = {

@@ -19,7 +19,7 @@ per change.
   Auto-resize images      true
   Error retry             3
   Tools                   true
-  Permission mode         manual
+  Permission mode         auto
   ...
   Max tool calls          0
   (1/18)
@@ -44,7 +44,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |
 | **Error retry** | `0` / `1` / `2` / `3` / `5` / `10` | How many times a request the provider **answers badly** (a `5xx`, a reset, a stall) is retried before the error surfaces (`llm::retry`, the `retrying n/N` status). A connection that cannot be made at all is not counted: it is **waited for**, every few seconds for as long as it takes, under the `Waiting for internet…` status (`docs/offline.md`). `0` means never retry, the wait included. Was the fixed `MAX_RETRIES = 3`. |
 | **Tools** | `true` / `false` | Whether `bash`/`read`/`write`/`edit`/`agent` are offered to the model at all (`docs/tools.md`). Seeded from `ALTER_ZERO_TOOLS`. Off also withdraws both halves of the `<system-reminder>` — the skills listing and the agent-type listing (`docs/subagents.md`): a roster for a tool the request never carries is a dead end. |
-| **Permission mode** | `manual` / `edit` / `auto` / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. |
+| **Permission mode** | `manual` / `edit` / **`auto`** / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. **`auto` until a project saves another mode**, which it keeps per project in `permissions.json` rather than `settings.json`; seeded for a run, and never saved, from `ALTER_ZERO_PERMISSION_MODE`. |
 | **Checkpoints** | **`false`** / `true` | Per-turn working-directory snapshots (`docs/checkpoint.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
@@ -191,7 +191,7 @@ sheds rows before it flows*):
   ❯
   ↑ 5 more above
   Tools                true
-→ Permission mode      manual
+→ Permission mode      auto
   Checkpoints          false
   ↓ 10 more below
   Type to search · Enter/Space to change · Esc to cancel

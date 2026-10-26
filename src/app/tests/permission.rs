@@ -464,7 +464,9 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
     use crate::stream::{CancelToken, StreamEvent};
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // Manual, so the write asks — auto, the default, would just run it.
     let gate = PermissionGate::new();
+    gate.set_mode(crate::permission::PermissionMode::Manual);
     let cancel = CancelToken::new();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("hello.py");

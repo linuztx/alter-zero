@@ -207,7 +207,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 ### Choose how much control to keep
 
 - **Review at the approval prompt.** Inspect proposed file content, diffs, and commands before approving them. Approve once, allow a session rule, or reject with instructions using **Tab**. **Ctrl+E** asks for a command explanation.
-- **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto` adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
+- **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
 - **Project trust.** Review project-defined agents, hooks, and MCP servers with `/trust` before they can run.
 

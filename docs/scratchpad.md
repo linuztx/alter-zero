@@ -121,6 +121,11 @@ It is also **visible**: the call resolves as `Approval::AllowNoted` with
 (`docs/permissions.md`), recorded on the call, replayed in Ctrl+O, and
 round-tripped by a `/resume`. Nothing runs unasked without saying so.
 
+The exemption is what lets a scratchpad write through in **manual** mode. In
+edit and auto — the default — every file change already runs under the mode
+the footer names, so a scratchpad write is covered there first, like any other
+write, and wears no note.
+
 ## Configuration
 
 - `ALTER_ZERO_SCRATCHPAD` — falsy (`0`/`false`/`no`/`off`) turns the whole

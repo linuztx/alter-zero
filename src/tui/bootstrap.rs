@@ -663,7 +663,8 @@ impl<'t> Session<'t> {
         let speed = self.models.speed_state();
         self.app.set_speed(speed);
         // The footer's right-edge permission segment (docs/permissions.md):
-        // seeded from the gate (which just loaded this project's saved mode), or
+        // seeded from the gate (which just took the session's starting mode —
+        // the run's seed, else this project's saved mode, else auto), or
         // hidden entirely when permissions are disabled — nothing asks, so a mode
         // would be a lie.
         let mode = self.permissions.mode();

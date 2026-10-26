@@ -24,6 +24,12 @@
 //! be settled there unseen, so the moment someone is actually asked — what a
 //! `Notification` hook announces (`docs/hooks.md`) — is the loop's to say.
 //!
+//! A session starts in **auto** unless this project saved another mode or
+//! `ALTER_ZERO_PERMISSION_MODE` seeds one for the run
+//! ([`PermissionsFile::starting_mode`](alter_zero::permission::PermissionsFile::starting_mode)).
+//! The seed rides the gate's live rules but never reaches the file: a mode
+//! change saves only the mode, a new rule only the allowlist.
+//!
 //! `ALTER_ZERO_PERMISSIONS=0` starts the session with **no gate**: nothing
 //! asks, every tool runs unasked, and the footer shows no mode (a mode with
 //! nothing asking would be a lie).
@@ -45,7 +51,8 @@ pub(crate) struct PermissionStore {
     /// "don't ask again for X" stick across turns and across a `/model` rebuild.
     gate: Option<PermissionGate>,
     /// `~/.alter-zero/permissions.json`; `None` disables persistence, and every
-    /// session then starts asking afresh.
+    /// session then starts afresh — no rules, and the default mode unless the
+    /// run is seeded.
     path: Option<PathBuf>,
     /// This working directory — the file's key, so a rule granted in one
     /// project never leaks into another.
@@ -58,8 +65,9 @@ pub(crate) struct PermissionStore {
 impl PermissionStore {
     /// Open the store for `cwd`: build the gate (unless
     /// `ALTER_ZERO_PERMISSIONS` is falsy) and seed it with this project's saved
-    /// command rules and mode, so "don't ask again" survives a restart in the
-    /// same directory.
+    /// command rules, so "don't ask again" survives a restart in the same
+    /// directory, and with the mode the session starts in — the run's seed,
+    /// else the saved mode, else auto.
     pub(crate) fn open(cwd: &Path) -> Self {
         let store = Self {
             gate: config::permissions_enabled().then(PermissionGate::new),
@@ -72,8 +80,8 @@ impl PermissionStore {
             if let Some(entry) = saved.project(&store.project) {
                 let (prefixes, exact) = entry.command_sets();
                 gate.seed_commands(prefixes, exact);
-                gate.set_mode(entry.saved_mode());
             }
+            gate.set_mode(saved.starting_mode(&store.project, config::permission_mode_seed()));
         }
         store
     }
@@ -97,9 +105,19 @@ impl PermissionStore {
     pub(crate) fn remember(&self, request: &PermissionRequest) {
         if let Some(gate) = self.gate.as_ref() {
             gate.remember(request);
-            // A session's approval is not a rule — nothing new to save.
-            if request.kind != PermissionKind::Session {
-                self.save(gate);
+            match request.kind {
+                // Option 2 on a file prompt *is* the switch to edit mode —
+                // the user's own pick, saved like a Shift+Tab.
+                PermissionKind::Write | PermissionKind::Edit => self.save_mode(gate.mode()),
+                // A rule saves the allowlist alone, never the live mode,
+                // which may be the run's seed.
+                PermissionKind::Bash | PermissionKind::Mcp => config::save_permission_commands(
+                    self.path.as_deref(),
+                    &self.project,
+                    &gate.rules(),
+                ),
+                // A session's approval is not a rule — nothing new to save.
+                PermissionKind::Session => {}
             }
         }
     }
@@ -111,13 +129,13 @@ impl PermissionStore {
         }
     }
 
-    /// Switch the session's mode (Shift+Tab) and persist it. The approve seam reads
-    /// the gate's rules, so the very next `write`/`edit`/`bash` obeys the new
-    /// posture.
+    /// Switch the session's mode (Shift+Tab, the `/settings` row) and persist
+    /// it. The approve seam reads the gate's rules, so the very next
+    /// `write`/`edit`/`bash` obeys the new posture.
     pub(crate) fn set_mode(&self, mode: PermissionMode) {
         if let Some(gate) = self.gate.as_ref() {
             gate.set_mode(mode);
-            self.save(gate);
+            self.save_mode(mode);
         }
     }
 
@@ -167,11 +185,11 @@ impl PermissionStore {
         }
     }
 
-    /// Write this project's live rules back to the file — a read-modify-write
-    /// (so other projects' entries survive) and best-effort, like every write
-    /// at this boundary.
-    fn save(&self, gate: &PermissionGate) {
-        config::save_permissions(self.path.as_deref(), &self.project, &gate.rules());
+    /// Write a mode the user picked as this project's — only the mode, so the
+    /// entry's allowlist stands — read-modify-write and best-effort, like
+    /// every write at this boundary.
+    fn save_mode(&self, mode: PermissionMode) {
+        config::save_permission_mode(self.path.as_deref(), &self.project, mode);
     }
 }
 

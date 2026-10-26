@@ -32,7 +32,7 @@ use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
     Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
-use alter_zero::permission::{PermissionRules, PermissionsFile};
+use alter_zero::permission::{PermissionMode, PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
 use alter_zero::settings::{SessionSettings, SettingKey, SettingsFile};
 use alter_zero::stream;
@@ -469,17 +469,34 @@ pub(crate) fn load_permissions(path: Option<&Path>) -> PermissionsFile {
         .unwrap_or_default()
 }
 
-/// Persist the session's live rules as this project's entry. A
-/// read-modify-write — the file is re-read first, so entries other projects
-/// wrote meanwhile survive — and best-effort like `save_settings`: a write
-/// failure is swallowed (a read-only home must never kill the TUI). See
-/// `docs/permissions.md`.
-pub(crate) fn save_permissions(path: Option<&Path>, project: &str, rules: &PermissionRules) {
+/// Persist the session's command allowlist as this project's, keeping the
+/// mode its entry saves (`PermissionsFile::record_commands`) — the live rules
+/// carry the run's `ALTER_ZERO_PERMISSION_MODE` seed, which is never saved.
+pub(crate) fn save_permission_commands(
+    path: Option<&Path>,
+    project: &str,
+    rules: &PermissionRules,
+) {
+    save_permissions(path, |file| file.record_commands(project, rules));
+}
+
+/// Persist `mode` — one the user picked — as this project's saved mode,
+/// keeping its allowlist (`PermissionsFile::record_mode`).
+pub(crate) fn save_permission_mode(path: Option<&Path>, project: &str, mode: PermissionMode) {
+    save_permissions(path, |file| file.record_mode(project, mode));
+}
+
+/// The write both of those make: a read-modify-write — the file is re-read
+/// first, so entries other projects wrote meanwhile survive, and `change`
+/// moves across only what changed in this project's — best-effort like
+/// `save_settings`: a write failure is swallowed (a read-only home must never
+/// kill the TUI). See `docs/permissions.md`.
+fn save_permissions(path: Option<&Path>, change: impl FnOnce(&mut PermissionsFile)) {
     let Some(path) = path else {
         return;
     };
     let mut file = load_permissions(Some(path));
-    file.record(project, rules);
+    change(&mut file);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -810,6 +827,14 @@ pub(crate) fn thinking_settings_of(
 /// behaviour. See `docs/permissions.md`.
 pub(crate) fn permissions_enabled() -> bool {
     env_flag("ALTER_ZERO_PERMISSIONS")
+}
+
+/// The mode `ALTER_ZERO_PERMISSION_MODE` seeds this run with — outranking the
+/// project's saved mode, never saved (`permission::mode_by_env` decides,
+/// `docs/permissions.md`).
+pub(crate) fn permission_mode_seed() -> Option<PermissionMode> {
+    let value = std::env::var("ALTER_ZERO_PERMISSION_MODE").ok();
+    alter_zero::permission::mode_by_env(value.as_deref())
 }
 
 /// A feature toggle read from the environment: **on** unless `name` is set to

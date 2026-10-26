@@ -20,29 +20,31 @@ use serde::{Deserialize, Serialize};
 const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// The session's permission posture — which tool calls ask before running.
-/// Pinned at the footer's right edge (`{model} · {cwd}      manual`), cycled
+/// Pinned at the footer's right edge (`{model} · {cwd}      auto`), cycled
 /// with **Shift+Tab** in increasing autonomy (option 2 on a `write`/`edit`
 /// prompt switches to `Edit` too), and persisted per project in
-/// `permissions.json`. See `docs/permissions.md`.
+/// `permissions.json`. A session starts in [`Auto`](Self::Auto), the default,
+/// unless the project saved another mode or the run is seeded with one
+/// ([`PermissionsFile::starting_mode`]). See `docs/permissions.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PermissionMode {
     /// Ask before every `write`/`edit` **and** every `bash` command — Claude
     /// Code's default posture, and the only one that can't be wrong about
-    /// what is safe.
-    #[default]
+    /// what is safe, so a mode that can't be read degrades to it.
     Manual,
     /// Auto-approve `write`/`edit` (Claude Code's "auto-accept edits on");
     /// `bash` commands still ask until allow-listed.
     Edit,
-    /// Claude Code's auto mode: `write`/`edit` run unasked like [`Edit`],
-    /// and a `bash` command — or an MCP tool call (`docs/mcp.md`) — is
-    /// reviewed by the **auto mode classifier** — a silent LLM safety check —
-    /// instead of the user. An allowed call runs (its cell noting
-    /// [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is rejected with the
-    /// classifier's reason; a classifier *failure* falls back to the
-    /// ordinary prompt. See `docs/permissions.md`.
+    /// Claude Code's auto mode, and **the default**: `write`/`edit` run
+    /// unasked like [`Edit`], and a `bash` command — or an MCP tool call
+    /// (`docs/mcp.md`) — is reviewed by the **auto mode classifier** — a
+    /// silent LLM safety check — instead of the user. An allowed call runs
+    /// (its cell noting [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is
+    /// rejected with the classifier's reason; a classifier *failure* falls
+    /// back to the ordinary prompt. See `docs/permissions.md`.
     ///
     /// [`Edit`]: Self::Edit
+    #[default]
     Auto,
     /// Everything runs unasked — Claude Code's bypass-permissions posture.
     /// No prompt, no classifier: the user has taken the seatbelt off.
@@ -85,6 +87,19 @@ impl PermissionMode {
             Self::Master => Self::Manual,
         }
     }
+}
+
+/// The mode `ALTER_ZERO_PERMISSION_MODE` seeds a run with, given its value —
+/// the `checkpoint::enabled_by_env` pattern: the boundary reads the variable
+/// and this decides. Unset or blank seeds nothing, leaving it to the
+/// project's saved mode or the default ([`PermissionsFile::starting_mode`]);
+/// a mode name seeds that mode, in any case; anything else seeds
+/// [`Manual`](PermissionMode::Manual) — the rule an unreadable saved label
+/// follows too, so a seed that can't be read asks more, never less.
+#[must_use]
+pub fn mode_by_env(value: Option<&str>) -> Option<PermissionMode> {
+    let value = value.map(str::trim).filter(|v| !v.is_empty())?;
+    Some(PermissionMode::parse(&value.to_ascii_lowercase()).unwrap_or(PermissionMode::Manual))
 }
 
 /// What a pending request is asking permission to do — the prompt's title, its
@@ -835,8 +850,11 @@ const PREFIX_RULE_SUFFIX: &str = " *";
 /// ```
 ///
 /// Pure format/parse (the `Settings` pattern, `docs/llm.md`) — the file
-/// read/write lives in `main.rs`, which loads it at startup to seed the gate
-/// and rewrites this project's entry on every rule change.
+/// read/write lives at the boundary (`tui::config`), which loads it at
+/// startup to seed the gate ([`starting_mode`](Self::starting_mode)) and, on
+/// every change, re-reads it and rewrites only what changed in this
+/// project's entry ([`record_commands`](Self::record_commands) or
+/// [`record_mode`](Self::record_mode)).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionsFile {
     /// One entry per project directory (its absolute path).
@@ -851,37 +869,44 @@ pub struct ProjectPermissions {
     /// else is an exact command (the `PREFIX_RULE_SUFFIX` encoding).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_commands: Vec<String>,
-    /// The project's saved [`PermissionMode`] label; absent = `manual` (the
-    /// default posture is not worth writing out, and old files stay valid).
+    /// The project's saved [`PermissionMode`] label; absent = the default,
+    /// `auto` ([`saved_mode`](Self::saved_mode)). Only a mode moved off the
+    /// default is written — `manual` included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 }
 
 impl ProjectPermissions {
-    /// The entry recording the session's live rules.
+    /// The saved mode. An absent key is the default — which is also how an
+    /// entry from before the default moved reads, since `manual` was the key
+    /// it left out then — while a label that can't be read degrades to
+    /// [`PermissionMode::Manual`]: a hand-edited file asks more, never less.
     #[must_use]
-    pub fn from_rules(rules: &PermissionRules) -> Self {
-        let mut allow_commands: Vec<String> = rules
+    pub fn saved_mode(&self) -> PermissionMode {
+        self.mode
+            .as_deref()
+            .map_or_else(PermissionMode::default, |label| {
+                PermissionMode::parse(label).unwrap_or(PermissionMode::Manual)
+            })
+    }
+
+    /// `rules`' allowlist as [`allow_commands`](Self::allow_commands) rows,
+    /// sorted.
+    fn command_rows(rules: &PermissionRules) -> Vec<String> {
+        let mut rows: Vec<String> = rules
             .prefixes
             .iter()
             .map(|p| format!("{p}{PREFIX_RULE_SUFFIX}"))
             .chain(rules.exact.iter().cloned())
             .collect();
-        allow_commands.sort();
-        Self {
-            allow_commands,
-            mode: (rules.mode != PermissionMode::Manual).then(|| rules.mode.label().to_string()),
-        }
+        rows.sort();
+        rows
     }
 
-    /// The saved mode, defaulting to `manual` for an absent or unknown label
-    /// (a hand-edited file degrades to asking, never to allowing).
-    #[must_use]
-    pub fn saved_mode(&self) -> PermissionMode {
-        self.mode
-            .as_deref()
-            .and_then(PermissionMode::parse)
-            .unwrap_or_default()
+    /// `mode` as the [`mode`](Self::mode) key: nothing for the default, which
+    /// is not worth writing out, and the label for any other.
+    fn mode_key(mode: PermissionMode) -> Option<String> {
+        (mode != PermissionMode::default()).then(|| mode.label().to_string())
     }
 
     /// Decode [`allow_commands`](Self::allow_commands) into the rules' two
@@ -926,12 +951,36 @@ impl PermissionsFile {
         self.projects.get(dir)
     }
 
-    /// Record `rules` as `dir`'s entry (replacing what was there), leaving
-    /// every other project's entry untouched — the caller re-reads the file
-    /// first, so two instances in two directories never clobber each other.
-    pub fn record(&mut self, dir: &str, rules: &PermissionRules) {
+    /// The mode a session in `dir` starts in: the run's `seed`
+    /// (`ALTER_ZERO_PERMISSION_MODE`, [`mode_by_env`]) when there is one, else
+    /// the mode the project saved, else the default — auto. The seed outranks
+    /// the file the way every `ALTER_ZERO_*` override does, and is never
+    /// written back ([`record_commands`](Self::record_commands)).
+    #[must_use]
+    pub fn starting_mode(&self, dir: &str, seed: Option<PermissionMode>) -> PermissionMode {
+        seed.unwrap_or_else(|| {
+            self.project(dir)
+                .map_or_else(PermissionMode::default, ProjectPermissions::saved_mode)
+        })
+    }
+
+    /// Record `rules`' command allowlist as `dir`'s, **keeping the mode** its
+    /// entry saves — a new rule is not a mode change, and the live rules'
+    /// mode may be a run's seed the project never chose. Every other
+    /// project's entry is left alone: the caller re-reads the file first, so
+    /// two instances in two directories never clobber each other.
+    pub fn record_commands(&mut self, dir: &str, rules: &PermissionRules) {
         self.projects
-            .insert(dir.to_string(), ProjectPermissions::from_rules(rules));
+            .entry(dir.to_string())
+            .or_default()
+            .allow_commands = ProjectPermissions::command_rows(rules);
+    }
+
+    /// Record `mode` as `dir`'s saved mode, **keeping its allowlist** — a mode
+    /// the user picked (Shift+Tab, the `/settings` row, option 2 on a file
+    /// prompt). The default is recorded by leaving the key out.
+    pub fn record_mode(&mut self, dir: &str, mode: PermissionMode) {
+        self.projects.entry(dir.to_string()).or_default().mode = ProjectPermissions::mode_key(mode);
     }
 }
 
@@ -1482,8 +1531,17 @@ mod tests {
     }
 
     #[test]
+    fn a_session_starts_in_auto_mode() {
+        // Auto is the default posture (docs/permissions.md): file changes
+        // run, and a command the allowlist doesn't cover goes to the
+        // classifier — so a fresh gate, and the rules it holds, start there.
+        assert_eq!(PermissionMode::default(), PermissionMode::Auto);
+        assert_eq!(PermissionRules::default().mode, PermissionMode::Auto);
+        assert_eq!(PermissionGate::new().mode(), PermissionMode::Auto);
+    }
+
+    #[test]
     fn the_mode_labels_round_trip_and_cycle() {
-        assert_eq!(PermissionMode::default(), PermissionMode::Manual);
         let all = [
             PermissionMode::Manual,
             PermissionMode::Edit,
@@ -1533,18 +1591,22 @@ mod tests {
     }
 
     #[test]
-    fn auto_and_master_modes_persist_their_labels() {
+    fn only_the_default_mode_is_left_out_of_the_file() {
+        // Auto is the default, so it is the one not worth writing out — and
+        // manual must be, or a project that chose it would read back as auto.
         for (mode, label) in [
-            (PermissionMode::Auto, "auto"),
-            (PermissionMode::Master, "master"),
+            (PermissionMode::Auto, None),
+            (PermissionMode::Manual, Some("manual")),
+            (PermissionMode::Edit, Some("edit")),
+            (PermissionMode::Master, Some("master")),
         ] {
-            let rules = PermissionRules {
-                mode,
-                ..PermissionRules::default()
-            };
-            let entry = ProjectPermissions::from_rules(&rules);
-            assert_eq!(entry.mode.as_deref(), Some(label));
-            assert_eq!(entry.saved_mode(), mode);
+            let mut file = PermissionsFile::default();
+            file.record_mode("/proj", mode);
+            let entry = file.project("/proj").expect("the entry");
+            assert_eq!(entry.mode.as_deref(), label);
+            let reread = PermissionsFile::parse(&file.to_json());
+            let entry = reread.project("/proj").expect("the entry, re-read");
+            assert_eq!(entry.saved_mode(), mode, "{mode:?} round-trips");
         }
     }
 
@@ -1652,16 +1714,27 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_allowed_by_default() {
+    fn the_default_covers_file_changes_and_no_command() {
+        // Auto, the default, lets file changes run; a command is the
+        // classifier's per-call business, never a standing rule, and there
+        // is no built-in safe list — so `allows` says no to every one.
         let rules = PermissionRules::default();
         for kind in [PermissionKind::Write, PermissionKind::Edit] {
-            assert!(!rules.allows(&request(kind, "a.py")));
+            assert!(rules.allows(&request(kind, "a.py")));
         }
         for command in ["ls", "cat README.md", "rm -rf /"] {
             assert!(
                 !rules.allows(&request(PermissionKind::Bash, command)),
                 "there is no built-in safe list: {command}"
             );
+        }
+        // Manual allows nothing at all.
+        let manual = PermissionRules {
+            mode: PermissionMode::Manual,
+            ..PermissionRules::default()
+        };
+        for kind in [PermissionKind::Write, PermissionKind::Edit] {
+            assert!(!manual.allows(&request(kind, "a.py")));
         }
     }
 
@@ -1806,7 +1879,7 @@ mod tests {
     #[test]
     fn the_gates_mode_is_shared_and_gates_file_changes() {
         let gate = PermissionGate::new();
-        assert_eq!(gate.mode(), PermissionMode::Manual);
+        gate.set_mode(PermissionMode::Manual);
         let edit = request(PermissionKind::Edit, "a.py");
         assert!(!gate.allows(&edit));
         gate.clone().set_mode(PermissionMode::Edit);
@@ -1858,13 +1931,61 @@ mod tests {
         let mut rules = PermissionRules::default();
         rules.remember(&request(PermissionKind::Bash, "python3 x.py"));
         rules.remember(&request(PermissionKind::Bash, "cat a > b"));
-        rules.mode = PermissionMode::Edit;
         let mut file = PermissionsFile::default();
-        file.record("/proj", &rules);
+        file.record_commands("/proj", &rules);
+        file.record_mode("/proj", PermissionMode::Edit);
         let restored = PermissionsFile::parse(&file.to_json());
         let entry = restored.project("/proj").expect("the entry");
         assert_eq!(entry.saved_mode(), PermissionMode::Edit);
         assert_eq!(entry.command_sets(), (rules.prefixes, rules.exact));
+    }
+
+    #[test]
+    fn a_command_rule_is_saved_without_touching_the_mode() {
+        // The live rules carry the mode the run started in — a seed from
+        // `ALTER_ZERO_PERMISSION_MODE` included — so saving a rule moves the
+        // allowlist across and nothing else: a seed never reaches the file.
+        let mut file = PermissionsFile::parse(
+            r#"{"projects":{"/proj":{"allow_commands":["ls *"],"mode":"edit"}}}"#,
+        );
+        let mut rules = PermissionRules {
+            mode: PermissionMode::Manual,
+            ..PermissionRules::default()
+        };
+        rules.prefixes.insert("ls".to_string());
+        rules.remember(&request(PermissionKind::Bash, "cargo test"));
+        file.record_commands("/proj", &rules);
+        let entry = file.project("/proj").expect("the entry");
+        assert_eq!(
+            entry.saved_mode(),
+            PermissionMode::Edit,
+            "the saved mode stands"
+        );
+        assert_eq!(entry.allow_commands, ["cargo test *", "ls *"]);
+        // A project with no entry yet gets one that saves no mode.
+        file.record_commands("/fresh", &rules);
+        assert_eq!(file.project("/fresh").expect("a new entry").mode, None);
+    }
+
+    #[test]
+    fn a_mode_is_saved_without_touching_the_allowlist() {
+        let mut file = PermissionsFile::parse(
+            r#"{"projects":{"/proj":{"allow_commands":["ls *"],"mode":"edit"}}}"#,
+        );
+        file.record_mode("/proj", PermissionMode::Manual);
+        let entry = file.project("/proj").expect("the entry");
+        assert_eq!(entry.mode.as_deref(), Some("manual"));
+        assert_eq!(entry.allow_commands, ["ls *"]);
+        // Back to the default leaves the key out again.
+        file.record_mode("/proj", PermissionMode::Auto);
+        let entry = file.project("/proj").expect("the entry");
+        assert_eq!(entry.mode, None);
+        assert_eq!(entry.allow_commands, ["ls *"]);
+        // A project with no entry yet gets one.
+        file.record_mode("/fresh", PermissionMode::Master);
+        let fresh = file.project("/fresh").expect("a new entry");
+        assert_eq!(fresh.saved_mode(), PermissionMode::Master);
+        assert!(fresh.allow_commands.is_empty());
     }
 
     #[test]
@@ -1874,7 +1995,8 @@ mod tests {
         let mut file = PermissionsFile::parse(
             r#"{"projects":{"/other":{"allow_commands":["ls *"],"mode":"edit"}}}"#,
         );
-        file.record("/mine", &PermissionRules::default());
+        file.record_commands("/mine", &PermissionRules::default());
+        file.record_mode("/mine", PermissionMode::Manual);
         let json = file.to_json();
         let reread = PermissionsFile::parse(&json);
         let other = reread.project("/other").expect("the other project");
@@ -1890,26 +2012,62 @@ mod tests {
             PermissionsFile::parse("not json"),
             PermissionsFile::default()
         );
-        // A manual-mode, no-rules entry stays valid and quiet.
+        // A no-rules, no-mode entry stays valid and quiet.
         let entry = ProjectPermissions::default();
-        assert_eq!(entry.saved_mode(), PermissionMode::Manual);
         assert_eq!(entry.command_sets(), (BTreeSet::new(), BTreeSet::new()));
     }
 
+    // --- where a session starts (docs/permissions.md) ---
+
     #[test]
-    fn a_manual_mode_entry_omits_the_mode_key() {
-        // Manual is the default posture — writing it out would just noise up
-        // the file (and an old file without the key must read as manual).
-        let entry = ProjectPermissions::from_rules(&PermissionRules::default());
-        assert_eq!(entry.mode, None);
-        let edit_rules = PermissionRules {
-            mode: PermissionMode::Edit,
-            ..PermissionRules::default()
-        };
-        assert_eq!(
-            ProjectPermissions::from_rules(&edit_rules).mode.as_deref(),
-            Some("edit")
+    fn the_env_seed_reads_any_mode_name_and_degrades_to_manual() {
+        // `ALTER_ZERO_PERMISSION_MODE`: unset and blank seed nothing…
+        assert_eq!(mode_by_env(None), None);
+        assert_eq!(mode_by_env(Some("")), None);
+        assert_eq!(mode_by_env(Some("  ")), None);
+        // …a mode name seeds that mode, in any case…
+        assert_eq!(mode_by_env(Some("manual")), Some(PermissionMode::Manual));
+        assert_eq!(mode_by_env(Some(" Edit ")), Some(PermissionMode::Edit));
+        assert_eq!(mode_by_env(Some("AUTO")), Some(PermissionMode::Auto));
+        assert_eq!(mode_by_env(Some("master")), Some(PermissionMode::Master));
+        // …and anything else asks more, never less.
+        assert_eq!(mode_by_env(Some("bypass")), Some(PermissionMode::Manual));
+    }
+
+    #[test]
+    fn a_session_starts_on_the_seed_then_the_saved_mode_then_auto() {
+        let file = PermissionsFile::parse(
+            r#"{"projects":{"/saved":{"mode":"edit"},"/rules":{"allow_commands":["ls *"]}}}"#,
         );
+        assert_eq!(file.starting_mode("/new", None), PermissionMode::Auto);
+        assert_eq!(file.starting_mode("/rules", None), PermissionMode::Auto);
+        assert_eq!(file.starting_mode("/saved", None), PermissionMode::Edit);
+        // The seed outranks what the project saved.
+        assert_eq!(
+            file.starting_mode("/saved", Some(PermissionMode::Manual)),
+            PermissionMode::Manual
+        );
+        assert_eq!(
+            file.starting_mode("/new", Some(PermissionMode::Master)),
+            PermissionMode::Master
+        );
+    }
+
+    #[test]
+    fn an_absent_mode_is_the_default_and_an_unreadable_one_manual() {
+        // No key is the default — which is also how an entry from before the
+        // default moved reads, since manual was the key it left out then.
+        let old = PermissionsFile::parse(r#"{"projects":{"/proj":{"allow_commands":["ls *"]}}}"#);
+        let entry = old.project("/proj").expect("the entry");
+        assert_eq!(entry.saved_mode(), PermissionMode::Auto);
+        // A label that can't be read asks more, never less.
+        for label in ["turbo", "Auto", ""] {
+            let entry = ProjectPermissions {
+                mode: Some(label.to_string()),
+                ..ProjectPermissions::default()
+            };
+            assert_eq!(entry.saved_mode(), PermissionMode::Manual, "{label:?}");
+        }
     }
     #[test]
     fn an_mcp_request_asks_with_the_display_form_and_exact_rule() {
@@ -1993,7 +2151,10 @@ mod tests {
     fn session_input_is_covered_by_the_rule_its_command_runs_under() {
         // Typing into `python3` is what `python3 *` already allowed — the
         // REPL is the program the rule trusts with any arguments.
-        let mut rules = PermissionRules::default();
+        let mut rules = PermissionRules {
+            mode: PermissionMode::Manual,
+            ..PermissionRules::default()
+        };
         let req = session_request("b1", "python3");
         assert!(!rules.allows(&req), "manual asks");
         rules.mode = PermissionMode::Edit;

@@ -889,12 +889,12 @@ fn live_the_model_puts_its_temp_file_in_the_scratchpad() {
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_scratchpad_write_runs_without_a_permission_prompt() {
     // The permission exemption end to end (docs/scratchpad.md): with a gate
-    // attached in its asking default, a `write` the model aims INSIDE the
-    // session scratchpad resolves before any prompt is raised — the file lands,
-    // no `StreamEvent::Permission` is emitted, and the cell wears the note that
-    // records no human approved it.
+    // attached in manual mode, which asks about every file change, a `write`
+    // the model aims INSIDE the session scratchpad resolves before any prompt
+    // is raised — the file lands, no `StreamEvent::Permission` is emitted, and
+    // the cell wears the note that records no human approved it.
     use alter_zero::llm::backend::augment_with_scratchpad;
-    use alter_zero::permission::{PermissionGate, SCRATCHPAD_ALLOWED_NOTE};
+    use alter_zero::permission::{PermissionGate, PermissionMode, SCRATCHPAD_ALLOWED_NOTE};
 
     let dir = std::env::temp_dir().join(format!("alter-zero-live-pad-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratchpad dir");
@@ -902,6 +902,7 @@ fn live_scratchpad_write_runs_without_a_permission_prompt() {
     let _ = std::fs::remove_file(&path);
 
     let gate = PermissionGate::new();
+    gate.set_mode(PermissionMode::Manual);
     gate.set_scratchpad(Some(dir.clone()));
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");

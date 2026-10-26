@@ -12,8 +12,10 @@ fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
     // (docs/permissions.md): both commands are announced up front, each
     // asks before it starts, and the next request follows the previous
     // cell's resolution with **no scripted pause** — the back-to-back
-    // prompt timing the covering machinery has to survive.
+    // prompt timing the covering machinery has to survive. Manual, the mode
+    // the smoke suite drives these demos in.
     let gate = crate::permission::PermissionGate::new();
+    gate.set_mode(crate::permission::PermissionMode::Manual);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
     let (tx, mut rx) = unbounded_channel();
     let handle = dummy.spawn(
@@ -133,6 +135,7 @@ fn the_auto_demo_still_asks_outside_auto_mode() {
     // The same prompt under `Manual` goes to the user — so smoke can
     // start the demo, flip Shift+Tab, and watch the difference.
     let gate = crate::permission::PermissionGate::new();
+    gate.set_mode(crate::permission::PermissionMode::Manual);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
     let (tx, mut rx) = unbounded_channel();
     let handle = dummy.spawn(
@@ -199,8 +202,10 @@ fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
     // line — with **no scripted pause** between the first cell's
     // resolution and the second request, so the loop sees the pinned
     // modal region shrink hard inside one frame gap (the smoke suite's
-    // staggered-prompt phase drives this end to end).
+    // staggered-prompt phase drives this end to end). Manual, so the writes
+    // ask — auto, the default, would run them.
     let gate = crate::permission::PermissionGate::new();
+    gate.set_mode(crate::permission::PermissionMode::Manual);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
     let (tx, mut rx) = unbounded_channel();
     let handle = dummy.spawn(

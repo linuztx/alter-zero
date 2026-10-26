@@ -47,7 +47,7 @@ printf '%s\n' "$cg_view"
 expect_has "$cg_view" -F "C L A S S I F I E R" "Tab did not flip to the classifier page"
 expect_has "$cg_view" -F "tab for llm context" "the classifier page never points back"
 # The mode note always shows, so the page can never read as "the classifier is
-# deciding this" when it is not — here the suite's default manual mode, whose
+# deciding this" when it is not — here the manual mode the suite pins, whose
 # note says the log is recorded but consulted only in auto.
 expect_has "$cg_view" -E "auto mode|disabled" "no mode note above the block"
 tmux send-keys -t "$S93" Tab
