@@ -467,6 +467,17 @@ fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
 }
 
 #[test]
+fn the_file_demo_says_which_mode_would_have_asked() {
+    // The demo's calls are scripted, so its reply says when real ones would
+    // have asked first: in manual mode, not the default. A session starts in
+    // auto (docs/permissions.md), where file changes like these run unasked,
+    // and the reply used to promise a prompt the user's session never shows.
+    let text = chunk_text(&turn_events("show me a diff", 0));
+    assert!(text.contains("default **auto** mode"), "{text}");
+    assert!(text.contains("**manual** mode"), "{text}");
+}
+
+#[test]
 fn a_diff_prompt_scripts_the_write_then_edit_demo() {
     // The file-change design (`docs/tools.md`) has no offline demo otherwise:
     // a `Write` shows the whole new file numbered, an `Edit` shows only the

@@ -1830,9 +1830,12 @@ wrapper (`sudo`, `sh -c`, …) means a prefix would hide what matters — and
 **sweeps the requests already queued** that the new rule covers
 (`App::drain_covered_permissions` — parallel agents all ask before any is
 answered, so one answer covers them all); the session carries a **permission
-mode** (`permission::PermissionMode` — `manual` asks for everything, `edit`
-auto-approves `write`/`edit` while commands still ask, `auto` additionally
-sends a non-allowlisted `bash` command to the **auto mode classifier** — a
+mode** (`permission::PermissionMode` — **`auto` by default**, a session
+starting there unless the project saved another mode or the
+`ALTER_ZERO_PERMISSION_MODE` run seed names one; `manual` asks for
+everything, `edit` auto-approves `write`/`edit` while commands still ask,
+`auto` additionally sends a non-allowlisted `bash` command to the **auto
+mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
 `ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
@@ -1873,7 +1876,7 @@ Claude-Code-style stop-or-adjust model text, and a classifier **failure**
 falls back to the ordinary prompt (never an allow); `master` runs
 *everything* unasked — no prompt, no classifier, Claude Code's
 bypass-permissions) pinned flush at the
-footer's **right edge** (`{model} · {cwd}      manual` — its columns reserved
+footer's **right edge** (`{model} · {cwd}      auto` — its columns reserved
 off the left chain's budget, so the `…` truncation can never eat it) and
 **cycled** with **Shift+Tab** (manual → edit → auto → master → manual, one step
 per press — from the composer, or on an open prompt: a file prompt's option
@@ -1884,12 +1887,20 @@ heuristic `permission::auto_verdict` instead of an LLM); the rules **persist
 per project** in
 `~/.alter-zero/permissions.json` (`{"projects": {"/abs/cwd":
 {"allow_commands": ["python3 *", …], "mode": "edit"}}}` — prefix rules
-star-suffixed, exact commands verbatim, `auto`/`master` labels round-tripping
-the same way, the pure format in
+star-suffixed, exact commands verbatim, `manual`/`edit`/`master` labels
+round-tripping the same way and the default `auto` left out — an entry from
+before the default moved, which left `manual` out instead, reads as auto — an
+unknown label degrading to `manual`, the pure format in
 `permission::PermissionsFile`, the read-modify-write I/O + startup gate seed
-in `tui::config`/`tui::permission`), so "don't ask again" and the mode survive a restart in the
-same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no
-footer segment, Shift+Tab explains via toast)) in
+in `tui::config`/`tui::permission`, a mode change recording only the `mode`
+and a command or MCP rule only `allow_commands`
+(`PermissionsFile::record_mode`/`record_commands`), so the run seed —
+`permission::mode_by_env` over `ALTER_ZERO_PERMISSION_MODE`, outranking the
+saved mode through `PermissionsFile::starting_mode`, and exported `manual` by
+`smoke.sh` so its prompt phases still meet their prompts, Phase 64 covering
+the default — is never saved), so "don't ask again" and the mode survive a
+restart in the same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled =
+no gate, no footer segment, Shift+Tab explains via toast)) in
 `docs/permissions.md`; and the **`AskUserQuestion` tool** (Claude-Code's
 mid-turn questions, `docs/ask.md`: the model asks 1–4 multiple-choice
 questions — `askuserquestion`, offered only when `LlmBackend::with_ask`
@@ -2928,7 +2939,7 @@ and its expiry is timed at the boundary (`Session::toast_deadline` +
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
-(`dummy_model_name · ~/repo      manual` — the Shift+Tab **permission mode**
+(`dummy_model_name · ~/repo      auto` — the Shift+Tab **permission mode**
 pinned flush at the row's right edge, `docs/permissions.md`, hidden when
 permissions are off; a reasoning-capable model carries its Ctrl+T
 thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)

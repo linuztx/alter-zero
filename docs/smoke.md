@@ -119,8 +119,11 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
 - the sanitized environment (`smoke_sanitize_env`: every `*_API_KEY`, every
   `ALTER_ZERO_*`, `OLLAMA_HOST`, `NO_COLOR`, the display variables unset;
   telemetry, the update check, the spinner tips and the project's `AGENTS.md`
-  exported off), run before the phase's first launch, so a phase run on its
-  own is as hermetic as one run by the suite.
+  exported off; the permission mode exported `manual`, since a session starts
+  in auto, where the dummy's writes never ask, and the prompt phases are
+  about the prompt — Phase 64 unsets it to cover the default), run before the
+  phase's first launch, so a phase run on its own is as hermetic as one run
+  by the suite.
 
 That isolation is what makes the parallel runner *correct* rather than
 merely fast: the phases were already independent scenarios on separate

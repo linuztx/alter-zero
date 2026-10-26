@@ -469,9 +469,10 @@ const FILES_REPLY: &str = concat!(
     "Sure — the file-change rendering is my favourite part. Watch: I'll write a \
      small script with a classic bug in it, fix the bug, then run it.\n\n",
     "There's the pair. A `Write` numbers the whole new file; an `Edit` shows only \
-     the hunk it touched, added lines tinted green and removed ones red. With \
-     permissions on (**shift+tab** cycles the mode) both would have asked you first — \
-     type *permission demo* to see that prompt.\n\n",
+     the hunk it touched, added lines tinted green and removed ones red. In the \
+     default **auto** mode changes like these run without asking; in **manual** mode \
+     (**shift+tab** cycles the mode) both would have asked you first — switch to it \
+     and type *permission demo* to see that prompt.\n\n",
     handoff!()
 );
 

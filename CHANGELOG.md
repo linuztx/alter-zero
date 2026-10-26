@@ -25,6 +25,22 @@ release heading when a version is cut.
   finished, the number is the provider's own and has no `≈`. A `!` command
   and an interrupted `/compact` still end without one (`docs/interrupt.md`).
 
+### Changed
+
+- **Sessions start in auto mode.** The permission mode used to start at
+  `manual`, which stopped the turn for every file change and every command.
+  A new session now starts in `auto`: file changes run without asking, and a
+  command your allowlist doesn't cover goes to the auto mode classifier,
+  which runs it, blocks it, or asks you when it can't decide. Each command it
+  reviews is one request to your provider. The footer's right edge says
+  `auto`, and Shift+Tab still cycles the modes; from `auto`, one press is
+  `master` and two are `manual`. A project where you picked `edit`, `auto` or
+  `master` keeps it. Earlier versions never saved `manual`, though, so a
+  project left in `manual` starts in `auto` now; switch it back with
+  Shift+Tab and it stays. To keep asking everywhere, launch with
+  `ALTER_ZERO_PERMISSION_MODE=manual`. It takes any mode name, sets the mode
+  for that launch, and is never saved (`docs/permissions.md`).
+
 ### Fixed
 
 - **A thought cut short by Esc keeps its duration.** Pressing Esc while the

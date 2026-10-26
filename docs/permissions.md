@@ -7,6 +7,13 @@ vocabulary in [`crate::permission`], the modal prompt state in
 `app/permission.rs`, its rendering in `ui/permission_view.rs`, and the
 cross-thread handshake in [`crate::permission::PermissionGate`].
 
+Which calls stop to ask depends on the session's **permission mode**
+(*Permission modes* below). A session starts in **auto**: file changes run, and a command
+goes to the auto mode classifier, which falls back to asking when it cannot
+decide. The prompt below is what **manual** mode raises for every `write`,
+`edit` and `bash` call, and what the other modes fall back to for a call they
+don't cover.
+
 ```
 ● Write(hello.py)
   ⎿  Waiting…
@@ -353,31 +360,34 @@ runs under: `python3 *` already trusts `python3` with any arguments — `-c
 "anything"` included — so typing into a `python3` session adds nothing the
 rule did not grant.
 
-There is no built-in safe-command list. Every `bash`, `write`, and `edit` asks
-until the rules say otherwise — Claude Code's default posture, and
-the only one that can't be wrong about what is safe. `read` is never gated.
+There is no built-in safe-command list. In manual mode every `bash`, `write`,
+and `edit` asks until the rules say otherwise — Claude Code's default posture,
+and the only one that can't be wrong about what is safe. `read` is never gated.
 
 ## Permission modes (manual · edit · auto · master)
 
 The session has a **permission posture**, `permission::PermissionMode`, pinned
-flush at the footer's **right edge** (`{model} · {cwd}      manual` — its own
+flush at the footer's **right edge** (`{model} · {cwd}      auto` — its own
 zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
 can never eat it; `docs/footer.md`) and **cycled** with **Shift+Tab** from the
 composer, one step per press in increasing autonomy:
 
-- **manual** (the default) — every `write`/`edit` and every `bash` command
-  asks, as above.
+- **manual** — every `write`/`edit` and every `bash` command asks, as above.
+  The most cautious posture, and the one a mode that can't be read degrades
+  to.
 - **edit** — Claude Code's "auto-accept edits on": `write`/`edit` run without
   asking, `bash` commands still ask (until allow-listed).
-- **auto** — Claude Code's auto mode: `write`/`edit` run like edit mode, and
-  a `bash` command — or an MCP tool call (`docs/mcp.md`) — the allowlist
-  doesn't already cover is reviewed by the **auto mode classifier** — a
-  silent LLM safety check in the user's stead (the next section). No prompt
-  opens in auto mode unless the classifier itself fails.
+- **auto** (the default) — Claude Code's auto mode: `write`/`edit` run like
+  edit mode, and a `bash` command — or an MCP tool call (`docs/mcp.md`) — the
+  allowlist doesn't already cover is reviewed by the **auto mode
+  classifier** — a silent LLM safety check in the user's stead (the next
+  section). No prompt opens in auto mode unless the classifier itself fails.
 - **master** — Claude Code's bypass-permissions posture: everything runs
   unasked. No prompt, no classifier; the user has taken the seatbelt off.
 
-The cycle wraps (`master` → `manual`), so one key walks the whole ladder.
+The cycle wraps (`master` → `manual`), so one key walks the whole ladder. A
+session starts in auto, so the first press lands on master and the second on
+manual.
 `PermissionRules::allows` encodes the standing coverage: file changes are
 covered by every mode above manual; a command or an MCP call only by master
 or the allowlist — auto mode's classifier is a **per-call consult in the
@@ -403,6 +413,34 @@ prompt approve at once — the option-2 sweep above; a switch to master sweeps
 every queued prompt), persists it (below), and toasts. With permissions
 disabled there is no mode: the footer segment is hidden and Shift+Tab raises a
 `Tool permissions are disabled` toast instead of silently doing nothing.
+
+### Where a session starts
+
+A new session takes its mode from the first of:
+
+1. **`ALTER_ZERO_PERMISSION_MODE`** — `manual`, `edit`, `auto` or `master`,
+   in any case — for this launch only. It outranks the project's saved mode
+   and is **never saved**: only a mode the user picks reaches
+   `permissions.json` (below). A blank value counts as unset; anything else
+   starts the run in manual, the rule an unreadable saved label follows too
+   (`permission::mode_by_env`).
+2. **The mode this project saved** in `permissions.json`.
+3. **auto**.
+
+`PermissionsFile::starting_mode` is that order, pure and unit-tested;
+`PermissionStore::open` reads the variable and the file and seeds the gate
+with the answer before the first frame, and the footer's segment reads the
+gate.
+
+Auto is the default because manual stops the turn for every file change and
+every command, so a task of any size becomes a run of approvals. Auto lets
+file changes run — the footer names the mode, and Shift+Tab is one key away —
+and puts each command the allowlist doesn't cover in front of the classifier,
+which falls back to the ordinary prompt whenever it cannot reach a verdict.
+The cost is one classifier request to the session's own provider per
+reviewed call. The smoke suite pins `ALTER_ZERO_PERMISSION_MODE=manual` so
+its prompt phases still meet their prompts (`docs/smoke.md`); Phase 64
+launches without it to cover the default.
 
 ## Auto mode: the classifier
 
@@ -731,17 +769,32 @@ Claude Code's per-project settings:
 ```
 
 `allow_commands` rows ending in ` *` are prefix rules; anything else is an
-exact command. `mode` is the saved posture (absent = `manual`, and an unknown
-label degrades to `manual` — a hand-edited file asks more, never less). The
-pure format/parse is `permission::PermissionsFile`/`ProjectPermissions` (the
-`Settings` pattern); `main.rs` owns the file I/O: the startup load seeds the
-gate (`seed_commands` + `set_mode`) before the first frame, and every rule
-change — an option-2 approval, a Shift+Tab toggle — **re-reads, updates this
-project's entry, and rewrites** (read-modify-write, so instances in other
-directories never clobber each other; best-effort like `config.json`, a
-write failure never kills the TUI). Restart the app — or `--continue` /
-`--resume` a session — in the same directory and the footer comes up in the
-saved mode with the saved allowlist in force.
+exact command. `mode` is the saved posture, written only when it differs from
+the default: absent = `auto`, while `manual`, `edit` and `master` are spelled
+out, and an unknown label degrades to `manual` — a hand-edited file asks
+more, never less. The key was left out for `manual` while manual was the
+default, so an entry from before the default moved has none and reads as
+auto now, exactly like a project that never saved one; Shift+Tab back to
+manual and the entry says so.
+
+The pure format/parse is `permission::PermissionsFile`/`ProjectPermissions`
+(the `Settings` pattern); `tui::config` and `tui::permission` own the file
+I/O: the startup load seeds the gate (`seed_commands`, then `set_mode` with
+`starting_mode`'s answer) before the first frame, and every change **re-reads
+the file, updates only what changed in this project's entry, and rewrites
+it** — a mode change (Shift+Tab, the `/settings` row, option 2 on a file
+prompt) only the `mode` (`record_mode`), a command or MCP rule (option 2 on
+their prompts) only `allow_commands` (`record_commands`). The split is what
+keeps an `ALTER_ZERO_PERMISSION_MODE` seed out of the file — the gate's live
+mode carries the seed, and a rule saved under it would otherwise have
+written the seed over the mode the project chose (the `settings.json` rule,
+`docs/per-directory-state.md`) — and a rule a second instance in the same
+directory saves no longer overwrites a mode the first one picked meanwhile.
+Read-modify-write,
+so instances in other directories never clobber each other; best-effort like
+`config.json`, a write failure never kills the TUI. Restart the app — or
+`--continue` / `--resume` a session — in the same directory and the footer
+comes up in the saved mode with the saved allowlist in force.
 
 ## The handshake
 
@@ -932,23 +985,31 @@ cursor identically.
 gate attached, and every tool runs as it did before this feature. The
 `LlmBackend` only asks when a gate was installed, so an embedder (and the live
 integration tests) that builds a backend directly is unaffected. With no gate
-there is no mode either: the footer's right-edge segment disappears and Shift+Tab
-explains itself with a toast instead of pretending to toggle anything.
+there is no mode either: the footer's right-edge segment disappears, Shift+Tab
+explains itself with a toast instead of pretending to toggle anything, and
+`ALTER_ZERO_PERMISSION_MODE` has nothing to seed.
 
 ## Tests
 
 - `permission.rs` — the pure vocabulary: titles, questions, option labels
   (the `{prefix} *` display, the exact command verbatim),
   `command_scope`'s segmentation/prefixing/degradation (subcommand tools,
-  wrappers, env assignments, quote-aware redirects), the mode's
+  wrappers, env assignments, quote-aware redirects), the auto default (the
+  mode, the rules and a fresh gate all start there), the mode's
   label/parse round trip and the four-step Shift+Tab cycle, the rules' allow +
   remember (mode gating file changes both ways; auto covering files but
   never commands; master covering everything), the classifier vocabulary
   (the allowed note, the denied display/result texts, the offline
   `auto_verdict` heuristic's allow/deny split), the `PermissionsFile` round
-  trip (the documented shape, auto/master labels included, other projects
-  preserved, garbage → default, manual omitted), and the gate's blocking
-  round trip (real threads) + shared mode + seeded commands.
+  trip (the documented shape, manual/master labels included, other projects
+  preserved, garbage → the empty file, an absent mode → auto, an unknown
+  label → manual, auto omitted and manual written), the two partial records
+  (`record_commands` keeping the saved mode, `record_mode` keeping the
+  allowlist, so a seeded mode never lands in the file), the
+  `ALTER_ZERO_PERMISSION_MODE` grammar (`mode_by_env`: unset and blank seed
+  nothing, labels in any case, anything else manual) and `starting_mode`'s
+  precedence (the seed over the saved mode over auto), and the gate's
+  blocking round trip (real threads) + shared mode + seeded commands.
 - `llm/approval.rs` — the auto-mode seam with scripted classifiers: an
   allowed verdict returns `AllowNoted` (no prompt), a denial the classifier
   texts, files and allow-listed commands never consult it, manual/edit modes
@@ -1087,6 +1148,14 @@ explains itself with a toast instead of pretending to toggle anything.
   **last row** — no band of blank rows underneath the still-open prompt (the
   reported empty-newlines bug) — with the tall `write`'s resolved cell
   visible above it, committed exactly once, and the box back flush after.
+- `smoke.sh` Phase 64 — the modes end to end, launched without the suite's
+  `ALTER_ZERO_PERMISSION_MODE=manual`: a fresh session's footer reads `auto`
+  before any key; the "auto permission" demo is decided by the offline
+  classifier with no prompt and nothing written to `permissions.json`; one
+  Shift+Tab is master (saved as `"master"`, the demo running silently), a
+  second is manual, saved as `"mode": "manual"` and back in the footer after a
+  restart; and a run seeded `edit` starts in edit while a command rule
+  approved under the seed saves `ls *` beside the untouched `manual`.
 - `smoke.sh` Phase 90 — Ctrl+O/Ctrl+D over an **open** prompt in a real
   terminal, at three geometries, each asserting the seat it is named for (a
   region floating with rows to spare, one flush at the screen bottom, and one

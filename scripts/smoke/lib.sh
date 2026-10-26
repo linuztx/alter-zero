@@ -117,6 +117,12 @@ smoke_sanitize_env() {
 	# a phase reads there. Off for the suite; the /init phase (52) turns it
 	# back on for its own temp project.
 	export ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0
+	# A session starts in auto mode (docs/permissions.md), where the dummy's
+	# writes run unasked and a real backend's commands meet the classifier —
+	# and the permission phases are about the prompt. Manual for the suite,
+	# exported (a phase's own launch string inherits it) and spelled out in
+	# every launch string; Phase 64 unsets it to cover the default.
+	export ALTER_ZERO_PERMISSION_MODE=manual
 }
 
 # ---------------------------------------------------------------------------
@@ -221,8 +227,9 @@ smoke_begin() {
 	# checkpoint restore does `git reset --hard` + `git clean` on the working
 	# directory. Only phases that run in a throwaway cwd re-enable them.
 	# Lifecycle hooks, the project config layer and the spinner tips are off
-	# for hermeticity too.
-	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_TIPS=0"
+	# for hermeticity too, and the permission mode is manual (the sanitizer's
+	# note on it).
+	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_TIPS=0 ALTER_ZERO_PERMISSION_MODE=manual"
 	# Persistence seeds the input history from a file on startup; /dev/null
 	# gives every launch an EMPTY history so the ↑/↓ and Ctrl+R assertions are
 	# unaffected by earlier submissions.
