@@ -63,6 +63,7 @@ mod tools;
 mod trust_menu;
 mod turn;
 mod types;
+mod usage;
 mod views;
 
 pub use self::action::{Action, McpOp};
@@ -128,6 +129,7 @@ pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
 };
+pub use self::usage::{UsageEntry, UsagePage, UsageState};
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
@@ -537,6 +539,15 @@ pub struct App {
     /// when it opens and re-counted at the loop bottom whenever its inputs
     /// change. See `docs/context-usage.md`.
     pub context_usage: Option<ContextUsagePage>,
+    /// The open `/usage` page; `None` when closed. The `/context` page's
+    /// sibling (no text entry) over what each signed-in subscription's own
+    /// server says is left of it, fetched by the boundary as the page opens.
+    /// See `docs/usage.md`.
+    pub usage_page: Option<UsagePage>,
+    /// The `/usage` fetch generation: bumped by every open and every
+    /// refresh, so an answer from an earlier one — or from a page since
+    /// closed — never lands on the rows of a later one.
+    usage_generation: u64,
     /// The tools the main session's next request offers, as the client
     /// sends them — pulled from the backend while the `/context` page is
     /// open ([`App::set_tool_definitions`]), empty for the dummy.

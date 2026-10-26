@@ -175,7 +175,7 @@ Connect to a supported subscription service, API provider, or local model server
 | **LM Studio** | Local model: enter your server's address, tested the same way; a token only if the server requires one. | Run the models you downloaded in [LM Studio](https://lmstudio.ai/download); start its server first. |
 | **Ollama Cloud** | API key. | Use open models hosted by Ollama. |
 
-The footer shows your active model, thinking mode, speed tier and context usage. **Ctrl+T** cycles the model's supported reasoning levels, a ChatGPT model that lists speed tiers gets a command per tier (**`/fast`**, `/ultrafast`) that switches it to that processing (faster replies at increased plan usage), vision support is checked before sending images, and requests support prompt caching where the provider allows it.
+The footer shows your active model, thinking mode, speed tier and context usage. **Ctrl+T** cycles the model's supported reasoning levels, a ChatGPT model that lists speed tiers gets a command per tier (**`/fast`**, `/ultrafast`) that switches it to that processing (faster replies at increased plan usage), vision support is checked before sending images, and requests support prompt caching where the provider allows it. On a subscription, **`/usage`** shows how much of each of the plan's limits is left and when it resets.
 
 <details>
 <summary><strong>Add a provider of your own</strong></summary>
@@ -249,6 +249,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/init` | Create an `AGENTS.md` contributor guide |
 | `/compact` | Summarise the conversation to free up context |
 | `/context` | See what fills the context window: tokens per category, the free space and the cache hit rate |
+| `/usage` | See what is left of each subscription you are signed in to: every limit's share used and when it resets |
 | `/resume` | Resume a saved chat |
 | `/model` | Switch the active model |
 | `/fast`, `/ultrafast`, … | Switch the model's speed tier — one command per tier its listing names, shown only on a model that lists it |

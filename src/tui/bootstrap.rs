@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, spawn_file_search_worker};
+use super::workers::{ModelFetch, UsageFetch, spawn_file_search_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -422,6 +422,9 @@ impl<'t> Session<'t> {
         // below): a `--resume` may replace the queued probe with its own
         // model's (docs/session-model.md).
         let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        // The `/usage` page's reads, one worker per subscription
+        // (docs/usage.md).
+        let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel::<UsageFetch>();
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
@@ -517,6 +520,9 @@ impl<'t> Session<'t> {
             model_rx,
             probe_tx,
             probe_rx,
+            usage_tx,
+            usage_rx,
+            usage_cancel: None,
             bg_rx,
             agent_rx,
             mcp_rx,

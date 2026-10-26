@@ -148,7 +148,10 @@ the routing bug *Which flow runs* describes: a renamed or copied block would
 quietly list from the wrong place. And a model-name prefix (`cline-pass/…`)
 can't choose the list it would be read off, which has not arrived yet.
 
-Quota is measured against rolling 5-hour, weekly and monthly windows; the
+Quota is measured against rolling 5-hour, weekly and monthly windows —
+`/usage` reads each one's share and reset from
+`GET {api}/users/me/plan/usage-limits`, and its dollar cap from the plan
+(`docs/usage.md`); the
 dashboard is
 [app.cline.bot/dashboard/subscription?personal=true](https://app.cline.bot/dashboard/subscription?personal=true).
 When a window runs out the server says which (*You have reached your 5-hour

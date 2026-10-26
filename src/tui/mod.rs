@@ -76,7 +76,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
+use self::workers::{DeviceEvent, FileSearchResult, ModelFetch, UsageFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -114,6 +114,7 @@ pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod update;
 pub(crate) mod update_cli;
+pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod workers;
 
@@ -241,6 +242,12 @@ pub(crate) struct Session<'t> {
     /// this session never learned (`docs/session-model.md`).
     probe_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     probe_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    /// The `/usage` page's reads (`docs/usage.md`), one worker per
+    /// subscription, and the token that stops them all — cancelled when
+    /// the page closes or `r` starts the next read.
+    usage_tx: tokio::sync::mpsc::UnboundedSender<UsageFetch>,
+    usage_rx: tokio::sync::mpsc::UnboundedReceiver<UsageFetch>,
+    usage_cancel: Option<CancelToken>,
     /// Background shells (`docs/background.md`) and subagents
     /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
     bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,

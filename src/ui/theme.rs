@@ -1810,6 +1810,105 @@ pub(super) fn context_usage_full_color() -> Color {
     error_color()
 }
 
+// --- the read-only /usage page (docs/usage.md). The /context page's frame
+// and its meter's cells — the family's indent, its `❯` marker, the dim meta
+// ink, the pages' title dress — over each signed-in subscription's limits:
+// a block per subscription, a bar per limit, the share used in the bar's
+// own colour, and the highlighted subscription's dashboard over the hint. ---
+
+/// The page's title.
+pub(super) const USAGE_TITLE: &str = "Subscription usage";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const USAGE_HINT: &str = "r refresh  ↑↓ select  esc close";
+
+/// Where a subscription's rows start: two columns past its name.
+pub(super) const USAGE_ROW_INDENT: &str = "      ";
+
+/// How far a named bucket's rows (`GPT-5.3-Codex-Spark`) sit past its
+/// heading.
+pub(super) const USAGE_SCOPE_INDENT: &str = "  ";
+
+/// The gap between a row's columns.
+pub(super) const USAGE_COLUMN_GAP: &str = "  ";
+
+/// The widest a limit's label column grows; a longer label is `…`-cut.
+pub(super) const USAGE_LABEL_MAX_COLS: usize = 24;
+
+/// A limit's bar: its cells, and its longest and shortest run. The bar
+/// yields columns down to the shortest so a row's trailer stays on it, and
+/// goes when even that does not fit.
+pub(super) const USAGE_BAR_FILL: &str = "█";
+pub(super) const USAGE_BAR_EMPTY: &str = "░";
+pub(super) const USAGE_BAR_MAX: usize = 20;
+pub(super) const USAGE_BAR_MIN: usize = 8;
+
+/// The share's column — `100%` at its widest, right-aligned in it — and the
+/// word after it.
+pub(super) const USAGE_SHARE_COLS: usize = 4;
+pub(super) const USAGE_USED_SUFFIX: &str = " used";
+
+/// The share past which a limit's bar and share turn amber, and red — the
+/// `/context` page's two thresholds, in percent.
+pub(super) const USAGE_WARN_SHARE: f64 = 75.0;
+pub(super) const USAGE_FULL_SHARE: f64 = 90.0;
+
+/// What a subscription's rows say while its answer is out, when it has
+/// none, and the word an unlimited allowance reads.
+pub(super) const USAGE_FETCHING: &str = "Fetching usage…";
+pub(super) const USAGE_NO_LIMITS: &str = "No limits reported.";
+pub(super) const USAGE_UNLIMITED: &str = "Unlimited";
+
+/// The marks before a failed answer's reason and a warning note.
+pub(super) const USAGE_FAILED_MARK: &str = "✗ ";
+pub(super) const USAGE_WARNING_MARK: &str = "⚠ ";
+
+/// The tag flush right on the subscription the session's model runs on.
+pub(super) const USAGE_IN_USE: &str = "in use";
+
+/// The lead-in to the highlighted subscription's dashboard link.
+pub(super) const USAGE_DETAILS: &str = "Details: ";
+
+/// What the page says with no subscription to list. The boundary toasts
+/// instead of opening an empty page; this only shows if one is opened.
+pub(super) const USAGE_NONE: &str = "No subscription is signed in — /login → Use a subscription.";
+
+/// The separator between a header's parts, and between a trailer's.
+pub(super) const USAGE_SEPARATOR: &str = " · ";
+
+/// A share's colour — the bar's fill and the share's digits: the success
+/// green, the caution amber from [`USAGE_WARN_SHARE`], the error red from
+/// [`USAGE_FULL_SHARE`].
+pub(super) fn usage_share_color(used_percent: f64) -> Color {
+    if used_percent >= USAGE_FULL_SHARE {
+        usage_full_color()
+    } else if used_percent >= USAGE_WARN_SHARE {
+        usage_warn_color()
+    } else {
+        usage_ok_color()
+    }
+}
+
+/// A share well inside its limit — the success green the cache meter wears.
+pub(super) fn usage_ok_color() -> Color {
+    tool_ok_color()
+}
+
+/// A share nearing its limit, and a warning note — the caution amber.
+pub(super) fn usage_warn_color() -> Color {
+    ask_warning_color()
+}
+
+/// A share at or near its limit, and a failed answer — the error red.
+pub(super) fn usage_full_color() -> Color {
+    error_color()
+}
+
+/// A bar's empty cells — the dim everything empty wears.
+pub(super) fn usage_empty_color() -> Color {
+    tool_dim_color()
+}
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,

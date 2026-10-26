@@ -104,6 +104,11 @@ pub enum CommandEffect {
     /// the cache. Works **mid-turn** like `/donate` — it only replaces the
     /// composer, and it is live. See `docs/context-usage.md`.
     Context,
+    /// Ask the loop to open the read-only `/usage` page: what is left of
+    /// each subscription this machine is signed in to, as each provider's
+    /// own server reports it. Works **mid-turn** like `/context` — it only
+    /// replaces the composer. See `docs/usage.md`.
+    Usage,
     /// Open the `/resume` session picker — or reject with a
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
     /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
@@ -279,6 +284,12 @@ pub const COMMANDS: &[SlashCommand] = &[
         "context",
         "Show what fills the context window",
         CommandEffect::Context,
+    ),
+    // …and what is left of the plan that pays for it.
+    SlashCommand::builtin(
+        "usage",
+        "Show your subscriptions' usage limits",
+        CommandEffect::Usage,
     ),
     SlashCommand::builtin("resume", "Resume a saved chat", CommandEffect::Resume),
     // The active model's speed tiers list right after this row
@@ -508,6 +519,14 @@ impl App {
                 // the backend sends and keeps it live (docs/context-usage.md).
                 self.open_context_usage();
                 Action::OpenContextUsage
+            }
+            CommandEffect::Usage => {
+                // /usage works mid-turn like /context: a read-only page that
+                // only replaces the composer. Which subscriptions are signed
+                // in is the boundary's to know, so the *loop* builds the
+                // rows, opens the page and fetches (the /model pattern) —
+                // or toasts when there is none (docs/usage.md).
+                Action::OpenUsagePage
             }
             CommandEffect::Init => {
                 // Codex's /init is submit_user_message(INIT_PROMPT): the canned

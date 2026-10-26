@@ -99,6 +99,9 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 session.on_model_fetch(label, result);
             }
 
+            // 6b. One subscription's `/usage` read finished (docs/usage.md).
+            Some(fetch) = session.usage_rx.recv() => session.on_usage_result(fetch),
+
             // 7. The startup capability probe answered. Guarded so a `/model`
             //    switch that raced it (and already knows its support first-hand)
             //    wins.

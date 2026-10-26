@@ -14,6 +14,21 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/usage` shows what is left of each subscription.** ChatGPT, GitHub
+  Copilot and ClinePass each meter a plan against limits the app could not
+  see, so the first sign of one was a refused request. `/usage` lists every
+  subscription you are signed in to, the one you are using first, and reads
+  each from the provider's own servers: ChatGPT's 5-hour and weekly windows
+  and its credits, Copilot's premium requests (AI Credits on the newer
+  billing) and its chat and suggestion allowances, and ClinePass's 5-hour,
+  weekly and monthly windows with each window's dollar cap. Every limit gets
+  a bar of the share used, green then amber at 75% and red at 90%, and when
+  it resets in your local time. An Anthropic Console sign-in is listed too:
+  it bills per token, so its row says there is no plan limit to show. ↑/↓
+  pick a subscription and the page links its usage dashboard, `r` reads
+  everything again, and on a short terminal the other subscriptions fold to
+  one line each, naming their tightest limit. It opens mid-turn, and with
+  nothing signed in it says so and points at `/login` (`docs/usage.md`).
 - **An interrupted turn now shows what it cost.** Pressing Esc mid-turn used
   to leave only the red `Conversation interrupted` line, and the status
   line's running time and token count vanished with it. The summary a

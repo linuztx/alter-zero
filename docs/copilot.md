@@ -412,9 +412,16 @@ loops until the code expires.
 
 ## Environment
 
-Nothing new. The Copilot provider is an ordinary `providers.toml` entry, so
+The Copilot provider is an ordinary `providers.toml` entry, so
 `ALTER_ZERO_PROVIDER=github_copilot` selects it, `ALTER_ZERO_MODEL` picks the
 model, and `GITHUB_COPILOT_TOKEN` in the real environment outranks the `.env`
 store exactly as every other provider's key does — which is also how a machine
 that already has a Copilot login (a CI box, a dotfiles export) skips `/login`
 entirely.
+
+`ALTER_ZERO_GITHUB_API_BASE` points the two calls that go to GitHub's API —
+the token exchange and the `/usage` page's read of the account's quota
+snapshots (`copilot_internal/user`, which takes the stored GitHub token
+itself and spends no exchange, `docs/usage.md`) — at another host: the
+smoke suite's local stub (`smoke.sh` Phase 145). Read at the boundary and
+handed in once through `copilot::set_github_api_base`.

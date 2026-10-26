@@ -18,6 +18,8 @@
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
+//! - [`spawn_usage_fetch`] — one subscription's usage limits, for the
+//!   `/usage` page (`docs/usage.md`).
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
 //!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
@@ -36,6 +38,19 @@ use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
 
 use super::Session;
+
+/// A finished `/usage` read of one subscription (`docs/usage.md`): the fetch
+/// generation it belongs to — the page drops an answer from an earlier one —
+/// the provider it is about, the answer or the sentence for why not, and
+/// when it was fetched (Unix seconds), which its reset times are worded
+/// against.
+#[derive(Debug)]
+pub(crate) struct UsageFetch {
+    pub(crate) generation: u64,
+    pub(crate) provider_id: String,
+    pub(crate) result: Result<alter_zero::llm::plan_usage::PlanUsage, String>,
+    pub(crate) fetched_at: i64,
+}
 
 /// A finished `/model` fetch from one provider: its human label (for a failure
 /// note) and either the provider's models or a one-line error. The picker
@@ -530,6 +545,33 @@ pub(crate) fn spawn_model_fetch(
         if !cancel.is_cancelled() {
             let _ = tx.send((label, result));
         }
+    });
+}
+
+/// Read one subscription's usage on a background thread (the `/model`
+/// fetch's pattern), sending the answer to the loop. One of these is
+/// spawned per signed-in subscription so they read in parallel and land
+/// independently; a cancelled read (the page closed, or `r` started a new
+/// one) sends nothing. See `docs/usage.md`.
+pub(crate) fn spawn_usage_fetch(
+    generation: u64,
+    provider_id: String,
+    cfg: ModelConfig,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<UsageFetch>,
+) {
+    std::thread::spawn(move || {
+        let result = llm::plan_usage::fetch(&cfg, &cancel).map_err(|e| e.to_string());
+        if cancel.is_cancelled() {
+            return;
+        }
+        let fetched_at = i64::try_from(super::host::unix_secs()).unwrap_or(i64::MAX);
+        let _ = tx.send(UsageFetch {
+            generation,
+            provider_id,
+            result,
+            fetched_at,
+        });
     });
 }
 

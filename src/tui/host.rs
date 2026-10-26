@@ -146,6 +146,13 @@ pub(crate) fn unix_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// The local clock's offset from UTC right now, in seconds east — the clock
+/// the `/usage` page words its reset times and its `as of` in
+/// (`docs/usage.md`), injected like every other clock.
+pub(crate) fn utc_offset_secs() -> i32 {
+    chrono::Local::now().offset().local_minus_utc()
+}
+
 /// This process's effective uid — the one its permissions are checked
 /// against: the stable per-user segment of the background tasks root (Claude
 /// Code's `claude-{uid}` pattern, `background::tasks_dir`), and what the

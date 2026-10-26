@@ -585,6 +585,11 @@ rather than left to a default.
 | `ALTER_ZERO_ENV_FILE` | relocates the store the rotation writes back to |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server both sign-ins (and the refresh) talk to — a fork's, or `smoke.sh` Phase 119's local stub; `https://auth.openai.com` by default |
 
+The seat's limits — the 5-hour and weekly windows, credits — are read by the
+`/usage` page from `/backend-api/wham/usage`, a sibling of the Codex base
+rather than under it, with the same bearer and `chatgpt-account-id` a turn
+sends (`docs/usage.md`).
+
 ## Files
 
 | file | what's in it |

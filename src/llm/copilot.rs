@@ -37,10 +37,60 @@ const SCOPE: &str = "read:user";
 /// RFC 8628's device-code grant type.
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// Where the flow's three calls go.
+/// Where the device flow's two calls go.
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
-const EXCHANGE_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+
+/// GitHub's API host — where the token exchange goes, and the `/usage`
+/// page's quota read (`docs/usage.md`) — unless [`GITHUB_API_ENV`] says
+/// otherwise.
+pub const DEFAULT_GITHUB_API: &str = "https://api.github.com";
+
+/// The exchange, and the account's entitlements with their quota
+/// snapshots, on that host.
+const EXCHANGE_PATH: &str = "/copilot_internal/v2/token";
+pub(crate) const USER_PATH: &str = "/copilot_internal/user";
+
+/// The environment variable that points both GitHub API calls at another
+/// host — the smoke suite's local stand-in (`smoke.sh` Phase 145). Read at
+/// the boundary and handed in once through [`set_github_api_base`], the
+/// `chatgpt::set_issuer` pattern: nothing here reads the environment.
+pub const GITHUB_API_ENV: &str = "ALTER_ZERO_GITHUB_API_BASE";
+
+/// The API host in force — [`DEFAULT_GITHUB_API`] until the boundary sets one.
+fn github_api_slot() -> &'static Mutex<Option<String>> {
+    static BASE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    BASE.get_or_init(|| Mutex::new(None))
+}
+
+/// Point the GitHub API calls at `url` instead of `api.github.com`.
+/// Boundary-only; called once at startup when [`GITHUB_API_ENV`] is set.
+pub fn set_github_api_base(url: impl Into<String>) {
+    let url = url.into();
+    let trimmed = url.trim().trim_end_matches('/').to_string();
+    if let Ok(mut slot) = github_api_slot().lock() {
+        *slot = (!trimmed.is_empty()).then_some(trimmed);
+    }
+}
+
+/// The GitHub API host the calls build their URLs on.
+pub(crate) fn github_api_base() -> String {
+    github_api_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| DEFAULT_GITHUB_API.to_string())
+}
+
+/// `path` on the API host `base`, a trailing slash never doubled.
+fn github_api_url(base: &str, path: &str) -> String {
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
+/// `path` on the API host in force — the URL a call actually makes.
+pub(crate) fn github_api(path: &str) -> String {
+    github_api_url(&github_api_base(), path)
+}
 
 /// The individual-seat API host, and the fallback when the exchange names none.
 pub const DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
@@ -52,9 +102,9 @@ pub const DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
 /// same pair on the chat request; these are for the two calls that go to
 /// `github.com`/`api.github.com` instead, which the provider's headers don't
 /// reach.
-const EDITOR_VERSION: &str = "vscode/1.104.3";
-const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
-const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
+pub(crate) const EDITOR_VERSION: &str = "vscode/1.104.3";
+pub(crate) const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
+pub(crate) const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
 
 /// The poll cadence GitHub falls back to when the device-code response names
 /// none, and the penalty a `slow_down` adds to it (both RFC 8628's).
@@ -739,7 +789,7 @@ fn github_message(body: &str) -> Option<String> {
 fn exchange(oauth_token: &str) -> Result<ExchangedToken> {
     let client = super::http_client(OP_TIMEOUT)?;
     let resp = client
-        .get(EXCHANGE_URL)
+        .get(github_api(EXCHANGE_PATH))
         // `token`, not `Bearer` — Microsoft's own client's scheme, and the one
         // every third-party implementation converged on.
         .header("authorization", format!("token {oauth_token}"))
@@ -858,6 +908,21 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_api_urls_follow_the_base_in_force() {
+        // The exchange and the `/usage` page's quota read both live on
+        // GitHub's API host — one base, so a stand-in for it (the smoke
+        // suite's) answers both, and a trailing slash never doubles up.
+        assert_eq!(
+            github_api_url(DEFAULT_GITHUB_API, EXCHANGE_PATH),
+            "https://api.github.com/copilot_internal/v2/token"
+        );
+        assert_eq!(
+            github_api_url("http://127.0.0.1:4242/", USER_PATH),
+            "http://127.0.0.1:4242/copilot_internal/user"
+        );
+    }
 
     #[test]
     fn auth_cache_regression_forget_does_not_wait_for_a_refresh_in_flight() {

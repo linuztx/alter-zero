@@ -94,6 +94,7 @@ impl Session<'_> {
                 // A `/login` device flow's worker parks on a poll for minutes;
                 // cancel it so the process can actually exit (`docs/copilot.md`).
                 self.cancel_device_login();
+                self.cancel_usage_fetch();
                 return Ok(Flow::Quit);
             }
             Action::Submit(text) => {
@@ -276,6 +277,13 @@ impl Session<'_> {
             // it the backend's tool set before the first frame
             // (docs/context-usage.md).
             Action::OpenContextUsage => self.sync_context_usage(),
+            // `/usage`: the loop knows which subscriptions are signed in,
+            // opens the page over them and reads each on a worker
+            // (docs/usage.md); `r` reads them again; a close stops the
+            // reads still out.
+            Action::OpenUsagePage => self.open_usage_page(),
+            Action::RefreshUsage => self.refresh_usage(),
+            Action::CloseUsagePage => self.cancel_usage_fetch(),
             Action::CloseContextUsage => {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
                 // collapses back to the composer on the next draw.
@@ -589,8 +597,10 @@ impl Session<'_> {
             View::Conversation if self.app.donate_picker.is_some() => {}
             // …nor does the `/export` page, its sibling (docs/export.md)…
             View::Conversation if self.app.export_picker.is_some() => {}
-            // …nor the `/context` page (docs/context-usage.md).
+            // …nor the `/context` page (docs/context-usage.md)…
             View::Conversation if self.app.context_usage.is_some() => {}
+            // …nor the `/usage` page, its sibling (docs/usage.md).
+            View::Conversation if self.app.usage_page.is_some() => {}
             // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
             // composer draft underneath (docs/secrets.md).

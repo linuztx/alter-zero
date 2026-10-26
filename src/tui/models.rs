@@ -40,7 +40,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
-use alter_zero::app::{LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind};
+use alter_zero::app::{
+    LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind, UsageEntry,
+};
 use alter_zero::background::BackgroundRegistry;
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
@@ -259,6 +261,11 @@ impl ModelSession {
         // boundary, and handed in once (`docs/chatgpt.md`).
         if let Some(issuer) = config::openai_issuer() {
             llm::chatgpt::set_issuer(issuer);
+        }
+        // GitHub's API host likewise — the Copilot token exchange and the
+        // `/usage` page's quota read both go there (`docs/usage.md`).
+        if let Some(base) = config::github_api_base() {
+            llm::copilot::set_github_api_base(base);
         }
         // Anthropic rotates its refresh token the same way, and the write-back
         // happens just as deep on a backend thread (`docs/claude.md`).
@@ -736,6 +743,37 @@ impl ModelSession {
     /// Is this provider signed in to rather than keyed?
     pub(crate) fn is_subscription(&self, provider: &str) -> bool {
         self.subscription_auth(provider).is_some()
+    }
+
+    /// The subscriptions the `/usage` page reads (`docs/usage.md`): every
+    /// one signed in to — a credential resolving, the `/login` ✓ — in the
+    /// `/login` list's order with the one the session runs on first, each
+    /// as the page's row and the config its usage is read through (the
+    /// stored credential, the provider's own base and headers).
+    pub(crate) fn usage_subscriptions(&self) -> Vec<(UsageEntry, ModelConfig)> {
+        let active = self.active_provider.as_deref();
+        let mut signed_in: Vec<SubscriptionChoice> = self
+            .subscription_choices()
+            .into_iter()
+            .filter(|choice| choice.configured)
+            .collect();
+        // Stable, so the rest keep the `/login` order.
+        signed_in.sort_by_key(|choice| Some(choice.id.as_str()) != active);
+        signed_in
+            .into_iter()
+            .filter_map(|choice| {
+                let auth = self.subscription_auth(&choice.id)?;
+                let cfg =
+                    self.config_for(&choice.id, &self.active_model, None, None, None, None)?;
+                let entry = UsageEntry::new(
+                    choice.id.clone(),
+                    choice.name,
+                    Some(choice.id.as_str()) == active,
+                    llm::plan_usage::dashboard_url(auth),
+                );
+                Some((entry, cfg))
+            })
+            .collect()
     }
 
     /// The active provider id, for the `/model` picker's "switch within this

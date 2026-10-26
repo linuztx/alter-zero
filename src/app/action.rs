@@ -307,6 +307,21 @@ pub enum Action {
     /// [`App::context_usage`] is already cleared; the loop repaints the
     /// collapsed region.
     CloseContextUsage,
+    /// `/usage`: open the read-only usage page over every subscription this
+    /// machine is signed in to. The pure side only asks — which
+    /// subscriptions are signed in is the providers table's and the key
+    /// store's to say — so the loop builds the rows, opens the page
+    /// ([`App::open_usage_page`]) and fetches each one on a worker, or toasts
+    /// when none is signed in. Works mid-turn like `/context`
+    /// (`docs/usage.md`).
+    OpenUsagePage,
+    /// `r` on the usage page: read every subscription again. The loop marks
+    /// the rows ([`App::begin_usage_refresh`]) and refetches.
+    RefreshUsage,
+    /// The usage page was dismissed (Esc, or Ctrl+C): [`App::usage_page`]
+    /// is already cleared; the loop cancels the fetches still out and
+    /// repaints the collapsed region.
+    CloseUsagePage,
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to

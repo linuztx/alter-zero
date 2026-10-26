@@ -999,6 +999,16 @@ pub(crate) fn openai_issuer() -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// Where GitHub's API is: `ALTER_ZERO_GITHUB_API_BASE` when set and
+/// non-empty (the smoke suite's local stand-in for `api.github.com`), else
+/// `None` — the module's built-in default stands (`docs/usage.md`).
+pub(crate) fn github_api_base() -> Option<String> {
+    std::env::var(alter_zero::llm::copilot::GITHUB_API_ENV)
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
 /// Where Cline's sign-in talks to WorkOS: `ALTER_ZERO_CLINE_AUTH_BASE` when
 /// set and non-empty (Phase 137's local stub, or a fork's own), else `None` —
 /// `https://api.workos.com` stands (`docs/cline.md`).

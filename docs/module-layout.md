@@ -60,6 +60,7 @@ widened for the split.
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `context_usage.rs` | The `/context` page's state — the counted breakdown, its signature, the highlight that follows the largest category until moved — the injected tool sets, the provider's last frame and the since-launch ledger (`docs/context-usage.md`). The counting itself is the top-level `crate::context_usage`. |
+| `usage.rs` | The `/usage` page's state — a row per signed-in subscription (fetching, its answer and when it landed, or why it failed), the highlight, the fetch generation that drops a superseded answer, and the keys (`docs/usage.md`). The answers themselves are `llm::plan_usage`'s. |
 | `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
@@ -99,6 +100,7 @@ widened for the split.
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `context_usage_view.rs` | The read-only `/context` page — the window bar, the legend with the highlighted category's parts beside or under it, the provider's usage rows and cache meter, and its shedding ladder (`docs/context-usage.md`). |
+| `usage_view.rs` | The read-only `/usage` page — a block per subscription, a bar per limit in the share's colour, the absolute reset times, the highlighted subscription's dashboard link, and its accordion ladder (`docs/usage.md`). |
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
@@ -149,6 +151,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
 | `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `context_usage.rs` | Keeping an open `/context` page live: the backend's tool set (or the viewed agent type's) handed over on the open and at every loop bottom, then the re-count (`docs/context-usage.md`). |
+| `usage.rs` | The `/usage` page's reads: the signed-in subscriptions resolved from the providers table and the key store, one worker per subscription per open or `r`, the answers landed by generation, the reads cancelled on close (`docs/usage.md`). |
 | `secrets.rs` | The `/secrets` page's saves, deletes and copies: the `secrets.json` read-modify-write, the shared store, the reminder sync (`docs/secrets.md`). |
 | `telemetry.rs` | The once-a-day anonymous usage ping (once more on the day of an update): the install id's mint, the one-time notice under the banner, the detached send, the record of the delivered day and version (`docs/telemetry.md`). |
 | `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |

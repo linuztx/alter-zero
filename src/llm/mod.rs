@@ -37,6 +37,7 @@ pub mod mcp;
 pub mod models;
 pub mod ollama;
 pub mod openai;
+pub mod plan_usage;
 pub mod reasoning;
 pub mod responses;
 pub mod retry;
