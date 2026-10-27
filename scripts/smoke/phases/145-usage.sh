@@ -217,8 +217,8 @@ page="$(wait_pane 10 "$S145" -E "Chat +(█|░)+ +31% used")" || fail "the page
 page="$(wait_pane 10 "$S145" -F "3 subscriptions · updated just now")" || fail "the page never finished its first round"
 dump "the page, read" "$page"
 expect_has "$page" -E "^  Usage limits$" "the page has no title"
-expect_has "$page" -E "❯ ClinePass +Monthly +in use$" \
-	"ClinePass is not first, highlighted and tagged in use under its plan's interval"
+expect_has "$page" -E "❯ ClinePass  Monthly · in use$" \
+	"ClinePass is not first, highlighted and tagged in use after its plan's interval"
 # (A glyph is several bytes and the suite's grep counts bytes, so a run of
 # them is a group: `(█)+`, never `█+`.)
 expect_has "$page" -E "^      5-hour limit +(█|░)+ +3% used" "ClinePass's 5-hour window is missing or not under its name"
