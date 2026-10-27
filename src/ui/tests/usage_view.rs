@@ -230,7 +230,9 @@ fn the_whole_page_hugs_its_rules() {
 // ===== a section per subscription =====
 
 #[test]
-fn the_subscription_in_use_comes_first_tagged_flush_right() {
+fn the_subscription_in_use_comes_first_tagged_after_its_head() {
+    // The tag is one more part of the head's ` · ` chain, after the plan and
+    // the account — never floated off to the page's edge across a gap.
     let app = loaded();
     let lines = usage_view_lines(&app, 100, TALL);
     let texts = texts(&app, 100, TALL);
@@ -240,20 +242,36 @@ fn the_subscription_in_use_comes_first_tagged_flush_right() {
         .collect();
     assert!(heads[0] < heads[1] && heads[1] < heads[2], "{texts:#?}");
     let head = &lines[heads[0]];
-    assert!(
-        plain(head).contains("❯ ChatGPT Codex  Pro · dev@example.com"),
-        "{:?}",
-        plain(head)
-    );
     assert_eq!(
-        plain(head).trim_end().len(),
-        plain(head).len(),
-        "flush to the edge"
+        plain(head),
+        "  ❯ ChatGPT Codex  Pro · dev@example.com · in use"
     );
-    assert!(plain(head).ends_with("in use"), "{:?}", plain(head));
-    assert_eq!(cols(&plain(head)), 100);
     assert_eq!(fg_of(head, "in use"), Some(usage_ok_color()));
     assert!(!texts[heads[1]].contains("in use"));
+}
+
+#[test]
+fn a_narrow_head_gives_up_the_account_before_the_tag() {
+    let app = loaded();
+    let texts = texts(&app, 40, TALL);
+    let head = texts
+        .iter()
+        .find(|t| t.contains("ChatGPT Codex"))
+        .expect("its head row");
+    assert_eq!(head, "  ❯ ChatGPT Codex  Pro · in use");
+}
+
+#[test]
+fn a_folded_head_carries_the_tag_after_its_summary() {
+    let mut app = loaded();
+    app.usage_page.as_mut().unwrap().selected = 1;
+    let lines = usage_view_lines(&app, 100, 14);
+    let head = row_with(&lines, "ChatGPT Codex");
+    assert_eq!(
+        plain(head),
+        "    ChatGPT Codex  Pro · Weekly limit 7% used · in use"
+    );
+    assert_eq!(fg_of(head, "in use"), Some(usage_ok_color()));
 }
 
 #[test]

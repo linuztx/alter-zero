@@ -7,8 +7,8 @@
 //! - a **subtitle** counting the subscriptions and saying how fresh the
 //!   numbers are (`updated just now`, `updated 3m ago`, `refreshing…`);
 //! - a **section** per subscription, its head naming the provider, the plan
-//!   and the account, the one in use tagged flush right, its rows indented
-//!   under the name;
+//!   and the account — the one in use tagged `in use` after them — its rows
+//!   indented under the name;
 //! - a **meter** per limit — a bar of the share used, green until it warns
 //!   and red once it is spent, the share, `limit reached` when it is, the
 //!   counts behind it, and when it resets, both as a countdown and as a
@@ -511,8 +511,9 @@ enum Fold {
 
 /// A section's head row: the marker and the provider's name (the accent on
 /// the highlighted section), the plan and, dim, the account — or, folded,
-/// the fullest limit — and `in use` flush right on the one the session runs
-/// on. What gives way on a narrow row: the account, then the tag.
+/// the fullest limit — and, last in the same ` · ` chain, `in use` on the
+/// one the session runs on, so it never floats off to the page's edge.
+/// What gives way on a narrow row: the account, then the tag.
 fn head_row(section: &UsageSection, selected: bool, fold: Fold, width: u16) -> Line<'static> {
     let accent = Style::new().fg(model_selected_color());
     let dim = Style::new().fg(model_meta_color());
@@ -569,26 +570,23 @@ fn head_row(section: &UsageSection, selected: bool, fold: Fold, width: u16) -> L
         }
     }
     let width = width as usize;
-    let tag = section
-        .in_use
-        .then(|| Span::styled(USAGE_IN_USE, Style::new().fg(usage_ok_color())));
-    let with_tail = spans_cols(&spans) + spans_cols(&tail);
-    let tag_cols = tag
-        .as_ref()
-        .map_or(0, |tag| cols(&tag.content) + cols(USAGE_LABEL_GAP));
-    if with_tail + tag_cols <= width {
+    let tag = if section.in_use {
+        vec![
+            Span::styled(USAGE_SEPARATOR, dim),
+            Span::styled(USAGE_IN_USE, Style::new().fg(usage_ok_color())),
+        ]
+    } else {
+        Vec::new()
+    };
+    let (head_cols, tag_cols) = (spans_cols(&spans), spans_cols(&tag));
+    if head_cols + spans_cols(&tail) + tag_cols <= width {
         spans.extend(tail);
-    } else if fold == Fold::Open && spans_cols(&spans) + tag_cols <= width {
+        spans.extend(tag);
+    } else if fold == Fold::Open && head_cols + tag_cols <= width {
         // The account gives way first.
+        spans.extend(tag);
     } else {
         spans.extend(tail);
-        return clamp_spans(spans, width);
-    }
-    if let Some(tag) = tag {
-        let used = spans_cols(&spans);
-        let fill = width.saturating_sub(used + cols(&tag.content));
-        spans.push(Span::raw(" ".repeat(fill)));
-        spans.push(tag);
     }
     clamp_spans(spans, width)
 }

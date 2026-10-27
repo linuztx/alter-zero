@@ -29,7 +29,7 @@ page: a toast says so and points at `/login` → *Use a subscription* — the
   Usage limits
   3 subscriptions · updated just now
 
-  ❯ ChatGPT Codex  Pro · dev@example.com                                                      in use
+  ❯ ChatGPT Codex  Pro · dev@example.com · in use
       Weekly limit   █░░░░░░░░░░░░░░░░░░░   7% used  resets in 6d · Sat 3:58 PM
       Credits        62,500 credits · ≈ 15.6k–81.3k local messages
       Limit resets   2 available
@@ -67,11 +67,15 @@ still landing) or `refreshing…` (over the numbers an earlier round left).
 
 ### A section per subscription
 
-The subscription in use comes first and says so (`in use`, in the success
-green, flush right); the others follow in `/login`'s order. A section's head
-is the provider's name (bold; the accent on the highlighted section), the plan
-(`Pro`, `Monthly`) and, dim, the account when the answer names one. Its rows
-are indented under the name, so each section reads as one block.
+The subscription in use comes first; the others follow in `/login`'s order.
+A section's head is the provider's name (bold; the accent on the highlighted
+section), the plan (`Pro`, `Monthly`) and, dim, the account when the answer
+names one — and on the subscription in use, `in use` in the success green,
+the last link of that same ` · ` chain. It sits beside what it describes,
+never pushed out to the page's edge across a gap of blank columns, which on a
+wide terminal read as a stray word rather than part of the head. A head too
+long for its row gives up the account first, then the tag. Its rows are
+indented under the name, so each section reads as one block.
 
 One row per **meter**, labels in an aligned column across the page:
 
