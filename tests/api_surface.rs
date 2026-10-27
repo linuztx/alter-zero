@@ -479,6 +479,7 @@ use alter_zero::ui::{
     idle_task_lines,
     image_block_lines,
     image_lines,
+    item_image_paths,
     item_images,
     shortcuts_lines,
     shortcuts_rows,

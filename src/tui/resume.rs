@@ -299,30 +299,6 @@ impl Session<'_> {
         self.overlay_return_repaint()
     }
 
-    /// Read the header of every pasted picture the loaded conversation
-    /// carries and record its size, so the pictures draw again. A paste has
-    /// no fact line to reserve its rows from (`docs/images.md`, *Where the
-    /// pixel size comes from*), and since pastes are kept under the config
-    /// home rather than `/tmp` the file is usually still there — a path that
-    /// isn't simply isn't drawn, as before.
-    pub(crate) fn remember_loaded_image_sizes(&self) {
-        for item in &self.app.history {
-            let alter_zero::app::HistoryItem::Message(message) = item else {
-                continue;
-            };
-            if message.role != alter_zero::app::Role::User {
-                continue;
-            }
-            for path in &message.images {
-                if let Some(name) = path.to_str()
-                    && let Some(px) = super::workers::image_dimensions(path)
-                {
-                    alter_zero::images::remember_size(name, px);
-                }
-            }
-        }
-    }
-
     /// Enter on a picker row: read + parse the rollout here (the I/O). Success
     /// swaps the conversation and adopts the file for further recording; failure
     /// leaves the current conversation unharmed under a red notice (codex).
@@ -351,8 +327,10 @@ impl Session<'_> {
         // is swapped out, so the event names it (docs/hooks.md).
         self.models.end_conversation("resume");
         let restored = self.restore_final_checkpoint(&session_checkpoints);
+        // The loaded pictures — a paste's size, a file gone since the session
+        // was recorded — are looked for by the purge rebuild below, which is
+        // what lays the history out (`docs/images.md`).
         self.app.load_session(items);
-        self.remember_loaded_image_sizes();
         // The checklist came back with the conversation (the last task
         // record's snapshot) — the shared registry follows, so the model's
         // next `tasklist` sees the resumed tasks (docs/task-tools.md).

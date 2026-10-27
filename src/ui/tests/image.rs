@@ -196,6 +196,81 @@ fn a_pasted_attachment_draws_under_its_own_bubble() {
 }
 
 #[test]
+fn every_file_a_picture_is_drawn_from_is_listed_for_the_recheck() {
+    // What the boundary looks for again when a conversation is loaded or
+    // rebuilt: an image read's file, whatever the registry knows of it, and
+    // every Ctrl+V attachment a user message carries — a paste whose size was
+    // never recorded included, since the recheck is what records it.
+    let read = image_read("/alter-zero-tests/paths/read.png", (64, 64));
+    assert_eq!(
+        item_image_paths(&read),
+        vec!["/alter-zero-tests/paths/read.png".to_string()]
+    );
+    let message = |role: Role| {
+        HistoryItem::Message(Message {
+            role,
+            text: "[Image #1] [Image #2] compare".to_string(),
+            timestamp: String::new(),
+            images: vec![
+                std::path::PathBuf::from("/alter-zero-tests/paths/1.png"),
+                std::path::PathBuf::from("/alter-zero-tests/paths/2.png"),
+            ],
+        })
+    };
+    assert_eq!(
+        item_image_paths(&message(Role::User)),
+        vec![
+            "/alter-zero-tests/paths/1.png".to_string(),
+            "/alter-zero-tests/paths/2.png".to_string(),
+        ]
+    );
+    assert!(
+        item_image_paths(&message(Role::Assistant)).is_empty(),
+        "only the user's own messages carry pastes"
+    );
+    let mut text = match image_read("/alter-zero-tests/paths/notes.txt", (1, 1)) {
+        HistoryItem::Tool(tool) => tool,
+        _ => unreachable!(),
+    };
+    text.output = "     1 alpha".to_string();
+    assert!(
+        item_image_paths(&HistoryItem::Tool(text)).is_empty(),
+        "a text read draws no picture, so there is nothing to look for"
+    );
+}
+
+#[test]
+fn a_resumed_read_whose_file_is_gone_leaves_no_blank_rows() {
+    // The reported bug, through the pure half: a conversation resumed after a
+    // reboot carries a `read` of a screenshot that lived under `/tmp`. Its
+    // fact line still says 1883x1007, so the block was reserved — a screenful
+    // of blank rows between the cell and the reply, with no file left to
+    // draw. The boundary's recheck finds no header there, and the
+    // conversation reads exactly as it would with no picture at all.
+    let _guard = drawing(120);
+    let path = "/alter-zero-tests/gone/desktop-first.png";
+    let history = vec![
+        image_read(path, (1883, 1007)),
+        HistoryItem::Message(Message {
+            role: Role::Assistant,
+            text: "That is the desktop.".to_string(),
+            timestamp: String::new(),
+            images: Vec::new(),
+        }),
+    ];
+    images::recheck_pictures(history.iter().flat_map(item_image_paths), |_| None);
+    assert!(
+        image_block_lines(&history[0], 100).is_empty(),
+        "no file, no rows"
+    );
+    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    images::set_policy(ImagePolicy::default());
+    let pictureless = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    assert_eq!(lines, pictureless, "not one row is held for the picture");
+    restore();
+}
+
+#[test]
 fn the_conversation_puts_the_picture_between_the_cell_and_the_spacer() {
     let _guard = drawing(120);
     let history = vec![image_read("/tmp/cat.png", (700, 689))];

@@ -388,10 +388,13 @@ told the answer anyway, on the picture's own placeholder, in the turn where
 it matters.
 
 **A resumed session finds its pictures.** A paste has no fact line to reserve
-its rows from (`docs/images.md`, *Where the pixel size comes from*), so after
-a `/resume`, `--continue` or `--resume` load `Session::remember_loaded_image_sizes`
-reads every pasted picture's header again (`images::remember_size`) and the
-pictures draw as they did — the reason the folder lives where it does.
+its rows from (`docs/images.md`, *Where the pixel size comes from*), so before
+a `/resume`, `--continue` or `--resume` load is laid out
+`tui::view::recheck_pictures` reads every pasted picture's header again
+(`images::recheck_pictures`) and the pictures draw as they did — the reason
+the folder lives where it does. A paste whose file is gone after all is
+marked missing there and takes no rows (`docs/images.md`, *A picture whose
+file is gone*).
 
 **The store is bounded, by size and not by age.** A durable folder that
 never forgets grows without end, so at startup `tui::config::sweep_image_cache`

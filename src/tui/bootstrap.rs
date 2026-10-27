@@ -843,7 +843,12 @@ impl<'t> Session<'t> {
                 let restored = self.restore_final_checkpoint(&session_checkpoints);
                 let count = items.len();
                 self.app.load_session(items);
-                self.remember_loaded_image_sizes();
+                // `paint_first_frame` commits the loaded transcript with no
+                // rebuild to look for its pictures, so look now: a paste gets
+                // its size back, and a picture whose file is gone — a `/tmp`
+                // screenshot after a reboot — reserves no rows
+                // (`docs/images.md`).
+                super::view::recheck_pictures(&self.app.history);
                 // The checklist came back with the conversation — the shared
                 // registry follows, exactly like the `/resume` picker's load
                 // (docs/task-tools.md).

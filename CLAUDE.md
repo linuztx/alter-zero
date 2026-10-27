@@ -1091,7 +1091,15 @@ picture; a differential test pins the two together against the real
 `Resize::Fit`. The pixel size comes from the `read` tool's own fact line
 (`images::read_image_size` — the only record that survives a `/resume`,
 since the rollout keeps the cell's text and not the file's header) or, for a
-paste, from the header the boundary read when the paste landed. Terminal
+paste, from the header the boundary read when the paste landed — and either
+way a picture reserves rows only while its file is there: a `--resume` load
+and every purge rebuild (which drops the encoded pictures) first look again
+for each picture's file (`tui::view::recheck_pictures` → the pure
+`images::recheck_pictures`), and `images::place` reserves nothing for one
+marked missing, cleared by any later sighting — the `read` executor records
+each picture it reads — since a resumed `/tmp` screenshot gone after a
+reboot used to come back as a screenful of blank rows (`docs/images.md` *A
+picture whose file is gone*, `smoke.sh` Phase 107f). Terminal
 detection **adds no stdin reader**: `ratatui_image`'s
 `Picker::from_query_stdio` spawns a reader thread behind a 2 s timeout and
 never joins it, so on a terminal that doesn't answer that thread eats the

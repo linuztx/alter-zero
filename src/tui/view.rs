@@ -22,6 +22,9 @@
 //! A repaint must not lose the in-flight partial reply — it lives in the
 //! streaming buffer, not `history` — so the rebuild re-commits it through the
 //! normal `insert_before` pipeline right after the reflow (`docs/flicker.md`).
+//! Nor may it reserve rows for a picture it can no longer draw: the purge
+//! drops every encoded picture with the scrollback, so each rebuild first
+//! looks again for the pictures' files ([`recheck_pictures`]).
 //!
 //! The clock injections live here too ([`Session::update_status_times`]): time
 //! is impure, so the pure `App`/`ui` only ever see already-computed durations.
@@ -32,7 +35,8 @@ use std::time::Instant;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
-use alter_zero::app::{App, DebugPage, View};
+use alter_zero::app::{App, DebugPage, HistoryItem, View};
+use alter_zero::images;
 use alter_zero::paste;
 use alter_zero::ui;
 
@@ -456,6 +460,13 @@ impl Session<'_> {
     /// re-commit can never double up with pre-rebuild leftovers.)
     pub(crate) fn repaint_conversation(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
+        // The purge takes the encoded pictures with it, so a picture whose
+        // file has gone since it was drawn — or since the conversation was
+        // recorded — must not reserve its rows again (`docs/images.md`).
+        recheck_pictures(ui::committed_history(
+            &self.app.history,
+            self.app.tool_queue(),
+        ));
         // The purge drops every committed row (screen and scrollback alike),
         // so nothing is "already committed" any more: reset, and let the
         // catch-up below re-commit the whole partial at the current width.
@@ -527,8 +538,10 @@ impl Session<'_> {
             return Ok(());
         };
         // Only the agent's committed cells, the main view's rule
-        // (`ui::committed_history`, `docs/mcp.md`).
+        // (`ui::committed_history`, `docs/mcp.md`) — and its pictures looked
+        // for again, the main rebuild's rule.
         let history = ui::committed_history(&run.history, &run.tool_queue).to_vec();
+        recheck_pictures(&history);
         let streaming = run.streaming.clone().filter(|text| !text.is_empty());
         // The preview comes FIRST, as in `repaint_conversation`: it injects
         // the strip's row count (`set_stream_preview_rows`) that
@@ -569,6 +582,23 @@ impl Session<'_> {
         }
         Ok(())
     }
+}
+
+/// Look again for the file behind every picture `history` shows, before it is
+/// laid out — so a picture whose file is gone reserves no rows
+/// (`docs/images.md`, *A picture whose file is gone*).
+///
+/// A `read` names its picture's size in its own fact line and a resumed
+/// conversation keeps that line, while the file can be long gone — a
+/// screenshot the agent saved under `/tmp`, wiped by a reboot, used to come
+/// back as a screenful of blank rows. And a paste has no fact line at all,
+/// so this is also where a loaded conversation's pastes get their sizes
+/// back. One header read per picture ([`super::workers::image_dimensions`]);
+/// the decision is [`images::recheck_pictures`]'s.
+pub(crate) fn recheck_pictures(history: &[HistoryItem]) {
+    images::recheck_pictures(history.iter().flat_map(ui::item_image_paths), |path| {
+        super::workers::image_dimensions(std::path::Path::new(path))
+    });
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

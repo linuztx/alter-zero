@@ -10,7 +10,8 @@
 //! - [`registry`] — the process-global render policy (`/settings` plus what
 //!   the terminal turned out to support) and the placement interner, so pure
 //!   `ui` line builders can reserve a block without a new argument on every
-//!   signature.
+//!   signature — and what the boundary last found at each picture's path, so
+//!   a picture whose file is gone reserves nothing.
 //! - [`payload`] — the other boundary: downscaling a picture before it is
 //!   uploaded, which is what `/settings` **Auto-resize images** controls —
 //!   and keeping the result on disk for the session, since an attachment is
@@ -54,8 +55,8 @@ pub use payload::{
     set_payload_cache_dir,
 };
 pub use registry::{
-    ImagePolicy, Placement, any_placements, auto_resizing, known_size, place, placement, policy,
-    remember_size, set_policy, showing,
+    ImagePolicy, Placement, any_placements, auto_resizing, known_missing, known_size, place,
+    placement, policy, recheck_pictures, remember_missing, remember_size, set_policy, showing,
 };
 pub use store::{
     Detection, GraphicsReply, IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV,

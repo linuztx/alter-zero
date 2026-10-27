@@ -29,7 +29,7 @@ always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 | module | what it is |
 | --- | --- |
 | `images::geometry` | pure. The cell footprint a picture takes, and the per-cell carrier that marks the rows reserved for it. |
-| `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
+| `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support), the placement interner, and what the boundary last found at each picture's path. |
 | `images::fitted` | pure. A PNG decoded at the size it will be shown or sent — rows streamed through an area-average shrink, so the whole picture is never held (`docs/memory.md`). |
 | `images::payload` | the other boundary: downscaling a picture before it is **uploaded**, and keeping the result on disk for the session so a re-sent attachment is never shrunk twice. |
 | `images::attachment` | the wire's copy of a picture: its base64 `data:` URL, encoded **once** per session — streamed from the file or the payload sidecar — and shared by reference by every request that re-sends it (`docs/memory.md`). |
@@ -94,7 +94,58 @@ since **gone** is not a file that changed: the picture already encoded keeps
 drawing, and nothing is retried per frame. The unit tests drive a half-block
 store into a `Buffer` with no terminal anywhere (`ImageStore::with_protocol`
 — red, rewritten blue at a distinct mtime, painted blue; deleted, still
-painted); `smoke.sh` Phase 107d does the same against the real binary.
+painted); `smoke.sh` Phase 107d does the same against the real binary. A
+gone file keeps drawing only until the next purge rebuild, though, which
+drops every encoded picture with the scrollback (*A picture whose file is
+gone*, below).
+
+### A picture whose file is gone
+
+The row reservation never opens the file: an image read's rows come from its
+own fact line (*Where the pixel size comes from*, below), and a resumed
+conversation keeps that line long after the file has gone. The agent saves a
+screenshot under `/tmp` and reads it, the machine reboots and `/tmp` goes
+with it, and resuming the session reserved the picture's rows all the same —
+a screenful of blank rows between the `Read image` cell and the reply, with
+nothing left to draw into them. That was the reported bug.
+
+So the boundary looks again before it lays a conversation out from history:
+`tui::view::recheck_pictures` reads the header of every picture the history
+shows (`ui::item_image_paths` lists the files — an image read's path and each
+Ctrl+V attachment) and hands the answers to `images::recheck_pictures`, the
+pure decision. A picture found has its size recorded (`remember_size`); one
+not found is marked missing (`remember_missing`), and `images::place` — the
+one call every reservation goes through — reserves no rows for a missing
+path. The cell above stands alone, exactly as it would with images off.
+
+It runs wherever the inline conversation is laid out from history whole —
+two places:
+
+* **a `--resume`/`--continue` load**, which commits the transcript at startup
+  with no rebuild (`apply_startup`);
+* **every purge rebuild** — a `/resume` load, a resize, a `/settings` image
+  row, a backtrack, the agent session view's own rebuild. The purge drops
+  every encoded picture with the scrollback (*Resize*), so after one a picture
+  whose file is gone could never be drawn again. Checking there costs one
+  header read per picture, against a rebuild that re-renders the whole
+  history anyway.
+
+A missing mark is not forever. Any later sighting clears it: a recheck that
+finds the file again (the agent took the screenshot again; a checkpoint
+restore put it back), a Ctrl+V paste landing, and the `read` executor itself,
+which records every picture it reads on the backend thread, before its cell
+is committed — so a resumed conversation that found `/tmp/shot.png` gone
+still draws a new `read` of a new `/tmp/shot.png`.
+
+What it cannot reach is a row already painted. A picture already drawn whose
+file is deleted mid-session keeps drawing from its encoding until the next
+purge rebuild — the moment its rows go — and the Ctrl+O transcript keeps the
+rows its cache built until that cache next rebuilds (a width change, a
+history rewind). Unit tests drive the registry with a fake probe and the line
+builders with a path marked missing; `smoke.sh` Phase 107f resumes a rollout
+whose read names a file that is not there, through `--resume` and the
+`/resume` picker, then writes the file back and deletes it again across two
+resizes.
 
 ### Where the pixel size comes from
 
@@ -108,11 +159,14 @@ two:
 * A **Ctrl+V paste** — no such line, so the boundary reads the header once
   when the paste lands (`images::remember_size`, from `tui::workers`) — and
   again for every pasted picture a loaded conversation carries
-  (`Session::remember_loaded_image_sizes`, after a `/resume`, `--continue` or
-  `--resume` load), since pastes are saved under the config home
+  (`tui::view::recheck_pictures`, before a `/resume`, `--continue` or
+  `--resume` load is laid out), since pastes are saved under the config home
   (`{config_home}/image-cache/{session}/N.png`, `docs/image-paste.md`) and
-  are usually still there. A path with no entry — a picture someone deleted —
-  simply isn't drawn.
+  are usually still there. A paste whose header can't be read — a picture
+  someone deleted — simply isn't drawn.
+
+Either way the size is only half of it: a picture reserves rows only while
+its file is still there to draw from (*A picture whose file is gone*, above).
 
 ## The geometry
 
@@ -552,3 +606,8 @@ Phase 107d overwrites the picture a resumed cell shows — same path, same
 size, the same byte length even — and asserts the transcript's next paint of
 that placement draws the new colour and none of the old (*A file rewritten
 in place*).
+Phase 107f resumes a read whose file is gone — through `--resume`, then the
+`/resume` picker and its Ctrl+O transcript — and asserts no row is held for
+it while a paste in the same conversation still draws; then it writes the
+file back and deletes it again, a resize after each, and asserts the picture
+returns and then goes with its rows (*A picture whose file is gone*).
