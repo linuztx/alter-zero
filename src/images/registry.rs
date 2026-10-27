@@ -1,6 +1,7 @@
-//! The process-global render policy and the placement interner.
+//! The process-global render policy, the placement interner, and what the
+//! boundary found on disk.
 //!
-//! Two pieces of state that pure `ui` code has to be able to *read* while it
+//! Three pieces of state that pure `ui` code has to be able to *read* while it
 //! builds lines, and that only the boundary ever *writes* — the same shape
 //! [`crate::links`]' URL interner has, and for the same reason: threading
 //! them through `conversation_lines`, `tool_commit_lines`,
@@ -16,6 +17,9 @@
 //!   on the *size* as well as the path is what makes a resize correct: a
 //!   narrower terminal produces a different id, so the boundary encodes a
 //!   fresh protocol instead of re-placing the old one at the wrong size.
+//! - The **sightings** are what the boundary found at each picture's path: a
+//!   paste's pixel size, which no fact line carries, or no picture at all —
+//!   a file gone since the conversation showed it, which reserves no rows.
 //!
 //! See `docs/images.md`.
 
@@ -141,12 +145,13 @@ fn placements() -> &'static Mutex<Placements> {
 /// Reserve a block for the image at `path` (whose pixel size is `px`) in a
 /// region `avail_cols` wide, returning the placement its cells will carry.
 ///
-/// `None` when images are off, the terminal is too narrow, or the interner is
+/// `None` when images are off, the boundary found the picture's file gone
+/// ([`remember_missing`]), the terminal is too narrow, or the interner is
 /// full — in every case the caller simply reserves no rows and the cell above
 /// stands alone, exactly as before.
 #[must_use]
 pub fn place(path: &str, px: (u32, u32), avail_cols: u16) -> Option<Placement> {
-    if !showing() {
+    if !showing() || known_missing(path) {
         return None;
     }
     let policy = policy();
@@ -183,31 +188,98 @@ pub fn placement(id: u32) -> Option<Placement> {
     guard.entries.get(id as usize - 1).cloned()
 }
 
-// --- The pixel-size registry ---
+// --- What the boundary found on disk ---
 
-/// Pixel sizes the boundary has learned, by path.
-///
-/// The `read` tool's own fact line carries the size of the picture it read
-/// ([`super::read_image_size`]), so an image read needs nothing here. A
-/// **Ctrl+V paste** has no such line — the composer shows `[Image #1]` and the
-/// message records only a path — so the boundary reads the header once when
-/// the paste lands and leaves the answer here for the line builders. A path
-/// with no entry simply isn't drawn, which is also the right answer for a
-/// resumed session whose per-session temp file is long gone.
-fn sizes() -> &'static Mutex<HashMap<String, (u32, u32)>> {
-    static SIZES: OnceLock<Mutex<HashMap<String, (u32, u32)>>> = OnceLock::new();
-    SIZES.get_or_init(|| Mutex::new(HashMap::new()))
+/// What the boundary last found at a picture's path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sighting {
+    /// A picture of this pixel size.
+    Found((u32, u32)),
+    /// No picture at all: the file is gone, or no longer an image.
+    Missing,
 }
 
-/// Record the pixel size of the image at `path`.
-pub fn remember_size(path: &str, px: (u32, u32)) {
-    if let Ok(mut guard) = sizes().lock() {
-        guard.insert(path.to_string(), px);
+/// What the boundary has found at each picture's path.
+///
+/// The `read` tool's own fact line carries the size of the picture it read
+/// ([`super::read_image_size`]), so an image read needs no size from here. A
+/// **Ctrl+V paste** has no such line — the composer shows `[Image #1]` and the
+/// message records only a path — so the boundary reads the header once when
+/// the paste lands and leaves the answer here for the line builders. A paste
+/// with no size simply isn't drawn.
+///
+/// Either kind can also lose its file while the conversation that shows it
+/// lives on: a screenshot the agent saved under `/tmp` is gone after a
+/// reboot, and resuming the session reserved its rows from the fact line all
+/// the same — a screenful of blanks, with nothing left to draw into them. So
+/// the boundary looks again whenever it lays a conversation out from history
+/// ([`recheck_pictures`]), and a path it found nothing at is
+/// [`Missing`](Sighting::Missing): [`place`] reserves no rows for it. See
+/// `docs/images.md`, *A picture whose file is gone*.
+fn sightings() -> &'static Mutex<HashMap<String, Sighting>> {
+    static SIGHTINGS: OnceLock<Mutex<HashMap<String, Sighting>>> = OnceLock::new();
+    SIGHTINGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record(path: &str, sighting: Sighting) {
+    if let Ok(mut guard) = sightings().lock() {
+        guard.insert(path.to_string(), sighting);
     }
 }
 
-/// The recorded pixel size of the image at `path`, if the boundary read one.
+fn sighting(path: &str) -> Option<Sighting> {
+    sightings().lock().ok()?.get(path).copied()
+}
+
+/// Record the pixel size of the image at `path` — a paste landing, a `read`
+/// that found a picture there, a recheck that did. Overrides an earlier
+/// [`remember_missing`]: the picture is back.
+pub fn remember_size(path: &str, px: (u32, u32)) {
+    record(path, Sighting::Found(px));
+}
+
+/// The recorded pixel size of the image at `path`, if the boundary read one
+/// and has not since found it gone.
 #[must_use]
 pub fn known_size(path: &str) -> Option<(u32, u32)> {
-    sizes().lock().ok()?.get(path).copied()
+    match sighting(path)? {
+        Sighting::Found(px) => Some(px),
+        Sighting::Missing => None,
+    }
+}
+
+/// Record that the boundary looked for the picture at `path` and found none,
+/// so [`place`] reserves no rows for it until it is seen again.
+pub fn remember_missing(path: &str) {
+    record(path, Sighting::Missing);
+}
+
+/// Whether the boundary last found no picture at `path`. `false` for a path
+/// it never looked at — a live `read`'s picture is there by definition.
+#[must_use]
+pub fn known_missing(path: &str) -> bool {
+    sighting(path) == Some(Sighting::Missing)
+}
+
+/// Look again for the picture at each of `paths`: `probe` is the boundary's
+/// header read, `Some` with the picture's pixel size or `None` when there is
+/// no picture there. A size found is recorded ([`remember_size`]) — which is
+/// how a loaded conversation's pastes get theirs back — and a picture not
+/// found is marked [`remember_missing`].
+///
+/// The boundary runs it before every layout from history: a load and every
+/// purge rebuild, which drops the encoded pictures with the scrollback, so a
+/// picture whose file is gone could never be drawn into the rows it would
+/// otherwise reserve.
+pub fn recheck_pictures<S: AsRef<str>>(
+    paths: impl IntoIterator<Item = S>,
+    mut probe: impl FnMut(&str) -> Option<(u32, u32)>,
+) {
+    for path in paths {
+        let path = path.as_ref();
+        match probe(path) {
+            Some(px) => remember_size(path, px),
+            None => remember_missing(path),
+        }
+    }
 }

@@ -1285,6 +1285,12 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     // picture, and reads it back from the cache rather than from the file
     // (`docs/memory.md`).
     let url = crate::images::remember_attachment(std::path::Path::new(path), payload, mime);
+    // The cell this read resolves draws the picture from the file, so the
+    // renderer hears that it is there — over a verdict that it was gone: a
+    // resumed conversation that found this path missing, its `/tmp`
+    // screenshot wiped by a reboot, before the agent took it again
+    // (`docs/images.md`, *A picture whose file is gone*).
+    crate::images::remember_size(path, (width, height));
     let text = match &sent {
         Some(small) => tools::format_read_image_resized(
             label,
@@ -1742,6 +1748,28 @@ os.write(1, b"\n")'"#;
             "the URL never pollutes the text output: {}",
             out.output
         );
+    }
+
+    #[test]
+    fn an_image_read_tells_the_renderer_its_picture_is_there() {
+        // A resumed conversation can have found this very path missing — a
+        // screenshot under `/tmp`, wiped by a reboot — and the agent taking
+        // it again and reading it must draw again rather than inherit the
+        // old verdict (`docs/images.md`, *A picture whose file is gone*).
+        let path = temp_path("read-image-seen-again.png");
+        let name = path.to_str().unwrap().to_string();
+        crate::images::remember_missing(&name);
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([220, 20, 20, 255]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{name}"}}"#));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(
+            !crate::images::known_missing(&name),
+            "the read saw the picture"
+        );
+        assert_eq!(crate::images::known_size(&name), Some((3, 2)));
     }
 
     #[test]

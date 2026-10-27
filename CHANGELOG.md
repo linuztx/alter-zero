@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A picture whose file is gone no longer leaves a blank block.** The agent
+  often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
+  Resuming such a session left a screenful of empty rows between the
+  `Read image` line and the reply, the space of a picture that could no
+  longer be drawn. A resumed session now checks that each picture's file is
+  still there, and one that is gone takes no rows at all. The check runs
+  again whenever the conversation is redrawn, on a resize or a change to the
+  image settings, so a picture deleted mid-session stops holding its space
+  too, and one whose file comes back draws again (`docs/images.md`).
+
 ## [0.17.0] - 2026-10-27
 
 ### Added

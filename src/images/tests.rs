@@ -209,6 +209,63 @@ fn nothing_is_reserved_while_images_are_off() {
     set_policy(ImagePolicy::default());
 }
 
+// ===== a picture whose file is gone (docs/images.md "A picture whose file is gone") =====
+
+#[test]
+fn a_picture_the_boundary_found_missing_reserves_no_rows() {
+    // The reported bug: a session resumed after a reboot carries a `read` of
+    // a screenshot that lived under `/tmp`, wiped with it. The fact line
+    // still names the size, so the block was reserved — and with no file to
+    // draw from it stayed a screenful of blank rows. The boundary marks such
+    // a path, and `place` reserves nothing for it.
+    let _guard = policy_lock();
+    set_policy(ImagePolicy {
+        show: true,
+        available: true,
+        max_cols: 120,
+        font: (10, 20),
+        auto_resize: true,
+    });
+    let path = "/alter-zero-tests/missing/desktop-first.png";
+    assert!(
+        place(path, (1883, 1007), 200).is_some(),
+        "a picture nobody has checked reserves its rows, as it always has"
+    );
+    remember_size(path, (1883, 1007));
+    remember_missing(path);
+    assert!(known_missing(path));
+    assert_eq!(known_size(path), None, "a missing picture has no size");
+    assert_eq!(
+        place(path, (1883, 1007), 200),
+        None,
+        "a missing picture reserves nothing"
+    );
+    // Seen again — a paste landing, a `read` that found it, a recheck that
+    // did — it draws again.
+    remember_size(path, (1883, 1007));
+    assert!(!known_missing(path));
+    assert!(place(path, (1883, 1007), 200).is_some());
+    set_policy(ImagePolicy::default());
+}
+
+#[test]
+fn a_recheck_marks_what_it_cannot_find_and_restores_what_it_can() {
+    // What the boundary runs over a loaded or rebuilt conversation's
+    // pictures. Its probe is a header read, so a picture it finds has its
+    // size recorded (a paste's rows come from it) and one it can't is marked.
+    let here = "/alter-zero-tests/recheck/here.png";
+    let gone = "/alter-zero-tests/recheck/gone.png";
+    recheck_pictures([here, gone], |path| (path == here).then_some((64, 48)));
+    assert_eq!(known_size(here), Some((64, 48)));
+    assert!(!known_missing(here));
+    assert!(known_missing(gone));
+    // The file comes back — the agent took the screenshot again — and the
+    // next recheck finds it.
+    recheck_pictures([gone], |_| Some((32, 32)));
+    assert!(!known_missing(gone));
+    assert_eq!(known_size(gone), Some((32, 32)));
+}
+
 #[test]
 fn the_default_policy_draws_nothing_until_the_boundary_reports_in() {
     // Every unit test in the crate runs under this default, which is what

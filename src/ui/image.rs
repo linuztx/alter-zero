@@ -37,6 +37,27 @@ pub fn item_images(item: &HistoryItem) -> Vec<(String, (u32, u32))> {
     }
 }
 
+/// Every file `item` would draw a picture from — an image `read`'s path and
+/// each Ctrl+V attachment a user message carries — whether or not its picture
+/// can be drawn now.
+///
+/// What the boundary looks for again before it lays a conversation out from
+/// history ([`images::recheck_pictures`]), so it cannot ask the registry what
+/// it already knows: a paste's size and a file found gone are exactly what
+/// that look records (`docs/images.md`, *A picture whose file is gone*).
+#[must_use]
+pub fn item_image_paths(item: &HistoryItem) -> Vec<String> {
+    match item {
+        HistoryItem::Tool(tool) => tool_image(tool).map(|(path, _)| path).into_iter().collect(),
+        HistoryItem::Message(message) if message.role == Role::User => message
+            .images
+            .iter()
+            .filter_map(|path| path.to_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The picture a resolved `read` call shows, if its result was one.
 fn tool_image(tool: &ToolCall) -> Option<(String, (u32, u32))> {
     if !tool.name.eq_ignore_ascii_case(READ_TOOL) || tool.shell {
@@ -81,7 +102,9 @@ fn message_images(message: &Message) -> Vec<(String, (u32, u32))> {
 /// The rows `item`'s pictures reserve below its cell — a blank spacer then
 /// the block, per picture. Empty when the item shows none, when `/settings`
 /// **Show images** is off, or when the terminal can't draw one, which is what
-/// keeps every existing line count exactly as it was.
+/// keeps every existing line count exactly as it was — and for a picture the
+/// boundary found gone, which would otherwise leave a blank block nothing can
+/// be drawn into.
 #[must_use]
 pub fn image_block_lines(item: &HistoryItem, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
