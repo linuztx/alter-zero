@@ -1091,7 +1091,14 @@ picture; a differential test pins the two together against the real
 `Resize::Fit`. The pixel size comes from the `read` tool's own fact line
 (`images::read_image_size` — the only record that survives a `/resume`,
 since the rollout keeps the cell's text and not the file's header) or, for a
-paste, from the header the boundary read when the paste landed. Terminal
+paste, from the header the boundary read when the paste landed. Neither keeps
+the **file**, so `images::place` reserves nothing for a picture whose file is
+gone — a resumed read of a scratchpad screenshot a reboot wiped used to leave
+a block of blank rows, inline and in Ctrl+O — by asking a `stat` the boundary
+installs once (`images::set_file_check`; until then every file counts as
+there, which is the unit tests' case), and asking again at every rebuild, so
+a picture deleted mid-session gives its rows back at the next resize
+(`docs/images.md` *A file that is gone*, `smoke.sh` Phase 107f). Terminal
 detection **adds no stdin reader**: `ratatui_image`'s
 `Picker::from_query_stdio` spawns a reader thread behind a 2 s timeout and
 never joins it, so on a terminal that doesn't answer that thread eats the

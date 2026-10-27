@@ -29,7 +29,7 @@ always splits them (`src/images/`), plus `ui/image.rs` for the rows themselves:
 | module | what it is |
 | --- | --- |
 | `images::geometry` | pure. The cell footprint a picture takes, and the per-cell carrier that marks the rows reserved for it. |
-| `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support) and the placement interner. |
+| `images::registry` | the process-global render policy (`/settings` plus what the terminal turned out to support), the placement interner, and the boundary's check for whether a picture's file is still there. |
 | `images::fitted` | pure. A PNG decoded at the size it will be shown or sent — rows streamed through an area-average shrink, so the whole picture is never held (`docs/memory.md`). |
 | `images::payload` | the other boundary: downscaling a picture before it is **uploaded**, and keeping the result on disk for the session so a re-sent attachment is never shrunk twice. |
 | `images::attachment` | the wire's copy of a picture: its base64 `data:` URL, encoded **once** per session — streamed from the file or the payload sidecar — and shared by reference by every request that re-sends it (`docs/memory.md`). |
@@ -91,7 +91,9 @@ the picture they were painted with. The check is one `stat` per visible
 block per paint — microseconds, against the decode and the upload it stands
 in for — and it reads the file's state, never its bytes. A file that has
 since **gone** is not a file that changed: the picture already encoded keeps
-drawing, and nothing is retried per frame. The unit tests drive a half-block
+drawing, and nothing is retried per frame — until the next rebuild from
+history, which reserves no rows for it at all (*A file that is gone*). The
+unit tests drive a half-block
 store into a `Buffer` with no terminal anywhere (`ImageStore::with_protocol`
 — red, rewritten blue at a distinct mtime, painted blue; deleted, still
 painted); `smoke.sh` Phase 107d does the same against the real binary.
@@ -113,6 +115,42 @@ two:
   (`{config_home}/image-cache/{session}/N.png`, `docs/image-paste.md`) and
   are usually still there. A path with no entry — a picture someone deleted —
   simply isn't drawn.
+
+### A file that is gone
+
+A size is not a picture. The fact line keeps an image read's size across a
+`/resume` because the rollout keeps the cell's text, but nothing keeps the
+file — and the likeliest place for one to vanish is exactly where an agent
+saves a screenshot: the session scratchpad, under `/tmp`, which a reboot
+wipes. Resuming such a session reserved the picture's whole footprint
+anyway: under `Read image (PNG, 1883x1007, 1.6 MB)`, a block of blank rows
+the boundary could never draw into, inline, in the Ctrl+O transcript and in
+an `/export` alike. That was the reported bug.
+
+So a block is reserved only while its file is there. Whether it is there is
+the disk's to say and the reservation is pure, so the boundary answers it:
+`images::set_file_check` installs a `stat` (`Path::is_file`) once at
+startup, and `images::place` asks it for every block it is about to reserve
+— after the policy and the geometry, so a session with images off, or a
+terminal too narrow for any block, asks nothing. A picture whose file is
+gone renders as it would with **Show images** off: the cell, then its
+spacer. Until a check is installed — every unit test — every file counts as
+there, so a made-up path reserves its block exactly as before.
+
+Asking at every reservation, rather than once when a conversation loads, is
+what covers the other way a file goes: deleted while the session runs. The
+rows already on screen keep their picture (*A file rewritten in place*), but
+the next rebuild from history — a resize, a `/settings` image row, a
+rewind — purges the encoded pictures along with the scrollback, and the
+block it reserved could no longer be filled; it reserves none. It costs one
+`stat` per picture per rebuild, against a rebuild that re-renders the whole
+conversation. A paste goes through the same `place` and the same check,
+though the size registry already leaves out a paste that was gone when its
+conversation loaded.
+
+What the check cannot see is a file that is there but cannot be drawn — no
+longer a picture, unreadable, past `WHOLE_DECODE_MAX_PIXELS`: a `stat` is
+not a decode, and such a block stays blank (*Known limits*).
 
 ## The geometry
 
@@ -525,6 +563,11 @@ was a bad idea.
   `ALTER_ZERO_IMAGE_PROTOCOL=halfblocks` answers it.
 * The live **streaming preview** doesn't draw a picture: a `read` has no image
   until it resolves, and the committed cell is one frame away.
+* A file that is **there but cannot be drawn** — overwritten with something
+  that is not a picture, unreadable, or past `WHOLE_DECODE_MAX_PIXELS` —
+  still reserves its rows, which stay blank: the reservation asks the disk
+  whether the file exists (*A file that is gone*), and only a decode could
+  say more.
 
 ## Driving it by hand
 
@@ -552,3 +595,9 @@ Phase 107d overwrites the picture a resumed cell shows — same path, same
 size, the same byte length even — and asserts the transcript's next paint of
 that placement draws the new colour and none of the old (*A file rewritten
 in place*).
+Phase 107f resumes, by `--resume {id}`, a rollout whose first image read
+names a file that no longer exists and whose second names a real one, and
+asserts the first cell has only its spacer under it, inline and in Ctrl+O,
+while the second draws; then it deletes the second file and resizes, and
+asserts the rebuild leaves its cell standing alone too (*A file that is
+gone*).

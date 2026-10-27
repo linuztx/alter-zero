@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A picture whose file is gone no longer leaves a block of empty lines.**
+  Resuming a conversation in which the agent had read an image that has since
+  been deleted, such as a screenshot it saved in the session scratchpad under
+  `/tmp`, which a reboot clears, still reserved the picture's whole height
+  under its `Read image (…)` line: blank rows that nothing would ever draw
+  into, inline and in Ctrl+O. The cell now stands alone, as it does with
+  **Show images** off. A picture deleted while the session is open gives its
+  rows back the next time the conversation is redrawn, after a resize for
+  example (`docs/images.md`).
+
 ## [0.17.0] - 2026-10-27
 
 ### Added

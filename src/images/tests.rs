@@ -4,6 +4,7 @@
 //! with no terminal anywhere (it draws real coloured cells into a `Buffer`).
 
 use std::sync::MutexGuard;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
@@ -204,6 +205,76 @@ fn nothing_is_reserved_while_images_are_off() {
         ..ImagePolicy::default()
     });
     assert_eq!(place("/tmp/cat.png", (700, 689), 200), None, "no terminal");
+    set_policy(ImagePolicy::default());
+}
+
+/// A session whose terminal can draw at a 10x20 cell — what the placement
+/// tests below reserve under.
+fn drawing_policy() -> ImagePolicy {
+    ImagePolicy {
+        show: true,
+        available: true,
+        max_cols: 120,
+        font: (10, 20),
+        auto_resize: true,
+    }
+}
+
+#[test]
+fn a_picture_whose_file_is_gone_reserves_nothing() {
+    // A resumed conversation's image `read` still carries the picture's size
+    // in its fact line after the file is gone — a screenshot in the session
+    // scratchpad that a reboot wiped out of `/tmp` — and reserving that
+    // footprint left a block of blank rows the boundary could never draw
+    // into. The boundary's check says which files are there.
+    let _guard = policy_lock();
+    set_policy(drawing_policy());
+    set_file_check(|path| path != "/tmp/scratchpad/wiped.png");
+    assert_eq!(
+        place("/tmp/scratchpad/wiped.png", (1883, 1007), 200),
+        None,
+        "a file that is gone has nothing to draw, so it reserves nothing"
+    );
+    assert!(
+        place("/tmp/scratchpad/kept.png", (1883, 1007), 200).is_some(),
+        "a file that is there still reserves its block"
+    );
+    set_file_check(|_| true);
+    set_policy(ImagePolicy::default());
+}
+
+/// How many times [`counting_check`] was asked.
+static FILE_CHECKS: AtomicUsize = AtomicUsize::new(0);
+
+/// A file check that counts its calls and finds every file there.
+fn counting_check(_path: &str) -> bool {
+    FILE_CHECKS.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+#[test]
+fn the_disk_is_asked_only_for_a_block_that_would_be_reserved() {
+    // The check is a `stat` at the boundary: a session with images off, or
+    // a terminal too narrow for any block, has no question to ask it.
+    let _guard = policy_lock();
+    set_file_check(counting_check);
+    let asked = || FILE_CHECKS.load(Ordering::Relaxed);
+    let before = asked();
+    set_policy(ImagePolicy {
+        show: false,
+        ..drawing_policy()
+    });
+    assert_eq!(place("/tmp/off.png", (700, 689), 200), None);
+    set_policy(drawing_policy());
+    assert_eq!(place("/tmp/narrow.png", (700, 689), 2), None);
+    assert_eq!(
+        asked(),
+        before,
+        "nothing would be reserved, so nothing asked"
+    );
+    assert!(place("/tmp/drawn.png", (700, 689), 200).is_some());
+    assert_eq!(asked(), before + 1, "one block, one question");
+    set_file_check(|_| true);
     set_policy(ImagePolicy::default());
 }
 

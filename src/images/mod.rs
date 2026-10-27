@@ -8,7 +8,8 @@
 //!   font size under the `/settings` **Image width** cap, and the per-cell
 //!   carrier that marks the rows reserved for it.
 //! - [`registry`] — the process-global render policy (`/settings` plus what
-//!   the terminal turned out to support) and the placement interner, so pure
+//!   the terminal turned out to support), the placement interner and the
+//!   boundary's check for whether a picture's file is still there, so pure
 //!   `ui` line builders can reserve a block without a new argument on every
 //!   signature.
 //! - [`payload`] — the other boundary: downscaling a picture before it is
@@ -55,7 +56,7 @@ pub use payload::{
 };
 pub use registry::{
     ImagePolicy, Placement, any_placements, auto_resizing, known_size, place, placement, policy,
-    remember_size, set_policy, showing,
+    remember_size, set_file_check, set_policy, showing,
 };
 pub use store::{
     Detection, GraphicsReply, IMAGE_CELL_SIZE_ENV, IMAGE_PROTOCOL_ENV, IMAGE_RETRANSMIT_ENV,

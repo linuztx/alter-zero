@@ -1,7 +1,8 @@
 //! The rows a picture reserves in the conversation (`docs/images.md`).
 //!
-//! The policy is process-global — the module's own doc says why — so every
-//! test here holds [`policy_lock`] and puts the default back on the way out.
+//! The policy and the file check are process-global — the registry's own doc
+//! says why — so every test here holds [`policy_lock`] and puts the defaults
+//! back on the way out.
 
 use std::sync::MutexGuard;
 
@@ -15,7 +16,7 @@ fn policy_lock() -> MutexGuard<'static, ()> {
     images::registry::test_lock()
 }
 
-/// A session whose terminal can draw, at a 10x20 cell.
+/// A session whose terminal can draw, at a 10x20 cell, with every file there.
 fn drawing(max_cols: u16) -> MutexGuard<'static, ()> {
     let guard = policy_lock();
     images::set_policy(ImagePolicy {
@@ -25,11 +26,14 @@ fn drawing(max_cols: u16) -> MutexGuard<'static, ()> {
         auto_resize: true,
         font: (10, 20),
     });
+    images::set_file_check(|_| true);
     guard
 }
 
+/// The defaults back: no terminal reported in, and every file there.
 fn restore() {
     images::set_policy(ImagePolicy::default());
+    images::set_file_check(|_| true);
 }
 
 /// A resolved image `read` of `path`, exactly as the executor records one.
@@ -191,6 +195,64 @@ fn a_pasted_attachment_draws_under_its_own_bubble() {
     let lines = image_block_lines(&message("/tmp/pasted.png"), 100);
     assert!(!lines.is_empty(), "a registered paste draws");
     assert_eq!(marked_rows(&lines).len(), lines.len() - 1);
+    restore();
+}
+
+#[test]
+fn a_read_whose_file_is_gone_renders_as_if_images_were_off() {
+    // The reported bug: resuming a conversation after a reboot wiped the
+    // scratchpad its screenshot was saved in still reserved the picture's
+    // whole footprint — a block of blank rows under `Read image (PNG,
+    // 1883x1007, 1.6 MB)` that nothing would ever draw into. The fact line
+    // keeps the size across a `/resume`; it can't keep the file.
+    let _guard = drawing(120);
+    let history = vec![image_read(
+        "/tmp/scratchpad/desktop-first.png",
+        (1883, 1007),
+    )];
+    assert!(
+        !image_block_lines(&history[0], 100).is_empty(),
+        "while its file is there, the picture reserves its block"
+    );
+    images::set_file_check(|path| path != "/tmp/scratchpad/desktop-first.png");
+    assert!(
+        image_block_lines(&history[0], 100).is_empty(),
+        "nothing is reserved for a picture that cannot be drawn"
+    );
+    let gone = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    images::set_policy(ImagePolicy {
+        show: false,
+        ..images::policy()
+    });
+    let without_images = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    assert_eq!(
+        gone, without_images,
+        "the cell then its spacer, exactly as with Show images off"
+    );
+    restore();
+}
+
+#[test]
+fn a_paste_whose_file_is_gone_reserves_nothing_either() {
+    // The paste boundary recorded a size when the picture landed, but the
+    // file went afterwards: the same check holds for both sources.
+    let _guard = drawing(120);
+    images::remember_size("/tmp/pasted-then-deleted.png", (800, 600));
+    let message = HistoryItem::Message(Message {
+        role: Role::User,
+        text: "[Image #1] look".to_string(),
+        timestamp: String::new(),
+        images: vec![std::path::PathBuf::from("/tmp/pasted-then-deleted.png")],
+    });
+    assert!(
+        !image_block_lines(&message, 100).is_empty(),
+        "while its file is there, the paste draws"
+    );
+    images::set_file_check(|path| path != "/tmp/pasted-then-deleted.png");
+    assert!(
+        image_block_lines(&message, 100).is_empty(),
+        "once it is gone, nothing is reserved"
+    );
     restore();
 }
 

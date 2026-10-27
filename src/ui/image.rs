@@ -27,7 +27,9 @@ const READ_TOOL: &str = "read";
 /// Two sources, and only two: a `read` whose result was an image (the size
 /// comes from the tool's own fact line, so it survives a `/resume`), and a
 /// user message carrying Ctrl+V attachments (the size comes from the registry
-/// the paste boundary filled). Everything else has no picture.
+/// the paste boundary filled). Everything else has no picture. Whether each
+/// is actually drawn is [`images::place`]'s to say — the `/settings` rows,
+/// the width, and the file still being there.
 #[must_use]
 pub fn item_images(item: &HistoryItem) -> Vec<(String, (u32, u32))> {
     match item {
@@ -80,8 +82,10 @@ fn message_images(message: &Message) -> Vec<(String, (u32, u32))> {
 
 /// The rows `item`'s pictures reserve below its cell — a blank spacer then
 /// the block, per picture. Empty when the item shows none, when `/settings`
-/// **Show images** is off, or when the terminal can't draw one, which is what
-/// keeps every existing line count exactly as it was.
+/// **Show images** is off, when the terminal can't draw one, or when the
+/// picture's file is gone (a `/resume`d read of a scratchpad screenshot a
+/// reboot wiped), which is what keeps every existing line count exactly as
+/// it was.
 #[must_use]
 pub fn image_block_lines(item: &HistoryItem, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();

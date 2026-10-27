@@ -1,7 +1,8 @@
-//! The process-global render policy and the placement interner.
+//! The process-global render policy, the placement interner, and the check
+//! for whether a picture's file is still there.
 //!
-//! Two pieces of state that pure `ui` code has to be able to *read* while it
-//! builds lines, and that only the boundary ever *writes* — the same shape
+//! State that pure `ui` code has to be able to *read* while it builds lines,
+//! and that only the boundary ever *writes* — the same shape
 //! [`crate::links`]' URL interner has, and for the same reason: threading
 //! them through `conversation_lines`, `tool_commit_lines`,
 //! `transcript_item_lines` and every caller would put an argument on a dozen
@@ -16,6 +17,10 @@
 //!   on the *size* as well as the path is what makes a resize correct: a
 //!   narrower terminal produces a different id, so the boundary encodes a
 //!   fresh protocol instead of re-placing the old one at the wrong size.
+//! - The **file check** is the one question about the disk a reservation
+//!   asks — whether the picture's file is still there, since a block for a
+//!   file that has gone is only blank rows. The boundary installs a `stat`
+//!   ([`set_file_check`]); until it does, every file counts as there.
 //!
 //! See `docs/images.md`.
 
@@ -141,9 +146,10 @@ fn placements() -> &'static Mutex<Placements> {
 /// Reserve a block for the image at `path` (whose pixel size is `px`) in a
 /// region `avail_cols` wide, returning the placement its cells will carry.
 ///
-/// `None` when images are off, the terminal is too narrow, or the interner is
-/// full — in every case the caller simply reserves no rows and the cell above
-/// stands alone, exactly as before.
+/// `None` when images are off, the terminal is too narrow, the picture's file
+/// is gone ([`set_file_check`]), or the interner is full — in every case the
+/// caller simply reserves no rows and the cell above stands alone, exactly as
+/// before.
 #[must_use]
 pub fn place(path: &str, px: (u32, u32), avail_cols: u16) -> Option<Placement> {
     if !showing() {
@@ -151,6 +157,12 @@ pub fn place(path: &str, px: (u32, u32), avail_cols: u16) -> Option<Placement> {
     }
     let policy = policy();
     let (cols, rows) = image_cells(px, policy.font, policy.max_cols, avail_cols)?;
+    // Asked last, so a block that would not be reserved anyway costs no
+    // `stat`: a block for a file that has gone is rows of blanks nothing
+    // will ever draw into.
+    if !file_present(path) {
+        return None;
+    }
     let key = (path.to_string(), cols, rows);
     let mut guard = placements().lock().ok()?;
     if let Some(&id) = guard.ids.get(&key) {
@@ -210,6 +222,51 @@ pub fn remember_size(path: &str, px: (u32, u32)) {
 #[must_use]
 pub fn known_size(path: &str) -> Option<(u32, u32)> {
     sizes().lock().ok()?.get(path).copied()
+}
+
+// --- Whether a picture's file is still there ---
+
+/// A question about one path: is the picture's file still there?
+type FileCheck = fn(&str) -> bool;
+
+/// How [`place`] asks whether a picture's file is still there to draw.
+///
+/// A block is worth its rows only if the boundary can draw into them, and it
+/// cannot draw a file that has gone. The `read` tool's fact line keeps a
+/// picture's size across a `/resume`, but nothing keeps its file: a
+/// screenshot saved in the session scratchpad under `/tmp` is wiped by a
+/// reboot, and the resumed conversation reserved its whole footprint anyway —
+/// a block of blank rows under the cell (`docs/images.md`, *A file that is
+/// gone*). Whether a file is there is the disk's to say and the reservation
+/// is pure, so the boundary installs the question once ([`set_file_check`],
+/// a `stat`) and [`place`] asks it for every block it is about to reserve —
+/// which is also what gives a file deleted mid-session its rows back at the
+/// next rebuild.
+///
+/// Until one is installed — every unit test — every file counts as there,
+/// so a made-up path reserves its block exactly as before.
+fn file_check() -> &'static RwLock<FileCheck> {
+    static CHECK: OnceLock<RwLock<FileCheck>> = OnceLock::new();
+    CHECK.get_or_init(|| RwLock::new(assume_present))
+}
+
+/// The check before the boundary installs one: every file is there.
+fn assume_present(_path: &str) -> bool {
+    true
+}
+
+/// Install how [`place`] asks whether the picture at a path is still there
+/// to draw — the boundary's one write, a `stat` installed at startup.
+pub fn set_file_check(check: fn(&str) -> bool) {
+    if let Ok(mut guard) = file_check().write() {
+        *guard = check;
+    }
+}
+
+/// Whether the picture at `path` is still there to draw, by the installed
+/// check.
+fn file_present(path: &str) -> bool {
+    file_check().read().map_or(true, |check| (*check)(path))
 }
 
 /// The lock every test that moves this module's process-global state holds,

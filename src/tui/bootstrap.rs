@@ -659,6 +659,12 @@ impl<'t> Session<'t> {
         // first frame (a `/resume`d conversation's image read) is already the
         // right size (`docs/images.md`).
         self.sync_image_policy();
+        // …and the one question it asks the disk: whether a picture's file
+        // is still there. A `/resume`d image read of a file that has gone —
+        // a scratchpad screenshot a reboot wiped out of /tmp — otherwise
+        // reserves its whole footprint as blank rows nothing will ever draw
+        // into (`docs/images.md`, *A file that is gone*).
+        alter_zero::images::set_file_check(|path| std::path::Path::new(path).is_file());
         // The footer's model name + cwd, formatted here at the boundary (the
         // set_clock pattern: the pure core never reads the environment) —
         // docs/footer.md — together with the system prompts and the gauge.
