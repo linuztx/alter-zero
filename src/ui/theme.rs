@@ -239,8 +239,9 @@ pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 pub(super) const TOOL_PEEK_ROWS: usize = 4;
 
 /// The marker spliced in (before the closing `)`) when a collapsed header's
-/// command is cut at [`TOOL_HEADER_MAX_LINES`] lines or
-/// [`TOOL_HEADER_MAX_COLS`] columns (`tool_header_lines`).
+/// command is cut at [`TOOL_HEADER_MAX_LINES`] lines,
+/// [`TOOL_HEADER_MAX_COLS`] columns or [`TOOL_HEADER_MAX_ROWS`] rows
+/// (`tool_header_lines`).
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
 
 /// How many **lines** of a command the collapsed header shows before the rest
@@ -250,9 +251,15 @@ pub(super) const TOOL_HEADER_MAX_LINES: usize = 2;
 
 /// How many display **columns** of a command the collapsed header shows
 /// before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — Claude Code's 160,
-/// a budget on the *text* rather than on rows, so the same command is cut at
-/// the same character in every terminal width and never floods the cell.
+/// a budget on the *text*, so a terminal wide enough to hold it in
+/// [`TOOL_HEADER_MAX_ROWS`] rows cuts the same command at the same character.
 pub(super) const TOOL_HEADER_MAX_COLS: usize = 160;
+
+/// How many display **rows** of arguments the collapsed header shows: where
+/// [`TOOL_HEADER_MAX_COLS`] columns would wrap onto a third row, the header
+/// stops at the end of the second, `…)` on its last word (`docs/tools.md`
+/// *Long headers*). A spilled header's name-only first row is not counted.
+pub(super) const TOOL_HEADER_MAX_ROWS: usize = 2;
 
 /// How many display **rows** of its output a settled exec cell shows *above
 /// the fold* — Claude Code's three — before the rest collapses behind the

@@ -184,11 +184,12 @@ pub(super) fn tool_header_lines(
         .saturating_sub(aligned + cols(TOOL_HEADER_OPEN))
         .max(1);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
-    // The collapsed cut is a budget on the **text** — the same command is cut
-    // at the same character in every width — made before the wrap, so the
-    // `…` lands where the text ends and the `)` rides after it, whatever row
-    // that falls on. The cut text is trimmed, so the marker attaches to the
-    // last kept word: `word …)` would read as a cut after a *missing* word.
+    // The collapsed cut is first a budget on the **text** — the same command
+    // is cut at the same character in every width that holds it in two rows
+    // — made before the wrap, so the `…` lands where the text ends and the
+    // `)` rides after it. The cut text is trimmed, so the marker attaches to
+    // the last kept word: `word …)` would read as a cut after a *missing*
+    // word. The row ceiling below then catches the widths that don't.
     let (shown, cut) = if collapsed {
         header_cut(&args)
     } else {
@@ -208,6 +209,11 @@ pub(super) fn tool_header_lines(
         .into_iter()
         .map(|row| row.trim_end().to_string())
         .collect();
+    let rows = if collapsed {
+        cap_header_rows(rows, first_width, body_width)
+    } else {
+        rows
+    };
     let last_row = rows.len().saturating_sub(1);
     rows.into_iter()
         .enumerate()
@@ -255,10 +261,11 @@ pub(super) fn tool_header_lines(
 /// space or a blank line). Returns the text to show and whether it was cut;
 /// text within both budgets comes back untouched.
 ///
-/// A budget on the text rather than on rows is what makes the header
-/// predictable: the same command shows the same characters in a 40-column
-/// terminal and a 200-column one, and a multi-line script shows its first
-/// two statements rather than however many the width happened to fit.
+/// A budget on the text is what keeps a wide terminal's header predictable:
+/// the same command shows the same characters in a 100-column terminal and a
+/// 200-column one, and a multi-line script shows its first two statements.
+/// A narrower terminal would wrap those columns onto a third row, which
+/// [`cap_header_rows`] takes back after the wrap.
 pub(super) fn header_cut(args: &str) -> (std::borrow::Cow<'_, str>, bool) {
     let mut kept = args;
     let mut cut = false;
@@ -275,6 +282,37 @@ pub(super) fn header_cut(args: &str) -> (std::borrow::Cow<'_, str>, bool) {
     } else {
         (std::borrow::Cow::Borrowed(args), false)
     }
+}
+
+/// The collapsed header's row ceiling over `rows`, the wrapped `{args})`
+/// body (its first row `first` columns wide, the rest `rest`): at most
+/// [`TOOL_HEADER_MAX_ROWS`] rows of arguments, a spilled header's empty first
+/// row not counted. A body that runs past them ends on the last kept row,
+/// cut back to make room for `…)` and trimmed so the marker sits on its last
+/// word; the rows above it are exactly the rows the whole body wrapped to.
+/// Rows within the ceiling come back untouched.
+///
+/// [`header_cut`]'s 160 columns wrap onto a third row on a terminal narrower
+/// than about ninety columns (the `● Bash(` lead, the continuation indent and
+/// the word wrap's ragged ends all spend columns), and that row held what the
+/// cut left of a token — `scripts/parallel_se…)` — in a cell whose output
+/// stops at four rows. The whole command is one Ctrl+O away.
+fn cap_header_rows(mut rows: Vec<String>, first: usize, rest: usize) -> Vec<String> {
+    let spilled = rows.len() > 1 && rows[0].is_empty();
+    let keep = TOOL_HEADER_MAX_ROWS + usize::from(spilled);
+    if rows.len() <= keep {
+        return rows;
+    }
+    rows.truncate(keep);
+    let last = keep - 1;
+    let width = if last == 0 { first } else { rest };
+    let room = width.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(TOOL_HEADER_CLOSE));
+    let kept = truncate_cols(&rows[last], room);
+    rows[last] = format!(
+        "{}{TOOL_HEADER_ELLIPSIS}{TOOL_HEADER_CLOSE}",
+        kept.trim_end()
+    );
+    rows
 }
 
 /// A `bash` command's `"$(cat <<'EOF'\n{body}\nEOF\n)"` message collapsed into

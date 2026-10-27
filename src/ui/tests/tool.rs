@@ -5,10 +5,10 @@ use super::*;
 use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, INLINE_DIFF_MARK_MIN_CONTRAST, TOOL_BULLET,
     TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES,
-    TOOL_JSON_PRETTY_MAX_BYTES, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER, tool_args_color,
-    tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg, tool_diff_del_bg,
-    tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color, tool_ok_color,
-    tool_output_color, tool_running_color, tool_waiting_color,
+    TOOL_HEADER_MAX_ROWS, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER,
+    tool_args_color, tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg,
+    tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color,
+    tool_ok_color, tool_output_color, tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::{cols, contrast_ratio};
@@ -3416,12 +3416,11 @@ fn tool_header_spills_a_first_word_that_fits_the_continuation_row_whole() {
 }
 
 #[test]
-fn a_spilled_header_still_shows_the_whole_call_within_its_budget() {
-    // The cut is a budget on the text, not on rows: a spilled header (nothing
-    // fits beside a long name, so row 0 carries only the name and its `(`)
-    // still shows every argument row of a call within TOOL_HEADER_MAX_COLS —
-    // the readable spill never costs the content it was meant to make
-    // readable.
+fn a_spilled_headers_name_row_is_not_one_of_its_two_rows() {
+    // A spilled header (nothing fits beside a long name, so row 0 carries
+    // only the name and its `(`) still gets two rows of arguments: the
+    // two-row ceiling counts the rows that show the call, so the readable
+    // spill never costs the content it was meant to make readable.
     let call = tool(
         "deepwiki - ask_question (MCP)",
         r#"{"repoName":"linuztx/flaredantic","question":"How does the tunnel client work?"}"#,
@@ -3429,20 +3428,20 @@ fn a_spilled_header_still_shows_the_whole_call_within_its_budget() {
         "err",
     );
     let lines = tool_lines(&call, 40, &PathDisplay::VERBATIM);
-    let header: Vec<String> = lines
-        .iter()
-        .map(plain)
-        .take_while(|row| !row.contains('⎿'))
-        .collect();
-    assert_eq!(header[0], "● Deepwiki - ask_question (MCP)(");
-    assert!(
-        header.len() >= 3,
-        "the name's own row over the wrapped argument rows: {header:?}"
+    assert_eq!(
+        header_rows(&lines),
+        vec![
+            "● Deepwiki - ask_question (MCP)(",
+            "  repoName: \"linuztx/flaredantic\",",
+            "  question: \"How does the tunnel clien…)",
+        ]
     );
-    let joined = header.join("");
+    // Wide enough for the call, nothing is cut.
+    let lines = tool_lines(&call, 80, &PathDisplay::VERBATIM);
+    let joined = header_rows(&lines).join("");
     assert!(
         joined.ends_with("work?\")") && !joined.contains(TOOL_HEADER_ELLIPSIS),
-        "the whole call fits its budget now: {joined:?}"
+        "the whole call fits its two rows: {joined:?}"
     );
 }
 
@@ -3751,16 +3750,36 @@ fn header_text(lines: &[Line]) -> String {
 
 #[test]
 fn the_header_fills_every_row_and_cuts_at_160_columns_like_claude_code() {
-    // The report, at the 72 columns it was captured in. Claude Code shows
+    // The report: Claude Code fills every row to the edge and cuts the
+    // command after 160 characters. Ours left the first row at `curl -s
+    // --max-time 15` because the URL token, which fits no row, was moved
+    // down to the next one before being broken. Wherever two rows hold the
+    // 160 columns — here at 100 — that is still the whole rule.
+    let lines = tool_lines(
+        &tool("Bash", WIKI_CURL, ToolStatus::Ok, "{}"),
+        100,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        header_rows(&lines),
+        vec![
+            "● Bash(curl -s --max-time 15 \"https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&",
+            "      explaintext&format=json&titles=World%20Chess%20Championship%202026\"…)",
+        ]
+    );
+}
+
+#[test]
+fn the_header_cuts_at_its_second_row_when_two_rows_cannot_hold_160_columns() {
+    // The same report at the 72 columns it was captured in, where the 160
+    // columns took a third row:
     //
     //   ● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
     //         query&prop=extracts&exintro&explaintext&format=json&titles=World%2
     //         0Chess%20Championship%202026"…)
     //
-    // — every row filled to the edge, the command cut after 160 characters.
-    // Ours left the first row at `curl -s --max-time 15` because the URL
-    // token, which fits no row, was moved down to the next one before being
-    // broken, and then cut the command at a row budget instead.
+    // The rows stay filled and the cut moves up to the second row's end. That
+    // row is full to the edge, so it gives up the two columns `…)` needs.
     let lines = tool_lines(
         &tool("Bash", WIKI_CURL, ToolStatus::Ok, "{}"),
         72,
@@ -3770,28 +3789,81 @@ fn the_header_fills_every_row_and_cuts_at_160_columns_like_claude_code() {
         header_rows(&lines),
         vec![
             "● Bash(curl -s --max-time 15 \"https://en.wikipedia.org/w/api.php?action=",
-            "      query&prop=extracts&exintro&explaintext&format=json&titles=World%2",
-            "      0Chess%20Championship%202026\"…)",
+            "      query&prop=extracts&exintro&explaintext&format=json&titles=World…)",
         ]
     );
 }
 
+/// The command from the two-row report: a `web-search` skill one-liner, as
+/// far as its cell showed it and then a plausible end.
+const WEB_SEARCH_ONE_LINER: &str = "cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3 -c \"import secrets;print(secrets.token_hex(16))\") && python3 scripts/parallel_search.py \"terminal coding agents\"";
+
 #[test]
-fn the_collapsed_header_cuts_a_long_command_at_160_columns_not_at_a_row_count() {
-    // The cut is a budget on the text (Claude Code's 160 characters), not on
-    // rows: the same command is cut at the same character in every width.
-    let cmd: String = (0..200u8).map(|i| char::from(b'a' + (i % 26))).collect();
-    let expected = format!(
-        "● Bash({}{TOOL_HEADER_ELLIPSIS})",
-        &cmd[..TOOL_HEADER_MAX_COLS]
+fn the_collapsed_header_stops_at_two_rows() {
+    // The report, at the 87 columns it was captured in. The 160-column
+    // budget alone gave the header a third row for the fragment the cut
+    // left behind:
+    //
+    //   ● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3
+    //         -c "import secrets;print(secrets.token_hex(16))") && python3
+    //         scripts/parallel_se…)
+    //
+    // A collapsed header is at most two rows of arguments: the cut lands at
+    // the end of the second, the `…)` on its last word.
+    let lines = tool_lines(
+        &tool("Bash", WEB_SEARCH_ONE_LINER, ToolStatus::Ok, "x"),
+        87,
+        &PathDisplay::VERBATIM,
     );
-    for width in [40u16, 72, 120, 200] {
+    assert_eq!(
+        header_rows(&lines),
+        vec![
+            "● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3",
+            "      -c \"import secrets;print(secrets.token_hex(16))\") && python3…)",
+        ]
+    );
+    // The Ctrl+O transcript still shows the whole command.
+    let full = tool_full_lines(
+        &tool("Bash", WEB_SEARCH_ONE_LINER, ToolStatus::Ok, "x"),
+        87,
+        &PathDisplay::VERBATIM,
+    );
+    assert!(
+        header_text(&full).ends_with("\"terminal coding agents\")"),
+        "the transcript keeps the command's end: {:?}",
+        header_rows(&full)
+    );
+}
+
+#[test]
+fn the_collapsed_header_cuts_at_160_columns_or_two_rows_whichever_comes_first() {
+    // Two budgets, the tighter one wins. Claude Code's 160 columns of text
+    // cut the command wherever two rows hold them (120 and 200 columns), so a
+    // wide terminal shows the same characters it always did; where they
+    // don't, the header stops at the end of its second row, which keeps two
+    // columns for `…)`: 33 + 34 - 2 at 40 columns, 65 + 66 - 2 at 72.
+    let cmd: String = (0..200u8).map(|i| char::from(b'a' + (i % 26))).collect();
+    for (width, kept) in [
+        (40u16, 65usize),
+        (72, 129),
+        (120, TOOL_HEADER_MAX_COLS),
+        (200, TOOL_HEADER_MAX_COLS),
+    ] {
         let lines = tool_lines(
             &tool("Bash", &cmd, ToolStatus::Ok, "x"),
             width,
             &PathDisplay::VERBATIM,
         );
-        assert_eq!(header_text(&lines), expected, "at {width} columns");
+        assert_eq!(
+            header_text(&lines),
+            format!("● Bash({}{TOOL_HEADER_ELLIPSIS})", &cmd[..kept]),
+            "at {width} columns"
+        );
+        assert!(
+            header_rows(&lines).len() <= TOOL_HEADER_MAX_ROWS,
+            "at most two rows at {width}: {:?}",
+            header_rows(&lines)
+        );
         for l in &lines {
             assert!(cols(&plain(l)) <= usize::from(width), "fits {width}: {l:?}");
         }
@@ -3806,15 +3878,24 @@ fn the_collapsed_header_cuts_a_long_command_at_160_columns_not_at_a_row_count() 
 }
 
 #[test]
-fn a_command_within_the_budget_is_never_cut() {
-    // Exactly 160 columns: shown whole, no marker.
+fn a_command_within_both_budgets_is_never_cut() {
+    // Exactly 160 columns where two rows hold them: shown whole, no marker.
     let cmd = "x".repeat(TOOL_HEADER_MAX_COLS);
+    let lines = tool_lines(
+        &tool("Bash", &cmd, ToolStatus::Ok, "x"),
+        100,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(header_text(&lines), format!("● Bash({cmd})"));
+    // A command that fills its two rows to the `)` at 80 columns, 73 + 67.
+    let cmd = "x".repeat(140);
     let lines = tool_lines(
         &tool("Bash", &cmd, ToolStatus::Ok, "x"),
         80,
         &PathDisplay::VERBATIM,
     );
     assert_eq!(header_text(&lines), format!("● Bash({cmd})"));
+    assert_eq!(header_rows(&lines).len(), TOOL_HEADER_MAX_ROWS);
 }
 
 #[test]
@@ -4266,6 +4347,26 @@ fn a_wrapped_or_cut_header_path_links_every_fragment_to_the_whole_file() {
     let linked = linked_spans(&lines[0]);
     assert_eq!(linked.len(), 1, "{linked:?}");
     assert_eq!(linked[0].1, format!("file://{long}"));
+    // Where the cut path would wrap onto a third row, the header stops at
+    // the end of its second: both fragments, the `…` with them, still open
+    // the whole file, and the closing `)` stays plain.
+    let lines = tool_lines(&cell, 40, &paths);
+    let header = header_only(&lines);
+    let rows: Vec<String> = header.iter().map(|l| plain(l)).collect();
+    assert_eq!(rows.len(), TOOL_HEADER_MAX_ROWS, "{rows:?}");
+    assert!(
+        rows[1].ends_with(&format!("{TOOL_HEADER_ELLIPSIS})")),
+        "cut at the second row: {rows:?}"
+    );
+    let linked: Vec<(String, String)> = header.iter().flat_map(|l| linked_spans(l)).collect();
+    assert_eq!(linked.len(), 2, "{linked:?}");
+    assert!(
+        linked[1].0.ends_with(TOOL_HEADER_ELLIPSIS),
+        "the marker rides the linked fragment: {linked:?}"
+    );
+    for (_, url) in &linked {
+        assert_eq!(*url, format!("file://{long}"));
+    }
 }
 
 #[test]
