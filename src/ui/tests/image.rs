@@ -3,17 +3,16 @@
 //! The policy is process-global — the module's own doc says why — so every
 //! test here holds [`policy_lock`] and puts the default back on the way out.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
 use super::*;
 use crate::app::{HistoryItem, Message, Role, ToolCall, ToolStatus};
 use crate::images::{self, ImagePolicy};
 
+/// The image registry's one test lock — shared with `images::tests`, which
+/// moves the same policy.
 fn policy_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    images::registry::test_lock()
 }
 
 /// A session whose terminal can draw, at a 10x20 cell.

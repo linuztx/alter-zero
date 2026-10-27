@@ -211,3 +211,19 @@ pub fn remember_size(path: &str, px: (u32, u32)) {
 pub fn known_size(path: &str) -> Option<(u32, u32)> {
     sizes().lock().ok()?.get(path).copied()
 }
+
+/// The lock every test that moves this module's process-global state holds,
+/// whichever module the test lives in.
+///
+/// `cargo test` runs tests on parallel threads, so a test that publishes a
+/// policy and then reserves a block must not see another test's policy land
+/// in between — and a lock only orders the tests that share it.
+/// `images::tests` and `ui::tests::image` used to keep one each, so either
+/// could turn **Show images** off under the other's `place`.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

@@ -3,7 +3,7 @@
 //! save for its cache's file-state rule, which a half-block store proves here
 //! with no terminal anywhere (it draws real coloured cells into a `Buffer`).
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
@@ -14,12 +14,10 @@ use ratatui_image::{FontSize as PickerFontSize, Resize};
 use super::*;
 
 /// Tests that move the process-global policy hold this, so they can't see
-/// each other's settings (`cargo test` runs them on parallel threads).
+/// each other's settings (`cargo test` runs them on parallel threads) — the
+/// registry's one lock, which `ui::tests::image` holds too.
 fn policy_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    registry::test_lock()
 }
 
 fn image(w: u32, h: u32) -> image::DynamicImage {
