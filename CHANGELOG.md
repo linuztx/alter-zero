@@ -60,6 +60,14 @@ release heading when a version is cut.
   Shift+Tab and it stays. To keep asking everywhere, launch with
   `ALTER_ZERO_PERMISSION_MODE=manual`. It takes any mode name, sets the mode
   for that launch, and is never saved (`docs/permissions.md`).
+- **A long command's header stops at two rows.** A `Bash(…)` header shows up
+  to 160 characters of the command, and in a terminal narrower than about
+  ninety columns they spilled onto a third row that held only the end of the
+  cut, often part of a word (`scripts/parallel_se…)`). The header now ends on
+  its second row with `…)`. Wider terminals show what they did before, and
+  Ctrl+O still shows the whole command. Every tool's header follows the same
+  rule, so a long file path or MCP call is cut the same way (`docs/tools.md`
+  *Long headers*).
 
 ### Fixed
 

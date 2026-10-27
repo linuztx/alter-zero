@@ -460,7 +460,8 @@ URL — is broken from where it stands, filling the row it is on, unless
 starting it on the next row would cost strictly fewer rows (a tie moves it
 down, so a token that gains nothing from the fill still opens a row of its
 own). The old wrap moved every over-wide token down first and left the row
-before it short, which is the reported difference at 72 columns:
+before it short, which is the reported difference at 72 columns (ours now
+fills the same rows and stops a row sooner, at the two-row ceiling below):
 
 ```
 Before:
@@ -468,10 +469,14 @@ Before:
       "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exi
       ntro&explaintext&format=json&titles=World%20Chess%20Championship…)
 
-Claude Code, and now:
+Claude Code:
 ● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
       query&prop=extracts&exintro&explaintext&format=json&titles=World%2
       0Chess%20Championship%202026"…)
+
+Now:
+● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
+      query&prop=extracts&exintro&explaintext&format=json&titles=World…)
 ```
 
 (`ui::wrap`'s `fills_from_here`, inside the `WrapMode::Output` scan — so the
@@ -507,19 +512,48 @@ a forty-column terminal used to show; `docs/mcp.md`).
 **A very long header is cut inline** the way Claude Code cuts it
 (`ui::tool::header_cut`, its `renderToolUseMessage` ported): the command's
 first `TOOL_HEADER_MAX_LINES` (2) lines and at most `TOOL_HEADER_MAX_COLS`
-(160) display columns, trimmed, then `…)` (`TOOL_HEADER_ELLIPSIS`). A budget on
-the **text** rather than on rows is what makes the header predictable — the
-same command shows the same characters in a 40-column terminal and a
-200-column one, and a multi-line script shows its first two statements — and
-the cut lands where the text ends, whatever row that falls on. The marker
+(160) display columns, trimmed, then `…)` (`TOOL_HEADER_ELLIPSIS`). The marker
 attaches to the last kept word (the cut text is trimmed, so `word …)` — a cut
-after a *missing* word — never shows):
+after a *missing* word — never shows). On a terminal that holds those 160
+columns in two rows, about ninety columns and wider, that is the whole rule:
+a budget on the **text**, so the same command shows the same characters at
+every such width and a multi-line script shows its first two statements. At
+100 columns:
 
 ```
-● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current
-      time: $(date)" && echo "System uptime: $(uptime)" && echo "Memory
-      usage: $(free -h | grep Mem)"…)
+● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current time: $(date)" && echo
+      "System uptime: $(uptime)" && echo "Memory usage: $(free -h | grep Mem)"…)
 ```
+
+**A collapsed header never takes a third row** (`ui::tool::cap_header_rows`,
+`TOOL_HEADER_MAX_ROWS` = 2). The `● Bash(` lead, the continuation indent and
+the wrap's ragged row ends all spend columns, so under about ninety columns
+the 160 wrapped onto a third row — and what that row held was the end of the
+cut, often part of a token, in a cell whose output stops at four rows. The
+header now stops at the end of its second row. The report, at 87 columns:
+
+```
+Before:
+● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3
+      -c "import secrets;print(secrets.token_hex(16))") && python3
+      scripts/parallel_se…)
+
+Now:
+● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3
+      -c "import secrets;print(secrets.token_hex(16))") && python3…)
+```
+
+The ceiling works on the wrapped rows, so the rows it keeps are exactly the
+ones the whole command wrapped to, and the last one ends in `…)` — giving up
+the two columns the marker needs when it was full to the edge, which can cut
+a word (`titles=World%2` → `titles=World…)` above). It counts rows of
+**arguments**: a spilled header's name-only first row
+(`● Deepwiki - ask_question (MCP)(` at forty columns) is not one of the two,
+so the spill still never costs the arguments it was made to fit. Below ninety
+columns the width, not the text budget, decides where the cut falls. That
+costs little: every resize re-wraps the cells from history, so the screen
+always agrees with its own width, and the whole command is one Ctrl+O away
+(and on the permission prompt, whenever one asks about it).
 
 **A commit's heredoc collapses into its message** (`ui::tool::collapse_heredoc`,
 Claude Code's rule, its regex ported): `git commit -m "$(cat <<'EOF'\n{body}\nEOF\n)"`

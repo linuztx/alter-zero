@@ -496,8 +496,9 @@ fn tool_lines_wraps_a_long_header_aligned_under_the_open_paren() {
 #[test]
 fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
     // A very long command is cut inline at TOOL_HEADER_MAX_COLS columns, the
-    // remainder replaced by `…)` (Claude-Code's truncated command); the whole
-    // thing is still shown in the Ctrl+O view.
+    // remainder replaced by `…)` (Claude-Code's truncated command), at a
+    // width whose two header rows hold that many; the whole thing is still
+    // shown in the Ctrl+O view.
     let cmd = "for i in {1..5}; do echo \"=== Iteration $i ===\" \
                && echo \"Current time: $(date)\" \
                && echo \"System uptime: $(uptime)\" \
@@ -508,7 +509,7 @@ fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
     );
     let lines = tool_lines(
         &tool("Bash", cmd, ToolStatus::Ok, "out"),
-        50,
+        100,
         &PathDisplay::VERBATIM,
     );
     let header: Vec<String> = lines
@@ -548,7 +549,7 @@ fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
     // Still no clipping past the width.
     for l in &lines {
         assert!(
-            cols(&plain(l)) <= 50,
+            cols(&plain(l)) <= 100,
             "row stays within the width: {:?}",
             plain(l)
         );
