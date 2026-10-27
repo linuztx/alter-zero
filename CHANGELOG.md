@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-27
+
 ### Added
 
 - **An interrupted turn now shows what it cost.** Pressing Esc mid-turn used
@@ -1608,7 +1610,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/linuztx/alter-zero/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/linuztx/alter-zero/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/linuztx/alter-zero/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/linuztx/alter-zero/compare/v0.13.0...v0.14.0
