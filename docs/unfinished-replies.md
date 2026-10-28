@@ -79,13 +79,17 @@ where the turn's other ending rules already live.
 `Complete` whose text is empty or whitespace, and any `CutOff` — and answers
 each with a **continuation prompt in a new user message**:
 
-- `Empty reply`: *Your last response was empty: it had no reply and no tool
-  call. Continue with the task — no apology, no recap. If the task is
-  already done, reply with a short summary of what you did.*
-- `Reply cut off`: *Your last response was cut off at the output token
-  limit. Continue directly from where it stopped — no apology, no recap.
-  Keep your reasoning short, and break the remaining work into smaller
-  steps.*
+- `Empty reply`: *[system] Your last response was empty: it had no reply
+  and no tool call. Continue with the task — no apology, no recap. If the
+  task is already done, reply with a short summary of what you did.*
+- `Reply cut off`: *[system] Your last response was cut off at the output
+  token limit. Continue directly from where it stopped — no apology, no
+  recap. Keep your reasoning short, and break the remaining work into
+  smaller steps.*
+
+The `[system]` tag is the one the derived context gives every notice the
+app speaks (`docs/context.md`): the prompt rides a user message, and
+untagged the model would read the app's words as the user's.
 
 What was said before a cut is kept as an assistant message, so the
 continuation reads where it left off. An **empty** reply is never sent back:
@@ -191,3 +195,32 @@ carry (Ctrl+D).
   Anthropic accepts it, would remove that pattern on that wire; it is a
   separate change across the message model, four wires and the context
   replay.
+
+## Tests
+
+- `llm::agent::tests` — the loop: an empty reply, a whitespace one, a cut-off
+  one with and without text, `Stop` hearing only the answer, the give-up on
+  each kind with its `StopFailure` type, progress earning the budget back, an
+  Esc under an unfinished round, the prompts' `[system]` tag, and the errors'
+  wording.
+- `llm::backend::tests` — `round_outcome` for every stop reason, and
+  `stream_round` against a loopback stub that stops at its output cap.
+- `llm::openai::tests` / `llm::responses::tests` — every wire's spelling of
+  a stop, and the Responses API's `incomplete_details.reason`.
+- `tests/wire_history.rs` — end to end through a real backend: the request
+  after an empty reply carries the prompt and nothing for the reply, the
+  request after a cut-off one carries what was said and then the prompt, and
+  the next human turn sends both as the provider saw them — the cut-off case
+  on a rebuilt backend, from the records alone.
+- `tests/live_unfinished.rs` — the Anthropic Messages wire through a Console
+  sign-in, `#[ignore]`d (the rotating refresh token writes back to
+  `ALTER_ZERO_LIVE_TOKEN_STORE`): a 40-token cap stops a count from 1 to 30
+  part way with `stop_reason: "max_tokens"`, and the continuation finishes
+  it in the same turn (when written, the first round stopped at 20 and the
+  second went on from 21 to `DONE`); the request an empty reply is
+  continued with — the question and the prompt side by side — is answered.
+- `scripts/smoke/phases/146-emptyreply.sh` — the real binary against stub
+  providers that reply with nothing, stop at the cap while thinking, and
+  never reply: the recovered answers, the `Thought for` cell, the prompt in
+  Ctrl+O and in Ctrl+D, the request counts, and the red notice that names
+  `/model`.

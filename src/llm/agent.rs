@@ -83,20 +83,24 @@ pub const EMPTY_REPLY_LABEL: &str = "Empty reply";
 
 /// What the model reads after a round that ended with no reply and no tool
 /// call. It leaves the model a way to finish properly — a model that stopped
-/// because it was done has to say so, not invent more work.
-pub const EMPTY_REPLY_NOTE: &str = "Your last response was empty: it had no reply and no tool \
-     call. Continue with the task — no apology, no recap. If the task is already done, reply \
-     with a short summary of what you did.";
+/// because it was done has to say so, not invent more work. Tagged
+/// `[system]`, as the derived context tags every notice the app speaks
+/// (`crate::context`): it rides a user message, and untagged it would read
+/// as the user's own words.
+pub const EMPTY_REPLY_NOTE: &str = "[system] Your last response was empty: it had no reply and \
+     no tool call. Continue with the task — no apology, no recap. If the task is already done, \
+     reply with a short summary of what you did.";
 
 /// The transcript heading over the continuation a cut-off reply gets.
 pub const CUT_OFF_LABEL: &str = "Reply cut off";
 
 /// What the model reads after a round the provider stopped at its output cap
 /// — after what it had said, when it had said anything. A thought that spent
-/// the whole budget is the usual cause, hence the advice.
-pub const CUT_OFF_NOTE: &str = "Your last response was cut off at the output token limit. \
-     Continue directly from where it stopped — no apology, no recap. Keep your reasoning \
-     short, and break the remaining work into smaller steps.";
+/// the whole budget is the usual cause, hence the advice. Tagged like
+/// [`EMPTY_REPLY_NOTE`].
+pub const CUT_OFF_NOTE: &str = "[system] Your last response was cut off at the output token \
+     limit. Continue directly from where it stopped — no apology, no recap. Keep your \
+     reasoning short, and break the remaining work into smaller steps.";
 
 /// Why a round ended without finishing (`docs/unfinished-replies.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1367,6 +1371,18 @@ mod tests {
         assert_eq!(*ran.borrow(), 1);
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
         assert_eq!(messages.len(), 1, "no continuation was queued");
+    }
+
+    #[test]
+    fn a_continuation_prompt_is_tagged_as_the_app_speaking() {
+        // The prompt rides a user message, so untagged it reads as the
+        // user's own words. `[system]` is the tag the derived context gives
+        // every other notice the app speaks (`crate::context`).
+        for kind in [Unfinished::Empty, Unfinished::CutOff] {
+            let (_, note) = kind.continuation();
+            assert!(note.starts_with("[system] "), "{note}");
+            assert!(!note.contains('\n'), "one line: {note}");
+        }
     }
 
     #[test]

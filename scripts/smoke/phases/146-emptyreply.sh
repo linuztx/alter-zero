@@ -134,7 +134,7 @@ dump "an empty reply, continued" "$first"
 
 note "an empty reply is continued, not taken for the answer"
 expect_eq "$(requests empty)" "2" "the empty reply should be followed by exactly one more request"
-expect_has "$(last_of empty)" -F "Your last response was empty" \
+expect_has "$(last_of empty)" -F "[system] Your last response was empty" \
 	"the request after the empty reply did not carry the continuation prompt"
 expect_has "$first" -F "Thought for" "the empty round's thought never settled into its cell"
 expect_lacks "$first" -F "stopped without replying" "a recovered turn showed the give-up notice"
@@ -145,10 +145,23 @@ keys "$S146" C-o
 transcript="$(wait_pane 5 "$S146" -F "Empty reply")" ||
 	fail "the Ctrl+O transcript does not show the continuation"
 dump "the Ctrl+O transcript" "$transcript"
-expect_has "$transcript" -F "Your last response was empty" \
+expect_has "$transcript" -F "[system] Your last response was empty" \
 	"the transcript does not show what the model was told"
 keys "$S146" C-o
 wait_for 5 "$S146" -F "stub-model" || fail "Ctrl+O did not return to the conversation"
+
+# Ctrl+D shows the prompt where the model read it, tagged as the app's words.
+keys "$S146" C-d
+context="$(wait_pane 5 "$S146" -F "C O N T E X T")" ||
+	fail "Ctrl+D did not open the context view"
+dump "the Ctrl+D context" "$context"
+# The page wraps at its width under a two-space indent: join the rows back up
+# before looking for a sentence.
+context_flat="$(printf '%s' "$context" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  //g')"
+expect_has "$context_flat" -F "[system] Your last response was empty: it had no reply and no tool call." \
+	"the derived context does not carry the prompt the model read"
+keys "$S146" C-d
+wait_for 5 "$S146" -F "stub-model" || fail "Ctrl+D did not return to the conversation"
 
 # ---- 2. a reply cut off at the output cap ----
 submit "$S146" "smoke146 cut"
