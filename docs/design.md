@@ -134,6 +134,20 @@ which Ctrl+V reads the clipboard from.
   their results back until it answers in plain text (`docs/tools.md`). An
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
+- **Collapsed read/search groups.** Unless the `/settings` **Verbose output**
+  row is on, a run of reads, searches and listings — `Read` calls and the
+  `bash` commands `read_only::read_kind` classifies (`ls`, `grep`, `rg`,
+  `find`, `cat`, `head`, …) — is one cell instead of a cell per call:
+  `● Searching for 1 pattern, reading 2 files, listing 1 directory… (ctrl+o
+  to expand)` live, its bullet blinking for as long as the group is open,
+  between calls too, then one dim bullet-less `Searched for 1 pattern, read 2
+  files, listed 1 directory (ctrl+o to expand)` line once something that is
+  not a read arrives — a call of another kind, reply text, an error, the
+  turn's end. The group is derived from the history (`app::group_run`), so
+  every rebuild paints the same line; Ctrl+O keeps every call whole
+  (`docs/tool-groups.md`). In auto mode the same commands, when they
+  *provably* only read (`read_only::is_read_only`), skip the classifier
+  (`docs/permissions.md`).
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare
   `https://…` in prose, a list item, a table cell, inline/fenced/indented code,
   a heading, or a `[text](url)` target — is painted wrapped in an OSC 8
@@ -1528,7 +1542,9 @@ stream for their own reasons).
   `docs/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
-  with every tool expanded (by design — keeps the inline chat compact).
+  with every tool expanded (by design — keeps the inline chat compact). Reads and
+  searches go further by default and fold into one line per run
+  (`docs/tool-groups.md`); an agent's session view keeps a cell per call.
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. The registry is intentionally small
   (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,

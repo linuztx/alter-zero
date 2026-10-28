@@ -67,6 +67,7 @@ widened for the split.
 | `background.rs` | Background shells and the ↓ manager band. |
 | `agent.rs` | The `Agent` tool's roster, groups, and notices. |
 | `reasoning.rs` | The thinking stream: the live reasoning buffer, the `Reasoning` cell it settles into, and the provider's reasoning-token snap (`docs/thinking-stream.md`). |
+| `tool_group.rs` | Collapsed read/search groups: which calls join one (`group_kind`, `is_group_member`), how far one runs through the history (`group_run`), what it counts, and the open group the commit path holds (`place_resolved_tool`, `close_tool_group`) (`docs/tool-groups.md`). |
 | `tips.rs` | The spinner tip's walk: the cursor the boundary seeds from `tips.json`, the draw `set_status_times` runs, and what hides the row (`docs/tips.md`). The catalog and the file format are the top-level `crate::tips`. |
 
 ### `src/ui/` — pure rendering
@@ -84,6 +85,7 @@ widened for the split.
 | `conversation.rs` | The whole-history walk and the tail a purge rebuild (resize, `/clear`, a rewind) repaints. |
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
+| `tool_group.rs` | The collapsed read/search group's two looks — the live `● Reading 2 files…` cell with its `⎿` hint, and the settled dim line a closed group commits (`docs/tool-groups.md`). |
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary — the amber `Waiting for internet…` verb and `offline for` clause included (`docs/offline.md`). |
@@ -303,6 +305,18 @@ cores carry no process and are unit-tested alone; `spawn` is the I/O.
 | `report.rs` | What the model reads: the `Running`/`Stopped` frames over the output or the screen, and the model-only notes. |
 | `session.rs` | `SessionIo` — the two views, the wait, the look, and the exit handshake the monitor and the calls share. |
 | `spawn.rs` | The boundary: the pseudo-terminal, the controlling-terminal tiers, the session environment, the line mode. |
+
+### `src/read_only/` — recognising the commands that only read
+
+Born as a directory too: two questions over one tokenizer
+(`docs/tool-groups.md`, `docs/permissions.md`), every part pure.
+
+| Module | Holds |
+|--------|-------|
+| `mod.rs` | `read_kind` (what a command reads — the collapsed group's clauses) and `is_read_only` (whether it provably only reads — auto mode's classifier skip), the program sets, the per-program write checks. |
+| `lex.rs` | The shell-word tokenizer: quotes, escapes, operators, redirects with their harmless forms, and the `Hazards` a command's words cannot vouch for. |
+| `flags.rs` | The per-program flag allowlists and their validator (`grep`, `rg`, `fd`, `sort`, `ps`, `xargs`, `sed`, …). |
+| `git.rs` | The read-only `git` verbs and the flags each takes. |
 
 ## The conventions the split had to preserve
 

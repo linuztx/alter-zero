@@ -438,11 +438,13 @@ pub fn classifier_denial_result(reason: Option<&str>) -> String {
     )
 }
 
-/// Program prefixes the offline heuristic classifier treats as read-only
-/// inspection — a deliberately small subset of Claude Code's read-only
-/// allowlist, enough for the dummy's auto-mode demo. Subcommand tools keep
-/// their verb (the [`segment_prefix`] shape), so `git status` is safe while
-/// bare `git` — and so `git push` — is not.
+/// Program prefixes the offline heuristic classifier treats as safe —
+/// read-only inspection (a deliberately small subset of Claude Code's
+/// read-only allowlist) plus running the project's own tests, enough for the
+/// dummy's auto-mode demo, whose read-only listing never reaches this list
+/// at all (the approve seam's fast path, `crate::read_only`). Subcommand
+/// tools keep their verb (the [`segment_prefix`] shape), so `git status` is
+/// safe while bare `git` — and so `git push` — is not.
 const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "cat",
     "date",
@@ -461,6 +463,7 @@ const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "printf",
     "ps",
     "pwd",
+    "pytest",
     "rg",
     "stat",
     "tail",

@@ -132,24 +132,48 @@ pub(super) fn preview_lines(
             false,
         )
     } else if let Some(text) = app.reasoning() {
-        trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
-    } else if let Some(lines) = stream_preview {
-        trim_preview(lines.to_vec(), rows, true)
+        // A thinking phase between two reads streams under the open group's
+        // cell, which stays up through it (docs/tool-groups.md).
+        let mut lines = open_group_lines(app, width);
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(live_reasoning_lines(text, app.pulse(), width));
+        trim_preview(lines, rows, false)
     } else {
-        trim_preview(
-            app.streaming_text()
-                .filter(|t| !t.is_empty())
-                .map(|text| {
-                    message_lines(Role::Assistant, text, width)
-                        .pop()
-                        .unwrap_or_default()
-                })
-                .into_iter()
-                .collect(),
-            rows,
-            true,
-        )
+        let group = open_group_lines(app, width);
+        if !group.is_empty() {
+            // Between rounds — the reads resolved, the model writing its
+            // next call — the open group's cell stays up, its bullet still
+            // blinking: the next call may well be another read
+            // (docs/tool-groups.md).
+            trim_preview(group, rows, false)
+        } else if let Some(lines) = stream_preview {
+            trim_preview(lines.to_vec(), rows, true)
+        } else {
+            trim_preview(
+                app.streaming_text()
+                    .filter(|t| !t.is_empty())
+                    .map(|text| {
+                        message_lines(Role::Assistant, text, width)
+                            .pop()
+                            .unwrap_or_default()
+                    })
+                    .into_iter()
+                    .collect(),
+                rows,
+                true,
+            )
+        }
     }
+}
+
+/// The open collapsed group's live cell in the strip — empty when no group is
+/// open (or **Verbose output** is on). The one call [`preview_lines`] and
+/// `preview_rows` share for the branches the group shows in alone, so the
+/// rows reserved and the rows drawn agree (`docs/tool-groups.md`).
+pub(super) fn open_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    super::tool_group::live_group_lines(app, width, Some(app.pulse()), true)
 }
 
 /// Trim built preview rows to the `rows` the strip reserved — from the front
@@ -256,11 +280,37 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     {
         return batch;
     }
+    // The open collapsed group (docs/tool-groups.md): the reads it holds and
+    // the ones leading the queue are one live cell; the queue's other calls
+    // keep cells of their own below it.
+    let group = super::tool_group::live_group_lines(app, width, Some(pulse), true);
+    let grouped = if group.is_empty() {
+        0
+    } else {
+        super::tool_group::leading_group_calls(app.tool_queue()).count()
+    };
+    if !group.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(group);
+        // A long search can go to the background like any command — its
+        // cell is the group's, so the hint hangs off the group's.
+        if let Some(front) = app.tool_queue().front().filter(|_| grouped > 0)
+            && front.status == ToolStatus::Running
+            && let Some(hint) = ctrl_b_hint(front)
+            && app
+                .background_hint_elapsed()
+                .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+        {
+            lines.push(result_row(1, hint.to_string()));
+        }
+    }
     // Each queued previewed call owns the next adopted draft, in queue order
     // (docs/write-streaming.md).
     let mut drafts = app.tool_drafts().queued();
-    for (i, tool) in app.tool_queue().iter().enumerate() {
-        if i > 0 || !lines.is_empty() {
+    for tool in app.tool_queue().iter().skip(grouped) {
+        if !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
         let draft = crate::app::previewed_display(&tool.name)
@@ -469,6 +519,7 @@ fn strip_preview_is_live_cells(app: &App) -> bool {
         || !app.tool_queue().is_empty()
         || app.tool_drafts().previews().next().is_some()
         || app.reasoning().is_some()
+        || app.tool_group_range().is_some()
 }
 
 /// The rows the strip's content occupies at `preview_n` preview rows —
@@ -528,6 +579,11 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     if let Some(group) = app.agent_group() {
         group.background.hash(&mut hasher);
         group.ids.hash(&mut hasher);
+    }
+    // The open collapsed group: a read joining it re-signs the strip, a
+    // command's output streaming under it does not (docs/tool-groups.md).
+    if app.viewed_agent().is_none() {
+        app.tool_group_range().hash(&mut hasher);
     }
     // A previewed call is signed on what its cell is *of* — its path, and
     // whether it shows the tail it follows while streaming or the head it

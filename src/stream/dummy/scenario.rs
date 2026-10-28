@@ -338,6 +338,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("interactive"),
         play: Play::Script(turns::interactive_turn),
     },
+    // Finding the way around before changing anything: a listing, a search
+    // and two reads over three rounds, folded into one collapsed group
+    // unless Verbose output is on, then a script run that keeps its own cell
+    // (docs/tool-groups.md).
+    Scenario {
+        #[cfg(test)]
+        name: "explore",
+        selects: |cue| cue.mentions("explore"),
+        play: Play::Script(turns::explore_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]

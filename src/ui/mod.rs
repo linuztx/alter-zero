@@ -80,6 +80,7 @@ mod theme;
 mod theme_view;
 mod tips;
 mod tool;
+mod tool_group;
 mod transcript;
 mod trust_view;
 mod usage_view;
@@ -150,6 +151,7 @@ pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::theme_view::{render_theme_picker, theme_picker_height};
 pub use self::tips::{tip_lines, tip_rows};
 pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};
+pub use self::tool_group::tool_group_lines;
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,
     render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,

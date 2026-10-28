@@ -78,11 +78,13 @@ fn generating(index: usize, name: &str, arguments: &str) -> StreamEvent {
 /// runs the script to prove it. The last cell is the credit itself, printed by
 /// code the middle cell changed.
 ///
-/// The file runs a few lines past the cell's ten-row peek on purpose: the
-/// committed `Read` then carries the `… +N lines (ctrl+o to expand)` tail, so
-/// the turn that answers *anything* is also the one that teaches the key —
-/// and the transcript has something to expand that the inline cell doesn't
-/// show (`scripts/smoke.sh` pages to `__main__` to prove it).
+/// The file runs a few lines past the cell's ten-row peek on purpose: with
+/// **Verbose output** on the committed `Read` carries the `… +N lines (ctrl+o
+/// to expand)` tail, and off it folds into the `Read 1 file (ctrl+o to
+/// expand)` line (`docs/tool-groups.md`), so either way the turn that answers
+/// *anything* is also the one that teaches the key — and the transcript has
+/// something to expand that the inline cell doesn't show (`scripts/smoke.sh`
+/// pages to `__main__` to prove it).
 const DUMMY_ABOUT_PATH: &str = "about.py";
 const DUMMY_ABOUT_V1: &str = "#!/usr/bin/env python3\n\
     \"\"\"Print the alter-zero calling card.\"\"\"\n\n\
@@ -1196,6 +1198,105 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY),
         truncated: false,
     });
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The **explore** demo's narration (`docs/tool-groups.md`): what the reads
+/// folded into, and the one call that kept a cell.
+const EXPLORE_REPLY: &str = concat!(
+    "I'll get my bearings before touching anything: list the folder, search \
+     for where the card is built, and read the files that matter.\n\n",
+    "Found it: `card()` in `about.py` builds the one line the script prints. \
+     Unless **Verbose output** is on in `/settings`, the listing, the search \
+     and the reads went into the one line above — **ctrl+o** shows every call \
+     whole — while the script that actually ran kept a cell of its own.\n\n",
+    handoff!()
+);
+
+/// The thought the explore demo has between its first two rounds — it
+/// streams under the open group's cell, whose bullet keeps blinking through
+/// it (`docs/tool-groups.md`).
+const EXPLORE_THINKING: &str =
+    "One script and a README. Find where the card is built,\nthen read both.";
+
+/// What the explore demo's `ls -la` lists.
+const EXPLORE_LISTING: &str = "total 24\n\
+    drwxr-xr-x  4 you you 4096 Oct 28 09:12 .\n\
+    drwxr-xr-x 18 you you 4096 Oct 28 09:10 ..\n\
+    drwxr-xr-x  8 you you 4096 Oct 28 09:12 .git\n\
+    -rw-r--r--  1 you you  118 Oct 28 09:12 README.md\n\
+    -rwxr-xr-x  1 you you  365 Oct 28 09:12 about.py\n\
+    drwxr-xr-x  2 you you 4096 Oct 28 09:12 tests";
+
+/// The explore demo's search — `grep -rn 'card()' .` over [`DUMMY_ABOUT_V1`].
+const EXPLORE_GREP: &str = "./about.py:10:def card() -> str:\n./about.py:16:    print(card())";
+
+/// The README the explore demo reads the head of.
+const EXPLORE_README: &str = "# about\n\n\
+    A one-file calling card for alter-zero.\n\n\
+    Run it with `python3 about.py`.";
+
+/// What the explore demo's script prints — the card before the default
+/// turn's edit wires the credit in.
+const EXPLORE_RUN: &str = "alter-zero — an autonomous AI agent that lives in your terminal";
+
+/// One scripted round: each call generated — its wire name, then its
+/// verbatim arguments — the batch announced, then every call run in order.
+fn round(calls: &[ScriptedCall]) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+    for (slot, call) in calls.iter().enumerate() {
+        events.push(generating(slot, &call.name.to_ascii_lowercase(), ""));
+        events.push(generating(slot, "", &call.arguments));
+    }
+    events.push(StreamEvent::ToolBatch(
+        calls.iter().map(ScriptedCall::summary).collect(),
+    ));
+    for call in calls {
+        events.push(call.start());
+        if call.streams {
+            events.extend(tool_output_events(&call.output));
+        }
+        events.push(call.end());
+    }
+    events
+}
+
+/// The **explore** demo (`docs/tool-groups.md`): the model finding its way
+/// around before it changes anything — a listing; a thought; a parallel
+/// round of a search and two reads; then a command that runs something.
+/// Nothing is said between the reads, so they are one collapsed group from
+/// the first call to the last read, its bullet blinking between the rounds
+/// too; the script run closes it and keeps a cell of its own. Every call
+/// resolves with the real executor's output, so Ctrl+O expands them as the
+/// live ones.
+pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let (first, second) = reply_parts(EXPLORE_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.extend(round(&[ScriptedCall::command(
+        "ls -la",
+        EXPLORE_LISTING,
+        0,
+    )]));
+    events.push(StreamEvent::ThinkingStart);
+    events.extend(
+        chunks(EXPLORE_THINKING)
+            .into_iter()
+            .map(StreamEvent::ThinkingChunk),
+    );
+    events.push(StreamEvent::ThinkingEnd);
+    events.extend(round(&[
+        ScriptedCall::command("grep -rn 'card()' .", EXPLORE_GREP, 0),
+        ScriptedCall::read(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1),
+        ScriptedCall::command("head -n 20 README.md", EXPLORE_README, 0),
+    ]));
+    events.extend(round(&[ScriptedCall::command(
+        &format!("python3 {DUMMY_ABOUT_PATH}"),
+        EXPLORE_RUN,
+        0,
+    )]));
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);
     events

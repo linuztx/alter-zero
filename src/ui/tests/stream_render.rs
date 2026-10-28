@@ -811,6 +811,7 @@ fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        true,
     )
     .iter()
     .map(plain)

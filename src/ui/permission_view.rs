@@ -385,11 +385,23 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     {
         return vec![batch];
     }
-    chunks.extend(queue_chunks(
-        app.tool_queue().iter(),
-        width,
-        app.path_display(),
-    ));
+    let mut queue = queue_chunks(app.tool_queue().iter(), width, app.path_display());
+    // The open read/search group the asked-about call follows, at rest
+    // (docs/tool-groups.md) — merged into that call's chunk, so the budget
+    // that may collapse the siblings never drops the call being asked about.
+    let group = super::tool_group::live_group_lines(app, width, None, false);
+    if !group.is_empty() {
+        match queue.first_mut() {
+            Some(first) => {
+                let mut merged = group;
+                merged.push(Line::default());
+                merged.append(first);
+                *first = merged;
+            }
+            None => queue.push(group),
+        }
+    }
+    chunks.extend(queue);
     chunks
 }
 

@@ -225,6 +225,12 @@ pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 
+/// The collapsed read/search group's glyphs (`docs/tool-groups.md`): the `…`
+/// that closes an open group's `● Reading 2 files…` line, and the `$ ` its
+/// `⎿` hint row puts in front of a command (a read's hint is its path).
+pub(super) const TOOL_GROUP_ACTIVE_SUFFIX: &str = "…";
+pub(super) const TOOL_GROUP_COMMAND_PROMPT: &str = "$ ";
+
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at
 /// the lowest row still moving (`LiveTail::anchor` — the last row for every

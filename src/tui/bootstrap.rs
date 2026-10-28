@@ -912,6 +912,7 @@ impl<'t> Session<'t> {
                 width,
                 RESIZE_REFLOW_MAX_ROWS,
                 self.app.path_display(),
+                self.app.settings().verbose,
             );
             self.term.insert_before(lines);
         }

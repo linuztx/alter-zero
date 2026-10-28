@@ -12,6 +12,38 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Reads, searches and listings fold into one line.** An agent finding its
+  way around a project used to fill the screen with a cell per call: every
+  `ls`, every `grep`, every file it read, each with its output under it.
+  A run of them is now one cell that says what the run is doing,
+  `● Searching for 1 pattern, reading 2 files, listing 1 directory…`, over
+  the command or file it is on. Its bullet keeps blinking between calls,
+  since the next one is often another read, and once something else
+  happens (another kind of call, a reply, an error, the end of the turn) it
+  settles into one dim line: `Searched for 1 pattern, read 2 files, listed
+  1 directory (ctrl+o to expand)`. Ctrl+O still shows every call with its
+  full output. A read that was refused, interrupted or moved to the
+  background keeps its own cell, and so does a read of an image, so its
+  picture still draws. The new **Verbose output** row in `/settings` brings
+  back a cell per call, and `ALTER_ZERO_VERBOSE=1` sets it for one run
+  (`docs/tool-groups.md`).
+
+### Changed
+
+- **Auto mode runs commands that only read without asking the
+  classifier.** In auto mode every command used to wait on a safety check
+  by the model, even `ls` or `git status`, and each check is a request to
+  your provider. A command that provably only reads (`ls -la`,
+  `grep -rn foo src`, `cat README.md | head -20`, `git log --oneline`) now
+  runs straight away, with no `Allowed by auto mode classifier` note under
+  it. Anything the check cannot be sure of still goes to the classifier:
+  a redirect into a file, `$(…)`, an unknown flag, a flag that writes such
+  as `find -delete` or `sort -o`, or `git` in a folder that looks like a
+  bare repository. Manual and edit modes still ask about every command
+  (`docs/permissions.md`).
+
 ### Fixed
 
 - **A picture whose file is gone no longer leaves a blank block.** The agent

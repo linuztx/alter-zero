@@ -57,6 +57,9 @@ pub const PERMISSIONS_DISABLED_LABEL: &str = "disabled";
 pub enum SettingKey {
     /// Hide the model's streamed chain-of-thought (`docs/thinking-stream.md`).
     HideThinking,
+    /// Show every read, search and listing as its own tool cell instead of
+    /// collapsing a run of them into one line (`docs/tool-groups.md`).
+    Verbose,
     /// Draw pictures inline in the conversation (`docs/images.md`).
     ShowImages,
     /// How wide, in columns, an inline picture may be (`docs/images.md`).
@@ -105,6 +108,7 @@ impl SettingKey {
     /// Every setting, in menu order.
     pub const ALL: &'static [Self] = &[
         Self::HideThinking,
+        Self::Verbose,
         Self::ShowImages,
         Self::ImageWidth,
         Self::AutoResizeImages,
@@ -129,6 +133,7 @@ impl SettingKey {
     pub const fn label(self) -> &'static str {
         match self {
             Self::HideThinking => "Hide thinking",
+            Self::Verbose => "Verbose output",
             Self::ShowImages => "Show images",
             Self::ImageWidth => "Image width",
             Self::AutoResizeImages => "Auto-resize images",
@@ -155,6 +160,9 @@ impl SettingKey {
         match self {
             Self::HideThinking => {
                 "Hide the model's chain-of-thought instead of streaming it above the composer"
+            }
+            Self::Verbose => {
+                "Show each read, search and listing as its own cell, not one collapsed line"
             }
             Self::ShowImages => {
                 "Render pasted screenshots and image reads as pictures in the terminal"
@@ -272,6 +280,11 @@ pub struct SessionSettings {
     /// Hide the streamed chain-of-thought (default `false` — it shows).
     #[serde(skip_serializing_if = "is_false")]
     pub hide_thinking: bool,
+    /// Show every tool call as its own cell (default `false` — a run of
+    /// reads, searches and listings collapses into one line, Claude Code's
+    /// default, `docs/tool-groups.md`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub verbose: bool,
     /// Draw pictures inline (default `true` — a terminal that can't draw one
     /// reports the row unavailable anyway).
     #[serde(skip_serializing_if = "is_true")]
@@ -352,6 +365,7 @@ impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             hide_thinking: false,
+            verbose: false,
             show_images: true,
             image_width: DEFAULT_IMAGE_WIDTH,
             auto_resize_images: true,
@@ -483,6 +497,7 @@ impl SessionSettings {
     pub fn value_text(&self, key: SettingKey, mode: Mode) -> String {
         let text = match key {
             SettingKey::HideThinking => bool_text(self.hide_thinking),
+            SettingKey::Verbose => bool_text(self.verbose),
             SettingKey::ShowImages => bool_text(self.images_active()),
             SettingKey::ImageWidth => self.image_width.to_string(),
             SettingKey::AutoResizeImages => bool_text(self.auto_resize_images),
@@ -521,6 +536,7 @@ impl SessionSettings {
         }
         match key {
             SettingKey::HideThinking => self.hide_thinking = !self.hide_thinking,
+            SettingKey::Verbose => self.verbose = !self.verbose,
             SettingKey::ShowImages => self.show_images = !self.show_images,
             SettingKey::ImageWidth => {
                 self.image_width = next_in(IMAGE_WIDTH_CHOICES, &self.image_width);
@@ -562,6 +578,7 @@ impl SessionSettings {
     pub fn copy_value(&mut self, key: SettingKey, live: &Self) {
         match key {
             SettingKey::HideThinking => self.hide_thinking = live.hide_thinking,
+            SettingKey::Verbose => self.verbose = live.verbose,
             SettingKey::ShowImages => self.show_images = live.show_images,
             SettingKey::ImageWidth => self.image_width = live.image_width,
             SettingKey::AutoResizeImages => self.auto_resize_images = live.auto_resize_images,

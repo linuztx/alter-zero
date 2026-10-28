@@ -97,13 +97,21 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
         return u16::try_from(lines.len()).unwrap_or(u16::MAX);
     }
     // An open thinking phase previews its live block — the `● Thinking…`
-    // header plus the tail it shows (docs/thinking-stream.md). Sized from the
-    // same walk the strip draws, so the two agree by construction.
+    // header plus the tail it shows (docs/thinking-stream.md) — under the
+    // open read/search group's cell when one is up (docs/tool-groups.md).
+    // Sized from the same walk the strip draws, so the two agree by
+    // construction.
+    let group = super::live::open_group_lines(app, width).len();
     if let Some(text) = app.reasoning() {
+        let gap = usize::from(group > 0);
         return u16::try_from(
-            super::reasoning::live_reasoning_lines(text, app.pulse(), width).len(),
+            group + gap + super::reasoning::live_reasoning_lines(text, app.pulse(), width).len(),
         )
         .unwrap_or(u16::MAX);
+    }
+    // Between rounds the open group's cell holds the slot alone.
+    if group > 0 {
+        return u16::try_from(group).unwrap_or(u16::MAX);
     }
     // A streaming reply previews the rows scrollback does not hold yet — its
     // last row for ordinary prose, every wrapped row of a withheld source

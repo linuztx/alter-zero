@@ -33,6 +33,7 @@ const EXAMPLES: &[&str] = &[
     "load a skill for me",
     "refresh the package databases with pacman",
     "run an interactive installer",
+    "explore the project for me",
     "hello there",
 ];
 
@@ -454,6 +455,103 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         ends[2].contains(last),
         "the last frame is what the report says: {last:?} in {}",
         ends[2]
+    );
+}
+
+#[test]
+fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
+    // docs/tool-groups.md: the offline demo of the collapsed read/search
+    // group — a listing, a thought, a parallel round of a search and two
+    // reads, then a command that runs something. Every call before the last
+    // is one the group takes and nothing is said between them, so the group
+    // stays open across all three rounds; the last call is no read and
+    // closes it, keeping a cell of its own.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "explore")
+        .expect("the explore demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the explore demo is a script");
+    };
+    let events = script(&Cue::new("explore the project for me", 0));
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. } => Some((name.as_str(), args.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            ("Bash", "ls -la"),
+            ("Bash", "grep -rn 'card()' ."),
+            ("Read", "about.py"),
+            ("Bash", "head -n 20 README.md"),
+            ("Bash", "python3 about.py"),
+        ]
+    );
+    let reads =
+        |name: &str, args: &str| name == "Read" || crate::read_only::read_kind(args).is_some();
+    let (last, before) = starts.split_last().expect("calls");
+    assert!(
+        before.iter().all(|(name, args)| reads(name, args)),
+        "every call before the last joins the group: {before:?}"
+    );
+    assert!(!reads(last.0, last.1), "the last call closes it: {last:?}");
+    // Three rounds, the middle one a parallel batch.
+    let batches: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolBatch(calls) => Some(calls.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(batches, vec![1, 3, 1]);
+    // Nothing is said from the first call to the last one, so nothing closes
+    // the group early — but the model thinks between the first two rounds,
+    // and the thought streams under the open group.
+    let first = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::ToolBatch(_)))
+        .expect("a batch");
+    let last_start = events
+        .iter()
+        .rposition(|e| matches!(e, StreamEvent::ToolStart { .. }))
+        .expect("a start");
+    assert!(
+        !events[first..last_start]
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Chunk(_))),
+        "no reply text between the reads"
+    );
+    assert!(
+        events[first..last_start]
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingStart)),
+        "a thought between the rounds"
+    );
+    // Every call resolves green with the real executor's output.
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                assert!(ok, "every call succeeds: {output}");
+                Some(output.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 5);
+    assert!(
+        ends[2].trim_start().starts_with("1 #!/usr/bin/env python3"),
+        "the read is the executor's numbered gutter: {}",
+        ends[2]
+    );
+    assert!(
+        ends[1].contains("about.py:10:def card() -> str:"),
+        "the search finds what the read shows: {}",
+        ends[1]
     );
 }
 

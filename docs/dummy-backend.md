@@ -175,6 +175,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |
 | `download` | "pacman"/"download" | pacman's parallel database refresh as a terminal sees it: one `bash` call whose four bars, drawn at pacman's own width so each wraps to two rows, redraw in place frame by frame, the two small ones finishing in the first second and sitting **below** the two still downloading — the shape a window pinned to the output's end got wrong, so the running cell's window follows the bars that move (`docs/tool-streaming.md` *The window follows what is still moving*, `smoke.sh` Phase 130) |
 | `interactive` | "interactive" | a setup wizard driven through a terminal session: a `bash` launch stopping at a prompt, a `bashsend` answer met by the next question, and the last answer ending the program — one call a round, every result the real `pty::report::report`, so the cells wear their dim `Waiting for input · session …` rows (`docs/interactive-shell.md`, `smoke.sh` Phase 124). The whole word only: `tty` hides in "pretty", `repl` in "reply" |
+| `explore` | "explore" | finding the way around before changing anything: an `ls -la`, a thought, then a parallel round of a `grep`, a `Read` and a `head`, and last a script run — every read one **collapsed group** whose bullet blinks through all three rounds and the thought between them, closed by the script run, which keeps its own cell (`docs/tool-groups.md`, `smoke.sh` Phase 146) |
 | `tools` | anything | the default turn: think, then read `about.py`, `Edit` in the credit it forgot, and run it |
 
 Cue order is registry order, so a narrower cue sits above a broader one that
@@ -275,7 +276,10 @@ the top, then prints a card that mentions neither:
    the demo fixes it. The file runs a few lines past the cell's ten-row peek on
    purpose, so the committed cell carries the `… +N lines (ctrl+o to expand)`
    tail and the transcript has something to expand that the inline cell doesn't
-   show.
+   show. That is the cell **Verbose output** draws; by default a read folds
+   into the collapsed `Read 1 file (ctrl+o to expand)` line instead
+   (`docs/tool-groups.md`), which teaches the same key, and the narration
+   names neither look so it is true under both.
 2. **`Edit(about.py)`** — one line rewritten, wiring those constants into what
    the card prints. A single `+`/`-` pair inside its context: the smallest diff
    that still shows both tints.

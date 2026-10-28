@@ -164,6 +164,9 @@ impl App {
         }
         self.history.truncate(position);
         self.history_generation += 1;
+        // A rewind lands between turns, where no group is open — but the
+        // rebuild that follows renders whatever one held (docs/tool-groups.md).
+        self.drop_tool_group();
         // The checklist rewinds with the conversation: the last task record
         // before the cut holds the state it had there (docs/task-tools.md);
         // the boundary syncs the shared registry after the rewind.

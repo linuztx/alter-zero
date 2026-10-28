@@ -330,6 +330,11 @@ impl Session<'_> {
     /// Esc-interrupt outcomes) *and* the idle completion arrival, so the paths
     /// can never drift.
     pub(crate) fn dispatch_after_turn(&mut self) {
+        // Every turn end closes the open read/search group where the turn
+        // ended (docs/tool-groups.md); this is the backstop, so a group no
+        // close point reached can never hold its reads out of scrollback.
+        let committing = self.commits_allowed();
+        self.close_tool_group(committing, self.term.screen().width);
         // The turn just ended and its history is settled — snapshot the code
         // state before any queued follow-up starts editing again
         // (docs/checkpoint.md).

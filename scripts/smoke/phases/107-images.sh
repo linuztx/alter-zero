@@ -104,19 +104,23 @@ for _ in $(seq 1 40); do
 done
 tmux send-keys -t "$S107" C-o
 sleep 0.5
-# /settings → Show images → off: the rebuild must drop the picture.
+# /settings → Show images → off: the rebuild must drop the picture. The row
+# is reached by type-to-search, never by position — a knob added above it
+# would move it (the first Esc clears the query, the second closes).
 tmux send-keys -t "$S107" -l "/settings"
 sleep 0.3
 tmux send-keys -t "$S107" Enter
 sleep 0.5
-tmux send-keys -t "$S107" Down
-sleep 0.2
+tmux send-keys -t "$S107" -l "images"
+sleep 0.3
 img_row_seen=0
-if tmux capture-pane -t "$S107" -p | grep -qE 'Show images +true'; then
+if tmux capture-pane -t "$S107" -p | grep -qE '→ Show images +true'; then
 	img_row_seen=1
 fi
 tmux send-keys -t "$S107" Enter
 sleep 1.0
+tmux send-keys -t "$S107" Escape
+sleep 0.3
 tmux send-keys -t "$S107" Escape
 sleep 0.8
 img_after="$(tmux capture-pane -t "$S107" -p -S -60)"
@@ -137,14 +141,16 @@ tmux send-keys -t "$S107" -l "/settings"
 sleep 0.3
 tmux send-keys -t "$S107" Enter
 sleep 0.5
-tmux send-keys -t "$S107" Down
-sleep 0.2
+tmux send-keys -t "$S107" -l "images"
+sleep 0.3
 img_row_off=0
-if tmux capture-pane -t "$S107" -p | grep -qE 'Show images +false'; then
+if tmux capture-pane -t "$S107" -p | grep -qE '→ Show images +false'; then
 	img_row_off=1
 fi
 tmux send-keys -t "$S107" Enter
 sleep 1.0
+tmux send-keys -t "$S107" Escape
+sleep 0.3
 tmux send-keys -t "$S107" Escape
 sleep 0.8
 img_back_rows="$(img_between "$(tmux capture-pane -t "$S107" -p -S -60)" | grep -cve '^[[:space:]]*$')"

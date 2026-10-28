@@ -121,9 +121,12 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   telemetry, the update check, the spinner tips and the project's `AGENTS.md`
   exported off; the permission mode exported `manual`, since a session starts
   in auto, where the dummy's writes never ask, and the prompt phases are
-  about the prompt — Phase 64 unsets it to cover the default), run before the
-  phase's first launch, so a phase run on its own is as hermetic as one run
-  by the suite.
+  about the prompt — Phase 64 unsets it to cover the default; and
+  **Verbose output** exported on, since by default a run of reads, searches
+  and listings folds into one collapsed line and the phases assert on the
+  per-call cells — Phase 146 unsets it to cover the default,
+  `docs/tool-groups.md`), run before the phase's first launch, so a phase run
+  on its own is as hermetic as one run by the suite.
 
 That isolation is what makes the parallel runner *correct* rather than
 merely fast: the phases were already independent scenarios on separate

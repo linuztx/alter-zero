@@ -796,7 +796,7 @@ fn conversation_and_transcript_walks_render_background_notices() {
     let mut app = App::new();
     app.history
         .push(HistoryItem::Background(bg_notice(Some(0), false)));
-    let inline: Vec<String> = conversation_lines(&app.history, 80, &PathDisplay::VERBATIM)
+    let inline: Vec<String> = conversation_lines(&app.history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(plain)
         .collect();

@@ -430,7 +430,7 @@ fn a_settled_thought_repaints_in_the_conversation_and_the_transcript() {
     app.begin_reasoning();
     app.push_thinking("the plan");
     app.finish_reasoning(7);
-    let inline: Vec<String> = conversation_lines(&app.history, 60, &PathDisplay::VERBATIM)
+    let inline: Vec<String> = conversation_lines(&app.history, 60, &PathDisplay::VERBATIM, true)
         .iter()
         .map(plain)
         .collect();

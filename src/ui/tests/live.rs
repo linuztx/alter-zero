@@ -329,8 +329,11 @@ fn render_live_previews_a_running_tool_with_a_blinking_bullet() {
     // the bullet **blinks** at the injected frame phase, Claude Code's running
     // dot: shown in the one resting grey, then hidden, the header text never
     // moving (`docs/tool-pulse.md`). This is the only place the blink reaches
-    // the screen, so it is the wiring this test pins.
+    // the screen, so it is the wiring this test pins — on the per-call cell
+    // **Verbose output** shows, since a read collapses into the read/search
+    // group's cell otherwise (whose own blink `ui/tests/tool_group.rs` pins).
     let mut app = App::new();
+    app.settings_mut().verbose = true;
     app.begin_stream();
     app.start_tool("Read", "src/main.rs", None);
     let pv = preview_rows(&app, 40);

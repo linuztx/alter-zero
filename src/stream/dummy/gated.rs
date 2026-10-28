@@ -502,10 +502,11 @@ pub(in crate::stream) fn parallel_permission_turn(stage: &Stage<'_>) {
     );
 }
 
-/// The **auto-mode** demo's two commands: a read-only listing the offline
-/// heuristic classifier allows (its output long enough for the collapsed
-/// `… +N lines` hint, like the reference transcript) and a deletion it
-/// denies. See [`auto_permission_turn`].
+/// The **auto-mode** demo's three commands, one per disposition: a
+/// read-only listing that takes the fast path past the classifier (its output
+/// long enough for the collapsed `… +N lines` hint, like the reference
+/// transcript), a test run the offline heuristic classifier allows, and a
+/// deletion it denies. See [`auto_permission_turn`].
 const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
     (
         "ls -la",
@@ -525,6 +526,13 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
         true,
     ),
     (
+        "pytest -q",
+        "Run the test suite",
+        "Exit code: 0\n....                                                    [100%]\n\
+         4 passed in 0.03s",
+        true,
+    ),
+    (
         "rm -rf /tmp/scratch",
         "Clean up the scratch directory",
         // Only reachable when something other than the classifier cleared it
@@ -538,7 +546,9 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
 /// Play the offline **auto mode** round trip (`docs/permissions.md`): the
 /// [`DUMMY_AUTO_COMMANDS`] batch announced up front, then — per call, the
 /// real approve seam's disposition — the allowlist first, then in
-/// [`PermissionMode::Auto`] the offline heuristic classifier
+/// [`PermissionMode::Auto`] the read-only fast path (a command that provably
+/// only reads runs unasked and unnoted, `crate::read_only::is_read_only`),
+/// then the offline heuristic classifier
 /// ([`crate::permission::auto_verdict`]) in the user's stead: an allowed
 /// command runs with the [`CLASSIFIER_ALLOWED_NOTE`] riding a `ToolNote`, a
 /// denied one resolves red via `ToolRejected` with the classifier texts. In
@@ -565,35 +575,38 @@ pub(in crate::stream) fn auto_permission_turn(stage: &Stage<'_>) {
         // then auto mode's classifier — here the deterministic heuristic —
         // and the prompt only outside auto mode.
         let mut note = None;
-        let resolved = if stage.gate.allows(&request) {
-            Ok(output.to_string())
-        } else if stage.gate.mode() == PermissionMode::Auto {
-            let verdict = auto_verdict(cmd);
-            if verdict.allow {
-                note = Some(CLASSIFIER_ALLOWED_NOTE.to_string());
+        let auto = stage.gate.mode() == PermissionMode::Auto;
+        let resolved =
+            if stage.gate.allows(&request) || (auto && crate::read_only::is_read_only(cmd)) {
                 Ok(output.to_string())
+            } else if auto {
+                let verdict = auto_verdict(cmd);
+                if verdict.allow {
+                    note = Some(CLASSIFIER_ALLOWED_NOTE.to_string());
+                    Ok(output.to_string())
+                } else {
+                    let reason = Some(verdict.reason.as_str()).filter(|r| !r.trim().is_empty());
+                    Err((
+                        classifier_denied_display(reason),
+                        classifier_denial_result(reason),
+                    ))
+                }
             } else {
-                let reason = Some(verdict.reason.as_str()).filter(|r| !r.trim().is_empty());
-                Err((
-                    classifier_denied_display(reason),
-                    classifier_denial_result(reason),
-                ))
-            }
-        } else {
-            match stage.ask(&mut request, || output.to_string()) {
-                Some(resolved) => resolved,
-                // Cancelled out from under us — the channel is abandoned.
-                None => return,
-            }
-        };
+                match stage.ask(&mut request, || output.to_string()) {
+                    Some(resolved) => resolved,
+                    // Cancelled out from under us — the channel is abandoned.
+                    None => return,
+                }
+            };
         any_rejected |= resolved.is_err();
         stage.resolve(&ScriptedTool::bash(cmd), note, resolved, *ok);
     }
     // The closing reply reports what actually happened — in auto mode the
-    // delete is blocked, while master (or an allowlist) runs both.
+    // delete is blocked, while master (or an allowlist) runs all three.
     stage.close(if any_rejected {
-        "Done — the listing ran and the delete was blocked, so nothing was removed."
+        "Done — the listing and the tests ran and the delete was blocked, so nothing was \
+         removed."
     } else {
-        "Done — both commands ran to completion."
+        "Done — all three commands ran to completion."
     });
 }

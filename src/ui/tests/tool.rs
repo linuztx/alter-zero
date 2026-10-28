@@ -2302,7 +2302,7 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
     assert!(second[0].starts_with("● Bash("), "{second:?}");
     // And the repaint from history shows the line exactly once.
     let repaint: Vec<String> =
-        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -2386,7 +2386,7 @@ fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
         format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")
     );
     // And the repaint from history agrees, line for line.
-    let repaint = crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM);
+    let repaint = crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true);
     assert_eq!(plain(&repaint[0]), plain(&lines[0]));
     assert_eq!(repaint.len(), 2, "one line + its spacer: {repaint:?}");
 }
@@ -2406,19 +2406,19 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     ]);
     app.end_tool("{\"answer\":\"…\"}", true);
     assert_eq!(app.history.len(), 1, "the call is recorded…");
-    let committed = crate::ui::committed_history(&app.history, app.tool_queue());
+    let committed = crate::ui::committed_history(&app.history, app.tool_queue(), None);
     assert!(
         committed.is_empty(),
         "…but not yet committed: {committed:?}"
     );
-    assert!(crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM).is_empty());
+    assert!(crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM, true).is_empty());
     // Once the run ends, the rebuild has the whole run — as its one line.
     app.start_tool("deepwiki - read_wiki_structure (MCP)", "", None);
     app.end_tool("{\"topics\":[]}", true);
-    let committed = crate::ui::committed_history(&app.history, app.tool_queue());
+    let committed = crate::ui::committed_history(&app.history, app.tool_queue(), None);
     assert_eq!(committed.len(), 2);
     let rebuilt: Vec<String> =
-        crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(committed, 100, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -2454,7 +2454,7 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     assert!(texts[2].starts_with("● Deepwiki - read_wiki_structure (MCP)("));
     assert!(texts.iter().any(|t| t.contains("server exploded")));
     let repaint: Vec<String> =
-        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -2511,7 +2511,7 @@ fn an_interrupted_batch_commits_a_cell_for_every_call_it_resolved() {
     );
     // A rebuild from history paints the same rows, then the notice.
     let repaint: Vec<String> =
-        crate::ui::conversation_lines(&app.history, 80, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(&app.history, 80, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -2559,7 +2559,7 @@ fn an_interrupted_mcp_run_flushes_its_held_line_ahead_of_the_resolved_calls() {
         "{texts:?}"
     );
     let repaint: Vec<String> =
-        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -2588,7 +2588,7 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
         app.end_tool("{}", true);
     }
     let repaint: Vec<String> =
-        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM)
+        crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true)
             .iter()
             .map(plain)
             .collect();
@@ -3696,7 +3696,7 @@ fn the_commit_and_the_rebuild_shorten_alike() {
         tool_commit_lines(&history, &VecDeque::new(), 80, &paths).expect("a resolved cell commits");
     assert_eq!(plain(&committed[0]), "● Write(~/hello.py)");
     assert_eq!(plain(&committed[1]), "  ⎿  Wrote 1 line to ../../hello.py");
-    let rebuilt = conversation_lines(&history, 80, &paths);
+    let rebuilt = conversation_lines(&history, 80, &paths, true);
     assert_eq!(plain(&rebuilt[0]), "● Write(~/hello.py)");
     assert_eq!(plain(&rebuilt[1]), "  ⎿  Wrote 1 line to ../../hello.py");
 }

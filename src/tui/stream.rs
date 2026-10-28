@@ -32,7 +32,7 @@
 
 use ratatui::text::Line;
 
-use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View};
+use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View, group_kind};
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -55,7 +55,10 @@ impl Session<'_> {
                 // The model launched a group of subagents: finalise the text
                 // before them (the ToolBatch dance), then seed the roster + the
                 // live group cell. No scrollback commit — the cell is live
-                // until the group resolves. See docs/agent-tool.md.
+                // until the group resolves. See docs/agent-tool.md. A launch
+                // is no read: the open read/search group closes ahead of it
+                // (docs/tool-groups.md).
+                self.close_tool_group(committing, width);
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_agent_group(background, &agents);
@@ -71,6 +74,10 @@ impl Session<'_> {
                 // resolution boundary like ToolEnd (the caller drained the agent
                 // channel first, so the roster snapshots are final). See
                 // docs/agent-tool.md.
+                // Its launch closed any open read/search group already; this
+                // close keeps the tree cell's record and commit together even
+                // so (docs/tool-groups.md).
+                self.close_tool_group(committing, width);
                 let group = self.app.finish_agent_group(background, &agents);
                 if committing {
                     let height = self.live_region_height();
@@ -84,6 +91,16 @@ impl Session<'_> {
             }
             StreamEvent::Chunk(chunk) => {
                 self.app.push_chunk(&chunk);
+                // A reply that says something ends the open read/search group
+                // — its line lands above the reply's first row. Whitespace
+                // records nothing, so it ends nothing (docs/tool-groups.md).
+                if self
+                    .app
+                    .streaming_text()
+                    .is_some_and(|text| !text.trim().is_empty())
+                {
+                    self.close_tool_group(committing, width);
+                }
                 if committing && let Some(text) = self.app.streaming_text() {
                     let lines = self.render.commit(text, width);
                     self.term.insert_before(lines);
@@ -109,6 +126,10 @@ impl Session<'_> {
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_tool_batch(&items);
+                // A batch led by a call that is no read closes the open
+                // read/search group; one led by a read joins it
+                // (docs/tool-groups.md).
+                self.close_group_unless_the_front_reads(committing, width);
                 false
             }
             StreamEvent::ToolStart {
@@ -128,6 +149,10 @@ impl Session<'_> {
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_tool(&name, &args, arguments.as_deref());
+                // A call that is no read closes the open read/search group
+                // before it runs, so the group's line sits above its cell
+                // (docs/tool-groups.md).
+                self.close_group_unless_the_front_reads(committing, width);
                 // Start this command's own clock — the delayed Ctrl+B hint waits
                 // on it, so a fast command never flashes the hint (a model tool
                 // that starts deep into a turn can't inherit the turn's elapsed).
@@ -280,8 +305,10 @@ impl Session<'_> {
                 // it into the turn's `↑` tally.
                 //
                 // Never a compact turn: `App::turn_steerable` refuses one, so
-                // nothing was ever queued against it to take.
+                // nothing was ever queued against it to take. The bubble ends
+                // the open read/search group (docs/tool-groups.md).
                 self.flush_segment(committing, width);
+                self.close_tool_group(committing, width);
                 self.render.reset();
                 self.app.deliver_steered(&text);
                 if committing {
@@ -340,7 +367,14 @@ impl Session<'_> {
                 // stashes the composer draft) — the backend thread is parked on
                 // the gate until an `Action::ResolvePermission` answers it.
                 // Nothing is committed: the prompt is live-only, and no call has
-                // started. See docs/permissions.md.
+                // started. See docs/permissions.md. A main-turn call that is
+                // no read will close the open read/search group when it
+                // resolves either way, so the group's line commits now, above
+                // the question; a read being asked about keeps it open, shown
+                // at rest over the prompt (docs/tool-groups.md).
+                if request.agent_id.is_none() {
+                    self.close_group_unless_the_front_reads(committing, width);
+                }
                 self.app.open_permission(request);
                 false
             }
@@ -406,6 +440,10 @@ impl Session<'_> {
                 // the blank spacer the committed cell will keep.
                 if self.app.push_tool_call_fragment(&piece) {
                     self.flush_segment(committing, width);
+                    // A previewed call is a `write`, no read: the open
+                    // read/search group closes above its cell
+                    // (docs/tool-groups.md).
+                    self.close_tool_group(committing, width);
                     self.render.reset();
                 }
                 false
@@ -469,6 +507,10 @@ impl Session<'_> {
                 // — settled first, so its cell sits ahead of the partial reply
                 // and the red notice (docs/thinking-stream.md).
                 self.settle_reasoning();
+                // …and the open read/search group closes on what it held, the
+                // settled thought included, above the failure's remains
+                // (docs/tool-groups.md).
+                self.close_tool_group(committing, width);
                 // The failure takes a live foreground agent group down with it
                 // (`App::resolve_live_agent_group` interrupts every member),
                 // and one of those members may be the conversation on screen —
@@ -514,6 +556,9 @@ impl Session<'_> {
     /// text, the held completions, and the `Done for Ns` summary — in that order,
     /// which is what keeps a late completion's notice *above* the summary.
     fn on_stream_done(&mut self, committing: bool, width: u16) -> bool {
+        // The turn's end closes the open read/search group above whatever
+        // closes the turn (docs/tool-groups.md).
+        self.close_tool_group(committing, width);
         // A /compact turn's end (docs/compact.md): the marker is appended here
         // (an append — the loop-bottom recorder sync writes it, the checkpoint
         // keys stay valid) and nothing streamed to the transcript, so there is no
@@ -635,6 +680,12 @@ impl Session<'_> {
         let Some(reasoning) = self.app.finish_reasoning(secs) else {
             return;
         };
+        // A thought settled inside an open read/search group is held with it:
+        // part of the work its line stands for when more reads follow, shown
+        // under that line when the group closes on it (docs/tool-groups.md).
+        if self.app.tool_group_range().is_some() {
+            return;
+        }
         if committing {
             let height = self.live_region_height();
             self.term.set_view_height(height);
@@ -650,6 +701,15 @@ impl Session<'_> {
     /// buffer is already empty — which is the common case for a batched call,
     /// whose batch event flushed first.
     fn flush_segment(&mut self, committing: bool, width: u16) {
+        // Text is no part of an open read/search group: the group closes
+        // before the text is recorded behind it (docs/tool-groups.md).
+        if self
+            .app
+            .streaming_text()
+            .is_some_and(|text| !text.trim().is_empty())
+        {
+            self.close_tool_group(committing, width);
+        }
         if let Some(segment) = self.app.flush_streaming_segment()
             && committing
         {
@@ -660,6 +720,22 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
+    /// Close the open read/search group unless the live queue's front call is
+    /// itself a read, search or listing that will join it
+    /// (`docs/tool-groups.md`) — what a batch announcement, a call's start and
+    /// a main-turn permission prompt each decide. With no call queued at all
+    /// the group closes: whatever comes next is no read.
+    fn close_group_unless_the_front_reads(&mut self, committing: bool, width: u16) {
+        let joins = self
+            .app
+            .tool_queue()
+            .front()
+            .is_some_and(|call| group_kind(call).is_some());
+        if !joins {
+            self.close_tool_group(committing, width);
+        }
+    }
+
     /// The reply channel's branch: fold one event in, keeping the subagent
     /// bookkeeping around it in step, and run the turn-end dispatch when the
     /// stream resolved.

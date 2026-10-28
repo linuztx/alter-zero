@@ -14,6 +14,7 @@ per change.
   ❯
 
 → Hide thinking           false
+  Verbose output          false
   Show images             true
   Image width             120
   Auto-resize images      true
@@ -22,7 +23,7 @@ per change.
   Permission mode         auto
   ...
   Max tool calls          0
-  (1/18)
+  (1/19)
 
   Hide the model's chain-of-thought…
 
@@ -32,13 +33,14 @@ per change.
 
 ## The settings
 
-Eighteen rows, each one a knob the running session actually reads. Every value
+Nineteen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
 | Setting | Values | What it changes |
 |---|---|---|
 | **Hide thinking** | `false` / `true` | Whether the model's chain-of-thought streams in the live `● Thinking…` cell and collapses into a `Thought for …` line (`docs/thinking-stream.md`). `true` restores the counted-and-dropped behaviour. Seeded from `ALTER_ZERO_SHOW_THINKING`. |
+| **Verbose output** | **`false`** / `true` | Whether every read, search and listing keeps a cell of its own (`true`, the tool cells exactly as they always were) or a run of them folds into one collapsed line — `● Reading 2 files, listing 1 directory…` while it runs, the dim `Read 2 files, listed 1 directory (ctrl+o to expand)` once it is over (`docs/tool-groups.md`). **Off by default**, Claude Code's non-verbose view; Ctrl+O shows every call whole either way. Cycling it purge-rebuilds, so the committed conversation changes shape at once. Seeded from `ALTER_ZERO_VERBOSE`. |
 | **Show images** | `true` / `false` | Whether a pasted screenshot and the `read` tool's image reads are drawn as pictures in the conversation (`docs/images.md`). `false (unavailable)` when the terminal can't draw one. Cycling it purge-rebuilds, so committed pictures appear or vanish at once. |
 | **Image width** | `60` / `80` / `120` | An inline picture's width **cap**, in columns — clamped to the terminal, and never used to blow a small picture up. Cycling it purge-rebuilds like **Show images**. |
 | **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |
@@ -260,6 +262,11 @@ docs`.
     context (so the row re-renders `App::skill_listing`). Flipping it off
     leaves the discovered set in memory, so flipping it back on costs no
     rescan (`docs/skills.md`).
+  - **Verbose output** purge-rebuilds the conversation, the **Show images**
+    rule: every committed read and search changes shape — a cell per call, or
+    one collapsed line — and the rebuild repaints them from history. Turning
+    it on first lets go of an open group, so the reads it held come back as
+    cells of their own (`docs/tool-groups.md`).
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
     `tui::stream` consults `App::settings().show_thinking()` per phase and
     `App::should_auto_compact` gates on the flag.
@@ -370,4 +377,5 @@ backend rebuild, the checkpoint flip, the file write — is covered by
 checks the toast and the collapsed composer; Phase 109 drives the per-directory
 half (a knob cycled in one directory, the defaults in the next, both against
 one config home); Phase 139 opens it on a 12-row terminal and walks its compact
-page.
+page; Phase 146 cycles **Verbose output** over a collapsed read/search group
+and checks the rebuild unfolds it (`docs/tool-groups.md`).

@@ -8,9 +8,9 @@ vocabulary in [`crate::permission`], the modal prompt state in
 cross-thread handshake in [`crate::permission::PermissionGate`].
 
 Which calls stop to ask depends on the session's **permission mode**
-(*Permission modes* below). A session starts in **auto**: file changes run, and a command
-goes to the auto mode classifier, which falls back to asking when it cannot
-decide. The prompt below is what **manual** mode raises for every `write`,
+(*Permission modes* below). A session starts in **auto**: file changes run, a
+command that only reads runs, and any other command goes to the auto mode
+classifier, which falls back to asking when it cannot decide. The prompt below is what **manual** mode raises for every `write`,
 `edit` and `bash` call, and what the other modes fall back to for a call they
 don't cover.
 
@@ -378,10 +378,12 @@ composer, one step per press in increasing autonomy:
 - **edit** — Claude Code's "auto-accept edits on": `write`/`edit` run without
   asking, `bash` commands still ask (until allow-listed).
 - **auto** (the default) — Claude Code's auto mode: `write`/`edit` run like
-  edit mode, and a `bash` command — or an MCP tool call (`docs/mcp.md`) — the
-  allowlist doesn't already cover is reviewed by the **auto mode
-  classifier** — a silent LLM safety check in the user's stead (the next
-  section). No prompt opens in auto mode unless the classifier itself fails.
+  edit mode, a `bash` command that only reads runs unreviewed (*Read-only
+  commands skip the classifier*, below), and any other command — or an MCP
+  tool call (`docs/mcp.md`) — the allowlist doesn't already cover is
+  reviewed by the **auto mode classifier** — a silent LLM safety check in
+  the user's stead (the next section). No prompt opens in auto mode unless
+  the classifier itself fails.
 - **master** — Claude Code's bypass-permissions posture: everything runs
   unasked. No prompt, no classifier; the user has taken the seatbelt off.
 
@@ -458,10 +460,61 @@ the prompt:
 ```
 approve(bash/MCP call) ── gate.allows()? ── yes ─────────────────► runs (no note)
                            └ no · mode == auto
+                              only reads? ── yes ──────────────────► runs (no note)
+                              └ no
                               classifier ── allow ──► runs, cell notes the classifier
                                           ── deny ───► rejected with the reason
                                           ── error ──► the ordinary prompt (fallback)
 ```
+
+### Read-only commands skip the classifier
+
+A `bash` command that **provably only reads** — `ls -la`, `grep -rn foo src`,
+`cat README.md | head -20`, `git log --oneline -5`, `rg --files` — runs in
+auto mode without a classifier request at all, and so without the
+`Allowed by auto mode classifier` note (`llm::approval`'s fast path, ahead of
+the scratchpad check, under the `PreToolUse` forced ask). Asking a model
+whether `ls` is safe costs a round trip per call for an answer that is never
+in doubt, and the exploring an agent does before it changes anything is
+exactly a run of such calls; Claude Code skips its reviewer for the same set
+(`checkReadOnlyConstraints`), so this is the reference's behaviour as well as
+the cheap one.
+
+"Provably" is the pure [`read_only::is_read_only`](../src/read_only/mod.rs)
+check, Claude Code's own port: the command is tokenized the way the shell
+would (`read_only::lex` — quotes, escapes, operators, redirects, `$`/backtick
+expansion, globs, brace expansion, comments), split at `&&` / `||` / `;` / `|`,
+and **every** segment must be a program on the allowlist whose flags all
+pass that program's table (`read_only::flags`, `read_only::git`). It refuses
+on the first doubt rather than parsing harder:
+
+- any expansion it cannot evaluate — `$HOME`, `$(…)`, a backtick, a glob,
+  `{a,b}` — since what the command *says* is then not what runs;
+- any redirect except the harmless ones (`2>&1`, `> /dev/null`, `< /dev/null`)
+  — `ls > out.txt` writes;
+- a flag that writes or executes, per program: `find -delete` / `-exec` /
+  `-fprint`, `sort -o`, `tree -o`, `rg --pre`, `fd -x`, `sed` beyond `-n …p`
+  and one stdin `s///`, `awk` with `system`, `getline`, `|` or `>`, a `git`
+  verb beyond the read-only ones (`status`, `diff`, `log`, `show`, `blame`,
+  `branch` without a target, `config --get`, …);
+- an unknown flag on a known program — the tables are allowlists, never
+  denylists, so a program's next release adding a writing flag cannot slip
+  through;
+- `git` in a directory **laid out as a bare repository** (a `HEAD` file
+  beside `objects/` or `refs/`, no `.git`): there git reads that directory's
+  own `config`, whose `core.fsmonitor` or a hook can run arbitrary code —
+  the reference's guard for the same attack.
+
+It is **auto mode's alone**: `manual` and `edit` still ask about every
+command (the allowlist answers a reading command exactly as before, and a
+rule the user saved still covers it), and `master` asks about nothing anyway.
+A `PreToolUse` hook answering `ask` still asks — a forced ask means a human,
+`docs/hooks.md`. The same check decides which calls the collapsed tool view
+groups, a listing, a search or a read (`read_only::read_kind`,
+`docs/tool-groups.md`), and the two are kept one function apart on purpose:
+grouping wants to know *what kind* of read a call is and tolerates what
+cannot change the display (`grep -c foo *.rs`, a glob), while the fast path
+must be certain nothing is written or run.
 
 The request is **one silent completion** — no events reach the UI, so the
 asked-about cell just keeps the `⎿ Waiting…` row its batch announcement gave
@@ -566,9 +619,11 @@ ordinary prompt: asking the user is the safe posture, and the one that still
 works offline. The **dummy backend** never talks HTTP, so its auto-mode demo
 (a prompt naming "auto" + "permission") consults the deterministic offline
 heuristic instead (`permission::auto_verdict` — a small read-only prefix
-list): the scripted `ls -la` runs with the note, the scripted
-`rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
-which is what lets `smoke.sh` drive the whole feature without a provider.
+list): the scripted `ls -la` takes the read-only fast path and runs with no
+note, the scripted `pytest -q` is allowed by the heuristic and runs with the
+note, the scripted `rm -rf /tmp/scratch` rejects, and the same demo in manual
+mode prompts for all three — which is what lets `smoke.sh` drive the whole
+feature without a provider (Phase 64).
 The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
 thing: verdicts both ways for commands *and* MCP calls — with the task
 context attached and bare — plus the two context properties that matter (a

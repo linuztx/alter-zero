@@ -78,9 +78,52 @@ fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
 }
 
 #[test]
+fn verbose_output_is_off_so_reads_and_searches_collapse_by_default() {
+    // Claude Code's `verbose: false` default (docs/tool-groups.md): a run of
+    // reads, searches and listings collapses into one line until a user
+    // asks to see every call. Off stays off the wire; on is what the
+    // directory's entry records.
+    let s = SessionSettings::default();
+    assert!(!s.verbose, "collapsed by default");
+    assert_eq!(s.value_text(SettingKey::Verbose, MANUAL), "false");
+    assert_eq!(s.to_json().trim(), "{}");
+    let mut on = s;
+    assert!(on.cycle(SettingKey::Verbose));
+    assert!(on.verbose);
+    let json = on.to_json();
+    assert!(json.contains("\"verbose\": true"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), on);
+}
+
+#[test]
+fn verbose_output_sits_beside_hide_thinking() {
+    // The two rows that decide what the conversation shows of the model's
+    // work, read together.
+    let at = |key| SettingKey::ALL.iter().position(|k| *k == key).unwrap();
+    assert_eq!(at(SettingKey::Verbose), at(SettingKey::HideThinking) + 1);
+    assert_eq!(SettingKey::Verbose.label(), "Verbose output");
+}
+
+#[test]
+fn a_cycled_verbose_row_is_what_the_directory_records() {
+    let mut file = SettingsFile::default();
+    let live = SessionSettings {
+        verbose: true,
+        ..SessionSettings::default()
+    };
+    file.record_value("/a", SettingKey::Verbose, &live);
+    assert!(file.settings_for("/a").verbose, "the cycled key is saved");
+    assert!(
+        !file.settings_for("/b").verbose,
+        "another directory keeps the default"
+    );
+}
+
+#[test]
 fn booleans_cycle_between_true_and_false() {
     for key in [
         SettingKey::HideThinking,
+        SettingKey::Verbose,
         SettingKey::Tools,
         SettingKey::Checkpoints,
         SettingKey::AutoCompact,
