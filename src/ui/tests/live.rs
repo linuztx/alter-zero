@@ -331,6 +331,9 @@ fn render_live_previews_a_running_tool_with_a_blinking_bullet() {
     // moving (`docs/tool-pulse.md`). This is the only place the blink reaches
     // the screen, so it is the wiring this test pins.
     let mut app = App::new();
+    // The per-call cell: every call's look with Verbose output on (a read
+    // otherwise folds into its group's line, docs/tool-groups.md).
+    app.settings_mut().verbose = true;
     app.begin_stream();
     app.start_tool("Read", "src/main.rs", None);
     let pv = preview_rows(&app, 40);

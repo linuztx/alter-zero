@@ -116,8 +116,11 @@ fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     assert!(first.starts_with("→ Hide thinking"), "{first:?}");
     assert!(first.contains("false"), "{first:?}");
     let second = row(&buf, 4, 78);
-    assert!(second.starts_with("  Show images"), "{second:?}");
-    assert!(second.contains("true"), "{second:?}");
+    assert!(second.starts_with("  Verbose output"), "{second:?}");
+    assert!(second.contains("false"), "{second:?}");
+    let third = row(&buf, 5, 78);
+    assert!(third.starts_with("  Show images"), "{third:?}");
+    assert!(third.contains("true"), "{third:?}");
     // The selected row's marker takes the picker family's cyan accent.
     assert_eq!(buf[(0, 3)].fg, model_selected_color());
 }
@@ -137,7 +140,7 @@ fn the_values_line_up_in_a_column() {
     };
     assert_eq!(
         value_col(3, 'f'),
-        value_col(4, 't'),
+        value_col(5, 't'),
         "the value column is shared"
     );
     assert_eq!(
@@ -156,10 +159,10 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
     let line = row(&buf, 3, 78);
     let at = u16::try_from(line.find("false").unwrap()).unwrap();
     assert_eq!(buf[(at, 3)].fg, settings_value_off_color(), "false is dim");
-    let line = row(&buf, 4, 78);
+    let line = row(&buf, 5, 78);
     let at = u16::try_from(line.find("true").unwrap()).unwrap();
     assert_eq!(
-        buf[(at, 4)].fg,
+        buf[(at, 5)].fg,
         settings_value_color(),
         "a live value is not"
     );
@@ -179,7 +182,7 @@ fn the_counter_and_description_track_the_selection() {
     // description = counter + gap + 1.
     let description = row(&buf, 3 + rows + 2, 78);
     assert!(
-        description.contains(SettingKey::ShowImages.description()),
+        description.contains(SettingKey::ALL[1].description()),
         "{description:?}"
     );
 }
@@ -510,8 +513,9 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
         "the highlighted setting: {texts:#?}"
     );
     assert_eq!(setting_rows(&texts, &labels), 3, "three rows: {texts:#?}");
+    let below = format!("  ↓ {} more below", SettingKey::ALL.len() - 3);
     assert!(
-        texts.iter().any(|t| t == "  ↓ 15 more below"),
+        texts.contains(&below),
         "the rest named under them: {texts:#?}"
     );
     assert!(
@@ -519,7 +523,7 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
         "{texts:#?}"
     );
     assert!(
-        !texts.iter().any(|t| t.contains("(1/18)")),
+        !texts.iter().any(|t| t.contains("(1/")),
         "no counter: {texts:#?}"
     );
     assert!(
@@ -539,9 +543,13 @@ fn the_compact_settings_page_is_the_familys_short_page() {
     assert_eq!(texts[1], "  ❯", "{texts:#?}");
     assert_eq!(texts[2], "", "nothing above the first row: {texts:#?}");
     assert!(texts[3].starts_with("→ Hide thinking"), "{texts:#?}");
-    assert!(texts[4].starts_with("  Show images"), "{texts:#?}");
-    assert!(texts[5].starts_with("  Image width"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 15 more below", "{texts:#?}");
+    assert!(texts[4].starts_with("  Verbose output"), "{texts:#?}");
+    assert!(texts[5].starts_with("  Show images"), "{texts:#?}");
+    assert_eq!(
+        texts[6],
+        format!("  ↓ {} more below", SettingKey::ALL.len() - 3),
+        "{texts:#?}"
+    );
     assert_eq!(texts[7], format!("  {SETTINGS_HINT}"), "{texts:#?}");
     assert!(is_rule(&texts[8]), "{texts:#?}");
 }
@@ -549,13 +557,21 @@ fn the_compact_settings_page_is_the_familys_short_page() {
 #[test]
 fn the_compact_settings_window_keeps_the_selection_in_its_middle() {
     let mut app = settings_app();
-    select(&mut app, 6); // Permission mode
+    let at = SettingKey::ALL
+        .iter()
+        .position(|k| *k == SettingKey::PermissionMode)
+        .expect("listed");
+    select(&mut app, at);
     let texts = page_at(&app, 78, 12);
-    assert_eq!(texts[2], "  ↑ 5 more above", "{texts:#?}");
+    assert_eq!(texts[2], format!("  ↑ {} more above", at - 1), "{texts:#?}");
     assert!(texts[3].starts_with("  Tools"), "{texts:#?}");
     assert!(texts[4].starts_with("→ Permission mode"), "{texts:#?}");
     assert!(texts[5].starts_with("  Checkpoints"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 10 more below", "{texts:#?}");
+    assert_eq!(
+        texts[6],
+        format!("  ↓ {} more below", SettingKey::ALL.len() - at - 2),
+        "{texts:#?}"
+    );
 }
 
 #[test]
@@ -620,7 +636,8 @@ fn a_long_settings_description_is_cut_to_one_row_before_the_list_shrinks() {
 fn the_whole_settings_page_returns_once_it_fits() {
     let app = settings_app();
     let whole = u16::try_from(page_at(&app, 78, TALL).len()).expect("rows");
-    let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains("(1/18)"));
+    let counter = format!("(1/{})", SettingKey::ALL.len());
+    let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains(&counter));
     assert!(
         has_counter(&page_at(&app, 78, whole)),
         "whole at its own height"

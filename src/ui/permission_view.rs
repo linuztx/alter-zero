@@ -469,7 +469,43 @@ fn context_lines(app: &App, width: u16, budget: usize) -> Vec<Line<'static>> {
         out.push(Line::default());
         out.push(waiting_summary_row(hidden));
     }
+    // The read group the turn is holding leads, above the call it is asking
+    // about — and is the first thing to give way: the question outranks what
+    // led up to it.
+    let group = held_group_lines(app, width);
+    if !group.is_empty() && group.len() + 1 + out.len() <= budget {
+        let mut lead = group;
+        lead.push(Line::default());
+        lead.extend(out);
+        out = lead;
+    }
     out
+}
+
+/// The folded read group the main turn is holding (`docs/tool-groups.md`),
+/// drawn at rest — or nothing. The prompt replaces the strip that was
+/// drawing it, and the group is held out of scrollback while it is open, so
+/// without this the calls it counts would be on no screen at all while the
+/// user decides whether the next one may run (manual and edit mode ask for
+/// every command, read-only ones included).
+///
+/// Only over the main turn's own question: its thread is parked on the gate,
+/// so the group cannot change while the prompt is open — the still frame
+/// every context cell is, safe to ride a flowing page — while a subagent's
+/// question is not about the lead's reading.
+fn held_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let own = app
+        .permission()
+        .is_some_and(|prompt| prompt.request.agent_id.is_none());
+    if !own || app.viewed_agent().is_some() || !app.tool_group_open() {
+        return Vec::new();
+    }
+    super::tool_group::live_tool_group_lines(
+        &app.held_tool_group(),
+        super::tool_group::GroupClock::AT_REST,
+        width,
+        app.path_display(),
+    )
 }
 
 /// The dim `… +N lines` tail appended when the body did not fit the terminal.

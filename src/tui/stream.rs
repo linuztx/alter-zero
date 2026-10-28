@@ -32,7 +32,7 @@
 
 use ratatui::text::Line;
 
-use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View};
+use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View, joins_tool_group};
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -55,7 +55,10 @@ impl Session<'_> {
                 // The model launched a group of subagents: finalise the text
                 // before them (the ToolBatch dance), then seed the roster + the
                 // live group cell. No scrollback commit — the cell is live
-                // until the group resolves. See docs/agent-tool.md.
+                // until the group resolves. See docs/agent-tool.md. A folded
+                // read group ends here: the launch is a cell of its own
+                // (docs/tool-groups.md).
+                self.close_tool_group(committing);
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_agent_group(background, &agents);
@@ -71,6 +74,7 @@ impl Session<'_> {
                 // resolution boundary like ToolEnd (the caller drained the agent
                 // channel first, so the roster snapshots are final). See
                 // docs/agent-tool.md.
+                self.close_tool_group(committing);
                 let group = self.app.finish_agent_group(background, &agents);
                 if committing {
                     let height = self.live_region_height();
@@ -83,6 +87,11 @@ impl Session<'_> {
                 false
             }
             StreamEvent::Chunk(chunk) => {
+                // Text ends a folded read group — whitespace before a call
+                // says nothing (docs/tool-groups.md).
+                if !chunk.trim().is_empty() {
+                    self.close_tool_group(committing);
+                }
                 self.app.push_chunk(&chunk);
                 if committing && let Some(text) = self.app.streaming_text() {
                     let lines = self.render.commit(text, width);
@@ -105,7 +114,15 @@ impl Session<'_> {
                 // running as `⎿ Waiting…`. No scrollback commit: the batch is
                 // live-only until each call ends. The subsequent per-call
                 // ToolStart flips its front `Waiting` to `Running`. See
-                // `docs/parallel-tools.md`.
+                // `docs/parallel-tools.md`. A batch opening on a call that
+                // only reads joins the open read group; any other ends it
+                // (docs/tool-groups.md).
+                if items
+                    .first()
+                    .is_some_and(|item| !joins_tool_group(&item.name, &item.args))
+                {
+                    self.close_tool_group(committing);
+                }
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_tool_batch(&items);
@@ -125,6 +142,11 @@ impl Session<'_> {
                 // ToolBatch (the buffer is empty, so this is a no-op) and
                 // `start_tool` flips the front `Waiting` to `Running`; a lone
                 // call (dummy/shell, no batch) pushes a fresh running call.
+                // A lone call decides the read group's fate itself; a batched
+                // one's batch already did (docs/tool-groups.md).
+                if self.app.tool_queue().is_empty() && !joins_tool_group(&name, &args) {
+                    self.close_tool_group(committing);
+                }
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.start_tool(&name, &args, arguments.as_deref());
@@ -281,6 +303,7 @@ impl Session<'_> {
                 //
                 // Never a compact turn: `App::turn_steerable` refuses one, so
                 // nothing was ever queued against it to take.
+                self.close_tool_group(committing);
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.app.deliver_steered(&text);
@@ -313,6 +336,7 @@ impl Session<'_> {
                 // marker at the turn's end, so the next context still carries
                 // it (the HookNote rule).
                 if !self.app.is_compacting() {
+                    self.close_tool_group(committing);
                     self.flush_segment(committing, width);
                     self.render.reset();
                     self.settle_delivered_notice(seq);
@@ -405,6 +429,9 @@ impl Session<'_> {
                 // its withheld last line — and the cell sits under it, under
                 // the blank spacer the committed cell will keep.
                 if self.app.push_tool_call_fragment(&piece) {
+                    // The previewed `write` is a cell of its own: the read
+                    // group ends as it goes up (docs/tool-groups.md).
+                    self.close_tool_group(committing);
                     self.flush_segment(committing, width);
                     self.render.reset();
                 }
@@ -467,8 +494,11 @@ impl Session<'_> {
             StreamEvent::Error(message) => {
                 // A phase still open when the backend died keeps what streamed
                 // — settled first, so its cell sits ahead of the partial reply
-                // and the red notice (docs/thinking-stream.md).
+                // and the red notice (docs/thinking-stream.md). Then a folded
+                // read group the failure ended, ahead of the calls it took
+                // down (docs/tool-groups.md).
                 self.settle_reasoning();
+                self.close_tool_group(committing);
                 // The failure takes a live foreground agent group down with it
                 // (`App::resolve_live_agent_group` interrupts every member),
                 // and one of those members may be the conversation on screen —
@@ -539,6 +569,10 @@ impl Session<'_> {
             self.clocks.end_turn();
             return true;
         }
+        // A folded read group still open ends with the turn — before the
+        // final text is recorded, which would end the run it is held in
+        // (docs/tool-groups.md).
+        self.close_tool_group(committing);
         let final_text = self.app.finish_stream();
         let elapsed = self
             .clocks

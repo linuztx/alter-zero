@@ -134,6 +134,23 @@ which Ctrl+V reads the clipboard from.
   their results back until it answers in plain text (`docs/tools.md`). An
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
+- **Reads fold into one line** (`docs/tool-groups.md`, Claude Code's collapsed
+  read/search groups). With the `/settings` **Verbose output** row off — the
+  default — a run of calls that only look (a `read`, `ls`, `cat`, `grep`,
+  `rg`, `find`, …) is one line counting what happened: live in the strip
+  while the turn can still add to it, its bullet blinking between the calls
+  (`● Reading 1 file, listing 1 directory… (ctrl+o to expand)` over a `⎿`
+  row naming the current call), and one dim past-tense line in scrollback
+  once anything else happens — text, a `write`, a command that does more
+  than read, the turn ending. The members are recorded like any call but
+  **held** out of scrollback while the group is open, which is derived per
+  event (`App::tool_group_open`) over a floor (`App::tool_group_floor`)
+  marking the last group commit, and a rebuild draws the same folded walk
+  over history. A failure leaves the group as its own red cell. Verbose
+  output on draws every call as its own cell, as before; Ctrl+O shows every
+  call in full either way. The parser behind it, `read_only`, also lets
+  **auto mode run a read-only command without the classifier**
+  (`docs/permissions.md` *Read-only commands*).
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare
   `https://…` in prose, a list item, a table cell, inline/fenced/indented code,
   a heading, or a `[text](url)` target — is painted wrapped in an OSC 8
@@ -1394,7 +1411,10 @@ a phase run on its own is as hermetic as one run by the suite):
   exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
   `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three
-  seconds; the phases that test each feature turn it back on for themselves). Each
+  seconds; the phases that test each feature turn it back on for themselves),
+  and one on (`ALTER_ZERO_VERBOSE`: with it off a run of reads, searches and
+  listings folds into one line, and the phases assert on the cells those
+  calls draw one by one — Phase 146 seeds it off, `docs/tool-groups.md`). Each
   is load-bearing: a resolvable key reaches a live provider instead of the
   dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
   assertion (the `/theme` banner accent, the focused shell indicator, the

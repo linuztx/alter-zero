@@ -486,6 +486,9 @@ impl Session<'_> {
             screen.width,
             RESIZE_REFLOW_MAX_ROWS,
             self.app.path_display(),
+            // Folded unless Verbose output is on — the open read group left
+            // to the strip, which is drawing it (docs/tool-groups.md).
+            self.app.tool_fold(),
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).

@@ -395,6 +395,10 @@ impl Session<'_> {
         // `Thought for 0s` however long the model had thought
         // (docs/thinking-stream.md).
         self.settle_reasoning();
+        // A folded read group the interrupt ends commits ahead of the calls
+        // it took down (docs/tool-groups.md).
+        let committing = self.commits_allowed();
+        self.close_tool_group(committing);
         self.abandon_inflight();
         // The interrupt takes a live foreground agent group down with it, and
         // a member may be the conversation on screen — the `Error` arm's rule

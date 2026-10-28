@@ -138,6 +138,9 @@ impl App {
     pub fn load_session(&mut self, items: Vec<HistoryItem>) {
         self.clear_conversation();
         self.history = items;
+        // Everything loaded is drawn by the rebuild that follows: nothing of
+        // it is held (docs/tool-groups.md).
+        self.seal_tool_group();
         // The task list comes back with the conversation: the last task
         // record's snapshot is the state it had (docs/task-tools.md).
         self.reset_tasks_from_history();

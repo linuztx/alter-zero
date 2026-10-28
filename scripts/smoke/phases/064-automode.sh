@@ -8,16 +8,18 @@ smoke_begin
 # runs with ALTER_ZERO_PERMISSION_MODE=manual exported; these launches unset
 # it, so the session comes up in the DEFAULT — auto — with the footer saying
 # so before any key is pressed. In auto the dummy's "auto permission" demo is
-# decided by the offline heuristic classifier: the read-only listing runs with
-# a dim '⎿ Allowed by auto mode classifier' row on its finished cell, the
-# delete is rejected red 'Denied by auto mode classifier', NO prompt ever
-# opens, and nothing is written — the default is never saved. One Shift+Tab
-# step is master (persisted as "master"), where the same demo runs both
-# commands silently; a second is manual, which must be written out now that
-# an absent mode means auto, so a relaunch in the same directory comes back
-# in manual. Last, a relaunch seeded ALTER_ZERO_PERMISSION_MODE=edit starts in
-# edit, and a command rule approved under that seed saves only the allowlist:
-# the file still says manual.
+# decided by the offline heuristic classifier: the test run runs with a dim
+# '⎿ Allowed by auto mode classifier' row on its finished cell, the delete is
+# rejected red 'Denied by auto mode classifier', NO prompt ever opens, and
+# nothing is written — the default is never saved. (A read-only command never
+# meets the classifier at all, docs/tool-groups.md — which is why the demo
+# allows a test run rather than a listing.) One Shift+Tab step is master
+# (persisted as "master"), where the same demo runs both commands silently; a
+# second is manual, which must be written out now that an absent mode means
+# auto, so a relaunch in the same directory comes back in manual. Last, a
+# relaunch seeded ALTER_ZERO_PERMISSION_MODE=edit starts in edit, and a command
+# rule approved under that seed saves only the allowlist: the file still says
+# manual.
 S64="${S}_automode"
 CFG64="$SMOKE_TMP/cfg64"
 PERMS64="$CFG64/permissions.json"
@@ -35,7 +37,7 @@ submit "$S64" "auto permission demo"
 auto_done="$(wait_pane 15 "$S64" -F "the delete was blocked")" ||
 	fail "the auto-mode demo never resolved both classifier verdicts"
 dump "captured pane (auto — the classifier decided, no prompt)" "$auto_done"
-expect_has "$auto_done" -F "● Bash(ls -la)" "the allowed command's cell is missing"
+expect_has "$auto_done" -F "● Bash(pytest -q)" "the allowed command's cell is missing"
 expect_has "$auto_done" -F "⎿  Allowed by auto mode classifier" "the allowed cell lacks its classifier note row"
 expect_has "$auto_done" -F "Denied by auto mode classifier" "the delete was not denied by the classifier"
 expect_has "$auto_done" -F "Reason:" "the denied cell lacks the classifier's reason line"
@@ -82,16 +84,16 @@ wait_gone 10 "$S64" || fail "the relaunched app did not quit on Ctrl+C"
 launch "$S64" 100 44 "$APP64_EDIT"
 seeded_pane="$(pane "$S64")"
 expect_has "$seeded_pane" -E "dummy_model_name · .*edit$" "ALTER_ZERO_PERMISSION_MODE=edit did not seed the run over the saved manual"
-# Edit mode covers file changes, not commands, so the demo's listing asks:
+# Edit mode covers file changes, not commands, so the demo's test run asks:
 # option 2 saves a rule while the gate's live mode is the seed.
 submit "$S64" "auto permission demo"
 wait_for 10 "$S64" -F "Do you want to proceed?" ||
-	fail "edit mode did not ask about the demo's listing"
+	fail "edit mode did not ask about the demo's test run"
 keys "$S64" 2
-wait_file 5 "$PERMS64" -F '"ls *"' ||
-	fail "option 2 on the listing did not save its rule"
+wait_file 5 "$PERMS64" -F '"pytest *"' ||
+	fail "option 2 on the test run did not save its rule"
 wait_for 10 "$S64" -F "don't ask again for: rm" ||
-	fail "the delete's prompt never opened after the listing's rule"
+	fail "the delete's prompt never opened after the test run's rule"
 keys "$S64" 3
 seeded_done="$(wait_pane 15 "$S64" -F "the delete was blocked")" ||
 	fail "the seeded demo never finished"

@@ -250,7 +250,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `read_only`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -260,11 +260,11 @@ with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
-`composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
+`composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `tool_group`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
-`layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
+`layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`, `tool_group`,
 `file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
@@ -1266,7 +1266,28 @@ nothing new probes as zero) in
 `docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
-`docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
+`docs/parallel-tools.md`; the **folded tool groups** (`docs/tool-groups.md`,
+Claude Code's collapsed read/search groups behind the `/settings` **Verbose
+output** row, **off by default**: a run of calls that only look — a `read`
+of anything but a picture, a `bash` command `read_only::reading` names a
+search, a read or a listing — is ONE line, live in the strip while the turn
+can still add to it (`● Reading 1 file, listing 1 directory… (ctrl+o to
+expand)` over a `⎿` row naming the current call, the bullet **blinking
+between the calls** as well as during one) and one dim bullet-less
+past-tense line in scrollback once anything else happens (text, a `write`,
+a command that does more than read, a steered message, a notice, the turn
+ending — a thought, a task call and a hook note pass through); a failed
+member breaks out as its own red cell, except a search that exited `1`; the
+members are recorded like any call but **held** out of scrollback while the
+group is open — `App::tool_group_open`, derived per event, never stored,
+over `App::tool_group_floor`, the history length at the last group commit,
+which every boundary breaker seals through `Session::close_tool_group` —
+and every rebuild walks history the same way (`ui::conversation_lines_with`
+over `App::tool_fold`, leaving the open group to the strip), so what the
+commits wrote and what a rebuild draws agree; Ctrl+O, `/export`, the
+permission prompt, an agent session view and the derived context keep a
+cell per call, and the suite exports `ALTER_ZERO_VERBOSE=1`, Phase 146
+seeding it off); the **live-streaming `bash` tool** (a running command
 tails its output — a four-row window ending at the lowest row **still
 moving** (`app::LiveTail`: each live row stamped with the command clock
 when its text last changed, a row active within `LIVE_ACTIVE_SPAN` (2 s)
@@ -1881,7 +1902,11 @@ mode** (`permission::PermissionMode` — **`auto` by default**, a session
 starting there unless the project saved another mode or the
 `ALTER_ZERO_PERMISSION_MODE` run seed names one; `manual` asks for
 everything, `edit` auto-approves `write`/`edit` while commands still ask,
-`auto` additionally sends a non-allowlisted `bash` command to the **auto
+`auto` additionally sends a non-allowlisted `bash` command — unless
+`read_only::is_read_only` says it only reads, which runs unasked with no
+note and no round trip (`docs/permissions.md` *Read-only commands*, every
+doubt a no: redirects, substitutions, wrappers, writing flags and their
+abbreviations) — to the **auto
 mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
@@ -2556,7 +2581,8 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-eighteen rows (**Hide thinking**, **Show images**, **Image width**,
+nineteen rows (**Hide thinking**, **Verbose output** — the folded tool
+groups, `docs/tool-groups.md` — **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,

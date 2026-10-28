@@ -59,6 +59,7 @@ mod status;
 mod tasks;
 mod theme;
 mod tips;
+mod tool_group;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -116,6 +117,9 @@ pub use self::status::{
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
+pub use self::tool_group::{
+    ReadKind, Reading, ToolFold, held_members, joins_tool_group, passes_through, tool_group_member,
+};
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
     ToolStatus, apply_tool_screen,
@@ -322,6 +326,13 @@ pub struct App {
     /// rounds' calls can never be mistaken for one parallel batch by the
     /// renderer that collapses a run of MCP cells. See `docs/mcp.md`.
     next_batch: u64,
+    /// The history length at the last moment a folded group's line
+    /// committed (`docs/tool-groups.md`): the held members are the trailing
+    /// run at or above it, so a member resolving after a breaker that left
+    /// no trace in history yet (a subagent launch, text still streaming)
+    /// never re-commits a line already in scrollback. Clamped wherever
+    /// history shrinks.
+    tool_group_floor: usize,
     /// The tool round the backend announced last
     /// ([`StreamEvent::RoundCalls`] → [`open_round`](App::open_round)): its
     /// batch id and its calls in the model's order, which is what stamps
@@ -1215,6 +1226,7 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        self.clamp_tool_group_floor();
         // A cleared slate holds no tasks — the boundary resets the shared
         // registry beside this (docs/task-tools.md).
         self.tasks = crate::tasks::TaskStore::default();

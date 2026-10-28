@@ -438,11 +438,14 @@ pub fn classifier_denial_result(reason: Option<&str>) -> String {
     )
 }
 
-/// Program prefixes the offline heuristic classifier treats as read-only
-/// inspection — a deliberately small subset of Claude Code's read-only
-/// allowlist, enough for the dummy's auto-mode demo. Subcommand tools keep
-/// their verb (the [`segment_prefix`] shape), so `git status` is safe while
-/// bare `git` — and so `git push` — is not.
+/// Program prefixes the offline heuristic classifier allows — read-only
+/// inspection, a deliberately small subset of Claude Code's read-only
+/// allowlist, plus `pytest`: running the project's tests is the kind of call
+/// a reviewer allows that the read-only rule (`crate::read_only`) would not
+/// already have run unasked, which is what the dummy's auto-mode demo needs
+/// to show a classifier allow at all. Subcommand tools keep their verb (the
+/// [`segment_prefix`] shape), so `git status` is safe while bare `git` — and
+/// so `git push` — is not.
 const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "cat",
     "date",
@@ -461,6 +464,7 @@ const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "printf",
     "ps",
     "pwd",
+    "pytest",
     "rg",
     "stat",
     "tail",
@@ -1643,7 +1647,9 @@ mod tests {
     #[test]
     fn the_heuristic_classifier_allows_read_only_commands() {
         // The offline stand-in the dummy backend consults in auto mode
-        // (docs/permissions.md) — read-only inspection passes…
+        // (docs/permissions.md) — read-only inspection passes, and so does
+        // running the project's tests: the one shape it allows that the
+        // read-only rule would not already have run unasked…
         for command in [
             "ls -la",
             "pwd",
@@ -1651,6 +1657,7 @@ mod tests {
             "git status --short",
             "git log --oneline | head -5",
             "grep -rn TODO src",
+            "pytest -q",
         ] {
             let verdict = auto_verdict(command);
             assert!(verdict.allow, "{command} should classify safe");

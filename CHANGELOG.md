@@ -12,6 +12,30 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Reads and searches fold into one line.** A turn that explores a codebase
+  is mostly looking: `ls`, a `read` of a file, `grep`, `cat`, another `rg`.
+  Drawn one cell each, a dozen of them pushed the answer a screen and a half
+  up. They now fold into one line that counts what happened, Claude Code's
+  way: `● Reading 1 file, listing 1 directory… (ctrl+o to expand)` while the
+  agent works, its bullet blinking between the calls since the next one may
+  be another read, and one dim `Searched for 1 pattern, read 2 files, listed
+  1 directory` line once it moves on to anything else. A call that fails
+  still gets its own red cell, and **ctrl+o** shows every call in full. The
+  new `/settings` row **Verbose output** turns it off: `true` draws every
+  call as its own cell, as before. It is per directory like the other rows,
+  and `ALTER_ZERO_VERBOSE` seeds it for a run (`docs/tool-groups.md`).
+- **Auto mode runs read-only commands without the classifier.** A command
+  that only reads, like `ls -la`, `cat a.py | grep def`, `rg -n TODO` or
+  `git log --oneline`, now runs at once in auto mode, with no safety review
+  and no `Allowed by auto mode classifier` note under it. Exploring a
+  project no longer waits on a classifier request per `grep`. Anything that
+  could write or run something still goes to the classifier: a redirect into
+  a file, a substitution, `sudo` or `xargs`, `find -exec`, `sort -o` and the
+  like. Manual and edit mode still ask for every command
+  (`docs/permissions.md` *Read-only commands*).
+
 ### Fixed
 
 - **A picture whose file is gone no longer leaves a blank block.** The agent

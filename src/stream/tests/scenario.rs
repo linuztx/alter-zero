@@ -33,6 +33,7 @@ const EXAMPLES: &[&str] = &[
     "load a skill for me",
     "refresh the package databases with pacman",
     "run an interactive installer",
+    "explore the project before you answer",
     "hello there",
 ];
 
@@ -600,4 +601,51 @@ fn turn_events_plays_the_scenario_the_registry_selects() {
             "turn_events disagrees with the registry for {prompt:?}"
         );
     }
+}
+
+#[test]
+fn the_explore_demo_reads_lists_and_searches_across_rounds() {
+    // docs/tool-groups.md: two rounds of calls that only look, a thought
+    // between them, then the answer — every call a member of one folded
+    // group, which is what keeps it open, blinking, through the thought.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "explore")
+        .expect("the explore demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the explore demo is a script");
+    };
+    let events = script(&Cue::new("explore the project before you answer", 0));
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. } => Some((name.as_str(), args.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert!(starts.len() >= 4, "{starts:?}");
+    assert!(
+        starts
+            .iter()
+            .all(|(name, args)| crate::app::joins_tool_group(name, args)),
+        "every call only looks: {starts:?}"
+    );
+    let batches: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(at, e)| matches!(e, StreamEvent::ToolBatch(_)).then_some(at))
+        .collect();
+    assert_eq!(batches.len(), 2, "two rounds");
+    assert!(
+        events[batches[0]..batches[1]]
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingStart)),
+        "a thought between the rounds"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| !matches!(e, StreamEvent::ToolEnd { ok: false, .. })),
+        "every call succeeds"
+    );
 }

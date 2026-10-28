@@ -100,7 +100,8 @@ fn up_and_down_move_the_selection_wrapping_at_the_ends() {
     app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.highlighted_setting().map(|r| r.key),
-        Some(SettingKey::ShowImages)
+        Some(SettingKey::ALL[1]),
+        "Down moves to the next row"
     );
     app.on_key(key(KeyCode::End));
     assert_eq!(

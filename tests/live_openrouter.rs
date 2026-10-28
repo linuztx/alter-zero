@@ -2566,13 +2566,15 @@ fn live_auto_mode_turn_runs_a_safe_command_with_the_note() {
     // The whole production path (docs/permissions.md): a gate in Auto rides
     // the backend; the model's bash call is reviewed by the classifier — the
     // events must show ToolStart → ToolNote → ToolEnd with NO Permission
-    // prompt, and the turn completes.
+    // prompt, and the turn completes. The command runs code, so it is not
+    // one that only reads: those skip the classifier (the twin below).
     use alter_zero::permission::{PermissionGate, PermissionMode};
     let gate = PermissionGate::new();
     gate.set_mode(PermissionMode::Auto);
     let backend = backend().with_permissions(gate);
 
-    let prompt = "Use the bash tool exactly once to run exactly: echo live_auto_marker \
+    let prompt = "Use the bash tool exactly once to run exactly: \
+                  python3 -c \"print('live_auto_marker')\" \
                   Then reply with just the marker it printed.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2602,6 +2604,46 @@ fn live_auto_mode_turn_runs_a_safe_command_with_the_note() {
     let (output, ok) = tool_ends.first().expect("the command ran");
     assert!(ok, "the echo succeeded: {output}");
     assert!(output.contains("live_auto_marker"), "got {output}");
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_auto_mode_runs_a_read_only_command_without_the_classifier() {
+    // docs/permissions.md *Read-only commands*: the same gate in Auto, a
+    // command that only reads — it runs with no prompt and no classifier
+    // note, since nothing was asked to review it.
+    use alter_zero::permission::{PermissionGate, PermissionMode};
+    let gate = PermissionGate::new();
+    gate.set_mode(PermissionMode::Auto);
+    let backend = backend().with_permissions(gate);
+
+    let prompt = "Use the bash tool exactly once to run exactly: echo live_read_only_marker \
+                  Then reply with just the marker it printed.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut notes = Vec::new();
+    let mut tool_ends = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolNote(note) => notes.push(note),
+            StreamEvent::ToolEnd { output, ok, .. } => tool_ends.push((output, ok)),
+            StreamEvent::Permission(req) => panic!("auto mode must not prompt: {req:?}"),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("notes: {notes:?}\ntool ends: {tool_ends:?}");
+    assert!(
+        notes.is_empty(),
+        "a read-only command met the classifier: {notes:?}"
+    );
+    let (output, ok) = tool_ends.first().expect("the command ran");
+    assert!(ok, "the echo succeeded: {output}");
+    assert!(output.contains("live_read_only_marker"), "got {output}");
 }
 
 // ===== the `/settings` knobs, against a live provider (docs/settings.md) =====

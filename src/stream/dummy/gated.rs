@@ -502,26 +502,25 @@ pub(in crate::stream) fn parallel_permission_turn(stage: &Stage<'_>) {
     );
 }
 
-/// The **auto-mode** demo's two commands: a read-only listing the offline
-/// heuristic classifier allows (its output long enough for the collapsed
-/// `… +N lines` hint, like the reference transcript) and a deletion it
-/// denies. See [`auto_permission_turn`].
+/// The **auto-mode** demo's two commands: a test run the offline heuristic
+/// classifier allows (its output long enough for the collapsed `… +N lines`
+/// hint, like the reference transcript) and a deletion it denies. Neither is
+/// read-only — a listing would run without meeting the classifier at all
+/// (`crate::read_only`, `docs/tool-groups.md`). See [`auto_permission_turn`].
 const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
     (
-        "ls -la",
-        "List the project files",
-        "Exit code: 0\ntotal 40\ndrwxr-xr-x 1 user user  256 Aug  4 17:14 .\n\
-         drwxr-xr-x 1 user user  126 Aug  1 14:35 ..\n\
-         -rw-r--r-- 1 user user 1017 Aug  4 16:59 config.py\n\
-         -rw-r--r-- 1 user user  188 Aug  4 16:59 README.md\n\
-         -rw-r--r-- 1 user user 2044 Aug  4 17:01 game.py\n\
-         -rw-r--r-- 1 user user  310 Aug  4 17:02 utils.py\n\
-         -rw-r--r-- 1 user user  452 Aug  4 17:03 test_game.py\n\
-         -rw-r--r-- 1 user user   96 Aug  4 17:05 Makefile\n\
-         -rw-r--r-- 1 user user  120 Aug  4 17:08 .gitignore\n\
-         -rw-r--r-- 1 user user  640 Aug  4 17:10 notes.md\n\
-         -rw-r--r-- 1 user user  517 Aug  4 17:12 setup.py\n\
-         drwxr-xr-x 1 user user  128 Aug  4 17:13 tests",
+        "pytest -q",
+        "Run the test suite",
+        "Exit code: 0\n============================= test session starts ==============================\n\
+         platform linux -- Python 3.12.3, pytest-8.2.0, pluggy-1.5.0\n\
+         rootdir: /home/user/game\n\
+         collected 12 items\n\
+         \n\
+         tests/test_board.py ....                                                 [ 33%]\n\
+         tests/test_game.py ......                                                [ 83%]\n\
+         tests/test_utils.py ..                                                   [100%]\n\
+         \n\
+         ============================== 12 passed in 0.08s ==============================",
         true,
     ),
     (
@@ -538,7 +537,8 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
 /// Play the offline **auto mode** round trip (`docs/permissions.md`): the
 /// [`DUMMY_AUTO_COMMANDS`] batch announced up front, then — per call, the
 /// real approve seam's disposition — the allowlist first, then in
-/// [`PermissionMode::Auto`] the offline heuristic classifier
+/// [`PermissionMode::Auto`] a command that only reads (`crate::read_only`,
+/// unasked and unnoted), then the offline heuristic classifier
 /// ([`crate::permission::auto_verdict`]) in the user's stead: an allowed
 /// command runs with the [`CLASSIFIER_ALLOWED_NOTE`] riding a `ToolNote`, a
 /// denied one resolves red via `ToolRejected` with the classifier texts. In
@@ -561,11 +561,16 @@ pub(in crate::stream) fn auto_permission_turn(stage: &Stage<'_>) {
     let mut any_rejected = false;
     for (cmd, detail, output, ok) in DUMMY_AUTO_COMMANDS {
         let mut request = stage.request(PermissionKind::Bash, cmd, String::new(), Some(detail));
-        // The approve seam's disposition, offline: standing approvals first,
-        // then auto mode's classifier — here the deterministic heuristic —
-        // and the prompt only outside auto mode.
+        // The approve seam's disposition, offline: standing approvals and
+        // auto mode's read-only rule first, then auto mode's classifier —
+        // here the deterministic heuristic — and the prompt only outside
+        // auto mode.
         let mut note = None;
-        let resolved = if stage.gate.allows(&request) {
+        let resolved = if stage.gate.allows(&request)
+            || (stage.gate.mode() == PermissionMode::Auto && crate::read_only::is_read_only(cmd))
+        {
+            // A standing approval — or, in auto mode, a command that only
+            // reads, which runs before the classifier is ever asked.
             Ok(output.to_string())
         } else if stage.gate.mode() == PermissionMode::Auto {
             let verdict = auto_verdict(cmd);
@@ -592,7 +597,7 @@ pub(in crate::stream) fn auto_permission_turn(stage: &Stage<'_>) {
     // The closing reply reports what actually happened — in auto mode the
     // delete is blocked, while master (or an allowlist) runs both.
     stage.close(if any_rejected {
-        "Done — the listing ran and the delete was blocked, so nothing was removed."
+        "Done — the tests ran and the delete was blocked, so nothing was removed."
     } else {
         "Done — both commands ran to completion."
     });

@@ -458,6 +458,7 @@ the prompt:
 ```
 approve(bash/MCP call) ── gate.allows()? ── yes ─────────────────► runs (no note)
                            └ no · mode == auto
+                              a command that only reads? ── yes ──► runs (no note)
                               classifier ── allow ──► runs, cell notes the classifier
                                           ── deny ───► rejected with the reason
                                           ── error ──► the ordinary prompt (fallback)
@@ -530,11 +531,9 @@ call resolves the cell appends a fresh dim `⎿` row — the transcript's record
 that no human approved it:
 
 ```
-● Bash(ls -la)
-  ⎿  total 40
-     drwxr-xr-x 1 user user  256 Aug  4 17:14 .
-     …
-     … +12 lines (ctrl+o to expand)
+● Bash(pytest -q)
+  ⎿  ........                                                   [100%]
+     8 passed in 0.42s
   ⎿  Allowed by auto mode classifier
 ```
 
@@ -565,9 +564,11 @@ A classifier **failure** — network, an unparseable reply — falls back to the
 ordinary prompt: asking the user is the safe posture, and the one that still
 works offline. The **dummy backend** never talks HTTP, so its auto-mode demo
 (a prompt naming "auto" + "permission") consults the deterministic offline
-heuristic instead (`permission::auto_verdict` — a small read-only prefix
-list): the scripted `ls -la` runs with the note, the scripted
+heuristic instead (`permission::auto_verdict` — a small list of safe
+prefixes): the scripted `pytest -q` runs with the note, the scripted
 `rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
+a test run rather than a listing, since a command that only reads never
+reaches the classifier at all ([below](#read-only-commands)) —
 which is what lets `smoke.sh` drive the whole feature without a provider.
 The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
 thing: verdicts both ways for commands *and* MCP calls — with the task
@@ -577,6 +578,36 @@ context that begs for an allow lifts nothing, and a retried variant of a
 events show `ToolStart → ToolNote → ToolEnd` with no `Permission` in sight
 — `tests/live_mcp.rs` closing the loop with a real server tool classified
 end to end (`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
+
+## Read-only commands
+
+In auto mode a `bash` command that **only reads** runs without the
+classifier: no round trip, no `⎿ Allowed by auto mode classifier` note under
+its cell, and no `PermissionRequest` hook, since nobody — human or machine —
+is being asked (`llm::approval::approve_call`, right after the scratchpad
+exemption; Claude Code's read-only allow sits at the same place). There is
+nothing for a reviewer to review in `ls -la` or `grep -rn TODO src`, and a
+round trip per `grep` made exploring a codebase slow and wrote the same note
+under every cell — while the folded view (`docs/tool-groups.md`) draws such a
+run as one line, which a note per call would have had nowhere to sit.
+
+"Only reads" is `read_only::is_read_only`, the parser that view folds by, and
+every doubt answers **no**: an unknown program, a redirect into a file, a
+substitution or an expansion, a wrapper (`sudo`, `xargs`, `sh -c`), a flag
+that writes or runs something (`find -exec`, `sort -o`, `rg --pre`, and the
+abbreviations GNU `getopt` accepts for them). A wrong *no* costs one
+classifier round; a wrong *yes* would run something unreviewed. The full
+rules are `docs/tool-groups.md` *Read-only commands and auto mode*.
+
+Manual and edit mode still ask for every command — those are the postures
+the user chose — and a `PreToolUse` hook's forced ask still asks. (With
+Verbose output off, a prompt for a read-only command draws the read group
+the turn is holding above the call it asks about, `docs/tool-groups.md`.) An MCP call
+and input typed into a running session always meet the classifier: whether a
+command only reads is a property of its text, and neither has one to read.
+`smoke.sh` Phase 146 proves it on the wire: against a stub provider that logs
+every request, a listing and a search run unasked with no classifier request
+at all, while the `touch` after them is classified.
 
 ## Seeing what the classifier sees — Ctrl+D, Tab
 
@@ -1012,8 +1043,10 @@ explains itself with a toast instead of pretending to toggle anything, and
   blocking round trip (real threads) + shared mode + seeded commands.
 - `llm/approval.rs` — the auto-mode seam with scripted classifiers: an
   allowed verdict returns `AllowNoted` (no prompt), a denial the classifier
-  texts, files and allow-listed commands never consult it, manual/edit modes
-  never consult it, master allows everything silently, a classifier failure
+  texts, files and allow-listed commands never consult it, a read-only
+  command runs unasked and unclassified while a look-alike that redirects
+  still meets it, manual/edit modes never consult it (and still ask for a
+  read-only command), master allows everything silently, a classifier failure
   falls back to the prompt, a failure on a cancelled turn rejects without
   one, and auto mode with no classifier attached still asks.
   `llm/classifier.rs` — the user-prompt build and the `<block>` contract
@@ -1102,7 +1135,8 @@ explains itself with a toast instead of pretending to toggle anything, and
 - `tests/live_openrouter.rs` (ignored; needs `OPENROUTER_API_KEY`) — the real
   classifier allowing `ls -la` and denying `sudo rm -rf /etc` with a reason,
   and a whole live auto-mode turn: `ToolStart → ToolNote → ToolEnd`, no
-  `Permission` event, the command's output in the model's reply.
+  `Permission` event, the command's output in the model's reply — with its
+  twin, a read-only `echo` that runs with no note at all.
 - `ui/tests/permission_view.rs` — the options show no cursor while the amend
   field and the composer do; and the seat, pinned to the rendered rows: it
   lands on whichever row carries the `❯` marker and steps down with each ↓, on

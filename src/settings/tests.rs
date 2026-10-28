@@ -81,6 +81,7 @@ fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
 fn booleans_cycle_between_true_and_false() {
     for key in [
         SettingKey::HideThinking,
+        SettingKey::Verbose,
         SettingKey::Tools,
         SettingKey::Checkpoints,
         SettingKey::AutoCompact,
@@ -785,4 +786,62 @@ fn the_ask_timeout_row_follows_max_tool_calls() {
         .expect("listed");
     assert_eq!(all[at - 1], SettingKey::MaxToolCalls);
     assert_eq!(all[at + 1], SettingKey::Tips);
+}
+
+// ===== the Verbose output row (docs/tool-groups.md) =====
+
+#[test]
+fn verbose_output_is_off_by_default_and_cycles_anywhere() {
+    // Claude Code's `verbose`: off until turned on, so a session reads its
+    // read/search/list calls as one folded line each run of them. It needs
+    // nothing from the host, so it is never unavailable.
+    let mut s = SessionSettings::default();
+    assert!(!s.verbose, "compact by default");
+    assert_eq!(SettingKey::Verbose.label(), "Verbose output");
+    assert!(
+        SettingKey::Verbose.description().contains("tool call"),
+        "the description says what the row changes: {}",
+        SettingKey::Verbose.description()
+    );
+    assert!(s.is_available(SettingKey::Verbose, MANUAL));
+    assert!(
+        s.is_available(SettingKey::Verbose, None),
+        "with no gate too"
+    );
+    assert_eq!(s.value_text(SettingKey::Verbose, MANUAL), "false");
+    assert!(s.cycle(SettingKey::Verbose));
+    assert!(s.verbose);
+    assert_eq!(s.value_text(SettingKey::Verbose, MANUAL), "true");
+}
+
+#[test]
+fn the_verbose_output_row_sits_under_hide_thinking() {
+    // Both say how much of the agent's work the conversation shows, so they
+    // read as a pair at the top of the menu.
+    let all = SettingKey::ALL;
+    assert_eq!(&all[..2], &[SettingKey::HideThinking, SettingKey::Verbose]);
+}
+
+#[test]
+fn verbose_output_persists_per_directory_and_its_override_never_sticks() {
+    // A display knob like Hide thinking: it lives in settings.json, only
+    // when changed, and an `ALTER_ZERO_VERBOSE` seed merged in for one run
+    // is never what a cycle of another row writes back.
+    let on = SessionSettings {
+        verbose: true,
+        ..SessionSettings::default()
+    };
+    let json = on.to_json();
+    assert!(json.contains("\"verbose\": true"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), on);
+    assert_eq!(
+        SessionSettings::default().to_json().trim(),
+        "{}",
+        "the default stays off the wire"
+    );
+    let mut file = SessionSettings::default();
+    file.copy_value(SettingKey::ErrorRetry, &on);
+    assert!(!file.verbose, "another row's save left the override behind");
+    file.copy_value(SettingKey::Verbose, &on);
+    assert!(file.verbose, "cycling the row itself is what saves it");
 }

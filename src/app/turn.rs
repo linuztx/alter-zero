@@ -525,6 +525,7 @@ impl App {
             // rollout's watermark both read the generation
             // (docs/tool-view-performance.md).
             self.history_generation += 1;
+            self.clamp_tool_group_floor();
             // A withdrawn thought is no snap target for the round's usage
             // frame — that count belongs to the attempt that gets through.
             let len = self.history.len();
@@ -740,6 +741,7 @@ impl App {
         }
         if !messages.is_empty() {
             self.history_generation += 1;
+            self.clamp_tool_group_floor();
         }
         messages.reverse();
         let mut pairs = Vec::new();

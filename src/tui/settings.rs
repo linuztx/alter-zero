@@ -295,6 +295,14 @@ impl Session<'_> {
             // Read by the `read` executor per call — nothing to redraw, since
             // this row is about the request and not the screen.
             SettingKey::AutoResizeImages => self.sync_image_policy(),
+            // How every committed tool call reads inline — one cell each, or
+            // each run of reads/searches/listings folded into one line — so
+            // the conversation is rebuilt from history for the change to
+            // show at all (the Show images rule). A group still open is held
+            // or released by the rebuild itself: it is derived from the row
+            // (docs/tool-groups.md). The Ctrl+O transcript shows every call
+            // whole either way, so its cache keeps.
+            SettingKey::Verbose => rebuild = true,
             // Read where they are used — nothing to rebuild. The ask timeout
             // is read by the draw tick on every reading of the idle clock, so
             // `never` stops a running wait at once (docs/ask.md).

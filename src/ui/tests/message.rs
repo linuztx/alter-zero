@@ -1,6 +1,7 @@
 //! Committed conversation lines and the repaint helpers.
 
 use super::*;
+use crate::app::ToolFold;
 use crate::ui::theme::{ai_color, error_color, list_marker_color, system_color, user_bg_color};
 use crate::ui::wrap::cols;
 
@@ -213,7 +214,7 @@ fn conversation_lines_renders_a_tool_call_between_messages() {
 fn repaint_lines_keeps_only_the_last_max_rows() {
     // Lines are: "❯ one", "● two", "" → keep the last 2.
     let history = [msg(Role::User, "one"), msg(Role::Assistant, "two")];
-    let texts: Vec<String> = repaint_lines(&history, 80, 2, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = repaint_lines(&history, 80, 2, &PathDisplay::VERBATIM, ToolFold::Off)
         .iter()
         .map(plain)
         .collect();
@@ -224,14 +225,14 @@ fn repaint_lines_keeps_only_the_last_max_rows() {
 fn repaint_lines_returns_everything_when_it_fits() {
     let history = [msg(Role::User, "hi")];
     assert_eq!(
-        repaint_lines(&history, 80, 100, &PathDisplay::VERBATIM).len(),
+        repaint_lines(&history, 80, 100, &PathDisplay::VERBATIM, ToolFold::Off).len(),
         2
     ); // message + blank
 }
 
 #[test]
 fn repaint_lines_of_empty_history_is_empty() {
-    assert!(repaint_lines(&[], 80, 10, &PathDisplay::VERBATIM).is_empty());
+    assert!(repaint_lines(&[], 80, 10, &PathDisplay::VERBATIM, ToolFold::Off).is_empty());
 }
 
 #[test]
@@ -254,14 +255,16 @@ fn repaint_tail_repaints_the_partial_reply_rows_already_committed() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        ToolFold::Off,
     )
     .iter()
     .map(plain)
     .collect();
-    let mut expected: Vec<String> = repaint_lines(&history, width, 100, &PathDisplay::VERBATIM)
-        .iter()
-        .map(plain)
-        .collect();
+    let mut expected: Vec<String> =
+        repaint_lines(&history, width, 100, &PathDisplay::VERBATIM, ToolFold::Off)
+            .iter()
+            .map(plain)
+            .collect();
     expected.extend(committed);
     assert_eq!(tail, expected);
 }
@@ -287,6 +290,7 @@ fn repaint_tail_then_commit_catches_up_without_duplicate_or_gap() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        ToolFold::Off,
     )
     .iter()
     .map(plain)
@@ -307,11 +311,18 @@ fn repaint_tail_then_commit_catches_up_without_duplicate_or_gap() {
 fn repaint_tail_without_a_stream_matches_repaint_lines() {
     let history = [msg(Role::User, "one"), msg(Role::Assistant, "two")];
     let mut render = StreamRender::new();
-    let tail: Vec<String> =
-        repaint_tail(&history, None, &mut render, 80, 2, &PathDisplay::VERBATIM)
-            .iter()
-            .map(plain)
-            .collect();
+    let tail: Vec<String> = repaint_tail(
+        &history,
+        None,
+        &mut render,
+        80,
+        2,
+        &PathDisplay::VERBATIM,
+        ToolFold::Off,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(tail, vec!["● two", ""]);
 }
 
@@ -331,6 +342,7 @@ fn repaint_tail_cap_keeps_the_newest_rows_including_the_partial() {
         width,
         2,
         &PathDisplay::VERBATIM,
+        ToolFold::Off,
     )
     .iter()
     .map(plain)
@@ -357,6 +369,7 @@ fn repaint_tail_after_a_width_change_carries_no_stale_rows() {
         40,
         100,
         &PathDisplay::VERBATIM,
+        ToolFold::Off,
     );
     assert!(tail.is_empty(), "no stale-width rows repainted");
     let recommitted: Vec<String> = render.commit(partial, 40).iter().map(plain).collect();

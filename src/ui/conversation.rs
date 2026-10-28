@@ -6,6 +6,7 @@
 //! (`docs/header.md`).
 
 use super::*;
+use crate::app::ToolFold;
 
 /// Whether `item` is a `!` shell command's header message (`Role::Shell`).
 /// Such an item gets **no** blank spacer after it: its tool's `⎿` output (or
@@ -47,45 +48,65 @@ pub fn conversation_lines(
         // all resolved ok — is one act, so it collapses to the single
         // `Called deepwiki 2 times (ctrl+o to expand)` line the commit path
         // writes ([`tool_commit_lines`], `docs/mcp.md`), spacer included.
-        if let Some((len, servers)) = super::tool::mcp_run(&history[index..]) {
-            lines.push(super::tool::mcp_called_line(&servers));
-            lines.push(Line::default());
+        if let Some(len) = push_mcp_run(&mut lines, &history[index..]) {
             index += len;
             continue;
         }
-        let item = &history[index];
+        push_item_lines(&mut lines, &history[index], width, paths);
         index += 1;
-        match item {
-            // A task tool call renders NOTHING inline — no cell, no spacer:
-            // the live checklist is its display, and the record expands only
-            // in the Ctrl+O transcript (docs/task-tools.md).
-            HistoryItem::TaskCall(_) => continue,
-            // Hook-injected conversation text is cell-less inline too — the
-            // Ctrl+O transcript is its record (docs/hooks.md).
-            HistoryItem::HookNote(_) => continue,
-            HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
-            HistoryItem::Tool(t) => lines.extend(tool_lines(t, width, paths)),
-            HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
-            HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
-            HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
-            HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
-            HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
-            // Collapsed: only the `Thought for …` line reaches scrollback —
-            // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
-            HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),
-        }
-        // A picture the item carries — an image `read`'s result, a message's
-        // Ctrl+V attachments — hangs below the cell, one blank row apart and
-        // flush at the left margin (`docs/images.md`). Empty for everything
-        // else, and for every session where images are off.
-        lines.extend(super::image::image_block_lines(item, width));
-        // Blank spacer after every item — except a shell command's header:
-        // its cell stays flush ([`is_shell_header`]).
-        if !is_shell_header(item) {
-            lines.push(Line::default());
-        }
     }
     lines
+}
+
+/// Push the one line a **parallel MCP run** leading `items` collapses to,
+/// spacer included, and return how many items it covered — `None`, pushing
+/// nothing, when `items` opens with no such run ([`super::tool::mcp_run`]).
+pub(super) fn push_mcp_run(lines: &mut Vec<Line<'static>>, items: &[HistoryItem]) -> Option<usize> {
+    let (len, servers) = super::tool::mcp_run(items)?;
+    lines.push(super::tool::mcp_called_line(&servers));
+    lines.push(Line::default());
+    Some(len)
+}
+
+/// Push one history item as the conversation draws it: its cell, the
+/// picture it carries, and the blank spacer after it — the walk
+/// [`conversation_lines`] and the folded one
+/// ([`conversation_lines_with`](super::conversation_lines_with)) share.
+pub(super) fn push_item_lines(
+    lines: &mut Vec<Line<'static>>,
+    item: &HistoryItem,
+    width: u16,
+    paths: &PathDisplay,
+) {
+    match item {
+        // A task tool call renders NOTHING inline — no cell, no spacer:
+        // the live checklist is its display, and the record expands only
+        // in the Ctrl+O transcript (docs/task-tools.md).
+        HistoryItem::TaskCall(_) => return,
+        // Hook-injected conversation text is cell-less inline too — the
+        // Ctrl+O transcript is its record (docs/hooks.md).
+        HistoryItem::HookNote(_) => return,
+        HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
+        HistoryItem::Tool(t) => lines.extend(tool_lines(t, width, paths)),
+        HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
+        HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+        HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
+        HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
+        HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
+        // Collapsed: only the `Thought for …` line reaches scrollback —
+        // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
+        HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),
+    }
+    // A picture the item carries — an image `read`'s result, a message's
+    // Ctrl+V attachments — hangs below the cell, one blank row apart and
+    // flush at the left margin (`docs/images.md`). Empty for everything
+    // else, and for every session where images are off.
+    lines.extend(super::image::image_block_lines(item, width));
+    // Blank spacer after every item — except a shell command's header:
+    // its cell stays flush ([`is_shell_header`]).
+    if !is_shell_header(item) {
+        lines.push(Line::default());
+    }
 }
 
 /// The last `max_rows` lines of the conversation — i.e. the tail that fits on
@@ -99,8 +120,12 @@ pub fn repaint_lines(
     width: u16,
     max_rows: usize,
     paths: &PathDisplay,
+    fold: ToolFold,
 ) -> Vec<Line<'static>> {
-    keep_last_rows(conversation_lines(history, width, paths), max_rows)
+    keep_last_rows(
+        super::conversation_lines_with(history, width, paths, fold),
+        max_rows,
+    )
 }
 
 /// The repaint tail for a mid-stream conversation rebuild
@@ -120,8 +145,9 @@ pub fn repaint_tail(
     width: u16,
     max_rows: usize,
     paths: &PathDisplay,
+    fold: ToolFold,
 ) -> Vec<Line<'static>> {
-    let mut lines = conversation_lines(history, width, paths);
+    let mut lines = super::conversation_lines_with(history, width, paths, fold);
     if let Some(text) = streaming.filter(|text| !text.is_empty()) {
         lines.extend(render.committed_rows(text, width));
     }

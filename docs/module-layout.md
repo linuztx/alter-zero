@@ -45,6 +45,7 @@ widened for the split.
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
 | `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
 | `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
+| `tool_group.rs` | The folded tool view's state (`docs/tool-groups.md`): which calls are members of a read/search/list group, the run **held** out of scrollback while the group is open — derived per event, never stored — the floor marking the last group commit, and `ToolFold`, how a rebuild draws the calls. What a command reads as is the top-level `crate::read_only`. |
 | `drafts.rs` | The calls a round is still **generating**: `ArgsScanner` (streamed JSON arguments decoded as they arrive), `ToolDraft` and `ToolDrafts` — the lifecycle a `write` previews by while its file streams into its cell (`docs/write-streaming.md`). |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
 | `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
@@ -83,6 +84,7 @@ widened for the split.
 | `message.rs` | Rendering one committed message, plus the `/compact` marker cell. |
 | `conversation.rs` | The whole-history walk and the tail a purge rebuild (resize, `/clear`, a rewind) repaints. |
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
+| `tool_group.rs` | The folded view's drawing (`docs/tool-groups.md`): the count line in both tenses, the live group cell with its `⎿` row, the folded rebuild walk (`conversation_lines_with`) and the lines the boundary commits. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
 | `inline_diff.rs` | Character-level refinement of a diff cell's `-`/`+` pairs — which bytes of a line actually changed (`docs/inline-diff.md`). |
 | `image.rs` | The rows a picture reserves under a cell — the pure half of the inline images (`docs/images.md`). |

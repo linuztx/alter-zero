@@ -1447,3 +1447,99 @@ fn a_session_prompts_description_row_is_dim() {
         "this session"
     );
 }
+
+// ===== a folded read group under the prompt (docs/tool-groups.md) =====
+
+/// A turn with Verbose output off that ran an `ls -la` — held in its open
+/// read group — and is now asking whether a `cat` may run: manual and edit
+/// mode ask for every command, read-only ones included.
+fn pending_read_after_a_listing() -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", None);
+    app.end_tool("Exit code: 0\ntotal 8", true);
+    app.start_tool_batch(&[ToolCallSummary {
+        name: "Bash".to_string(),
+        args: "cat a.py".to_string(),
+    }]);
+    app.open_permission(request(PermissionKind::Bash, "cat a.py", ""));
+    app
+}
+
+#[test]
+fn a_held_read_group_shows_above_the_call_being_asked_about() {
+    // The prompt replaces the strip that was drawing the group, and the
+    // group is held out of scrollback while it is open — so without this the
+    // listing that ran would be on no screen at all while the user decides
+    // about the next read. Drawn at rest: the prompt is a still frame.
+    let app = pending_read_after_a_listing();
+    let lines = rows(&app, 80, 40);
+    assert_eq!(
+        lines[..5],
+        [
+            "● Listing 1 directory… (ctrl+o to expand)",
+            "  ⎿  $ ls -la",
+            "",
+            "● Bash(cat a.py)",
+            "  ⎿  Waiting…",
+        ],
+        "{lines:?}"
+    );
+    assert_eq!(lines[5], "", "then a blank before the frame");
+    assert_eq!(lines[6], "─".repeat(80), "then the prompt's top rule");
+}
+
+#[test]
+fn verbose_output_leaves_the_context_to_the_queue() {
+    // Every call committed as its own cell: nothing is held, so the context
+    // is the asked-about call alone, as it always was.
+    let mut app = pending_read_after_a_listing();
+    app.settings_mut().verbose = true;
+    let lines = rows(&app, 80, 40);
+    assert_eq!(lines[0], "● Bash(cat a.py)", "{lines:?}");
+}
+
+#[test]
+fn a_subagents_question_does_not_carry_the_leads_read_group() {
+    // The lead's reading is not what a subagent is asking about.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", None);
+    app.end_tool("Exit code: 0\ntotal 8", true);
+    app.start_tool_batch(&[ToolCallSummary {
+        name: "Bash".to_string(),
+        args: "cat a.py".to_string(),
+    }]);
+    let mut asked = request(PermissionKind::Bash, "rm -rf build", "");
+    asked.agent = Some("general-purpose".to_string());
+    asked.agent_id = Some("a1".to_string());
+    app.open_permission(asked);
+    let lines = rows(&app, 80, 40);
+    assert!(
+        lines.iter().all(|row| !row.contains("Listing")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn the_held_group_gives_way_before_the_call_being_asked_about() {
+    // Short on rows, what led up to the question goes before the question's
+    // subject: there is a height that keeps the asked-about cell and drops
+    // the group, and none that keeps the group without the cell.
+    let app = pending_read_after_a_listing();
+    let mut dropped = false;
+    for height in 8..40 {
+        let lines = rows(&app, 80, height);
+        let group = lines
+            .iter()
+            .position(|row| row.contains("Listing 1 directory"));
+        let call = lines.iter().position(|row| row == "● Bash(cat a.py)");
+        match (group, call) {
+            (Some(group), Some(call)) => assert!(group < call, "{height}: {lines:?}"),
+            (Some(_), None) => panic!("the group outlived the call at {height}: {lines:?}"),
+            (None, Some(_)) => dropped = true,
+            (None, None) => {}
+        }
+    }
+    assert!(dropped, "the group never gave way before the call");
+}

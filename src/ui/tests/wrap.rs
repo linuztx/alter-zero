@@ -416,6 +416,9 @@ fn preview_rows_counts_a_wrapped_running_tail() {
     // counts the wrapped rows (header + windowed tail + the clock row + the
     // Ctrl+B hint), not one row per source line.
     let mut app = App::new();
+    // The per-call cell's running tail — Verbose output on, where a `cat`
+    // keeps a cell of its own (docs/tool-groups.md).
+    app.settings_mut().verbose = true;
     app.begin_stream();
     app.start_tool("Bash", "cat log", None);
     // Past the hint delay so the Ctrl+B hint row is part of the preview.

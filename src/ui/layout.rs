@@ -87,7 +87,7 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
     // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
     // draws ([`preview_tool_lines`]) so the count and the paint agree.
-    if app.agent_group().is_some() || !app.tool_queue().is_empty() {
+    if super::live::strip_shows_tool_cells(app) {
         return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
     }
     // A `write` still being generated previews its streaming cell

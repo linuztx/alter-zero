@@ -1,6 +1,7 @@
 //! Live-region geometry: height, re-pin, and the cursor seat.
 
 use super::*;
+use crate::app::ToolFold;
 
 /// The `/login` key step's whole page: top rule, prompt, gap, input, gap,
 /// hint, bottom rule — pinned here so a builder change that adds or drops a
@@ -442,7 +443,13 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
                     render_live(area, &mut buf, app);
                     let _ = cursor_position(area, app);
                     // mirror main.rs::repaint_conversation
-                    let _ = repaint_lines(&app.history, w, usize::from(h), &PathDisplay::VERBATIM);
+                    let _ = repaint_lines(
+                        &app.history,
+                        w,
+                        usize::from(h),
+                        &PathDisplay::VERBATIM,
+                        ToolFold::Off,
+                    );
                     // mirror the streaming commit path
                     if let Some(text) = app.streaming_text() {
                         let mut render = StreamRender::new();

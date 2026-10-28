@@ -406,6 +406,13 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
+What follows is each call's own cell — what every call draws with the
+`/settings` **Verbose output** row on, and what a call that does more than
+look draws either way. With the row off, the default, a run of calls that
+only look (a `read`, an `ls`, a `grep`, …) folds into one line counting them
+instead, each still expanded in Ctrl+O exactly as below
+(`docs/tool-groups.md`).
+
 A `bash` cell renders in the `!` shell cell's shape — the coloured
 `● Bash(cmd)` header over a **multi-line `⎿` output peek** — but where the
 shell cell shows its whole output inline (`docs/shell-command.md`: the user

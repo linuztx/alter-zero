@@ -1200,3 +1200,83 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
     events.push(StreamEvent::StreamDone);
     events
 }
+
+/// The **explore** demo's narration (`docs/tool-groups.md`): what a run of
+/// calls that only look becomes with **Verbose output** off, and where each
+/// call still is.
+const EXPLORE_REPLY: &str = concat!(
+    "Let me get my bearings first — a look around the project before I \
+     answer.\n\n",
+    "That was four calls that only looked. With **Verbose output** off — the \
+     `/settings` default — a run of reads, searches and listings like that \
+     one folds into a single line that counts what happened, its bullet \
+     blinking while the run can still grow; turn the row on and each call \
+     gets its own cell. **ctrl+o** shows every call in full either way.\n\n",
+    handoff!()
+);
+
+/// What the explore demo's `ls -la` prints.
+const EXPLORE_LISTING: &str = "total 16\n\
+    drwxr-xr-x  2 you you 4096 Oct 28 09:12 .\n\
+    drwxr-xr-x 12 you you 4096 Oct 28 09:10 ..\n\
+    -rw-r--r--  1 you you  118 Oct 28 09:12 README.md\n\
+    -rwxr-xr-x  1 you you  402 Oct 28 09:12 about.py\n";
+
+/// What the explore demo's `cat README.md` prints.
+const EXPLORE_README: &str = "# about\n\n\
+    A calling card for alter-zero, printed by `python3 about.py`.\n";
+
+/// The thought that opens the explore demo's first round.
+const EXPLORE_FIRST_THOUGHT: &str = "Start with the layout.";
+
+/// The thought between the explore demo's two rounds — long enough at the
+/// thinking pace to watch the group wait for its next call.
+const EXPLORE_SECOND_THOUGHT: &str =
+    "The entry point is about.py. Next, find what it defines and read the readme.";
+
+/// The **explore** demo (`docs/tool-groups.md`): two rounds of calls that
+/// only look — a listing and a read, a thought, then a search and a `cat` —
+/// before the answer. Every call is a member of one folded group, so with
+/// Verbose output off the strip shows one line counting up, its bullet
+/// blinking through the thought between the rounds, and scrollback keeps
+/// `Searched for 1 pattern, read 2 files, listed 1 directory`. With it on,
+/// four ordinary cells.
+pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let rounds = [
+        (
+            EXPLORE_FIRST_THOUGHT,
+            vec![
+                ScriptedCall::command("ls -la", EXPLORE_LISTING, 0),
+                ScriptedCall::read(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1),
+            ],
+        ),
+        (
+            EXPLORE_SECOND_THOUGHT,
+            vec![
+                ScriptedCall::command("rg -n \"def \" .", "./about.py:10:def card() -> str:\n", 0),
+                ScriptedCall::command("cat README.md", EXPLORE_README, 0),
+            ],
+        ),
+    ];
+    let (first, second) = reply_parts(EXPLORE_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    for (thought, batch) in rounds {
+        events.push(StreamEvent::ThinkingStart);
+        events.extend(chunks(thought).into_iter().map(StreamEvent::ThinkingChunk));
+        events.push(StreamEvent::ThinkingEnd);
+        events.push(StreamEvent::ToolBatch(
+            batch.iter().map(ScriptedCall::summary).collect(),
+        ));
+        for call in &batch {
+            events.push(call.start());
+            if call.streams {
+                events.extend(tool_output_events(&call.output));
+            }
+            events.push(call.end());
+        }
+    }
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}

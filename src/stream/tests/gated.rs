@@ -69,9 +69,8 @@ fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
 fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
     // The offline mirror of auto mode (docs/permissions.md): with the
     // gate in `Auto`, the heuristic classifier stands in for the user —
-    // the read-only listing runs with the ToolNote riding it, the delete
-    // rejects with the classifier texts, and NO Permission event is ever
-    // raised.
+    // the test run runs with the ToolNote riding it, the delete rejects
+    // with the classifier texts, and NO Permission event is ever raised.
     let gate = crate::permission::PermissionGate::new();
     gate.set_mode(crate::permission::PermissionMode::Auto);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
@@ -119,7 +118,7 @@ fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
         order,
         vec![
             "batch:2",
-            "start:ls -la",
+            "start:pytest -q",
             "note:Allowed by auto mode classifier",
             "end:true",
             "start:rm -rf /tmp/scratch",

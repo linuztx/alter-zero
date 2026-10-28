@@ -84,15 +84,20 @@ impl Session<'_> {
     /// draw tick racing in ahead of the back-to-back `StreamDone` would
     /// otherwise flush against the stale strip-inflated height and scroll the
     /// box off the bottom (invariant 3).
+    ///
+    /// With **Verbose output** off the builder is
+    /// [`ui::folded_tool_commit_lines`] (`docs/tool-groups.md`): a read,
+    /// search or listing that leaves its group open commits nothing — the
+    /// strip is drawing it — and whatever ends a group commits the group's
+    /// one line first. A commit seals the group even where committing is
+    /// held back (an agent session view, a flowed page): the return's
+    /// rebuild draws it from history, and an unsealed group would be
+    /// written again by the next close.
     pub(crate) fn commit_tool_cell(&mut self, committing: bool, width: u16) -> bool {
-        let Some(lines) = ui::tool_commit_lines(
-            &self.app.history,
-            self.app.tool_queue(),
-            width,
-            self.app.path_display(),
-        ) else {
+        let Some(lines) = ui::folded_tool_commit_lines(&self.app, width) else {
             return false;
         };
+        self.app.seal_tool_group();
         if committing && !lines.is_empty() {
             let height = self.live_region_height();
             self.term.set_view_height(height);
@@ -100,6 +105,28 @@ impl Session<'_> {
             self.term.insert_before(vec![Line::default()]);
         }
         true
+    }
+
+    /// Something that ends a folded read/search group is about to commit:
+    /// commit the group's held line **first**, so scrollback reads in the
+    /// order things happened, and seal it (`docs/tool-groups.md`). A no-op
+    /// when nothing is held — Verbose output on, a group already closed, a
+    /// turn that read nothing — so every breaker can call it unconditionally.
+    ///
+    /// Sealed before the reseat, the `StreamDone` dance: the open group's
+    /// live cell leaves the strip as its line lands, so the region is
+    /// measured without it (invariant 3).
+    pub(crate) fn close_tool_group(&mut self, committing: bool) {
+        let lines = ui::held_tool_group_lines(&self.app);
+        self.app.seal_tool_group();
+        if let Some(lines) = lines
+            && committing
+        {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term.insert_before(lines);
+            self.term.insert_before(vec![Line::default()]);
+        }
     }
 
     /// Commit a one-off notice to scrollback + history, finalising any in-flight

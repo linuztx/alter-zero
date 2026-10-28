@@ -164,6 +164,7 @@ impl App {
         }
         self.history.truncate(position);
         self.history_generation += 1;
+        self.clamp_tool_group_floor();
         // The checklist rewinds with the conversation: the last task record
         // before the cut holds the state it had there (docs/task-tools.md);
         // the boundary syncs the shared registry after the rewind.

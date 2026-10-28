@@ -1,6 +1,7 @@
 //! Incremental streaming to scrollback (`docs/markdown.md`, `docs/flicker.md`).
 
 use super::*;
+use crate::app::ToolFold;
 
 #[test]
 fn the_render_says_whether_any_of_the_reply_reached_scrollback() {
@@ -811,6 +812,7 @@ fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        ToolFold::Off,
     )
     .iter()
     .map(plain)

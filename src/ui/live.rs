@@ -119,7 +119,7 @@ pub(super) fn preview_lines(
             rows,
             streaming,
         )
-    } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
+    } else if strip_shows_tool_cells(app) {
         trim_preview(preview_tool_lines(app, width), rows, false)
     } else if app.tool_drafts().previews().next().is_some() {
         // A `write` the model is still generating, its file streaming into
@@ -214,6 +214,15 @@ pub(super) fn live_call_lines(
     live_tool_lines(tool, width, pulse, paths)
 }
 
+/// Whether the strip's preview is the live tool cells
+/// ([`preview_tool_lines`]): a live agent group, a queued or running call,
+/// or a folded read/search group still open between rounds
+/// (`docs/tool-groups.md`). The one predicate the paint ([`preview_lines`])
+/// and the sizing (`preview_rows`) branch on, so the two agree.
+pub(super) fn strip_shows_tool_cells(app: &App) -> bool {
+    app.agent_group().is_some() || !app.tool_queue().is_empty() || app.tool_group_open()
+}
+
 /// The live tool queue rendered as preview rows: each call's collapsed cell,
 /// blank-line-separated so a **parallel batch** reads like the committed
 /// scrollback (the running call live, each not-yet-started sibling a dim
@@ -256,11 +265,43 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     {
         return batch;
     }
+    // With Verbose output off a run of reads, searches and listings is one
+    // cell (`docs/tool-groups.md`): the open group's held members, joined by
+    // every queued member up to the next call that is not one — the same
+    // runs a rebuild folds, each drawn live, its bullet blinking.
+    let folded = !app.settings().verbose;
+    let mut group: Vec<&ToolCall> = if app.tool_group_open() {
+        app.held_tool_group()
+    } else {
+        Vec::new()
+    };
+    let clock = super::tool_group::GroupClock {
+        pulse: Some(pulse),
+        elapsed: app.command_elapsed(),
+        hint_elapsed: app.background_hint_elapsed(),
+    };
+    let paths = app.path_display();
+    let flush_group = |lines: &mut Vec<Line<'static>>, group: &mut Vec<&ToolCall>| {
+        if !group.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::default()); // blank row between batch cells
+            }
+            lines.extend(super::tool_group::live_tool_group_lines(
+                group, clock, width, paths,
+            ));
+            group.clear();
+        }
+    };
     // Each queued previewed call owns the next adopted draft, in queue order
     // (docs/write-streaming.md).
     let mut drafts = app.tool_drafts().queued();
-    for (i, tool) in app.tool_queue().iter().enumerate() {
-        if i > 0 || !lines.is_empty() {
+    for tool in app.tool_queue() {
+        if folded && crate::app::tool_group_member(tool).is_some() {
+            group.push(tool);
+            continue;
+        }
+        flush_group(&mut lines, &mut group);
+        if !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
         let draft = crate::app::previewed_display(&tool.name)
@@ -294,6 +335,18 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         {
             lines.push(result_row(1, hint.to_string()));
         }
+    }
+    flush_group(&mut lines, &mut group);
+    // A thought between two rounds of an open group shows under it — the
+    // group is not over while the model decides what to read next.
+    if app.tool_group_open()
+        && app.tool_queue().is_empty()
+        && let Some(text) = app.reasoning()
+    {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(live_reasoning_lines(text, pulse, width));
     }
     lines
 }
@@ -465,8 +518,7 @@ fn strip_preview_is_live_cells(app: &App) -> bool {
             || run.drafts().previews().next().is_some()
             || run.reasoning().is_some();
     }
-    app.agent_group().is_some()
-        || !app.tool_queue().is_empty()
+    strip_shows_tool_cells(app)
         || app.tool_drafts().previews().next().is_some()
         || app.reasoning().is_some()
 }
@@ -529,6 +581,10 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
         group.background.hash(&mut hasher);
         group.ids.hash(&mut hasher);
     }
+    // An open folded group re-signs as a member joins it or it commits
+    // (docs/tool-groups.md); its blinking bullet and its clock do not.
+    app.tool_group_open().hash(&mut hasher);
+    app.held_tool_group().len().hash(&mut hasher);
     // A previewed call is signed on what its cell is *of* — its path, and
     // whether it shows the tail it follows while streaming or the head it
     // settles on — never on its rows: a streamed line re-signs nothing,
