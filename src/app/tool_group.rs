@@ -11,11 +11,19 @@
 //! [`App::tool_group_range`]'s start on, held by the commit path until
 //! something that is not part of it arrives.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::ops::Range;
+use std::time::Duration;
 
 use super::{App, ERROR_TOOL_OUTPUT, HistoryItem, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
 use crate::read_only::ReadKind;
+
+/// How long each call's value holds the open group's `⎿` row before the next
+/// call's replaces it — the reference's `MIN_HINT_DISPLAY_MS`. A parallel
+/// batch of reads resolves in milliseconds, so a row that followed the newest
+/// call showed only the last one's value (`docs/tool-groups.md` *The hint
+/// row*).
+pub const GROUP_HINT_HOLD: Duration = Duration::from_millis(700);
 
 /// What a call adds to a group, however it resolved — `None` for a call that
 /// never joins one: anything but a `Read` or a `Bash` command that only
@@ -152,6 +160,24 @@ pub fn group_counts<'a>(calls: impl IntoIterator<Item = &'a ToolCall>) -> GroupC
     counts
 }
 
+/// The calls at the front of a live tool queue that join the open group —
+/// every one up to the first call of another kind, which keeps its own cell
+/// (and closes the group when it starts).
+pub fn leading_group_calls(queue: &VecDeque<ToolCall>) -> impl Iterator<Item = &ToolCall> {
+    queue.iter().take_while(|tool| group_kind(tool).is_some())
+}
+
+/// Which of the open group's calls its `⎿` row is showing, and since when —
+/// stepped by [`App::advance_group_hint`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct GroupHint {
+    /// The call on the row, as an index into [`App::group_hint_calls`].
+    shown: usize,
+    /// The frame clock's reading when that call went up; `None` until a tick
+    /// has seen the row.
+    since: Option<Duration>,
+}
+
 /// Where the call the boundary just resolved goes
 /// ([`App::place_resolved_tool`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,13 +206,15 @@ impl App {
             return ToolPlacement::Held;
         }
         let end = if member { len } else { len.saturating_sub(1) };
-        ToolPlacement::Commit {
-            closed: self
-                .tool_group
-                .take()
-                .map(|start| start..end)
-                .filter(|range| !range.is_empty()),
+        let closed = self
+            .tool_group
+            .take()
+            .map(|start| start..end)
+            .filter(|range| !range.is_empty());
+        if closed.is_some() {
+            self.group_hint = GroupHint::default();
         }
+        ToolPlacement::Commit { closed }
     }
 
     /// Close the open group, handing back the range of history it held for
@@ -196,6 +224,7 @@ impl App {
     /// turn's end.
     pub fn close_tool_group(&mut self) -> Option<Range<usize>> {
         let start = self.tool_group.take()?;
+        self.group_hint = GroupHint::default();
         let range = start..self.history.len();
         (!range.is_empty()).then_some(range)
     }
@@ -214,5 +243,77 @@ impl App {
     /// a cleared or rewound conversation).
     pub(super) fn drop_tool_group(&mut self) {
         self.tool_group = None;
+        self.group_hint = GroupHint::default();
+    }
+
+    /// The open group's calls in the order they ran — the held ones, then
+    /// the reads leading the live queue that have started — every value the
+    /// `⎿` row steps through; before any has started, the batch's first call,
+    /// about to run. With `with_queue` false, the held calls alone: the
+    /// permission prompt's still frame, where the call being asked about has
+    /// a cell of its own. Empty with **Verbose output** on.
+    #[must_use]
+    pub fn group_hint_calls(&self, with_queue: bool) -> Vec<&ToolCall> {
+        if self.settings.verbose {
+            return Vec::new();
+        }
+        let mut calls: Vec<&ToolCall> = self
+            .tool_group_range()
+            .map(|range| {
+                self.history[range]
+                    .iter()
+                    .filter_map(|item| match item {
+                        HistoryItem::Tool(tool) if is_group_member(tool) => Some(tool),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if with_queue {
+            let leading: Vec<&ToolCall> = leading_group_calls(&self.tool_queue).collect();
+            let started = leading
+                .iter()
+                .take_while(|tool| tool.status == ToolStatus::Running)
+                .count();
+            calls.extend(&leading[..started]);
+            if calls.is_empty() {
+                calls.extend(leading.first());
+            }
+        }
+        calls
+    }
+
+    /// The call the open group's `⎿` row shows — the one
+    /// [`advance_group_hint`](App::advance_group_hint) has stepped to among
+    /// [`group_hint_calls`](App::group_hint_calls). `None` when there is no
+    /// group to show.
+    #[must_use]
+    pub fn group_hint(&self, with_queue: bool) -> Option<&ToolCall> {
+        let calls = self.group_hint_calls(with_queue);
+        let last = calls.len().checked_sub(1)?;
+        Some(calls[self.group_hint.shown.min(last)])
+    }
+
+    /// Step the open group's `⎿` row on the boundary's frame clock `now`
+    /// (injected before each draw, beside [`set_pulse`](App::set_pulse)):
+    /// once the call on the row has held it for [`GROUP_HINT_HOLD`], the
+    /// next call that ran replaces it — one step per hold, in the order the
+    /// calls ran, so a batch that resolves within a frame shows every value
+    /// instead of its last (the reference throttles the row instead, which
+    /// drops a value that arrives during the hold). A group with nothing to
+    /// show resets the row, so the next one starts from its own first call.
+    pub fn advance_group_hint(&mut self, now: Duration) {
+        let reached = self.group_hint_calls(true).len();
+        let Some(last) = reached.checked_sub(1) else {
+            self.group_hint = GroupHint::default();
+            return;
+        };
+        let hint = &mut self.group_hint;
+        hint.shown = hint.shown.min(last);
+        let since = *hint.since.get_or_insert(now);
+        if hint.shown < last && now.saturating_sub(since) >= GROUP_HINT_HOLD {
+            hint.shown += 1;
+            hint.since = Some(now);
+        }
     }
 }

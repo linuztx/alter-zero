@@ -63,13 +63,60 @@ assert on).
   `reading`, `listing`), the first capitalised, the counts **bold**, the
   nouns pluralised past one (`1 pattern`, `2 patterns`; `1 directory`,
   `2 directories`), the line closed by a `…`.
-- The `⎿` row says what the group is doing: the running call when one runs,
-  else the last call the group took, so between rounds it keeps saying what
-  the group last did. A read names its file (by the session's path display
-  rule, `docs/tools.md` *Path display*); a command is `$ {command}` — its
-  first line, whitespace runs closed up, a ` …` when more lines follow.
+- The `⎿` row says what the group is doing, **one call's value at a time,
+  in the order the calls ran** (*The hint row*, below), and between rounds it
+  keeps saying what the group last did. A read names its file (by the
+  session's path display rule, `docs/tools.md` *Path display*); a command is
+  `$ {command}` — its first line, whitespace runs closed up, a ` …` when more
+  lines follow.
 - The dim `(ctrl+o to expand)` is the first thing a narrow terminal drops;
   past that the clauses are cut with a `…`.
+
+### The hint row
+
+A parallel batch resolves in milliseconds — three reads and a listing are
+done before the next frame is drawn — so a row that named the newest call
+showed only the batch's **last** value, and the others never reached the
+screen at all. The reference has the same problem one step removed: it holds
+each hint for `MIN_HINT_DISPLAY_MS` (700 ms), but as a *throttle* (its
+`useMinDisplayTime`), which drops every value that arrives during the hold
+and shows the newest once the hold ends — so its batch, too, jumps from the
+first value to the last.
+
+Here the row is a **queue**. The values are the group's calls in the order
+they ran — the held ones, then the running one — and the row steps through
+them one at a time, each holding it for [`GROUP_HINT_HOLD`] (the reference's
+700 ms) before the next replaces it, never skipping one however late a frame
+comes. A read and a listing in one round read
+
+```
+● Reading 1 file, listing 1 directory… (ctrl+o to expand)
+  ⎿  README.md
+```
+
+for 700 ms, then
+
+```
+● Reading 1 file, listing 1 directory… (ctrl+o to expand)
+  ⎿  $ ls -la
+```
+
+while the clauses count the whole round from the start. A call still waiting
+its turn in a batch is never shown ahead of the ones before it (the batch's
+first call stands in until something has run), a group a round at a time
+shows each call's value the moment it runs (the model's seconds of writing
+its next call are longer than the hold), and the last value stays on the row
+until the group closes. The queue lags reality by at most one hold per call
+that finished faster than one — a few seconds for a large batch, played out
+while the model writes its next call.
+
+The state is pure: `App::group_hint` — which call is on the row and since
+when — stepped by [`App::advance_group_hint`] on the boundary's frame clock
+(the reading `set_pulse` takes, injected before every draw while the turn's
+32 ms animation chain runs), and reset whenever a group closes, so the next
+group starts from its own first call. The permission prompt's still frame
+steps through the held calls alone, since the call it asks about has a cell
+of its own there.
 
 **Settled**, in scrollback, once the group closes:
 
@@ -210,17 +257,23 @@ order it happened in (`ui::tool_group_lines`).
 
 ## Testing
 
-The pure halves are unit-tested: membership, runs, counts and placement in
-`app/tests/tool_group.rs`; the two looks, the path display, the narrow-width
-fit and the rebuild in `ui/tests/tool_group.rs`; `read_kind` and
+The pure halves are unit-tested: membership, runs, counts, placement and the
+hint row's queue (every value in order, each held, none skipped, a new group
+starting over) in `app/tests/tool_group.rs`; the two looks, the path display,
+the narrow-width fit, a parallel batch's first value then its next, and the
+rebuild in `ui/tests/tool_group.rs`; `read_kind` and
 `is_read_only` over the reference's own cases plus adversarial ones (redirect
 spellings, unicode spaces, `find` grouping, line continuations) in
 `read_only/tests.rs`. The offline dummy's **`explore`** scenario (a prompt
 naming "explore") drives a whole group with no network: a listing, a thought
-between the rounds, a parallel search and two reads, then a script run that
-closes it, every call resolving with the real executor's output.
+between the rounds, a parallel search and two reads, a second thought — a
+live model's pause before its next call, in which the hint row plays the
+round's values through — then a script run that closes it, every call
+resolving with the real executor's output.
 `scripts/smoke.sh` Phase 146 plays it against the real binary — the live cell
-over the streaming thought, the clauses growing, the one settled line above the
-closing call with no per-read cell and no absorbed thought, Ctrl+O expanding
-every call, a resize rebuild painting the same line, and **Verbose output**
-unfolding it — while every other phase runs with `ALTER_ZERO_VERBOSE=1`.
+over the streaming thought, the clauses growing, the parallel round's three
+values taking the hint row in turn, the one settled line above the closing
+call with no per-read cell, the thought between the reads absorbed and the one
+after them under the line, Ctrl+O expanding every call, a resize rebuild
+painting the same line, and **Verbose output** unfolding it — while every
+other phase runs with `ALTER_ZERO_VERBOSE=1`.

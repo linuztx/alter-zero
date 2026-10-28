@@ -194,7 +194,11 @@ fn a_rebuild_leaves_out_the_group_still_open() {
 #[test]
 fn the_live_cell_counts_the_held_and_the_running_reads_under_a_blinking_bullet() {
     let mut app = holding_a_read("mathutil.py");
+    // The read has had the row for its hold when the listing starts, so the
+    // listing's value is on the row at the next tick (docs/tool-groups.md).
+    app.advance_group_hint(Duration::ZERO);
     app.start_tool("Bash", "ls -la", None);
+    app.advance_group_hint(crate::app::GROUP_HINT_HOLD);
     let lines = live_group_lines(&app, 80, Some(Duration::ZERO), true);
     assert_eq!(
         texts(&lines),
@@ -209,6 +213,45 @@ fn the_live_cell_counts_the_held_and_the_running_reads_under_a_blinking_bullet()
         plain(&hidden[0]).starts_with("  Reading 1 file"),
         "the bullet blinks, the text holds its column: {:?}",
         plain(&hidden[0])
+    );
+}
+
+#[test]
+fn a_parallel_batch_shows_its_first_calls_value_first_then_the_next() {
+    // docs/tool-groups.md *The hint row*: a read and a listing in one round,
+    // both resolved before a frame was drawn. The row used to jump straight
+    // to the listing; each value now holds it for GROUP_HINT_HOLD in turn.
+    let mut app = App::new();
+    app.begin_stream();
+    let batch: Vec<crate::stream::ToolCallSummary> = [("Read", "README.md"), ("Bash", "ls -la")]
+        .iter()
+        .map(|(name, args)| crate::stream::ToolCallSummary {
+            name: (*name).to_string(),
+            args: (*args).to_string(),
+        })
+        .collect();
+    app.start_tool_batch(&batch);
+    for (name, args) in [("Read", "README.md"), ("Bash", "ls -la")] {
+        app.start_tool(name, args, None);
+        app.end_tool("out", true).expect("running");
+        app.place_resolved_tool();
+    }
+    let t0 = Duration::from_secs(5);
+    app.advance_group_hint(t0);
+    assert_eq!(
+        texts(&live_group_lines(&app, 80, None, true)),
+        [
+            "● Reading 1 file, listing 1 directory… (ctrl+o to expand)",
+            "  ⎿  README.md",
+        ]
+    );
+    app.advance_group_hint(t0 + crate::app::GROUP_HINT_HOLD);
+    assert_eq!(
+        texts(&live_group_lines(&app, 80, None, true)),
+        [
+            "● Reading 1 file, listing 1 directory… (ctrl+o to expand)",
+            "  ⎿  $ ls -la",
+        ]
     );
 }
 
@@ -272,8 +315,10 @@ fn the_strip_shows_the_group_over_the_rest_of_its_batch() {
             args: (*args).to_string(),
         })
         .collect();
+    app.advance_group_hint(Duration::ZERO);
     app.start_tool_batch(&batch);
     app.start_tool("Bash", "ls -la", None);
+    app.advance_group_hint(crate::app::GROUP_HINT_HOLD);
     let rows = preview_rows(&app, 80);
     let preview = texts(&preview_lines(&app, 80, None, rows));
     assert_eq!(usize::from(rows), preview.len());

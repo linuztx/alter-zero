@@ -341,3 +341,169 @@ fn clearing_the_conversation_drops_the_group() {
     assert_eq!(app.tool_group_range(), None);
     assert_eq!(app.close_tool_group(), None);
 }
+
+// ===== the hint row: every call's value, in the order the calls ran =====
+
+fn batch(calls: &[(&str, &str)]) -> Vec<crate::stream::ToolCallSummary> {
+    calls
+        .iter()
+        .map(|(name, args)| crate::stream::ToolCallSummary {
+            name: (*name).to_string(),
+            args: (*args).to_string(),
+        })
+        .collect()
+}
+
+/// Run the queue's front call to its end and place it, the way the boundary
+/// resolves each call of an announced batch.
+fn run_front(app: &mut App) {
+    let front = app.tool_queue().front().expect("a queued call");
+    let (name, args) = (front.name.clone(), front.args.clone());
+    app.start_tool(&name, &args, None);
+    app.end_tool("out", true).expect("a running call");
+    app.place_resolved_tool();
+}
+
+fn shown_hint(app: &App) -> Option<String> {
+    app.group_hint(true).map(|tool| tool.args.clone())
+}
+
+#[test]
+fn a_parallel_batch_shows_each_calls_value_in_turn() {
+    // docs/tool-groups.md *The hint row*: a batch of reads resolves in
+    // milliseconds, and a row that followed the newest call showed only the
+    // last one's value. Each value holds the row for GROUP_HINT_HOLD, in the
+    // order the calls ran, the first one first — and none is skipped, however
+    // late a tick comes.
+    let mut app = App::new();
+    app.start_tool_batch(&batch(&[
+        ("Read", "README.md"),
+        ("Bash", "ls -la"),
+        ("Bash", "grep -rn todo src"),
+        ("Bash", "cat Cargo.toml"),
+    ]));
+    for _ in 0..4 {
+        run_front(&mut app);
+    }
+    let t0 = Duration::from_secs(10);
+    app.advance_group_hint(t0);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("README.md"),
+        "the first call first"
+    );
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD - Duration::from_millis(1));
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("README.md"),
+        "held for the whole hold"
+    );
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD);
+    assert_eq!(shown_hint(&app).as_deref(), Some("ls -la"), "then the next");
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 10);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("grep -rn todo src"),
+        "one step per hold, never a skip"
+    );
+    // The late tick starts the next hold, so its value gets the whole of it.
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 11 - Duration::from_millis(1));
+    assert_eq!(shown_hint(&app).as_deref(), Some("grep -rn todo src"));
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 11);
+    assert_eq!(shown_hint(&app).as_deref(), Some("cat Cargo.toml"));
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 40);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("cat Cargo.toml"),
+        "the last value stays on the row"
+    );
+}
+
+#[test]
+fn a_call_that_runs_after_the_hold_shows_at_once() {
+    // A round at a time — the model takes seconds to write its next call —
+    // so the newest call's value is on the row the moment it runs.
+    let mut app = App::new();
+    let t0 = Duration::from_secs(10);
+    app.start_tool("Bash", "ls -la", None);
+    app.advance_group_hint(t0);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("ls -la"),
+        "the running read"
+    );
+    app.end_tool("out", true).expect("running");
+    app.place_resolved_tool();
+    app.start_tool("Read", "a.rs", None);
+    app.advance_group_hint(t0 + Duration::from_secs(3));
+    assert_eq!(shown_hint(&app).as_deref(), Some("a.rs"));
+}
+
+#[test]
+fn a_call_still_waiting_its_turn_is_not_shown_ahead_of_it() {
+    let mut app = App::new();
+    app.start_tool_batch(&batch(&[("Read", "a.rs"), ("Read", "b.rs")]));
+    let t0 = Duration::from_secs(10);
+    app.advance_group_hint(t0);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("a.rs"),
+        "the batch's first call, about to run"
+    );
+    app.start_tool("Read", "a.rs", None);
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 3);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("a.rs"),
+        "b.rs has not started"
+    );
+}
+
+#[test]
+fn a_new_group_starts_its_hints_from_its_own_first_call() {
+    let mut app = App::new();
+    let t0 = Duration::from_secs(10);
+    app.start_tool_batch(&batch(&[("Read", "a.rs"), ("Read", "b.rs")]));
+    run_front(&mut app);
+    run_front(&mut app);
+    app.advance_group_hint(t0);
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD);
+    assert_eq!(shown_hint(&app).as_deref(), Some("b.rs"));
+    // Reply text arrived and closed the group, then the next round read again.
+    assert!(app.close_tool_group().is_some());
+    app.start_tool_batch(&batch(&[("Read", "c.rs"), ("Read", "d.rs")]));
+    run_front(&mut app);
+    run_front(&mut app);
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 2);
+    assert_eq!(
+        shown_hint(&app).as_deref(),
+        Some("c.rs"),
+        "the new group's first call, not where the last one stopped"
+    );
+}
+
+#[test]
+fn the_prompts_still_frame_steps_through_the_held_calls_alone() {
+    // A permission prompt about the next read shows the group at rest above
+    // that call's own cell, so the row never names the call being asked
+    // about.
+    let mut app = App::new();
+    app.start_tool_batch(&batch(&[("Read", "a.rs"), ("Bash", "ls -la")]));
+    run_front(&mut app);
+    let t0 = Duration::from_secs(10);
+    app.advance_group_hint(t0);
+    app.advance_group_hint(t0 + GROUP_HINT_HOLD * 5);
+    assert_eq!(
+        app.group_hint(false).map(|tool| tool.args.as_str()),
+        Some("a.rs")
+    );
+}
+
+#[test]
+fn verbose_output_shows_no_hint() {
+    let mut app = App::new();
+    app.settings_mut().verbose = true;
+    app.start_tool("Read", "a.rs", None);
+    app.advance_group_hint(Duration::from_secs(1));
+    assert_eq!(app.group_hint(true), None);
+}

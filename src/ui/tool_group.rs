@@ -26,7 +26,7 @@ use super::theme::*;
 use super::tool::{bullet_span, result_row};
 use super::wrap::{cols, truncate_cols};
 use super::*;
-use crate::app::{GroupCounts, group_counts, group_kind, is_group_member};
+use crate::app::{GroupCounts, group_counts, is_group_member, leading_group_calls};
 
 /// One clause of a group's line: its verb, its count, its noun.
 struct Clause {
@@ -177,8 +177,11 @@ fn hint_text(tool: &ToolCall, paths: &PathDisplay) -> String {
 /// at rest (the permission prompt's still frame, which passes `with_queue:
 /// false` because the call it asks about has a cell of its own there).
 ///
-/// The `⎿` hint names the running read when one runs, else the group's last
-/// read — so between calls it keeps saying what the group last did.
+/// The `⎿` hint steps through the group's calls in the order they ran, each
+/// value holding the row for [`GROUP_HINT_HOLD`](crate::app::GROUP_HINT_HOLD)
+/// ([`App::group_hint`]) — so a batch that resolved within a frame still shows
+/// every call's value, its first call first — and between rounds it keeps
+/// saying what the group last did.
 pub(super) fn live_group_lines(
     app: &App,
     width: u16,
@@ -218,11 +221,8 @@ pub(super) fn live_group_lines(
         room,
     ));
     let mut lines = vec![Line::from(spans)];
-    let hint = queued
-        .iter()
-        .find(|tool| tool.status == ToolStatus::Running)
-        .or_else(|| held.last())
-        .or_else(|| queued.first())
+    let hint = app
+        .group_hint(with_queue)
         .map(|tool| hint_text(tool, app.path_display()));
     if let Some(hint) = hint {
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));
@@ -235,11 +235,4 @@ pub(super) fn live_group_lines(
         lines.push(result_row(0, shown));
     }
     lines
-}
-
-/// The calls at the front of a live tool queue that join the open group —
-/// every one up to the first call of another kind, which keeps its own cell
-/// (and closes the group when it starts).
-pub(super) fn leading_group_calls(queue: &VecDeque<ToolCall>) -> impl Iterator<Item = &ToolCall> {
-    queue.iter().take_while(|tool| group_kind(tool).is_some())
 }

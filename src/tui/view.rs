@@ -87,7 +87,12 @@ impl Session<'_> {
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
-        self.app.set_pulse(self.clocks.loop_start.elapsed());
+        let now = self.clocks.loop_start.elapsed();
+        self.app.set_pulse(now);
+        // The open read/search group's `⎿` row steps through its calls on
+        // the same clock, each value held long enough to read
+        // (docs/tool-groups.md *The hint row*).
+        self.app.advance_group_hint(now);
         // The `/usage` page's countdowns run on the wall clock
         // (docs/usage.md).
         if self.app.usage_page.is_some() {

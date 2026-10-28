@@ -118,7 +118,8 @@ pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
 pub use self::tool_group::{
-    GroupCounts, ToolPlacement, group_counts, group_kind, group_run, is_group_member,
+    GROUP_HINT_HOLD, GroupCounts, ToolPlacement, group_counts, group_kind, group_run,
+    is_group_member, leading_group_calls,
 };
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
@@ -328,6 +329,11 @@ pub struct App {
     /// (`docs/tool-groups.md`). `None` with no group open, and always with
     /// **Verbose output** on.
     tool_group: Option<usize>,
+    /// Which of the open group's calls its `⎿` row is showing, and since when
+    /// — stepped on the boundary's frame clock so every call's value gets the
+    /// row in turn ([`App::advance_group_hint`], `docs/tool-groups.md` *The
+    /// hint row*).
+    group_hint: tool_group::GroupHint,
     /// The id [`start_tool_batch`](App::start_tool_batch) stamps the next
     /// announced batch with ([`ToolCall::batch`]) — a plain counter, so two
     /// rounds' calls can never be mistaken for one parallel batch by the

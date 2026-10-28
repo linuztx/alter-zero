@@ -1271,8 +1271,13 @@ non-verbose tool view, the default unless `/settings` **Verbose output** is
 on: a run of `Read` calls and `bash` commands that only read —
 `read_only::read_kind`'s listings, searches and reads, never an image read —
 is one cell, the live `● Searching for 1 pattern, reading 2 files…` over a
-`⎿` hint naming the call it is on, its bullet blinking for as long as the
-group is open, between calls too, then one dim bullet-less `Searched for 1
+`⎿` hint naming the calls **one at a time in the order they ran** — a
+queue, not the reference's throttle, which drops the values a fast parallel
+batch produces during its hold and so jumps to the last: each value held
+`app::GROUP_HINT_HOLD` (the reference's 700 ms) and none skipped,
+`App::advance_group_hint` stepping it on the boundary's frame clock, a
+closed group resetting it (`docs/tool-groups.md` *The hint row*) — its
+bullet blinking for as long as the group is open, between calls too, then one dim bullet-less `Searched for 1
 pattern, read 2 files (ctrl+o to expand)` line once something that is not a
 read arrives — reply text, a call of another kind, an error, the turn's end;
 the grouping is a property of the history (`app::group_run`, the parallel MCP

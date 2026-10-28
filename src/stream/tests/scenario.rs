@@ -525,12 +525,25 @@ fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
             .any(|e| matches!(e, StreamEvent::Chunk(_))),
         "no reply text between the reads"
     );
-    assert!(
-        events[first..last_start]
-            .iter()
-            .any(|e| matches!(e, StreamEvent::ThinkingStart)),
-        "a thought between the rounds"
-    );
+    // Two thoughts: one between the first two rounds, one after the parallel
+    // round — the pause a live model takes before its next call, in which the
+    // row steps through each of the round's values (docs/tool-groups.md *The
+    // hint row*).
+    let thoughts: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ThinkingStart))
+        .map(|(i, _)| i)
+        .collect();
+    let batches_at: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ToolBatch(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(thoughts.len(), 2, "{events:?}");
+    assert!(batches_at[0] < thoughts[0] && thoughts[0] < batches_at[1]);
+    assert!(batches_at[1] < thoughts[1] && thoughts[1] < batches_at[2]);
     // Every call resolves green with the real executor's output.
     let ends: Vec<&str> = events
         .iter()

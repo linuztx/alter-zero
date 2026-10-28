@@ -1221,6 +1221,14 @@ const EXPLORE_REPLY: &str = concat!(
 const EXPLORE_THINKING: &str =
     "One script and a README. Find where the card is built,\nthen read both.";
 
+/// The thought after the explore demo's parallel round — a live model's pause
+/// before its next call, in which the group's `⎿` row steps through each of
+/// the round's values in turn (`docs/tool-groups.md` *The hint row*). It
+/// follows the group's last read, so it shows under the group's line once
+/// the script run closes the group.
+const EXPLORE_SECOND_THINKING: &str =
+    "card() builds the line, and the README says to run it.\nRun it and see.";
+
 /// What the explore demo's `ls -la` lists.
 const EXPLORE_LISTING: &str = "total 24\n\
     drwxr-xr-x  4 you you 4096 Oct 28 09:12 .\n\
@@ -1241,6 +1249,14 @@ const EXPLORE_README: &str = "# about\n\n\
 /// What the explore demo's script prints — the card before the default
 /// turn's edit wires the credit in.
 const EXPLORE_RUN: &str = "alter-zero — an autonomous AI agent that lives in your terminal";
+
+/// One scripted thinking phase streaming `text`.
+fn thought(text: &str) -> Vec<StreamEvent> {
+    let mut events = vec![StreamEvent::ThinkingStart];
+    events.extend(chunks(text).into_iter().map(StreamEvent::ThinkingChunk));
+    events.push(StreamEvent::ThinkingEnd);
+    events
+}
 
 /// One scripted round: each call generated — its wire name, then its
 /// verbatim arguments — the batch announced, then every call run in order.
@@ -1265,7 +1281,8 @@ fn round(calls: &[ScriptedCall]) -> Vec<StreamEvent> {
 
 /// The **explore** demo (`docs/tool-groups.md`): the model finding its way
 /// around before it changes anything — a listing; a thought; a parallel
-/// round of a search and two reads; then a command that runs something.
+/// round of a search and two reads, whose values the group's `⎿` row shows
+/// one after another; another thought; then a command that runs something.
 /// Nothing is said between the reads, so they are one collapsed group from
 /// the first call to the last read, its bullet blinking between the rounds
 /// too; the script run closes it and keeps a cell of its own. Every call
@@ -1280,18 +1297,13 @@ pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
         EXPLORE_LISTING,
         0,
     )]));
-    events.push(StreamEvent::ThinkingStart);
-    events.extend(
-        chunks(EXPLORE_THINKING)
-            .into_iter()
-            .map(StreamEvent::ThinkingChunk),
-    );
-    events.push(StreamEvent::ThinkingEnd);
+    events.extend(thought(EXPLORE_THINKING));
     events.extend(round(&[
         ScriptedCall::command("grep -rn 'card()' .", EXPLORE_GREP, 0),
         ScriptedCall::read(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1),
         ScriptedCall::command("head -n 20 README.md", EXPLORE_README, 0),
     ]));
+    events.extend(thought(EXPLORE_SECOND_THINKING));
     events.extend(round(&[ScriptedCall::command(
         &format!("python3 {DUMMY_ABOUT_PATH}"),
         EXPLORE_RUN,

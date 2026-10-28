@@ -8,14 +8,19 @@ smoke_begin
 # runs with ALTER_ZERO_VERBOSE=1 exported, so its per-call cells stay; this
 # launch drops it, so the session comes up in the DEFAULT, where a run of
 # reads, searches and listings is one cell. The offline `explore` demo lists
-# the folder, thinks, searches and reads in one parallel round, then runs the
-# script — the one call that is no read, and so the one that closes the group:
+# the folder, thinks, searches and reads in one parallel round, thinks again,
+# then runs the script — the one call that is no read, and so the one that
+# closes the group:
 #   - while the reads run, the group's live cell — `Listing 1 directory…
 #     (ctrl+o to expand)` over `⎿  $ ls -la` — held open through the thought
 #     between the rounds, which streams under it;
+#   - the parallel round's three values take the `⎿` row ONE AFTER ANOTHER,
+#     in the order the calls ran — the search, then the file, then the
+#     README — each held long enough to read, never jumping to the last;
 #   - once the script runs, ONE settled line above the script's own cell —
 #     `Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to
-#     expand)` — and no cell for any read, nor the thought between them;
+#     expand)` — no cell for any read, the thought between them absorbed and
+#     the one after the last read under the group's line;
 #   - Ctrl+O still shows every call whole;
 #   - a resize's rebuild paints the same one line (it is derived from history);
 #   - /settings → Verbose output → true rebuilds the conversation with a cell
@@ -49,6 +54,17 @@ fi
 grown="$(wait_pane 15 "$S146" -F "Searching for 1 pattern, reading 2 files, listing 1 directory…")" ||
 	fail "the parallel round's search and reads never joined the open group"
 dump "captured pane (the group after the parallel round)" "$grown"
+# …and its values take the row in turn, the first call's first — each held
+# long enough to read (docs/tool-groups.md *The hint row*), where the row
+# used to jump straight to the round's last call.
+wait_for 10 "$S146" -F "  ⎿  \$ grep -rn 'card()' ." ||
+	fail "the parallel round's first call (the search) never took the hint row"
+stepped="$(wait_pane 5 "$S146" -F "  ⎿  about.py")" ||
+	fail "the hint row skipped the parallel round's second call (the read of about.py)"
+dump "captured pane (the hint row on the round's second call)" "$stepped"
+expect_lacks "$stepped" -F "  ⎿  \$ head -n 20 README.md" "the hint row showed two calls at once"
+wait_for 5 "$S146" -F "  ⎿  \$ head -n 20 README.md" ||
+	fail "the hint row never reached the parallel round's last call (the README)"
 
 wait_summaries 25 "$S146" 1 >/dev/null || fail "the explore demo never finished"
 settled="$(pane "$S146" -S -400)"
@@ -58,12 +74,17 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_lacks "$settled" -F "$cell" "a read inside the group kept a cell of its own: $cell"
 done
 expect_lacks "$settled" -F "Listing 1 directory" "the open group's live cell was left behind in scrollback"
-expect_lacks "$settled" -F "Thought for" "the thought between the reads was not absorbed into the group"
+# The thought between the rounds is part of the group's work and shows only
+# in Ctrl+O; the one after its last read follows the group's line.
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$settled")" "1" \
+	"only the thought after the group's last read may show inline (the one between the reads is the group's)"
 expect_has "$settled" -F "Bash(python3 about.py)" "the script run lost its own cell"
 group_line="$(grep -nF "$GROUP146" <<<"$settled" | head -1 | cut -d: -f1)"
+thought_line="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | head -1 | cut -d: -f1)"
 run_line="$(grep -nF "Bash(python3 about.py)" <<<"$settled" | head -1 | cut -d: -f1)"
-if [ -z "$group_line" ] || [ -z "$run_line" ] || [ "$group_line" -ge "$run_line" ]; then
-	fail "the group's line is not above the call that closed it (group row ${group_line:-none}, run row ${run_line:-none})"
+if [ -z "$group_line" ] || [ -z "$thought_line" ] || [ -z "$run_line" ] ||
+	[ "$group_line" -ge "$thought_line" ] || [ "$thought_line" -ge "$run_line" ]; then
+	fail "the group's line, the thought after it and the call that closed it are out of order (rows ${group_line:-none}, ${thought_line:-none}, ${run_line:-none})"
 fi
 # The settled line wears no bullet: what is left is a fact about the turn.
 expect_lacks "$settled" -F "● $GROUP146" "the settled group line kept a bullet"
@@ -115,6 +136,8 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_has "$verbose" -F "$cell" "Verbose output did not give $cell its own cell back"
 done
 expect_lacks "$verbose" -F "$GROUP146" "Verbose output left the collapsed line on screen"
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$verbose")" "2" \
+	"Verbose output did not give the thought between the reads its own cell back"
 wait_file 5 "$SMOKE_CFG/settings.json" -E '"verbose": *true' ||
 	fail "the Verbose output row did not persist to settings.json: $(cat "$SMOKE_CFG/settings.json" 2>/dev/null)"
 

@@ -287,7 +287,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let grouped = if group.is_empty() {
         0
     } else {
-        super::tool_group::leading_group_calls(app.tool_queue()).count()
+        crate::app::leading_group_calls(app.tool_queue()).count()
     };
     if !group.is_empty() {
         if !lines.is_empty() {
