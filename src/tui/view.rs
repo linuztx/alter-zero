@@ -476,16 +476,19 @@ impl Session<'_> {
         // `live_region_height` below must reserve (docs/table-streaming.md).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
-        let tail = ui::repaint_tail(
+        let tail = ui::repaint_tail_with(
             // Only what has actually reached scrollback: a parallel MCP run
             // still in flight has cells recorded but held, and the strip is
-            // showing them (`docs/mcp.md`).
+            // showing them (`docs/mcp.md`) — as is the compact display's
+            // open group, which the walk holds by itself
+            // (`docs/compact-tools.md`).
             ui::committed_history(&self.app.history, self.app.tool_queue()),
             self.app.streaming_text(),
             &mut self.render,
             screen.width,
             RESIZE_REFLOW_MAX_ROWS,
             self.app.path_display(),
+            ui::GroupWalk::for_app(&self.app),
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).

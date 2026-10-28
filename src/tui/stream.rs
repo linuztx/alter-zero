@@ -58,6 +58,10 @@ impl Session<'_> {
                 // until the group resolves. See docs/agent-tool.md.
                 self.flush_segment(committing, width);
                 self.render.reset();
+                // A subagent launch is no member of the compact display's
+                // group: it settles before the tree cell goes live
+                // (docs/compact-tools.md).
+                self.flush_tool_group(committing);
                 self.app.start_agent_group(background, &agents);
                 // The delayed Ctrl+B hint clock — a foreground group can be moved
                 // to the background like a running command (docs/background.md).
@@ -71,6 +75,9 @@ impl Session<'_> {
                 // resolution boundary like ToolEnd (the caller drained the agent
                 // channel first, so the roster snapshots are final). See
                 // docs/agent-tool.md.
+                // The tree cell is a breaker for the compact display's group
+                // (docs/compact-tools.md).
+                self.flush_tool_group(committing);
                 let group = self.app.finish_agent_group(background, &agents);
                 if committing {
                     let height = self.live_region_height();
@@ -83,6 +90,12 @@ impl Session<'_> {
                 false
             }
             StreamEvent::Chunk(chunk) => {
+                // Assistant text ends the compact display's group: its
+                // settled line commits before the first row of the reply
+                // (docs/compact-tools.md).
+                if !chunk.trim().is_empty() {
+                    self.flush_tool_group(committing);
+                }
                 self.app.push_chunk(&chunk);
                 if committing && let Some(text) = self.app.streaming_text() {
                     let lines = self.render.commit(text, width);
@@ -108,6 +121,16 @@ impl Session<'_> {
                 // `docs/parallel-tools.md`.
                 self.flush_segment(committing, width);
                 self.render.reset();
+                // A batch opening on a call that is no member ends the group
+                // now, before that call's prompt can open over a summary that
+                // would otherwise stand through it (docs/compact-tools.md).
+                if let Some(first) = items.first()
+                    && self
+                        .app
+                        .tool_group_breaks_on(&first.name, &first.args, None)
+                {
+                    self.flush_tool_group(committing);
+                }
                 self.app.start_tool_batch(&items);
                 false
             }
@@ -127,6 +150,14 @@ impl Session<'_> {
                 // call (dummy/shell, no batch) pushes a fresh running call.
                 self.flush_segment(committing, width);
                 self.render.reset();
+                // A call that is no member of the compact display's group
+                // ends it ahead of its own cell (docs/compact-tools.md).
+                if self
+                    .app
+                    .tool_group_breaks_on(&name, &args, arguments.as_deref())
+                {
+                    self.flush_tool_group(committing);
+                }
                 self.app.start_tool(&name, &args, arguments.as_deref());
                 // Start this command's own clock — the delayed Ctrl+B hint waits
                 // on it, so a fast command never flashes the hint (a model tool
@@ -283,6 +314,8 @@ impl Session<'_> {
                 // nothing was ever queued against it to take.
                 self.flush_segment(committing, width);
                 self.render.reset();
+                // A user message is a breaker (docs/compact-tools.md).
+                self.flush_tool_group(committing);
                 self.app.deliver_steered(&text);
                 if committing {
                     // The strip loses the pending row as the bubble lands, so
@@ -475,6 +508,9 @@ impl Session<'_> {
                 // a settle that carries no event of its own, so the session
                 // view's pre-fold work has to run here (`docs/agent-view-streaming.md`).
                 let owed = self.begin_turn_agent_settle(width);
+                // Read before the death resolves the queue, which closes the
+                // compact display's group (docs/compact-tools.md).
+                let group_open = self.app.tool_group_open();
                 let failed = self.app.fail_stream(&message);
                 self.finish_turn_agent_settle(owed, width);
                 if let Some(failure) = failed {
@@ -500,6 +536,7 @@ impl Session<'_> {
                             &failure.tools,
                             failure.agents,
                             Some(&failure.error),
+                            group_open,
                         );
                     }
                 }
@@ -569,6 +606,9 @@ impl Session<'_> {
                 self.term.insert_before(vec![Line::default()]); // blank spacer
             }
         }
+        // A turn that ends on its reads — no reply after them — settles the
+        // compact display's group above its receipt (docs/compact-tools.md).
+        self.flush_tool_group(committing);
         // Settle before recording the summary — history-gated commit inside
         // (invariant 4), so the notice sits above the summary either way.
         self.settle_bg_completions();

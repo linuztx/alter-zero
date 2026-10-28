@@ -119,7 +119,10 @@ pub(super) fn preview_lines(
             rows,
             streaming,
         )
-    } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
+    } else if app.agent_group().is_some() || !app.tool_queue().is_empty() || app.tool_group_open() {
+        // An open compact-display group with nothing queued still previews:
+        // its summary keeps blinking between rounds, over whatever the model
+        // is doing next (docs/compact-tools.md).
         trim_preview(preview_tool_lines(app, width), rows, false)
     } else if app.tool_drafts().previews().next().is_some() {
         // A `write` the model is still generating, its file streaming into
@@ -256,11 +259,57 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     {
         return batch;
     }
+    // The compact tool display (docs/compact-tools.md): the held members and
+    // the queue's leading members read as ONE blinking summary over the
+    // running call's hint — `● Reading 1 file, listing 1 directory…` over
+    // `⎿ $ ls -la` — ahead of whatever the queue holds behind them (a write
+    // waiting its turn keeps its own cell). With nothing queued at all the
+    // summary stands alone, or over the next round's streaming `write` draft
+    // or `● Thinking…` block, which the branches below would otherwise show
+    // in its place.
+    let skip = match app.live_tool_group() {
+        Some(live) => {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.extend(super::tool::tool_group_live_lines(
+                &live,
+                pulse,
+                width,
+                app.path_display(),
+            ));
+            if let Some(front) = app.tool_queue().front()
+                && front.status == ToolStatus::Running
+                && live.queued > 0
+                && let Some(hint) = ctrl_b_hint(front)
+                && app
+                    .background_hint_elapsed()
+                    .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+            {
+                lines.push(result_row(1, hint.to_string()));
+            }
+            if app.tool_queue().is_empty() {
+                let next = if app.tool_drafts().previews().next().is_some() {
+                    draft_preview_lines(app.tool_drafts(), pulse, width, app.path_display())
+                } else if let Some(text) = app.reasoning() {
+                    live_reasoning_lines(text, pulse, width)
+                } else {
+                    Vec::new()
+                };
+                if !next.is_empty() {
+                    lines.push(Line::default());
+                    lines.extend(next);
+                }
+            }
+            live.queued
+        }
+        None => 0,
+    };
     // Each queued previewed call owns the next adopted draft, in queue order
     // (docs/write-streaming.md).
     let mut drafts = app.tool_drafts().queued();
-    for (i, tool) in app.tool_queue().iter().enumerate() {
-        if i > 0 || !lines.is_empty() {
+    for (i, tool) in app.tool_queue().iter().enumerate().skip(skip) {
+        if i > skip || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
         let draft = crate::app::previewed_display(&tool.name)
@@ -512,6 +561,9 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     let mut hasher = DefaultHasher::new();
     app.agent_view.hash(&mut hasher);
     strip_has_status(app).hash(&mut hasher);
+    // The compact display's held group is part of what the strip is of
+    // (docs/compact-tools.md).
+    app.tool_group_open().hash(&mut hasher);
     app.reasoning().is_some().hash(&mut hasher);
     app.streaming_text().is_some().hash(&mut hasher);
     let queue = app

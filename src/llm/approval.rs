@@ -21,6 +21,7 @@ use crate::permission::{
     classifier_denial_result, classifier_denied_display, denial_result, denied_display,
     explain_display, explain_result,
 };
+use crate::readonly::READ_ONLY_ALLOWED_NOTE;
 use crate::stream::{CancelToken, StreamEvent};
 
 /// The display + model-facing texts used when a turn is cancelled out from
@@ -261,6 +262,22 @@ pub fn approve_call(
     if !force_ask && gate.scratchpad_covers(&request) {
         return Approval::AllowNoted {
             note: SCRATCHPAD_ALLOWED_NOTE.to_string(),
+        };
+    }
+    // And a provably read-only `bash` command (`crate::readonly::is_read_only`,
+    // `docs/permissions.md` *Read-only commands*) sits with them for the
+    // same reason: it changes nothing, so it needs no reviewer. In auto mode
+    // it runs here — before the `PermissionRequest` hook and the classifier,
+    // which keep judging what the parser cannot vouch for (`ls $HOME`) —
+    // wearing the note that says what vouched for it. Auto mode only: manual
+    // and edit mode promise that commands ask, and keep the promise.
+    if !force_ask
+        && gate.mode() == PermissionMode::Auto
+        && request.kind == PermissionKind::Bash
+        && crate::readonly::is_read_only(&request.target)
+    {
+        return Approval::AllowNoted {
+            note: READ_ONLY_ALLOWED_NOTE.to_string(),
         };
     }
     // `PermissionRequest` (docs/hooks.md) sits exactly where the auto-mode
@@ -987,11 +1004,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = gate_in(crate::permission::PermissionMode::Auto);
         let classify = |request: &PermissionRequest| {
-            assert_eq!(request.target, "ls -la");
-            assert_eq!(request.detail.as_deref(), Some("List files"));
+            assert_eq!(request.target, "python3 x.py");
+            assert_eq!(request.detail.as_deref(), Some("Run the script"));
             Ok(ClassifierVerdict {
                 allow: true,
-                reason: "read-only".to_string(),
+                reason: "harmless".to_string(),
             })
         };
         let approval = approve_call(
@@ -1003,7 +1020,10 @@ mod tests {
             &tx,
             &CancelToken::new(),
             None,
-            &call("bash", r#"{"command":"ls -la","description":"List files"}"#),
+            &call(
+                "bash",
+                r#"{"command":"python3 x.py","description":"Run the script"}"#,
+            ),
             None,
         );
         assert_eq!(
@@ -1013,6 +1033,149 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn auto_mode_runs_a_read_only_command_unasked_with_its_own_note() {
+        // `ls -la` is provably read-only (`readonly::is_read_only`), so auto
+        // mode needs no reviewer for it: no classifier round-trip, no prompt,
+        // and the cell says what vouched for the call.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("the classifier must not be consulted for a read-only command")
+        };
+        // Pre-cancelled: a regression that raises the prompt fails fast.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        for command in [
+            "ls -la",
+            "cat Cargo.toml | head",
+            "git status",
+            "rg -n 'fn main' src",
+        ] {
+            let approval = approve_call(
+                Some(&gate),
+                Some(&classify),
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call(
+                    "bash",
+                    &serde_json::json!({ "command": command }).to_string(),
+                ),
+                None,
+            );
+            assert_eq!(
+                approval,
+                Approval::AllowNoted {
+                    note: READ_ONLY_ALLOWED_NOTE.to_string(),
+                },
+                "{command}"
+            );
+        }
+        assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn a_read_only_command_still_goes_to_the_classifier_when_it_cannot_be_proved() {
+        // `ls $HOME` looks like a listing but a `$VAR` is whatever the shell
+        // makes of it: not provable, so the classifier judges it as before.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let asked = std::cell::Cell::new(false);
+        let classify = |request: &PermissionRequest| {
+            asked.set(true);
+            assert_eq!(request.target, "ls $HOME");
+            Ok(ClassifierVerdict {
+                allow: true,
+                reason: "harmless".to_string(),
+            })
+        };
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            None,
+            &NoHooks,
+            false,
+            &tx,
+            &CancelToken::new(),
+            None,
+            &call("bash", r#"{"command":"ls $HOME"}"#),
+            None,
+        );
+        assert!(asked.get(), "the classifier judged it");
+        assert_eq!(
+            approval,
+            Approval::AllowNoted {
+                note: CLASSIFIER_ALLOWED_NOTE.to_string(),
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn manual_and_edit_mode_still_ask_about_a_read_only_command() {
+        // The read-only exemption is auto mode's: the other two modes promise
+        // that commands ask, and a cancelled wait is how a raised prompt
+        // reads here.
+        for mode in [
+            crate::permission::PermissionMode::Manual,
+            crate::permission::PermissionMode::Edit,
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let gate = gate_in(mode);
+            let cancel = CancelToken::new();
+            cancel.cancel();
+            let approval = approve_call(
+                Some(&gate),
+                None,
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call("bash", r#"{"command":"ls -la"}"#),
+                None,
+            );
+            assert!(
+                matches!(approval, Approval::Reject { .. }),
+                "{mode:?}: the prompt was raised (and cancelled), never a silent allow"
+            );
+            assert!(
+                matches!(rx.try_recv(), Ok(StreamEvent::Permission(_))),
+                "{mode:?}: a request reached the screen"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forced_ask_still_prompts_for_a_read_only_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("ask means a human")
+        };
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            None,
+            &NoHooks,
+            true,
+            &tx,
+            &cancel,
+            None,
+            &call("bash", r#"{"command":"ls -la"}"#),
+            None,
+        );
+        assert!(matches!(approval, Approval::Reject { .. }));
+        assert!(matches!(rx.try_recv(), Ok(StreamEvent::Permission(_))));
     }
 
     #[test]

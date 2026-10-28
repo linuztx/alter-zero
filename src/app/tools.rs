@@ -449,6 +449,9 @@ impl App {
             turn.tokens += count_tokens(tool.context_text());
             turn.arrow = TokenArrow::Up;
         }
+        // The compact display's group: does this cell fold, and does its
+        // group go on or end here (docs/compact-tools.md)?
+        self.settle_tool_group(&tool);
         self.history.push(HistoryItem::Tool(tool.clone()));
         Some(tool)
     }

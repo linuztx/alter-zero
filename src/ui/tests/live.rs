@@ -1301,3 +1301,116 @@ fn a_queued_write_previews_its_head_under_waiting() {
         "{texts:#?}"
     );
 }
+
+// ===== the compact tool display in the strip (docs/compact-tools.md) =====
+
+fn strip_text(app: &App, width: u16) -> String {
+    let pv = preview_rows(app, width);
+    let h = live_height(&app.input, width, 30, true, pv, 0, 0, 0, 0, 0, 0);
+    let mut buf = buffer(width, h);
+    render_live(buf.area, &mut buf, app);
+    (0..h)
+        .map(|y| row(&buf, y, width))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_compact_strip_folds_the_members_into_one_summary_over_the_running_hint() {
+    let mut app = App::new();
+    app.settings_mut().verbose_output = false;
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", Some(r#"{"command":"ls -la"}"#));
+    app.end_tool("Exit code: 0\ntotal 4", true);
+    let batch: Vec<crate::stream::ToolCallSummary> = [("Read", "/p/b.rs"), ("Write", "/p/c.rs")]
+        .iter()
+        .map(|(name, args)| crate::stream::ToolCallSummary {
+            name: (*name).to_string(),
+            args: (*args).to_string(),
+        })
+        .collect();
+    app.start_tool_batch(&batch);
+    app.start_tool("Read", "/p/b.rs", None);
+    // The summary over its hint, a gap, then the write's own waiting cell:
+    // sized and painted from one walk.
+    assert_eq!(
+        usize::from(preview_rows(&app, 60)),
+        preview_lines(&app, 60, None, 30).len()
+    );
+    let all = strip_text(&app, 60);
+    assert!(
+        all.contains("● Reading 1 file, listing 1 directory… (ctrl+o to expand)"),
+        "{all:?}"
+    );
+    assert!(
+        all.contains("⎿  /p/b.rs"),
+        "the running read's hint: {all:?}"
+    );
+    assert!(
+        all.contains("● Write(/p/c.rs)"),
+        "the write keeps its cell: {all:?}"
+    );
+    assert_eq!(all.matches("Waiting…").count(), 1, "{all:?}");
+    assert!(
+        !all.contains("● Bash(ls -la)"),
+        "the held listing shows no cell: {all:?}"
+    );
+    assert!(
+        !all.contains("● Read(/p/b.rs)"),
+        "nor does the running read: {all:?}"
+    );
+}
+
+#[test]
+fn a_held_group_with_nothing_queued_keeps_its_summary_blinking_on_screen() {
+    let mut app = App::new();
+    app.settings_mut().verbose_output = false;
+    app.begin_stream();
+    app.start_tool(
+        "Bash",
+        "rg -n main src",
+        Some(r#"{"command":"rg -n main src"}"#),
+    );
+    app.end_tool("src/main.rs:1:fn main", true);
+    assert!(app.tool_queue().is_empty());
+    assert!(
+        preview_rows(&app, 60) >= 2,
+        "the summary and its hint are reserved"
+    );
+    let all = strip_text(&app, 60);
+    assert!(
+        all.contains("● Searching for 1 pattern… (ctrl+o to expand)"),
+        "{all:?}"
+    );
+    assert!(all.contains("⎿  $ rg -n main src"), "{all:?}");
+    // The next round's thinking block sits under it rather than replacing it.
+    app.begin_reasoning();
+    app.push_thinking("hm");
+    assert_eq!(
+        usize::from(preview_rows(&app, 60)),
+        preview_lines(&app, 60, None, 30).len()
+    );
+    let thinking = strip_text(&app, 60);
+    assert!(
+        thinking.contains("Searching for 1 pattern…"),
+        "{thinking:?}"
+    );
+    assert!(thinking.contains("Thinking"), "{thinking:?}");
+}
+
+#[test]
+fn verbose_output_keeps_every_cell_in_the_strip() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", Some(r#"{"command":"ls -la"}"#));
+    app.end_tool("Exit code: 0", true);
+    assert_eq!(
+        preview_rows(&app, 60),
+        0,
+        "a resolved cell committed; nothing held"
+    );
+    app.start_tool("Read", "/p/b.rs", None);
+    let all = strip_text(&app, 60);
+    assert!(all.contains("● Read(/p/b.rs)"), "{all:?}");
+    assert!(!all.contains("Reading 1 file"), "{all:?}");
+}

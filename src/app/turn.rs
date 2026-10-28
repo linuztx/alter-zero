@@ -807,6 +807,7 @@ impl App {
         // already — cheap insurance for the transcript cache's frozen
         // prefix (docs/tool-view-performance.md).
         self.history_generation += 1;
+        self.drop_tool_group();
         rolled
     }
 }

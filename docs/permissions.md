@@ -360,9 +360,11 @@ runs under: `python3 *` already trusts `python3` with any arguments — `-c
 "anything"` included — so typing into a `python3` session adds nothing the
 rule did not grant.
 
-There is no built-in safe-command list. In manual mode every `bash`, `write`,
-and `edit` asks until the rules say otherwise — Claude Code's default posture,
-and the only one that can't be wrong about what is safe. `read` is never gated.
+In manual mode every `bash`, `write`, and `edit` asks until the rules say
+otherwise — the one posture that can't be wrong about what is safe. The one
+built-in exemption is auto mode's, for a command the parser can **prove**
+read-only (*Read-only commands* below); manual and edit mode never use it.
+`read` is never gated.
 
 ## Permission modes (manual · edit · auto · master)
 
@@ -458,6 +460,7 @@ the prompt:
 ```
 approve(bash/MCP call) ── gate.allows()? ── yes ─────────────────► runs (no note)
                            └ no · mode == auto
+                              provably read-only bash? ── yes ──► runs, cell notes the parser
                               classifier ── allow ──► runs, cell notes the classifier
                                           ── deny ───► rejected with the reason
                                           ── error ──► the ordinary prompt (fallback)
@@ -564,11 +567,15 @@ later turns replay exactly what the model was told.
 A classifier **failure** — network, an unparseable reply — falls back to the
 ordinary prompt: asking the user is the safe posture, and the one that still
 works offline. The **dummy backend** never talks HTTP, so its auto-mode demo
-(a prompt naming "auto" + "permission") consults the deterministic offline
-heuristic instead (`permission::auto_verdict` — a small read-only prefix
-list): the scripted `ls -la` runs with the note, the scripted
-`rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
-which is what lets `smoke.sh` drive the whole feature without a provider.
+(a prompt naming "auto" + "permission") mirrors the seam offline: the
+scripted `ls -la` is provably read-only and runs with `Allowed as a
+read-only command`, the scripted `du -sh *` — a glob the parser cannot vouch
+for — goes to the deterministic offline heuristic instead
+(`permission::auto_verdict`, a small read-only prefix list standing in for
+the classifier) and runs with the classifier's note, the scripted
+`rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts for
+all three — which is what lets `smoke.sh` drive the whole feature without a
+provider.
 The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
 thing: verdicts both ways for commands *and* MCP calls — with the task
 context attached and bare — plus the two context properties that matter (a
@@ -748,6 +755,72 @@ visible, through the same channel the classifier's verdict uses:
   ⎿  Wrote 12 lines to …/scratchpad/plan.md
   ⎿  Allowed in the session scratchpad
 ```
+
+## Read-only commands
+
+The other thing that resolves beside the standing rules: in **auto mode**, a
+`bash` command the parser can prove changes nothing runs at once, with no
+classifier round-trip and no prompt — `ls -la`, `cat Cargo.toml | head`,
+`rg -n 'fn main' src`, `git status`, `find . -name '*.rs' 2>/dev/null`. A
+read needs no reviewer, and sending one to the classifier cost a silent
+completion per listing. The verdict is `readonly::is_read_only`
+(`src/readonly.rs`), the pure core the compact tool display reads its
+listing/read/search classification from too (`docs/compact-tools.md`), and
+it is a **promise**, so it is strict where the display is lenient:
+
+- every segment of the pipeline names a program in the table — the
+  inspecting ones (`cat`, `head`, `tail`, `wc`, `stat`, `file`, `strings`,
+  `cut`, `sort`, `uniq`, `tr`, `jq`, `diff`, `cmp`, `nl`, `od`, `hexdump`,
+  `sha256sum`…), the listing ones (`ls`, `tree`, `du`), the searching ones
+  (`grep`, `rg`, `ag`, `ack`, `fd`, `find`, `locate`, `which`, `whereis`,
+  `pgrep`), the neutral ones (`echo`, `printf`, `true`, `false`, `:`, `cd`,
+  `pwd`, `test`, `[`, `date`, `whoami`, `id`, `uname`, `nproc`, `df`…), the
+  read-only `git` subcommands (`status`, `log`, `diff`, `show`, `blame`,
+  `branch`, `tag`, `remote`, `config --get`, `stash list`, `worktree list`…
+  with the flags that would make them write refused — `branch -D`, a bare
+  `tag v1`, `log --output`, `-c key=value` ahead of the subcommand) and a
+  handful of `--version` queries; a path to a program (`./script.sh`,
+  `/usr/bin/ls`) is a program the table does not know;
+- none of a program's **writing or executing flags**: `find -exec`/`-ok`/
+  `-delete`/`-fprint`, `sort -o`/`--output`/`--compress-program`, `tree -o`,
+  `rg --pre`, `fd -x`, `jq -f`/`--rawfile`, `date -s`, `uniq in out`;
+- no **expansion** bash resolves at run time — a `$VAR`, a glob, a brace,
+  `$'…'` — anywhere in the command: `find . $FLAGS` may be `find . -delete`
+  by the time the shell is done, and `find . *` may be too if a file is
+  named `-delete`;
+- no substitution (`$(…)`, backticks, `<(…)`), no subshell or group, no
+  `NAME=value` environment ahead of the program (`PAGER=evil git log`), no
+  wrapper (`sudo`, `env`, `sh -c`, `xargs`, `time`);
+- no redirection but input (`<`, `<<<`, a heredoc), a descriptor
+  duplication (`2>&1`) or output to `/dev/null`.
+
+What fails any of it — `ls $HOME`, `cat f | tee g`, `sed -n 1p f`, `awk`, a
+pager, `cargo test` — is simply not proved, and goes where it always went:
+the classifier in auto mode, the prompt elsewhere. It is narrow on purpose:
+`bash` calls only (the companions keep their own rules — typing into a
+session is judged by the session's command, and a `less` session takes `!`
+escapes), a `PreToolUse` forced ask still asks, and **auto mode only**: manual
+and edit mode promise that commands ask, and keep the promise. And it is
+visible, through the channel the classifier's verdict uses:
+
+```
+● Bash(ls -la)
+  ⎿  total 40
+     drwxr-xr-x 1 user user  256 Aug  4 17:14 .
+     …
+     … +12 lines (ctrl+o to expand)
+  ⎿  Allowed as a read-only command
+```
+
+The parser is a real lexer of `bash -c`'s grammar (`readonly::lex`): single
+and double quotes with their escapes, `#` comments, the list and pipeline
+operators, redirections with their descriptors, the expansions a word
+carries. It is also what `permission::command_segments` splits a command
+with now, so a prefix rule and the read-only verdict can never disagree
+about where a command ends — which closed a hole the old splitter had: it
+read a backslash-escaped `\"` as an opening quote and knew no comments, so
+`echo \"; rm -rf ~; echo \"` was one `echo` segment to it, matched by a saved
+`echo *` rule, while bash ran the `rm`.
 
 ## Persisted per project (`~/.alter-zero/permissions.json`)
 

@@ -24,11 +24,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, BackgroundShell, BackgroundView, DeviceLogin, DeviceStatus, HistoryItem, HistorySearch,
-    KeyOnboarding, KeyStep, LiveTail, ModelLoad, ModelPicker, PathDisplay, QueuedTurn,
-    ResumeControl, ResumeFilter, ResumePicker, ResumeSort, Role, SearchState, SigninKind,
-    SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus, TurnStatus, TurnSummary,
-    command_query, matching_commands,
+    App, BackgroundShell, BackgroundView, DeviceLogin, DeviceStatus, GroupCommit, Hint,
+    HistoryItem, HistorySearch, KeyOnboarding, KeyStep, LiveGroup, LiveTail, ModelLoad,
+    ModelPicker, PathDisplay, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker, ResumeSort,
+    Role, SearchState, SigninKind, SlashCommand, ToastKind, TokenArrow, ToolCall, ToolGroup,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
 use crate::highlight;
@@ -98,7 +98,8 @@ pub use self::context_usage_view::{
 };
 pub use self::context_view::{ContextCache, context_lines, render_context_view};
 pub use self::conversation::{
-    banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,
+    GroupWalk, banner_tail, committed_history, conversation_lines, conversation_lines_with,
+    repaint_lines, repaint_lines_with, repaint_tail, repaint_tail_with,
 };
 pub use self::diff_view::{diff_body_rows, render_diff_view};
 pub use self::donate_view::{donate_picker_height, donate_view_lines, render_donate_picker};
@@ -149,7 +150,10 @@ pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::theme_view::{render_theme_picker, theme_picker_height};
 pub use self::tips::{tip_lines, tip_rows};
-pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};
+pub use self::tool::{
+    held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_commit_lines_with,
+    tool_group_live_lines, tool_group_settled_line, tool_group_settled_lines, tool_lines,
+};
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,
     render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,

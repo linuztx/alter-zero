@@ -87,7 +87,10 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
     // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
     // draws ([`preview_tool_lines`]) so the count and the paint agree.
-    if app.agent_group().is_some() || !app.tool_queue().is_empty() {
+    // …and an open compact-display group with nothing queued previews its
+    // summary (over the next round's draft or thinking block), sized from
+    // the same walk (docs/compact-tools.md).
+    if app.agent_group().is_some() || !app.tool_queue().is_empty() || app.tool_group_open() {
         return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
     }
     // A `write` still being generated previews its streaming cell

@@ -14,6 +14,7 @@ per change.
   ❯
 
 → Hide thinking           false
+  Verbose output          true
   Show images             true
   Image width             120
   Auto-resize images      true
@@ -22,7 +23,7 @@ per change.
   Permission mode         auto
   ...
   Max tool calls          0
-  (1/18)
+  (1/19)
 
   Hide the model's chain-of-thought…
 
@@ -32,13 +33,14 @@ per change.
 
 ## The settings
 
-Eighteen rows, each one a knob the running session actually reads. Every value
+Nineteen rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
 | Setting | Values | What it changes |
 |---|---|---|
 | **Hide thinking** | `false` / `true` | Whether the model's chain-of-thought streams in the live `● Thinking…` cell and collapses into a `Thought for …` line (`docs/thinking-stream.md`). `true` restores the counted-and-dropped behaviour. Seeded from `ALTER_ZERO_SHOW_THINKING`. |
+| **Verbose output** | **`true`** / `false` | Whether every tool call is its own cell. Off, consecutive read-only calls — a `read`, a `bash` listing, read or search — fold into one Claude-Code-style line that grows while the group is open (`● Reading 1 file, listing 1 directory… (ctrl+o to expand)` over the running call's hint) and settles into a dim `Read 1 file, listed 1 directory (ctrl+o to expand)` once the model writes, runs something else or answers (`docs/compact-tools.md`); Ctrl+O still shows every cell. Seeded from `ALTER_ZERO_VERBOSE`. Cycling it purge-rebuilds, so committed cells fold or unfold at once. |
 | **Show images** | `true` / `false` | Whether a pasted screenshot and the `read` tool's image reads are drawn as pictures in the conversation (`docs/images.md`). `false (unavailable)` when the terminal can't draw one. Cycling it purge-rebuilds, so committed pictures appear or vanish at once. |
 | **Image width** | `60` / `80` / `120` | An inline picture's width **cap**, in columns — clamped to the terminal, and never used to blow a small picture up. Cycling it purge-rebuilds like **Show images**. |
 | **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |
@@ -189,7 +191,7 @@ sheds rows before it flows*):
 ```
 ──────────────────────────────────────────────────────────
   ❯
-  ↑ 5 more above
+  ↑ 6 more above
   Tools                true
 → Permission mode      auto
   Checkpoints          false
@@ -263,6 +265,10 @@ docs`.
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
     `tui::stream` consults `App::settings().show_thinking()` per phase and
     `App::should_auto_compact` gates on the flag.
+  - **Verbose output** re-decides whether a run of read-only cells trailing
+    the history is held in the strip (`App::reopen_tool_group`), invalidates
+    the rendered history and purge-rebuilds, so the committed cells fold or
+    unfold on screen at once (`docs/compact-tools.md`).
   - **Show tips** writes its own file — `tips.json`, beside the walk's
     position (`docs/tips.md`) — and needs nothing else: `App::tip` reads the
     row every frame, so the row under the status line goes (or comes) at the

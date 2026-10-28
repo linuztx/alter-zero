@@ -295,6 +295,17 @@ impl Session<'_> {
             // Read by the `read` executor per call — nothing to redraw, since
             // this row is about the request and not the screen.
             SettingKey::AutoResizeImages => self.sync_image_policy(),
+            // The compact tool display (docs/compact-tools.md): the committed
+            // cells fold or unfold, so the screen rebuilds from history, and
+            // the transcript cache — pinned on the history generation — is
+            // invalidated like Show images' for the same reason.
+            SettingKey::VerboseOutput => {
+                // Mid-turn, the trailing run is held again or released
+                // before the rebuild decides what to paint for it.
+                self.app.reopen_tool_group();
+                self.app.invalidate_rendered_history();
+                rebuild = true;
+            }
             // Read where they are used — nothing to rebuild. The ask timeout
             // is read by the draw tick on every reading of the idle clock, so
             // `never` stops a running wait at once (docs/ask.md).

@@ -166,6 +166,7 @@ pub mod paste;
 pub mod permission;
 pub mod project_doc;
 pub mod pty;
+pub mod readonly;
 pub mod reminder;
 pub mod scratchpad;
 pub mod secrets;

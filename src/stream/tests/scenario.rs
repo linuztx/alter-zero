@@ -33,6 +33,7 @@ const EXAMPLES: &[&str] = &[
     "load a skill for me",
     "refresh the package databases with pacman",
     "run an interactive installer",
+    "explore the project layout",
     "hello there",
 ];
 

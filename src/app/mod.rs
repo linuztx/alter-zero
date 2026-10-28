@@ -59,6 +59,7 @@ mod status;
 mod tasks;
 mod theme;
 mod tips;
+mod tool_group;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -116,6 +117,10 @@ pub use self::status::{
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
+pub use self::tool_group::{
+    GroupCommit, Hint, LiveGroup, Member, ToolGroup, breaks, is_member, is_skippable, member_of,
+    run_len, trailing_run,
+};
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
     ToolStatus, apply_tool_screen,
@@ -331,6 +336,15 @@ pub struct App {
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
+    /// The compact tool display's one runtime bit (`docs/compact-tools.md`):
+    /// whether the run of read-only cells trailing `history` is an **open**
+    /// group — held out of scrollback, the strip's summary speaking for it —
+    /// rather than cells already committed (verbose output) or a group
+    /// already settled. Read via [`tool_group_open`](Self::tool_group_open).
+    tool_group_open: bool,
+    /// What the commit of the call that just resolved does about that group,
+    /// decided as it resolved ([`tool_group_commit`](Self::tool_group_commit)).
+    tool_group_commit: tool_group::GroupCommit,
     /// The live task list — the model's `taskcreate`/`taskupdate` state,
     /// rendered as the checklist under the status line while a turn runs and
     /// re-derived from history on every rewind
@@ -1215,6 +1229,7 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        self.drop_tool_group();
         // A cleared slate holds no tasks — the boundary resets the shared
         // registry beside this (docs/task-tools.md).
         self.tasks = crate::tasks::TaskStore::default();

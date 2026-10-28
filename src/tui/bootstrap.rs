@@ -907,11 +907,12 @@ impl<'t> Session<'t> {
         // picker's mid-session purge exists to drop the *previous* conversation's
         // rows; at startup there are none). Capped like every full rebuild.
         if !self.app.history.is_empty() {
-            let lines: Vec<Line<'static>> = ui::repaint_lines(
+            let lines: Vec<Line<'static>> = ui::repaint_lines_with(
                 &self.app.history,
                 width,
                 RESIZE_REFLOW_MAX_ROWS,
                 self.app.path_display(),
+                ui::GroupWalk::for_app(&self.app),
             );
             self.term.insert_before(lines);
         }

@@ -44,6 +44,7 @@ widened for the split.
 | `file_picker.rs` | The `@` picker's query round-trip and path insertion. |
 | `input_history.rs` | `InputHistory` (↑/↓ recall) and `HistorySearch` (Ctrl+R). |
 | `queue.rs` | `QueuedTurn`, the mid-turn queue, and the messages handed to the running turn (`docs/queue.md`). |
+| `tool_group.rs` | The compact tool display's group (`docs/compact-tools.md`): which resolved calls are members (`member_of`), the run trailing the history, the `ToolGroup` tally and its summary grammar, and the hold/flush decision a resolving call makes (`GroupCommit`) — the one runtime bit `tool_group_open` over the records. |
 | `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
 | `drafts.rs` | The calls a round is still **generating**: `ArgsScanner` (streamed JSON arguments decoded as they arrive), `ToolDraft` and `ToolDrafts` — the lifecycle a `write` previews by while its file streams into its cell (`docs/write-streaming.md`). |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |

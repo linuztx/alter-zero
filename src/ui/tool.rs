@@ -1043,6 +1043,50 @@ pub fn tool_commit_lines(
     width: u16,
     paths: &PathDisplay,
 ) -> Option<Vec<Line<'static>>> {
+    tool_commit_lines_with(history, queue, width, paths, GroupCommit::Off)
+}
+
+/// [`tool_commit_lines`] under the compact tool display (`docs/compact-tools.md`),
+/// `group` being what the resolving call decided about its group
+/// ([`App::tool_group_commit`]): a **held** member commits nothing (the
+/// strip's summary speaks for it), a member that **ends** its group commits
+/// the group's one settled line with itself inside it, and a breaker that
+/// found the group open commits that line first and then its own cell —
+/// over the parallel-MCP hold either way, so a flushed group ahead of a held
+/// MCP cell still lands. `GroupCommit::Off` is [`tool_commit_lines`].
+#[must_use]
+pub fn tool_commit_lines_with(
+    history: &[HistoryItem],
+    queue: &VecDeque<ToolCall>,
+    width: u16,
+    paths: &PathDisplay,
+    group: GroupCommit,
+) -> Option<Vec<Line<'static>>> {
+    match group {
+        GroupCommit::Off => tool_commit_lines_plain(history, queue, width, paths),
+        GroupCommit::Hold => None,
+        GroupCommit::FlushWith => Some(tool_group_settled_lines(history)),
+        GroupCommit::FlushBefore => {
+            let before = history.len().saturating_sub(1);
+            let mut lines = tool_group_settled_lines(&history[..before]);
+            if let Some(cell) = tool_commit_lines_plain(history, queue, width, paths) {
+                if !lines.is_empty() && !cell.is_empty() {
+                    lines.push(Line::default()); // the spacer between committed cells
+                }
+                lines.extend(cell);
+            }
+            Some(lines)
+        }
+    }
+}
+
+/// The verbose commit: every cell its own, a parallel MCP run aggregated.
+fn tool_commit_lines_plain(
+    history: &[HistoryItem],
+    queue: &VecDeque<ToolCall>,
+    width: u16,
+    paths: &PathDisplay,
+) -> Option<Vec<Line<'static>>> {
     let HistoryItem::Tool(last) = history.last()? else {
         return None;
     };
@@ -1135,6 +1179,101 @@ pub fn resolved_tools_commit_lines(
         lines.extend(cell);
     }
     lines
+}
+
+/// The compact tool display's **live group** (`docs/compact-tools.md`): the
+/// `● Searching for 1 pattern, reading 2 files… (ctrl+o to expand)` header —
+/// the bullet a running call's grey, blinking against `pulse`, since the
+/// group is still taking calls — over the dim `⎿` hint row naming its newest
+/// member (`$ rg -n main src`, or a file by the path display rule), with the
+/// running command's own clock once it has run `TOOL_BACKGROUND_HINT_DELAY`
+/// (a fast command never shows one). Drawn in the strip only; what commits
+/// is [`tool_group_settled_line`].
+#[must_use]
+pub fn tool_group_live_lines(
+    live: &LiveGroup,
+    pulse: Duration,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![tool_group_header(&live.group, Some(pulse), width)];
+    if let Some(hint) = &live.group.hint {
+        let mut text = match hint {
+            Hint::Path(path) => paths.display(path),
+            Hint::Command(command) => {
+                let collapsed = command.split_whitespace().collect::<Vec<_>>().join(" ");
+                format!("{TOOL_GROUP_COMMAND_PREFIX}{collapsed}")
+            }
+        };
+        if let Some(elapsed) = live
+            .running
+            .filter(|elapsed| *elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+        {
+            text.push_str(&format!(" ({}s)", elapsed.as_secs()));
+        }
+        let room = (width as usize)
+            .saturating_sub(cols(TOOL_RESULT_PREFIX))
+            .max(1);
+        if cols(&text) > room {
+            text = format!(
+                "{}{TOOL_HEADER_ELLIPSIS}",
+                truncate_cols(&text, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)))
+            );
+        }
+        lines.push(result_row(0, text));
+    }
+    lines
+}
+
+/// The live group's header row — the active summary, `…`, and the expand
+/// hint when the terminal has room for it (the MCP header's own rule).
+fn tool_group_header(group: &ToolGroup, pulse: Option<Duration>, width: u16) -> Line<'static> {
+    let label = format!("{}{MCP_CALLING_SUFFIX}", group.summary(true));
+    let label_room = (width as usize).saturating_sub(cols(TOOL_BULLET)).max(1);
+    let mut spans = vec![
+        bullet_span(
+            tool_status_color(ToolStatus::Running),
+            running_blink(ToolStatus::Running, pulse),
+        ),
+        Span::styled(
+            truncate_cols(&label, label_room),
+            Style::new()
+                .fg(tool_name_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if cols(TOOL_BULLET) + cols(&label) + cols(EXPAND_HINT) <= width as usize {
+        spans.push(Span::styled(
+            EXPAND_HINT.to_string(),
+            Style::new().fg(tool_dim_color()),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The bullet-less dim `Searched for 1 pattern, read 2 files (ctrl+o to
+/// expand)` line a settled group leaves in scrollback — the parallel MCP
+/// run's `Called deepwiki 2 times` shape (`mcp_called_line`), because what
+/// is left is a fact about the turn; every member's own cell lives in Ctrl+O.
+#[must_use]
+pub fn tool_group_settled_line(group: &ToolGroup) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{}{EXPAND_HINT}", group.summary(false)),
+        Style::new().fg(reasoning_label_color()),
+    ))
+}
+
+/// The settled line of the group **trailing** `history`
+/// ([`crate::app::trailing_run`]) — what a flush commits. Empty when the
+/// newest records hold no member.
+#[must_use]
+pub fn tool_group_settled_lines(history: &[HistoryItem]) -> Vec<Line<'static>> {
+    let group = ToolGroup::of(crate::app::trailing_run(history));
+    if group.is_empty() {
+        Vec::new()
+    } else {
+        vec![tool_group_settled_line(&group)]
+    }
 }
 
 /// The `● Calling {label}… (ctrl+o to expand)` header row a collapsed MCP

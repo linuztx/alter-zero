@@ -4812,3 +4812,242 @@ fn the_strip_follows_the_apps_live_tail() {
         "the strip is sized by the same walk it is painted from"
     );
 }
+
+// ===== the compact tool display's group (docs/compact-tools.md) =====
+
+use crate::ui::conversation::{GroupWalk, conversation_lines_with};
+use crate::ui::tool::{tool_commit_lines_with, tool_group_live_lines, tool_group_settled_lines};
+
+/// An app with the compact display on and a turn running.
+fn compact_app() -> App {
+    let mut app = App::new();
+    app.settings_mut().verbose_output = false;
+    app.begin_stream();
+    app
+}
+
+fn commit_now(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
+    tool_commit_lines_with(
+        &app.history,
+        app.tool_queue(),
+        width,
+        app.path_display(),
+        app.tool_group_commit(),
+    )
+}
+
+#[test]
+fn a_compact_group_holds_its_members_and_settles_as_one_dim_line() {
+    let mut app = compact_app();
+    app.start_tool("Bash", "ls -la", Some(r#"{"command":"ls -la"}"#));
+    app.end_tool("Exit code: 0\ntotal 4", true);
+    assert_eq!(commit_now(&app, 80), None, "a member is held");
+    app.start_tool("Read", "/p/mathutil.py", None);
+    app.end_tool("1 def add():", true);
+    assert_eq!(commit_now(&app, 80), None, "still held");
+    // The rebuild agrees: an open group paints nothing for its members…
+    let paths = app.path_display();
+    let open = conversation_lines_with(&app.history, 80, paths, GroupWalk::Compact { open: true });
+    assert!(
+        open.is_empty(),
+        "{:?}",
+        open.iter().map(plain).collect::<Vec<_>>()
+    );
+    // …and a settled one paints the one line the flush commits.
+    let settled = tool_group_settled_lines(&app.history);
+    assert_eq!(settled.len(), 1);
+    assert_eq!(
+        plain(&settled[0]),
+        "Read 1 file, listed 1 directory (ctrl+o to expand)"
+    );
+    assert_eq!(settled[0].spans[0].style.fg, Some(reasoning_label_color()));
+    let closed =
+        conversation_lines_with(&app.history, 80, paths, GroupWalk::Compact { open: false });
+    let texts: Vec<String> = closed.iter().map(plain).collect();
+    assert_eq!(
+        texts,
+        vec![
+            "Read 1 file, listed 1 directory (ctrl+o to expand)".to_string(),
+            String::new()
+        ]
+    );
+    // Verbose output is untouched: every cell its own.
+    let verbose: Vec<String> = conversation_lines(&app.history, 80, paths)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(verbose[0], "● Bash(ls -la)");
+    assert!(
+        verbose.iter().any(|t| t.starts_with("● Read(")),
+        "{verbose:?}"
+    );
+    assert_eq!(
+        conversation_lines_with(&app.history, 80, paths, GroupWalk::Off),
+        conversation_lines(&app.history, 80, paths)
+    );
+}
+
+#[test]
+fn a_breaker_flushes_the_group_ahead_of_its_own_cell_and_the_rebuild_agrees() {
+    let mut app = compact_app();
+    app.start_tool("Bash", "rg -n main src", None);
+    app.end_tool("src/main.rs:1:fn main", true);
+    app.start_tool("Write", "/p/hello.py", None);
+    app.end_tool("Wrote 1 line to /p/hello.py\n1 print()", true);
+    let lines = commit_now(&app, 80).expect("the breaker commits");
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts[0], "Searched for 1 pattern (ctrl+o to expand)");
+    assert_eq!(texts[1], "", "a spacer between the two cells");
+    assert_eq!(texts[2], "● Write(/p/hello.py)");
+    let rebuilt: Vec<String> = conversation_lines_with(
+        &app.history,
+        80,
+        app.path_display(),
+        GroupWalk::Compact { open: false },
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        &rebuilt[..3],
+        &texts[..3],
+        "scrollback and the rebuild agree"
+    );
+}
+
+#[test]
+fn a_member_whose_successor_is_a_breaker_commits_the_group_with_itself() {
+    let mut app = compact_app();
+    app.start_tool_batch(&[
+        crate::stream::ToolCallSummary {
+            name: "Read".to_string(),
+            args: "/p/a.rs".to_string(),
+        },
+        crate::stream::ToolCallSummary {
+            name: "Write".to_string(),
+            args: "/p/b.rs".to_string(),
+        },
+    ]);
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    let lines = commit_now(&app, 80).expect("the group ends with the read");
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts, vec!["Read 1 file (ctrl+o to expand)".to_string()]);
+}
+
+#[test]
+fn a_failed_member_is_a_breaker_whose_red_cell_follows_the_settled_line() {
+    let mut app = compact_app();
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    app.start_tool("Read", "/p/gone.rs", None);
+    app.end_tool("Error: no such file", false);
+    let texts: Vec<String> = commit_now(&app, 80)
+        .expect("commits")
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(texts[0], "Read 1 file (ctrl+o to expand)");
+    assert_eq!(texts[2], "● Read(/p/gone.rs)");
+    assert!(texts[3].contains("no such file"), "{texts:?}");
+}
+
+#[test]
+fn thoughts_among_the_members_keep_their_lines_and_the_group_lands_after_them() {
+    let mut app = compact_app();
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    app.history
+        .push(HistoryItem::Reasoning(crate::app::Reasoning {
+            text: "hm".to_string(),
+            secs: 2,
+            tokens: 0,
+            timestamp: String::new(),
+        }));
+    app.start_tool("Read", "/p/b.rs", None);
+    app.end_tool("1 y", true);
+    app.history.push(HistoryItem::Message(crate::app::Message {
+        role: Role::Assistant,
+        text: "So:".to_string(),
+        timestamp: String::new(),
+        images: Vec::new(),
+    }));
+    let texts: Vec<String> = conversation_lines_with(
+        &app.history,
+        80,
+        app.path_display(),
+        GroupWalk::Compact { open: false },
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert!(texts[0].starts_with("Thought for 2s"), "{texts:?}");
+    assert_eq!(texts[1], "");
+    assert_eq!(texts[2], "Read 2 files (ctrl+o to expand)");
+    assert_eq!(texts[3], "");
+    assert!(texts[4].contains("So:"), "{texts:?}");
+}
+
+#[test]
+fn the_live_group_blinks_its_bullet_over_the_running_commands_hint() {
+    let mut app = compact_app();
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    app.start_tool("Bash", "ls   -la", Some(r#"{"command":"ls   -la"}"#));
+    let live = app.live_tool_group().expect("a live group");
+    let lines = tool_group_live_lines(&live, Duration::ZERO, 80, app.path_display());
+    assert_eq!(
+        plain(&lines[0]),
+        "● Reading 1 file, listing 1 directory… (ctrl+o to expand)"
+    );
+    assert_eq!(plain(&lines[1]), "  ⎿  $ ls -la", "whitespace collapsed");
+    assert_eq!(lines[0].spans[0].style.fg, Some(tool_running_color()));
+    // Hidden for the second half of every second, like a running tool's.
+    let blinked = tool_group_live_lines(&live, Duration::from_millis(600), 80, app.path_display());
+    assert_eq!(
+        plain(&blinked[0]).trim_start(),
+        &plain(&lines[0])[TOOL_BULLET.len()..]
+    );
+    assert!(plain(&blinked[0]).starts_with("  "));
+    // Past the hint delay the running command's own clock rides the hint.
+    app.set_command_elapsed(Some(Duration::from_secs(4)));
+    let clocked = tool_group_live_lines(
+        &app.live_tool_group().expect("still live"),
+        Duration::ZERO,
+        80,
+        app.path_display(),
+    );
+    assert_eq!(plain(&clocked[1]), "  ⎿  $ ls -la (4s)");
+    // Narrow: the hint is dropped before the summary is cut, and a long
+    // command hint is cut with an ellipsis.
+    let narrow = tool_group_live_lines(&live, Duration::ZERO, 40, app.path_display());
+    assert_eq!(plain(&narrow[0]), "● Reading 1 file, listing 1 directory…");
+    let mut wide = compact_app();
+    wide.start_tool("Bash", &format!("grep -rn {} .", "a".repeat(60)), None);
+    let cut = tool_group_live_lines(
+        &wide.live_tool_group().expect("live"),
+        Duration::ZERO,
+        30,
+        wide.path_display(),
+    );
+    let hint = plain(&cut[1]);
+    assert!(hint.ends_with('…') && cols(&hint) <= 30, "{hint:?}");
+}
+
+#[test]
+fn a_read_member_hints_its_path_by_the_display_rule() {
+    let mut app = compact_app();
+    app.set_path_display(PathDisplay::new(
+        std::path::PathBuf::from("/home/linuztx/proj"),
+        Some(std::path::PathBuf::from("/home/linuztx")),
+    ));
+    app.start_tool("Read", "/home/linuztx/proj/mathutil.py", None);
+    let lines = tool_group_live_lines(
+        &app.live_tool_group().expect("live"),
+        Duration::ZERO,
+        80,
+        app.path_display(),
+    );
+    assert_eq!(plain(&lines[0]), "● Reading 1 file… (ctrl+o to expand)");
+    assert_eq!(plain(&lines[1]), "  ⎿  mathutil.py");
+}

@@ -221,9 +221,13 @@ impl Session<'_> {
     /// (invariant 4: history always records; an overlay return repaints from
     /// it).
     fn settle_bg_completion(&mut self, completion: &BgCompletion) {
+        // A notice cell is a breaker for the compact display's group
+        // (docs/compact-tools.md).
+        let width = self.term.screen().width;
+        let committing = self.commits_allowed();
+        self.flush_tool_group(committing);
         let notice = self.app.record_background_notice(completion);
-        if self.commits_allowed() {
-            let width = self.term.screen().width;
+        if committing {
             // A completion can settle right after a turn whose strip just
             // collapsed — reseat the viewport like every post-stream commit
             // so the notice replaces the strip's rows in place (invariant 3).
@@ -241,10 +245,12 @@ impl Session<'_> {
     /// recorded group entry first so the Ctrl+O cell shows the final response
     /// (docs/agent-tool.md).
     fn settle_agent_notice(&mut self, notice: &alter_zero::app::AgentNotice) {
+        let width = self.term.screen().width;
+        let committing = self.commits_allowed();
+        self.flush_tool_group(committing);
         self.app.settle_agent_completion(notice);
         self.app.record_agent_notice(notice);
-        if self.commits_allowed() {
-            let width = self.term.screen().width;
+        if committing {
             let height = self.live_region_height();
             self.term.set_view_height(height);
             self.term

@@ -554,75 +554,20 @@ impl CommandScope {
 }
 
 /// Split a command into its pipeline/list segments on `|`, `||`, `&&`, `&`,
-/// `;` and newlines, respecting single and double quotes. Empty segments are
-/// dropped.
+/// `;` and newlines, each as bash reads it ([`crate::readonly::lex`]): quotes
+/// keep an operator literal, a backslash escapes the next character (so a
+/// `\"` opens no quote, and a `;` behind one is a real `;`), and a `#`
+/// comment hides nothing. Empty segments are dropped. A command bash itself
+/// refuses — an unterminated quote — is one segment, judged as it stands.
 #[must_use]
 pub fn command_segments(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            current.push(c);
-            if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => {
-                quote = Some(c);
-                current.push(c);
-            }
-            '|' | '&' => {
-                if chars.peek() == Some(&c) {
-                    chars.next(); // a doubled `||` / `&&` operator
-                }
-                out.push(std::mem::take(&mut current));
-            }
-            ';' | '\n' => out.push(std::mem::take(&mut current)),
-            _ => current.push(c),
-        }
+    match crate::readonly::lex(command) {
+        Some(segments) => segments.into_iter().map(|s| s.raw).collect(),
+        None => Some(command.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .into_iter()
+            .collect(),
     }
-    out.push(current);
-    out.into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Whether a segment carries a redirect or a substitution — something a prefix
-/// would silently drop, so the scope degrades to an exact match. Quote-aware:
-/// `>`/`<` are literal inside quotes (`echo "a > b"` redirects nothing — the
-/// old raw `contains` degraded it for no reason), while `` ` `` and `$(` stay
-/// live inside **double** quotes (`"$(whoami)"` runs) and are inert only in
-/// single ones.
-fn has_redirect(segment: &str) -> bool {
-    let mut quote: Option<char> = None;
-    let mut chars = segment.chars().peekable();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some('\'') => {
-                if c == '\'' {
-                    quote = None;
-                }
-            }
-            Some(_) => match c {
-                '"' => quote = None,
-                '`' => return true,
-                '$' if chars.peek() == Some(&'(') => return true,
-                _ => {}
-            },
-            None => match c {
-                '\'' | '"' => quote = Some(c),
-                '>' | '<' | '`' => return true,
-                '$' if chars.peek() == Some(&'(') => return true,
-                _ => {}
-            },
-        }
-    }
-    false
 }
 
 /// Programs whose second word is a *subcommand* worth keeping in the rule:
@@ -716,17 +661,27 @@ pub fn segment_prefix(segment: &str) -> Option<String> {
 /// Reduce a command to what the session allowlist stores and shows.
 #[must_use]
 pub fn command_scope(command: &str) -> CommandScope {
-    let segments = command_segments(command);
     let exact = || CommandScope::Exact(command.trim().to_string());
+    // An unterminated quote is a command bash refuses whole: nothing to
+    // summarize, so only the byte-identical command ever matches.
+    let Some(segments) = crate::readonly::lex(command) else {
+        return exact();
+    };
     if segments.is_empty() {
         return exact();
     }
     let mut keys = Vec::new();
     for segment in &segments {
-        if has_redirect(segment) {
+        // A redirect, a substitution or a subshell is something a prefix
+        // would silently drop, so the scope degrades to an exact match.
+        // The lexer is quote-aware: `>`/`<` are literal inside quotes
+        // (`echo "a > b"` redirects nothing), while `` ` `` and `$(` stay
+        // live inside **double** quotes (`"$(whoami)"` runs) and are inert
+        // only in single ones.
+        if !segment.redirects.is_empty() || segment.substitution || segment.grouping {
             return exact();
         }
-        match segment_prefix(segment) {
+        match segment_prefix(&segment.raw) {
             Some(prefix) => keys.push(prefix),
             None => return exact(),
         }
@@ -1511,6 +1466,43 @@ mod tests {
             command_scope(r#"echo "`whoami`""#),
             CommandScope::Exact(_)
         ));
+    }
+
+    #[test]
+    fn an_escaped_quote_or_a_comment_hides_no_operator_from_the_scope() {
+        // To bash `\"` is a literal character, so the `;` after it is a real
+        // separator and `rm -rf ~` runs. The old splitter opened a quote
+        // there and reported one `echo` segment, which a saved `echo *`
+        // rule covered — the hole `readonly::lex` closes.
+        assert_eq!(
+            command_segments(r#"echo \"; rm -rf ~; echo \""#),
+            vec![r#"echo \""#, "rm -rf ~", r#"echo \""#]
+        );
+        let scope = command_scope(r#"echo \"; rm -rf ~; echo \""#);
+        assert_eq!(
+            scope.keys(),
+            vec!["echo".to_string(), "rm".to_string(), "echo".to_string()]
+        );
+        // A `#` where a word would start comments out the rest of the line,
+        // so the quote inside it opens nothing either.
+        assert_eq!(
+            command_segments("echo #'\nrm -rf ~\n#'"),
+            vec!["echo", "rm -rf ~"]
+        );
+        assert!(matches!(
+            command_scope(r#"echo \' $(whoami) \'"#),
+            CommandScope::Exact(_)
+        ));
+        assert!(
+            matches!(command_scope("ls \""), CommandScope::Exact(_)),
+            "an unterminated quote is a command bash refuses: nothing to summarize"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_duplication_is_a_redirect_not_a_background_operator() {
+        assert_eq!(command_segments("ls 2>&1 | head"), vec!["ls 2>&1", "head"]);
+        assert!(matches!(command_scope("ls 2>&1"), CommandScope::Exact(_)));
     }
 
     // --- the session rules ---

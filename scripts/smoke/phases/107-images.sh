@@ -109,7 +109,8 @@ tmux send-keys -t "$S107" -l "/settings"
 sleep 0.3
 tmux send-keys -t "$S107" Enter
 sleep 0.5
-tmux send-keys -t "$S107" Down
+# Show images is the third row, under Hide thinking and Verbose output.
+tmux send-keys -t "$S107" Down Down
 sleep 0.2
 img_row_seen=0
 if tmux capture-pane -t "$S107" -p | grep -qE 'Show images +true'; then
@@ -137,7 +138,8 @@ tmux send-keys -t "$S107" -l "/settings"
 sleep 0.3
 tmux send-keys -t "$S107" Enter
 sleep 0.5
-tmux send-keys -t "$S107" Down
+# Show images is the third row, under Hide thinking and Verbose output.
+tmux send-keys -t "$S107" Down Down
 sleep 0.2
 img_row_off=0
 if tmux capture-pane -t "$S107" -p | grep -qE 'Show images +false'; then

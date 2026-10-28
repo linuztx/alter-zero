@@ -1258,6 +1258,11 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(show) = env_flag_set("ALTER_ZERO_SHOW_THINKING") {
         settings.hide_thinking = !show;
     }
+    // `ALTER_ZERO_VERBOSE=0` is the compact tool display for a run
+    // (docs/compact-tools.md).
+    if let Some(verbose) = env_flag_set("ALTER_ZERO_VERBOSE") {
+        settings.verbose_output = verbose;
+    }
     if let Some(on) = env_flag_set("ALTER_ZERO_TOOLS") {
         settings.tools = on;
     }

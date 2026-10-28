@@ -85,11 +85,15 @@ impl Session<'_> {
     /// otherwise flush against the stale strip-inflated height and scroll the
     /// box off the bottom (invariant 3).
     pub(crate) fn commit_tool_cell(&mut self, committing: bool, width: u16) -> bool {
-        let Some(lines) = ui::tool_commit_lines(
+        // Under the compact tool display the resolving call also decided
+        // its group's fate — held, flushed with it, or flushed ahead of it
+        // (`docs/compact-tools.md`).
+        let Some(lines) = ui::tool_commit_lines_with(
             &self.app.history,
             self.app.tool_queue(),
             width,
             self.app.path_display(),
+            self.app.tool_group_commit(),
         ) else {
             return false;
         };
@@ -102,6 +106,32 @@ impl Session<'_> {
         true
     }
 
+    /// Settle the compact tool display's **open group** before a breaker
+    /// commits (`docs/compact-tools.md`): assistant text, a user message, a
+    /// notice, a call that is not a member, the turn's end — each calls this
+    /// first, so the group's one dim `Read 2 files, listed 1 directory
+    /// (ctrl+o to expand)` line lands above it, where the rebuild
+    /// ([`ui::conversation_lines_with`]) paints it from the same history. A
+    /// no-op when no group is open — which is always, in verbose output.
+    pub(crate) fn flush_tool_group(&mut self, committing: bool) {
+        if !self.app.close_tool_group() {
+            return;
+        }
+        if !committing {
+            return;
+        }
+        let lines = ui::tool_group_settled_lines(&self.app.history);
+        if lines.is_empty() {
+            return;
+        }
+        // The strip loses the summary as it commits, so reseat first
+        // (invariant 3).
+        let height = self.live_region_height();
+        self.term.set_view_height(height);
+        self.term.insert_before(lines);
+        self.term.insert_before(vec![Line::default()]);
+    }
+
     /// Commit a one-off notice to scrollback + history, finalising any in-flight
     /// streamed segment first so the notice slots in order — the same flush
     /// trick a tool call uses. The shared body of [`Session::commit_error_notice`]
@@ -111,6 +141,7 @@ impl Session<'_> {
     fn commit_notice(&mut self, role: Role, record: fn(&mut App, &str), text: &str) {
         let width = self.term.screen().width;
         let committing = self.commits_allowed();
+        self.flush_tool_group(committing);
         if let Some(segment) = self.app.flush_streaming_segment()
             && committing
         {
@@ -157,12 +188,18 @@ impl Session<'_> {
     ///
     /// [`App::interrupt_turn`]: alter_zero::app::App::interrupt_turn
     /// [`App::fail_stream`]: alter_zero::app::App::fail_stream
+    ///
+    /// `group_open` is whether the compact display's group was open when the
+    /// turn died — read before the death resolved the queue, since the
+    /// resolutions close it — in which case its settled line commits ahead
+    /// of the cells that ended it (`docs/compact-tools.md`).
     pub(crate) fn commit_turn_failure(
         &mut self,
         partial: Option<String>,
         tools: &[ToolCall],
         agents: Option<AgentGroup>,
         notice: Option<&str>,
+        group_open: bool,
     ) {
         // The caller guarantees the conversation view, but a backend error can
         // still land while a framed view's flow covers the screen — the
@@ -177,6 +214,19 @@ impl Session<'_> {
         if let Some(partial) = partial {
             self.term.insert_before(self.render.finish(&partial, width));
             self.term.insert_before(vec![Line::default()]);
+        }
+        // The group the death found open: its members sit just before the
+        // cells the death resolved, the agent group it took down and the
+        // notice recorded behind them.
+        if group_open {
+            let before = self.app.history.len().saturating_sub(
+                tools.len() + usize::from(agents.is_some()) + usize::from(notice.is_some()),
+            );
+            let lines = ui::tool_group_settled_lines(&self.app.history[..before]);
+            if !lines.is_empty() {
+                self.term.insert_before(lines);
+                self.term.insert_before(vec![Line::default()]);
+            }
         }
         // Every call the death resolved — the running one and each `⎿
         // Waiting…` sibling behind it, plus any MCP cells a run was holding —

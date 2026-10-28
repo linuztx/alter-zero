@@ -403,7 +403,10 @@ impl Session<'_> {
         let width = self.term.screen().width;
         let owed = self.begin_turn_agent_settle(width);
         // Interrupt only arises in the conversation view (overlay Esc returns
-        // instead), so nothing here touches the alternate screen.
+        // instead), so nothing here touches the alternate screen. The compact
+        // display's group is read before the interrupt resolves the queue,
+        // which closes it (docs/compact-tools.md).
+        let group_open = self.app.tool_group_open();
         let interrupted = self.app.interrupt_turn(elapsed);
         self.finish_turn_agent_settle(owed, width);
         match interrupted {
@@ -441,7 +444,7 @@ impl Session<'_> {
                         self.agent_clocks.remove(&entry.id);
                     }
                 }
-                self.commit_turn_failure(partial, &tools, agents, notice);
+                self.commit_turn_failure(partial, &tools, agents, notice, group_open);
                 self.render.reset();
                 // The receipt closes the turn, under the notice: a background
                 // completion no round read settles above it first — the

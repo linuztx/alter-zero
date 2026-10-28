@@ -224,6 +224,10 @@ pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
+/// What a compact group's `⎿` hint row puts before a member command —
+/// `⎿  $ ls -la` — so a command reads as one and a file path as the other
+/// (`docs/compact-tools.md`).
+pub(super) const TOOL_GROUP_COMMAND_PREFIX: &str = "$ ";
 
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at

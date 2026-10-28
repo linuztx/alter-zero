@@ -12,7 +12,37 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A compact tool display.** Turn `/settings` → **Verbose output** off (or
+  run with `ALTER_ZERO_VERBOSE=0`) and the model's housekeeping — its reads,
+  searches and directory listings — folds into one Claude-Code-style line
+  instead of a cell per call: `● Reading 1 file, listing 1 directory…
+  (ctrl+o to expand)` over the running command while the model keeps
+  looking, settling into a dim `Read 1 file, listed 1 directory (ctrl+o to
+  expand)` once it writes something, runs anything else or answers. A
+  thought between two reads stays its own `Thought for …` line; a failed
+  read shows whole. Ctrl+O, the context and the rollout keep every cell, so
+  nothing is lost and a `/resume` folds the same way. Verbose output — the
+  default — is exactly what the app did before (`docs/compact-tools.md`).
+- **Read-only commands run unasked in auto mode.** A `bash` command the app
+  can prove changes nothing — `ls -la`, `cat f | head`, `rg -n main src`,
+  `git status`, `find . -name '*.rs' 2>/dev/null` — no longer waits on the
+  auto mode classifier: it runs at once with a dim `⎿ Allowed as a read-only
+  command` row. The proof is strict (a `$VAR` or a glob, a redirect into a
+  file, a `find -exec`, a `sort -o`, a `sudo` are not read-only), so
+  everything else goes to the classifier as before; manual and edit mode
+  still ask (`docs/permissions.md` *Read-only commands*).
+
 ### Fixed
+
+- **A saved command rule could be slipped past with an escaped quote or a
+  comment.** The splitter behind `python3 *`-style rules read `\"` as an
+  opening quote and knew no `#` comments, so `echo \"; rm -rf ~; echo \"`
+  was one `echo` segment to it — matched by a saved `echo *` rule — while
+  bash ran the `rm`. It now lexes a command the way `bash -c` does, so a
+  `;` behind an escaped quote or inside a comment is a separator to both
+  (`docs/permissions.md`).
 
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.

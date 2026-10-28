@@ -338,6 +338,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("interactive"),
         play: Play::Script(turns::interactive_turn),
     },
+    // Three read-only calls, one a round — the compact tool display's
+    // summary growing a clause at a time (docs/compact-tools.md).
+    Scenario {
+        #[cfg(test)]
+        name: "explore",
+        selects: |cue| cue.mentions("explore"),
+        play: Play::Script(turns::explore_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]

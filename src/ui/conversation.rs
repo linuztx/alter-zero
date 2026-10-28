@@ -30,19 +30,88 @@ pub fn committed_history<'a>(
     &history[..history.len() - super::tool::held_run_len(history, queue)]
 }
 
+/// How a rebuild folds the compact tool display's groups
+/// (`docs/compact-tools.md`) — the choice [`conversation_lines_with`] walks
+/// under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupWalk {
+    /// Verbose output: every cell its own.
+    #[default]
+    Off,
+    /// Consecutive read-only cells fold into one settled line each; `open`
+    /// says whether the run trailing the history is still **held** by the
+    /// commit path (the strip shows it), so the rebuild paints nothing for it
+    /// — only the thoughts among its members, which committed their own
+    /// lines.
+    Compact { open: bool },
+}
+
+impl GroupWalk {
+    /// The walk the app's own conversation rebuilds under.
+    #[must_use]
+    pub fn for_app(app: &App) -> Self {
+        if app.compact_tools() {
+            Self::Compact {
+                open: app.tool_group_open(),
+            }
+        } else {
+            Self::Off
+        }
+    }
+}
+
 /// Build the whole conversation as styled lines, mirroring how it was streamed
 /// to scrollback: each message's wrapped lines (or each tool call's collapsed
 /// peek), with a blank spacer after every item. Used to repaint after a resize
-/// clears the screen, or when returning from the tool-output view.
+/// clears the screen, or when returning from the tool-output view. Every cell
+/// its own — [`conversation_lines_with`] folds the compact display's groups.
 #[must_use]
 pub fn conversation_lines(
     history: &[HistoryItem],
     width: u16,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
+    conversation_lines_with(history, width, paths, GroupWalk::Off)
+}
+
+/// [`conversation_lines`] under `groups`: with the compact tool display on,
+/// each run of consecutive read-only cells ([`crate::app::run_len`]) is one
+/// settled `Searched for 1 pattern, read 2 files (ctrl+o to expand)` line —
+/// the very line the commit path wrote when the run ended
+/// ([`tool_commit_lines_with`], `docs/compact-tools.md`) — placed where the
+/// run **closed**, after the `Thought for …` lines of the thoughts among its
+/// members (which committed as they happened); and the run still open at the
+/// history's end paints nothing but those, the strip speaking for it.
+#[must_use]
+pub fn conversation_lines_with(
+    history: &[HistoryItem],
+    width: u16,
+    paths: &PathDisplay,
+    groups: GroupWalk,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut index = 0;
     while index < history.len() {
+        if let GroupWalk::Compact { open } = groups {
+            let run = crate::app::run_len(&history[index..]);
+            if run > 0 {
+                for item in &history[index..index + run] {
+                    if let HistoryItem::Reasoning(r) = item {
+                        lines.extend(reasoning_lines(r, width));
+                        lines.push(Line::default());
+                    }
+                }
+                let held = open && index + run == history.len();
+                if !held {
+                    lines.extend(super::tool::tool_group_settled_lines(
+                        &history[..index + run],
+                    ));
+                    lines.push(Line::default());
+                }
+                index += run;
+                continue;
+            }
+        }
         // A **parallel MCP run** — consecutive cells of one announced batch,
         // all resolved ok — is one act, so it collapses to the single
         // `Called deepwiki 2 times (ctrl+o to expand)` line the commit path
@@ -100,7 +169,22 @@ pub fn repaint_lines(
     max_rows: usize,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    keep_last_rows(conversation_lines(history, width, paths), max_rows)
+    repaint_lines_with(history, width, max_rows, paths, GroupWalk::Off)
+}
+
+/// [`repaint_lines`] under `groups` ([`conversation_lines_with`]).
+#[must_use]
+pub fn repaint_lines_with(
+    history: &[HistoryItem],
+    width: u16,
+    max_rows: usize,
+    paths: &PathDisplay,
+    groups: GroupWalk,
+) -> Vec<Line<'static>> {
+    keep_last_rows(
+        conversation_lines_with(history, width, paths, groups),
+        max_rows,
+    )
 }
 
 /// The repaint tail for a mid-stream conversation rebuild
@@ -121,7 +205,29 @@ pub fn repaint_tail(
     max_rows: usize,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let mut lines = conversation_lines(history, width, paths);
+    repaint_tail_with(
+        history,
+        streaming,
+        render,
+        width,
+        max_rows,
+        paths,
+        GroupWalk::Off,
+    )
+}
+
+/// [`repaint_tail`] under `groups` ([`conversation_lines_with`]).
+#[must_use]
+pub fn repaint_tail_with(
+    history: &[HistoryItem],
+    streaming: Option<&str>,
+    render: &mut StreamRender,
+    width: u16,
+    max_rows: usize,
+    paths: &PathDisplay,
+    groups: GroupWalk,
+) -> Vec<Line<'static>> {
+    let mut lines = conversation_lines_with(history, width, paths, groups);
     if let Some(text) = streaming.filter(|text| !text.is_empty()) {
         lines.extend(render.committed_rows(text, width));
     }

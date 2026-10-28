@@ -40,10 +40,10 @@ expect_lacks "$short_settings" -E '\([0-9]+/[0-9]+\)' "/settings still shows its
 expect_lacks "$short_settings" -F "chain-of-thought" "/settings still shows its description on 12 rows"
 # ↓ walks the window down the list: it rides the selection, and both slots
 # name what they hide.
-tmux send-keys -t "$S139" Down Down Down Down Down Down
+tmux send-keys -t "$S139" Down Down Down Down Down Down Down
 sleep 0.4
 short_settings_walk="$(pane "$S139")"
-echo "==== Phase 139: /settings after six ↓ ===="
+echo "==== Phase 139: /settings after seven ↓ ===="
 printf '%s\n' "$short_settings_walk"
 expect_has "$short_settings_walk" -E '^→ Permission mode +' "the /settings window did not follow the selection"
 expect_has "$short_settings_walk" -E '^  ↑ [0-9]+ more above$' "/settings does not name the rows over its window"

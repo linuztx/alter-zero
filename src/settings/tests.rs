@@ -46,6 +46,11 @@ fn the_defaults_match_the_pre_feature_behaviour() {
     let s = SessionSettings::default();
     assert!(!s.hide_thinking, "thinking showed by default");
     assert!(s.show_thinking());
+    assert!(
+        s.verbose_output,
+        "every tool call was its own cell by default"
+    );
+    assert!(!s.compact_tools());
     assert_eq!(s.error_retry, crate::llm::retry::MAX_RETRIES);
     assert!(s.tools, "tools were on by default");
     assert!(s.auto_compact);
@@ -54,6 +59,32 @@ fn the_defaults_match_the_pre_feature_behaviour() {
     // The app ships UNCAPPED where the library's backstop was 20 rounds —
     // see the dedicated test below and `docs/settings.md`.
     assert_eq!(s.max_tool_calls, 0);
+}
+
+#[test]
+fn the_verbose_output_row_sits_under_hide_thinking_and_persists_only_when_off() {
+    // A display knob among the display knobs (docs/compact-tools.md), and a
+    // diff from the defaults like every per-directory row: on — the default
+    // — writes nothing, off writes the one key.
+    let all = SettingKey::ALL;
+    assert_eq!(all[0], SettingKey::HideThinking);
+    assert_eq!(all[1], SettingKey::VerboseOutput);
+    assert_eq!(SettingKey::VerboseOutput.label(), "Verbose output");
+    let mut s = SessionSettings::default();
+    assert_eq!(s.to_json().trim(), "{}");
+    assert!(s.cycle(SettingKey::VerboseOutput));
+    assert!(!s.verbose_output);
+    assert!(s.compact_tools());
+    assert_eq!(s.value_text(SettingKey::VerboseOutput, None), "false");
+    let json = s.to_json();
+    assert!(json.contains("\"verbose_output\": false"), "{json}");
+    let back = SessionSettings::parse(&json);
+    assert_eq!(back, s);
+    // Copied across like any per-directory value.
+    let mut file = SettingsFile::default();
+    file.record_value("/proj", SettingKey::VerboseOutput, &s);
+    assert!(!file.settings_for("/proj").verbose_output);
+    assert!(file.settings_for("/elsewhere").verbose_output);
 }
 
 #[test]
@@ -81,6 +112,7 @@ fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
 fn booleans_cycle_between_true_and_false() {
     for key in [
         SettingKey::HideThinking,
+        SettingKey::VerboseOutput,
         SettingKey::Tools,
         SettingKey::Checkpoints,
         SettingKey::AutoCompact,

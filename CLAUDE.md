@@ -250,7 +250,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `readonly`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -1372,7 +1372,23 @@ so `{root}-elsewhere` is outside), and a `PreToolUse` forced ask still asking �
 and **visibly**, resolving as `Approval::AllowNoted` with the classifier
 note's sibling `SCRATCHPAD_ALLOWED_NOTE` (`⎿ Allowed in the session
 scratchpad`); gated by `ALTER_ZERO_SCRATCHPAD`, relocated by
-`ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/scratchpad.md`; and the **background
+`ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/scratchpad.md`; the **read-only
+command exemption** beside it (`docs/permissions.md` *Read-only commands*:
+in **auto mode** a `bash` command `readonly::is_read_only` can **prove**
+changes nothing — every pipeline segment a known inspecting, listing,
+searching or neutral program, none of its writing/executing flags, no
+`$VAR`/glob expansion, no substitution, environment or wrapper, no
+redirection but input, a descriptor duplication or `/dev/null` — runs at
+once as `Approval::AllowNoted` with `READ_ONLY_ALLOWED_NOTE` (`⎿ Allowed as
+a read-only command`), the classifier consulted only for what the parser
+cannot vouch for; `bash` calls only, a forced ask still asks, manual and
+edit mode still ask; `src/readonly.rs` is also the lexer
+`permission::command_segments` splits a command with — `bash -c`'s own
+grammar, quotes, escapes and `#` comments included, which closed the
+escaped-quote hole a saved prefix rule had — and the
+listing/read/search classification the compact tool display groups by,
+`readonly::kind`, lenient about expansions where the verdict is strict);
+and the **background
 shells** (a `bash` call's `wait: 0` — or a trailing `&`, or the old
 `run_in_background` — resolves at once with the session id and the
 interim-output path, and a call whose `wait` passes hands its command here
@@ -2556,7 +2572,27 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-eighteen rows (**Hide thinking**, **Show images**, **Image width**,
+nineteen rows (**Hide thinking**, **Verbose output** — the compact tool
+display, `docs/compact-tools.md`: off, consecutive read-only calls — a
+`read`, a `bash` listing, read or search by `readonly::kind` — fold into one
+Claude-Code-style line, `● Reading 1 file, listing 1 directory… (ctrl+o to
+expand)` over the running call's `⎿ $ ls -la` hint in the strip while the
+group is open (the bullet blinking on after a call returns, since the next
+may join), settling into the dim bullet-less `Read 1 file, listed 1
+directory (ctrl+o to expand)` line when a breaker lands — assistant text, a
+`write`, a command that is not read-only, a failed or refused member, a user
+message, a notice, the turn's end; a thought, a task call and a hook note
+are read through. Built on the parallel MCP run's hold (`docs/mcp.md`): a
+member's cell is **held** out of scrollback (`App::tool_group_open`, the one
+runtime bit; `App::tool_group_commit` → `ui::tool_commit_lines_with`
+deciding Hold / FlushWith / FlushBefore / Off as the call resolves), every
+other breaker flushing it through `Session::flush_tool_group`, and the
+rebuild walk (`ui::GroupWalk`, `conversation_lines_with`) deriving the same
+line from the same history, placed where the run closed, after the
+`Thought for` lines it read through. Ctrl+O, Ctrl+D, `/export`, the rollout
+and the agent session view are untouched; `ALTER_ZERO_VERBOSE=0` seeds it;
+the dummy's `explore` scenario and `smoke.sh` Phase 146 drive it —
+**Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,

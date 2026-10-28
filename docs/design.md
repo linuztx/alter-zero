@@ -129,6 +129,12 @@ which Ctrl+V reads the clipboard from.
   text before a tool is committed as its own message so the scrollback (and the
   resize repaint) keeps text and tools in the exact order they streamed. The dummy
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
+  With the `/settings` **Verbose output** row off, consecutive read-only calls
+  — a `read`, a `bash` listing, read or search — fold into one
+  Claude-Code-style line instead (`● Reading 1 file, listing 1 directory…`
+  while the group is open, a dim `Read 1 file, listed 1 directory (ctrl+o to
+  expand)` once it settles); the cells themselves stay whole in Ctrl+O and the
+  rollout (`docs/compact-tools.md`).
   With a **real** backend these tools are driven by the model: it can call
   `bash`/`read`/`write`/`edit`, which run locally in an agentic loop and feed
   their results back until it answers in plain text (`docs/tools.md`). An

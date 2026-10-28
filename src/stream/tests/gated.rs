@@ -68,10 +68,11 @@ fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
 #[test]
 fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
     // The offline mirror of auto mode (docs/permissions.md): with the
-    // gate in `Auto`, the heuristic classifier stands in for the user —
-    // the read-only listing runs with the ToolNote riding it, the delete
-    // rejects with the classifier texts, and NO Permission event is ever
-    // raised.
+    // gate in `Auto`, the provably read-only listing runs on the parser's
+    // word alone, the heuristic classifier stands in for the user on the
+    // glob it cannot vouch for and on the delete — a ToolNote riding each
+    // allowed call, the classifier texts on the rejected one — and NO
+    // Permission event is ever raised.
     let gate = crate::permission::PermissionGate::new();
     gate.set_mode(crate::permission::PermissionMode::Auto);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
@@ -118,15 +119,18 @@ fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
     assert_eq!(
         order,
         vec![
-            "batch:2",
+            "batch:3",
             "start:ls -la",
+            "note:Allowed as a read-only command",
+            "end:true",
+            "start:du -sh *",
             "note:Allowed by auto mode classifier",
             "end:true",
             "start:rm -rf /tmp/scratch",
             "rejected",
             "done",
         ],
-        "the classifier decided both calls without the user"
+        "the parser and the classifier decided every call without the user"
     );
 }
 
@@ -159,7 +163,7 @@ fn the_auto_demo_still_asks_outside_auto_mode() {
         }
     }
     handle.join().unwrap();
-    assert_eq!(asked, 2, "both commands prompt in manual mode");
+    assert_eq!(asked, 3, "every command prompts in manual mode");
     assert_eq!(notes, 0, "no classifier note when the user approved");
 }
 
@@ -190,7 +194,7 @@ fn the_auto_demo_runs_everything_silently_in_master_mode() {
         }
     }
     handle.join().unwrap();
-    assert_eq!(ends, 2, "both calls ran unasked");
+    assert_eq!(ends, 3, "every call ran unasked");
 }
 
 #[test]

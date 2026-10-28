@@ -2572,7 +2572,12 @@ fn live_auto_mode_turn_runs_a_safe_command_with_the_note() {
     gate.set_mode(PermissionMode::Auto);
     let backend = backend().with_permissions(gate);
 
-    let prompt = "Use the bash tool exactly once to run exactly: echo live_auto_marker \
+    // A command the read-only parser cannot vouch for (a `python3 -c` is no
+    // inspection), so it is the classifier that allows it — a bare `echo`
+    // would run on the parser's word alone, with the read-only note
+    // instead (docs/permissions.md *Read-only commands*).
+    let prompt = "Use the bash tool exactly once to run exactly: \
+                  python3 -c 'print(\"live_auto_marker\")' \
                   Then reply with just the marker it printed.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2600,7 +2605,7 @@ fn live_auto_mode_turn_runs_a_safe_command_with_the_note() {
         "the classifier cleared the call"
     );
     let (output, ok) = tool_ends.first().expect("the command ran");
-    assert!(ok, "the echo succeeded: {output}");
+    assert!(ok, "the command succeeded: {output}");
     assert!(output.contains("live_auto_marker"), "got {output}");
 }
 
