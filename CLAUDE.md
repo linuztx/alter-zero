@@ -3844,7 +3844,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model
   requested (emitting the same `ToolStart`/`ToolEnd` events the dummy scripts,
   via the `llm::exec::ToolExecutor` seam), feeds the results back, and loops
-  until the model answers with plain text. The pure pieces — the tool defs +
+  until the model answers with plain text — a reply that answers *nothing*
+  (empty, or cut off at the output cap: `RoundOutcome::CutOff`, read off each
+  wire's stop reason by `StreamOutcome::stop_reason`) is answered with a
+  continuation prompt recorded as a `HookNote`, two in a row at most, then a
+  red error (`docs/unfinished-replies.md`). The pure pieces — the tool defs +
   edit engine (`llm::tools`), the streamed `tool_calls` accumulator
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,

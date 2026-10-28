@@ -131,7 +131,9 @@ which Ctrl+V reads the clipboard from.
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
   With a **real** backend these tools are driven by the model: it can call
   `bash`/`read`/`write`/`edit`, which run locally in an agentic loop and feed
-  their results back until it answers in plain text (`docs/tools.md`). An
+  their results back until it answers in plain text (`docs/tools.md`) — an
+  empty reply, or one cut off at the output cap, is asked to continue rather
+  than taken for the answer (`docs/unfinished-replies.md`). An
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare
@@ -716,6 +718,14 @@ which Ctrl+V reads the clipboard from.
   over a ripple row naming the host and counting the attempts; content ends
   it, Esc interrupts it (and hands an unsent message back to the composer),
   a refused local Ollama still says to start the server.
+- **A reply that isn't one** (`docs/unfinished-replies.md`): a round that
+  ends with no reply and no tool call, or that the provider cut off at its
+  output cap (every wire's stop reason read into one `StopReason`), no
+  longer ends the turn as though it were the answer — the loop keeps what
+  was said and asks the model to continue in a new user message, recorded
+  as a cell-less note Ctrl+O and the context carry, two times in a row at
+  most before a red error says so; a reply stopped by the context window or
+  a content filter ends on a notice naming the cause.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
