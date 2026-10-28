@@ -76,6 +76,49 @@ pub struct StreamOutcome {
     pub usage: Option<TokenUsage>,
 }
 
+/// Why a stream ended, in the crate's own terms — every wire's spelling of
+/// each reason folded into one, so the agent loop asks one question whatever
+/// the provider called it (`docs/unfinished-replies.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// The model ended its reply — or the provider named no reason at all.
+    Finished,
+    /// The provider stopped the reply at its output-token cap before the
+    /// model finished it: Chat Completions' and Ollama's `length`,
+    /// Anthropic's `max_tokens`, the Responses API's `max_output_tokens`.
+    OutputCap,
+    /// The reply filled the model's whole context window (Anthropic's
+    /// `model_context_window_exceeded`).
+    ContextWindow,
+    /// A content filter stopped the reply (`content_filter`).
+    ContentFilter,
+}
+
+impl StreamOutcome {
+    /// Why this stream ended ([`StopReason`]), read off its `finish_reason`
+    /// case-insensitively — a shim may pass a provider's own `MAX_TOKENS`
+    /// through. An unknown or absent reason is a finish.
+    #[must_use]
+    pub fn stop_reason(&self) -> StopReason {
+        let Some(reason) = self.finish_reason.as_deref() else {
+            return StopReason::Finished;
+        };
+        let is = |spelling: &str| reason.eq_ignore_ascii_case(spelling);
+        if ["length", "max_tokens", "max_output_tokens"]
+            .into_iter()
+            .any(is)
+        {
+            StopReason::OutputCap
+        } else if is("model_context_window_exceeded") {
+            StopReason::ContextWindow
+        } else if is("content_filter") {
+            StopReason::ContentFilter
+        } else {
+            StopReason::Finished
+        }
+    }
+}
+
 /// A streaming chat client bound to one [`ModelConfig`], optionally carrying the
 /// tool definitions (`tools` array) offered to the model.
 #[derive(Debug, Clone)]
@@ -808,14 +851,21 @@ fn drain_responses(
                 }
                 tool_calls.push(call);
             }
-            super::responses::ResponseEvent::Completed { usage: got, status } => {
+            super::responses::ResponseEvent::Completed {
+                usage: got,
+                status,
+                reason,
+            } => {
                 if got.is_some() {
                     usage = got;
                 }
                 // A round that requested tools finished *for* those tools,
                 // which is what the agent loop reads to decide to loop again.
+                // An incomplete one says why it stopped short — the reason,
+                // not the bare `incomplete` status, is what tells a reply cut
+                // off at the output cap apart (docs/unfinished-replies.md).
                 finish_reason = Some(if tool_calls.is_empty() {
-                    status.unwrap_or_else(|| "stop".to_string())
+                    reason.or(status).unwrap_or_else(|| "stop".to_string())
                 } else {
                     "tool_calls".to_string()
                 });
@@ -2957,6 +3007,48 @@ data: {"type":"response.completed","response":{"status":"completed"}}
             ]
         );
         assert_eq!(out.expect("the stream completes").tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn a_responses_round_its_reasoning_cut_off_says_it_hit_the_output_cap() {
+        // A long thought spends the whole output budget and no message item
+        // follows: the response ends `incomplete`, and its reason — not the
+        // bare status — is what tells the loop the reply was cut off rather
+        // than finished (docs/unfinished-replies.md).
+        let (out, _) = drain_responses_queued(vec![Ok(br#"data: {"type":"response.reasoning_summary_text.delta","delta":"Weighing the options"}
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
+"#
+        .to_vec())]);
+        let outcome = out.expect("the stream ends cleanly");
+        assert_eq!(outcome.text.response, "");
+        assert_eq!(outcome.finish_reason.as_deref(), Some("max_output_tokens"));
+        assert_eq!(outcome.stop_reason(), StopReason::OutputCap);
+    }
+
+    #[test]
+    fn every_wires_spelling_of_a_stop_reads_as_one_reason() {
+        let ended = |reason: Option<&str>| {
+            StreamOutcome {
+                finish_reason: reason.map(str::to_string),
+                ..StreamOutcome::default()
+            }
+            .stop_reason()
+        };
+        // Chat Completions and Ollama, Anthropic, the Responses API — and a
+        // shim that passes a provider's own upper-case spelling through.
+        for reason in ["length", "max_tokens", "max_output_tokens", "MAX_TOKENS"] {
+            assert_eq!(ended(Some(reason)), StopReason::OutputCap, "{reason}");
+        }
+        assert_eq!(
+            ended(Some("model_context_window_exceeded")),
+            StopReason::ContextWindow
+        );
+        assert_eq!(ended(Some("content_filter")), StopReason::ContentFilter);
+        // The model's own end, a round that ran tools, and no reason at all
+        // (a shim that never sends one) are all a finish.
+        for reason in [Some("stop"), Some("end_turn"), Some("tool_calls"), None] {
+            assert_eq!(ended(reason), StopReason::Finished, "{reason:?}");
+        }
     }
 
     #[test]

@@ -8,7 +8,9 @@
 //! knows how to render, runs each call through the `execute` closure, appends
 //! the results to the running message list, and loops — until the model answers
 //! with plain text (`StreamDone`), fails (`Error`), is cancelled (silent), or
-//! the tool-call cap trips.
+//! the tool-call cap trips. A round that answers *nothing* — an empty reply, or
+//! one the provider cut off at its output cap — is asked to continue instead of
+//! ending the turn (`docs/unfinished-replies.md`).
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -66,6 +68,131 @@ fn limit_error(max_tool_calls: usize) -> String {
     )
 }
 
+/// How many rounds **in a row** may end unfinished — an empty reply, or one
+/// the provider cut off at its output cap — before the turn gives up. Each is
+/// answered with a continuation prompt in a new user message
+/// ([`EMPTY_REPLY_NOTE`], [`CUT_OFF_NOTE`]) and the same turn runs another
+/// round; a round that makes progress earns the budget back. Two, so three
+/// attempts in all — the bound Anthropic's own continuation example uses.
+/// See `docs/unfinished-replies.md`.
+pub const MAX_CONTINUATIONS: usize = 2;
+
+/// The transcript heading over the continuation an empty reply gets — what
+/// the Ctrl+O view shows as the reason the turn kept going.
+pub const EMPTY_REPLY_LABEL: &str = "Empty reply";
+
+/// What the model reads after a round that ended with no reply and no tool
+/// call. It leaves the model a way to finish properly — a model that stopped
+/// because it was done has to say so, not invent more work. Tagged
+/// `[system]`, as the derived context tags every notice the app speaks
+/// (`crate::context`): it rides a user message, and untagged it would read
+/// as the user's own words.
+pub const EMPTY_REPLY_NOTE: &str = "[system] Your last response was empty: it had no reply and \
+     no tool call. Continue with the task — no apology, no recap. If the task is already done, \
+     reply with a short summary of what you did.";
+
+/// The transcript heading over the continuation a cut-off reply gets.
+pub const CUT_OFF_LABEL: &str = "Reply cut off";
+
+/// What the model reads after a round the provider stopped at its output cap
+/// — after what it had said, when it had said anything. A thought that spent
+/// the whole budget is the usual cause, hence the advice. Tagged like
+/// [`EMPTY_REPLY_NOTE`].
+pub const CUT_OFF_NOTE: &str = "[system] Your last response was cut off at the output token \
+     limit. Continue directly from where it stopped — no apology, no recap. Keep your \
+     reasoning short, and break the remaining work into smaller steps.";
+
+/// Why a round ended without finishing (`docs/unfinished-replies.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unfinished {
+    /// No reply and no tool call.
+    Empty,
+    /// Stopped at the provider's output-token cap.
+    CutOff,
+}
+
+impl Unfinished {
+    /// The transcript heading and the prompt the model reads next.
+    const fn continuation(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Empty => (EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE),
+            Self::CutOff => (CUT_OFF_LABEL, CUT_OFF_NOTE),
+        }
+    }
+
+    /// `StopFailure`'s error type once the continuations run out: Claude
+    /// Code's `max_output_tokens` for a reply that kept hitting the cap, its
+    /// catch-all for one that never came (`docs/hooks.md`).
+    const fn stop_failure_kind(self) -> &'static str {
+        match self {
+            Self::Empty => "unknown",
+            Self::CutOff => "max_output_tokens",
+        }
+    }
+}
+
+/// The error that ends a turn whose rounds kept ending unfinished after
+/// every continuation was spent. The user meets it as a bare red notice, so
+/// it says what happened, that the loop already asked again, and what to do
+/// next — the [`limit_error`] rule.
+fn unfinished_error(kind: Unfinished) -> String {
+    match kind {
+        Unfinished::Empty => format!(
+            "The model stopped without replying, even after being asked to continue \
+             {MAX_CONTINUATIONS} times. Send a message to try again, or switch models with /model."
+        ),
+        Unfinished::CutOff => format!(
+            "The model's reply kept getting cut off at its output token limit, even after \
+             {MAX_CONTINUATIONS} continuations. Ask for the work in smaller steps, or lower the \
+             thinking effort with Ctrl+T."
+        ),
+    }
+}
+
+/// Answer a round that ended without finishing — keep what it said, ask for
+/// the rest in a new user message — and report whether the turn goes on
+/// (`docs/unfinished-replies.md`).
+///
+/// The prompt rides [`StreamEvent::HookNote`], the event a `Stop` hook's
+/// continuation already uses, so the loop flushes the streamed text before
+/// it, the Ctrl+O transcript shows why the turn kept going, and every later
+/// context — and a `/resume` — replays what the model read. An empty reply is
+/// never sent back: a finished empty response, re-sent, only tells the model
+/// again that its turn is over. Past [`MAX_CONTINUATIONS`] in a row the turn
+/// ends the way a failure does, through `StopFailure`, on a notice saying so.
+fn continue_unfinished(
+    kind: Unfinished,
+    said: &str,
+    unfinished_rounds: &mut usize,
+    messages: &mut Vec<ChatMessage>,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    hooks: &dyn HookSink,
+) -> bool {
+    // Esc landed as the round came back: a silent stop, asking for nothing
+    // more — the UI owns the notice.
+    if cancel.is_cancelled() {
+        return false;
+    }
+    if *unfinished_rounds >= MAX_CONTINUATIONS {
+        let message = unfinished_error(kind);
+        hooks.stop_failure(kind.stop_failure_kind(), &message, cancel);
+        let _ = tx.send(StreamEvent::Error(message));
+        return false;
+    }
+    *unfinished_rounds += 1;
+    if !said.trim().is_empty() {
+        messages.push(ChatMessage::new("assistant", said));
+    }
+    let (label, note) = kind.continuation();
+    let _ = tx.send(StreamEvent::HookNote {
+        label: label.to_string(),
+        text: note.to_string(),
+    });
+    messages.push(ChatMessage::user(note));
+    true
+}
+
 /// What one streaming round produced, as [`run_agent`] sees it. The `round`
 /// closure emits the `Chunk`/`Thinking*` events itself; this only reports the
 /// disposition and — for a tool-calling round — the assistant message to append
@@ -75,8 +202,14 @@ pub enum RoundOutcome {
     /// done, unless a `Stop` hook blocks (`docs/hooks.md`). `text` is the
     /// round's full reply: the stop payload's `last_assistant_message`, and —
     /// on a continuation — the assistant message the next round's context
-    /// keeps.
+    /// keeps. An **empty** one is no answer: the loop asks the model to
+    /// continue (`docs/unfinished-replies.md`).
     Complete { text: String },
+    /// The provider stopped the reply at its output-token cap before the
+    /// model finished it (`docs/unfinished-replies.md`). `text` is what had
+    /// streamed by then — often nothing, when a long thought spent the whole
+    /// budget.
+    CutOff { text: String },
     /// The assistant requested tool calls. `assistant` is the message to append
     /// verbatim (carrying its `tool_calls`); `calls` are the parsed requests.
     ToolCalls {
@@ -165,6 +298,12 @@ pub enum PendingInput {
 /// header names the program its keys go to from the moment the call is
 /// announced, above its prompt and on a refused cell alike
 /// (`docs/interactive-shell.md`). One that knows no sessions keeps the id.
+///
+/// A round that ends **unfinished** — an empty reply, or one the provider
+/// cut off at its output cap ([`RoundOutcome::CutOff`]) — does not end the
+/// turn: the loop keeps what it said and asks for the rest in a new user
+/// message, up to [`MAX_CONTINUATIONS`] rounds in a row, and only then ends
+/// the turn on an error saying so (`docs/unfinished-replies.md`).
 #[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
@@ -183,6 +322,9 @@ pub fn run_agent(
     // True from the first Stop/SubagentStop-forced continuation on — the
     // payloads' loop-guard flag (docs/hooks.md).
     let mut stop_hook_active = false;
+    // The rounds in a row that ended unfinished; any progress zeroes it
+    // (docs/unfinished-replies.md).
+    let mut unfinished_rounds = 0usize;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -212,7 +354,39 @@ pub fn run_agent(
             }
         }
         match round(messages) {
+            // No answer at all: a round that only thought, or said nothing,
+            // and ended its turn. Ending the turn with it looked finished
+            // while nothing was (docs/unfinished-replies.md).
+            RoundOutcome::Complete { text } if text.trim().is_empty() => {
+                if !continue_unfinished(
+                    Unfinished::Empty,
+                    &text,
+                    &mut unfinished_rounds,
+                    messages,
+                    tx,
+                    cancel,
+                    hooks,
+                ) {
+                    return;
+                }
+            }
+            // Half an answer, or none: the provider stopped the reply at its
+            // output cap, often after a thought that spent the whole budget.
+            RoundOutcome::CutOff { text } => {
+                if !continue_unfinished(
+                    Unfinished::CutOff,
+                    &text,
+                    &mut unfinished_rounds,
+                    messages,
+                    tx,
+                    cancel,
+                    hooks,
+                ) {
+                    return;
+                }
+            }
             RoundOutcome::Complete { text } => {
+                unfinished_rounds = 0;
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -261,6 +435,7 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
+                unfinished_rounds = 0;
                 // The cap bounds TOOL CALLS, not the final answer: once the
                 // budget is spent the model still gets one more request, and a
                 // plain-text reply there completes the turn — only a further
@@ -758,6 +933,16 @@ mod tests {
         out
     }
 
+    /// The round a fake model ends its turn with: a real, if short, answer.
+    /// An *empty* `Complete` is a round the loop continues rather than an
+    /// answer (docs/unfinished-replies.md), so a fixture that means "the
+    /// model answered" has to say something.
+    fn answered() -> RoundOutcome {
+        RoundOutcome::Complete {
+            text: "Done.".to_string(),
+        }
+    }
+
     fn skill_fixture(root: &std::path::Path) -> crate::skills::SkillRegistry {
         for name in ["alpha", "beta"] {
             let dir = root.join(name);
@@ -792,9 +977,7 @@ mod tests {
                     assistant: assistant_with(&calls),
                     calls,
                 },
-                None => RoundOutcome::Complete {
-                    text: String::new(),
-                },
+                None => answered(),
             },
             |call, _| super::super::skill::run_skill_tool(registry, &mut loaded, call),
             Vec::new,
@@ -935,9 +1118,7 @@ mod tests {
             &cancel,
             MAX_TOOL_ITERATIONS,
             &mut vec![ChatMessage::user("hi")],
-            |_msgs| RoundOutcome::Complete {
-                text: String::new(),
-            },
+            |_msgs| answered(),
             |_call, _sink| panic!("no tools should run"),
             Vec::new,
             |_calls| Vec::new(),
@@ -946,6 +1127,280 @@ mod tests {
             &no_sessions,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
+    }
+
+    /// Drive one turn whose rounds come back as `script`, in order, and hand
+    /// back the events, the message list the rounds built, and how many
+    /// rounds ran. Every call runs and succeeds.
+    fn scripted_turn(
+        script: Vec<RoundOutcome>,
+        hooks: &dyn HookSink,
+    ) -> (Vec<StreamEvent>, Vec<ChatMessage>, usize) {
+        let (tx, mut rx) = unbounded_channel();
+        let script = RefCell::new(std::collections::VecDeque::from(script));
+        let ran = RefCell::new(0usize);
+        let mut messages = vec![ChatMessage::user("look at the model")];
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                *ran.borrow_mut() += 1;
+                script
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("the loop asked for a round past the script's end")
+            },
+            |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            hooks,
+            &no_sessions,
+        );
+        (drain(&mut rx), messages, ran.into_inner())
+    }
+
+    /// The messages as `(role, text)` pairs, a tool-call message by its role.
+    fn roles_and_texts(messages: &[ChatMessage]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|m| (m.role.clone(), text_of(m)))
+            .collect()
+    }
+
+    fn notes(events: &[StreamEvent]) -> Vec<(&str, &str)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::HookNote { label, text } => Some((label.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reply(text: &str) -> RoundOutcome {
+        RoundOutcome::Complete {
+            text: text.to_string(),
+        }
+    }
+
+    fn cut_off(text: &str) -> RoundOutcome {
+        RoundOutcome::CutOff {
+            text: text.to_string(),
+        }
+    }
+
+    fn mcp_round() -> RoundOutcome {
+        let calls = vec![call("c1", "mcp__devtools__list_pages", "{}")];
+        RoundOutcome::ToolCalls {
+            assistant: assistant_with(&calls),
+            calls,
+        }
+    }
+
+    #[test]
+    fn an_empty_reply_is_answered_with_a_continuation_and_the_turn_goes_on() {
+        // The reported stall: two tool rounds, then a round that only thought
+        // and ended with nothing to show — and the turn ended there, as
+        // though that were the answer (docs/unfinished-replies.md).
+        let (events, messages, ran) = scripted_turn(
+            vec![mcp_round(), reply(""), reply("Here is what I found.")],
+            &NoHooks,
+        );
+        assert_eq!(ran, 3, "the empty round bought exactly one more");
+        assert_eq!(notes(&events), vec![(EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE)]);
+        assert!(
+            matches!(events.last(), Some(StreamEvent::StreamDone)),
+            "the turn ends on the answer: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+            "{events:?}"
+        );
+        // The note follows the tool result as a new user message. The empty
+        // reply itself is never sent back — that only teaches the model the
+        // turn is over (Anthropic's stop-reason guidance).
+        let tail = roles_and_texts(&messages[messages.len() - 2..]);
+        assert_eq!(
+            tail,
+            vec![
+                ("tool".to_string(), "ran {}".to_string()),
+                ("user".to_string(), EMPTY_REPLY_NOTE.to_string()),
+            ]
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.role == "assistant" && text_of(m).is_empty() && m.tool_calls.is_empty()),
+            "no empty assistant message: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn a_reply_of_nothing_but_whitespace_is_empty_too() {
+        let (events, _, ran) = scripted_turn(vec![reply("\n\n  "), reply("Hi.")], &NoHooks);
+        assert_eq!(ran, 2);
+        assert_eq!(notes(&events), vec![(EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE)]);
+    }
+
+    #[test]
+    fn a_reply_cut_off_at_the_output_cap_keeps_what_it_said_and_continues() {
+        let (events, messages, ran) = scripted_turn(
+            vec![cut_off("The plan: first"), reply(" read it, then fix it.")],
+            &NoHooks,
+        );
+        assert_eq!(ran, 2);
+        assert_eq!(notes(&events), vec![(CUT_OFF_LABEL, CUT_OFF_NOTE)]);
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+        assert_eq!(
+            roles_and_texts(&messages),
+            vec![
+                ("user".to_string(), "look at the model".to_string()),
+                ("assistant".to_string(), "The plan: first".to_string()),
+                ("user".to_string(), CUT_OFF_NOTE.to_string()),
+            ],
+            "the continuation reads what was said before the cut"
+        );
+    }
+
+    #[test]
+    fn a_thought_that_spent_the_whole_output_cap_continues_with_nothing_kept() {
+        let (events, messages, _) = scripted_turn(vec![cut_off(""), reply("Answer.")], &NoHooks);
+        assert_eq!(notes(&events), vec![(CUT_OFF_LABEL, CUT_OFF_NOTE)]);
+        assert_eq!(
+            roles_and_texts(&messages),
+            vec![
+                ("user".to_string(), "look at the model".to_string()),
+                ("user".to_string(), CUT_OFF_NOTE.to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_stop_hook_hears_the_answer_never_the_round_that_had_none() {
+        let hooks = FakeHooks::default();
+        let (events, _, _) = scripted_turn(vec![reply(""), reply("The answer.")], &hooks);
+        assert_eq!(hooks.stop_seen(), vec![(false, "The answer.".to_string())]);
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_model_that_never_replies_gives_up_after_its_continuations() {
+        let hooks = FakeHooks::default();
+        let script = (0..=MAX_CONTINUATIONS).map(|_| reply("")).collect();
+        let (events, _, ran) = scripted_turn(script, &hooks);
+        assert_eq!(ran, MAX_CONTINUATIONS + 1, "every continuation was spent");
+        assert_eq!(notes(&events).len(), MAX_CONTINUATIONS);
+        let message = unfinished_error(Unfinished::Empty);
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error(m)) if *m == message),
+            "the turn ends on a notice saying why: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::StreamDone)),
+            "{events:?}"
+        );
+        // It ends like any other failure — StopFailure, never Stop.
+        assert_eq!(
+            hooks.stop_failures(),
+            vec![("unknown".to_string(), message)]
+        );
+        assert_eq!(hooks.stop_seen(), Vec::<(bool, String)>::new());
+    }
+
+    #[test]
+    fn a_reply_that_keeps_getting_cut_off_gives_up_as_max_output_tokens() {
+        let hooks = FakeHooks::default();
+        let script = (0..=MAX_CONTINUATIONS).map(|_| cut_off("")).collect();
+        let (events, _, ran) = scripted_turn(script, &hooks);
+        assert_eq!(ran, MAX_CONTINUATIONS + 1);
+        let message = unfinished_error(Unfinished::CutOff);
+        assert!(matches!(events.last(), Some(StreamEvent::Error(m)) if *m == message));
+        // Claude Code's StopFailure type for exactly this.
+        assert_eq!(
+            hooks.stop_failures(),
+            vec![("max_output_tokens".to_string(), message)]
+        );
+    }
+
+    #[test]
+    fn work_between_two_empty_replies_earns_the_budget_back() {
+        // Only consecutive unfinished rounds count: a model that runs a tool
+        // after each continuation is making progress, however often it
+        // stalls.
+        let mut script = Vec::new();
+        for _ in 0..=MAX_CONTINUATIONS {
+            script.push(reply(""));
+            script.push(mcp_round());
+        }
+        script.push(reply("All done."));
+        let (events, _, _) = scripted_turn(script, &NoHooks);
+        assert_eq!(notes(&events).len(), MAX_CONTINUATIONS + 1);
+        assert!(
+            matches!(events.last(), Some(StreamEvent::StreamDone)),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_turn_cancelled_under_an_empty_reply_asks_for_nothing_more() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut messages = vec![ChatMessage::user("hi")];
+        let ran = RefCell::new(0);
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                *ran.borrow_mut() += 1;
+                // Esc lands just as the empty round comes back.
+                cancel.cancel();
+                reply("")
+            },
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        assert_eq!(*ran.borrow(), 1);
+        assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
+        assert_eq!(messages.len(), 1, "no continuation was queued");
+    }
+
+    #[test]
+    fn a_continuation_prompt_is_tagged_as_the_app_speaking() {
+        // The prompt rides a user message, so untagged it reads as the
+        // user's own words. `[system]` is the tag the derived context gives
+        // every other notice the app speaks (`crate::context`).
+        for kind in [Unfinished::Empty, Unfinished::CutOff] {
+            let (_, note) = kind.continuation();
+            assert!(note.starts_with("[system] "), "{note}");
+            assert!(!note.contains('\n'), "one line: {note}");
+        }
+    }
+
+    #[test]
+    fn the_unfinished_errors_say_what_happened_and_what_to_do() {
+        // The user meets these as a bare red notice, so each carries the
+        // whole story: what happened, that the loop already tried, and what
+        // the user can do next.
+        let empty = unfinished_error(Unfinished::Empty);
+        assert!(empty.contains("without replying"), "{empty}");
+        assert!(
+            empty.contains(&MAX_CONTINUATIONS.to_string()),
+            "says it already tried: {empty}"
+        );
+        assert!(empty.contains("/model"), "names a way out: {empty}");
+        let cut = unfinished_error(Unfinished::CutOff);
+        assert!(cut.contains("output token limit"), "{cut}");
+        assert!(cut.contains(&MAX_CONTINUATIONS.to_string()), "{cut}");
+        assert!(cut.contains("Ctrl+T"), "names a way out: {cut}");
     }
 
     /// A `HookSink` that answers from fixtures — the pure half of the hook
@@ -1083,9 +1538,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
@@ -1133,9 +1586,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| outcome.clone(),
@@ -1192,9 +1643,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| panic!("no ordinary tools requested"),
@@ -1722,9 +2171,7 @@ mod tests {
                             calls: calls.clone(),
                         }
                     } else {
-                        RoundOutcome::Complete {
-                            text: String::new(),
-                        }
+                        answered()
                     }
                 },
                 |_c, _sink| ToolOutcome {
@@ -1796,9 +2243,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
@@ -1892,9 +2337,7 @@ mod tests {
                             calls: calls.clone(),
                         }
                     } else {
-                        RoundOutcome::Complete {
-                            text: String::new(),
-                        }
+                        answered()
                     }
                 },
                 |_c, _sink| {
@@ -1963,9 +2406,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, sink| {
@@ -2039,9 +2480,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, sink| {
@@ -2113,9 +2552,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
@@ -2202,9 +2639,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("file contents"),
@@ -2535,9 +2970,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("done"),
@@ -2587,9 +3020,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("done"),
@@ -2650,9 +3081,7 @@ mod tests {
                 } else {
                     *seen_round2.borrow_mut() =
                         msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0"),
@@ -2718,9 +3147,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0"),
@@ -2775,9 +3202,7 @@ mod tests {
             &mut vec![ChatMessage::user("hi")],
             |msgs| {
                 *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                RoundOutcome::Complete {
-                    text: String::new(),
-                }
+                answered()
             },
             |_c, _sink| panic!("no tools requested"),
             || {
@@ -2832,9 +3257,7 @@ mod tests {
                 } else {
                     *seen_round2.borrow_mut() =
                         msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0"),
@@ -2885,9 +3308,7 @@ mod tests {
             &mut vec![ChatMessage::user("hi")],
             |msgs| {
                 *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                RoundOutcome::Complete {
-                    text: String::new(),
-                }
+                answered()
             },
             |_c, _sink| panic!("no tools requested"),
             || {
@@ -2988,9 +3409,7 @@ mod tests {
                     }
                 } else {
                     *seen_round2.borrow_mut() = msgs.to_vec();
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| {
@@ -3064,9 +3483,7 @@ mod tests {
                     }
                 } else {
                     *seen_round2.borrow_mut() = msgs.to_vec();
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("1 alpha"),
@@ -3115,9 +3532,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
@@ -3171,9 +3586,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| panic!("a rejected call must never execute"),
@@ -3253,9 +3666,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| panic!("a rejected call must never execute"),
@@ -3309,9 +3720,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0\ntotal 40"),
@@ -3365,9 +3774,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |_c, _sink| {
@@ -3416,9 +3823,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| {
@@ -3515,9 +3920,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| {
@@ -3575,9 +3978,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| {
@@ -3705,9 +4106,7 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete {
-                        text: String::new(),
-                    }
+                    answered()
                 }
             },
             |c, _sink| {

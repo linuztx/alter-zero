@@ -317,6 +317,11 @@ pub enum ResponseEvent {
     Completed {
         usage: Option<TokenUsage>,
         status: Option<String>,
+        /// Why an **incomplete** response stopped short —
+        /// `incomplete_details.reason`, `max_output_tokens` or
+        /// `content_filter` — which the bare `incomplete` status does not
+        /// say (`docs/unfinished-replies.md`). `None` for a finished one.
+        reason: Option<String>,
     },
     /// The server failed the response in-band.
     Failed(String),
@@ -378,14 +383,19 @@ pub fn parse_event(data: &str) -> ResponseEvent {
                     call,
                 })
         }
-        "response.completed" | "response.incomplete" => ResponseEvent::Completed {
-            usage: value.get("response").and_then(parse_usage),
-            status: value
-                .get("response")
-                .and_then(|r| r.get("status"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        },
+        "response.completed" | "response.incomplete" => {
+            let response = value.get("response");
+            let text = |field: Option<&Value>| field.and_then(Value::as_str).map(str::to_string);
+            ResponseEvent::Completed {
+                usage: response.and_then(parse_usage),
+                status: text(response.and_then(|r| r.get("status"))),
+                reason: text(
+                    response
+                        .and_then(|r| r.get("incomplete_details"))
+                        .and_then(|d| d.get("reason")),
+                ),
+            }
+        }
         "response.failed" | "error" => ResponseEvent::Failed(failure_message(&value, data)),
         _ => ResponseEvent::Ignored,
     }
@@ -874,7 +884,7 @@ mod tests {
             "input_tokens":100,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":7},
             "output_tokens":20,"output_tokens_details":{"reasoning_tokens":12},
             "total_tokens":120}}}"#;
-        let ResponseEvent::Completed { usage, status } = parse_event(frame) else {
+        let ResponseEvent::Completed { usage, status, .. } = parse_event(frame) else {
             panic!("expected completion");
         };
         let usage = usage.expect("usage present");
@@ -885,6 +895,31 @@ mod tests {
         assert_eq!(usage.cache_write, 7);
         assert_eq!(usage.reasoning, 12);
         assert_eq!(status.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn an_incomplete_response_names_why_it_stopped() {
+        let frame = r#"{"type":"response.incomplete","response":{"status":"incomplete",
+            "incomplete_details":{"reason":"max_output_tokens"},
+            "usage":{"input_tokens":100,"output_tokens":4096}}}"#;
+        let ResponseEvent::Completed {
+            usage,
+            status,
+            reason,
+        } = parse_event(frame)
+        else {
+            panic!("an incomplete response still ends the stream");
+        };
+        assert_eq!(usage.map(|u| u.output), Some(4096));
+        assert_eq!(status.as_deref(), Some("incomplete"));
+        assert_eq!(reason.as_deref(), Some("max_output_tokens"));
+        // A finished response has no reason to give.
+        let ResponseEvent::Completed { reason, .. } =
+            parse_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)
+        else {
+            panic!("expected completion");
+        };
+        assert_eq!(reason, None);
     }
 
     #[test]

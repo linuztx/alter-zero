@@ -107,6 +107,12 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
       messages.push(user(note))             # round — a killed shell is known to the
                                             # model within the turn (docs/background.md)
     match round(&messages):                 # one streaming request (with its own retry)
+      Complete(blank) | CutOff(text):       # no answer, or one cut off at the output
+        if unfinished == MAX_CONTINUATIONS: # cap: keep what it said, ask for the rest
+          tx.send(Error(gave_up)); return   # in a new user message, two times in a
+        unfinished += 1                     # row at most (docs/unfinished-replies.md)
+        messages.push(assistant(text)) if text
+        messages.push(user(continue_note)); continue
       Complete            => tx.send(StreamDone); return
       Cancelled           => return
       Failed(e)           => tx.send(Error(e)); return
@@ -130,7 +136,17 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
   `docs/status-indicator.md`) and a `write` previews as its content arrives
   (`docs/write-streaming.md`) — accumulates tool
   calls, and applies the **existing per-request retry** (`llm::retry`) internally,
-  returning a `RoundOutcome`. Retry is unchanged and still per-request.
+  returning a `RoundOutcome`. Retry is unchanged and still per-request. What
+  the round reports is read off the stream's stop reason (`round_outcome`):
+  a reply stopped at the output cap comes back `CutOff`, and one stopped by
+  the context window or a content filter `Failed`, naming the cause
+  (`docs/unfinished-replies.md`).
+- **A round that answers nothing does not end the turn.** An empty reply —
+  no text, no tool call — or a `CutOff` is answered with a continuation
+  prompt in a new user message, recorded as a cell-less note the transcript
+  and every later context carry, and the same turn runs another round. Any
+  progress earns the budget back; the third unfinished round in a row ends
+  the turn on an error saying so (`docs/unfinished-replies.md`).
 - `execute` is the real executor (below). Both are plain closures in the tests, a
   real streamer + real executor in production.
 - `max_tool_calls` (`MAX_TOOL_ITERATIONS`, 20 — the `/settings` **Max tool

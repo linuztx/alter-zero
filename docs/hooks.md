@@ -154,7 +154,7 @@ and the other non-tool queries are never aliased.
 | `SessionEnd`         | `tui` — `/clear`, `/resume` and quit, under a 2 s event budget   |
 | `UserPromptSubmit`   | `llm/backend.rs` — the spawn top, after the SessionStart wait    |
 | `Stop`               | `llm/agent.rs` — `run_agent`'s Complete arm                      |
-| `StopFailure`        | `llm/agent.rs` — a failed round, or the tool-call ceiling        |
+| `StopFailure`        | `llm/agent.rs` — a failed round, the tool-call ceiling, or a reply that never finished |
 | `PreCompact`         | the compact spawn's top, via the `CompactHooks` wrapper          |
 | `PostCompact`        | the compact spawn's completion, via the same wrapper             |
 
@@ -199,7 +199,9 @@ normal and correct — the permission gate parks there on a `Condvar`,
 never existed:
 
 - **`Stop`/`SubagentStop`** fire in `run_agent` at `RoundOutcome::Complete`,
-  before `StreamDone`. A block appends the reply-so-far as an assistant
+  before `StreamDone` — on a real answer only: an empty reply is continued
+  first, and a turn that gives up on one ends through `StopFailure` instead
+  (`docs/unfinished-replies.md`). A block appends the reply-so-far as an assistant
   message and the feedback (`Stop hook feedback:\n{reason}`, Claude Code's
   exact wording) as the next user message, flips `stop_hook_active`, and the
   **same turn runs another round** — so the status line keeps working, the
@@ -216,14 +218,17 @@ never existed:
   (matcher = agent type) with the same block-to-continue semantics on the
   agent's own loop; a killed or errored agent fires nothing.
 - **`StopFailure`** fires where the turn ends on an error instead of an
-  answer: a round that failed (after the bounded retry gave up), or the
-  **Max tool calls** ceiling. Its `error` — also the matcher — is Claude
-  Code's error type read off the failure (`llm::hooks::stop_failure_kind`):
-  `rate_limit` (429), `overloaded` (529), `authentication_failed`
-  (401/403), `billing_error` (402), `model_not_found` (404),
-  `invalid_request` (any other 4xx), `server_error` (5xx, a transport
-  failure, an unreachable host), and `unknown` for the rest — the ceiling
-  included. Output is ignored, as in the reference. An interrupt fires
+  answer: a round that failed (after the bounded retry gave up), the
+  **Max tool calls** ceiling, or a reply that still never finished after
+  its continuations (`docs/unfinished-replies.md`). Its `error` — also the
+  matcher — is Claude Code's error type read off the failure
+  (`llm::hooks::stop_failure_kind`): `rate_limit` (429), `overloaded`
+  (529), `authentication_failed` (401/403), `billing_error` (402),
+  `model_not_found` (404), `invalid_request` (any other 4xx),
+  `server_error` (5xx, a transport failure, an unreachable host),
+  `max_output_tokens` for a reply that kept being cut off at the output
+  cap, and `unknown` for the rest — the ceiling and a model that never
+  replied included. Output is ignored, as in the reference. An interrupt fires
   none (Esc is not a failure), and neither does a subagent's failed round:
   the event is the session's turn ending.
 - **`SessionStart`** fires **in the background as a conversation
@@ -379,7 +384,11 @@ existing could express them:
   by `context_messages` as the user-role message the model actually read,
   and round-tripped through the rollout so a `/resume` keeps it. Context
   wire text uses Claude Code's exact shape — the
-  `<system-reminder>`-wrapped `{event} hook additional context: …`.
+  `<system-reminder>`-wrapped `{event} hook additional context: …`. The
+  agent loop's own continuation prompts ride it too — the note an empty or
+  cut-off reply is answered with, under `Empty reply` / `Reply cut off`
+  (`docs/unfinished-replies.md`) — because a continuation needs exactly what
+  a Stop block's feedback gets.
 - **`StreamEvent::PromptBlocked { reason }`** is a `UserPromptSubmit`
   block's terminal event — sent instead of `StreamDone`, nothing follows
   it; the loop's arm owns the rollback described above.

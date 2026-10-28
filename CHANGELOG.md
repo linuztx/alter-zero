@@ -14,6 +14,17 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A turn no longer ends on a reply that says nothing.** A model sometimes
+  ends its turn with no reply and no tool call — most often right after a
+  tool round, sometimes after a long thought that used up its whole output
+  budget — and the turn stopped there with only `Thought for …` on screen,
+  until you typed `continue`. The app now asks the model to continue by
+  itself, inside the same turn, and a reply cut off at the provider's output
+  limit is continued from where it stopped. If the model still answers
+  nothing after two tries, the turn ends on a red notice saying so instead
+  of looking finished. A reply stopped by the model's context window or by a
+  content filter now ends on a notice naming the cause, too. Ctrl+O shows
+  each continuation and what the model was told (`docs/unfinished-replies.md`).
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
   Resuming such a session left a screenful of empty rows between the

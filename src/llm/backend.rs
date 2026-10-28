@@ -1983,9 +1983,10 @@ fn spawn_subagent_run(
 /// Stream one round of the conversation: one HTTP request (with the existing
 /// per-request retry), emitting the `Chunk`/`Thinking*` events as text and
 /// reasoning arrive, and reporting the [`RoundOutcome`] the agent loop acts on
-/// — `Complete` (plain answer), `ToolCalls` (the model wants to run tools),
-/// `Cancelled`, or `Failed`. Boundary code (real HTTP); the loop that calls it
-/// and the retry it wraps are unit-tested separately.
+/// — `Complete` (plain answer), `CutOff` (stopped at the output cap),
+/// `ToolCalls` (the model wants to run tools), `Cancelled`, or `Failed` —
+/// through the pure [`round_outcome`]. Boundary code (real HTTP); the loop
+/// that calls it and the retry it wraps are unit-tested separately.
 fn stream_round(
     client: &OpenAiClient,
     messages: &[ChatMessage],
@@ -2073,23 +2074,57 @@ fn stream_round(
             if let Some(usage) = outcome.usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
-            if outcome.tool_calls.is_empty() {
-                RoundOutcome::Complete {
-                    text: outcome.text.response,
-                }
-            } else {
-                let assistant = ChatMessage::assistant_tool_calls(
-                    outcome.text.response,
-                    to_tool_call_specs(&outcome.tool_calls),
-                );
-                RoundOutcome::ToolCalls {
-                    assistant,
-                    calls: outcome.tool_calls,
-                }
-            }
+            round_outcome(outcome)
         }
         AttemptResult::Cancelled => RoundOutcome::Cancelled,
         AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+    }
+}
+
+/// What ends a turn whose reply a content filter stopped — the provider
+/// omitted the rest, and asking again would only meet the same filter.
+const CONTENT_FILTER_NOTICE: &str = "the provider's content filter stopped the reply";
+
+/// What ends a turn whose reply filled the model's context window — a
+/// continuation could not fit either, and compacting is what makes room.
+const CONTEXT_WINDOW_NOTICE: &str = "the reply filled the model's context window before it \
+     finished — run /compact to make room, then send a message to go on";
+
+/// What a finished stream means for the agent loop
+/// (`docs/unfinished-replies.md`): a round that asked for tools runs them,
+/// whatever its stop reason; one stopped by the context window or a content
+/// filter fails, saying which, since neither can be continued; one stopped at
+/// the output cap is [`RoundOutcome::CutOff`], which the loop continues; and
+/// anything else is the model's answer. Whether an *empty* answer may end the
+/// turn is the loop's question, not the wire's.
+fn round_outcome(outcome: super::openai::StreamOutcome) -> RoundOutcome {
+    use super::openai::StopReason;
+    if !outcome.tool_calls.is_empty() {
+        let assistant = ChatMessage::assistant_tool_calls(
+            outcome.text.response,
+            to_tool_call_specs(&outcome.tool_calls),
+        );
+        return RoundOutcome::ToolCalls {
+            assistant,
+            calls: outcome.tool_calls,
+        };
+    }
+    let failed = |notice: &str| {
+        // In-band, like a refusal: a 200 stream has no status to name.
+        RoundOutcome::Failed(LlmError::Api {
+            status: 0,
+            body: notice.to_string(),
+        })
+    };
+    match outcome.stop_reason() {
+        StopReason::ContextWindow => failed(CONTEXT_WINDOW_NOTICE),
+        StopReason::ContentFilter => failed(CONTENT_FILTER_NOTICE),
+        StopReason::OutputCap => RoundOutcome::CutOff {
+            text: outcome.text.response,
+        },
+        StopReason::Finished => RoundOutcome::Complete {
+            text: outcome.text.response,
+        },
     }
 }
 
@@ -3134,6 +3169,151 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
     /// A chat-completions frame whose delta carries `text` under `field`.
     fn delta_frame(field: &str, text: &str) -> String {
         serde_json::json!({"choices": [{"index": 0, "delta": {field: text}}]}).to_string()
+    }
+
+    /// A finished stream that asked for no tools: it showed `reply`, thought
+    /// `thought`, and ended for `reason`.
+    fn ended_stream(
+        reply: &str,
+        thought: &str,
+        reason: &str,
+    ) -> super::super::openai::StreamOutcome {
+        super::super::openai::StreamOutcome {
+            text: super::super::thinking::ChatStreamResult {
+                response: reply.to_string(),
+                reasoning: thought.to_string(),
+            },
+            finish_reason: Some(reason.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_round_stopped_at_the_output_cap_is_cut_off_rather_than_answered() {
+        // The reported stall: a long thought spent the whole output budget,
+        // nothing was said, and the turn ended as though the model had
+        // answered (docs/unfinished-replies.md).
+        let RoundOutcome::CutOff { text } =
+            round_outcome(ended_stream("", "Weighing the options", "length"))
+        else {
+            panic!("a reply stopped at the cap is not the model's answer");
+        };
+        assert_eq!(text, "");
+        // Half a reply is kept, so the continuation picks up after it.
+        let RoundOutcome::CutOff { text } =
+            round_outcome(ended_stream("The plan: first", "", "max_tokens"))
+        else {
+            panic!("a reply stopped at the cap is not the model's answer");
+        };
+        assert_eq!(text, "The plan: first");
+    }
+
+    #[test]
+    fn a_round_that_asked_for_tools_runs_them_whatever_its_stop_reason() {
+        let mut outcome = ended_stream("Reading it.", "", "length");
+        outcome.tool_calls = vec![ToolCallRequest {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"a.rs"}"#.into(),
+        }];
+        let RoundOutcome::ToolCalls { assistant, calls } = round_outcome(outcome) else {
+            panic!("the round's finished call must run");
+        };
+        assert_eq!(calls.len(), 1);
+        assert_eq!(assistant.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn a_reply_a_content_filter_stopped_fails_naming_the_filter() {
+        // The provider cut the model off, whether or not some of the reply
+        // had shown — asking again would only meet the same filter.
+        for reply in ["", "Partly said"] {
+            let RoundOutcome::Failed(error) =
+                round_outcome(ended_stream(reply, "", "content_filter"))
+            else {
+                panic!("a filtered reply must not end the turn as an answer");
+            };
+            assert!(error.to_string().contains("content filter"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_reply_that_filled_the_context_window_fails_pointing_at_compact() {
+        // A continuation could not fit either: the room it needs is the room
+        // the conversation took, which only compacting gives back.
+        let RoundOutcome::Failed(error) = round_outcome(ended_stream(
+            "",
+            "Weighing it",
+            "model_context_window_exceeded",
+        )) else {
+            panic!("a reply stopped by the context window is no answer");
+        };
+        let error = error.to_string();
+        assert!(error.contains("context window"), "{error}");
+        assert!(error.contains("/compact"), "names the way out: {error}");
+    }
+
+    #[test]
+    fn a_round_the_model_ended_is_its_answer_even_an_empty_one() {
+        // Whether an empty answer may end the turn is the loop's question
+        // (`agent::run_agent` continues it), not the wire's.
+        for reply in ["Done.", ""] {
+            let RoundOutcome::Complete { text } = round_outcome(ended_stream(reply, "", "stop"))
+            else {
+                panic!("a stop is the model's answer");
+            };
+            assert_eq!(text, reply);
+        }
+        // No reason at all — a shim that never sends one — is a finish too.
+        let mut outcome = ended_stream("Hi", "", "stop");
+        outcome.finish_reason = None;
+        assert!(matches!(
+            round_outcome(outcome),
+            RoundOutcome::Complete { .. }
+        ));
+    }
+
+    #[test]
+    fn a_round_the_server_stops_at_its_output_cap_comes_back_cut_off() {
+        let port = sse_server(vec![SseAnswer {
+            frames: vec![
+                delta_frame("reasoning_content", "Weighing it"),
+                serde_json::json!({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}]
+                })
+                .to_string(),
+            ],
+            cut: false,
+        }]);
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = Some("not-a-real-key".into());
+        let client = OpenAiClient::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = stream_round(
+            &client,
+            &[ChatMessage::user("hi")],
+            &tx,
+            &CancelToken::new(),
+            MAX_RETRIES,
+        );
+        let RoundOutcome::CutOff { text } = outcome else {
+            panic!("a round stopped at the cap must come back cut off");
+        };
+        assert_eq!(text, "");
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        // The thought still settles: the stream ended cleanly.
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ThinkingStart,
+                StreamEvent::ThinkingChunk("Weighing it".into()),
+                StreamEvent::ThinkingEnd,
+            ]
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use alter_zero::app::{App, HistoryItem};
 use alter_zero::context::{ContextMessage, ContextRole, context_messages};
+use alter_zero::llm::agent::{CUT_OFF_LABEL, CUT_OFF_NOTE, EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE};
 use alter_zero::llm::hooks::{HookSink, PromptVerdict};
 use alter_zero::llm::{LlmBackend, ModelConfig, WireApi};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
@@ -40,6 +41,26 @@ const CHAT_BATCH_ROUND: &str = concat!(
     r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_provider_b","type":"function","function":{"name":"read","arguments":"{\"path\":\"/nonexistent/alter-zero-b\"}"}}]}}]}"#,
     "\n\n",
     r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// A Chat Completions round in which the model thinks and then says nothing
+/// at all — no reply, no call — and the provider ends it as finished.
+const CHAT_REASONING_ONLY_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"reasoning_content":"Let me look at the model first."}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// A Chat Completions round the provider stops at its output cap part way
+/// through the reply.
+const CHAT_CUT_OFF_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"content":"The first step is"}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
     "\n\n",
     "data: [DONE]\n\n",
 );
@@ -179,6 +200,10 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
                 display, result, ..
             } => {
                 app.reject_tool(&display, &result);
+            }
+            StreamEvent::HookNote { label, text } => {
+                app.flush_streaming_segment();
+                app.record_hook_note(&label, &text);
             }
             StreamEvent::StreamDone => {
                 app.finish_stream();
@@ -323,6 +348,121 @@ fn the_next_responses_turn_sends_the_prefix_the_provider_already_saw() {
     );
     assert_eq!(items[4]["content"][0]["text"], "done");
     assert_eq!(items[5]["content"][0]["text"], "and now?");
+}
+
+/// The continuation prompt a turn's events carried, by its label.
+fn continuation(events: &[StreamEvent]) -> Option<(String, String)> {
+    events.iter().find_map(|event| match event {
+        StreamEvent::HookNote { label, text } => Some((label.clone(), text.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_empty_reply_is_answered_with_a_continuation_the_next_turn_replays() {
+    // The reported bug, end to end (docs/unfinished-replies.md): the model's
+    // round comes back with reasoning and nothing else. The turn does not
+    // end on it — the next request carries a continuation prompt, and the
+    // reply that follows ends the turn — and the prompt is recorded, so the
+    // next human turn sends the conversation as the provider saw it.
+    let (base, requests) = stand_in(&[CHAT_REASONING_ONLY_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
+    let backend = backend_on(WireApi::Chat, &base);
+    let mut app = App::new();
+    app.record_user_message("what is wrong with the model?");
+    app.begin_stream();
+    let events = turn(
+        &backend,
+        "what is wrong with the model?",
+        context_messages(&app.history),
+    );
+    assert_eq!(
+        continuation(&events),
+        Some((EMPTY_REPLY_LABEL.to_string(), EMPTY_REPLY_NOTE.to_string())),
+        "the empty round is answered with a continuation: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(StreamEvent::StreamDone)),
+        "the reply after the prompt ends the turn: {events:?}"
+    );
+    fold(&mut app, events);
+
+    let sent = requests.lock().expect("the request log")[1].clone();
+    let messages = sent["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        messages.len(),
+        3,
+        "system, the question, the prompt — nothing for the empty reply: {sent}"
+    );
+    assert_eq!(messages[1]["content"], "what is wrong with the model?");
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"], EMPTY_REPLY_NOTE);
+
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&backend, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[2].clone();
+    let replayed = next["messages"].as_array().expect("a messages array");
+    // The records merge the question and the prompt into one user entry;
+    // the retained prefix keeps the provider's two.
+    assert_eq!(
+        &replayed[..3],
+        &messages[..3],
+        "the prompt where the provider saw it, byte for byte: {next}"
+    );
+    assert_eq!(replayed[3]["content"], "done");
+    assert_eq!(replayed[4]["content"], "and now?");
+}
+
+#[test]
+fn a_cut_off_reply_and_its_continuation_replay_from_the_records_alone() {
+    // What was said before the cap is kept and the prompt follows it. The
+    // next human turn runs on a *rebuilt* backend — no retained request,
+    // what a `/model` switch or a `/resume` leaves — so only the records
+    // can reproduce the request the provider saw (docs/unfinished-replies.md).
+    let (base, requests) = stand_in(&[CHAT_CUT_OFF_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
+    let first = backend_on(WireApi::Chat, &base);
+    let mut app = App::new();
+    app.record_user_message("walk me through it");
+    app.begin_stream();
+    let events = turn(&first, "walk me through it", context_messages(&app.history));
+    assert_eq!(
+        continuation(&events),
+        Some((CUT_OFF_LABEL.to_string(), CUT_OFF_NOTE.to_string())),
+        "the cut-off round is answered with a continuation: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(StreamEvent::StreamDone)),
+        "{events:?}"
+    );
+    fold(&mut app, events);
+
+    let sent = requests.lock().expect("the request log")[1].clone();
+    let messages = sent["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        messages.len(),
+        4,
+        "system, the question, what was said, the prompt: {sent}"
+    );
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(messages[2]["content"], "The first step is");
+    assert_eq!(messages[3]["role"], "user");
+    assert_eq!(messages[3]["content"], CUT_OFF_NOTE);
+
+    let rebuilt = backend_on(WireApi::Chat, &base);
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&rebuilt, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[2].clone();
+    let replayed = next["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        &replayed[..4],
+        &messages[..4],
+        "the cut reply and the prompt, byte for byte: {next}"
+    );
+    assert_eq!(replayed[4]["content"], "done");
+    assert_eq!(replayed[5]["content"], "and now?");
 }
 
 #[test]
