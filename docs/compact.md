@@ -54,7 +54,12 @@ emits, in place of everything before it:
    codex's `bytes/4` approximation (`approx_token_count`), not the tiktoken
    seam — the walk runs at every turn start and must be O(len);
 2. the **bridge**: `{SUMMARY_PREFIX}\n{summary}` as a user message (an empty
-   summary becomes `(no summary available)`, codex's fallback). The prefix is
+   summary becomes `(no summary available)`, codex's fallback — which a live
+   compaction no longer reaches: the summarization turn runs on the agent
+   loop, which asks again for a summary that came back empty, and a
+   compaction that never gets one fails like any other, leaving the context
+   as it was (`docs/unfinished-replies.md`); the fallback still covers a
+   marker recorded before that). The prefix is
    codex's verbatim `prompts/compact_summary_prefix.md` ("Another language
    model started to solve this problem…");
 
