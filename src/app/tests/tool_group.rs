@@ -444,3 +444,205 @@ fn switching_verbose_output_mid_turn_reopens_or_releases_the_trailing_run() {
     app.reopen_tool_group();
     assert!(!app.tool_group_open());
 }
+
+// --- the hint hold ---
+
+fn summary(name: &str, args: &str) -> ToolCallSummary {
+    ToolCallSummary {
+        name: name.to_string(),
+        args: args.to_string(),
+    }
+}
+
+/// What the strip's `⎿` row names right now.
+fn row(app: &App) -> Option<Hint> {
+    app.live_tool_group().and_then(|live| live.group.hint)
+}
+
+fn command(text: &str) -> Option<Hint> {
+    Some(Hint::Command(text.to_string()))
+}
+
+fn path(text: &str) -> Option<Hint> {
+    Some(Hint::Path(text.to_string()))
+}
+
+#[test]
+fn each_value_takes_the_row_in_turn_and_stays_the_minimum_display_time() {
+    let mut app = compact_app();
+    app.begin_stream();
+    app.start_tool_batch(&[summary("Bash", "ls -la"), summary("Read", "/p/README.md")]);
+    app.start_tool("Bash", "ls -la", Some(r#"{"command":"ls -la"}"#));
+    app.advance_tool_hint(Duration::from_secs(10));
+    assert_eq!(row(&app), command("ls -la"));
+    // The listing and the read both resolve within one frame.
+    app.end_tool("Exit code: 0", true);
+    app.start_tool("Read", "/p/README.md", None);
+    app.end_tool("1 x", true);
+    assert!(app.tool_group_open());
+    assert_eq!(
+        app.live_tool_group().expect("held").group.summary(true),
+        "Reading 1 file, listing 1 directory"
+    );
+    // The listing's value stays its minimum before the read's takes the row.
+    app.advance_tool_hint(Duration::from_millis(10_050));
+    assert_eq!(
+        row(&app),
+        command("ls -la"),
+        "the read's value waits its turn"
+    );
+    app.advance_tool_hint(Duration::from_millis(10_699));
+    assert_eq!(row(&app), command("ls -la"));
+    app.advance_tool_hint(Duration::from_millis(10_700));
+    assert_eq!(row(&app), path("/p/README.md"), "the minimum has passed");
+    // And rests there between rounds.
+    app.advance_tool_hint(Duration::from_secs(20));
+    assert_eq!(row(&app), path("/p/README.md"));
+}
+
+#[test]
+fn a_value_on_the_row_past_the_minimum_gives_way_at_once() {
+    let mut app = compact_app();
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", None);
+    app.advance_tool_hint(Duration::from_secs(10));
+    app.end_tool("Exit code: 0", true);
+    app.advance_tool_hint(Duration::from_secs(11));
+    assert_eq!(row(&app), command("ls -la"));
+    app.start_tool("Read", "/p/a.rs", None);
+    app.advance_tool_hint(Duration::from_secs(11));
+    assert_eq!(
+        row(&app),
+        path("/p/a.rs"),
+        "a second on the row is more than the minimum"
+    );
+}
+
+#[test]
+fn the_backlog_is_bounded_so_the_row_never_falls_far_behind() {
+    let mut app = compact_app();
+    app.begin_stream();
+    let paths: Vec<String> = (1..=12).map(|n| format!("/p/{n}.rs")).collect();
+    app.start_tool("Read", &paths[0], None);
+    app.advance_tool_hint(Duration::ZERO);
+    app.end_tool("1 x", true);
+    for file in &paths[1..] {
+        app.start_tool("Read", file, None);
+        app.end_tool("1 x", true);
+    }
+    assert_eq!(row(&app), path(&paths[0]));
+    let mut seen = Vec::new();
+    for step in 1..=10 {
+        app.advance_tool_hint(MIN_HINT_DISPLAY * step);
+        if let Some(Hint::Path(shown)) = row(&app)
+            && seen.last() != Some(&shown)
+        {
+            seen.push(shown);
+        }
+    }
+    // The first value shows whole; of the eleven behind it only the newest
+    // `HINT_BACKLOG_MAX` waited their turn, the oldest giving way as more
+    // arrived, so the row ends on the newest member.
+    let expected: Vec<String> = (5..=12).map(|n| format!("/p/{n}.rs")).collect();
+    assert_eq!(HINT_BACKLOG_MAX, 8);
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn a_running_commands_clock_rides_only_its_own_value() {
+    let mut app = compact_app();
+    app.begin_stream();
+    app.start_tool_batch(&[
+        summary("Read", "/p/a.rs"),
+        summary("Bash", "find / -name x"),
+    ]);
+    app.start_tool("Read", "/p/a.rs", None);
+    app.advance_tool_hint(Duration::from_secs(10));
+    app.end_tool("1 x", true);
+    app.start_tool(
+        "Bash",
+        "find / -name x",
+        Some(r#"{"command":"find / -name x"}"#),
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(4)));
+    app.advance_tool_hint(Duration::from_millis(10_100));
+    let live = app.live_tool_group().expect("live");
+    assert_eq!(
+        live.group.hint,
+        path("/p/a.rs"),
+        "the read's value is still up"
+    );
+    assert_eq!(
+        live.running, None,
+        "the clock is the command's, not the value on the row"
+    );
+    app.advance_tool_hint(Duration::from_millis(10_700));
+    let live = app.live_tool_group().expect("live");
+    assert_eq!(live.group.hint, command("find / -name x"));
+    assert_eq!(live.running, Some(Duration::from_secs(4)));
+}
+
+#[test]
+fn a_closed_group_forgets_its_hold_so_the_next_opens_on_its_first_value_at_once() {
+    let mut app = compact_app();
+    app.begin_stream();
+    // A member resolves with a write announced behind it: the group ends
+    // with it, and the write's turn is no time for the row to catch up on.
+    app.start_tool_batch(&[summary("Read", "/p/a.rs"), summary("Write", "/p/w.rs")]);
+    app.start_tool("Read", "/p/a.rs", None);
+    app.advance_tool_hint(Duration::from_secs(10));
+    app.end_tool("1 x", true);
+    assert_eq!(app.tool_group_commit(), GroupCommit::FlushWith);
+    app.start_tool("Write", "/p/w.rs", None);
+    assert_eq!(row(&app), None, "no group while the write runs");
+    app.end_tool("Wrote 1 line", true);
+    // The next group's first value takes the row at once, the old hold gone.
+    app.start_tool("Read", "/p/b.rs", None);
+    app.advance_tool_hint(Duration::from_millis(10_050));
+    assert_eq!(row(&app), path("/p/b.rs"));
+    app.end_tool("1 y", true);
+    // Explicitly closed (the boundary's flush ahead of a breaker): the same.
+    assert!(app.close_tool_group());
+    app.start_tool("Read", "/p/c.rs", None);
+    app.advance_tool_hint(Duration::from_millis(10_100));
+    assert_eq!(row(&app), path("/p/c.rs"));
+}
+
+#[test]
+fn a_repeated_value_is_not_queued_again() {
+    let mut app = compact_app();
+    app.begin_stream();
+    app.start_tool("Read", "/p/a.rs", None);
+    app.advance_tool_hint(Duration::ZERO);
+    app.end_tool("1 x", true);
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    app.start_tool("Read", "/p/b.rs", None);
+    app.end_tool("1 y", true);
+    app.advance_tool_hint(MIN_HINT_DISPLAY);
+    assert_eq!(
+        row(&app),
+        path("/p/b.rs"),
+        "the same file twice is one value"
+    );
+    app.advance_tool_hint(MIN_HINT_DISPLAY * 2);
+    assert_eq!(row(&app), path("/p/b.rs"));
+}
+
+#[test]
+fn switching_to_compact_mid_turn_shows_the_newest_value_with_no_backlog() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ls -la", None);
+    app.end_tool("Exit code: 0", true);
+    app.start_tool("Read", "/p/a.rs", None);
+    app.end_tool("1 x", true);
+    app.settings_mut().verbose_output = false;
+    app.reopen_tool_group();
+    app.advance_tool_hint(Duration::ZERO);
+    assert_eq!(
+        row(&app),
+        path("/p/a.rs"),
+        "verbose output fed no hold: the newest member, not the listing first"
+    );
+}

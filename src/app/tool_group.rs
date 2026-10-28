@@ -28,7 +28,7 @@
 //! [`App::tool_group_open`] — says whether the trailing run is still held
 //! out of scrollback.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::time::Duration;
 
 use super::{App, HistoryItem, ToolCall, ToolStatus};
@@ -63,6 +63,83 @@ pub enum Hint {
     Path(String),
     /// A command, shown after `$ `.
     Command(String),
+}
+
+/// How long each value stays on the group's `⎿` row before the next may
+/// take it — Claude Code's `MIN_HINT_DISPLAY_MS`. A read resolves in
+/// milliseconds, so a parallel batch of them used to flash every value but
+/// the last past in a frame; a value shown for a frame was never read.
+pub const MIN_HINT_DISPLAY: Duration = Duration::from_millis(700);
+
+/// How many values may wait their turn behind the one on the row. A batch
+/// lands faster than the row can show it, and the values waiting are what
+/// the row still owes; past this many the **oldest** waiting gives way to
+/// the newest, so the row trails what is actually running by a few seconds
+/// at most and always ends on the newest member.
+pub const HINT_BACKLOG_MAX: usize = 8;
+
+/// The group's `⎿` row over time (`docs/compact-tools.md` *Each value, long
+/// enough to read*): the value on the row and the clock reading it took the
+/// row at, and the values that have come since, in order. Fed as each
+/// member **starts** (`App::start_tool`), so a batch's values queue in call
+/// order; moved on by the draw tick's clock ([`App::advance_tool_hint`]),
+/// which is how time reaches the pure core — the
+/// [`set_pulse`](App::set_pulse) pattern.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HintHold {
+    shown: Option<Shown>,
+    pending: VecDeque<Hint>,
+}
+
+/// The value on the row, and when it got there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shown {
+    hint: Hint,
+    since: Duration,
+}
+
+impl HintHold {
+    /// A value has come: it waits behind the newest — unless it *is* the
+    /// newest (the same file read twice is one value) — the oldest waiting
+    /// giving way past [`HINT_BACKLOG_MAX`].
+    pub fn offer(&mut self, hint: Hint) {
+        let newest = self
+            .pending
+            .back()
+            .or(self.shown.as_ref().map(|shown| &shown.hint));
+        if newest == Some(&hint) {
+            return;
+        }
+        if self.pending.len() >= HINT_BACKLOG_MAX {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(hint);
+    }
+
+    /// The clock reads `now`: the next value waiting takes the row once the
+    /// one on it has had its [`MIN_HINT_DISPLAY`] — at once when the row is
+    /// empty.
+    pub fn advance(&mut self, now: Duration) {
+        let due = self
+            .shown
+            .as_ref()
+            .is_none_or(|shown| now.saturating_sub(shown.since) >= MIN_HINT_DISPLAY);
+        if due && let Some(hint) = self.pending.pop_front() {
+            self.shown = Some(Shown { hint, since: now });
+        }
+    }
+
+    /// The value on the row.
+    #[must_use]
+    pub fn shown(&self) -> Option<&Hint> {
+        self.shown.as_ref().map(|shown| &shown.hint)
+    }
+
+    /// Forget every value — the group closed, and the next opens on its
+    /// first value at once.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Whether `tool` — resolved or still queued — is a call the compact
@@ -312,6 +389,7 @@ impl App {
     /// commits the group's settled line first. Returns whether a group was
     /// open, so the caller commits a line only when there is one.
     pub fn close_tool_group(&mut self) -> bool {
+        self.tool_group_hint.clear();
         std::mem::take(&mut self.tool_group_open)
     }
 
@@ -342,6 +420,9 @@ impl App {
             GroupCommit::Off
         };
         self.tool_group_open = self.tool_group_commit == GroupCommit::Hold;
+        if !self.tool_group_open {
+            self.tool_group_hint.clear();
+        }
     }
 
     /// Whether a call about to **start** ends the open group: a breaker by
@@ -349,25 +430,27 @@ impl App {
     /// settled line before the call's cell can appear.
     #[must_use]
     pub fn tool_group_breaks_on(&self, name: &str, args: &str, arguments: Option<&str>) -> bool {
-        if !self.tool_group_open {
-            return false;
+        self.tool_group_open && member_of(&probe_call(name, args, arguments)).is_none()
+    }
+
+    /// A call is **starting** (`App::start_tool`): a member's value joins
+    /// the `⎿` row's queue, so a batch's values show one after another in
+    /// call order rather than the row jumping to the last.
+    pub(super) fn note_tool_start(&mut self, name: &str, args: &str, arguments: Option<&str>) {
+        if !self.compact_tools() {
+            return;
         }
-        let call = ToolCall {
-            name: name.to_string(),
-            args: args.to_string(),
-            status: ToolStatus::Running,
-            output: String::new(),
-            timestamp: String::new(),
-            shell: false,
-            truncated: false,
-            context_output: None,
-            arguments: arguments.map(str::to_string),
-            approval_note: None,
-            batch: None,
-            call_id: None,
-            position: None,
-        };
-        member_of(&call).is_none()
+        if let Some(member) = member_of(&probe_call(name, args, arguments)) {
+            self.tool_group_hint.offer(member.hint());
+        }
+    }
+
+    /// Inject the frame clock before a draw (the [`set_pulse`](App::set_pulse)
+    /// pattern — the same reading): the next value waiting takes the `⎿`
+    /// row once the one on it has stayed [`MIN_HINT_DISPLAY`]
+    /// ([`HintHold::advance`]).
+    pub fn advance_tool_hint(&mut self, now: Duration) {
+        self.tool_group_hint.advance(now);
     }
 
     /// The group the strip shows: `None` in verbose mode, or when nothing is
@@ -389,17 +472,28 @@ impl App {
         if group.is_empty() {
             return None;
         }
-        // The running call is the newest thing happening, so its hint leads
-        // — over the waiting siblings behind it that `add` passed last.
-        if let Some(front) = queued.first() {
-            group.hint = Some(front.hint());
+        // The row names the value the hold has up — each member's in turn,
+        // long enough to read — else the running call's (nothing fed yet:
+        // the frame before its start), else the newest member's that `add`
+        // passed last (a group the Verbose output switch reopened).
+        let front_hint = queued.first().map(Member::hint);
+        if let Some(hint) = self
+            .tool_group_hint
+            .shown()
+            .cloned()
+            .or_else(|| front_hint.clone())
+        {
+            group.hint = Some(hint);
         }
+        // The clock is the running command's own: it rides its value, never
+        // an earlier one still up.
         let running = self
             .tool_queue
             .front()
             .filter(|front| {
                 front.status == ToolStatus::Running
                     && matches!(queued.first(), Some(Member::Command { .. }))
+                    && group.hint == front_hint
             })
             .and_then(|_| self.command_elapsed());
         Some(LiveGroup {
@@ -414,6 +508,9 @@ impl App {
     /// still running and no text has started, so the rebuild shows it in the
     /// strip; turning it off releases it, the rebuild painting every cell.
     pub fn reopen_tool_group(&mut self) {
+        // Whatever the row held belonged to the display that was on; the
+        // reopened group's row names its newest member until the next call.
+        self.tool_group_hint.clear();
         self.tool_group_open = self.compact_tools()
             && self.status.is_some()
             && !trailing_run(&self.history).is_empty()
@@ -431,5 +528,26 @@ impl App {
     pub(super) fn drop_tool_group(&mut self) {
         self.tool_group_open = false;
         self.tool_group_commit = GroupCommit::Off;
+        self.tool_group_hint.clear();
+    }
+}
+
+/// A bare record of a call about to start, for classification alone
+/// ([`member_of`]) — the name and arguments are all a start carries.
+fn probe_call(name: &str, args: &str, arguments: Option<&str>) -> ToolCall {
+    ToolCall {
+        name: name.to_string(),
+        args: args.to_string(),
+        status: ToolStatus::Running,
+        output: String::new(),
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        context_output: None,
+        arguments: arguments.map(str::to_string),
+        approval_note: None,
+        batch: None,
+        call_id: None,
+        position: None,
     }
 }

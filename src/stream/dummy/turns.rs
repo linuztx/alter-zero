@@ -1027,14 +1027,15 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
 }
 
 /// The **exploration** demo's narration (`docs/compact-tools.md`): three
-/// read-only calls, one a round, so the compact tool display's summary
-/// grows a clause at a time — `Listing 1 directory…`, then `Reading 1 file,
-/// listing 1 directory…`, then `Searching for 1 pattern, …` — and settles
+/// read-only calls — a listing and a read in one parallel batch, then a
+/// search — so the compact tool display's summary opens on `Reading 1
+/// file, listing 1 directory…` with the batch's values taking its `⎿` row
+/// one after another, grows to `Searching for 1 pattern, …`, and settles
 /// once the reply begins; in verbose output the same three calls are three
 /// ordinary cells.
 const EXPLORE_REPLY: &str = concat!(
-    "Let me look around first — the listing, the one module that matters, \
-     then a search through it.\n\n",
+    "Let me look around first — the listing and the one module that matters \
+     together, then a search through it.\n\n",
     "mathutil.py is tiny: `add` and `mul`, both unused by the tests. With \
      verbose output off those three calls folded into one line — `Searched \
      for 1 pattern, read 1 file, listed 1 directory` — that Ctrl+O expands \
@@ -1042,38 +1043,42 @@ const EXPLORE_REPLY: &str = concat!(
     handoff!()
 );
 
-/// The read-only **exploration** turn (`docs/compact-tools.md`): a listing,
-/// a read and a search, **one call a round** (each its own `ToolBatch`, the
-/// way a live model issues them), with a thinking phase between the read
-/// and the search — a thought commits its own `Thought for …` line and ends
-/// no group, so the summary still counts all three.
+/// The read-only **exploration** turn (`docs/compact-tools.md`): a listing
+/// and a read in **one parallel batch** (the looking-around a live model
+/// issues at once — the batch's two values take the compact summary's `⎿`
+/// row one after another, `$ ls -la` for its minimum and then
+/// `mathutil.py`), then a thinking phase and a search in a round of their
+/// own — a thought commits its own `Thought for …` line and ends no group,
+/// so the summary still counts all three.
 pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
-    let steps = [
-        ScriptedCall::command(
-            "ls -la",
-            "total 16\n\
-             drwxr-xr-x 1 user user  96 Aug  4 17:14 .\n\
-             drwxr-xr-x 1 user user 126 Aug  1 14:35 ..\n\
-             -rw-r--r-- 1 user user 188 Aug  4 16:59 README.md\n\
-             -rw-r--r-- 1 user user 143 Aug  4 17:01 mathutil.py\n\
-             -rw-r--r-- 1 user user 260 Aug  4 17:03 test_math.py",
-            0,
-        ),
-        ScriptedCall::read(
-            "mathutil.py",
-            "\"\"\"Small arithmetic helpers.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n",
-        ),
-        ScriptedCall::command(
+    let rounds: [Vec<ScriptedCall>; 2] = [
+        vec![
+            ScriptedCall::command(
+                "ls -la",
+                "total 16\n\
+                 drwxr-xr-x 1 user user  96 Aug  4 17:14 .\n\
+                 drwxr-xr-x 1 user user 126 Aug  1 14:35 ..\n\
+                 -rw-r--r-- 1 user user 188 Aug  4 16:59 README.md\n\
+                 -rw-r--r-- 1 user user 143 Aug  4 17:01 mathutil.py\n\
+                 -rw-r--r-- 1 user user 260 Aug  4 17:03 test_math.py",
+                0,
+            ),
+            ScriptedCall::read(
+                "mathutil.py",
+                "\"\"\"Small arithmetic helpers.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n",
+            ),
+        ],
+        vec![ScriptedCall::command(
             "grep -rn 'def ' mathutil.py",
             "mathutil.py:4:def add(a, b):\nmathutil.py:8:def mul(a, b):",
             0,
-        ),
+        )],
     ];
     let (first, second) = reply_parts(EXPLORE_REPLY);
     let mut events = opening(cue);
     events.extend(say(&first));
-    for (index, step) in steps.iter().enumerate() {
-        if index == 2 {
+    for (index, round) in rounds.iter().enumerate() {
+        if index == 1 {
             events.push(StreamEvent::ThinkingStart);
             events.extend(
                 chunks("Two functions. Nothing calls them yet — a search will say.")
@@ -1082,12 +1087,16 @@ pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
             );
             events.push(StreamEvent::ThinkingEnd);
         }
-        events.push(StreamEvent::ToolBatch(vec![step.summary()]));
-        events.push(step.start());
-        if step.streams {
-            events.extend(tool_output_events(&step.output));
+        events.push(StreamEvent::ToolBatch(
+            round.iter().map(ScriptedCall::summary).collect(),
+        ));
+        for step in round {
+            events.push(step.start());
+            if step.streams {
+                events.extend(tool_output_events(&step.output));
+            }
+            events.push(step.end());
         }
-        events.push(step.end());
     }
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);

@@ -88,6 +88,10 @@ impl Session<'_> {
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         self.app.set_pulse(self.clocks.loop_start.elapsed());
+        // The compact tool display's `⎿` row moves on to the next value
+        // waiting once the one on it has had its minimum — the same reading
+        // (docs/compact-tools.md).
+        self.app.advance_tool_hint(self.clocks.loop_start.elapsed());
         // The `/usage` page's countdowns run on the wall clock
         // (docs/usage.md).
         if self.app.usage_page.is_some() {

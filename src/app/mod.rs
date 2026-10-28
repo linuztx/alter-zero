@@ -118,8 +118,8 @@ pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
 pub use self::tool_group::{
-    GroupCommit, Hint, LiveGroup, Member, ToolGroup, breaks, is_member, is_skippable, member_of,
-    run_len, trailing_run,
+    GroupCommit, HINT_BACKLOG_MAX, Hint, HintHold, LiveGroup, MIN_HINT_DISPLAY, Member, ToolGroup,
+    breaks, is_member, is_skippable, member_of, run_len, trailing_run,
 };
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
@@ -345,6 +345,10 @@ pub struct App {
     /// What the commit of the call that just resolved does about that group,
     /// decided as it resolved ([`tool_group_commit`](Self::tool_group_commit)).
     tool_group_commit: tool_group::GroupCommit,
+    /// That group's `⎿` row over time — each member's value in turn, held
+    /// long enough to read ([`HintHold`](tool_group::HintHold)), moved on by
+    /// the draw tick's clock ([`advance_tool_hint`](Self::advance_tool_hint)).
+    tool_group_hint: tool_group::HintHold,
     /// The live task list — the model's `taskcreate`/`taskupdate` state,
     /// rendered as the checklist under the status line while a turn runs and
     /// re-derived from history on every rewind

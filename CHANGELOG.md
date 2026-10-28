@@ -18,9 +18,12 @@ release heading when a version is cut.
   run with `ALTER_ZERO_VERBOSE=0`) and the model's housekeeping — its reads,
   searches and directory listings — folds into one Claude-Code-style line
   instead of a cell per call: `● Reading 1 file, listing 1 directory…
-  (ctrl+o to expand)` over the running command while the model keeps
-  looking, settling into a dim `Read 1 file, listed 1 directory (ctrl+o to
-  expand)` once it writes something, runs anything else or answers. A
+  (ctrl+o to expand)` over the call's value — a parallel batch's values
+  taking that row one after another, each held long enough to read (700
+  ms), so a batch of reads shows every file rather than the last alone —
+  while the model keeps looking, settling into a dim `Read 1 file, listed 1
+  directory (ctrl+o to expand)` once it writes something, runs anything else
+  or answers. A
   thought between two reads stays its own `Thought for …` line; a failed
   read shows whole. Ctrl+O, the context and the rollout keep every cell, so
   nothing is lost and a `/resume` folds the same way. Verbose output — the

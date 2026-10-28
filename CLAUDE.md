@@ -2576,9 +2576,14 @@ nineteen rows (**Hide thinking**, **Verbose output** — the compact tool
 display, `docs/compact-tools.md`: off, consecutive read-only calls — a
 `read`, a `bash` listing, read or search by `readonly::kind` — fold into one
 Claude-Code-style line, `● Reading 1 file, listing 1 directory… (ctrl+o to
-expand)` over the running call's `⎿ $ ls -la` hint in the strip while the
-group is open (the bullet blinking on after a call returns, since the next
-may join), settling into the dim bullet-less `Read 1 file, listed 1
+expand)` over a `⎿ $ ls -la` hint in the strip while the group is open —
+each member's value taking that row in turn as its call starts and staying
+at least `MIN_HINT_DISPLAY` (700 ms, Claude Code's hold, `app::HintHold`
+moved on by the draw tick's `App::advance_tool_hint`), at most
+`HINT_BACKLOG_MAX` (8) waiting behind it, the running command's clock riding
+its own value only, so a parallel batch of reads shows every file rather
+than the last alone (the bullet blinking on after a call returns, since the
+next may join), settling into the dim bullet-less `Read 1 file, listed 1
 directory (ctrl+o to expand)` line when a breaker lands — assistant text, a
 `write`, a command that is not read-only, a failed or refused member, a user
 message, a notice, the turn's end; a thought, a task call and a hook note

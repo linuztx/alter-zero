@@ -210,6 +210,9 @@ impl App {
         // ([`LiveTail::apply`]).
         self.command_elapsed = None;
         self.tool_revision += 1;
+        // The compact display's `⎿` row queues a member's value as it starts,
+        // so a batch's values show one after another (docs/compact-tools.md).
+        self.note_tool_start(name, args, arguments);
         let arguments = arguments.map(str::to_string);
         if let Some(front) = self.tool_queue.front_mut()
             && front.status == ToolStatus::Waiting

@@ -6,19 +6,21 @@ smoke_begin
 
 # The compact tool display (docs/compact-tools.md): with the `/settings`
 # **Verbose output** row off — `ALTER_ZERO_VERBOSE=0` for a run — the
-# dummy's "explore" demo (a listing, a read, then a search, one call a round,
-# a thinking phase between the last two) shows ONE blinking summary in the
-# strip that grows a clause per call — `Listing 1 directory…`, `Reading 1
-# file, listing 1 directory…`, `Searching for 1 pattern, reading 1 file,
-# listing 1 directory…` — and, once the reply begins, commits the one dim
-# `Searched for 1 pattern, read 1 file, listed 1 directory (ctrl+o to
-# expand)` line in their place: no `● Bash(ls -la)`, no `● Read(…)` cell in
-# scrollback, the `Thought for …` line of the thought between them still its
-# own row above the summary. Ctrl+O still shows every cell whole, and both a
-# resize (a purge rebuild from history) and the overlay's return keep exactly
-# one summary — the rebuild walk and the commit path agree. Verbose output —
-# the default — is untouched: the same demo is three ordinary cells, and
-# turning the row off afterwards folds them on the rebuilt screen.
+# dummy's "explore" demo (a listing and a read in one parallel batch, then a
+# thought and a search) shows ONE blinking summary in the strip — `Reading 1
+# file, listing 1 directory…` for the batch, whose two values take the `⎿`
+# row ONE AFTER ANOTHER: `$ ls -la` first, held its minimum display time
+# even though the listing is over in milliseconds, then `mathutil.py` — then
+# `Searching for 1 pattern, reading 1 file, listing 1 directory…` — and, once
+# the reply begins, commits the one dim `Searched for 1 pattern, read 1 file,
+# listed 1 directory (ctrl+o to expand)` line in their place: no `● Bash(ls
+# -la)`, no `● Read(…)` cell in scrollback, the `Thought for …` line of the
+# thought between the rounds still its own row above the summary. Ctrl+O
+# still shows every cell whole, and both a resize (a purge rebuild from
+# history) and the overlay's return keep exactly one summary — the rebuild
+# walk and the commit path agree. Verbose output — the default — is
+# untouched: the same demo is three ordinary cells, and turning the row off
+# afterwards folds them on the rebuilt screen.
 S146="${S}_compact"
 S146V="${S}_verbose"
 EXPLORE="explore the project layout"
@@ -29,11 +31,20 @@ HANDOFF="Two commands away from the real thing"
 
 launch "$S146" 100 30 "env ALTER_ZERO_VERBOSE=0 $APP"
 submit "$S146" "$EXPLORE"
-# The summary grows a clause per call while the group is open.
-wait_for 15 "$S146" -F "Listing 1 directory" ||
-	fail "the first read-only call never showed the compact summary"
+# The batch's summary counts both calls at once, and its values take the
+# `⎿` row in call order, each long enough to read: the listing's first —
+# held past the listing's own end, which is milliseconds away — then the
+# read's (the poll runs at a tenth of the hold, so a value shown for its
+# minimum cannot be missed; a value shown for one frame could).
 wait_for 15 "$S146" -F "Reading 1 file, listing 1 directory" ||
-	fail "the read did not join the open group's summary"
+	fail "the batch never showed the compact summary"
+batch_row="$(wait_pane 5 "$S146" -F '⎿  $ ls -la')" ||
+	fail "the listing's value never took the summary's row"
+dump "captured pane (the batch's first value on the row)" "$batch_row"
+expect_lacks "$batch_row" -F "⎿  mathutil.py" "the read's value was up at the same time as the listing's"
+wait_for 5 "$S146" -F '⎿  mathutil.py' ||
+	fail "the read's value never took the row after the listing's"
+# The search joins the open group across the thought between the rounds.
 wait_for 15 "$S146" -F "Searching for 1 pattern, reading 1 file, listing 1 directory" ||
 	fail "the search did not join the group across the thought between them"
 compact_done="$(wait_pane 20 "$S146" -S -200 -- -F "$HANDOFF")" ||
@@ -44,7 +55,7 @@ expect_eq "$(grep -cF "$SETTLED" <<<"$compact_done")" "1" "the summary committed
 expect_lacks "$compact_done" -F "● Bash(ls -la)" "the listing committed its own cell"
 expect_lacks "$compact_done" -F "● Read(" "the read committed its own cell"
 expect_lacks "$compact_done" -F "● Bash(grep" "the search committed its own cell"
-expect_lacks "$compact_done" -F "Listing 1 directory…" "the live summary outlived the group"
+expect_lacks "$compact_done" -F "Reading 1 file, listing 1 directory…" "the live summary outlived the group"
 expect_has "$compact_done" -F "Thought for" "the thought between the members lost its line"
 thought_at="$(grep -nF "Thought for" <<<"$compact_done" | head -1 | cut -d: -f1)"
 settled_at="$(grep -nF "$SETTLED" <<<"$compact_done" | head -1 | cut -d: -f1)"

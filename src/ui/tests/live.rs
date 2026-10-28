@@ -1362,6 +1362,42 @@ fn the_compact_strip_folds_the_members_into_one_summary_over_the_running_hint() 
 }
 
 #[test]
+fn the_strip_keeps_a_batchs_first_value_up_while_the_read_behind_it_runs() {
+    let mut app = App::new();
+    app.settings_mut().verbose_output = false;
+    app.begin_stream();
+    let batch: Vec<crate::stream::ToolCallSummary> = [("Bash", "ls -la"), ("Read", "/p/b.rs")]
+        .iter()
+        .map(|(name, args)| crate::stream::ToolCallSummary {
+            name: (*name).to_string(),
+            args: (*args).to_string(),
+        })
+        .collect();
+    app.start_tool_batch(&batch);
+    app.start_tool("Bash", "ls -la", Some(r#"{"command":"ls -la"}"#));
+    app.advance_tool_hint(Duration::from_secs(10));
+    // The listing is over in a frame and the read runs: the row still says
+    // `$ ls -la`, for its minimum, with the read's value waiting its turn.
+    app.end_tool("Exit code: 0\ntotal 4", true);
+    app.start_tool("Read", "/p/b.rs", None);
+    app.advance_tool_hint(Duration::from_millis(10_020));
+    let all = strip_text(&app, 60);
+    assert!(
+        all.contains("● Reading 1 file, listing 1 directory… (ctrl+o to expand)"),
+        "{all:?}"
+    );
+    assert!(
+        all.contains("⎿  $ ls -la"),
+        "the first value, held: {all:?}"
+    );
+    assert!(!all.contains("⎿  /p/b.rs"), "{all:?}");
+    app.advance_tool_hint(Duration::from_millis(10_700));
+    let later = strip_text(&app, 60);
+    assert!(later.contains("⎿  /p/b.rs"), "then the read's: {later:?}");
+    assert!(!later.contains("⎿  $ ls -la"), "{later:?}");
+}
+
+#[test]
 fn a_held_group_with_nothing_queued_keeps_its_summary_blinking_on_screen() {
     let mut app = App::new();
     app.settings_mut().verbose_output = false;
