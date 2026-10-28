@@ -8,7 +8,9 @@
 //! knows how to render, runs each call through the `execute` closure, appends
 //! the results to the running message list, and loops — until the model answers
 //! with plain text (`StreamDone`), fails (`Error`), is cancelled (silent), or
-//! the tool-call cap trips.
+//! the tool-call cap trips. A round that comes back with neither text nor a
+//! call is no answer: the model is asked to continue, a bounded number of
+//! times in a row (`docs/empty-reply.md`).
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -66,6 +68,80 @@ fn limit_error(max_tool_calls: usize) -> String {
     )
 }
 
+/// How many [empty rounds](RoundOutcome::Empty) **in a row** the loop
+/// answers with a continue prompt before it ends the turn on an error
+/// (`docs/empty-reply.md`). One prompt is what usually recovers the round:
+/// it is Anthropic's own advice for an empty Claude reply, where sending the
+/// same request again only gets the same decision. The second covers a model
+/// whose first try was unlucky. A model still empty after that has a problem
+/// a third prompt will not fix, and each empty round can cost minutes of
+/// reasoning.
+pub const MAX_CONTINUE_PROMPTS: usize = 2;
+
+/// The heading a continue prompt is recorded under — what the Ctrl+O
+/// transcript shows above it (`docs/empty-reply.md`).
+pub const CONTINUE_PROMPT_LABEL: &str = "Empty reply";
+
+/// Does `finish_reason` say the round ran out of output tokens? Each wire's
+/// own word for it: `length` (Chat Completions, Ollama), `max_tokens`
+/// (Anthropic), `max_output_tokens` (an `incomplete` Responses round).
+fn is_output_limit(finish_reason: Option<&str>) -> bool {
+    matches!(
+        finish_reason,
+        Some("length" | "max_tokens" | "max_output_tokens")
+    )
+}
+
+/// What an empty round is answered with: the user message the next round
+/// reads (`docs/empty-reply.md`). Tagged `[system]` like every note the app
+/// itself adds to the conversation (`[error]`, `[background]`), so the
+/// model reads the app speaking rather than the user.
+///
+/// A round the output limit cut off says so: the model cannot see its own
+/// cut-off reasoning (reasoning does not round-trip), so without being told
+/// it would think its way into the same wall.
+fn continue_prompt(finish_reason: Option<&str>) -> &'static str {
+    if is_output_limit(finish_reason) {
+        "[system] Your last response hit the output token limit while you were still \
+         reasoning, so it had no text and no tool call. Continue the task with brief \
+         reasoning: call the next tool you need, or give your answer."
+    } else {
+        "[system] Your last response was empty: no text and no tool call, so the user saw \
+         nothing. Continue the task: call the next tool you need, or give your answer."
+    }
+}
+
+/// The error that ends a turn whose model kept returning empty rounds
+/// (`docs/empty-reply.md`). Like [`limit_error`], it stands alone on a red
+/// row with nothing above it explaining why, and the model reads it too, as
+/// the next turn's `[error] …` entry, so it says what happened, that the
+/// turn stopped, and what to do.
+///
+/// `finish_reason` is the last empty round's. An output-limit stop points at
+/// the knob that spends fewer tokens on thinking; any other unusual stop is
+/// quoted in the provider's own word; an ordinary one, or none, explains
+/// nothing and is left out.
+fn empty_reply_error(rounds: usize, finish_reason: Option<&str>) -> String {
+    let (detail, advice) = match finish_reason {
+        reason if is_output_limit(reason) => (
+            " The last one ran out of output tokens while the model was still reasoning."
+                .to_string(),
+            "Lower the thinking level with Ctrl+T, or send a message to have it continue.",
+        ),
+        None | Some("stop" | "end_turn" | "completed" | "stop_sequence") => {
+            (String::new(), "Send a message to have it continue.")
+        }
+        Some(reason) => (
+            format!(" The provider ended the last one with \"{reason}\"."),
+            "Send a message to have it continue.",
+        ),
+    };
+    format!(
+        "The model returned an empty response {rounds} times in a row — no text and no \
+         tool call — so the turn stopped here.{detail} {advice}"
+    )
+}
+
 /// What one streaming round produced, as [`run_agent`] sees it. The `round`
 /// closure emits the `Chunk`/`Thinking*` events itself; this only reports the
 /// disposition and — for a tool-calling round — the assistant message to append
@@ -77,6 +153,13 @@ pub enum RoundOutcome {
     /// on a continuation — the assistant message the next round's context
     /// keeps.
     Complete { text: String },
+    /// The round ended with **no reply text and no tool call** — reasoning
+    /// alone, or nothing at all (`docs/empty-reply.md`). Not an answer: the
+    /// loop asks the model to continue rather than end the turn on it.
+    /// `finish_reason` is the provider's own word for why the round ended
+    /// (`length` when the output budget ran out mid-thought), `None` when
+    /// the stream never said.
+    Empty { finish_reason: Option<String> },
     /// The assistant requested tool calls. `assistant` is the message to append
     /// verbatim (carrying its `tool_calls`); `calls` are the parsed requests.
     ToolCalls {
@@ -183,6 +266,9 @@ pub fn run_agent(
     // True from the first Stop/SubagentStop-forced continuation on — the
     // payloads' loop-guard flag (docs/hooks.md).
     let mut stop_hook_active = false;
+    // Empty rounds in a row, each answered with a continue prompt until
+    // `MAX_CONTINUE_PROMPTS` is spent (docs/empty-reply.md).
+    let mut empty_rounds = 0usize;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -213,6 +299,7 @@ pub fn run_agent(
         }
         match round(messages) {
             RoundOutcome::Complete { text } => {
+                empty_rounds = 0;
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -248,6 +335,41 @@ pub fn run_agent(
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
             }
+            // The model sent back nothing — no reply, no call — which is
+            // not an answer, so the turn must not end on it as if it were
+            // (docs/empty-reply.md). It is told so in a new user message
+            // and the SAME turn runs another round: the user's own
+            // `continue`, which is also Anthropic's advice for an empty
+            // Claude reply (a plain retry gets the same decision again).
+            // Nothing is added for the empty reply itself — some wires
+            // refuse an empty assistant message, and there is nothing in it
+            // to keep. The prompt is recorded the way a Stop
+            // hook's feedback is (HookNote: cell-less inline, shown in
+            // Ctrl+O, replayed into every later context), and `Stop` does
+            // not fire: the model has not finished answering. Bounded,
+            // since a model that keeps coming back empty will not be
+            // talked out of it: past the budget the turn ends on an error
+            // saying what happened, through StopFailure like every other.
+            RoundOutcome::Empty { finish_reason } => {
+                // Esc landed as the round came back empty: the interrupt
+                // owns the turn's end.
+                if cancel.is_cancelled() {
+                    return;
+                }
+                empty_rounds += 1;
+                if empty_rounds > MAX_CONTINUE_PROMPTS {
+                    let message = empty_reply_error(empty_rounds, finish_reason.as_deref());
+                    hooks.stop_failure("unknown", &message, cancel);
+                    let _ = tx.send(StreamEvent::Error(message));
+                    return;
+                }
+                let prompt = continue_prompt(finish_reason.as_deref());
+                let _ = tx.send(StreamEvent::HookNote {
+                    label: CONTINUE_PROMPT_LABEL.to_string(),
+                    text: prompt.to_string(),
+                });
+                messages.push(ChatMessage::user(prompt));
+            }
             RoundOutcome::Cancelled => return,
             RoundOutcome::Failed(err) => {
                 // `StopFailure` (docs/hooks.md): the turn ends on an error.
@@ -261,6 +383,7 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
+                empty_rounds = 0;
                 // The cap bounds TOOL CALLS, not the final answer: once the
                 // budget is spent the model still gets one more request, and a
                 // plain-text reply there completes the turn — only a further
@@ -3751,5 +3874,236 @@ mod tests {
                 ("c2".to_string(), "listing".to_string()),
             ]
         );
+    }
+
+    // --- an empty round (docs/empty-reply.md) -------------------------------
+
+    /// An empty round, ended for `finish_reason`.
+    fn empty(finish_reason: Option<&str>) -> RoundOutcome {
+        RoundOutcome::Empty {
+            finish_reason: finish_reason.map(str::to_string),
+        }
+    }
+
+    /// Drive one turn whose rounds come from `script` in order — a plain
+    /// `done` answer once it runs out — and hand back the events, every
+    /// request the loop made, and the conversation it left behind.
+    fn scripted(
+        script: Vec<RoundOutcome>,
+        hooks: &dyn HookSink,
+    ) -> (Vec<StreamEvent>, Vec<Vec<ChatMessage>>, Vec<ChatMessage>) {
+        let (tx, mut rx) = unbounded_channel();
+        let mut script = script.into_iter();
+        let mut requests: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut messages = vec![ChatMessage::user("fix the model")];
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |msgs| {
+                requests.push(msgs.to_vec());
+                script.next().unwrap_or_else(|| RoundOutcome::Complete {
+                    text: "done".to_string(),
+                })
+            },
+            |_call, _sink| ToolOutcome::ok("looked"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            hooks,
+            &no_sessions,
+        );
+        (drain(&mut rx), requests, messages)
+    }
+
+    #[test]
+    fn an_empty_round_is_answered_with_a_continue_prompt_and_the_turn_goes_on() {
+        // The reported bug: the model thought for minutes, then sent back
+        // nothing — no text, no tool call — and the loop took that for an
+        // answer, ending the turn on a summary over a reply that never came.
+        // An empty round is not an answer: the model is told so in the next
+        // user message, and the same turn runs another round.
+        let hooks = FakeHooks::default();
+        let (events, requests, messages) = scripted(vec![empty(Some("stop"))], &hooks);
+        assert_eq!(requests.len(), 2, "the empty round bought one more round");
+        let prompt = continue_prompt(Some("stop"));
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::HookNote {
+                    label: CONTINUE_PROMPT_LABEL.to_string(),
+                    text: prompt.to_string(),
+                },
+                StreamEvent::StreamDone,
+            ],
+            "the prompt is recorded where the model reads it, then the turn ends"
+        );
+        // The next request is the first one plus the prompt: an empty reply
+        // leaves no assistant message behind (some wires refuse an empty
+        // one, and there is nothing in it to keep).
+        let (first, second) = (&requests[0], &requests[1]);
+        assert_eq!(second.len(), first.len() + 1, "{second:?}");
+        let last = second.last().expect("the prompt");
+        assert_eq!((last.role.as_str(), text_of(last)), ("user", prompt.into()));
+        assert_eq!(messages.len(), 2, "the prompt stays in the conversation");
+        // The model never finished answering in the empty round, so `Stop`
+        // fires once, for the reply that did come.
+        assert_eq!(hooks.stop_seen(), vec![(false, "done".to_string())]);
+        assert!(hooks.stop_failures().is_empty(), "the turn did not fail");
+    }
+
+    #[test]
+    fn a_round_cut_off_at_the_output_limit_is_told_so() {
+        // `length` (Chat Completions, Ollama), `max_tokens` (Anthropic) and
+        // `max_output_tokens` (Responses) all mean the reply ran out of
+        // output tokens — on an empty round, while the model was still
+        // reasoning. It cannot see its own cut-off thought, so the prompt
+        // says what happened and asks for brief reasoning.
+        for reason in ["length", "max_tokens", "max_output_tokens"] {
+            let (events, _, _) = scripted(vec![empty(Some(reason))], &NoHooks);
+            let Some(StreamEvent::HookNote { text, .. }) = events.first() else {
+                panic!("{reason}: expected the continue prompt first, got {events:?}");
+            };
+            assert_eq!(text, continue_prompt(Some(reason)), "{reason}");
+            assert!(text.contains("output token limit"), "{reason}: {text}");
+        }
+        assert_ne!(
+            continue_prompt(Some("length")),
+            continue_prompt(Some("stop"))
+        );
+        assert_eq!(
+            continue_prompt(None),
+            continue_prompt(Some("stop")),
+            "a stream that named no reason gets the plain prompt"
+        );
+    }
+
+    #[test]
+    fn the_continue_prompt_is_the_app_speaking_briefly() {
+        // The model reads it as the next user message, so it carries the
+        // bracket tag every note the app itself adds does (`[error]`,
+        // `[background]`) — the app speaking, not the user — and says the
+        // one thing it is for: there was no reply, so go on.
+        for reason in [None, Some("length")] {
+            let prompt = continue_prompt(reason);
+            assert!(prompt.starts_with("[system] "), "{prompt}");
+            assert!(prompt.contains("no text and no tool call"), "{prompt}");
+            assert!(prompt.contains("Continue"), "{prompt}");
+            assert!(!prompt.contains('\n'), "one line: {prompt}");
+        }
+    }
+
+    #[test]
+    fn a_model_that_keeps_replying_with_nothing_ends_the_turn_on_an_error() {
+        // A continue prompt usually recovers the round; one that keeps
+        // coming back empty has a problem another prompt will not fix, and
+        // the turn says so rather than looping or ending as if answered.
+        let hooks = FakeHooks::default();
+        let script = (0..10).map(|_| empty(Some("stop"))).collect();
+        let (events, requests, _) = scripted(script, &hooks);
+        assert_eq!(
+            requests.len(),
+            1 + MAX_CONTINUE_PROMPTS,
+            "the first round, then one per prompt"
+        );
+        let prompts = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::HookNote { .. }))
+            .count();
+        assert_eq!(prompts, MAX_CONTINUE_PROMPTS);
+        let Some(StreamEvent::Error(message)) = events.last() else {
+            panic!("expected the turn to end on an error: {events:?}");
+        };
+        assert_eq!(
+            message,
+            &empty_reply_error(1 + MAX_CONTINUE_PROMPTS, Some("stop"))
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::StreamDone)),
+            "a turn that never answered does not finish as if it had: {events:?}"
+        );
+        // It ends the way every failed turn does (docs/hooks.md).
+        assert_eq!(
+            hooks.stop_failures(),
+            vec![("unknown".to_string(), message.clone())]
+        );
+        assert!(hooks.stop_seen().is_empty(), "no reply ever finished");
+    }
+
+    #[test]
+    fn the_empty_reply_error_says_what_happened_and_what_to_do() {
+        // Like the tool-call limit's, this error stands alone on a red row
+        // with nothing above it explaining the context, and the model reads
+        // it too, as the next turn's `[error] …` entry.
+        let plain = empty_reply_error(3, Some("stop"));
+        assert!(plain.contains("3 times in a row"), "{plain}");
+        assert!(plain.contains("no text and no tool call"), "{plain}");
+        assert!(plain.contains("Send a message"), "{plain}");
+        // An ordinary end names no reason: it would explain nothing.
+        for ordinary in [None, Some("end_turn"), Some("completed")] {
+            assert_eq!(empty_reply_error(3, ordinary), plain, "{ordinary:?}");
+        }
+        // Out of output tokens mid-thought: the knob that spends fewer.
+        let cut = empty_reply_error(3, Some("length"));
+        assert!(cut.contains("output tokens"), "{cut}");
+        assert!(cut.contains("Ctrl+T"), "{cut}");
+        // Anything else is the provider's own word for it, quoted.
+        let filtered = empty_reply_error(3, Some("content_filter"));
+        assert!(filtered.contains("\"content_filter\""), "{filtered}");
+    }
+
+    #[test]
+    fn a_round_with_output_starts_the_empty_count_over() {
+        // The budget is for empty rounds IN A ROW: a long task that comes
+        // back empty now and then, between rounds that do work, recovers
+        // every time rather than spending one budget across the whole turn.
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let mut script = vec![
+            empty(None),
+            RoundOutcome::ToolCalls {
+                assistant: assistant_with(&calls),
+                calls: calls.clone(),
+            },
+        ];
+        script.extend((0..MAX_CONTINUE_PROMPTS).map(|_| empty(None)));
+        let (events, _, _) = scripted(script, &NoHooks);
+        assert!(
+            matches!(events.last(), Some(StreamEvent::StreamDone)),
+            "every empty round was within the budget: {events:?}"
+        );
+        let prompts = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::HookNote { .. }))
+            .count();
+        assert_eq!(prompts, 1 + MAX_CONTINUE_PROMPTS);
+    }
+
+    #[test]
+    fn an_empty_round_the_user_cancelled_ends_silently() {
+        // Esc landed as the round came back empty: the interrupt owns the
+        // turn's end, so nothing is recorded and nothing more is asked.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut rounds = 0;
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("x")],
+            |_msgs| {
+                rounds += 1;
+                cancel.cancel();
+                empty(Some("stop"))
+            },
+            |_call, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        assert_eq!(rounds, 1);
+        assert_eq!(drain(&mut rx), Vec::<StreamEvent>::new());
     }
 }

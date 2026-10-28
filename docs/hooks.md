@@ -154,7 +154,7 @@ and the other non-tool queries are never aliased.
 | `SessionEnd`         | `tui` — `/clear`, `/resume` and quit, under a 2 s event budget   |
 | `UserPromptSubmit`   | `llm/backend.rs` — the spawn top, after the SessionStart wait    |
 | `Stop`               | `llm/agent.rs` — `run_agent`'s Complete arm                      |
-| `StopFailure`        | `llm/agent.rs` — a failed round, or the tool-call ceiling        |
+| `StopFailure`        | `llm/agent.rs` — a failed round, the tool-call ceiling, or a model that kept replying with nothing |
 | `PreCompact`         | the compact spawn's top, via the `CompactHooks` wrapper          |
 | `PostCompact`        | the compact spawn's completion, via the same wrapper             |
 
@@ -216,16 +216,19 @@ never existed:
   (matcher = agent type) with the same block-to-continue semantics on the
   agent's own loop; a killed or errored agent fires nothing.
 - **`StopFailure`** fires where the turn ends on an error instead of an
-  answer: a round that failed (after the bounded retry gave up), or the
-  **Max tool calls** ceiling. Its `error` — also the matcher — is Claude
-  Code's error type read off the failure (`llm::hooks::stop_failure_kind`):
-  `rate_limit` (429), `overloaded` (529), `authentication_failed`
-  (401/403), `billing_error` (402), `model_not_found` (404),
-  `invalid_request` (any other 4xx), `server_error` (5xx, a transport
-  failure, an unreachable host), and `unknown` for the rest — the ceiling
-  included. Output is ignored, as in the reference. An interrupt fires
-  none (Esc is not a failure), and neither does a subagent's failed round:
-  the event is the session's turn ending.
+  answer: a round that failed (after the bounded retry gave up), the
+  **Max tool calls** ceiling, or a model whose rounds kept coming back
+  empty past its continue prompts (`docs/empty-reply.md`). Its `error` —
+  also the matcher — is Claude Code's error type read off the failure
+  (`llm::hooks::stop_failure_kind`): `rate_limit` (429), `overloaded`
+  (529), `authentication_failed` (401/403), `billing_error` (402),
+  `model_not_found` (404), `invalid_request` (any other 4xx),
+  `server_error` (5xx, a transport failure, an unreachable host), and
+  `unknown` for the rest — the ceiling and the empty replies included.
+  Output is ignored, as in the reference. An interrupt fires none (Esc is
+  not a failure), and neither does a subagent's failed round: the event is
+  the session's turn ending. An empty round fires no `Stop` either: the
+  model has not finished answering.
 - **`SessionStart`** fires **in the background as a conversation
   opens** — Claude Code's timing: the user can type at once, and the first
   turn waits for the hooks so their context still lands. The boundary
@@ -380,6 +383,10 @@ existing could express them:
   and round-tripped through the rollout so a `/resume` keeps it. Context
   wire text uses Claude Code's exact shape — the
   `<system-reminder>`-wrapped `{event} hook additional context: …`.
+  The agent loop sends one of its own through the same event: the
+  continue prompt it answers an empty round with, labelled `Empty reply`
+  (`docs/empty-reply.md`). That is the Stop continuation's mechanism with
+  no hook in it, so it takes the same record for the same reasons.
 - **`StreamEvent::PromptBlocked { reason }`** is a `UserPromptSubmit`
   block's terminal event — sent instead of `StreamDone`, nothing follows
   it; the loop's arm owns the rollback described above.

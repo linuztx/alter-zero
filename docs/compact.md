@@ -126,7 +126,17 @@ no new user bubble:
   summary; the loop commits the `● Context compacted` cell
   (`ui::compaction_lines`) and runs the normal `dispatch_after_turn` — a
   queued batch dispatches onto the freshly compacted context, and the
-  turn-end checkpoint snapshots at the new (grown) length.
+  turn-end checkpoint snapshots at the new (grown) length;
+- a summary that comes back **empty** never reaches `StreamDone`. The
+  summarization turn runs on the same agent loop as any other, so an empty
+  round is answered with a continue prompt, and a model that still returns
+  nothing ends the turn on an error (`docs/empty-reply.md`). Like any failed
+  compaction, that leaves the old context standing. Before this, an empty
+  summary was committed as a marker with nothing in it, which replaced the
+  conversation with its recent user messages and a `(no summary available)`
+  bridge. The prompt reaches the summarization request only, as
+  PreCompact's notes do: a compact turn's notes never enter the
+  conversation's own record.
 
 ## Auto-compact + the context gauge
 

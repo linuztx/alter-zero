@@ -14,6 +14,18 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A turn no longer ends on a reply that never came.** Sometimes the model
+  thought for a while and then sent back nothing, with no text and no tool
+  call, and the turn ended right there with its summary under an empty
+  reply, until you typed `continue`. Now the app does that for you: it tells
+  the model its last response was empty and the turn carries on. If the
+  model runs out of output tokens while still thinking, the message says so
+  and asks it to keep its reasoning brief. A model that comes back empty
+  three times in a row ends the turn on an error that says what happened,
+  and suggests a lower thinking level (Ctrl+T) when the output limit is the
+  cause. The same goes for subagents, and for `/compact`, whose empty
+  summary used to replace the conversation with `(no summary available)`
+  (`docs/empty-reply.md`).
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
   Resuming such a session left a screenful of empty rows between the

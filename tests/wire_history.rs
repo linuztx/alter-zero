@@ -44,6 +44,16 @@ const CHAT_BATCH_ROUND: &str = concat!(
     "data: [DONE]\n\n",
 );
 
+/// A Chat Completions round in which the model thinks and then says nothing
+/// at all — no reply, no call — and the provider ends it as finished.
+const CHAT_REASONING_ONLY_ROUND: &str = concat!(
+    r#"data: {"choices":[{"delta":{"reasoning_content":"Let me look at the model first."}}]}"#,
+    "\n\n",
+    r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+    "\n\n",
+    "data: [DONE]\n\n",
+);
+
 /// A plain-text Chat Completions round that ends the turn.
 const CHAT_TEXT_ROUND: &str = concat!(
     r#"data: {"choices":[{"delta":{"content":"done"}}]}"#,
@@ -179,6 +189,10 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
                 display, result, ..
             } => {
                 app.reject_tool(&display, &result);
+            }
+            StreamEvent::HookNote { label, text } => {
+                app.flush_streaming_segment();
+                app.record_hook_note(&label, &text);
             }
             StreamEvent::StreamDone => {
                 app.finish_stream();
@@ -323,6 +337,62 @@ fn the_next_responses_turn_sends_the_prefix_the_provider_already_saw() {
     );
     assert_eq!(items[4]["content"][0]["text"], "done");
     assert_eq!(items[5]["content"][0]["text"], "and now?");
+}
+
+#[test]
+fn an_empty_reply_is_answered_with_a_continue_prompt_the_next_turn_replays() {
+    // The reported bug, end to end (docs/empty-reply.md): the model's round
+    // comes back with reasoning and nothing else. The turn does not end on
+    // it — the next request carries a continue prompt, and the reply that
+    // follows ends the turn — and the prompt is recorded, so the next human
+    // turn sends the conversation exactly as the provider saw it.
+    let (base, requests) = stand_in(&[CHAT_REASONING_ONLY_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
+    let backend = backend_on(WireApi::Chat, &base);
+    let mut app = App::new();
+    app.record_user_message("what is wrong with the model?");
+    app.begin_stream();
+    let events = turn(
+        &backend,
+        "what is wrong with the model?",
+        context_messages(&app.history),
+    );
+    let prompt = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::HookNote { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the empty round is answered with a continue prompt");
+    assert!(
+        matches!(events.last(), Some(StreamEvent::StreamDone)),
+        "the reply after the prompt ends the turn: {events:?}"
+    );
+    fold(&mut app, events);
+
+    let sent = requests.lock().expect("the request log")[1].clone();
+    let messages = sent["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        messages.len(),
+        3,
+        "system, the question, the prompt — nothing for the empty reply: {sent}"
+    );
+    assert_eq!(messages[1]["content"], "what is wrong with the model?");
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"], prompt.as_str());
+
+    app.record_user_message("and now?");
+    app.begin_stream();
+    let events = turn(&backend, "and now?", context_messages(&app.history));
+    fold(&mut app, events);
+    let next = requests.lock().expect("the request log")[2].clone();
+    let replayed = next["messages"].as_array().expect("a messages array");
+    assert_eq!(
+        &replayed[..3],
+        &messages[..3],
+        "the prompt where the provider saw it, byte for byte: {next}"
+    );
+    assert_eq!(replayed[3]["content"], "done");
+    assert_eq!(replayed[4]["content"], "and now?");
 }
 
 #[test]

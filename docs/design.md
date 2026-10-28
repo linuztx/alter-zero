@@ -131,7 +131,10 @@ which Ctrl+V reads the clipboard from.
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
   With a **real** backend these tools are driven by the model: it can call
   `bash`/`read`/`write`/`edit`, which run locally in an agentic loop and feed
-  their results back until it answers in plain text (`docs/tools.md`). An
+  their results back until it answers in plain text (`docs/tools.md`). A
+  round that comes back with neither text nor a call (only reasoning) is not
+  an answer, and the loop asks the model to continue instead of ending the
+  turn on it (`docs/empty-reply.md`). An
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare

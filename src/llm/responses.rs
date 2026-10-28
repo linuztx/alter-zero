@@ -313,7 +313,9 @@ pub enum ResponseEvent {
         slot: Option<usize>,
         call: ToolCallRequest,
     },
-    /// The stream finished; the round's usage, when the frame carried one.
+    /// The stream finished; the round's usage, when the frame carried one,
+    /// and its status — for an `incomplete` response, the reason it was cut
+    /// short (`max_output_tokens`, `content_filter`).
     Completed {
         usage: Option<TokenUsage>,
         status: Option<String>,
@@ -378,13 +380,19 @@ pub fn parse_event(data: &str) -> ResponseEvent {
                     call,
                 })
         }
+        // An `incomplete` response says why beside its status — the output
+        // limit or a content filter — and the why is what an empty round's
+        // prompt and error tell apart (docs/empty-reply.md).
         "response.completed" | "response.incomplete" => ResponseEvent::Completed {
             usage: value.get("response").and_then(parse_usage),
-            status: value
-                .get("response")
-                .and_then(|r| r.get("status"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            status: value.get("response").and_then(|response| {
+                response
+                    .get("incomplete_details")
+                    .and_then(|details| details.get("reason"))
+                    .and_then(Value::as_str)
+                    .or_else(|| response.get("status").and_then(Value::as_str))
+                    .map(str::to_string)
+            }),
         },
         "response.failed" | "error" => ResponseEvent::Failed(failure_message(&value, data)),
         _ => ResponseEvent::Ignored,
@@ -885,6 +893,29 @@ mod tests {
         assert_eq!(usage.cache_write, 7);
         assert_eq!(usage.reasoning, 12);
         assert_eq!(status.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn an_incomplete_response_names_why_it_stopped() {
+        // `status: "incomplete"` alone says only that the response is cut
+        // short; the reason beside it says by what — the output limit or a
+        // content filter — which is what an empty round's prompt and error
+        // tell apart (docs/empty-reply.md).
+        let frame = r#"{"type":"response.incomplete","response":{"status":"incomplete",
+            "incomplete_details":{"reason":"max_output_tokens"},
+            "usage":{"input_tokens":10,"output_tokens":4096,"total_tokens":4106}}}"#;
+        let ResponseEvent::Completed { usage, status } = parse_event(frame) else {
+            panic!("an incomplete response still ends the stream");
+        };
+        assert_eq!(status.as_deref(), Some("max_output_tokens"));
+        assert_eq!(usage.map(|usage| usage.output), Some(4096));
+        // Without the detail, the status is all there is to report.
+        let ResponseEvent::Completed { status, .. } =
+            parse_event(r#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#)
+        else {
+            panic!("expected completion");
+        };
+        assert_eq!(status.as_deref(), Some("incomplete"));
     }
 
     #[test]

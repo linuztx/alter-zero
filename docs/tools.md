@@ -108,6 +108,9 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
                                             # model within the turn (docs/background.md)
     match round(&messages):                 # one streaming request (with its own retry)
       Complete            => tx.send(StreamDone); return
+      Empty               =>                # no text and no call: not an answer
+        if empties == MAX_CONTINUE_PROMPTS: tx.send(Error("empty response …")); return
+        messages.push(user(continue_prompt))  # docs/empty-reply.md
       Cancelled           => return
       Failed(e)           => tx.send(Error(e)); return
       ToolCalls{assistant, calls}:
@@ -144,6 +147,14 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
   turn ends with an error naming the ceiling and pointing at `/settings` — an
   error the model reads too, as an `[error] …` user entry, which is why the
   per-call results don't repeat the advice.
+- An **empty round**, one with no reply text and no tool call (reasoning
+  alone, or nothing at all), is `RoundOutcome::Empty`, and it is never taken
+  for the answer. `backend::round_outcome` decides, and a call always makes a
+  tool round. The loop appends a continue prompt as the next user message,
+  recorded the way a Stop hook's feedback is, and the same turn runs another
+  round. At most `MAX_CONTINUE_PROMPTS` (2) in a row; a round with output
+  starts the count over, and a third empty one ends the turn on an error
+  that says so (`docs/empty-reply.md`).
 - `pending_notices` takes the background registry's completion notice board
   (`LlmBackend` wires it; empty without a registry) — each note a user-role
   message appended after the prior round's tool results, exactly where the

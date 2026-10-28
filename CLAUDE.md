@@ -3844,8 +3844,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model
   requested (emitting the same `ToolStart`/`ToolEnd` events the dummy scripts,
   via the `llm::exec::ToolExecutor` seam), feeds the results back, and loops
-  until the model answers with plain text. The pure pieces — the tool defs +
-  edit engine (`llm::tools`), the streamed `tool_calls` accumulator
+  until the model answers with plain text. A round that brings **neither
+  text nor a call** (only reasoning: the model stopped before acting, or ran
+  out of output tokens mid-thought) is `RoundOutcome::Empty`
+  (`backend::round_outcome`), never the answer: the loop appends a continue
+  prompt as the next user message, recorded like a Stop hook's feedback (a
+  `HookNote` labelled `Empty reply`), and runs another round, at most
+  `MAX_CONTINUE_PROMPTS` (2) in a row before it ends the turn on an error
+  saying so (`docs/empty-reply.md`, `smoke.sh` Phase 146). The pure
+  pieces — the tool defs + edit engine (`llm::tools`), the streamed
+  `tool_calls` accumulator
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,
   off via `ALTER_ZERO_TOOLS`. A `read`/`edit`/`write` cell renders its output as

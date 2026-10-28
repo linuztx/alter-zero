@@ -17,7 +17,7 @@ use super::classifier::{ClassifierContext, SafetyClassifier};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
-use super::openai::{Delta, OpenAiClient};
+use super::openai::{Delta, OpenAiClient, StreamOutcome};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
@@ -1984,8 +1984,10 @@ fn spawn_subagent_run(
 /// per-request retry), emitting the `Chunk`/`Thinking*` events as text and
 /// reasoning arrive, and reporting the [`RoundOutcome`] the agent loop acts on
 /// — `Complete` (plain answer), `ToolCalls` (the model wants to run tools),
-/// `Cancelled`, or `Failed`. Boundary code (real HTTP); the loop that calls it
-/// and the retry it wraps are unit-tested separately.
+/// `Empty` (neither — `docs/empty-reply.md`), `Cancelled`, or `Failed`.
+/// Boundary code (real HTTP); the loop that calls it, the retry it wraps and
+/// the classification it ends on ([`round_outcome`]) are unit-tested
+/// separately.
 fn stream_round(
     client: &OpenAiClient,
     messages: &[ChatMessage],
@@ -2073,23 +2075,42 @@ fn stream_round(
             if let Some(usage) = outcome.usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
-            if outcome.tool_calls.is_empty() {
-                RoundOutcome::Complete {
-                    text: outcome.text.response,
-                }
-            } else {
-                let assistant = ChatMessage::assistant_tool_calls(
-                    outcome.text.response,
-                    to_tool_call_specs(&outcome.tool_calls),
-                );
-                RoundOutcome::ToolCalls {
-                    assistant,
-                    calls: outcome.tool_calls,
-                }
-            }
+            round_outcome(outcome)
         }
         AttemptResult::Cancelled => RoundOutcome::Cancelled,
         AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+    }
+}
+
+/// What a completed stream amounts to for the agent loop. A round that asked
+/// for tools is a tool round, whatever text came with it. One with neither a
+/// call nor any reply text — reasoning alone, or nothing at all — is
+/// [`RoundOutcome::Empty`], which the loop answers with a continue prompt
+/// rather than ending the turn on it (`docs/empty-reply.md`). Anything else
+/// is the model's answer.
+///
+/// "No reply text" is blank once trimmed: the app records no message for a
+/// whitespace-only run either, so the user would see exactly as much as for
+/// an empty one. Reasoning never counts — it is not shown as an answer and
+/// does not go back to the model.
+fn round_outcome(outcome: StreamOutcome) -> RoundOutcome {
+    if !outcome.tool_calls.is_empty() {
+        let assistant = ChatMessage::assistant_tool_calls(
+            outcome.text.response,
+            to_tool_call_specs(&outcome.tool_calls),
+        );
+        return RoundOutcome::ToolCalls {
+            assistant,
+            calls: outcome.tool_calls,
+        };
+    }
+    if outcome.text.response.trim().is_empty() {
+        return RoundOutcome::Empty {
+            finish_reason: outcome.finish_reason,
+        };
+    }
+    RoundOutcome::Complete {
+        text: outcome.text.response,
     }
 }
 
@@ -3193,6 +3214,132 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
                 StreamEvent::ThinkingChunk("Weighed.".into()),
                 StreamEvent::ThinkingEnd,
                 StreamEvent::Chunk("The whole reply.".into()),
+            ]
+        );
+    }
+
+    // --- an empty round (docs/empty-reply.md) -------------------------------
+
+    /// A completed stream that said `response`, thought `reasoning`, asked
+    /// for `calls` and ended for `finish_reason`.
+    fn streamed(
+        response: &str,
+        reasoning: &str,
+        calls: Vec<ToolCallRequest>,
+        finish_reason: Option<&str>,
+    ) -> StreamOutcome {
+        StreamOutcome {
+            text: crate::llm::thinking::ChatStreamResult {
+                response: response.to_string(),
+                reasoning: reasoning.to_string(),
+            },
+            tool_calls: calls,
+            finish_reason: finish_reason.map(str::to_string),
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn a_round_that_only_reasoned_is_empty_not_an_answer() {
+        // Minutes of thought and then nothing: no reply text, no call. That
+        // is not the model answering, and the loop must not end the turn on
+        // it as though it were.
+        let outcome = round_outcome(streamed(
+            "",
+            "Let me look at the model…",
+            vec![],
+            Some("stop"),
+        ));
+        let RoundOutcome::Empty { finish_reason } = outcome else {
+            panic!("a reasoning-only round must come back empty");
+        };
+        assert_eq!(finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn a_reply_of_blank_lines_is_no_reply() {
+        // The app records no message for a whitespace-only run either, so
+        // the user would see exactly as much as for an empty one: nothing.
+        let outcome = round_outcome(streamed("\n\n  \n", "", vec![], None));
+        assert!(
+            matches!(
+                outcome,
+                RoundOutcome::Empty {
+                    finish_reason: None
+                }
+            ),
+            "a blank reply is an empty round"
+        );
+    }
+
+    #[test]
+    fn text_completes_and_a_call_is_a_call_whatever_the_text() {
+        let RoundOutcome::Complete { text } =
+            round_outcome(streamed("The model is fine.", "", vec![], Some("stop")))
+        else {
+            panic!("a reply completes the round");
+        };
+        assert_eq!(text, "The model is fine.");
+        // A call is work to do even with no text beside it — the commonest
+        // round of all, and never an empty one.
+        let call = ToolCallRequest {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+        };
+        let RoundOutcome::ToolCalls { calls, .. } = round_outcome(streamed(
+            "",
+            "Thinking…",
+            vec![call.clone()],
+            Some("tool_calls"),
+        )) else {
+            panic!("a round that asked for a tool is a tool round");
+        };
+        assert_eq!(calls, vec![call]);
+    }
+
+    #[test]
+    fn a_round_that_reasons_to_the_output_limit_comes_back_empty_with_why() {
+        // The streamed shape of the report: a provider whose default output
+        // cap the reasoning spends whole ends the round on `length` before a
+        // word of the reply. The thought still settles into its cell; what
+        // the round reports is that nothing came of it, and why.
+        let port = sse_server(vec![SseAnswer {
+            frames: vec![
+                delta_frame("reasoning_content", "Weighing it"),
+                serde_json::json!({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}]
+                })
+                .to_string(),
+            ],
+            cut: false,
+        }]);
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = Some("not-a-real-key".into());
+        let client = OpenAiClient::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = stream_round(
+            &client,
+            &[ChatMessage::user("hi")],
+            &tx,
+            &CancelToken::new(),
+            MAX_RETRIES,
+        );
+        let RoundOutcome::Empty { finish_reason } = outcome else {
+            panic!("a round that only reasoned must come back empty");
+        };
+        assert_eq!(finish_reason.as_deref(), Some("length"));
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ThinkingStart,
+                StreamEvent::ThinkingChunk("Weighing it".into()),
+                StreamEvent::ThinkingEnd,
             ]
         );
     }
