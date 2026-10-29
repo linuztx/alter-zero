@@ -315,7 +315,8 @@ Plus, on the hint row:
 stores:
 
 - The command is split into segments on `|`, `||`, `&&`, `;`, `&` and newlines
-  (quotes respected), and each segment is reduced to its **prefix**: the
+  **the way `bash -c` splits it**, and each segment is reduced to its
+  **prefix** (see *Splitting the way bash does*, below): the
   program word — `python3 script.py` → `python3`, `ls -la` → `ls`, `mkdir
   build` → `mkdir` — a file/argument is an *argument*, not part of the rule.
   (The old prefix kept a non-flag second token, so approving `python3
@@ -343,9 +344,15 @@ stores:
   degrades; only single quotes defuse a substitution.
 - A segment that **no prefix can honestly summarize** degrades the same way:
   a leading env assignment (`FOO=1 python3 …` — `PATH=…` can redirect what
-  the program *is*) or a command wrapper (`sudo`, `sh -c`, `xargs`, `env`,
+  the program *is*), a command wrapper (`sudo`, `sh -c`, `xargs`, `env`,
   `timeout`, …) whose "argument" is itself a command — a `sudo` prefix would
-  allow-list everything sudo can carry.
+  allow-list everything sudo can carry — or a word that leads a segment
+  without being its program: bash's reserved words (`if`, `then`, `do`,
+  `while`, `for`, `!`, `{`, …), `.` (which sources a file) and `builtin`. A
+  rule stored for one would cover whatever runs behind it: approving `if [ -f
+  x ]; then make; fi` used to store `then`, and `if true; then rm -rf ~; fi`
+  then ran unasked. A subshell's parenthesis degrades the scope too, since
+  `(git` is not `git` and its verb would be lost.
 
 Approving with option 2 also **sweeps the requests already waiting**. Parallel
 agents raise theirs before any of them is answered — each thread consulted the
@@ -363,6 +370,24 @@ rule did not grant.
 There is no built-in safe-command list. In manual mode every `bash`, `write`,
 and `edit` asks until the rules say otherwise — Claude Code's default posture,
 and the only one that can't be wrong about what is safe. `read` is never gated.
+
+#### Splitting the way bash does
+
+A rule is matched segment by segment, so a segment the splitter reads as one
+that bash runs as **two** lets a rule cover a command nobody approved. The
+splitter used to know only quotes, and three spellings got past it: an
+**escaped quote** (`echo \"; rm -rf ~; echo \"` — to bash `\"` is a literal
+character, so the `;` after it is real), a **comment** (`echo #'` newline `rm
+-rf ~` — the `'` inside the comment opened nothing), and **ANSI-C quoting**
+(`echo $'\'' ; rm -rf ~` — inside `$'…'` a `\'` does not close). Each read as
+a single `echo` segment, so a saved `echo *` rule ran `rm -rf ~` without a
+prompt, in any mode; the last also hid a redirect (`echo $'\'' >
+/etc/passwd`). `permission::command_segments` now reads a command as `bash -c`
+does as far as splitting goes: single quotes, double quotes and `$'…'` with
+the escapes each takes, a backslash escaping the next character outside them
+(a line continuation removed whole), and a `#` opening a word commenting out
+the rest of its line. A quote that never closes is a line bash refuses, so its
+scope is the exact command.
 
 ## Permission modes (manual · edit · auto · master)
 
@@ -1049,7 +1074,9 @@ explains itself with a toast instead of pretending to toggle anything, and
 - `permission.rs` — the pure vocabulary: titles, questions, option labels
   (the `{prefix} *` display, the exact command verbatim),
   `command_scope`'s segmentation/prefixing/degradation (subcommand tools,
-  wrappers, env assignments, quote-aware redirects), the auto default (the
+  wrappers, env assignments, reserved words, quote-aware redirects, and the
+  split bash makes of an escaped quote, a comment and `$'…'`, each against a
+  saved rule), the auto default (the
   mode, the rules and a fresh gate all start there), the mode's
   label/parse round trip and the four-step Shift+Tab cycle, the rules' allow +
   remember (mode gating file changes both ways; auto covering files but

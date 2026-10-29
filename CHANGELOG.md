@@ -48,6 +48,18 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A saved command rule no longer covers a command hidden by quoting.**
+  "Don't ask again" on a command saves a rule for its program, such as
+  `echo *`, and a later command runs without asking when every part of it
+  is covered. Splitting a command into its parts only took quotes into
+  account, so a command like `echo \"; rm -rf ~; echo \"`, where the
+  backslash makes the quote an ordinary character, read as one `echo` and
+  ran `rm -rf ~` unasked. A `#` comment or `$'…'` quoting could do the same.
+  Commands are now split the way bash runs them. A command that starts
+  with a keyword such as `if`, `then`, `do` or `{`, with `.` or `builtin`,
+  or with a subshell's `(` now only ever matches a rule for that exact
+  command, since a rule saved for `then` used to cover whatever came after
+  it (`docs/permissions.md`).
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
   Resuming such a session left a screenful of empty rows between the
