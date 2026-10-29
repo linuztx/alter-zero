@@ -8,7 +8,8 @@ smoke_begin
 # any line longer than three rows and end the third with a `…` — a markdown
 # paragraph, a long HTML tag, a string literal, cut mid-word while the file
 # streamed into its cell and again once it was written. A file cell now shows
-# every line it shows to its end; a line taller than a streaming write's
+# a line to its end while it fits the cell's ten rows (a longer one is cut on
+# the last of them, Phase 138c); a line taller than a streaming write's
 # ten-row window scrolls through it instead.
 #
 # The REAL backend, against a stub provider whose model writes `notes.md` — a

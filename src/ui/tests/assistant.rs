@@ -2,7 +2,9 @@
 //! (`docs/markdown.md`).
 
 use super::*;
-use crate::ui::assistant::{assistant_lines, code_content_rows, code_content_tail_rows};
+use crate::ui::assistant::{
+    assistant_lines, code_content_head_rows, code_content_rows, code_content_tail_rows,
+};
 use crate::ui::theme::{
     AI_BULLET, BULLET_WIDTH, CODE_TAB_WIDTH, THEMATIC_BREAK, ai_color, inline_code_color,
     menu_dim_color, menu_selected_color,
@@ -1212,6 +1214,45 @@ fn a_code_lines_tail_rows_are_the_last_rows_of_the_whole_wrap() {
                     assert_eq!(
                         code_content_tail_rows(&segments, width, keep),
                         wrapped_then_dropped(&segments, width, keep),
+                        "{text:?} at width {width}, keeping {keep}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_code_lines_head_rows_are_the_first_rows_of_the_whole_wrap() {
+    // A file cell's peek shows a long line's first rows and stops wrapping
+    // there (docs/long-lines.md §7). The greedy break is prefix-stable, so
+    // those rows must be exactly the whole wrap's first ones, styles and all,
+    // and the line must say whether anything was left behind them — a line
+    // that exactly fills its rows has nothing left.
+    let red = Style::new().fg(Color::Red);
+    let blue = Style::new().fg(Color::Blue);
+    let texts = [
+        String::new(),
+        "short".to_string(),
+        "x".repeat(72 * 3),
+        "{\"k\":1,\"v\":[1,2,3]},".repeat(40),
+        "漢字かな".repeat(30),
+        "e\u{301}x".repeat(60),
+    ];
+    for text in &texts {
+        let split: Vec<(String, Style)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| (ch.to_string(), if i % 2 == 0 { red } else { blue }))
+            .collect();
+        for segments in [vec![(text.clone(), red)], split] {
+            for width in [1u16, 7, 72] {
+                let whole = code_content_rows(&segments, width);
+                for keep in [0usize, 1, 3, 10, 10_000] {
+                    let first = whole[..keep.min(whole.len())].to_vec();
+                    assert_eq!(
+                        code_content_head_rows(&segments, width, keep),
+                        (first, whole.len() > keep),
                         "{text:?} at width {width}, keeping {keep}"
                     );
                 }

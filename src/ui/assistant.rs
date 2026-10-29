@@ -52,6 +52,24 @@ pub(super) fn code_content_rows(
     segments: &[(String, Style)],
     width: u16,
 ) -> Vec<Vec<Span<'static>>> {
+    code_content_head_rows(segments, width, usize::MAX).0
+}
+
+/// The first `keep` of the rows [`code_content_rows`] breaks `segments` into
+/// at `width`, and whether any row comes after them — the head of a long line
+/// without wrapping the rest of it, which is all a file cell's peek shows of
+/// the line its row budget runs out inside (`docs/long-lines.md` §7). The
+/// break is greedy and prefix-stable, so these are the whole wrap's rows; the
+/// wrap stops at the first grapheme that would open row `keep + 1`.
+pub(super) fn code_content_head_rows(
+    segments: &[(String, Style)],
+    width: u16,
+    keep: usize,
+) -> (Vec<Vec<Span<'static>>>, bool) {
+    // Even an empty line is one row, so keeping none leaves the line behind.
+    if keep == 0 {
+        return (Vec::new(), true);
+    }
     let width = (width as usize).max(1);
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
@@ -70,6 +88,9 @@ pub(super) fn code_content_rows(
                 flush(&mut row, &mut run, run_style);
                 rows.push(std::mem::take(&mut row));
                 w = 0;
+                if rows.len() == keep {
+                    return (rows, true);
+                }
             }
             if *style != run_style {
                 flush(&mut row, &mut run, run_style);
@@ -83,7 +104,7 @@ pub(super) fn code_content_rows(
     if !row.is_empty() || rows.is_empty() {
         rows.push(row);
     }
-    rows
+    (rows, false)
 }
 
 /// The last `keep` of the rows [`code_content_rows`] breaks `segments` into

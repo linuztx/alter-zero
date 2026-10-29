@@ -2,7 +2,7 @@
 //! gutter — dim line numbers, green/red signs, syntax-highlighted content, and
 //! added/removed rows on background tints. See `docs/tools.md`.
 
-use super::assistant::{code_content_rows, code_content_tail_rows};
+use super::assistant::{code_content_head_rows, code_content_rows, code_content_tail_rows};
 use super::inline::wrap_inline_hanging;
 use super::inline_diff::{RefineRow, refine_rows};
 use super::theme::*;
@@ -364,22 +364,61 @@ fn row_segments(
     out
 }
 
+/// Which of a numbered line's display rows [`numbered_row_lines`] builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineRows {
+    /// Every row — the Ctrl+O expansion and the permission prompt's preview,
+    /// where the whole line lives.
+    All,
+    /// At most the first `n` — the peek with `n` rows of its budget left
+    /// (`docs/long-lines.md` §7). A line that needs more is cut on its `n`th
+    /// row, which closes on [`FILE_PEEK_ELLIPSIS`], and the rows past it are
+    /// never wrapped ([`code_content_head_rows`]).
+    First(usize),
+    /// Only the last `n` — the streaming tail's window
+    /// ([`draft_cell_lines`]), found without wrapping the rows before them
+    /// where the text allows ([`code_content_tail_rows`]); the line number
+    /// goes with the line's first row, so a line whose head is not in the
+    /// window shows none.
+    Last(usize),
+}
+
+/// Close the last row the peek shows of a line it cut: trimmed until
+/// [`FILE_PEEK_ELLIPSIS`] fits inside `width`, then the marker in `style`.
+fn close_cut_row(row: Vec<Span<'static>>, width: usize, style: Style) -> Vec<Span<'static>> {
+    let room = width.saturating_sub(cols(FILE_PEEK_ELLIPSIS));
+    let mut kept: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in row {
+        let w = cols(&span.content);
+        if used + w <= room {
+            used += w;
+            kept.push(span);
+        } else {
+            let cut = truncate_cols(&span.content, room - used);
+            if !cut.is_empty() {
+                kept.push(Span::styled(cut, span.style));
+            }
+            break;
+        }
+    }
+    kept.push(Span::styled(FILE_PEEK_ELLIPSIS.to_string(), style));
+    kept
+}
+
 /// Build the display rows for one numbered source row: a dim right-aligned
 /// line number, the `+`/`-` sign in the diff colour, and the content
 /// syntax-highlighted — added rows on the dark-green tint, removed rows
 /// (their text dimmed) on the dark-red one, both padded to the full width.
-/// Long content wraps ([`code_content_rows`]) to every row it needs and is
-/// never cut — in the collapsed cell as in the Ctrl+O expansion and the
-/// permission prompt's preview (`docs/long-lines.md` §7); continuations
-/// indent under the content column and keep the tint. `changed` are the
-/// row's character-level refinement ranges ([`row_segments`],
-/// `docs/inline-diff.md`) — empty for an unrefined row, which renders
-/// exactly as it always did.
+/// Long content wraps ([`code_content_rows`]); continuations indent under the
+/// content column and keep the tint. `changed` are the row's character-level
+/// refinement ranges ([`row_segments`], `docs/inline-diff.md`) — empty for an
+/// unrefined row, which renders exactly as it always did.
 ///
-/// `keep_last` keeps only the line's last rows — the streaming tail's window
-/// ([`draft_cell_lines`]) — which are exactly the last rows of the whole
-/// line, found without wrapping the rows before them where the text allows
-/// ([`code_content_tail_rows`]); the line number goes with its first row.
+/// `window` says which of the line's rows to build ([`LineRows`]); the flag
+/// beside them is whether the line was cut — a [`LineRows::First`] line
+/// with more rows than it was given, its last row closed on the dim
+/// [`FILE_PEEK_ELLIPSIS`] on the row's own tint.
 fn numbered_row_lines(
     gutter: &str,
     sign: Option<char>,
@@ -387,8 +426,8 @@ fn numbered_row_lines(
     changed: &[Range<usize>],
     indent_cols: usize,
     width: u16,
-    keep_last: Option<usize>,
-) -> Vec<Line<'static>> {
+    window: LineRows,
+) -> (Vec<Line<'static>>, bool) {
     let dim = Style::new().fg(tool_dim_color());
     let indent = " ".repeat(indent_cols);
     let (bg, mark_bg, dim_content) = match sign {
@@ -421,11 +460,23 @@ fn numbered_row_lines(
     // baked in before the wrap, so a changed word split across two display
     // rows keeps its mark on both.
     let segments = row_segments(segs, changed, bg, mark_bg, dim_content);
-    let (rows, dropped) = match keep_last {
-        Some(keep) => code_content_tail_rows(&segments, content_width as u16, keep),
-        None => (code_content_rows(&segments, content_width as u16), 0),
+    let row_width = content_width as u16;
+    let (mut rows, dropped, cut) = match window {
+        LineRows::All => (code_content_rows(&segments, row_width), 0, false),
+        LineRows::First(keep) => {
+            let (rows, more) = code_content_head_rows(&segments, row_width, keep);
+            (rows, 0, more)
+        }
+        LineRows::Last(keep) => {
+            let (rows, dropped) = code_content_tail_rows(&segments, row_width, keep);
+            (rows, dropped, false)
+        }
     };
-    rows.into_iter()
+    if cut && let Some(last) = rows.pop() {
+        rows.push(close_cut_row(last, content_width, with_bg(dim)));
+    }
+    let lines = rows
+        .into_iter()
         .enumerate()
         .map(|(i, row)| {
             let mut spans = vec![Span::raw(indent.clone())];
@@ -451,7 +502,8 @@ fn numbered_row_lines(
             }
             Line::from(spans)
         })
-        .collect()
+        .collect();
+    (lines, cut)
 }
 
 /// One parsed row as the character-level refinement sees it: a numbered row is its
@@ -517,7 +569,16 @@ pub(super) fn numbered_body_lines(
         let display = match &parsed[i] {
             Some(FileRow::Numbered { gutter, sign, text }) => {
                 let segs = hl.line(text);
-                numbered_row_lines(gutter, *sign, &segs, &changed[i], indent_cols, width, None)
+                let (rows, _) = numbered_row_lines(
+                    gutter,
+                    *sign,
+                    &segs,
+                    &changed[i],
+                    indent_cols,
+                    width,
+                    LineRows::All,
+                );
+                rows
             }
             Some(FileRow::Gap(raw) | FileRow::Note(raw)) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
@@ -546,12 +607,12 @@ pub(super) fn numbered_body_lines(
 /// the white summary head (its `(+A -D)` counts coloured) on the corner row,
 /// word-wrapped under it when long ([`summary_head_lines`]),
 /// then every body row via [`numbered_row_lines`], the `⋮` hunk gaps and `…`
-/// notes dim. `peek` bounds the body to [`FILE_PEEK_LINES`] display rows: it
-/// starts source rows while the budget has room and shows each one it starts
-/// whole, so a long line carries the peek past the budget by the rest of
-/// itself instead of being cut (`docs/long-lines.md` §7), then appends the
-/// `… +N lines (ctrl+o to expand)` hint counting the file lines it never
-/// started.
+/// notes dim. `peek` bounds the body to [`FILE_PEEK_LINES`] display rows,
+/// never more (`docs/long-lines.md` §7): source rows show whole while they
+/// fit the rows left, the one the budget runs out inside is cut on its last
+/// row ([`LineRows::First`]), and no row is started after it. The
+/// `… +N lines (ctrl+o to expand)` hint then counts the file lines the peek
+/// does not show whole — the cut one and every one after it.
 /// `None` when the output isn't in the format — the caller falls back to the
 /// legacy rendering. See `docs/tools.md`.
 pub(super) fn file_cell_lines(
@@ -566,33 +627,41 @@ pub(super) fn file_cell_lines(
     let note_width = (width as usize).saturating_sub(indent.len()).max(1);
     let mut out = summary_head_lines(&head, width);
 
-    let budget = if peek { FILE_PEEK_LINES } else { usize::MAX };
+    let budget = peek.then_some(FILE_PEEK_LINES);
     let changed = refine_rows(&refine_input_rows(&rows));
+    let numbered_from = |i: usize| {
+        rows[i..]
+            .iter()
+            .filter(|r| matches!(r, FileRow::Numbered { .. }))
+            .count()
+    };
     let mut used = 0usize;
     let mut hidden = 0usize;
     let mut hl = highlight::Highlighter::new(lang, super::palette::palette().code);
     for (i, row) in rows.iter().enumerate() {
-        // A spent budget starts no further row; one it starts is shown whole.
-        if used >= budget {
-            hidden = rows[i..]
-                .iter()
-                .filter(|r| matches!(r, FileRow::Numbered { .. }))
-                .count();
+        let left = budget.map(|budget| budget.saturating_sub(used));
+        // A spent budget starts no further row.
+        if left == Some(0) {
+            hidden = numbered_from(i);
             break;
         }
-        let display = match row {
+        let (display, cut) = match row {
             FileRow::Gap(raw) => {
                 // Hunks re-synchronize at the gap; the lexer state resets too.
                 hl = highlight::Highlighter::new(lang, super::palette::palette().code);
-                vec![Line::from(vec![
+                let gap = Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(truncate_cols(raw, note_width), dim),
-                ])]
+                ]);
+                (vec![gap], false)
             }
-            FileRow::Note(raw) => vec![Line::from(vec![
-                Span::raw(indent.clone()),
-                Span::styled(truncate_cols(raw, note_width), dim),
-            ])],
+            FileRow::Note(raw) => {
+                let note = Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(truncate_cols(raw, note_width), dim),
+                ]);
+                (vec![note], false)
+            }
             FileRow::Numbered { gutter, sign, text } => {
                 let segs = hl.line(text);
                 numbered_row_lines(
@@ -602,12 +671,18 @@ pub(super) fn file_cell_lines(
                     &changed[i],
                     file_body_indent(),
                     width,
-                    None,
+                    left.map_or(LineRows::All, LineRows::First),
                 )
             }
         };
         used += display.len();
         out.extend(display);
+        // The budget ran out inside this line: it is not shown whole, so the
+        // hint counts it with every line after it.
+        if cut {
+            hidden = numbered_from(i);
+            break;
+        }
     }
     if hidden > 0 {
         out.push(more_hint_line(hidden));
@@ -645,13 +720,13 @@ enum DraftWindow {
 /// transcript, which shows every line and the whole header.
 ///
 /// The window is the committed peek's [`FILE_PEEK_LINES`] **display rows**,
-/// and no line in it is cut (`docs/long-lines.md` §7). While a generated
-/// call's content streams it is the newest rows, the line still arriving at
-/// the bottom and the top row possibly the end of a line that began above
-/// the window; once the content has arrived or the call is queued it is the
-/// committed peek — lines from the top while the budget has room, each one
-/// shown whole — over the hint. So the head is the committed cell's body row
-/// for row, and resolving the call changes only its corner row and its
+/// never more (`docs/long-lines.md` §7). While a generated call's content
+/// streams it is the newest rows, the line still arriving at the bottom and
+/// the top row possibly the end of a line that began above the window; once
+/// the content has arrived or the call is queued it is the committed peek —
+/// lines from the top while they fit, the one the rows run out inside cut on
+/// the last of them — over the hint. So the head is the committed cell's body
+/// row for row, and resolving the call changes only its corner row and its
 /// bullet's colour.
 pub(super) fn draft_cell_lines(
     draft: &crate::app::ToolDraft,
@@ -711,26 +786,27 @@ pub(super) fn draft_cell_lines(
     };
     lines.push(result_row(0, corner));
     let digits = total.to_string().len();
-    // One source line's display rows — every one of them, or only its last
-    // `keep` — the complete lines from the cache, the one still arriving from
-    // its peek on a clone of the highlighter.
-    let rows_of = |at: usize, keep: Option<usize>| -> Vec<Line<'static>> {
+    // One source line's display rows — the ones `rows` names, and whether
+    // the line was cut — the complete lines from the cache, the one still
+    // arriving from its peek on a clone of the highlighter.
+    let rows_of = |at: usize, rows: LineRows| -> (Vec<Line<'static>>, bool) {
         let segs = cache.line(at);
         debug_assert!(segs.is_some(), "line {at} of {total} is not kept");
         let segs = segs.unwrap_or_default();
         let gutter = format!("{:>digits$}", at + 1);
-        numbered_row_lines(&gutter, None, segs, &[], file_body_indent(), width, keep)
+        numbered_row_lines(&gutter, None, segs, &[], file_body_indent(), width, rows)
     };
     match window {
         DraftWindow::Whole => {
             for at in 0..total {
-                lines.extend(rows_of(at, None));
+                lines.extend(rows_of(at, LineRows::All).0);
             }
         }
         DraftWindow::Head => {
             // The committed peek's walk (`file_cell_lines`): source lines
-            // while the budget has room, each one it starts shown whole. A
-            // full budget starts no further line, so it never reads one the
+            // while they fit the rows left, the one the budget runs out
+            // inside cut on its last row and counted by the hint. No line is
+            // started past the budget, so the walk never reads one the
             // peek's cache does not keep.
             let mut used = 0usize;
             let mut shown = 0usize;
@@ -738,10 +814,13 @@ pub(super) fn draft_cell_lines(
                 if used >= FILE_PEEK_LINES {
                     break;
                 }
-                let rows = rows_of(at, None);
+                let (rows, cut) = rows_of(at, LineRows::First(FILE_PEEK_LINES - used));
                 used += rows.len();
-                shown += 1;
                 lines.extend(rows);
+                if cut {
+                    break;
+                }
+                shown += 1;
             }
             if shown < total {
                 lines.push(more_hint_line(total - shown));
@@ -759,7 +838,7 @@ pub(super) fn draft_cell_lines(
                 if used >= FILE_PEEK_LINES {
                     break;
                 }
-                let rows = rows_of(at, Some(FILE_PEEK_LINES - used));
+                let (rows, _) = rows_of(at, LineRows::Last(FILE_PEEK_LINES - used));
                 used += rows.len();
                 window.push(rows);
             }

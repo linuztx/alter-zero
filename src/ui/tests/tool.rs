@@ -2747,10 +2747,10 @@ fn count_char(lines: &[String], ch: char) -> usize {
 
 #[test]
 fn a_read_cell_shows_a_very_long_file_line_whole() {
-    // A long line in the numbered file cell wraps to every row it needs: it
-    // is never cut at a row budget and closed with `…`, which hid the rest
-    // of the line from the one cell the user reads. The lines after it still
-    // show while the peek has room.
+    // A long line that fits the peek's ten rows wraps to every row it needs:
+    // there is no per-line cut, whose `…` on a line's third row hid the rest
+    // of it from the one cell the user reads. The lines after it still show
+    // while the peek has room.
     let body = format!(" 1 {}\n 2 short\n 3 tail", "x".repeat(400));
     let lines: Vec<String> = tool_lines(
         &tool("Read", "min.json", ToolStatus::Ok, &body),
@@ -2783,10 +2783,57 @@ fn a_read_cell_shows_a_very_long_file_line_whole() {
 }
 
 #[test]
-fn the_peek_finishes_a_long_line_it_starts() {
-    // Seven one-row lines leave the ten-row peek room for more, so line 8 is
-    // shown — whole, all six of its rows, rather than three rows and a `…`.
-    // The peek then stops: the hint counts the four file lines after it.
+fn a_write_of_a_minified_line_never_runs_past_the_peek() {
+    // The report: a `write` of a stylesheet whose fourth line is the whole
+    // sheet minified. Lines 1 to 3 spend seven of the peek's ten rows, so the
+    // peek started line 4 — and showed every row of it, a few hundred rows of
+    // CSS inline. The budget is a ceiling: the line it runs out inside is cut
+    // on the budget's last row, and the hint counts that line with the six
+    // after it.
+    let rules: Vec<String> = (5..=10).map(|i| format!(".rule-{i}{{}}")).collect();
+    let content = format!(
+        "@import url('{}');\n\n:root{{{}}}\n*{{{}}}\n{}",
+        "f".repeat(150),
+        "r".repeat(150),
+        "c".repeat(20_000),
+        rules.join("\n")
+    );
+    let output = crate::llm::tools::write_report("src/styles.css", &content);
+    let lines: Vec<String> = tool_lines(
+        &tool("Write", "src/styles.css", ToolStatus::Ok, &output),
+        80,
+        &PathDisplay::VERBATIM,
+    )
+    .iter()
+    .map(plain)
+    .collect();
+    assert_eq!(
+        lines.len(),
+        2 + FILE_PEEK_LINES + 1,
+        "header + `Wrote 10 lines` + the ten-row peek + the hint: {lines:#?}"
+    );
+    let cut = &lines[lines.len() - 2];
+    assert!(cut.ends_with('…'), "the cut row says so: {lines:#?}");
+    assert!(cols(cut) <= 80, "the marker fits the row: {cut:?}");
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains(&format!("+7 lines{EXPAND_HINT}")),
+        "line 4 and lines 5 to 10 wait behind the hint: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains(".rule-")),
+        "no line after the cut is started: {lines:#?}"
+    );
+}
+
+#[test]
+fn the_peek_cuts_the_line_its_budget_runs_out_inside() {
+    // Seven one-row lines leave the ten-row peek three rows, so line 8 is
+    // started and fills them: its first three rows, the third closed by a
+    // `…` (71 content columns at width 80, one of them the marker's). The
+    // hint counts line 8 with the four lines after it, none of them started.
     let body: String = (1..=12)
         .map(|i| {
             let text = if i == 8 {
@@ -2806,30 +2853,34 @@ fn the_peek_finishes_a_long_line_it_starts() {
     .iter()
     .map(plain)
     .collect();
-    assert_eq!(count_char(&lines, 'y'), 400, "line 8 whole: {lines:?}");
     assert_eq!(
         lines.len(),
-        2 + 7 + 6 + 1,
-        "header + summary + rows 1–7 + line 8's six rows + the hint: {lines:?}"
+        2 + FILE_PEEK_LINES + 1,
+        "header + summary + rows 1–7 + line 8's first three rows + the hint: {lines:?}"
+    );
+    assert_eq!(count_char(&lines, 'y'), 3 * 71 - 1, "{lines:?}");
+    assert!(
+        lines[lines.len() - 2].ends_with('…'),
+        "line 8's last row shown says it goes on: {lines:?}"
     );
     assert!(
-        lines[..lines.len() - 1].iter().all(|l| !l.contains('…')),
-        "no row is cut: {lines:?}"
+        lines[2..lines.len() - 2].iter().all(|l| !l.contains('…')),
+        "the lines that fit are whole: {lines:?}"
     );
     assert!(
         lines
             .last()
             .unwrap()
-            .contains(&format!("+4 lines{EXPAND_HINT}")),
-        "lines 9–12 wait behind the hint: {lines:?}"
+            .contains(&format!("+5 lines{EXPAND_HINT}")),
+        "lines 8–12 wait behind the hint: {lines:?}"
     );
 }
 
 #[test]
-fn a_full_peek_starts_no_further_line() {
-    // The other half of the rule: a line the peek has no room left for is
-    // not started at all, however short — one line's rows never push the
-    // peek past its budget a second time.
+fn a_line_taller_than_the_whole_peek_is_cut_on_its_last_row() {
+    // A line longer than the budget at the top of the file — a minified
+    // bundle's one line — takes every row of the peek and no more, and no
+    // further line is started, however short.
     let body: String = (1..=12)
         .map(|i| {
             let text = if i == 1 {
@@ -2849,54 +2900,86 @@ fn a_full_peek_starts_no_further_line() {
     .iter()
     .map(plain)
     .collect();
-    // 800 columns at 71 a row: twelve rows, past the ten-row budget.
-    assert_eq!(count_char(&lines, 'y'), 800, "line 1 whole: {lines:?}");
-    assert_eq!(lines.len(), 2 + 12 + 1, "{lines:?}");
+    // 800 columns at 71 a row are twelve rows, two past the budget.
+    assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1, "{lines:?}");
+    assert_eq!(count_char(&lines, 'y'), 10 * 71 - 1, "{lines:?}");
+    assert!(lines[lines.len() - 2].ends_with('…'), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("row 2")),
+        "no further line is started: {lines:?}"
+    );
     assert!(
         lines
             .last()
             .unwrap()
-            .contains(&format!("+11 lines{EXPAND_HINT}")),
-        "{lines:?}"
+            .contains(&format!("+12 lines{EXPAND_HINT}")),
+        "line 1 is not shown whole, so it counts with the eleven after it: {lines:?}"
     );
 }
 
 #[test]
-fn an_edit_of_a_long_line_shows_both_versions_whole() {
+fn an_edit_of_a_long_line_still_starts_the_line_it_became() {
     // An edit of a long line — a paragraph rewritten — is a long `-` row then
-    // a long `+` row. Each shows whole, and the `+` row is started while the
-    // peek has room left (three context rows and the six-row removed line
-    // leave one), so the cell shows the line it became, not just the line it
-    // was.
+    // a long `+` row. Three context rows and the six-row removed line leave
+    // the peek one row, and the `+` row is started in it rather than dropped,
+    // so the cell shows what the line became and not only what it was: one
+    // row of it, cut, on the added-row tint to the width (70 content columns
+    // beside the ` 4 +` gutter, one of them the marker's).
     let body = format!(
         "Updated a.md (+1 -1)\n 1  ctx\n 2  ctx\n 3  ctx\n 4 -{}\n 4 +{}\n 5  ctx",
-        "a".repeat(400),
-        "b".repeat(400)
+        "q".repeat(400),
+        "z".repeat(400)
     );
-    let lines: Vec<String> = tool_lines(
+    let styled = tool_lines(
         &tool("Edit", "a.md", ToolStatus::Ok, &body),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let lines: Vec<String> = styled.iter().map(plain).collect();
+    assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1, "{lines:?}");
+    assert_eq!(
+        count_char(&lines, 'q'),
+        400,
+        "the old line whole: {lines:?}"
+    );
+    assert_eq!(count_char(&lines, 'z'), 69, "one row of the new: {lines:?}");
+    let added = &styled[styled.len() - 2];
+    assert!(plain(added).ends_with('…'), "{lines:?}");
+    assert_eq!(cols(&plain(added)), 80, "the tint pads the full width");
+    assert_eq!(
+        added.spans.last().unwrap().style.bg,
+        Some(tool_diff_add_bg()),
+        "the marker sits on the row's tint"
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains(&format!("+2 lines{EXPAND_HINT}")),
+        "the cut `+` row and the trailing context wait behind the hint: {lines:?}"
+    );
+}
+
+#[test]
+fn the_ctrl_o_view_shows_the_line_the_peek_cut_whole() {
+    // The cut is the peek's alone: the expansion is where the whole line
+    // lives, every row of it and no marker, then the lines after it.
+    let content = format!("{}\nnext", "w".repeat(2_000));
+    let output = crate::llm::tools::write_report("min.js", &content);
+    let lines: Vec<String> = tool_full_lines(
+        &tool("Write", "min.js", ToolStatus::Ok, &output),
         80,
         &PathDisplay::VERBATIM,
     )
     .iter()
     .map(plain)
     .collect();
-    assert_eq!(
-        count_char(&lines, 'b'),
-        400,
-        "the new line whole: {lines:?}"
-    );
+    assert_eq!(count_char(&lines, 'w'), 2_000, "the whole line: {lines:?}");
     assert!(
-        lines[..lines.len() - 1].iter().all(|l| !l.contains('…')),
-        "no row is cut: {lines:?}"
+        !lines.iter().any(|l| l.contains('…')),
+        "no cut marker: {lines:?}"
     );
-    assert!(
-        lines
-            .last()
-            .unwrap()
-            .contains(&format!("+1 lines{EXPAND_HINT}")),
-        "only the trailing context waits behind the hint: {lines:?}"
-    );
+    assert!(lines.last().unwrap().ends_with("next"), "{lines:?}");
 }
 
 #[test]

@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A long line no longer stretches a read, write or edit cell past its ten
+  rows.** Since 0.17.0 the cell finished every line it started, so a file
+  with one very long line — a minified stylesheet or bundle — painted every
+  row of that line inline, hundreds of rows burying the conversation. The
+  cell is ten rows again whatever the file holds: a line still shows whole
+  while it fits, and the line the ten rows run out inside stops on the last
+  of them with a `…`, counted in the `… +N lines (ctrl+o to expand)` hint
+  below it. Ctrl+O and the permission prompt still show every line in full
+  (`docs/long-lines.md`).
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a
   tool round, sometimes after a long thought that used up its whole output

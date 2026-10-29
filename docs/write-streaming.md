@@ -167,17 +167,22 @@ geometry is the committed cell's, so the two cannot drift:
   first), then `Waiting…`/`Running…` once queued.
 - **The body** is the numbered, syntax-highlighted gutter of the committed
   `Wrote …` cell, built by the same `numbered_row_lines`. It uses the same
-  `{n:>W}` gutter and the same one-column indent past the corner, and like
-  the committed cell it never cuts a line (`docs/long-lines.md` §7). The
-  window is the committed peek's `FILE_PEEK_LINES` (10) **display rows**:
+  `{n:>W}` gutter and the same one-column indent past the corner. The window
+  is the committed peek's `FILE_PEEK_LINES` (10) **display rows**, never
+  more (`docs/long-lines.md` §7, §8):
   - **tail**, while the content streams: the newest ten rows, the unfinished
     last line at the bottom. Rows, not lines: a long line still arriving
     shows the text that just arrived, and the top row may be the end of a
     line whose start has scrolled off, so the window never grows past ten
     rows;
   - **head**, once it has all arrived: the committed peek — lines from the
-    top while the ten rows last, each line it starts shown whole — over the
-    `… +N lines (ctrl+o to expand)` hint, where N counts the lines Ctrl+O adds;
+    top, each shown whole while it fits, the one the ten rows run out inside
+    cut on the last of them with a `…` — over the
+    `… +N lines (ctrl+o to expand)` hint, where N counts the lines it does
+    not show whole: the cut one and those after it. Only the rows it shows
+    of the cut line are ever wrapped (`code_content_head_rows`), so a 1 MB
+    line's head costs ten rows, not the whole line, however often the strip
+    builds it;
   - **whole**, in Ctrl+O: every line.
 
 The window flips from tail to head on the content's closing quote, or when the
@@ -268,7 +273,10 @@ committed cell must keep them over `… +20 lines`. Phase 138b streams one long
 paragraph line the same way and reads the file back: the streaming cell must
 show more than three rows of it with no row ending in `…`, and the committed
 `Write` and `Read` cells must both show its last word (`docs/long-lines.md`
-§7).
+§7). Phase 138c writes and reads back a stylesheet whose fourth line is
+twenty kilobytes of minified CSS: the cell must never pass its ten rows and
+the hint, and the committed `Write` and `Read` cells must each cut that line
+on their tenth row with a `…` over `… +7 lines` (`docs/long-lines.md` §8).
 
 ## What it does not do
 
