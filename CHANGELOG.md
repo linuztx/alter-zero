@@ -21,16 +21,18 @@ release heading when a version is cut.
   `● Searching for 1 pattern, reading 2 files, listing 1 directory…`, over
   the command or file it is on. When the agent runs several at once, that
   row names each one in turn, in the order they ran, for 0.7 seconds
-  each, instead of jumping to the last. Its bullet keeps blinking between
-  calls, since the next one is often another read, and once something else
-  happens (another kind of call, a reply, an error, the end of the turn) it
-  settles into one dim line: `Searched for 1 pattern, read 2 files, listed
-  1 directory (ctrl+o to expand)`. Ctrl+O still shows every call with its
-  full output. A read that was refused, interrupted or moved to the
-  background keeps its own cell, and so does a read of an image, so its
-  picture still draws. The new **Verbose output** row in `/settings` brings
-  back a cell per call, and `ALTER_ZERO_VERBOSE=1` sets it for one run
-  (`docs/tool-groups.md`).
+  each, instead of jumping to the last; a command still running after two
+  seconds shows how long it has run and how many lines it has printed. Its
+  bullet keeps blinking between calls, since the next one is often another
+  read, and once something else happens (another kind of call, a reply, an
+  error, the end of the turn) it settles into one dim line: `Searched for 1
+  pattern, read 2 files, listed 1 directory (ctrl+o to expand)`, with any
+  `Thought for …` lines from the run under it. Ctrl+O still shows every
+  call with its full output. A read that was refused, interrupted or moved
+  to the background keeps its own cell, and so does a read of an image, so
+  its picture still draws. The new **Verbose output** row in `/settings`
+  brings back a cell per call, and `ALTER_ZERO_VERBOSE=1` sets it for one
+  run (`docs/tool-groups.md`).
 
 ### Changed
 

@@ -82,7 +82,10 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
 }
 
 #[test]
-fn a_thought_after_the_groups_last_read_follows_its_line_and_one_between_is_absorbed() {
+fn every_thought_in_a_group_follows_its_line_in_order() {
+    // The reference defers a thought that lands during a group to after the
+    // group's line: the line stays where the group's first call was, and no
+    // thought leaves the conversation.
     let items = [
         ok("Read", "a.py"),
         thought(2),
@@ -94,6 +97,8 @@ fn a_thought_after_the_groups_last_read_follows_its_line_and_one_between_is_abso
         texts(&lines),
         [
             "Read 1 file, listed 1 directory (ctrl+o to expand)",
+            "",
+            "Thought for 2s (ctrl+o to expand)",
             "",
             "Thought for 1s (ctrl+o to expand)",
         ]
@@ -253,6 +258,45 @@ fn a_parallel_batch_shows_its_first_calls_value_first_then_the_next() {
             "  ⎿  $ ls -la",
         ]
     );
+}
+
+#[test]
+fn a_command_running_two_seconds_shows_its_clock_on_the_hint_row() {
+    // The reference's collapsed group does the same, so a long search does
+    // not look frozen: the command's own clock, then how much it has printed.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "grep -rn todo .", None);
+    app.set_command_elapsed(Some(Duration::from_millis(1900)));
+    let row = |app: &App| texts(&live_group_lines(app, 80, None, true))[1].clone();
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo .");
+    app.set_command_elapsed(Some(Duration::from_secs(12)));
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (12s)");
+    app.push_tool_output("a.rs:1: todo\n");
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (12s · 1 line)");
+    app.push_tool_output("b.rs:2: todo\n");
+    app.set_command_elapsed(Some(Duration::from_secs(65)));
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (1m 5s · 2 lines)");
+    // A narrow row gives up the end of the command before the clock.
+    assert_eq!(
+        texts(&live_group_lines(&app, 34, None, true))[1],
+        "  ⎿  $ grep -rn… (1m 5s · 2 lines)"
+    );
+}
+
+#[test]
+fn the_clock_rides_only_the_running_commands_own_value() {
+    // A row still showing an earlier call's value never wears the clock of
+    // the command running behind it.
+    let mut app = holding_a_read("mathutil.py");
+    app.start_tool("Bash", "grep -rn todo .", None);
+    app.set_command_elapsed(Some(Duration::from_secs(12)));
+    let t0 = Duration::from_secs(5);
+    app.advance_group_hint(t0);
+    let row = |app: &App| texts(&live_group_lines(app, 80, None, true))[1].clone();
+    assert_eq!(row(&app), "  ⎿  mathutil.py");
+    app.advance_group_hint(t0 + crate::app::GROUP_HINT_HOLD);
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (12s)");
 }
 
 #[test]

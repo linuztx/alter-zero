@@ -23,7 +23,7 @@
 
 use super::reasoning::reasoning_lines;
 use super::theme::*;
-use super::tool::{bullet_span, result_row};
+use super::tool::{bullet_span, command_display_lines, result_row};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 use crate::app::{GroupCounts, group_counts, is_group_member, leading_group_calls};
@@ -123,10 +123,10 @@ fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'sta
 /// A closed group as **committed** lines — what the commit path writes when
 /// the group closes and what every rebuild paints in its place
 /// ([`conversation_lines`]): the one settled line over the members of
-/// `items` (a [`crate::app::group_run`]), then any thought the turn settled
-/// after the group's last call, each under a blank spacer as its own cell —
-/// the thoughts *between* its calls are part of the work the line stands for
-/// and show in Ctrl+O.
+/// `items` (a [`crate::app::group_run`]), then every thought the turn
+/// settled while the group was open, in order, each under a blank spacer as
+/// its own cell — the reference defers them past the group's line, which
+/// stays where the group's first call was.
 #[must_use]
 pub fn tool_group_lines(items: &[HistoryItem], width: u16) -> Vec<Line<'static>> {
     let members = items.iter().filter_map(|item| match item {
@@ -140,11 +140,7 @@ pub fn tool_group_lines(items: &[HistoryItem], width: u16) -> Vec<Line<'static>>
         style,
         usize::from(width),
     ))];
-    let last_call = items
-        .iter()
-        .rposition(|item| matches!(item, HistoryItem::Tool(_)))
-        .unwrap_or(0);
-    for item in &items[last_call + 1..] {
+    for item in items {
         if let HistoryItem::Reasoning(reasoning) = item {
             lines.push(Line::default());
             lines.extend(reasoning_lines(reasoning, width));
@@ -221,18 +217,42 @@ pub(super) fn live_group_lines(
         room,
     ));
     let mut lines = vec![Line::from(spans)];
-    let hint = app
-        .group_hint(with_queue)
-        .map(|tool| hint_text(tool, app.path_display()));
-    if let Some(hint) = hint {
+    if let Some(tool) = app.group_hint(with_queue) {
+        let hint = hint_text(tool, app.path_display());
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));
-        let shown = if cols(&hint) > room {
+        // The clock outranks the end of the command on a narrow row.
+        let clock = group_clock(app, tool, with_queue).filter(|clock| cols(clock) < room);
+        let room = room - clock.as_deref().map_or(0, cols);
+        let mut shown = if cols(&hint) > room {
             let cut = truncate_cols(&hint, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
             format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end())
         } else {
             hint
         };
+        shown.push_str(clock.as_deref().unwrap_or_default());
         lines.push(result_row(0, shown));
     }
     lines
+}
+
+/// What the hint row adds while it shows a command that has run
+/// [`TOOL_GROUP_CLOCK_DELAY`]: ` (12s)`, then ` (12s · 34 lines)` once it
+/// has printed — the reference's collapsed group, so a long search does not
+/// look frozen. Only the running command's own value wears it: a row still
+/// showing an earlier call never borrows the clock of the one behind it.
+fn group_clock(app: &App, shown: &ToolCall, with_queue: bool) -> Option<String> {
+    let running = app
+        .tool_queue()
+        .front()
+        .filter(|front| with_queue && std::ptr::eq(*front, shown))
+        .filter(|front| front.status == ToolStatus::Running && front.name == "Bash")?;
+    let elapsed = app
+        .command_elapsed()
+        .filter(|elapsed| *elapsed >= TOOL_GROUP_CLOCK_DELAY)?;
+    let time = crate::app::format_elapsed(elapsed.as_secs());
+    Some(match command_display_lines(running).len() {
+        0 => format!(" ({time})"),
+        1 => format!(" ({time}{TOOL_CLOCK_SEPARATOR}1 line)"),
+        printed => format!(" ({time}{TOOL_CLOCK_SEPARATOR}{printed} lines)"),
+    })
 }

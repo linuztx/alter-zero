@@ -1223,9 +1223,9 @@ const EXPLORE_THINKING: &str =
 
 /// The thought after the explore demo's parallel round — a live model's pause
 /// before its next call, in which the group's `⎿` row steps through each of
-/// the round's values in turn (`docs/tool-groups.md` *The hint row*). It
-/// follows the group's last read, so it shows under the group's line once
-/// the script run closes the group.
+/// the round's values in turn (`docs/tool-groups.md` *The hint row*). Like
+/// the first thought, it shows under the group's line once the script run
+/// closes the group.
 const EXPLORE_SECOND_THINKING: &str =
     "card() builds the line, and the README says to run it.\nRun it and see.";
 

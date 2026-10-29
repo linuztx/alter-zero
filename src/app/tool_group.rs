@@ -85,9 +85,9 @@ pub fn is_group_member(tool: &ToolCall) -> bool {
 }
 
 /// Whether `item` lets a group run on through it: a task call and a hook
-/// note have no cell inline at all, and a thought between two reads is part
-/// of the work the group stands for (one after the group's last read is
-/// shown after the group's line).
+/// note have no cell inline at all, and a thought the model has while the
+/// group is open is shown after the group's line rather than ending it (the
+/// reference defers it there).
 fn passes_through(item: &HistoryItem) -> bool {
     matches!(
         item,
@@ -117,6 +117,20 @@ pub fn group_run(items: &[HistoryItem]) -> Option<usize> {
             })
             .count(),
     )
+}
+
+/// Where the run of members the history ends on starts — the group a turn
+/// in flight would be holding — or `None` when the history does not end on
+/// one (nothing but members and the items a group runs through since the
+/// last item that is neither).
+fn trailing_group_start(history: &[HistoryItem]) -> Option<usize> {
+    let joins =
+        |item: &HistoryItem| matches!(item, HistoryItem::Tool(tool) if is_group_member(tool));
+    let after = history
+        .iter()
+        .rposition(|item| !joins(item) && !passes_through(item))
+        .map_or(0, |breaker| breaker + 1);
+    (after..history.len()).find(|&at| joins(&history[at]))
 }
 
 /// A group's clauses: how many searches, files read, and listings it holds.
@@ -244,6 +258,36 @@ impl App {
     pub(super) fn drop_tool_group(&mut self) {
         self.tool_group = None;
         self.group_hint = GroupHint::default();
+    }
+
+    /// Hold the reads a turn in flight already committed as cells of their
+    /// own, when **Verbose output** turns off under it: the rebuild the row
+    /// triggers paints them as the open group, and the next read joins them
+    /// — so a later rebuild draws the one line scrollback will show, never a
+    /// line for the reads before the switch and another for the ones after.
+    /// Nothing is held between turns (a rebuild draws a settled run's line by
+    /// itself), nor once something has ended the run: reply text, a call of
+    /// another kind running or being written, a subagent launch.
+    pub(super) fn hold_trailing_group(&mut self) {
+        let moved_on = self
+            .streaming_text()
+            .is_some_and(|text| !text.trim().is_empty())
+            || self
+                .tool_queue
+                .front()
+                .is_some_and(|tool| group_kind(tool).is_none())
+            || self.tool_drafts.previews().next().is_some()
+            || self.agent_group().is_some();
+        if self.settings.verbose || !self.is_streaming() || self.tool_group.is_some() || moved_on {
+            return;
+        }
+        self.tool_group = trailing_group_start(&self.history);
+        // The row names the newest of them: the ones before it were cells.
+        let held = self.group_hint_calls(false).len();
+        self.group_hint = GroupHint {
+            shown: held.saturating_sub(1),
+            since: None,
+        };
     }
 
     /// The open group's calls in the order they ran — the held ones, then

@@ -100,33 +100,41 @@ pub fn read_kind(command: &str) -> Option<ReadKind> {
 fn segment_read_kind(segment: &Segment) -> Option<ReadKind> {
     let program = segment.program()?;
     let args = segment.args();
-    let has = |flag: &str| args.iter().any(|word| word == flag);
-    let has_prefix = |prefix: &str| args.iter().any(|word| word.starts_with(prefix));
+    // Any word giving one of these flags — as a short flag anywhere in a
+    // bundle (`-aR`, `-xrm`), or as a long option however GNU getopt lets it
+    // be shortened (`--out=` for `--output=`).
+    let any = |short: &[char], long: &[&str]| {
+        args.iter()
+            .any(|word| bundles(word, short) || long.iter().any(|option| names_long(word, option)))
+    };
     if LIST_PROGRAMS.contains(&program) {
         // `tree -o FILE` writes the listing; `-R` re-runs it in every
         // directory with `-o 00Tree.html`.
-        let writes = program == "tree"
-            && args
-                .iter()
-                .any(|word| word.starts_with("-o") || word == "-R");
+        let writes = program == "tree" && any(&['o', 'R'], &["--output"]);
         return (!writes).then_some(ReadKind::List);
     }
     if SEARCH_PROGRAMS.contains(&program) {
         let writes = match program {
             "find" => args.iter().any(|word| FIND_WRITES.contains(&word.as_str())),
-            "fd" | "fdfind" => has("-x") || has("-X") || has_prefix("--exec"),
-            "rg" => has_prefix("--pre"),
+            // A program run per match.
+            "fd" | "fdfind" => any(&['x', 'X'], &["--exec", "--exec-batch"]),
+            // A preprocessor, and a program asked for the hostname.
+            "rg" => any(&[], &["--pre", "--hostname-bin"]),
+            "ag" | "ack" => any(&[], &["--pager"]),
             _ => false,
         };
         return (!writes).then_some(ReadKind::Search);
     }
     if READ_PROGRAMS.contains(&program) {
         let writes = match program {
-            "sort" => args.iter().any(|word| {
-                word.starts_with("--output")
-                    || word.starts_with("--compress-program")
-                    || (word.starts_with('-') && !word.starts_with("--") && word.contains('o'))
-            }),
+            "sort" => any(&['o'], &["--output", "--compress-program"]),
+            // `-C` compiles a magic file into a `.mgc` beside it.
+            "file" => any(&['C'], &["--compile"]),
+            // A copy of what is shown, into a log file.
+            "less" => any(&['o', 'O'], &["--log-file", "--LOG-FILE"]),
+            // A pager of the caller's choosing; `bat cache` builds and clears
+            // bat's own.
+            "bat" => any(&[], &["--pager"]) || args.first().is_some_and(|word| word == "cache"),
             // `uniq INPUT OUTPUT` writes its second positional.
             "uniq" => uniq_positionals(args) > 1,
             "awk" => args.iter().any(|word| {
@@ -140,6 +148,25 @@ fn segment_read_kind(segment: &Segment) -> Option<ReadKind> {
         return (!writes).then_some(ReadKind::Read);
     }
     None
+}
+
+/// Whether `word` is a bundle of short flags holding one of `letters` —
+/// `-aR`, `-xrm` (an attached value reads as a bundle too, so `-exml` is
+/// taken for an `x`: refusing a read costs a cell, never a hidden write).
+fn bundles(word: &str, letters: &[char]) -> bool {
+    word.len() > 1
+        && word.starts_with('-')
+        && !word.starts_with("--")
+        && word[1..].chars().any(|letter| letters.contains(&letter))
+}
+
+/// Whether `word` gives the long option `option` — whole, with a value
+/// (`--output=x`), or shortened the way GNU getopt allows (`--out=x`), which
+/// a check of the full name alone walks past. An ambiguous prefix counts too:
+/// the program refuses it, so nothing is lost.
+fn names_long(word: &str, option: &str) -> bool {
+    let name = word.split_once('=').map_or(word, |(name, _)| name);
+    name.len() > 2 && name.starts_with("--") && option.starts_with(name)
 }
 
 /// `find` predicates that run a program, delete, or write a file.

@@ -231,6 +231,12 @@ pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 pub(super) const TOOL_GROUP_ACTIVE_SUFFIX: &str = "…";
 pub(super) const TOOL_GROUP_COMMAND_PROMPT: &str = "$ ";
 
+/// How long a command in an open read/search group must have run before the
+/// group's `⎿` row wears its clock — `$ grep -rn todo . (12s · 34 lines)` —
+/// the reference's two seconds, so a fast command never flashes one and a
+/// slow one does not look frozen (`docs/tool-groups.md` *The hint row*).
+pub(super) const TOOL_GROUP_CLOCK_DELAY: Duration = Duration::from_secs(2);
+
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at
 /// the lowest row still moving (`LiveTail::anchor` — the last row for every

@@ -42,6 +42,16 @@ already in scrollback changes shape at once; `ALTER_ZERO_VERBOSE` seeds it for
 a run (the smoke suite exports `1`, so its phases keep the per-call cells they
 assert on).
 
+Turned **off in the middle of a turn**, the reads the turn already showed as
+cells of their own become the **open** group (`App::hold_trailing_group`), so
+the rebuild draws them in the strip and the next read joins them: otherwise
+scrollback would get one line for the reads before the switch and another for
+the ones after it, while every later rebuild — which reads the history as one
+run — drew a single line. Nothing is held between turns, where a rebuild draws
+a finished run's line by itself, nor once the run has ended (reply text, a
+call of another kind, a subagent launch). Turned **on**, the open group lets
+go and the rebuild paints its calls as cells.
+
 ## The two looks
 
 **Live**, in the streaming strip, while the group is open:
@@ -108,7 +118,10 @@ shows each call's value the moment it runs (the model's seconds of writing
 its next call are longer than the hold), and the last value stays on the row
 until the group closes. The queue lags reality by at most one hold per call
 that finished faster than one — a few seconds for a large batch, played out
-while the model writes its next call.
+while the model writes its next call. It is deliberately not capped: a cap
+that let the oldest waiting values go would skip a large batch's **first**
+calls, the very values this queue exists to show, and the lag ends with the
+group anyway, since a closed group resets the row.
 
 The state is pure: `App::group_hint` — which call is on the row and since
 when — stepped by [`App::advance_group_hint`] on the boundary's frame clock
@@ -117,6 +130,15 @@ when — stepped by [`App::advance_group_hint`] on the boundary's frame clock
 group starts from its own first call. The permission prompt's still frame
 steps through the held calls alone, since the call it asks about has a cell
 of its own there.
+
+A command that is still running after two seconds (`TOOL_GROUP_CLOCK_DELAY`,
+the reference's threshold) wears its own **clock** at the end of the row —
+`$ grep -rn todo . (12s)`, then `(12s · 34 lines)` once it has printed — so a
+long search reads as alive rather than frozen; on a narrow row the end of the
+command gives way before the clock does. The clock is the command's own
+(`App::command_elapsed`) and rides only its own value: while the row is still
+showing an earlier call, it shows no clock at all. A command running long
+enough for Ctrl+B keeps that hint too, hung off the group's cell.
 
 **Settled**, in scrollback, once the group closes:
 
@@ -166,9 +188,14 @@ strict about one thing only: a collapsed line must never summarise a write as
 a read. A glob or a variable is fine (`grep -c TODO *.rs` is still a search),
 while a redirect to a file, a `$(…)` substitution, a background `&`, a
 subshell, and the flags that make a reading program write or run something
-(`find -delete`/`-exec`, `sort -o`, `tree -o`, `rg --pre`, `fd -x`, `uniq IN
-OUT`, `awk` with `system`/`getline`/`>`/`|`, `sed` beyond `-n …p` and one
-stdin `s///`) make it no read at all. Whether a command *provably* reads —
+(`find -delete`/`-exec`, `sort -o`, `tree -o`/`-R`, `rg --pre`/
+`--hostname-bin`, `fd -x`, `ag`/`ack`/`bat --pager`, `file -C`, `less -o`,
+`bat cache`, `uniq IN OUT`, `awk` with `system`/`getline`/`>`/`|`, `sed`
+beyond `-n …p` and one stdin `s///`) make it no read at all. A short flag
+counts anywhere in a bundle or with its value attached (`tree -aR`, `fd
+-xrm`), and a long one however GNU getopt lets it be shortened (`sort
+--out=…`): a check of the whole word alone is one those spellings walk past.
+Whether a command *provably* reads —
 whether auto mode may skip the classifier for it — is a different, stricter
 question with its own function, [`read_only::is_read_only`]
 (`docs/permissions.md` *Read-only commands skip the classifier*). The two share
@@ -226,14 +253,16 @@ no-op with none open):
 
 ### Thoughts
 
-A thought **between** two reads is part of the work the line stands for: it
-settles into the history inside the group (`tui::stream`'s
-`settle_reasoning` holds it while a group is open) and shows in Ctrl+O, not
-inline. While it streams, its live `● Thinking…` block sits **under** the open
-group's cell, which stays up through it. A thought that settles **after** the
-group's last read — the model thinking before it answers — is shown after the
-group's line as its own `Thought for …` cell when the group closes on it, the
-order it happened in (`ui::tool_group_lines`).
+A thought does not close a group, and it is not hidden either: the reference
+**defers** a thought that lands while a group is open to just after the
+group's line ("this preserves the visual ordering where the collapsed badge
+appears at the position of the first tool use"), and so does this. It settles
+into the history inside the group (`tui::stream`'s `settle_reasoning` holds it
+while a group is open), and when the group closes its line commits with every
+thought it held under it, each its own `Thought for …` cell in the order they
+happened (`ui::tool_group_lines`) — a thought between two reads and one after
+the last read alike. While it streams, its live `● Thinking…` block sits
+**under** the open group's cell, which stays up through it.
 
 ## Where it does not apply
 
@@ -273,7 +302,7 @@ resolving with the real executor's output.
 `scripts/smoke.sh` Phase 146 plays it against the real binary — the live cell
 over the streaming thought, the clauses growing, the parallel round's three
 values taking the hint row in turn, the one settled line above the closing
-call with no per-read cell, the thought between the reads absorbed and the one
-after them under the line, Ctrl+O expanding every call, a resize rebuild
+call with no per-read cell, both thoughts under the line in the order they
+happened, Ctrl+O expanding every call, a resize rebuild
 painting the same line, and **Verbose output** unfolding it — while every
 other phase runs with `ALTER_ZERO_VERBOSE=1`.

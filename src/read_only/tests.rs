@@ -150,8 +150,51 @@ fn a_reading_program_with_a_writing_flag_is_no_read() {
         "uniq names.txt deduped.txt",
         "awk '{ system(\"rm x\") }' f",
         "awk '{ print > \"out\" }' f",
+        // A program the caller names runs: a hostname helper, a pager.
+        "rg --hostname-bin=./helper foo",
+        "rg --hostname-bin ./helper foo",
+        "ag --pager=./helper foo",
+        "ack --pager ./helper foo",
+        "bat --pager=./helper notes.md",
+        // A compiled magic file, a pager's log, bat's own cache.
+        "file -C -m magic",
+        "file -Cm magic",
+        "file --compile -m magic",
+        "less -o copy.txt notes.md",
+        "less -Ocopy.txt notes.md",
+        "less --log-file=copy.txt notes.md",
+        "bat cache --build",
+        // The writing flag inside a bundle, or attached to its value.
+        "tree -aR -L 2",
+        "tree -ao tree.txt",
+        "fd -Hx rm",
+        "fd -xrm",
+        "fd -Xrm",
+        // GNU getopt takes any unambiguous prefix of a long option.
+        "sort --out=sorted.txt names.txt",
+        "sort --outp=sorted.txt names.txt",
+        "sort --compress-prog=./helper names.txt",
+        "tree --output tree.txt",
     ] {
         assert_eq!(read_kind(command), None, "{command}");
+    }
+}
+
+#[test]
+fn the_flags_beside_a_writing_one_still_read() {
+    for (command, kind) in [
+        ("rg --pre-glob '*.gz' foo", ReadKind::Search),
+        ("fd -e rs", ReadKind::Search),
+        ("fd -H -t f", ReadKind::Search),
+        ("tree -L 2 -I node_modules", ReadKind::List),
+        ("tree --dirsfirst", ReadKind::List),
+        ("file -m magic f", ReadKind::Read),
+        ("less -R notes.md", ReadKind::Read),
+        ("bat --paging=never notes.md", ReadKind::Read),
+        ("sort --check names.txt", ReadKind::Read),
+        ("sort -rn names.txt", ReadKind::Read),
+    ] {
+        assert_eq!(read_kind(command), Some(kind), "{command}");
     }
 }
 

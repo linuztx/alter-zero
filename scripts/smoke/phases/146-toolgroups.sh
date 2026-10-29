@@ -19,12 +19,16 @@ smoke_begin
 #     README — each held long enough to read, never jumping to the last;
 #   - once the script runs, ONE settled line above the script's own cell —
 #     `Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to
-#     expand)` — no cell for any read, the thought between them absorbed and
-#     the one after the last read under the group's line;
+#     expand)` — no cell for any read, and both thoughts under the group's
+#     line in the order they happened (the reference defers them there);
 #   - Ctrl+O still shows every call whole;
 #   - a resize's rebuild paints the same one line (it is derived from history);
 #   - /settings → Verbose output → true rebuilds the conversation with a cell
-#     per call, and the row persists to settings.json.
+#     per call, and the row persists to settings.json;
+#   - and turned back OFF in the middle of a second run, the reads that run
+#     already showed as cells become the open group, so it still ends as the
+#     one line — never a line for the listing and another for the reads after
+#     the switch.
 S146="${S}_toolgroups"
 APP146="env ${CFG_ENV_NOHIST/ ALTER_ZERO_VERBOSE=1/} ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 GROUP146="Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to expand)"
@@ -74,17 +78,18 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_lacks "$settled" -F "$cell" "a read inside the group kept a cell of its own: $cell"
 done
 expect_lacks "$settled" -F "Listing 1 directory" "the open group's live cell was left behind in scrollback"
-# The thought between the rounds is part of the group's work and shows only
-# in Ctrl+O; the one after its last read follows the group's line.
-expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$settled")" "1" \
-	"only the thought after the group's last read may show inline (the one between the reads is the group's)"
+# Neither thought is lost: both follow the group's line, the one between the
+# rounds first, and the call that closed the group comes after them.
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$settled")" "2" \
+	"a thought the model had while the group was open is missing from the conversation"
 expect_has "$settled" -F "Bash(python3 about.py)" "the script run lost its own cell"
 group_line="$(grep -nF "$GROUP146" <<<"$settled" | head -1 | cut -d: -f1)"
-thought_line="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | head -1 | cut -d: -f1)"
+first_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | head -1 | cut -d: -f1)"
+last_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | tail -1 | cut -d: -f1)"
 run_line="$(grep -nF "Bash(python3 about.py)" <<<"$settled" | head -1 | cut -d: -f1)"
-if [ -z "$group_line" ] || [ -z "$thought_line" ] || [ -z "$run_line" ] ||
-	[ "$group_line" -ge "$thought_line" ] || [ "$thought_line" -ge "$run_line" ]; then
-	fail "the group's line, the thought after it and the call that closed it are out of order (rows ${group_line:-none}, ${thought_line:-none}, ${run_line:-none})"
+if [ -z "$group_line" ] || [ -z "$first_thought" ] || [ -z "$run_line" ] ||
+	[ "$group_line" -ge "$first_thought" ] || [ "$last_thought" -ge "$run_line" ]; then
+	fail "the group's line, the thoughts after it and the call that closed it are out of order (rows ${group_line:-none}, ${first_thought:-none}…${last_thought:-none}, ${run_line:-none})"
 fi
 # The settled line wears no bullet: what is left is a fact about the turn.
 expect_lacks "$settled" -F "● $GROUP146" "the settled group line kept a bullet"
@@ -137,9 +142,50 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 done
 expect_lacks "$verbose" -F "$GROUP146" "Verbose output left the collapsed line on screen"
 expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$verbose")" "2" \
-	"Verbose output did not give the thought between the reads its own cell back"
+	"Verbose output lost a thought"
+# …each back in its place: the first between the listing and the search.
+first_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$verbose" | head -1 | cut -d: -f1)"
+search_cell="$(grep -nF "Bash(grep -rn 'card()' .)" <<<"$verbose" | tail -1 | cut -d: -f1)"
+if [ -z "$first_thought" ] || [ -z "$search_cell" ] || [ "$first_thought" -ge "$search_cell" ]; then
+	fail "Verbose output did not put the thought between the rounds back above the search (rows ${first_thought:-none}, ${search_cell:-none})"
+fi
 wait_file 5 "$SMOKE_CFG/settings.json" -E '"verbose": *true' ||
 	fail "the Verbose output row did not persist to settings.json: $(cat "$SMOKE_CFG/settings.json" 2>/dev/null)"
 
 keys "$S146" C-c
 wait_gone 10 "$S146" || fail "the app did not quit on Ctrl+C"
+
+# Verbose output turned OFF while a turn runs (docs/tool-groups.md *Verbose
+# output*): the listing already committed as a cell, and the rebuild the row
+# triggers has to hold it as the open group for the reads after it to join.
+S146b="${S}_toolgroups_midturn"
+launch "$S146b" 100 44 "env ${CFG_ENV_NOHIST} ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+submit "$S146b" "explore the project for me"
+wait_for 15 "$S146b" -F "Thinking…" ||
+	fail "the second run never reached its thought between the rounds"
+expect_has "$(pane "$S146b")" -F "Bash(ls -la)" "Verbose output on did not give the listing its own cell"
+type_text "$S146b" "/settings"
+sleep 0.3
+keys "$S146b" Enter
+wait_for 3 "$S146b" -F "Type to search" || fail "/settings did not open mid-turn"
+type_text "$S146b" "verbose"
+wait_pane 3 "$S146b" -E "→ Verbose output +true" >/dev/null ||
+	fail "the Verbose output row does not read true in a verbose session"
+keys "$S146b" Enter
+wait_for 3 "$S146b" -F "Verbose output: false" || fail "no 'Verbose output: false' toast after Enter"
+# The first Esc clears the query, the second closes the menu; neither reaches
+# the running turn.
+keys "$S146b" Escape
+sleep 0.3
+keys "$S146b" Escape
+wait_summaries 25 "$S146b" 1 >/dev/null || fail "the explore demo never finished after the switch"
+midturn="$(pane "$S146b" -S -400)"
+dump "captured pane + scrollback (Verbose output turned off mid-turn)" "$midturn"
+expect_lacks "$midturn" -F "Conversation interrupted" "closing /settings interrupted the turn"
+expect_eq "$(grep -cF "$GROUP146" <<<"$midturn")" "1" \
+	"the run did not end as one line covering the listing from before the switch"
+expect_lacks "$midturn" -F "Listed 1 directory (ctrl+o" "the listing from before the switch settled as a line of its own"
+expect_lacks "$midturn" -F "Bash(ls -la)" "the listing kept the cell it had before the switch"
+
+keys "$S146b" C-c
+wait_gone 10 "$S146b" || fail "the app did not quit on Ctrl+C"

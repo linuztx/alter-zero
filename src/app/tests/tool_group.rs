@@ -331,6 +331,88 @@ fn turning_verbose_on_lets_go_of_the_open_group() {
     assert_eq!(app.tool_group_range(), None);
 }
 
+/// Cycle the `/settings` **Verbose output** row with Enter.
+fn cycle_verbose(app: &mut App) {
+    app.open_settings();
+    let at = SettingKey::ALL
+        .iter()
+        .position(|key| *key == SettingKey::Verbose)
+        .unwrap();
+    for _ in 0..at {
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Action::SettingChanged(SettingKey::Verbose)
+    );
+}
+
+/// An app mid-turn with **Verbose output** on, whose reads committed as cells
+/// of their own: a reply, a read, a thought, a listing.
+fn verbose_turn_with_reads() -> App {
+    let mut app = App::new();
+    app.settings_mut().verbose = true;
+    app.begin_stream();
+    app.history.push(assistant("Let me look around."));
+    app.start_tool("Read", "a.rs", None);
+    app.end_tool("1 a", true);
+    assert_eq!(
+        app.place_resolved_tool(),
+        ToolPlacement::Commit { closed: None }
+    );
+    app.history.push(thought());
+    app.start_tool("Bash", "ls -la", None);
+    app.end_tool("x", true);
+    app.place_resolved_tool();
+    app
+}
+
+#[test]
+fn turning_verbose_off_mid_turn_holds_the_reads_already_on_screen() {
+    // The rebuild the row triggers paints them as the open group, and the
+    // next read joins it — so a later rebuild draws the one line scrollback
+    // will show, never a line for the reads before the switch and another
+    // for the ones after it.
+    let mut app = verbose_turn_with_reads();
+    cycle_verbose(&mut app);
+    assert!(!app.settings().verbose);
+    assert_eq!(app.tool_group_range(), Some(1..4));
+    // The row names the newest of them: the others were cells on screen.
+    assert_eq!(
+        app.group_hint(true).map(|tool| tool.args.as_str()),
+        Some("ls -la")
+    );
+    app.start_tool("Read", "b.rs", None);
+    app.end_tool("1 b", true);
+    assert_eq!(app.place_resolved_tool(), ToolPlacement::Held);
+    assert_eq!(app.tool_group_range(), Some(1..5));
+}
+
+#[test]
+fn turning_verbose_off_holds_nothing_the_turn_has_moved_past() {
+    // Between turns the rebuild draws the settled line itself.
+    let mut app = verbose_turn_with_reads();
+    app.end_turn(1);
+    cycle_verbose(&mut app);
+    assert_eq!(app.tool_group_range(), None, "no turn is running");
+    // Reply text after the reads ended their group already.
+    let mut app = verbose_turn_with_reads();
+    app.push_chunk("It reads a.rs.");
+    cycle_verbose(&mut app);
+    assert_eq!(app.tool_group_range(), None, "the reply has begun");
+    // So did a call of another kind.
+    let mut app = verbose_turn_with_reads();
+    app.start_tool("Write", "c.rs", None);
+    cycle_verbose(&mut app);
+    assert_eq!(app.tool_group_range(), None, "a write is running");
+    let mut app = verbose_turn_with_reads();
+    app.start_tool("Write", "c.rs", None);
+    app.end_tool("Wrote 1 lines to c.rs", true);
+    app.place_resolved_tool();
+    cycle_verbose(&mut app);
+    assert_eq!(app.tool_group_range(), None, "the write ended the run");
+}
+
 #[test]
 fn clearing_the_conversation_drops_the_group() {
     let mut app = App::new();
