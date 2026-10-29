@@ -132,7 +132,7 @@ impl Session<'_> {
         if !committing {
             return;
         }
-        let lines = ui::tool_group_lines(&self.app.history[range], width);
+        let lines = ui::tool_group_lines(&self.app.history[range], width, self.app.path_display());
         // The group's live cell leaves the strip as its line commits, so the
         // viewport is reseated first (invariant 3).
         let height = self.live_region_height();

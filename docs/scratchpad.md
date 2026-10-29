@@ -126,6 +126,25 @@ edit and auto — the default — every file change already runs under the mode
 the footer names, so a scratchpad write is covered there first, like any other
 write, and wears no note.
 
+## How its files look in the conversation
+
+Scratch work is the agent finding its way around, not a change to the user's
+project, so with **Verbose output** off — the default — a `write` or `edit`
+into the scratchpad keeps no cell of its own. It joins the collapsed
+read/search group as a clause of its own, over the file's path while the
+model writes it:
+
+```
+● Making 1 scratchpad edit +25… (ctrl+o to expand)
+  ⎿  /tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad/guess_the_number.py
+```
+
+and as one dim line once the group closes —
+`Made 2 scratchpad edits +26 -1 (ctrl+o to expand)` — the lines the edits
+added and removed dim beside the count (`docs/tool-groups.md` *Scratchpad
+edits*). Ctrl+O still expands every call whole, its permission note included;
+an edit that failed or never ran keeps its red cell.
+
 ## Configuration
 
 - `ALTER_ZERO_SCRATCHPAD` — falsy (`0`/`false`/`no`/`off`) turns the whole
@@ -139,7 +158,9 @@ write, and wears no note.
 
 - Pure (`src/scratchpad.rs`): the root/leaf shapes, and `contains` against the
   escapes it must refuse — relative, `..`, the sibling-prefix directory, the
-  root itself, the `tasks` sibling.
+  root itself, the `tasks` sibling; `is_session_scratchpad` recognising any
+  session's layout and refusing the directory itself, a sibling leaf, a
+  missing session segment, another per-user root, relative paths and `..`.
 - Pure (`llm::backend`): `render_scratchpad` leaves no placeholder;
   `augment_with_scratchpad` appends after the environment block (order
   persona < environment < scratchpad) and leaves a blank base alone.
@@ -172,6 +193,10 @@ write, and wears no note.
   per conversation, so a resumed transcript's older tool records name the
   previous session's directory while the prompt names the new one. The files
   are still on disk at the path the transcript shows; nothing rewrites them.
+  The collapsed view still folds those older edits — it knows **any**
+  session's scratchpad by the layout (`scratchpad::is_session_scratchpad`) —
+  while the permission exemption covers the new directory alone: the layout
+  check is display only.
 - The scratchpad is **not** a `/settings` row: it is a launch-time fact (the
   prompt is assembled once at startup), so the environment variables are its
   only switch.

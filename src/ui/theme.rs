@@ -237,6 +237,12 @@ pub(super) const TOOL_GROUP_COMMAND_PROMPT: &str = "$ ";
 /// slow one does not look frozen (`docs/tool-groups.md` *The hint row*).
 pub(super) const TOOL_GROUP_CLOCK_DELAY: Duration = Duration::from_secs(2);
 
+/// The most rows a path takes on an open group's `⎿` row: a path wraps
+/// under the corner rather than losing its file name to a cut, and past this
+/// many rows its last is cut after all (`docs/tool-groups.md` *Scratchpad
+/// edits*).
+pub(super) const TOOL_GROUP_HINT_MAX_ROWS: usize = 3;
+
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at
 /// the lowest row still moving (`LiveTail::anchor` — the last row for every

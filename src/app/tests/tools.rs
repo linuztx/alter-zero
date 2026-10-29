@@ -547,6 +547,29 @@ fn the_verbatim_policy_leaves_every_path_as_given() {
 }
 
 #[test]
+fn the_policy_knows_the_sessions_scratchpad_and_any_sessions_layout() {
+    // This session's own, wherever ALTER_ZERO_SCRATCHPAD_DIR put it…
+    let paths = paths().with_scratchpad(Some("/home/linuztx/scratch".into()));
+    assert!(paths.in_scratchpad("/home/linuztx/scratch/guess.py"));
+    assert!(!paths.in_scratchpad("/home/linuztx/scratch"));
+    assert!(!paths.in_scratchpad("/home/linuztx/hello.py"));
+    assert!(
+        !paths.in_scratchpad("guess.py"),
+        "a relative path is the project's"
+    );
+    // …and any session's by the layout, so a resumed conversation still knows
+    // the files an earlier process wrote there.
+    assert!(PathDisplay::VERBATIM.in_scratchpad("/tmp/alter-zero-0/a-1/scratchpad/x.py"));
+    assert!(!PathDisplay::VERBATIM.in_scratchpad("/tmp/x.py"));
+    // A relative directory is no scratchpad at all.
+    assert!(
+        !PathDisplay::VERBATIM
+            .with_scratchpad(Some("scratch".into()))
+            .in_scratchpad("scratch/x.py")
+    );
+}
+
+#[test]
 fn the_app_holds_the_verbatim_policy_until_the_boundary_injects_one() {
     let mut app = App::new();
     assert_eq!(*app.path_display(), PathDisplay::VERBATIM);

@@ -7,7 +7,7 @@
 //! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
 use super::agent::agent_preview_rows;
-use super::live::{draft_preview_lines, preview_tool_lines};
+use super::live::preview_tool_lines;
 use super::theme::*;
 use super::wrap::cols;
 use super::*;
@@ -93,7 +93,7 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // A `write` still being generated previews its streaming cell
     // (docs/write-streaming.md), sized from the walk the strip draws.
     if app.tool_drafts().previews().next().is_some() {
-        let lines = draft_preview_lines(app.tool_drafts(), app.pulse(), width, app.path_display());
+        let lines = super::live::drafting_lines(app, width);
         return u16::try_from(lines.len()).unwrap_or(u16::MAX);
     }
     // An open thinking phase previews its live block — the `● Thinking…`

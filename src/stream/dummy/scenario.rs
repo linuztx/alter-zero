@@ -37,6 +37,7 @@ pub(in crate::stream) struct Cue {
     text: String,
     lower: String,
     images: usize,
+    scratchpad: Option<std::path::PathBuf>,
 }
 
 impl Cue {
@@ -46,7 +47,21 @@ impl Cue {
             text: prompt.to_string(),
             lower: prompt.to_lowercase(),
             images,
+            scratchpad: None,
         }
+    }
+
+    /// The same cue, in a session whose scratchpad is `dir` — where the
+    /// scratchpad demo writes (`docs/tool-groups.md` *Scratchpad edits*).
+    #[must_use]
+    pub(in crate::stream) fn with_scratchpad(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.scratchpad = dir;
+        self
+    }
+
+    /// The session's scratchpad, when it has one.
+    pub(in crate::stream) fn scratchpad(&self) -> Option<&std::path::Path> {
+        self.scratchpad.as_deref()
     }
 
     /// The prompt as it was typed — what a reply is composed from.
@@ -276,6 +291,16 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         name: "parallel-batch",
         selects: |cue| cue.mentions("parallel"),
         play: Play::Script(turns::parallel_turn),
+    },
+    // A `write` and an `edit` in the session's scratchpad, folded into the
+    // collapsed group's `Made 2 scratchpad edits` line unless Verbose output
+    // is on (docs/tool-groups.md *Scratchpad edits*). Ahead of the files demo,
+    // whose "write"/"edit" cue a prompt about the scratchpad may well use.
+    Scenario {
+        #[cfg(test)]
+        name: "scratchpad",
+        selects: |cue| cue.mentions("scratchpad"),
+        play: Play::Script(turns::scratchpad_turn),
     },
     // A `Write` then an `Edit`: the numbered file cell and its tinted diff.
     Scenario {

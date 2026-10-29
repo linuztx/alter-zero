@@ -1203,6 +1203,87 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
+/// The file the **scratchpad** demo drafts (`docs/tool-groups.md`
+/// *Scratchpad edits*).
+const DUMMY_GUESS_NAME: &str = "guess_the_number.py";
+
+/// Where the scratchpad demo writes when the session has no scratchpad — a
+/// path in a session's scratchpad by the layout, so the group still takes it.
+const DUMMY_SCRATCHPAD_FALLBACK: &str = "/tmp/alter-zero-0/demo/scratchpad";
+
+/// The game the scratchpad demo writes, twenty-five lines.
+const DUMMY_GUESS_V1: &str = "#!/usr/bin/env python3\n\
+    \"\"\"Guess the number — a scratch draft.\"\"\"\n\n\
+    import random\n\n\
+    LOW, HIGH = 1, 100\n\n\n\
+    def play() -> None:\n    \
+    secret = random.randint(LOW, HIGH)\n    \
+    tries = 0\n    \
+    while True:\n        \
+    guess = int(input(f\"Guess a number between {LOW} and {HIGH}: \"))\n        \
+    tries += 1\n        \
+    if guess < secret:\n            \
+    print(\"Higher.\")\n        \
+    elif guess > secret:\n            \
+    print(\"Lower.\")\n        \
+    else:\n            \
+    print(f\"Got it in {tries} tries.\")\n            \
+    return\n\n\n\
+    if __name__ == \"__main__\":\n    \
+    play()\n";
+
+/// The **scratchpad** demo's narration (`docs/tool-groups.md` *Scratchpad
+/// edits*).
+const SCRATCHPAD_REPLY: &str = concat!(
+    "I'll draft the game in my scratchpad first, so nothing lands in your \
+     project until it plays right.\n\n",
+    "Drafted and tuned: a smaller range makes a quicker game. Unless **Verbose \
+     output** is on in `/settings`, the write and the edit went into the one \
+     line above — a scratchpad file is scratch work, not your project's — \
+     and **ctrl+o** shows both whole.\n\n",
+    handoff!()
+);
+
+/// One scripted round of a single call whose arguments stream in token-sized
+/// pieces, the way a live model generates a `write` — so it streams into its
+/// cell, or into the collapsed group's line (`docs/write-streaming.md`).
+fn streamed_round(call: &ScriptedCall) -> Vec<StreamEvent> {
+    let mut events = vec![generating(0, &call.name.to_ascii_lowercase(), "")];
+    events.extend(
+        tokens(&call.arguments)
+            .iter()
+            .map(|piece| generating(0, "", piece)),
+    );
+    events.push(StreamEvent::ToolBatch(vec![call.summary()]));
+    events.push(call.start());
+    events.push(call.end());
+    events
+}
+
+/// The **scratchpad** demo (`docs/tool-groups.md` *Scratchpad edits*): the
+/// model drafts a game in its session scratchpad — a `write` generated the
+/// way a live model generates one, so the collapsed group's `Making 1
+/// scratchpad edit +N…` line counts the lines as they arrive, then a one-line
+/// `edit` — and the reply closes the group as `Made 2 scratchpad edits +26
+/// -1`. Both calls resolve with the real executor's reports.
+pub(in crate::stream) fn scratchpad_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let dir = cue.scratchpad().map_or_else(
+        || std::path::PathBuf::from(DUMMY_SCRATCHPAD_FALLBACK),
+        std::path::Path::to_path_buf,
+    );
+    let path = dir.join(DUMMY_GUESS_NAME).display().to_string();
+    let (first, second) = reply_parts(SCRATCHPAD_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.extend(streamed_round(&ScriptedCall::write(&path, DUMMY_GUESS_V1)));
+    // One line changed: a smaller range for a quicker game.
+    let tuned = DUMMY_GUESS_V1.replacen("LOW, HIGH = 1, 100", "LOW, HIGH = 1, 50", 1);
+    events.extend(round(&[ScriptedCall::edit(&path, DUMMY_GUESS_V1, &tuned)]));
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// The **explore** demo's narration (`docs/tool-groups.md`): what the reads
 /// folded into, and the one call that kept a cell.
 const EXPLORE_REPLY: &str = concat!(

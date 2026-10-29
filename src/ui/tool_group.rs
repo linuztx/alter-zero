@@ -24,31 +24,46 @@
 use super::reasoning::reasoning_lines;
 use super::theme::*;
 use super::tool::{bullet_span, command_display_lines, result_row};
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
-use crate::app::{GroupCounts, group_counts, is_group_member, leading_group_calls};
+use crate::app::{
+    EditLines, GroupCounts, GroupHintItem, GroupKind, ToolDraft, group_counts, group_kind,
+    is_group_member, leading_group_calls, pending_edit_lines, previewed_display,
+};
 
-/// One clause of a group's line: its verb, its count, its noun.
+/// One clause of a group's line: its verb, its count, its noun — and, for
+/// the scratchpad edits, the lines they changed.
 struct Clause {
     verb: &'static str,
     count: usize,
     noun: &'static str,
+    lines: Option<EditLines>,
 }
 
-/// A group's clauses in the reference's order — searches, then reads, then
-/// listings — each verb in the tense the group is in (`Searching for` while
-/// it runs, `Searched for` once it is over), nouns in the plural past one.
+/// A group's clauses in the reference's order — what it changed, then what
+/// it read: scratchpad edits, then searches, reads and listings — each verb
+/// in the tense the group is in (`Searching for` while it runs, `Searched
+/// for` once it is over), nouns in the plural past one.
 fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
     let pick = |live: &'static str, done: &'static str| if active { live } else { done };
     let plural = |count: usize, one: &'static str, many: &'static str| {
         if count == 1 { one } else { many }
     };
     let mut out = Vec::new();
+    if counts.edits > 0 {
+        out.push(Clause {
+            verb: pick("making", "made"),
+            count: counts.edits,
+            noun: plural(counts.edits, "scratchpad edit", "scratchpad edits"),
+            lines: Some(counts.lines),
+        });
+    }
     if counts.searches > 0 {
         out.push(Clause {
             verb: pick("searching for", "searched for"),
             count: counts.searches,
             noun: plural(counts.searches, "pattern", "patterns"),
+            lines: None,
         });
     }
     if counts.reads > 0 {
@@ -56,6 +71,7 @@ fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
             verb: pick("reading", "read"),
             count: counts.reads,
             noun: plural(counts.reads, "file", "files"),
+            lines: None,
         });
     }
     if counts.lists > 0 {
@@ -63,6 +79,7 @@ fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
             verb: pick("listing", "listed"),
             count: counts.lists,
             noun: plural(counts.lists, "directory", "directories"),
+            lines: None,
         });
     }
     out
@@ -70,8 +87,14 @@ fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
 
 /// The clauses as styled spans — `Read `, **`2`**, ` files, listed `, … —
 /// every piece in `style`, the counts bold on top of it, the first verb
-/// capitalised. `ellipsis` closes an open group's line (`…`).
-fn summary_spans(counts: GroupCounts, active: bool, style: Style) -> Vec<Span<'static>> {
+/// capitalised, the scratchpad edits' `+55 -2` in `dim`. `ellipsis` closes
+/// an open group's line (`…`).
+fn summary_spans(
+    counts: GroupCounts,
+    active: bool,
+    style: Style,
+    dim: Style,
+) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, clause) in clauses(counts, active).into_iter().enumerate() {
         let verb = if i == 0 {
@@ -85,6 +108,15 @@ fn summary_spans(counts: GroupCounts, active: bool, style: Style) -> Vec<Span<'s
             style.add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(format!(" {}", clause.noun), style));
+        // `+55 -2`, dim beside the clause; a side that changed nothing is
+        // left out.
+        let lines = clause.lines.unwrap_or_default();
+        for (count, sign) in [(lines.added, '+'), (lines.removed, '-')] {
+            if count > 0 {
+                spans.push(Span::styled(" ".to_string(), style));
+                spans.push(Span::styled(format!("{sign}{count}"), dim));
+            }
+        }
     }
     if active {
         spans.push(Span::styled(TOOL_GROUP_ACTIVE_SUFFIX.to_string(), style));
@@ -128,15 +160,19 @@ fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'sta
 /// its own cell — the reference defers them past the group's line, which
 /// stays where the group's first call was.
 #[must_use]
-pub fn tool_group_lines(items: &[HistoryItem], width: u16) -> Vec<Line<'static>> {
+pub fn tool_group_lines(
+    items: &[HistoryItem],
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
     let members = items.iter().filter_map(|item| match item {
         HistoryItem::Tool(tool) => Some(tool),
         _ => None,
     });
-    let counts = group_counts(members);
+    let counts = group_counts(members, paths);
     let style = Style::new().fg(reasoning_label_color());
     let mut lines = vec![Line::from(fit(
-        summary_spans(counts, false, style),
+        summary_spans(counts, false, style, style),
         style,
         usize::from(width),
     ))];
@@ -149,21 +185,48 @@ pub fn tool_group_lines(items: &[HistoryItem], width: u16) -> Vec<Line<'static>>
     lines
 }
 
-/// What the group's `⎿` row says a call is doing: a read's file (the path
-/// as the session shows paths, `docs/tools.md` *Path display*), a command as
-/// `$ {command}` — its first line, its whitespace runs closed up, a `…` when
-/// more lines follow.
-fn hint_text(tool: &ToolCall, paths: &PathDisplay) -> String {
-    if tool.name == "Read" {
-        return paths.display(&tool.args);
-    }
+/// What the group's `⎿` row says a value is about.
+enum HintText {
+    /// A file — read, or edited in the scratchpad — as the session shows
+    /// paths (`docs/tools.md` *Path display*).
+    Path(String),
+    /// A command, as `$ {command}`: its first line, its whitespace runs
+    /// closed up, a `…` when more lines follow.
+    Command(String),
+}
+
+fn hint_text(item: GroupHintItem<'_>, paths: &PathDisplay) -> HintText {
+    let tool = match item {
+        GroupHintItem::Call(tool) if tool.name == "Bash" => tool,
+        other => return HintText::Path(paths.display(other.target())),
+    };
     let mut lines = tool.args.lines().filter(|line| !line.trim().is_empty());
     let first = lines
         .next()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
     let more = if lines.next().is_some() { " …" } else { "" };
-    format!("{TOOL_GROUP_COMMAND_PROMPT}{first}{more}")
+    HintText::Command(format!("{TOOL_GROUP_COMMAND_PROMPT}{first}{more}"))
+}
+
+/// A path on the `⎿` row, **wrapped** under the corner rather than cut —
+/// its file name is at its end, which a cut would take — over at most
+/// [`TOOL_GROUP_HINT_MAX_ROWS`] rows, the last cut with a `…` when even those
+/// are not enough.
+fn path_hint_rows(path: &str, room: usize) -> Vec<Line<'static>> {
+    let width = u16::try_from(room.max(1)).unwrap_or(u16::MAX);
+    let mut rows = wrap_output(path, width);
+    if rows.len() > TOOL_GROUP_HINT_MAX_ROWS {
+        rows.truncate(TOOL_GROUP_HINT_MAX_ROWS);
+        if let Some(last) = rows.last_mut() {
+            let cut = truncate_cols(last, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
+            *last = format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end());
+        }
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(at, row)| result_row(usize::from(at > 0), row))
+        .collect()
 }
 
 /// The **open** group's live cell — the held reads plus, with `with_queue`,
@@ -193,44 +256,72 @@ pub(super) fn live_group_lines(
             app.history[range]
                 .iter()
                 .filter_map(|item| match item {
-                    HistoryItem::Tool(tool) if is_group_member(tool) => Some(tool),
+                    HistoryItem::Tool(tool) if is_group_member(tool, app.path_display()) => {
+                        Some(tool)
+                    }
                     _ => None,
                 })
                 .collect()
         })
         .unwrap_or_default();
     let queued: Vec<&ToolCall> = if with_queue {
-        leading_group_calls(app.tool_queue()).collect()
+        leading_group_calls(app.tool_queue(), app.path_display()).collect()
     } else {
         Vec::new()
     };
-    let counts = group_counts(held.iter().chain(queued.iter()).copied());
+    let paths = app.path_display();
+    let mut counts = group_counts(held.iter().chain(queued.iter()).copied(), paths);
+    if with_queue {
+        // A queued scratchpad write counts the content it carries: the draft
+        // it streamed, which the batch handed its cell
+        // (docs/write-streaming.md), else its announced arguments. The k-th
+        // previewed call pairs with the k-th adopted draft, and the group's
+        // calls lead the queue.
+        let mut adopted = app.tool_drafts().queued();
+        for tool in &queued {
+            let draft = previewed_display(&tool.name)
+                .then(|| adopted.next())
+                .flatten();
+            if group_kind(tool, paths) == Some(GroupKind::ScratchpadEdit) {
+                counts.lines += pending_edit_lines(tool, draft.map(ToolDraft::content));
+            }
+        }
+        // A scratchpad write still being generated is an edit already, its
+        // lines counted as they arrive.
+        for draft in app.group_drafts() {
+            counts.add_edit(EditLines {
+                added: draft.content().lines().count(),
+                removed: 0,
+            });
+        }
+    }
     if counts.is_empty() {
         return Vec::new();
     }
     let label = Style::new().fg(tool_name_color());
+    let dim = Style::new().fg(tool_dim_color());
     let room = usize::from(width).saturating_sub(cols(TOOL_BULLET));
     let mut spans = vec![bullet_span(tool_running_color(), pulse)];
-    spans.extend(fit(
-        summary_spans(counts, true, label),
-        Style::new().fg(tool_dim_color()),
-        room,
-    ));
+    spans.extend(fit(summary_spans(counts, true, label, dim), dim, room));
     let mut lines = vec![Line::from(spans)];
-    if let Some(tool) = app.group_hint(with_queue) {
-        let hint = hint_text(tool, app.path_display());
+    if let Some(item) = app.group_hint(with_queue) {
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));
-        // The clock outranks the end of the command on a narrow row.
-        let clock = group_clock(app, tool, with_queue).filter(|clock| cols(clock) < room);
-        let room = room - clock.as_deref().map_or(0, cols);
-        let mut shown = if cols(&hint) > room {
-            let cut = truncate_cols(&hint, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
-            format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end())
-        } else {
-            hint
-        };
-        shown.push_str(clock.as_deref().unwrap_or_default());
-        lines.push(result_row(0, shown));
+        match hint_text(item, paths) {
+            HintText::Path(path) => lines.extend(path_hint_rows(&path, room)),
+            HintText::Command(hint) => {
+                // The clock outranks the end of the command on a narrow row.
+                let clock = group_clock(app, item, with_queue).filter(|clock| cols(clock) < room);
+                let room = room - clock.as_deref().map_or(0, cols);
+                let mut shown = if cols(&hint) > room {
+                    let cut = truncate_cols(&hint, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
+                    format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end())
+                } else {
+                    hint
+                };
+                shown.push_str(clock.as_deref().unwrap_or_default());
+                lines.push(result_row(0, shown));
+            }
+        }
     }
     lines
 }
@@ -240,7 +331,10 @@ pub(super) fn live_group_lines(
 /// has printed — the reference's collapsed group, so a long search does not
 /// look frozen. Only the running command's own value wears it: a row still
 /// showing an earlier call never borrows the clock of the one behind it.
-fn group_clock(app: &App, shown: &ToolCall, with_queue: bool) -> Option<String> {
+fn group_clock(app: &App, shown: GroupHintItem<'_>, with_queue: bool) -> Option<String> {
+    let GroupHintItem::Call(shown) = shown else {
+        return None;
+    };
     let running = app
         .tool_queue()
         .front()

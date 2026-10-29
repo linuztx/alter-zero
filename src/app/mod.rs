@@ -118,8 +118,8 @@ pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
 pub use self::tool_group::{
-    GROUP_HINT_HOLD, GroupCounts, ToolPlacement, group_counts, group_kind, group_run,
-    is_group_member, leading_group_calls,
+    EditLines, GROUP_HINT_HOLD, GroupCounts, GroupHintItem, GroupKind, ToolPlacement, edit_lines,
+    group_counts, group_kind, group_run, is_group_member, leading_group_calls, pending_edit_lines,
 };
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,

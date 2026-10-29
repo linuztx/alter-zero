@@ -440,11 +440,14 @@ impl Session<'_> {
                 // the blank spacer the committed cell will keep.
                 if self.app.push_tool_call_fragment(&piece) {
                     self.flush_segment(committing, width);
-                    // A previewed call is a `write`, no read: the open
-                    // read/search group closes above its cell
-                    // (docs/tool-groups.md).
-                    self.close_tool_group(committing, width);
                     self.render.reset();
+                }
+                // A `write` is no read — but one into the scratchpad is part
+                // of the group (docs/tool-groups.md *Scratchpad edits*), so
+                // the group closes above the write's cell only once its path
+                // says it writes somewhere else.
+                if self.app.draft_ends_group() {
+                    self.close_tool_group(committing, width);
                 }
                 false
             }
@@ -730,7 +733,7 @@ impl Session<'_> {
             .app
             .tool_queue()
             .front()
-            .is_some_and(|call| group_kind(call).is_some());
+            .is_some_and(|call| group_kind(call, self.app.path_display()).is_some());
         if !joins {
             self.close_tool_group(committing, width);
         }

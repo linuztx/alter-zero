@@ -33,6 +33,19 @@ release heading when a version is cut.
   its picture still draws. The new **Verbose output** row in `/settings`
   brings back a cell per call, and `ALTER_ZERO_VERBOSE=1` sets it for one
   run (`docs/tool-groups.md`).
+- **Scratchpad files fold into that line too.** The agent keeps its
+  throwaway work, a script to try something or a note, in its session
+  scratchpad, and every file it wrote or changed there used to get a full
+  cell with the file's contents under it. Those writes and edits now join
+  the line beside the reads: `● Making 1 scratchpad edit +55… (ctrl+o to
+  expand)` over the file's path while the agent writes it, the count of
+  added lines going up as the file streams in, then `Made 1 scratchpad edit
+  +55 (ctrl+o to expand)` once the agent moves on, the lines added and
+  removed shown dim beside the count. A long path wraps under the line
+  instead of losing the file name, and a resumed session folds the files
+  its earlier run wrote the same way. An edit that failed or was refused
+  keeps its own red cell, and **Verbose output** still brings back a cell
+  per call (`docs/tool-groups.md`).
 
 ### Changed
 

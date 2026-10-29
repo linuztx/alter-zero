@@ -54,8 +54,8 @@ pub fn conversation_lines(
     let mut lines = Vec::new();
     let mut index = 0;
     while index < history.len() {
-        if !verbose && let Some(len) = crate::app::group_run(&history[index..]) {
-            lines.extend(tool_group_lines(&history[index..index + len], width));
+        if !verbose && let Some(len) = crate::app::group_run(&history[index..], paths) {
+            lines.extend(tool_group_lines(&history[index..index + len], width, paths));
             lines.push(Line::default());
             index += len;
             continue;

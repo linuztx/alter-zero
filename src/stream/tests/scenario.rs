@@ -27,6 +27,7 @@ const EXAMPLES: &[&str] = &[
     "stream some markdown to me",
     "call agents for weather",
     "run three pings in parallel",
+    "draft a game in your scratchpad",
     "show me a diff",
     "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
@@ -455,6 +456,68 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         ends[2].contains(last),
         "the last frame is what the report says: {last:?} in {}",
         ends[2]
+    );
+}
+
+#[test]
+fn the_scratchpad_demo_writes_then_edits_a_file_in_the_sessions_scratchpad() {
+    // docs/tool-groups.md *Scratchpad edits*: a `write` generated the way a
+    // live model generates one — its arguments in token-sized pieces, so it
+    // streams into the group's line — then a one-line `edit`, both into the
+    // session's own scratchpad and resolving with the executor's reports.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "scratchpad")
+        .expect("the scratchpad demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the scratchpad demo is a script");
+    };
+    let dir = std::path::PathBuf::from("/tmp/alter-zero-7/s9/scratchpad");
+    let events =
+        script(&Cue::new("draft a game in your scratchpad", 0).with_scratchpad(Some(dir.clone())));
+    let file = dir.join("guess_the_number.py").display().to_string();
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. } => Some((name.as_str(), args.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![("Write", file.as_str()), ("Edit", file.as_str())]
+    );
+    // The write streams: many argument pieces under one slot before its batch.
+    let write_pieces = events
+        .iter()
+        .take_while(|e| !matches!(e, StreamEvent::ToolBatch(_)))
+        .filter(|e| matches!(e, StreamEvent::ToolCallDelta(piece) if piece.name.is_empty()))
+        .count();
+    assert!(write_pieces > 10, "only {write_pieces} pieces");
+    // Both resolve with the executor's reports — a new file, then a one-line
+    // change.
+    let reports: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolAnswered { display, .. } => display.lines().next(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports[0].starts_with("Wrote 25 lines to "), "{reports:?}");
+    assert!(reports[1].ends_with("(+1 -1)"), "{reports:?}");
+    // Without a scratchpad the demo still writes into one by its layout.
+    let events = script(&Cue::new("draft a game in your scratchpad", 0));
+    let path = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolStart { args, .. } => Some(args.clone()),
+            _ => None,
+        })
+        .expect("a call");
+    assert!(
+        crate::scratchpad::is_session_scratchpad(std::path::Path::new(&path)),
+        "{path}"
     );
 }
 

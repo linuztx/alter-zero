@@ -445,6 +445,9 @@ impl ModelSession {
                     // makes the demo stream as slowly as a struggling model
                     // (docs/slow-stream.md).
                     .with_chunk_delay(config::chunk_delay())
+                    // …and the session's scratchpad, where its scratchpad demo
+                    // writes (docs/tool-groups.md *Scratchpad edits*).
+                    .with_scratchpad(scratchpad.map(Path::to_path_buf))
                     .with_ask(ask.clone())
                     .with_agents(agents.clone())
                     // …and the mid-turn queue, so the offline demo takes a

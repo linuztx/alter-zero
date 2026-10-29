@@ -124,7 +124,7 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   about the prompt — Phase 64 unsets it to cover the default; and
   **Verbose output** exported on, since by default a run of reads, searches
   and listings folds into one collapsed line and the phases assert on the
-  per-call cells — Phase 146 unsets it to cover the default,
+  per-call cells — Phases 146 and 147 unset it to cover the default,
   `docs/tool-groups.md`), run before the phase's first launch, so a phase run
   on its own is as hermetic as one run by the suite.
 

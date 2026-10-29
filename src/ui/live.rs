@@ -125,12 +125,10 @@ pub(super) fn preview_lines(
         // A `write` the model is still generating, its file streaming into
         // the cell (docs/write-streaming.md) — before any batch exists, so
         // it never meets the queue above, and after the backend closed any
-        // thinking phase, so it never meets the block below.
-        trim_preview(
-            draft_preview_lines(app.tool_drafts(), app.pulse(), width, app.path_display()),
-            rows,
-            false,
-        )
+        // thinking phase, so it never meets the block below. Under the open
+        // read/search group, which a scratchpad write streams into instead
+        // of a cell of its own (docs/tool-groups.md *Scratchpad edits*).
+        trim_preview(drafting_lines(app, width), rows, false)
     } else if let Some(text) = app.reasoning() {
         // A thinking phase between two reads streams under the open group's
         // cell, which stays up through it (docs/tool-groups.md).
@@ -166,6 +164,34 @@ pub(super) fn preview_lines(
             )
         }
     }
+}
+
+/// The strip while the model generates a `write`: the open group — which a
+/// write into the scratchpad joins, counting its lines as they arrive — over
+/// the cells of the writes that are no part of it, among them one whose path
+/// is not out yet (`docs/tool-groups.md` *Scratchpad edits*). The one walk
+/// [`preview_lines`] and `preview_rows` share for the branch, so the rows
+/// reserved and the rows drawn agree.
+pub(super) fn drafting_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = open_group_lines(app, width);
+    for draft in app
+        .tool_drafts()
+        .previews()
+        .filter(|draft| !app.is_group_draft(draft))
+    {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(draft_cell_lines(
+            draft,
+            None,
+            Some(app.pulse()),
+            width,
+            app.path_display(),
+            false,
+        ));
+    }
+    lines
 }
 
 /// The open collapsed group's live cell in the strip — empty when no group is
@@ -287,7 +313,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let grouped = if group.is_empty() {
         0
     } else {
-        crate::app::leading_group_calls(app.tool_queue()).count()
+        crate::app::leading_group_calls(app.tool_queue(), app.path_display()).count()
     };
     if !group.is_empty() {
         if !lines.is_empty() {
@@ -307,8 +333,14 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }
     }
     // Each queued previewed call owns the next adopted draft, in queue order
-    // (docs/write-streaming.md).
+    // (docs/write-streaming.md) — the group's own included: a scratchpad
+    // write it counts took its draft along.
     let mut drafts = app.tool_drafts().queued();
+    for tool in app.tool_queue().iter().take(grouped) {
+        if crate::app::previewed_display(&tool.name) {
+            drafts.next();
+        }
+    }
     for tool in app.tool_queue().iter().skip(grouped) {
         if !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells

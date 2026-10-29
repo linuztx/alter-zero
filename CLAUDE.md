@@ -1270,6 +1270,13 @@ not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 non-verbose tool view, the default unless `/settings` **Verbose output** is
 on: a run of `Read` calls and `bash` commands that only read —
 `read_only::read_kind`'s listings, searches and reads, never an image read —
+and the `write`/`edit` calls that succeeded in a session's **scratchpad**,
+their own leading clause `Making 1 scratchpad edit +55…` with the edits'
+`+A -D` dim beside it, a scratchpad `write` still being generated
+counted as it streams and its path wrapped under the corner rather than cut
+(`PathDisplay::in_scratchpad` — this session's directory or any session's by
+its layout, so a `/resume` repaints the same line; `docs/tool-groups.md`
+*Scratchpad edits*) —
 is one cell, the live `● Searching for 1 pattern, reading 2 files…` over a
 `⎿` hint naming the calls **one at a time in the order they ran** — a
 queue, not the reference's throttle, which drops the values a fast parallel
@@ -1284,10 +1291,11 @@ the grouping is a property of the history (`app::group_run`, the parallel MCP
 run's pattern), the open group held by the commit path from
 `App::tool_group`'s index on (`App::place_resolved_tool`, the boundary's
 `close_tool_group` at every close point, `ui::committed_history` leaving it
-out of rebuilds), a thought between reads absorbed into it and one after its
-last read shown under its line; Ctrl+O always verbose, an agent session view
-per call; the dummy's `explore` scenario and `smoke.sh` Phase 146, every
-other phase exporting `ALTER_ZERO_VERBOSE=1`) in `docs/tool-groups.md`; the
+out of rebuilds), every thought it held shown under its line in the order
+they happened; Ctrl+O always verbose, an agent session view per call; the
+dummy's `explore` and `scratchpad` scenarios and `smoke.sh` Phases 146 and
+147, every other phase exporting `ALTER_ZERO_VERBOSE=1`) in
+`docs/tool-groups.md`; the
 **live-streaming `bash` tool** (a running command
 tails its output — a four-row window ending at the lowest row **still
 moving** (`app::LiveTail`: each live row stamped with the command clock

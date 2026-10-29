@@ -6,7 +6,9 @@
 use super::*;
 use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
-use crate::ui::theme::{TOOL_PULSE_PERIOD, reasoning_label_color, tool_running_color};
+use crate::ui::theme::{
+    TOOL_PULSE_PERIOD, reasoning_label_color, tool_dim_color, tool_running_color,
+};
 use crate::ui::tool_group::{live_group_lines, tool_group_lines};
 use crate::ui::wrap::cols;
 
@@ -44,7 +46,7 @@ fn a_settled_group_is_one_dim_bullet_less_line_in_the_references_clause_order() 
         ok("Bash", "grep -rn add ."),
         ok("Bash", "ls -la"),
     ];
-    let lines = tool_group_lines(&items, 100);
+    let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
         ["Searched for 1 pattern, read 1 file, listed 1 directory (ctrl+o to expand)"]
@@ -68,7 +70,7 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
         ok("Bash", "ls"),
         ok("Bash", "ls src"),
     ];
-    let lines = tool_group_lines(&items, 100);
+    let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
         ["Read 3 files, listed 2 directories (ctrl+o to expand)"]
@@ -92,7 +94,7 @@ fn every_thought_in_a_group_follows_its_line_in_order() {
         ok("Bash", "ls -la"),
         thought(1),
     ];
-    let lines = tool_group_lines(&items, 100);
+    let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
         [
@@ -108,9 +110,9 @@ fn every_thought_in_a_group_follows_its_line_in_order() {
 #[test]
 fn a_narrow_terminal_drops_the_hint_before_it_cuts_the_clauses() {
     let items = [ok("Read", "a.py"), ok("Bash", "ls -la")];
-    let line = &tool_group_lines(&items, 34)[0];
+    let line = &tool_group_lines(&items, 34, &PathDisplay::VERBATIM)[0];
     assert_eq!(plain(line), "Read 1 file, listed 1 directory");
-    let line = &tool_group_lines(&items, 20)[0];
+    let line = &tool_group_lines(&items, 20, &PathDisplay::VERBATIM)[0];
     assert!(cols(&plain(line)) <= 20, "{:?}", plain(line));
     assert!(plain(line).ends_with('…'), "{:?}", plain(line));
 }
@@ -416,5 +418,201 @@ fn the_permission_prompt_keeps_the_open_group_above_the_call_it_asks_about() {
     assert!(
         page.iter().any(|row| row.starts_with("● Bash(ls -la)")),
         "{page:#?}"
+    );
+}
+
+// ===== scratchpad edits (docs/tool-groups.md *Scratchpad edits*) =====
+
+/// A session's scratchpad by the layout, so the verbatim policy knows it.
+const PAD: &str = "/tmp/alter-zero-0/s1/scratchpad";
+
+fn pad(name: &str) -> String {
+    format!("{PAD}/{name}")
+}
+
+fn edited(name: &str, path: &str, output: &str) -> HistoryItem {
+    HistoryItem::Tool(tool(name, path, ToolStatus::Ok, output))
+}
+
+/// One streamed piece of a `write` under slot 0.
+fn write_piece(name: &str, arguments: &str) -> crate::stream::ToolCallFragment {
+    crate::stream::ToolCallFragment {
+        index: 0,
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    }
+}
+
+#[test]
+fn scratchpad_edits_settle_as_made_with_the_lines_they_changed() {
+    let items = [
+        edited(
+            "Write",
+            &pad("guess.py"),
+            "Wrote 55 lines to guess.py\n 1 x",
+        ),
+        edited(
+            "Edit",
+            &pad("guess.py"),
+            "Updated guess.py (+2 -1)\n3 -a\n3 +b",
+        ),
+    ];
+    let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
+    assert_eq!(
+        texts(&lines),
+        ["Made 2 scratchpad edits +57 -1 (ctrl+o to expand)"]
+    );
+    let spans = &lines[0].spans;
+    let span = |text: &str| {
+        spans
+            .iter()
+            .find(|span| span.content == text)
+            .unwrap_or_else(|| panic!("no {text:?} span in {spans:?}"))
+    };
+    assert!(span("2").style.add_modifier.contains(Modifier::BOLD));
+    // The lines changed are dim, like the rest of the settled line — never
+    // the diff colours, and never bold like the count.
+    for count in ["+57", "-1"] {
+        assert_eq!(
+            span(count).style.fg,
+            Some(reasoning_label_color()),
+            "{count}"
+        );
+        assert!(!span(count).style.add_modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
+fn a_scratchpad_edit_leads_the_reads_on_their_line() {
+    // The reference's order: what the group changed, then what it read.
+    let items = [
+        ok("Read", "a.py"),
+        edited("Write", &pad("guess.py"), "Wrote 55 lines to guess.py"),
+    ];
+    assert_eq!(
+        texts(&tool_group_lines(&items, 100, &PathDisplay::VERBATIM)),
+        ["Made 1 scratchpad edit +55, read 1 file (ctrl+o to expand)"]
+    );
+    // An edit that changed nothing names no lines at all.
+    let items = [edited("Write", &pad("guess.py"), "No changes to guess.py")];
+    assert_eq!(
+        texts(&tool_group_lines(&items, 100, &PathDisplay::VERBATIM)),
+        ["Made 1 scratchpad edit (ctrl+o to expand)"]
+    );
+}
+
+#[test]
+fn an_open_scratchpad_edit_is_making_over_its_whole_path() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Write", &pad("guess_the_number.py"), None);
+    app.end_tool("Wrote 55 lines to guess_the_number.py", true);
+    app.place_resolved_tool();
+    let lines = live_group_lines(&app, 100, None, true);
+    assert_eq!(
+        texts(&lines),
+        [
+            "● Making 1 scratchpad edit +55… (ctrl+o to expand)",
+            "  ⎿  /tmp/alter-zero-0/s1/scratchpad/guess_the_number.py",
+        ]
+    );
+    // Its lines are dim, in the `(ctrl+o to expand)` hint's colour.
+    let added = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == "+55")
+        .expect("a +55 span");
+    assert_eq!(added.style.fg, Some(tool_dim_color()));
+    // Too wide for the row, the path wraps under the corner instead of
+    // losing its file name to a cut.
+    assert_eq!(
+        texts(&live_group_lines(&app, 40, None, true))[1..],
+        [
+            "  ⎿  /tmp/alter-zero-0/s1/scratchpad/gue",
+            "     ss_the_number.py",
+        ]
+    );
+}
+
+#[test]
+fn a_write_streaming_into_the_scratchpad_is_the_group_counting_its_lines() {
+    // No cell of its own: the group's line counts the lines as they arrive.
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        &format!(r#"{{"path":"{}","content":"a\nb\nc"#, pad("g.py")),
+    ));
+    let rows = preview_rows(&app, 80);
+    let lines = preview_lines(&app, 80, None, rows);
+    assert_eq!(usize::from(rows), lines.len(), "the count is the paint");
+    assert_eq!(
+        texts(&lines),
+        [
+            "● Making 1 scratchpad edit +3… (ctrl+o to expand)",
+            "  ⎿  /tmp/alter-zero-0/s1/scratchpad/g.py",
+        ]
+    );
+}
+
+#[test]
+fn a_scratchpad_write_joins_the_reads_while_it_streams() {
+    let mut app = holding_a_read("mathutil.py");
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        &format!(r#"{{"path":"{}","content":"a\nb"#, pad("g.py")),
+    ));
+    let rows = preview_rows(&app, 80);
+    let lines = preview_lines(&app, 80, None, rows);
+    assert_eq!(usize::from(rows), lines.len());
+    assert_eq!(
+        texts(&lines)[0],
+        "● Making 1 scratchpad edit +2, reading 1 file… (ctrl+o to expand)"
+    );
+    assert!(
+        !texts(&lines).iter().any(|row| row.contains("Write(")),
+        "{:#?}",
+        texts(&lines)
+    );
+}
+
+#[test]
+fn a_write_whose_path_is_not_out_yet_keeps_the_group_over_its_cell() {
+    let mut app = holding_a_read("mathutil.py");
+    app.push_tool_call_fragment(&write_piece("write", r#"{"pa"#));
+    let rows = preview_rows(&app, 80);
+    let lines = preview_lines(&app, 80, None, rows);
+    assert_eq!(usize::from(rows), lines.len());
+    assert_eq!(
+        texts(&lines),
+        [
+            "● Reading 1 file… (ctrl+o to expand)",
+            "  ⎿  mathutil.py",
+            "",
+            "● Write",
+            "  ⎿  Writing…",
+        ]
+    );
+}
+
+#[test]
+fn a_queued_scratchpad_write_stays_the_group_with_the_lines_it_streamed() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.push_tool_call_fragment(&write_piece(
+        "write",
+        &format!(r#"{{"path":"{}","content":"a\nb\n"}}"#, pad("g.py")),
+    ));
+    app.start_tool_batch(&[crate::stream::ToolCallSummary {
+        name: "Write".to_string(),
+        args: pad("g.py"),
+    }]);
+    let lines = crate::ui::live::preview_tool_lines(&app, 80);
+    assert_eq!(
+        texts(&lines),
+        [
+            "● Making 1 scratchpad edit +2… (ctrl+o to expand)",
+            "  ⎿  /tmp/alter-zero-0/s1/scratchpad/g.py",
+        ]
     );
 }

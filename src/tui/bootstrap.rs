@@ -120,12 +120,6 @@ impl<'t> Session<'t> {
         alter_zero::ui::activate_theme(app.theme());
 
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        // How a `Read`/`Write`/`Edit` cell names its file (`docs/tools.md`
-        // *Path display*): relative under this cwd, `~`-relative under home,
-        // absolute elsewhere — injected once, like the clock, so the pure
-        // renderers never read the environment. An unreadable cwd (the
-        // `unwrap_or_default` above) leaves the verbatim policy.
-        app.set_path_display(alter_zero::app::PathDisplay::new(cwd.clone(), home.clone()));
 
         // The session id, minted ONCE (it is nanos-derived — a second call is a
         // different id) and shared by everything that needs one: the temp tree
@@ -140,6 +134,17 @@ impl<'t> Session<'t> {
         // about no scratchpad and its writes there get no exemption.
         let session_tmp = config::session_tmp_root(&session_id);
         let scratchpad_dir = config::prepare_scratchpad(&session_tmp);
+        // How a `Read`/`Write`/`Edit` cell names its file (`docs/tools.md`
+        // *Path display*): relative under this cwd, `~`-relative under home,
+        // absolute elsewhere — injected once, like the clock, so the pure
+        // renderers never read the environment. An unreadable cwd (the
+        // `unwrap_or_default` above) leaves the verbatim policy. It knows the
+        // scratchpad too, so a `write`/`edit` there folds into the collapsed
+        // group as a scratchpad edit (docs/tool-groups.md).
+        app.set_path_display(
+            alter_zero::app::PathDisplay::new(cwd.clone(), home.clone())
+                .with_scratchpad(scratchpad_dir.clone()),
+        );
         // Where Ctrl+V pastes land (docs/image-paste.md): the config home,
         // not /tmp, so a resumed session still finds its pictures.
         let paste_dir = config::paste_store_dir(&session_id);

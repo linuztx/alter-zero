@@ -162,7 +162,7 @@ impl SettingKey {
                 "Hide the model's chain-of-thought instead of streaming it above the composer"
             }
             Self::Verbose => {
-                "Show each read, search and listing as its own cell, not one collapsed line"
+                "A cell per read, search, listing and scratchpad edit, not one collapsed line"
             }
             Self::ShowImages => {
                 "Render pasted screenshots and image reads as pictures in the terminal"

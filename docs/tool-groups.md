@@ -6,7 +6,9 @@ that exploring fills the screen with output nobody reads — a `● Bash(ls -la)
 over a directory listing, a `● Read(src/app.rs)` over ten numbered lines, a
 `● Bash(grep -rn …)` over its matches — and pushes the part of the turn that
 matters, the change and the reply, off the top. Claude Code's non-verbose view
-folds such a run into one line, and this is that, ported.
+folds such a run into one line, and this is that, ported — with the
+throwaway files the agent writes into its own scratchpad folded in beside the
+reads (*Scratchpad edits*, below).
 
 ```
 ● I'll get my bearings first.
@@ -49,7 +51,8 @@ scrollback would get one line for the reads before the switch and another for
 the ones after it, while every later rebuild — which reads the history as one
 run — drew a single line. Nothing is held between turns, where a rebuild draws
 a finished run's line by itself, nor once the run has ended (reply text, a
-call of another kind, a subagent launch). Turned **on**, the open group lets
+call of another kind, a subagent launch — though a `write` the model is still
+writing into the scratchpad continues it, *Scratchpad edits*). Turned **on**, the open group lets
 go and the rebuild paints its calls as cells.
 
 ## The two looks
@@ -68,17 +71,22 @@ go and the rebuild paints its calls as cells.
   rounds only to start again would say the work had stopped when it had not.
   It stops when the group closes (below): a call of another kind, text, an
   error, the turn's end.
-- The clauses are in the reference's order — searches, then reads, then
-  listings — each verb in the tense the group is in (`Searching for`,
-  `reading`, `listing`), the first capitalised, the counts **bold**, the
-  nouns pluralised past one (`1 pattern`, `2 patterns`; `1 directory`,
+- The clauses are in the reference's order — what the group changed, then
+  what it read: scratchpad edits, then searches, reads and listings — each
+  verb in the tense the group is in (`Making`, `searching for`, `reading`,
+  `listing`), the first capitalised, the counts **bold**, the nouns
+  pluralised past one (`1 pattern`, `2 patterns`; `1 directory`,
   `2 directories`), the line closed by a `…`.
 - The `⎿` row says what the group is doing, **one call's value at a time,
   in the order the calls ran** (*The hint row*, below), and between rounds it
-  keeps saying what the group last did. A read names its file (by the
-  session's path display rule, `docs/tools.md` *Path display*); a command is
-  `$ {command}` — its first line, whitespace runs closed up, a ` …` when more
-  lines follow.
+  keeps saying what the group last did. A read or a scratchpad edit names its
+  file (by the session's path display rule, `docs/tools.md` *Path display*),
+  **wrapped** under the corner when the row is too narrow for it — a path's
+  file name is at its end, which a cut would take — over at most three rows
+  (`TOOL_GROUP_HINT_MAX_ROWS`), the last cut with a `…` only past that; a
+  command is `$ {command}` — its first line, whitespace runs closed up, a ` …`
+  when more lines follow — on one row, cut, since its clock rides the row's
+  end.
 - The dim `(ctrl+o to expand)` is the first thing a narrow terminal drops;
   past that the clauses are cut with a `…`.
 
@@ -166,10 +174,12 @@ A **member** is a call the group takes ([`app::is_group_member`]):
   kind — a listing wherever one appears, else a search, else a read, the
   reference's precedence — so `ls | grep x` lists and `cat f | grep x`
   searches; `echo`, `printf`, `true` and `cd` ride along without a kind of
-  their own, so `cd src && ls` is a listing.
+  their own, so `cd src && ls` is a listing;
+- a `Write` or `Edit` of a file in a session's **scratchpad** — but only
+  once it has **succeeded** (*Scratchpad edits*, below).
 
-and it joins only once it has **run**, whether it succeeded or failed in the
-running — a search that matched nothing exits 1, a read of a missing file
+and a read joins only once it has **run**, whether it succeeded or failed in
+the running — a search that matched nothing exits 1, a read of a missing file
 fails; the model read the error either way, and Ctrl+O keeps it. A call that
 never ran or never finished keeps a cell of its own, because its cell is the
 record of *why*: refused at the prompt or by the classifier, blocked by a hook,
@@ -209,6 +219,68 @@ the tokenizer and nothing else.
   words do not say how many files a command opens, and the reference counts
   the same way).
 - **Listings** — every listing command, each one a "directory".
+- **Scratchpad edits** — every scratchpad `write` and `edit`, each one an
+  "edit", with the lines they added and removed.
+
+## Scratchpad edits
+
+The session's scratchpad (`docs/scratchpad.md`) is where the agent puts what
+is not the user's work — a script it writes to try something, a note, an
+intermediate file. A change there is part of finding the way around rather
+than a change to the project, so the newer reference folds it into the group
+too, as a clause of its own, and so does this:
+
+```
+● Making 1 scratchpad edit +25… (ctrl+o to expand)
+  ⎿  /tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad/guess_the_numbe
+     r.py
+```
+
+while the model writes the file, and once the group closes:
+
+```
+Made 2 scratchpad edits +26 -1 (ctrl+o to expand)
+```
+
+- The clause is `Making`/`made` **N** `scratchpad edit(s)`, then the lines
+  the edits added and removed, `+A -D`, **dim** — the `(ctrl+o to expand)`
+  hint's colour on the live line, the line's own dim once it settles, never
+  bold like the count — with a side that changed nothing left out (a new file
+  reads `+25`, never `+25 -0`). Not the diff colours a file cell's `Updated …
+  (+A -D)` corner wears: the line is a summary, and the green and red belong
+  to the cells Ctrl+O expands.
+- The lines come from each edit's own cell head (`llm::tools::write_report`/
+  `update_report`): `Wrote {N} lines to …` for a new file, `Updated … (+A
+  -D)` for an overwrite or an edit, the legacy `Created … ({N} lines)` for an
+  old rollout — so the line says exactly what the cells Ctrl+O expands say,
+  and a `/resume` repaints it from the records alone. `No changes to …` is an
+  edit that names no lines.
+- **A `write` still being generated is part of the group already.** Its draft
+  (`docs/write-streaming.md`) streams no cell of its own: the clause counts it
+  the moment its path is out and in the scratchpad, its `+N` growing as the
+  lines arrive, and the hint row names its file. Queued behind its batch it
+  counts the content it carries (the adopted draft, else the call's verbatim
+  arguments); an `edit` names its lines only once it has run, since only
+  running it reports the diff.
+
+**What counts as the scratchpad** (`PathDisplay::in_scratchpad`): this
+session's own directory, wherever `ALTER_ZERO_SCRATCHPAD_DIR` put it — the
+policy the boundary injects beside the cwd and `$HOME` — and **any** session's
+by its layout, `{tmp}/alter-zero-{uid}/{session}/scratchpad/…`
+(`scratchpad::is_session_scratchpad`), because a conversation resumed in a new
+process has a scratchpad of its own while its records name the one the earlier
+process wrote into (`docs/scratchpad.md` *Known limitations*), and its line
+must repaint after the resume as it did before. Both checks are lexical, the
+permission gate's rule: an absolute path, no `..` anywhere. The layout check
+is **display only** — the permission gate's exemption still asks about this
+session's own scratchpad and nothing else.
+
+**Only an edit that succeeded joins.** One that failed, or never ran —
+refused at a prompt a hook forced, blocked by a hook, cut by Esc or a backend
+error — changed nothing, so it keeps its red cell, which says why, and "made
+N edits" stays true. That is stricter than a read, which joins however it
+ended once it ran: a read that failed still told the model something, an
+edit that failed did nothing.
 
 ## The group's lifecycle
 
@@ -240,9 +312,12 @@ no-op with none open):
 - **a call of another kind**: its batch announcement, its start, or its
   resolution, whichever comes first — a parallel batch led by a read joins the
   group, one led by anything else closes it;
-- a **subagent launch**, a **`write` starting to stream** into its cell, a
-  **steered message** landing, a **notice** (an error notice, a background
-  shell's or an agent's completion);
+- a **subagent launch**, a **`write` starting to stream** into a cell of
+  its own — one whose path is out and lies outside every scratchpad; until
+  its path is out nothing says where it writes, so its cell streams **under**
+  the open group, which stays up over it, and a scratchpad write joins it
+  instead —, a **steered message** landing, a **notice** (an error notice, a
+  background shell's or an agent's completion);
 - a **permission prompt** about a call that is no read, so the line commits
   above the question; a prompt about a *read* (manual mode asking about `ls`)
   keeps the group open and shows it at rest above the asked-about call's own
@@ -288,21 +363,32 @@ the last read alike. While it streams, its live `● Thinking…` block sits
 
 The pure halves are unit-tested: membership, runs, counts, placement and the
 hint row's queue (every value in order, each held, none skipped, a new group
-starting over) in `app/tests/tool_group.rs`; the two looks, the path display,
-the narrow-width fit, a parallel batch's first value then its next, and the
-rebuild in `ui/tests/tool_group.rs`; `read_kind` and
-`is_read_only` over the reference's own cases plus adversarial ones (redirect
-spellings, unicode spaces, `find` grouping, line continuations) in
-`read_only/tests.rs`. The offline dummy's **`explore`** scenario (a prompt
-naming "explore") drives a whole group with no network: a listing, a thought
-between the rounds, a parallel search and two reads, a second thought — a
-live model's pause before its next call, in which the hint row plays the
-round's values through — then a script run that closes it, every call
-resolving with the real executor's output.
-`scripts/smoke.sh` Phase 146 plays it against the real binary — the live cell
-over the streaming thought, the clauses growing, the parallel round's three
-values taking the hint row in turn, the one settled line above the closing
-call with no per-read cell, both thoughts under the line in the order they
-happened, Ctrl+O expanding every call, a resize rebuild
-painting the same line, and **Verbose output** unfolding it — while every
+starting over) in `app/tests/tool_group.rs`, with the scratchpad edits'
+membership, line counts and streaming drafts beside them; the two looks, the
+path display, the narrow-width fit, a wrapped path, the `+A -D` counts, a
+parallel batch's first value then its next, and the rebuild in
+`ui/tests/tool_group.rs`; `read_kind` and `is_read_only` over the
+reference's own cases plus adversarial ones (redirect spellings, unicode
+spaces, `find` grouping, line continuations) in `read_only/tests.rs`; the
+scratchpad layout in `scratchpad.rs`.
+
+The offline dummy's **`explore`** scenario (a prompt naming "explore") drives
+a whole group with no network: a listing, a thought between the rounds, a
+parallel search and two reads, a second thought — a live model's pause before
+its next call, in which the hint row plays the round's values through — then
+a script run that closes it, every call resolving with the real executor's
+output. Its **`scratchpad`** scenario (a prompt naming "scratchpad") streams
+a `write` of a little game into the session's scratchpad the way a live model
+generates one, then `edit`s it, both resolving through the real
+`write_report`/`update_report`.
+
+`scripts/smoke.sh` Phase 146 plays the first against the real binary — the
+live cell over the streaming thought, the clauses growing, the parallel
+round's three values taking the hint row in turn, the one settled line above
+the closing call with no per-read cell, both thoughts under the line in the
+order they happened, Ctrl+O expanding every call, a resize rebuild painting
+the same line, and **Verbose output** unfolding it. Phase 147 plays the
+second — the live `Making 1 scratchpad edit +N…` line counting up over the
+file's path while the write streams, no `Write(` cell anywhere, one settled
+`Made 2 scratchpad edits +26 -1` line, and Ctrl+O expanding both calls. Every
 other phase runs with `ALTER_ZERO_VERBOSE=1`.
