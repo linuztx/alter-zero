@@ -59,7 +59,8 @@ check() {
     --skip the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line \
     --skip a_pathological_line_renders_plain_within_the_frame_budget \
     --skip the_activity_row_stays_inside_the_frame_budget_on_a_line_of_blank_space \
-    --skip the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget
+    --skip the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget \
+    --skip the_head_of_a_huge_finished_line_stays_inside_the_frame_budget
 }
 
 package() {

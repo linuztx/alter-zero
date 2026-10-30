@@ -34,6 +34,16 @@ release heading when a version is cut.
   again whenever the conversation is redrawn, on a resize or a change to the
   image settings, so a picture deleted mid-session stops holding its space
   too, and one whose file comes back draws again (`docs/images.md`).
+- **A file cell's inline peek stays inside its ten rows.** A `read`, `write`
+  or `edit` cell shows the first rows of the file and keeps the rest behind
+  Ctrl+O, but a long line that began inside those rows was always shown to
+  its end — so a `write` of a minified stylesheet painted one line of it
+  across more than a hundred rows of scrollback, under a hint still counting
+  the lines after it. The peek now stops at its tenth row: a line the rows
+  left can hold still shows whole, and the one that needs more is cut on the
+  last row and marked with a `…`. When the cut line is the file's last, the
+  row under it still points at Ctrl+O. Ctrl+O and the permission prompt
+  still show every line whole (`docs/long-lines.md`).
 
 ## [0.17.0] - 2026-10-27
 

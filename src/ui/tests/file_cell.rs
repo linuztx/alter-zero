@@ -220,8 +220,9 @@ fn the_tail_is_the_newest_rows_of_the_whole_view_when_lines_wrap() {
 #[test]
 fn a_finished_write_with_a_long_line_shows_the_head_the_committed_cell_will() {
     // The head and the committed cell share the peek's rule: a long line the
-    // peek starts is shown whole, and the cell is the same either side of
-    // the call resolving.
+    // peek starts is shown for the rows its ten have left and cut there
+    // (docs/long-lines.md §8), and the cell is the same either side of the
+    // call resolving.
     let mut content = String::new();
     for i in 1..=12 {
         if i == 8 {
@@ -244,11 +245,36 @@ fn a_finished_write_with_a_long_line_shows_the_head_the_committed_cell_will() {
         "row for row: {:#?}",
         texts(&lines)
     );
-    let ys: usize = texts(&lines)
-        .iter()
-        .map(|row| row.matches('y').count())
-        .sum();
-    assert_eq!(ys, 400, "the long line whole: {:#?}", texts(&lines));
+    let body = &texts(&lines)[2..];
+    assert_eq!(body.len(), FILE_PEEK_LINES + 1, "ten rows over the hint");
+    let ys: usize = body.iter().map(|row| row.matches('y').count()).sum();
+    assert_eq!(ys, 71 + 71 + 70, "line 8's three rows: {body:#?}");
+    assert!(body[FILE_PEEK_LINES - 1].ends_with('…'), "{body:#?}");
+}
+
+#[test]
+fn a_finished_write_of_one_huge_line_shows_the_committed_cut() {
+    // One line taller than the peek: the head is its first ten rows, cut on
+    // the tenth, over the count-less hint — exactly the committed cell's.
+    let content = "x".repeat(2_000);
+    let drafts = drafts_with("a.min.js", &content, true);
+    let lines = streaming_cell(draft(&drafts));
+    let committed = tool_lines(
+        &committed_call("a.min.js", &content),
+        WIDTH,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        lines[2..],
+        committed[2..],
+        "row for row: {:#?}",
+        texts(&lines)
+    );
+    assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1, "{:#?}", texts(&lines));
+    assert_eq!(
+        plain(&lines[lines.len() - 1]).trim(),
+        "… (ctrl+o to expand)"
+    );
 }
 
 #[test]
@@ -407,6 +433,32 @@ fn the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget() {
     assert!(
         per_build < std::time::Duration::from_millis(10),
         "one build of the streaming cell took {per_build:?} — the tail is \
+         wrapping the whole line again"
+    );
+}
+
+#[test]
+fn the_head_of_a_huge_finished_line_stays_inside_the_frame_budget() {
+    // Once the content has arrived the strip shows the head instead, and
+    // keeps building it several times a frame while the call waits and runs.
+    // The head is the line's first ten rows, cut there (docs/long-lines.md
+    // §8), so a build wraps those rows and stops; wrapping the whole ~1 MB
+    // line to keep ten of its rows costs tens of milliseconds a build.
+    let content = "{\"k\":123,\"deep\":[1,2,3]},".repeat(40_000);
+    let drafts = drafts_with("a.json", &content, true);
+    let finished = draft(&drafts);
+    // The highlight cache's first fill is the line's arrival, not a frame.
+    assert_eq!(streaming_cell(finished).len(), 2 + FILE_PEEK_LINES + 1);
+    let frames = 10u32;
+    let start = std::time::Instant::now();
+    for _ in 0..frames {
+        assert_eq!(streaming_cell(finished).len(), 2 + FILE_PEEK_LINES + 1);
+    }
+    let per_build = start.elapsed() / frames;
+    println!("the finished cell of a 1 MB line: {per_build:?} per build");
+    assert!(
+        per_build < std::time::Duration::from_millis(10),
+        "one build of the finished cell took {per_build:?} — the head is \
          wrapping the whole line again"
     );
 }
