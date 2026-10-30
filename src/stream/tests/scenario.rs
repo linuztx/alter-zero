@@ -573,7 +573,7 @@ fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
     assert_eq!(batches, vec![1, 3, 1]);
     // Nothing is said from the first call to the last one, so nothing closes
     // the group early — but the model thinks between the first two rounds,
-    // and the thought streams under the open group.
+    // and the thought settles inside the open group.
     let first = events
         .iter()
         .position(|e| matches!(e, StreamEvent::ToolBatch(_)))

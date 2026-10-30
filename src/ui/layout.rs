@@ -96,22 +96,19 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
         let lines = super::live::drafting_lines(app, width);
         return u16::try_from(lines.len()).unwrap_or(u16::MAX);
     }
-    // An open thinking phase previews its live block — the `● Thinking…`
-    // header plus the tail it shows (docs/thinking-stream.md) — under the
-    // open read/search group's cell when one is up (docs/tool-groups.md).
-    // Sized from the same walk the strip draws, so the two agree by
-    // construction.
+    // The open read/search group's cell holds the slot alone — between
+    // rounds, and through a thought, which opens no block while the group is
+    // up (docs/tool-groups.md *Thoughts*); else an open thinking phase
+    // previews its live block, the `● Thinking…` header plus the tail it
+    // shows (docs/thinking-stream.md). Sized from the same walks the strip
+    // draws, so the two agree by construction.
     let group = super::live::open_group_lines(app, width).len();
-    if let Some(text) = app.reasoning() {
-        let gap = usize::from(group > 0);
-        return u16::try_from(
-            group + gap + super::reasoning::live_reasoning_lines(text, app.pulse(), width).len(),
-        )
-        .unwrap_or(u16::MAX);
-    }
-    // Between rounds the open group's cell holds the slot alone.
     if group > 0 {
         return u16::try_from(group).unwrap_or(u16::MAX);
+    }
+    if let Some(text) = app.reasoning() {
+        let block = super::reasoning::live_reasoning_lines(text, app.pulse(), width);
+        return u16::try_from(block.len()).unwrap_or(u16::MAX);
     }
     // A streaming reply previews the rows scrollback does not hold yet — its
     // last row for ordinary prose, every wrapped row of a withheld source

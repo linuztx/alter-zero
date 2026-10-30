@@ -328,16 +328,26 @@ no-op with none open):
 
 ### Thoughts
 
-A thought does not close a group, and it is not hidden either: the reference
-**defers** a thought that lands while a group is open to just after the
-group's line ("this preserves the visual ordering where the collapsed badge
-appears at the position of the first tool use"), and so does this. It settles
-into the history inside the group (`tui::stream`'s `settle_reasoning` holds it
-while a group is open), and when the group closes its line commits with every
-thought it held under it, each its own `Thought for …` cell in the order they
-happened (`ui::tool_group_lines`) — a thought between two reads and one after
-the last read alike. While it streams, its live `● Thinking…` block sits
-**under** the open group's cell, which stays up through it.
+A thought does not close a group: the reference **defers** a thought that
+lands while a group is open to just after the group's line ("this preserves
+the visual ordering where the collapsed badge appears at the position of the
+first tool use"), and so does this. It settles into the history inside the
+group (`tui::stream`'s `settle_reasoning` holds it while a group is open), and
+when the group closes its line commits with every thought it held under it,
+each its own `Thought for …` cell in the order they happened
+(`ui::tool_group_lines`) — a thought between two reads and one after the last
+read alike.
+
+While it streams, it stays out of the strip: no `● Thinking…` block opens
+under the open group's cell, which keeps the slot alone (the group outranks
+the block in `ui::live::preview_lines` and `ui::preview_rows` alike, so the
+rows drawn and the rows reserved agree). A block there grew the strip by a
+gap and its rows on every thought and gave them back at the next call, the
+box bouncing between two reads; the group's line and its hint row hold still
+instead. The status line still says the model is thinking
+(`Thinking for 6s`), and Ctrl+O shows the thought as it streams. A thought
+with no group open — before the first read, or in a turn with none — keeps
+its block (`docs/thinking-stream.md`).
 
 ## Where it does not apply
 
@@ -366,11 +376,11 @@ hint row's queue (every value in order, each held, none skipped, a new group
 starting over) in `app/tests/tool_group.rs`, with the scratchpad edits'
 membership, line counts and streaming drafts beside them; the two looks, the
 path display, the narrow-width fit, a wrapped path, the `+A -D` counts, a
-parallel batch's first value then its next, and the rebuild in
-`ui/tests/tool_group.rs`; `read_kind` and `is_read_only` over the
-reference's own cases plus adversarial ones (redirect spellings, unicode
-spaces, `find` grouping, line continuations) in `read_only/tests.rs`; the
-scratchpad layout in `scratchpad.rs`.
+parallel batch's first value then its next, a thought inside the open group
+leaving the strip to its cell, and the rebuild in `ui/tests/tool_group.rs`;
+`read_kind` and `is_read_only` over the reference's own cases plus adversarial
+ones (redirect spellings, unicode spaces, `find` grouping, line continuations)
+in `read_only/tests.rs`; the scratchpad layout in `scratchpad.rs`.
 
 The offline dummy's **`explore`** scenario (a prompt naming "explore") drives
 a whole group with no network: a listing, a thought between the rounds, a
@@ -383,12 +393,13 @@ generates one, then `edit`s it, both resolving through the real
 `write_report`/`update_report`.
 
 `scripts/smoke.sh` Phase 146 plays the first against the real binary — the
-live cell over the streaming thought, the clauses growing, the parallel
-round's three values taking the hint row in turn, the one settled line above
-the closing call with no per-read cell, both thoughts under the line in the
-order they happened, Ctrl+O expanding every call, a resize rebuild painting
-the same line, and **Verbose output** unfolding it. Phase 147 plays the
-second — the live `Making 1 scratchpad edit +N…` line counting up over the
+live cell alone while the model thinks (the status line counting the thought,
+no block under the cell), the clauses growing, the parallel round's three
+values taking the hint row in turn, the one settled line above the closing
+call with no per-read cell, both thoughts under the line in the order they
+happened, Ctrl+O expanding every call and both thoughts, a resize rebuild
+painting the same line, and **Verbose output** unfolding it. Phase 147 plays
+the second — the live `Making 1 scratchpad edit +N…` line counting up over the
 file's path while the write streams, no `Write(` cell anywhere, one settled
 `Made 2 scratchpad edits +26 -1` line, and Ctrl+O expanding both calls. Every
 other phase runs with `ALTER_ZERO_VERBOSE=1`.

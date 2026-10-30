@@ -89,7 +89,9 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// `● Thinking…` header over the tail of the chain-of-thought
 /// (`docs/thinking-stream.md`) — after the agent/tool branches (what is
 /// genuinely executing is what the user waits on) and before the reply's,
-/// which cannot be streaming while the model is still thinking.
+/// which cannot be streaming while the model is still thinking; an open
+/// read/search group's cell outranks it, so a thought between two reads opens
+/// no block at all (`docs/tool-groups.md` *Thoughts*).
 /// Empty when there is nothing to preview (the pre-stream pause / idle).
 ///
 /// `rows` is the slot the caller reserved ([`fitted_preview_rows`], or the
@@ -129,23 +131,18 @@ pub(super) fn preview_lines(
         // read/search group, which a scratchpad write streams into instead
         // of a cell of its own (docs/tool-groups.md *Scratchpad edits*).
         trim_preview(drafting_lines(app, width), rows, false)
-    } else if let Some(text) = app.reasoning() {
-        // A thinking phase between two reads streams under the open group's
-        // cell, which stays up through it (docs/tool-groups.md).
-        let mut lines = open_group_lines(app, width);
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.extend(live_reasoning_lines(text, app.pulse(), width));
-        trim_preview(lines, rows, false)
     } else {
         let group = open_group_lines(app, width);
         if !group.is_empty() {
             // Between rounds — the reads resolved, the model writing its
             // next call — the open group's cell stays up, its bullet still
-            // blinking: the next call may well be another read
-            // (docs/tool-groups.md).
+            // blinking: the next call may well be another read. It holds the
+            // slot alone through a thought too, which opens no block while
+            // the group is up: the status line says the model is thinking
+            // and Ctrl+O shows the text (docs/tool-groups.md *Thoughts*).
             trim_preview(group, rows, false)
+        } else if let Some(text) = app.reasoning() {
+            trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
         } else if let Some(lines) = stream_preview {
             trim_preview(lines.to_vec(), rows, true)
         } else {

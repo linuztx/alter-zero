@@ -13,7 +13,8 @@ smoke_begin
 # closes the group:
 #   - while the reads run, the group's live cell — `Listing 1 directory…
 #     (ctrl+o to expand)` over `⎿  $ ls -la` — held open through the thought
-#     between the rounds, which streams under it;
+#     between the rounds, which opens no `● Thinking…` block of its own: the
+#     status line says the model is thinking;
 #   - the parallel round's three values take the `⎿` row ONE AFTER ANOTHER,
 #     in the order the calls ran — the search, then the file, then the
 #     README — each held long enough to read, never jumping to the last;
@@ -21,7 +22,7 @@ smoke_begin
 #     `Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to
 #     expand)` — no cell for any read, and both thoughts under the group's
 #     line in the order they happened (the reference defers them there);
-#   - Ctrl+O still shows every call whole;
+#   - Ctrl+O still shows every call whole, and both thoughts' text;
 #   - a resize's rebuild paints the same one line (it is derived from history);
 #   - /settings → Verbose output → true rebuilds the conversation with a cell
 #     per call, and the row persists to settings.json;
@@ -39,20 +40,18 @@ esac
 launch "$S146" 100 44 "env -u ALTER_ZERO_VERBOSE ${APP146#env }"
 submit "$S146" "explore the project for me"
 
-# The live cell, caught while the thought between the rounds streams under
-# it. Its bullet blinks, so the rows are matched without it.
-live="$(wait_pane 15 "$S146" -F "Thinking…")" ||
+# The live cell, caught a second into the thought between the rounds — long
+# enough for its first sentence to have streamed — with the status line's
+# clause the one sign of it and no block under the cell. Its bullet blinks,
+# so the rows are matched without it.
+live="$(wait_pane 15 "$S146" -E "· Thinking for [1-9]")" ||
 	fail "the explore demo never reached its thought between the rounds"
-dump "captured pane (the open group over the streaming thought)" "$live"
+dump "captured pane (the open group while the model thinks)" "$live"
 expect_has "$live" -F "Listing 1 directory… (ctrl+o to expand)" "the open group's live cell is not up while the model thinks"
 expect_has "$live" -F "  ⎿  \$ ls -la" "the live group cell does not name the command it ran"
 expect_lacks "$live" -F "Bash(ls -la)" "the listing got a cell of its own"
-# The thought sits UNDER the group's cell, not above it.
-group_row="$(grep -nF "Listing 1 directory…" <<<"$live" | head -1 | cut -d: -f1)"
-thought_row="$(grep -nF "Thinking…" <<<"$live" | head -1 | cut -d: -f1)"
-if [ -n "$group_row" ] && [ -n "$thought_row" ] && [ "$thought_row" -le "$group_row" ]; then
-	fail "the thought streams above the open group (thought row $thought_row, group row $group_row)"
-fi
+expect_lacks "$live" -F "Thinking…" "a thinking block opened under the open group"
+expect_lacks "$live" -F "One script and a README." "the thought streamed into the strip while the group was open"
 
 # The reads join the group as they run: the parallel round grows its clauses.
 grown="$(wait_pane 15 "$S146" -F "Searching for 1 pattern, reading 2 files, listing 1 directory…")" ||
@@ -108,6 +107,11 @@ dump "the transcript, bottom" "$bottom"
 for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(head -n 20 README.md)" "Bash(python3 about.py)"; do
 	expect_has "$top
 $bottom" -F "$cell" "Ctrl+O does not expand $cell"
+done
+# …and both thoughts' text, which the strip left out while the group was open.
+for text in "One script and a README." "card() builds the line, and the README says to run it."; do
+	expect_has "$top
+$bottom" -F "$text" "Ctrl+O does not show the thought: $text"
 done
 keys "$S146" q
 wait_for 5 "$S146" -E '^❯' || fail "q did not close the transcript"

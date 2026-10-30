@@ -27,7 +27,9 @@ release heading when a version is cut.
   read, and once something else happens (another kind of call, a reply, an
   error, the end of the turn) it settles into one dim line: `Searched for 1
   pattern, read 2 files, listed 1 directory (ctrl+o to expand)`, with any
-  `Thought for …` lines from the run under it. Ctrl+O still shows every
+  `Thought for …` lines from the run under it. While the agent thinks
+  between calls, no thinking block opens under the cell, and only the
+  status line says it is thinking. Ctrl+O still shows the thought and every
   call with its full output. A read that was refused, interrupted or moved
   to the background keeps its own cell, and so does a read of an image, so
   its picture still draws. The new **Verbose output** row in `/settings`

@@ -385,16 +385,32 @@ fn the_strip_shows_the_group_over_the_rest_of_its_batch() {
 }
 
 #[test]
-fn a_thinking_phase_inside_the_group_shows_under_its_cell() {
+fn a_thinking_phase_inside_the_group_leaves_the_strip_to_its_cell() {
+    // No `● Thinking…` block while the group is open: the status line says
+    // the model is thinking and Ctrl+O shows the thought
+    // (docs/tool-groups.md *Thoughts*).
     let mut app = holding_a_read("a.py");
     app.begin_reasoning();
     app.push_thinking("Now the tests.");
     let rows = preview_rows(&app, 80);
     let preview = texts(&preview_lines(&app, 80, None, rows));
     assert_eq!(usize::from(rows), preview.len());
-    assert_eq!(preview[0], "● Reading 1 file… (ctrl+o to expand)");
-    assert_eq!(preview[2], "", "{preview:#?}");
-    assert!(preview[3].contains("Thinking"), "{preview:#?}");
+    assert_eq!(
+        preview,
+        ["● Reading 1 file… (ctrl+o to expand)", "  ⎿  a.py"]
+    );
+}
+
+#[test]
+fn a_thought_with_no_group_open_keeps_its_own_block() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.begin_reasoning();
+    app.push_thinking("Before anything is read.");
+    let rows = preview_rows(&app, 80);
+    let preview = texts(&preview_lines(&app, 80, None, rows));
+    assert_eq!(usize::from(rows), preview.len());
+    assert_eq!(preview, ["● Thinking…", "  ⎿  Before anything is read."]);
 }
 
 #[test]

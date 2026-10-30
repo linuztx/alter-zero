@@ -901,8 +901,11 @@ the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
 codex's grey base is right for a metric and unreadable for a header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
 tool's output there), tail-following its last `REASONING_PEEK_LINES` (3)
-wrapped rows; at the phase's end the cell shape goes away entirely and it
-**collapses** into one committed **bullet-less** two-tone
+wrapped rows — no block at all while a collapsed read/search group is open,
+the strip left to the group's cell and the status line's `Thinking for Ns`
+(the open group outranks the block in `ui::live::preview_lines`,
+`docs/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
+away entirely and it **collapses** into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
 the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
@@ -1292,7 +1295,8 @@ run's pattern), the open group held by the commit path from
 `App::tool_group`'s index on (`App::place_resolved_tool`, the boundary's
 `close_tool_group` at every close point, `ui::committed_history` leaving it
 out of rebuilds), every thought it held shown under its line in the order
-they happened; Ctrl+O always verbose, an agent session view per call; the
+they happened — streaming with no block of its own while the group is open;
+Ctrl+O always verbose, an agent session view per call; the
 dummy's `explore` and `scratchpad` scenarios and `smoke.sh` Phases 146 and
 147, every other phase exporting `ALTER_ZERO_VERBOSE=1`) in
 `docs/tool-groups.md`; the

@@ -1296,9 +1296,10 @@ const EXPLORE_REPLY: &str = concat!(
     handoff!()
 );
 
-/// The thought the explore demo has between its first two rounds — it
-/// streams under the open group's cell, whose bullet keeps blinking through
-/// it (`docs/tool-groups.md`).
+/// The thought the explore demo has between its first two rounds — the strip
+/// keeps showing the open group's cell while it streams, its bullet blinking
+/// through it, and only the status line says the model is thinking
+/// (`docs/tool-groups.md` *Thoughts*).
 const EXPLORE_THINKING: &str =
     "One script and a README. Find where the card is built,\nthen read both.";
 
