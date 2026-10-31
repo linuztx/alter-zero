@@ -2,7 +2,9 @@
 //! (`docs/markdown.md`).
 
 use super::*;
-use crate::ui::assistant::{assistant_lines, code_content_rows, code_content_tail_rows};
+use crate::ui::assistant::{
+    assistant_lines, code_content_head_rows, code_content_rows, code_content_tail_rows,
+};
 use crate::ui::theme::{
     AI_BULLET, BULLET_WIDTH, CODE_TAB_WIDTH, THEMATIC_BREAK, ai_color, inline_code_color,
     menu_dim_color, menu_selected_color,
@@ -1154,6 +1156,82 @@ fn a_code_labelled_link_marks_only_the_two_names() {
     );
 }
 
+/// The texts the head and tail differentials wrap, each as one segment and
+/// split into alternating styles every seven characters, so a cut can land
+/// inside a segment: wide glyphs can end a row a column short, a combining
+/// mark joins its base, and a control byte is not one column.
+fn wrap_fixtures() -> Vec<(String, Vec<(String, Style)>)> {
+    let red = Style::new().fg(Color::Red);
+    let blue = Style::new().fg(Color::Blue);
+    let texts = [
+        String::new(),
+        "short".to_string(),
+        "{\"k\":1,\"v\":[1,2,3]},".repeat(40),
+        "word ".repeat(50),
+        "漢字かな".repeat(30),
+        "e\u{301}x".repeat(60),
+        format!("{}\t{}", "a".repeat(90), "b".repeat(90)),
+        format!("{}\u{200b}{}", "c".repeat(72), "d".repeat(80)),
+    ];
+    let mut fixtures = Vec::new();
+    for text in texts {
+        let mut split: Vec<(String, Style)> = Vec::new();
+        let mut run = String::new();
+        for (i, ch) in text.chars().enumerate() {
+            run.push(ch);
+            if i % 7 == 6 {
+                let style = if split.len().is_multiple_of(2) {
+                    red
+                } else {
+                    blue
+                };
+                split.push((std::mem::take(&mut run), style));
+            }
+        }
+        if !run.is_empty() {
+            split.push((run, red));
+        }
+        fixtures.push((text.clone(), vec![(text.clone(), red)]));
+        fixtures.push((text, split));
+    }
+    fixtures
+}
+
+/// What [`code_content_head_rows`] must answer: the whole line wrapped by
+/// [`code_content_rows`], cut to its first `keep` rows, and whether any row
+/// was cut away.
+fn wrapped_then_cut(
+    segments: &[(String, Style)],
+    width: u16,
+    keep: usize,
+) -> (Vec<Vec<Span<'static>>>, bool) {
+    let mut rows = code_content_rows(segments, width);
+    let cut = rows.len() > keep;
+    rows.truncate(keep);
+    (rows, cut)
+}
+
+#[test]
+fn a_code_lines_head_rows_are_the_first_rows_of_the_whole_wrap() {
+    // The file peek cuts the line that runs past its tenth row
+    // (docs/long-lines.md §8) by wrapping only the rows it shows: the greedy
+    // break only ever looks back, so the head of the whole wrap is the wrap
+    // of the head. The rows must be the whole wrap's first ones, styles and
+    // all — a zero-width character after a full row stays on that row — and
+    // the flag must say whether the line went on past them.
+    for (text, segments) in wrap_fixtures() {
+        for width in [1u16, 7, 72] {
+            for keep in [0usize, 1, 3, 10, 10_000] {
+                assert_eq!(
+                    code_content_head_rows(&segments, width, keep),
+                    wrapped_then_cut(&segments, width, keep),
+                    "{text:?} at width {width}, keeping {keep}"
+                );
+            }
+        }
+    }
+}
+
 /// What [`code_content_tail_rows`] must answer: the whole line wrapped by
 /// [`code_content_rows`], its head dropped down to the last `keep` rows, and
 /// how many rows were dropped.
@@ -1173,48 +1251,15 @@ fn a_code_lines_tail_rows_are_the_last_rows_of_the_whole_wrap() {
     // A streaming file keeps a long line's newest rows without wrapping its
     // head (docs/long-lines.md §7): printable ASCII skips the head by
     // arithmetic, anything else is wrapped whole. Either way the rows must be
-    // exactly the whole wrap's last ones, styles and all — wide glyphs can end
-    // a row a column short, a combining mark joins its base, and a control
-    // byte is not one column.
-    let red = Style::new().fg(Color::Red);
-    let blue = Style::new().fg(Color::Blue);
-    let texts = [
-        String::new(),
-        "short".to_string(),
-        "{\"k\":1,\"v\":[1,2,3]},".repeat(40),
-        "word ".repeat(50),
-        "漢字かな".repeat(30),
-        "e\u{301}x".repeat(60),
-        format!("{}\t{}", "a".repeat(90), "b".repeat(90)),
-    ];
-    for text in &texts {
-        // The text as one segment, and split into alternating styles every
-        // seven characters, so the skipped head can end inside a segment.
-        let mut split: Vec<(String, Style)> = Vec::new();
-        let mut run = String::new();
-        for (i, ch) in text.chars().enumerate() {
-            run.push(ch);
-            if i % 7 == 6 {
-                let style = if split.len().is_multiple_of(2) {
-                    red
-                } else {
-                    blue
-                };
-                split.push((std::mem::take(&mut run), style));
-            }
-        }
-        if !run.is_empty() {
-            split.push((run, red));
-        }
-        for segments in [vec![(text.clone(), red)], split] {
-            for width in [1u16, 7, 72] {
-                for keep in [0usize, 1, 3, 10, 10_000] {
-                    assert_eq!(
-                        code_content_tail_rows(&segments, width, keep),
-                        wrapped_then_dropped(&segments, width, keep),
-                        "{text:?} at width {width}, keeping {keep}"
-                    );
-                }
+    // exactly the whole wrap's last ones, styles and all.
+    for (text, segments) in wrap_fixtures() {
+        for width in [1u16, 7, 72] {
+            for keep in [0usize, 1, 3, 10, 10_000] {
+                assert_eq!(
+                    code_content_tail_rows(&segments, width, keep),
+                    wrapped_then_dropped(&segments, width, keep),
+                    "{text:?} at width {width}, keeping {keep}"
+                );
             }
         }
     }

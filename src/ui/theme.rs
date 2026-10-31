@@ -727,14 +727,20 @@ pub(super) const TOOL_WRITING: &str = "Writing…";
 pub(super) const TOOL_WRITING_PREFIX: &str = "Writing ";
 pub(super) const TOOL_WRITING_SUFFIX: &str = "…";
 
-/// The display-row budget of a `read`/`write`/`edit` cell's inline peek
-/// before the `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row
-/// Write preview): the peek starts numbered lines while it has rows of this
-/// budget left and shows every line it starts whole, never cut, so one long
-/// line can carry it past the budget by the rest of itself
-/// (`docs/long-lines.md` §7). A streaming `write`'s tail is exactly this many
-/// rows (`docs/write-streaming.md`).
+/// The display-row budget — and ceiling — of a `read`/`write`/`edit` cell's
+/// inline peek before the `… +N lines (ctrl+o to expand)` hint (Claude-Code's
+/// ~10-row Write preview): the peek starts numbered lines while it has rows
+/// of this budget left and shows each one whole when the rows left hold it;
+/// the one line that needs more is cut on the last row with
+/// [`FILE_PEEK_CUT_MARKER`], so no line, however long, carries the peek past
+/// this many rows (`docs/long-lines.md` §8). A streaming `write`'s tail is
+/// exactly this many rows (`docs/write-streaming.md`).
 pub(super) const FILE_PEEK_LINES: usize = 10;
+
+/// The dim marker closing the last row the file peek keeps of a line it cuts
+/// at [`FILE_PEEK_LINES`] — in the row's last column, on its tint — so a cut
+/// line never reads as a line that ended (`docs/long-lines.md` §8).
+pub(super) const FILE_PEEK_CUT_MARKER: &str = "…";
 
 /// The model tools whose output is a file change — rendered as the numbered,
 /// syntax-highlighted codex-style cell when the output is in the

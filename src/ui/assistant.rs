@@ -52,6 +52,36 @@ pub(super) fn code_content_rows(
     segments: &[(String, Style)],
     width: u16,
 ) -> Vec<Vec<Span<'static>>> {
+    code_rows_up_to(segments, width, usize::MAX).0
+}
+
+/// The first `keep` of the rows [`code_content_rows`] breaks `segments` into
+/// at `width`, and whether the line goes on past them — the head of a long
+/// line without wrapping its tail, which is what the file peek keeps of the
+/// line it cuts at its ceiling (`docs/long-lines.md` §8). The greedy break
+/// only ever looks back, so the head of the whole wrap is the wrap of the
+/// head: the scan stops at the first grapheme that would open a row past
+/// `keep`, and a 1 MB line costs what its first rows cost.
+pub(super) fn code_content_head_rows(
+    segments: &[(String, Style)],
+    width: u16,
+    keep: usize,
+) -> (Vec<Vec<Span<'static>>>, bool) {
+    if keep == 0 {
+        // Every line is at least one row, an empty one included.
+        return (Vec::new(), true);
+    }
+    code_rows_up_to(segments, width, keep)
+}
+
+/// [`code_content_rows`]' scan, stopping before the first grapheme that would
+/// open a row past `limit` (at least one): the rows, and whether it stopped
+/// short of the line's end.
+fn code_rows_up_to(
+    segments: &[(String, Style)],
+    width: u16,
+    limit: usize,
+) -> (Vec<Vec<Span<'static>>>, bool) {
     let width = (width as usize).max(1);
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
@@ -69,6 +99,9 @@ pub(super) fn code_content_rows(
             if w > 0 && w + gw > width {
                 flush(&mut row, &mut run, run_style);
                 rows.push(std::mem::take(&mut row));
+                if rows.len() >= limit {
+                    return (rows, true);
+                }
                 w = 0;
             }
             if *style != run_style {
@@ -83,7 +116,7 @@ pub(super) fn code_content_rows(
     if !row.is_empty() || rows.is_empty() {
         rows.push(row);
     }
-    rows
+    (rows, false)
 }
 
 /// The last `keep` of the rows [`code_content_rows`] breaks `segments` into

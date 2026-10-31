@@ -43,15 +43,19 @@ lines while the user reads it in **rows**.
 > exactly one more row shown whole; the hint counts the **rows** the
 > expansion will add; a command cell spends none of those rows on a
 > **blank** line; and a line that is a **JSON document** is reshaped for
-> display before any of that. The numbered file cell budgets rows too, but
-> **never cuts a line**: a line its peek starts is shown whole (§7).
+> display before any of that. The numbered file cell budgets rows too, and
+> its ten are a **ceiling**: a line its peek starts shows whole when the rows
+> left hold it, and the one that needs more is cut on the last of them,
+> closed by a `…` (§7, §8).
 
 The rule arrived in layers, and the layers are the history of getting it
 wrong: §1–§3 bounded the *line*; §0 (added after the mess came back in a
 second dress) bounded the *block*; §4 decided what the block is *of*; §5 and
 §6 are the port of Claude Code's own fold, which is what the block's budget
 finally became; §7 took the line budget out of the file cells, the last place
-it was kept. They are kept in that order because each explains the next.
+it was kept; §8 made their block budget a ceiling again, after one line §7
+let through painted a screenful. They are kept in that order because each
+explains the next.
 
 ### 0. Rows, not lines (the block has a row budget)
 
@@ -109,7 +113,8 @@ it, so the exec cells dropped it. It stayed for the numbered file cells
 
 Where a line *was* clipped (the file cells), the last kept row ended in `…`,
 fitted so the row never overflowed the width; without it a clipped line read
-as a line that simply ended. The marker went with the cap (§7). The exec fold
+as a line that simply ended. The marker went with the cap (§7), and came
+back for the one cut the file peek's ceiling makes (§8). The exec fold
 never had one: the `… +N lines` hint sits right under the third row and
 already says the rest follows — that is Claude Code's look, and a marker on
 top of it would replace the row's last character to say the same thing twice.
@@ -144,9 +149,9 @@ into `String`s (`docs/tool-streaming.md`).
 (`ui/file_cell.rs`) paints a line-number gutter, and expanding it shows those
 same numbered file lines — so `… +20 lines` there means twenty more *file*
 lines, the unit the user is reading off the gutter. The rule is one rule in two
-dresses: **count in the unit the expansion shows**. Those cells show each line
-they start whole, never cut (§7), so a hidden line is always a whole line the
-hint counts.
+dresses: **count in the unit the expansion shows**. The one line those cells
+cut at their ceiling (§8) is marked on its own row instead, so a hidden line
+is still always a whole line the hint counts.
 
 ### 4. The peek is the output's first block, not its first four lines
 
@@ -323,12 +328,13 @@ context and the `-` row before it leave a row of the budget. A rule that only
 took lines while they *fit* would have dropped it as soon as the two halves
 together passed ten rows, showing what was removed but not what replaced it.
 
-The cost is the case §1 was written for: a pathological line the peek starts
-is shown whole, a minified bundle painting every row of itself inline. For a
-`read` that is bounded by the tool's own cap (`TOOL_OUTPUT_MAX_BYTES`, 64 KB,
-under a thousand rows at 80 columns); a committed cell lands in scrollback,
-not the live region; and the report asked for exactly that. Ctrl+O shows the
-same rows.
+The cost was the case §1 was written for: a pathological line the peek
+started was shown whole, a minified bundle painting every row of itself
+inline. It was judged bounded — by the `read` tool's own cap
+(`TOOL_OUTPUT_MAX_BYTES`, 64 KB, under a thousand rows at 80 columns), and
+by a committed cell landing in scrollback rather than the live region. It
+was not: a `write` has no such cap, and scrollback is where the user reads.
+§8 is the report that said so, and the ceiling it put back.
 
 A `write` streaming into its cell (`docs/write-streaming.md`) shows the
 newest `FILE_PEEK_LINES` **rows** of the file as it stands — rows, not lines,
@@ -349,6 +355,111 @@ character is one grapheme one column wide, row `k` starts at byte
 `k × width`, and only the rows from there are wrapped: 0.7 ms a build for the
 same line. Any other text is wrapped whole and its head dropped. The rows are
 the same either way, which a differential test holds the arithmetic to.
+
+### 8. The file peek's ten rows are a ceiling
+
+The cost §7 accepted came back as a report: a `Write` of a stylesheet whose
+fourth line was the whole sheet minified, thousands of columns on one line.
+
+```
+● Write(src/styles.css)
+  ⎿  Wrote 10 lines to src/styles.css
+       1 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500
+         ;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap'
+         );
+       2
+       3 :root{font-family:'DM Sans',sans-serif;color:#272932;background:#fafbfc;font-s
+         ynthesis:none;font-weight:400;--purple:#6c5ce7;--purple-dark:#5948d6;--muted:#
+         90919c;--line:#e8e9ee;--surface:#fff;--green:#2c9a73}
+       4 *{box-sizing:border-box}body{margin:0;min-width:360px}button,a{-webkit-tap-hig
+         hlight-color:transparent}button{font:inherit;cursor:pointer}button:disabled{cu
+         rsor:not-allowed}button:focus-visible,a:focus-visible{outline:3px solid rgba(1
+         08,92,231,.28);outline-offset:4px}button{color:inherit}button svg{flex-shrink:
+         [… well over a hundred more rows of line 4 …]
+     … +6 lines (ctrl+o to expand)
+```
+
+Line 4 began on the peek's eighth row, so the peek started it, and §7's
+rule showed every row of it: a cell meant as a ten-row glimpse painted a
+screenful of minified CSS into scrollback, the hint under it still counting
+six lines. The bound §7 leaned on held for a `read`, whose output the tool
+caps, and for nothing else: what a model *writes* has no cap, and the rows
+of a committed cell stay in the user's scrollback for good. It was §0's
+lesson in the file cells' dress: a cell whose height depends on how its
+content happens to be shaped is a cell you cannot skim.
+
+So the ten rows are a ceiling now. Of §7's rule, only what happens to the
+line that runs into it changes:
+
+> The peek **starts** a line while it has rows left of `FILE_PEEK_LINES`
+> (10), shows it **whole** when the rows left hold it, and otherwise shows it
+> for the rows left and **cuts** it on the last of them, closing that row
+> with a dim `…` (`FILE_PEEK_CUT_MARKER`).
+
+```
+● Write(src/styles.css)
+  ⎿  Wrote 10 lines to src/styles.css
+       1 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500
+         ;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap'
+         );
+       2
+       3 :root{font-family:'DM Sans',sans-serif;color:#272932;background:#fafbfc;font-s
+         ynthesis:none;font-weight:400;--purple:#6c5ce7;--purple-dark:#5948d6;--muted:#
+         90919c;--line:#e8e9ee;--surface:#fff;--green:#2c9a73}
+       4 *{box-sizing:border-box}body{margin:0;min-width:360px}button,a{-webkit-tap-hig
+         hlight-color:transparent}button{font:inherit;cursor:pointer}button:disabled{cu
+         rsor:not-allowed}button:focus-visible,a:focus-visible{outline:3px solid rgba(…
+     … +6 lines (ctrl+o to expand)
+```
+
+What §7 was for survives it:
+
+- A short-lined file shows its first ten lines, as it always has, and a long
+  line the rows left can hold is shown whole: a paragraph is never cut at a
+  per-line count again, as it was at three rows (§1). §7's `README.md`
+  renders exactly as drawn there.
+- At most one line is cut, and only by the ceiling, never by its own length:
+  it is the last line the peek shows.
+- An edit still shows the `+` row of a replaced line whenever the context and
+  the `-` row before it leave a row — the start rule is §7's own — cut on the
+  rows left instead of carried past the ceiling. A `-` row that reaches the
+  ceiling itself leaves its `+` row unstarted, as it did under §7. Sharing
+  the rows out between the two halves would show more of the replacement,
+  but only by cutting the old line in the middle of the cell, which is the
+  per-line cap of §1 again.
+
+The marker is §2's, back for this one cut, and the exec fold's reason for
+doing without one does not carry over. The fold's hint counts rows, so the
+`+N lines` under its third row already says that row's text goes on. A file
+cell's hint counts file lines, and its code rows hard-break at the width, so
+a full last row reads the same whether its line ends there or runs on for a
+thousand rows; only the `…` says which. It takes the row's last column, dim,
+on the row's own tint, so an added line's green band runs unbroken to the
+cut; the row's content gives up the columns it needs from its end.
+
+**The hint still counts whole lines.** `+6 lines` is lines 5–10, the file
+lines the peek never started, so the gutter's last number plus the hint is
+the head's count, as in every file cell; the rest of the cut line is what
+the `…` on its row stands for. A cut line with no line after it — a minified
+one-line file, read back or written — hides no whole line, and `+0 lines`
+would say nothing is behind Ctrl+O. The hint row there is `… (ctrl+o to
+expand)`: no count, and still the way to the rest.
+
+**The cut line's tail is never wrapped.** `code_content_head_rows` builds the
+rows the peek keeps and stops at the first grapheme that would open a row
+past them: the greedy break only ever looks back, so the head of the whole
+wrap is the wrap of the head, which a differential test holds it to. That
+matters most for a `write` streaming into its cell, whose head the strip
+rebuilds several times a frame while the call waits and runs. Under §7 that
+head wrapped a 1 MB line whole every build and kept every row — 13,889 of
+them at 80 columns — the cost §7 had already taken off the tail with
+arithmetic (38 ms a build). Ten rows of the same line now take about a
+quarter of a millisecond a build, less than the tail's arithmetic, and
+`the_head_of_a_huge_finished_line_stays_inside_the_frame_budget` holds it
+inside a frame beside the tail's gate.
+
+Ctrl+O and the permission prompt's preview are untouched: the expansion
+still shows every line whole, and you still see what you approve.
 
 ## Where it does *not* apply
 
@@ -419,7 +530,7 @@ grep, three rows instead of ten:
 | The collapsed output fold (`result_peek_block`) | `ui/tool.rs` |
 | The first-block window (`BlankPolicy`, `is_blank_row`) | `ui/tool.rs` |
 | The running tail's `+N lines ({secs}s · timeout …)` clock row | `ui/tool.rs` (`running_command_lines`) |
-| The numbered file cell's whole-line peek (§7) | `ui/file_cell.rs` (`file_cell_lines`, the draft's head) |
+| The numbered file cell's whole-line peek (§7) and its ceiling (§8) | `ui/file_cell.rs` (`file_cell_lines`, the draft's head, `numbered_row_lines`' `LineRows`, `peek_hint_line`), `ui/assistant.rs` (`code_content_head_rows`) |
 | The streaming `write`'s newest-rows tail (§7) | `ui/file_cell.rs` (`draft_cell_lines`), `ui/assistant.rs` (`code_content_tail_rows`) |
 
 Tests: `ui::tests::wrap` (the counter primitives and the fill rule) and
@@ -427,13 +538,20 @@ Tests: `ui::tests::wrap` (the counter primitives and the fill rule) and
 `a_finished_peek_never_spends_more_rows_than_the_row_ceiling` is the block
 budget's own, `an_exec_cell_pretty_prints_a_json_line_like_claude_code` and
 `a_four_row_output_shows_whole_instead_of_hiding_one_row` the port's,
-`the_peek_finishes_a_long_line_it_starts` and
-`an_edit_of_a_long_line_shows_both_versions_whole` the file cells'), with the
-streaming tail's in `ui::tests::file_cell`
-(`a_long_line_still_arriving_shows_its_newest_rows`, and the frame-budget gate
-`the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget`) and the
-arithmetic's differential test in `ui::tests::assistant`
-(`a_code_lines_tail_rows_are_the_last_rows_of_the_whole_wrap`). On
+`a_read_cell_shows_a_very_long_file_line_whole`,
+`the_peek_cuts_the_line_that_runs_past_its_tenth_row`,
+`the_reported_minified_write_stays_inside_its_ten_rows`,
+`a_cut_last_line_still_points_at_ctrl_o` and
+`an_edit_of_a_long_line_shows_both_versions_inside_the_peek` the file
+cells'), with the streaming cell's in `ui::tests::file_cell`
+(`a_long_line_still_arriving_shows_its_newest_rows`,
+`a_finished_write_with_a_long_line_shows_the_head_the_committed_cell_will`,
+and the frame-budget gates
+`the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget` and
+`the_head_of_a_huge_finished_line_stays_inside_the_frame_budget`) and the
+differential tests in `ui::tests::assistant`
+(`a_code_lines_tail_rows_are_the_last_rows_of_the_whole_wrap`,
+`a_code_lines_head_rows_are_the_first_rows_of_the_whole_wrap`). On
 screen, the fold is Phase 38's settled `Bash(ping …)` cells (`… +3 lines
 (ctrl+o to expand)` under the dummy backend's real commands); Phase 92 drives
 the same three shapes — a 750-character single line, four wrapping lines, a
@@ -443,4 +561,9 @@ contract: every row inline, no hint, and Ctrl+O agreeing row for row. §7 is
 Phase 138b's: the real backend, against a stub provider, streams a `write` of
 a 467-character paragraph line and reads the file back, and neither the
 streaming cell nor the committed `Write` and `Read` cells may cut a file row
-with a `…`.
+with a `…`. §8 is Phase 138c's: the same stub streams the reported
+stylesheet and reads it back, and no sample of the streaming cell may pass
+ten body rows, the committed `Write` cell and the `Read` cell after it must
+each show exactly ten — the tenth ending in `…` — over `… +6 lines (ctrl+o
+to expand)` with the minified line's last word nowhere inline, and Ctrl+O
+must show that word.

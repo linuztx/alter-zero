@@ -685,15 +685,18 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   Derived from the parsed body, so it lights up on rollouts recorded before it
   existed, and the permission prompt's preview gets it too.
 - Long rows **wrap** (`code_content_rows`), continuations indented under the
-  content column, keeping colour and tint — and are **never cut**: inline, in
-  Ctrl+O and in the permission prompt's preview alike, a line shows every row
-  it wraps to, with no `…` (`docs/long-lines.md` §7).
-- The **inline peek** starts body lines from the top while it has rows left
-  of `FILE_PEEK_LINES` (10), showing each line it starts whole — so a long
-  line inside the first ten rows carries the cell past them by the rest of
-  itself instead of being cut — then the `… +N lines (ctrl+o to expand)`
-  hint, counting **file lines** here, the unit the gutter numbers and the
-  expansion shows; the Ctrl+O transcript shows everything.
+  content column, keeping colour and tint. In Ctrl+O and in the permission
+  prompt's preview a line shows every row it wraps to; the inline peek cuts
+  only the one line that runs past its tenth row (`docs/long-lines.md` §7,
+  §8).
+- The **inline peek** is at most `FILE_PEEK_LINES` (10) rows. It starts body
+  lines from the top while it has rows left, shows each whole when the rows
+  left hold it, and cuts the one that needs more on the tenth row, closing
+  that row with a dim `…` on its tint — then the `… +N lines (ctrl+o to
+  expand)` hint, counting **file lines** here (the ones it never started),
+  the unit the gutter numbers and the expansion shows, or a count-less
+  `… (ctrl+o to expand)` when the cut line was the last; the Ctrl+O
+  transcript shows everything.
 
 ### Path display
 
