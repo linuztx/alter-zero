@@ -190,7 +190,7 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
                 println!("  Env: {}", masked(env, "="));
             }
         }
-        McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers } => {
+        McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers, .. } => {
             println!("  URL: {url}");
             if !headers.is_empty() {
                 println!("  Headers: {}", masked(headers, ": "));

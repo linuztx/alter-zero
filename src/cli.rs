@@ -726,13 +726,19 @@ fn build_add_config(
                     url,
                     headers,
                     sse_fallback: true,
+                    oauth: None,
                 }),
                 Some("http") => Ok(McpServerConfig::Http {
                     url,
                     headers,
                     sse_fallback: false,
+                    oauth: None,
                 }),
-                Some("sse") => Ok(McpServerConfig::Sse { url, headers }),
+                Some("sse") => Ok(McpServerConfig::Sse {
+                    url,
+                    headers,
+                    oauth: None,
+                }),
                 Some(other) => Err(format!("--transport {other} takes a command, not --url")),
             }
         }
@@ -1253,6 +1259,7 @@ Options:
                 url: "https://mcp.vercel.com".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: true,
+                oauth: None,
             },
         });
         assert_eq!(
@@ -1289,6 +1296,7 @@ Options:
                     url: "https://x".to_string(),
                     headers: BTreeMap::new(),
                     sse_fallback: false,
+                    oauth: None,
                 },
             })
         );
@@ -1300,6 +1308,7 @@ Options:
                 config: McpServerConfig::Sse {
                     url: "https://x/sse".to_string(),
                     headers: BTreeMap::new(),
+                    oauth: None,
                 },
             })
         );
@@ -1396,6 +1405,7 @@ Options:
                     // First `:` splits, both sides trimmed.
                     headers: pairs(&[("Authorization", "Bearer a:b"), ("X-Custom", "v")]),
                     sse_fallback: true,
+                    oauth: None,
                 },
             })
         );
@@ -1454,6 +1464,7 @@ Options:
                     url: "https://x/mcp".to_string(),
                     headers: BTreeMap::new(),
                     sse_fallback: false,
+                    oauth: None,
                 },
             })
         );

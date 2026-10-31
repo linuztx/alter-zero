@@ -23,6 +23,7 @@ fn tall_mcp_app() -> App {
             url: "https://deepwiki.test/mcp".to_string(),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status: McpServerStatus::Connected,
         auth: None,

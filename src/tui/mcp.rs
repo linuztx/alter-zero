@@ -91,6 +91,7 @@ pub(crate) fn load_mcp_sources(
         project,
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
+        default_callback_port: alter_zero::llm::mcp::DEFAULT_CALLBACK_PORT,
         cwd: Some(cwd.to_path_buf()),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
@@ -160,6 +161,17 @@ impl Session<'_> {
             McpEvent::Changed => {}
             McpEvent::AuthUrl { server, url } => {
                 self.app.set_mcp_auth_url(&server, &url);
+            }
+            McpEvent::AuthNeedsClient { server, request } => {
+                self.app.finish_mcp_auth();
+                self.toast(
+                    format!(
+                        "{server}: {} can't register this app — add the OAuth client you \
+                         created there as \"oauth\" in the server's config",
+                        request.issuer
+                    ),
+                    ToastKind::Error,
+                );
             }
             McpEvent::AuthDone { server, ok, detail } => {
                 self.app.finish_mcp_auth();

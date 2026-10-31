@@ -12,6 +12,21 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP servers that can't register the app themselves now work, Google's
+  included.** Some servers, such as Google Calendar's
+  (`calendarmcp.googleapis.com`), only accept an OAuth client you create in
+  the provider's console, and signing in to one ended on "the server offers
+  no client registration; add a pre-registered client" with no way to add
+  one. A server's entry in `mcp.json` can now carry an `oauth` object in the
+  same shape Claude Code writes: `clientId`, `callbackPort`, `scopes` and
+  `authServerMetadataUrl`, plus `clientSecret`, which Google's own setup
+  guides put there. The sign-in authenticates to the provider in whichever
+  way it accepts, and asks Google for a refresh token so the login renews
+  itself instead of lapsing within the hour. A client you enter for one
+  provider is never sent to another (`docs/mcp.md`).
+
 ### Fixed
 
 - **Cancelling an MCP server's sign-in no longer leaves `/mcp` waiting for

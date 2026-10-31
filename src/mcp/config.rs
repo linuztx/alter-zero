@@ -30,6 +30,30 @@ impl McpScope {
     }
 }
 
+/// A remote server's OAuth settings — the `oauth` object Claude Code writes
+/// (`clientId`, `callbackPort`, `scopes`, `authServerMetadataUrl`), plus the
+/// `clientSecret` Google's own MCP setup guides put beside it
+/// (`docs/mcp.md` *Pre-registered clients*). Every field is optional: the
+/// object's presence alone says the server expects a sign-in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpOAuthConfig {
+    /// A client the server's provider issued — the spec's pre-registration,
+    /// what an authorization server without dynamic registration needs.
+    pub client_id: Option<String>,
+    /// Its secret, when written into the file. The CLI and `/mcp` keep it in
+    /// the token store instead (`mcp-auth.json`, owner-only).
+    pub client_secret: Option<String>,
+    /// The fixed loopback port of the redirect URI
+    /// (`http://localhost:{port}/callback`) — what a provider that matches
+    /// redirect URIs exactly needs registered.
+    pub callback_port: Option<u16>,
+    /// The scopes to ask for, space-separated, in place of discovery's.
+    pub scopes: Option<String>,
+    /// Read the authorization server's metadata here instead of discovering
+    /// it from the server.
+    pub auth_server_metadata_url: Option<String>,
+}
+
 /// One server's transport configuration, as declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerConfig {
@@ -48,11 +72,13 @@ pub enum McpServerConfig {
         url: String,
         headers: BTreeMap<String, String>,
         sse_fallback: bool,
+        oauth: Option<McpOAuthConfig>,
     },
     /// A legacy HTTP+SSE server (the 2024-11-05 dual-endpoint transport).
     Sse {
         url: String,
         headers: BTreeMap<String, String>,
+        oauth: Option<McpOAuthConfig>,
     },
 }
 
@@ -80,6 +106,16 @@ impl McpServerConfig {
         match self {
             Self::Stdio { .. } => None,
             Self::Http { url, .. } | Self::Sse { url, .. } => Some(url),
+        }
+    }
+
+    /// The server's `oauth` object, when the config carries one (remote
+    /// servers only).
+    #[must_use]
+    pub const fn oauth(&self) -> Option<&McpOAuthConfig> {
+        match self {
+            Self::Stdio { .. } => None,
+            Self::Http { oauth, .. } | Self::Sse { oauth, .. } => oauth.as_ref(),
         }
     }
 
@@ -291,6 +327,7 @@ pub fn render_server(config: &McpServerConfig) -> Value {
             url,
             headers,
             sse_fallback,
+            oauth,
         } => {
             if !sse_fallback {
                 obj.insert("type".to_string(), "http".into());
@@ -299,16 +336,134 @@ pub fn render_server(config: &McpServerConfig) -> Value {
             if !headers.is_empty() {
                 obj.insert("headers".to_string(), string_map(headers));
             }
+            if let Some(oauth) = oauth {
+                obj.insert("oauth".to_string(), render_oauth(oauth));
+            }
         }
-        McpServerConfig::Sse { url, headers } => {
+        McpServerConfig::Sse {
+            url,
+            headers,
+            oauth,
+        } => {
             obj.insert("type".to_string(), "sse".into());
             obj.insert("url".to_string(), url.as_str().into());
             if !headers.is_empty() {
                 obj.insert("headers".to_string(), string_map(headers));
             }
+            if let Some(oauth) = oauth {
+                obj.insert("oauth".to_string(), render_oauth(oauth));
+            }
         }
     }
     Value::Object(obj)
+}
+
+/// The `oauth` object in Claude Code's spelling — `scopes` as its
+/// space-separated string, absent fields omitted.
+fn render_oauth(oauth: &McpOAuthConfig) -> Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(client_id) = &oauth.client_id {
+        obj.insert("clientId".to_string(), client_id.as_str().into());
+    }
+    if let Some(secret) = &oauth.client_secret {
+        obj.insert("clientSecret".to_string(), secret.as_str().into());
+    }
+    if let Some(port) = oauth.callback_port {
+        obj.insert("callbackPort".to_string(), port.into());
+    }
+    if let Some(scopes) = &oauth.scopes {
+        obj.insert("scopes".to_string(), scopes.as_str().into());
+    }
+    if let Some(url) = &oauth.auth_server_metadata_url {
+        obj.insert("authServerMetadataUrl".to_string(), url.as_str().into());
+    }
+    Value::Object(obj)
+}
+
+/// Parse one server's `oauth` object (`None` when the key is absent).
+fn parse_oauth(value: Option<&Value>) -> Result<Option<McpOAuthConfig>, String> {
+    let obj = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(obj)) => obj,
+        Some(_) => return Err("\"oauth\" must be an object".to_string()),
+    };
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match obj.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) if !text.trim().is_empty() => {
+                Ok(Some(text.trim().to_string()))
+            }
+            Some(_) => Err(format!("\"oauth.{key}\" must be a non-empty string")),
+        }
+    };
+    let callback_port = match obj.get("callbackPort") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let port = match value {
+                Value::Number(n) => n.as_u64(),
+                Value::String(s) => s.trim().parse::<u64>().ok(),
+                _ => None,
+            };
+            match port.and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0) {
+                Some(port) => Some(port),
+                None => {
+                    return Err("\"oauth.callbackPort\" must be a port number (1-65535)".into());
+                }
+            }
+        }
+    };
+    // Claude Code writes one space-separated string; Google's guides and
+    // Gemini CLI write an array. Both read as the same list.
+    let scopes = match obj.get("scopes") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.split_whitespace().collect::<Vec<_>>().join(" ")),
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::trim)
+                        .ok_or_else(|| "\"oauth.scopes\" must be strings".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" "),
+        ),
+        Some(_) => {
+            return Err("\"oauth.scopes\" must be a string or an array of strings".to_string());
+        }
+    }
+    .filter(|scopes| !scopes.trim().is_empty());
+    let auth_server_metadata_url = text("authServerMetadataUrl")?;
+    if let Some(url) = &auth_server_metadata_url
+        && !is_secure_metadata_url(url)
+    {
+        return Err("\"oauth.authServerMetadataUrl\" must be an https URL".to_string());
+    }
+    Ok(Some(McpOAuthConfig {
+        client_id: text("clientId")?,
+        client_secret: text("clientSecret")?,
+        callback_port,
+        scopes,
+        auth_server_metadata_url,
+    }))
+}
+
+/// Metadata names the endpoints the user's credentials are sent to, so it
+/// must come over https — loopback excepted (a local server, a test).
+fn is_secure_metadata_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => match parsed.host() {
+            Some(url::Host::Domain(name)) => name == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// Parse the whole document for a CLI write: empty/whitespace contents are a
@@ -413,8 +568,12 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
             .map(str::to_string)
             .ok_or_else(|| "missing \"url\"".to_string())
     };
+    let oauth = || parse_oauth(obj.get("oauth"));
     match kind {
         Some("stdio") | None if obj.contains_key("command") => {
+            if obj.get("oauth").is_some_and(|v| !v.is_null()) {
+                return Err("\"oauth\" applies only to remote (http/sse) servers".to_string());
+            }
             let command = obj
                 .get("command")
                 .and_then(Value::as_str)
@@ -444,15 +603,18 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: false,
+            oauth: oauth()?,
         }),
         Some("sse") => Ok(McpServerConfig::Sse {
             url: url()?,
             headers: string_map("headers")?,
+            oauth: oauth()?,
         }),
         None if obj.contains_key("url") => Ok(McpServerConfig::Http {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: true,
+            oauth: oauth()?,
         }),
         Some(other) => Err(format!("unsupported transport type \"{other}\"")),
         None => Err("entry needs a \"command\" (stdio) or a \"url\" (http/sse)".to_string()),
@@ -565,6 +727,7 @@ mod tests {
                 url: "https://x/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: false,
+                oauth: None,
             }
         );
         assert_eq!(
@@ -572,6 +735,7 @@ mod tests {
             McpServerConfig::Sse {
                 url: "https://x/sse".to_string(),
                 headers: [("A".to_string(), "b".to_string())].into_iter().collect(),
+                oauth: None,
             }
         );
         assert_eq!(
@@ -581,6 +745,102 @@ mod tests {
                 args: vec!["-y".to_string(), "srv".to_string()],
                 env: [("K".to_string(), "v".to_string())].into_iter().collect(),
             }
+        );
+    }
+
+    #[test]
+    fn a_remote_server_carries_its_oauth_client_settings() {
+        // Claude Code's `oauth` object, plus the `clientSecret` Google's own
+        // MCP setup guides write into it.
+        let file = parse_mcp_file(
+            r#"{"mcpServers": {
+                "calendar": {"url": "https://calendarmcp.googleapis.com/mcp/v1",
+                             "oauth": {"clientId": "123.apps.googleusercontent.com",
+                                       "clientSecret": "GOCSPX-x",
+                                       "callbackPort": 8080,
+                                       "scopes": ["a", "b"],
+                                       "authServerMetadataUrl": "https://as.test/.well-known/oauth-authorization-server"}},
+                "cc":       {"type": "http", "url": "https://x/mcp",
+                             "oauth": {"clientId": "cid", "scopes": "read write"}},
+                "legacy":   {"type": "sse", "url": "https://x/sse",
+                             "oauth": {"callbackPort": "9000"}}
+            }}"#,
+        );
+        assert!(file.errors.is_empty(), "{:?}", file.errors);
+        let get = |name: &str| {
+            file.servers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, c)| c.oauth().cloned())
+                .unwrap()
+        };
+        assert_eq!(
+            get("calendar"),
+            Some(McpOAuthConfig {
+                client_id: Some("123.apps.googleusercontent.com".to_string()),
+                client_secret: Some("GOCSPX-x".to_string()),
+                callback_port: Some(8080),
+                // An array (Google, Gemini CLI) and Claude Code's
+                // space-separated string read as the same scope list.
+                scopes: Some("a b".to_string()),
+                auth_server_metadata_url: Some(
+                    "https://as.test/.well-known/oauth-authorization-server".to_string()
+                ),
+            })
+        );
+        assert_eq!(get("cc").unwrap().scopes.as_deref(), Some("read write"));
+        assert_eq!(get("legacy").unwrap().callback_port, Some(9000));
+        // A server without the object has no OAuth settings at all.
+        assert_eq!(
+            parse_server_entry(r#"{"url": "https://x"}"#)
+                .unwrap()
+                .oauth(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_bad_oauth_object_is_reported_by_name() {
+        for (entry, needle) in [
+            (r#"{"url": "https://x", "oauth": "cid"}"#, "\"oauth\""),
+            (
+                r#"{"url": "https://x", "oauth": {"clientId": ""}}"#,
+                "clientId",
+            ),
+            (
+                r#"{"url": "https://x", "oauth": {"callbackPort": 0}}"#,
+                "callbackPort",
+            ),
+            (
+                r#"{"url": "https://x", "oauth": {"callbackPort": 70000}}"#,
+                "callbackPort",
+            ),
+            (
+                r#"{"url": "https://x", "oauth": {"callbackPort": "https://a.test/cb"}}"#,
+                "callbackPort",
+            ),
+            (
+                r#"{"url": "https://x", "oauth": {"scopes": [1]}}"#,
+                "scopes",
+            ),
+            (
+                r#"{"url": "https://x", "oauth": {"authServerMetadataUrl": "http://as.test/m"}}"#,
+                "authServerMetadataUrl",
+            ),
+            (
+                r#"{"command": "srv", "oauth": {"clientId": "c"}}"#,
+                "remote",
+            ),
+        ] {
+            let err = parse_server_entry(entry).expect_err(entry);
+            assert!(err.contains(needle), "{entry}: {err}");
+        }
+        // Loopback http is fine for a metadata URL — a local test server.
+        assert!(
+            parse_server_entry(
+                r#"{"url": "https://x", "oauth": {"authServerMetadataUrl": "http://127.0.0.1:9/m"}}"#
+            )
+            .is_ok()
         );
     }
 
@@ -736,6 +996,7 @@ mod tests {
             url: url.to_string(),
             headers: BTreeMap::new(),
             sse_fallback: false,
+            oauth: None,
         }
     }
 
@@ -766,17 +1027,40 @@ mod tests {
                 url: "https://x/mcp".to_string(),
                 headers: map(&[("Authorization", "Bearer t")]),
                 sse_fallback: false,
+                oauth: None,
             },
             McpServerConfig::Http {
                 url: "https://x/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: true,
+                oauth: None,
             },
             McpServerConfig::Sse {
                 url: "https://x/sse".to_string(),
                 headers: map(&[("A", "b")]),
+                oauth: None,
             },
         ];
+        let oauth = McpOAuthConfig {
+            client_id: Some("cid".to_string()),
+            client_secret: None,
+            callback_port: Some(8080),
+            scopes: Some("a b".to_string()),
+            auth_server_metadata_url: Some("https://as.test/meta".to_string()),
+        };
+        let shapes = shapes.into_iter().chain([
+            McpServerConfig::Http {
+                url: "https://x/mcp".to_string(),
+                headers: BTreeMap::new(),
+                sse_fallback: true,
+                oauth: Some(oauth.clone()),
+            },
+            McpServerConfig::Sse {
+                url: "https://x/sse".to_string(),
+                headers: BTreeMap::new(),
+                oauth: Some(McpOAuthConfig::default()),
+            },
+        ]);
         for config in shapes {
             let rendered = render_server(&config).to_string();
             assert_eq!(
@@ -785,12 +1069,26 @@ mod tests {
                 "{rendered}"
             );
         }
+        // The writer spells the object the way Claude Code does.
+        assert_eq!(
+            render_server(&McpServerConfig::Http {
+                url: "https://x".to_string(),
+                headers: BTreeMap::new(),
+                sse_fallback: false,
+                oauth: Some(oauth),
+            }),
+            serde_json::json!({"type": "http", "url": "https://x", "oauth": {
+                "clientId": "cid", "callbackPort": 8080, "scopes": "a b",
+                "authServerMetadataUrl": "https://as.test/meta"
+            }})
+        );
         // The fallback shape is the bare `{"url": …}` — NO "type" key, the
         // only spelling that re-arms the http→sse compat retry.
         let fallback = render_server(&McpServerConfig::Http {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: true,
+            oauth: None,
         });
         assert!(fallback.get("type").is_none(), "{fallback}");
         // Empty args/env/headers are omitted, matching absent-means-empty.
@@ -905,11 +1203,13 @@ mod tests {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: true,
+            oauth: None,
         };
         assert_eq!(fallback.transport_label(), "http");
         let sse = McpServerConfig::Sse {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
+            oauth: None,
         };
         assert_eq!(sse.transport_label(), "sse");
     }
@@ -947,6 +1247,7 @@ mod tests {
             url: "https://x/mcp".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: false,
+            oauth: None,
         };
         assert_eq!(http.target(), "https://x/mcp");
         assert!(http.is_remote());

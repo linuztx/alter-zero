@@ -17,12 +17,15 @@ pub use self::manager::{
     DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpManager, McpSources,
 };
 pub use self::oauth::{
-    AUTH_FLOW_TIMEOUT, AuthProgress, AuthServerMeta, Callback, RefreshFailure, StoredTokens,
-    b64url, build_authorize_url, challenge_resource_metadata, connect_bearer, discover,
-    form_encode, load_tokens, parse_callback, parse_redirect, parse_token_store, pkce_and_state,
-    record_tokens, redirect_param, refresh_failure_kind, refresh_grant, refresh_if_stale,
-    refresh_params, register_client, run_auth_flow, save_tokens, tokens_fresh, url_decode,
-    url_encode, validate_issuer, with_offline_access,
+    AUTH_FLOW_TIMEOUT, AuthError, AuthProgress, AuthServerMeta, AuthSettings, Callback, ClientAuth,
+    ClientCredentials, ClientPlan, ClientRequest, ClientSource, DEFAULT_CALLBACK_PORT,
+    RefreshFailure, Registration, StoredClient, StoredTokens, b64url, basic_credentials,
+    build_authorize_url, challenge_resource_metadata, choose_client_auth, connect_bearer, discover,
+    form_encode, issuers_match, load_client, load_tokens, parse_callback, parse_client_store,
+    parse_redirect, parse_token_store, pkce_and_state, plan_client, provider_authorize_params,
+    record_client, record_tokens, redirect_param, refresh_failure_kind, refresh_grant,
+    refresh_if_stale, refresh_params, register_client, run_auth_flow, save_client, save_tokens,
+    tokens_fresh, url_decode, url_encode, validate_issuer, with_offline_access,
 };
 pub use self::transport::{
     HttpTransport, RemoteHeaders, SseTransport, StdioTransport, Transport, TransportError,

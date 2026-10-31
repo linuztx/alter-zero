@@ -39,6 +39,13 @@ pub enum McpEvent {
         ok: bool,
         detail: String,
     },
+    /// An auth flow has no client to present: nothing is configured or
+    /// stored and the authorization server registers none — the spec's
+    /// "prompt the user to enter the client information" step.
+    AuthNeedsClient {
+        server: String,
+        request: oauth::ClientRequest,
+    },
 }
 
 /// What the manager is built from — gathered by the boundary
@@ -60,6 +67,10 @@ pub struct McpSources {
     pub user_file: Option<PathBuf>,
     /// The OAuth token store (`{config_home}/mcp-auth.json`).
     pub auth_path: Option<PathBuf>,
+    /// The port a pre-registered client's redirect URI names when its config
+    /// fixes none — [`oauth::DEFAULT_CALLBACK_PORT`] in the app; `0` (any
+    /// free port) in tests.
+    pub default_callback_port: u16,
     /// The session cwd stdio children run in.
     pub cwd: Option<PathBuf>,
     pub startup_timeout: Duration,
@@ -133,12 +144,16 @@ struct Inner {
     project: String,
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
+    default_callback_port: u16,
     cwd: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
     /// The active auth flow's paste channel + cancel, while one runs.
     auth_paste: Option<mpsc::Sender<String>>,
     auth_cancel: Option<CancelToken>,
+    /// Bumped per auth flow, so a superseded flow's ending never clears the
+    /// newer flow's channel or closes its page.
+    auth_flow: u64,
 }
 
 /// The shared handle. Clones are cheap and all see the same state.
@@ -199,6 +214,7 @@ impl McpManager {
                 project: sources.project,
                 user_file: sources.user_file,
                 auth_path,
+                default_callback_port: sources.default_callback_port,
                 cwd: sources.cwd,
                 startup_timeout: if sources.startup_timeout.is_zero() {
                     DEFAULT_STARTUP_TIMEOUT
@@ -212,6 +228,7 @@ impl McpManager {
                 },
                 auth_paste: None,
                 auth_cancel: None,
+                auth_flow: 0,
             })),
             events,
         }
@@ -514,7 +531,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path) = {
+        let (url, challenge, auth_path, settings) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -527,11 +544,20 @@ impl McpManager {
                 });
                 return;
             };
-            (url, server.challenge.clone(), inner.auth_path.clone())
+            let settings = oauth::AuthSettings {
+                oauth: server.entry.config.oauth().cloned(),
+                default_port: inner.default_callback_port,
+            };
+            (
+                url,
+                server.challenge.clone(),
+                inner.auth_path.clone(),
+                settings,
+            )
         };
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
-        {
+        let flow = {
             let mut inner = self.lock();
             // A new flow supersedes a stuck one.
             if let Some(old) = inner.auth_cancel.take() {
@@ -539,7 +565,9 @@ impl McpManager {
             }
             inner.auth_paste = Some(paste_tx);
             inner.auth_cancel = Some(cancel.clone());
-        }
+            inner.auth_flow += 1;
+            inner.auth_flow
+        };
         let manager = self.clone();
         let name = name.to_string();
         std::thread::spawn(move || {
@@ -563,24 +591,46 @@ impl McpManager {
                 &url,
                 challenge.as_deref(),
                 auth_path.as_deref(),
+                &settings,
                 &paste_rx,
                 &progress,
                 &open_browser,
                 &cancel,
             );
-            {
+            let current = {
                 let mut inner = manager.lock();
-                inner.auth_paste = None;
-                inner.auth_cancel = None;
+                let current = inner.auth_flow == flow;
+                if current {
+                    inner.auth_paste = None;
+                    inner.auth_cancel = None;
+                }
                 if result.is_ok()
                     && let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name)
                 {
                     server.has_tokens = true;
                 }
+                current
+            };
+            // A flow the user backed out of, or a newer one replaced, ends
+            // quietly: its page is gone (or belongs to the newer flow), and
+            // Esc is not an error to toast. A grant it did land still counts.
+            if !current || cancel.is_cancelled() {
+                manager.notify(McpEvent::Changed);
+                if result.is_ok() {
+                    manager.spawn_connect(&name);
+                }
+                return;
             }
             let (ok, detail) = match result {
                 Ok(()) => (true, format!("Authenticated with {name}")),
-                Err(detail) => (false, detail),
+                Err(oauth::AuthError::NeedsClient(request)) => {
+                    manager.notify(McpEvent::AuthNeedsClient {
+                        server: name.clone(),
+                        request,
+                    });
+                    return;
+                }
+                Err(oauth::AuthError::Failed(detail)) => (false, detail),
             };
             manager.notify(McpEvent::AuthDone {
                 server: name.clone(),
@@ -627,6 +677,7 @@ impl McpManager {
                     server.entry.config.is_remote(),
                     server.entry.config.has_auth_header(),
                     server.has_tokens,
+                    server.entry.config.oauth().is_some() || server.challenge.is_some(),
                     &server.status,
                 ),
                 identity: server.identity.clone(),
@@ -1145,6 +1196,7 @@ mod tests {
                 url,
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -1527,6 +1579,7 @@ done
                 client_secret: None,
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
+                auth_method: None,
             }),
         );
     }
@@ -1542,6 +1595,7 @@ done
                         url: fixture.url.clone(),
                         headers: Default::default(),
                         sse_fallback: false,
+                        oauth: None,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),

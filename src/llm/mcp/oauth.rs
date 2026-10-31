@@ -80,6 +80,10 @@ pub struct StoredTokens {
     pub client_secret: Option<String>,
     pub token_endpoint: String,
     pub scope: Option<String>,
+    /// How the client authenticated at the token endpoint
+    /// (`client_secret_post`/`client_secret_basic`) — the refresh must do
+    /// the same. `None` reads as the body, the pre-negotiation behaviour.
+    pub auth_method: Option<String>,
 }
 
 /// Parse the store document into `server_url → tokens`.
@@ -105,6 +109,7 @@ pub fn parse_token_store(contents: &str) -> std::collections::BTreeMap<String, S
                     client_secret: text("client_secret"),
                     token_endpoint: text("token_endpoint").unwrap_or_default(),
                     scope: text("scope"),
+                    auth_method: text("token_endpoint_auth_method"),
                 },
             ))
         })
@@ -145,6 +150,9 @@ pub fn record_tokens(contents: &str, server_url: &str, tokens: Option<&StoredTok
                 if let Some(scope) = &tokens.scope {
                     entry.insert("scope".into(), scope.clone().into());
                 }
+                if let Some(method) = &tokens.auth_method {
+                    entry.insert("token_endpoint_auth_method".into(), method.clone().into());
+                }
                 servers.insert(server_url.to_string(), Value::Object(entry));
             }
             None => {
@@ -165,12 +173,18 @@ pub fn load_tokens(path: Option<&Path>, server_url: &str) -> Option<StoredTokens
 /// Persist (or delete) one server's tokens — read-modify-write, owner-only,
 /// best-effort like every other config write.
 pub fn save_tokens(path: Option<&Path>, server_url: &str, tokens: Option<&StoredTokens>) {
+    write_store(path, |existing| record_tokens(existing, server_url, tokens));
+}
+
+/// The store's one write path: under [`STORE_LOCK`], read the file, apply
+/// `update`, and commit the result write-then-rename, owner-only.
+fn write_store(path: Option<&Path>, update: impl FnOnce(&str) -> String) {
     let Some(path) = path else { return };
     let _guard = STORE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let updated = record_tokens(&existing, server_url, tokens);
+    let updated = update(&existing);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -187,6 +201,106 @@ pub fn save_tokens(path: Option<&Path>, server_url: &str, tokens: Option<&Stored
     }
     let _ = std::fs::write(path, updated);
     set_owner_only(path);
+}
+
+/// A client identity kept for one server, apart from its grant so a cleared
+/// login keeps it: credentials the user entered on the `/mcp` auth page (or
+/// a secret the CLI stored beside a configured `clientId`), or a dynamic
+/// registration (`docs/mcp.md` *Pre-registered clients*).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredClient {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// The authorization server the credentials belong to — the spec binds
+    /// static credentials to their issuer (SEP-2352). `None` until a flow
+    /// has seen it (a secret stored from the command line).
+    pub issuer: Option<String>,
+    /// Set for a dynamic registration: the redirect URI it registered. Such
+    /// a client is reused only by a flow listening on exactly that URI.
+    pub redirect_uri: Option<String>,
+    /// The token-endpoint authentication method a registration settled.
+    pub auth_method: Option<String>,
+}
+
+/// Parse the store's `clients` section into `server_url → client`.
+#[must_use]
+pub fn parse_client_store(contents: &str) -> std::collections::BTreeMap<String, StoredClient> {
+    let Ok(value) = serde_json::from_str::<Value>(contents.trim()) else {
+        return Default::default();
+    };
+    let Some(clients) = value.get("clients").and_then(Value::as_object) else {
+        return Default::default();
+    };
+    clients
+        .iter()
+        .filter_map(|(url, entry)| {
+            let text = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
+            Some((
+                url.clone(),
+                StoredClient {
+                    client_id: text("client_id").filter(|id| !id.is_empty())?,
+                    client_secret: text("client_secret"),
+                    issuer: text("issuer"),
+                    redirect_uri: text("redirect_uri"),
+                    auth_method: text("token_endpoint_auth_method"),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Re-render the store with one server's client replaced (`None` deletes
+/// it) — [`record_tokens`]' sibling over the `clients` section.
+#[must_use]
+pub fn record_client(contents: &str, server_url: &str, client: Option<&StoredClient>) -> String {
+    let mut value: Value = serde_json::from_str(contents.trim())
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let root = value.as_object_mut().expect("object ensured above");
+    let clients = root
+        .entry("clients")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(clients) = clients.as_object_mut() {
+        match client {
+            Some(client) => {
+                let mut entry = serde_json::Map::new();
+                entry.insert("client_id".into(), client.client_id.clone().into());
+                let optional = [
+                    ("client_secret", &client.client_secret),
+                    ("issuer", &client.issuer),
+                    ("redirect_uri", &client.redirect_uri),
+                    ("token_endpoint_auth_method", &client.auth_method),
+                ];
+                for (key, field) in optional {
+                    if let Some(field) = field {
+                        entry.insert(key.into(), field.clone().into());
+                    }
+                }
+                clients.insert(server_url.to_string(), Value::Object(entry));
+            }
+            None => {
+                clients.remove(server_url);
+            }
+        }
+        if clients.is_empty() {
+            root.remove("clients");
+        }
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| contents.to_string())
+}
+
+/// Load one server's stored client.
+#[must_use]
+pub fn load_client(path: Option<&Path>, server_url: &str) -> Option<StoredClient> {
+    let contents = std::fs::read_to_string(path?).ok()?;
+    parse_client_store(&contents).remove(server_url)
+}
+
+/// Persist (or delete) one server's client — the token store's own
+/// locked, owner-only, write-then-rename read-modify-write.
+pub fn save_client(path: Option<&Path>, server_url: &str, client: Option<&StoredClient>) {
+    write_store(path, |existing| record_client(existing, server_url, client));
 }
 
 /// `0600` — the store holds refresh tokens, which the spec requires be kept
@@ -267,22 +381,35 @@ pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
 /// PKCE, which belongs to the authorization-code grant alone. The `resource`
 /// indicator rides every token request, the refresh included: omitting it
 /// mints a token audience-bound to nothing, which the MCP server then 401s —
-/// the classic silent refresh loop.
+/// the classic silent refresh loop. The client authenticates the way the
+/// grant was obtained ([`StoredTokens::auth_method`]), so a body secret and
+/// the Basic header (the second element) never both ride one request.
 #[must_use]
-pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, String)> {
-    let mut params = vec![
-        ("grant_type".to_string(), "refresh_token".to_string()),
-        (
-            "refresh_token".to_string(),
-            tokens.refresh_token.clone().unwrap_or_default(),
-        ),
-        ("client_id".to_string(), tokens.client_id.clone()),
-    ];
-    if let Some(secret) = &tokens.client_secret {
-        params.push(("client_secret".to_string(), secret.clone()));
-    }
+pub fn refresh_params(
+    tokens: &StoredTokens,
+    server_url: &str,
+) -> (Vec<(String, String)>, Option<String>) {
+    let has_secret = tokens.client_secret.is_some();
+    let method = tokens
+        .auth_method
+        .as_deref()
+        .and_then(ClientAuth::parse)
+        .filter(|_| has_secret)
+        .unwrap_or_else(|| choose_client_auth(&[], has_secret, None));
+    let (mut params, basic) =
+        client_auth_parts(&tokens.client_id, tokens.client_secret.as_deref(), method);
+    params.splice(
+        0..0,
+        [
+            ("grant_type".to_string(), "refresh_token".to_string()),
+            (
+                "refresh_token".to_string(),
+                tokens.refresh_token.clone().unwrap_or_default(),
+            ),
+        ],
+    );
     params.push(("resource".to_string(), server_url.to_string()));
-    params
+    (params, basic)
 }
 
 /// Refresh the stored grant for `server_url` through its token endpoint —
@@ -320,8 +447,8 @@ pub fn refresh_grant(
     if tokens.refresh_token.is_none() || tokens.token_endpoint.trim().is_empty() {
         return Err(RefreshFailure::NoGrant);
     }
-    let params = refresh_params(&tokens, server_url);
-    let (status, body) = match post_form_raw(&tokens.token_endpoint, &params) {
+    let (params, basic) = refresh_params(&tokens, server_url);
+    let (status, body) = match post_form_raw(&tokens.token_endpoint, &params, basic.as_deref()) {
         Ok(answer) => answer,
         Err(detail) => return Err(RefreshFailure::Transient(detail)),
     };
@@ -430,6 +557,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| prior.scope.clone()),
+        auth_method: prior.auth_method.clone(),
     })
 }
 
@@ -559,6 +687,7 @@ pub fn build_authorize_url(
     state: &str,
     scope: Option<&str>,
     resource: &str,
+    extra: &[(&str, &str)],
 ) -> String {
     let mut params = vec![
         ("response_type".to_string(), "code".to_string()),
@@ -576,6 +705,11 @@ pub fn build_authorize_url(
         // an access token alone — the same dead end as never asking.
         if scope.split_whitespace().any(|s| s == OFFLINE_ACCESS) {
             params.push(("prompt".to_string(), "consent".to_string()));
+        }
+    }
+    for (key, value) in extra {
+        if !params.iter().any(|(k, _)| k == key) {
+            params.push(((*key).to_string(), (*value).to_string()));
         }
     }
     let query = form_encode(&params);
@@ -771,7 +905,7 @@ pub fn b64url(bytes: &[u8]) -> String {
 // discovery + registration (HTTP)
 
 /// What discovery resolved: where to send the user, where to trade the code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthServerMeta {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
@@ -783,6 +917,9 @@ pub struct AuthServerMeta {
     /// advertises it must send `iss` on every authorization response, so a
     /// response without one is rejected rather than excused.
     pub iss_required: bool,
+    /// `token_endpoint_auth_methods_supported` — how a client may
+    /// authenticate at the token endpoint ([`choose_client_auth`]).
+    pub auth_methods: Vec<String>,
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -801,14 +938,23 @@ fn get_json(url: &str) -> Result<Value, String> {
         .map_err(|e| format!("bad JSON: {e}"))
 }
 
-/// POST a form and hand back `(status, body)` raw — the refresh path
-/// classifies the failure itself (`Err` only when no answer arrived at all).
-fn post_form_raw(url: &str, params: &[(String, String)]) -> Result<(u16, String), String> {
+/// POST a token request and hand back `(status, body)` raw — each caller
+/// classifies a failure itself (`Err` only when no answer arrived at all).
+/// `basic` is the `client_secret_basic` header, when that is the method.
+fn post_form_raw(
+    url: &str,
+    params: &[(String, String)],
+    basic: Option<&str>,
+) -> Result<(u16, String), String> {
     let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
-    let response = client
+    let mut request = client
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Accept", "application/json")
+        .header("Accept", "application/json");
+    if let Some(basic) = basic {
+        request = request.header("Authorization", basic);
+    }
+    let response = request
         .body(form_encode(params))
         .send()
         .map_err(|e| format!("request failed: {e}"))?;
@@ -816,19 +962,15 @@ fn post_form_raw(url: &str, params: &[(String, String)]) -> Result<(u16, String)
     Ok((status, response.text().unwrap_or_default()))
 }
 
-fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
-    let (status, body) = post_form_raw(url, params)?;
-    if !(200..300).contains(&status) {
-        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        let flat: String = flat.chars().take(200).collect();
-        return Err(format!("HTTP {status}: {flat}"));
-    }
-    serde_json::from_str(&body).map_err(|e| format!("bad JSON: {e}"))
-}
-
 /// Resolve the authorization server for `server_url`, seeded by the 401's
-/// challenge when one was captured.
-pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerMeta, String> {
+/// challenge when one was captured. A server's `oauth` config can pin the
+/// scopes and name the metadata document outright
+/// (`authServerMetadataUrl`), skipping the well-known search.
+pub fn discover(
+    server_url: &str,
+    challenge: Option<&str>,
+    config: Option<&crate::mcp::McpOAuthConfig>,
+) -> Result<AuthServerMeta, String> {
     // 1. Protected-resource metadata: the challenge's named URL first, then
     //    the well-known candidates on the server itself.
     let mut resource_meta: Option<Value> = None;
@@ -870,10 +1012,17 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
         ),
         None => (None, None),
     };
-    // 2. AS metadata: the named server, else the MCP server's own origin.
-    let auth_base = auth_server.unwrap_or_else(|| origin_of(server_url));
-    let mut as_candidates = well_known_candidates(&auth_base, "oauth-authorization-server");
-    as_candidates.extend(well_known_candidates(&auth_base, "openid-configuration"));
+    // 2. AS metadata: the configured document, else the named server's,
+    //    else the MCP server's own origin's.
+    let as_candidates = match config.and_then(|c| c.auth_server_metadata_url.clone()) {
+        Some(url) => vec![url],
+        None => {
+            let auth_base = auth_server.unwrap_or_else(|| origin_of(server_url));
+            let mut candidates = well_known_candidates(&auth_base, "oauth-authorization-server");
+            candidates.extend(well_known_candidates(&auth_base, "openid-configuration"));
+            candidates
+        }
+    };
     let mut last_err = String::from("no authorization-server metadata found");
     for candidate in as_candidates {
         match get_json(&candidate) {
@@ -904,7 +1053,11 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                 // asking for scopes the resource never wanted is what strict
                 // providers answer with `invalid_scope`, failing the flow
                 // outright.
-                let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
+                // Pinned scopes outrank both: the user chose them.
+                let base = config
+                    .and_then(|c| c.scopes.as_deref())
+                    .or(challenged_scopes.as_deref())
+                    .or(resource_scopes.as_deref());
                 let scopes = with_offline_access(base, &as_scopes);
                 return Ok(AuthServerMeta {
                     authorization_endpoint,
@@ -916,6 +1069,7 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                         .get("authorization_response_iss_parameter_supported")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
                 });
             }
             Err(e) => last_err = format!("{candidate}: {e}"),
@@ -939,12 +1093,21 @@ fn origin_of(url_text: &str) -> String {
         .unwrap_or_else(|| url_text.to_string())
 }
 
-/// Dynamically register a client (RFC 7591). Returns `(client_id,
-/// client_secret)`.
+/// What a dynamic registration (RFC 7591) settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registration {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// The `token_endpoint_auth_method` the server registered — it may
+    /// differ from the `none` asked for, and the exchange must follow it.
+    pub auth_method: Option<String>,
+}
+
+/// Dynamically register a client (RFC 7591).
 pub fn register_client(
     registration_endpoint: &str,
     redirect_uri: &str,
-) -> Result<(String, Option<String>), String> {
+) -> Result<Registration, String> {
     let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let body = serde_json::json!({
         "client_name": "alter-zero",
@@ -971,18 +1134,261 @@ pub fn register_client(
     }
     let value: Value =
         serde_json::from_str(&body).map_err(|e| format!("registration: bad JSON: {e}"))?;
-    let client_id = value
-        .get("client_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "registration returned no client_id".to_string())?
-        .to_string();
-    Ok((
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    Ok(Registration {
+        client_id: text("client_id")
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "registration returned no client_id".to_string())?,
+        client_secret: text("client_secret"),
+        auth_method: text("token_endpoint_auth_method"),
+    })
+}
+
+/// A metadata document's string array (`[]` when absent or malformed).
+fn string_list(meta: &Value, key: &str) -> Vec<String> {
+    meta.get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Do two authorization-server identifiers name the same server? Exactly —
+/// RFC 8414 §3.3 and the 2026-07-28 authorization spec forbid normalizing —
+/// except for one trailing `/` on a bare origin, which both official SDKs
+/// forgive because real deployments disagree on it: Google's resource
+/// metadata names `https://accounts.google.com/` while its own metadata
+/// says `https://accounts.google.com`.
+#[must_use]
+pub fn issuers_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let bare_origin = |text: &str| {
+        url::Url::parse(text)
+            .ok()
+            .is_some_and(|url| url.path() == "/" && url.query().is_none())
+    };
+    let (shorter, longer) = if a.len() < b.len() { (a, b) } else { (b, a) };
+    longer.strip_suffix('/') == Some(shorter) && bare_origin(longer)
+}
+
+/// How a client authenticates at the token endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAuth {
+    /// A public client: `client_id` in the body, nothing else.
+    None,
+    /// `client_secret_post` — the secret in the form body.
+    Post,
+    /// `client_secret_basic` — HTTP Basic over the form-encoded pair.
+    Basic,
+}
+
+impl ClientAuth {
+    /// The RFC 7591 / RFC 8414 spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Post => "client_secret_post",
+            Self::Basic => "client_secret_basic",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "none" => Some(Self::None),
+            "client_secret_post" => Some(Self::Post),
+            "client_secret_basic" => Some(Self::Basic),
+            _ => None,
+        }
+    }
+}
+
+/// Choose how to present a client at the token endpoint. Without a secret
+/// there is nothing to present. With one: the method a registration settled
+/// while the server still lists it, else the form body — the method every
+/// OAuth 2.1 server MUST accept, and this client's behaviour before it
+/// negotiated — unless the server lists Basic and not the body. A server
+/// that takes Basic alone answered a body secret with `invalid_client`.
+#[must_use]
+pub fn choose_client_auth(
+    supported: &[String],
+    has_secret: bool,
+    registered: Option<&str>,
+) -> ClientAuth {
+    if !has_secret {
+        return ClientAuth::None;
+    }
+    let listed = |method: ClientAuth| supported.iter().any(|m| m == method.as_str());
+    if let Some(method) = registered.and_then(ClientAuth::parse)
+        && method != ClientAuth::None
+        && (supported.is_empty() || listed(method))
+    {
+        return method;
+    }
+    if !listed(ClientAuth::Post) && listed(ClientAuth::Basic) {
+        return ClientAuth::Basic;
+    }
+    ClientAuth::Post
+}
+
+/// The `Authorization` header for `client_secret_basic` — RFC 6749 §2.3.1:
+/// each half form-encoded, then the pair base64'd.
+#[must_use]
+pub fn basic_credentials(client_id: &str, client_secret: &str) -> String {
+    let pair = format!("{}:{}", url_encode(client_id), url_encode(client_secret));
+    format!("Basic {}", crate::clipboard::base64_encode(pair.as_bytes()))
+}
+
+/// The client credentials one token request presents: the body pairs, and
+/// the Basic header when that is the method.
+fn client_auth_parts(
+    client_id: &str,
+    client_secret: Option<&str>,
+    method: ClientAuth,
+) -> (Vec<(String, String)>, Option<String>) {
+    let mut params = vec![("client_id".to_string(), client_id.to_string())];
+    match (method, client_secret) {
+        (ClientAuth::Basic, Some(secret)) => (params, Some(basic_credentials(client_id, secret))),
+        (ClientAuth::Post, Some(secret)) => {
+            params.push(("client_secret".to_string(), secret.to_string()));
+            (params, None)
+        }
+        _ => (params, None),
+    }
+}
+
+/// Where a client identity came from — the error text and the cleanup on a
+/// rejected client depend on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientSource {
+    /// The server's `oauth.clientId` in the config file.
+    Configured,
+    /// Typed on the `/mcp` auth page.
+    Entered,
+    /// A dynamic registration made earlier.
+    Registered,
+}
+
+/// The client a flow will present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCredentials {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// The token-endpoint method a registration settled, if any.
+    pub auth_method: Option<String>,
+    pub source: ClientSource,
+}
+
+/// What the flow does for a client identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientPlan {
+    /// Present these credentials.
+    Use(ClientCredentials),
+    /// Register one dynamically at this endpoint.
+    Register(String),
+}
+
+/// What the user must supply for a flow to go on — the spec's last
+/// registration step, "prompt the user to enter the client information".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientRequest {
+    /// The authorization server, as its issuer names itself — the page says
+    /// who issues the client.
+    pub issuer: String,
+    /// The configured client id, when only its secret is missing.
+    pub client_id: Option<String>,
+    /// The redirect URI the flow listens on — what a provider that matches
+    /// redirect URIs exactly needs registered.
+    pub redirect_uri: String,
+}
+
+/// Choose the client a flow presents, in the spec's registration order:
+/// pre-registered (the config's `clientId`, or credentials the user entered
+/// for this issuer) → a dynamic registration already made on this exact
+/// redirect URI → a new dynamic registration → ask the user. Client ID
+/// Metadata Documents would sit before dynamic registration, and need a
+/// hosted document this client does not have (`docs/mcp.md`).
+pub fn plan_client(
+    config: Option<&crate::mcp::McpOAuthConfig>,
+    stored: Option<&StoredClient>,
+    meta: &AuthServerMeta,
+    redirect_uri: &str,
+) -> Result<ClientPlan, ClientRequest> {
+    let issuer = meta.issuer.clone().unwrap_or_default();
+    let request = |client_id: Option<String>| ClientRequest {
+        issuer: issuer.clone(),
         client_id,
-        value
-            .get("client_secret")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    ))
+        redirect_uri: redirect_uri.to_string(),
+    };
+    // Stored credentials are only ever presented to the server that issued
+    // them (SEP-2352) — unknown on either side passes, nothing to compare.
+    let same_issuer = |client: &StoredClient| match (&client.issuer, &meta.issuer) {
+        (Some(stored), Some(current)) => issuers_match(stored, current),
+        _ => true,
+    };
+    if let Some(client_id) = config.and_then(|c| c.client_id.clone()) {
+        let secret = config.and_then(|c| c.client_secret.clone()).or_else(|| {
+            stored
+                .filter(|s| s.client_id == client_id && s.redirect_uri.is_none() && same_issuer(s))
+                .and_then(|s| s.client_secret.clone())
+        });
+        // A server that lists its methods and not `none` will refuse a
+        // client with no secret — after the browser round, so ask first.
+        let public_ok =
+            meta.auth_methods.is_empty() || meta.auth_methods.iter().any(|m| m == "none");
+        if secret.is_none() && !public_ok {
+            return Err(request(Some(client_id)));
+        }
+        return Ok(ClientPlan::Use(ClientCredentials {
+            client_id,
+            client_secret: secret,
+            auth_method: None,
+            source: ClientSource::Configured,
+        }));
+    }
+    if let Some(client) = stored.filter(|s| same_issuer(s)) {
+        let credentials = |source| {
+            ClientPlan::Use(ClientCredentials {
+                client_id: client.client_id.clone(),
+                client_secret: client.client_secret.clone(),
+                auth_method: client.auth_method.clone(),
+                source,
+            })
+        };
+        match &client.redirect_uri {
+            None => return Ok(credentials(ClientSource::Entered)),
+            Some(registered) if registered == redirect_uri => {
+                return Ok(credentials(ClientSource::Registered));
+            }
+            Some(_) => {} // another port: register afresh below
+        }
+    }
+    match &meta.registration_endpoint {
+        Some(endpoint) => Ok(ClientPlan::Register(endpoint.clone())),
+        None => Err(request(None)),
+    }
+}
+
+/// Authorization parameters a provider needs beyond the standard ones.
+/// Google issues refresh tokens only for `access_type=offline` — it lists
+/// no `offline_access` scope — and re-issues one only with `prompt=consent`
+/// (its MCP setup guides say both), so without them a web client's grant
+/// expires within the hour with nothing to renew it.
+#[must_use]
+pub fn provider_authorize_params(issuer: Option<&str>) -> &'static [(&'static str, &'static str)] {
+    match issuer {
+        Some(issuer) if issuers_match(issuer, "https://accounts.google.com") => {
+            &[("access_type", "offline"), ("prompt", "consent")]
+        }
+        _ => &[],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -995,86 +1401,249 @@ pub trait AuthProgress: Send {
     fn on_url(&self, url: &str);
 }
 
+/// The redirect port a pre-registered client's flow listens on when its
+/// config fixes none. Fixed rather than ephemeral so a provider that matches
+/// redirect URIs exactly — a Google *Web application* client, which is what
+/// Google's Workspace MCP guides prescribe — can have
+/// `http://localhost:8976/callback` registered once (`docs/mcp.md`).
+pub const DEFAULT_CALLBACK_PORT: u16 = 8976;
+
+/// What a flow needs beyond the server URL: the server's config, and the
+/// boundary's default port.
+#[derive(Debug, Clone, Default)]
+pub struct AuthSettings {
+    /// The server's `oauth` object from the config file.
+    pub oauth: Option<crate::mcp::McpOAuthConfig>,
+    /// The port a pre-registered client listens on when the config fixes
+    /// none — [`DEFAULT_CALLBACK_PORT`]; `0` takes any free port.
+    pub default_port: u16,
+}
+
+/// Why a flow ended without a grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    /// No client to present — nothing configured or entered, and the server
+    /// registers none: the `/mcp` auth page asks the user for one.
+    NeedsClient(ClientRequest),
+    /// Anything else, worded for the toast.
+    Failed(String),
+}
+
+impl From<String> for AuthError {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeedsClient(request) => write!(
+                f,
+                "{} needs an OAuth client registered with it",
+                request.issuer
+            ),
+            Self::Failed(detail) => f.write_str(detail),
+        }
+    }
+}
+
+/// Which port the callback listener binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallbackPort {
+    /// The config's `callbackPort`: that port or nothing — the provider was
+    /// told this redirect URI.
+    Exactly(u16),
+    /// A stable port worth keeping when free, any port otherwise.
+    Prefer(u16),
+    Any,
+}
+
+fn bind_callback(port: CallbackPort) -> Result<TcpListener, String> {
+    let any = || {
+        TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("could not open the callback port: {e}"))
+    };
+    match port {
+        CallbackPort::Exactly(port) => TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("the callback port {port} (oauth.callbackPort) is not free: {e}")),
+        CallbackPort::Prefer(port) if port != 0 => {
+            TcpListener::bind(("127.0.0.1", port)).or_else(|_| any())
+        }
+        CallbackPort::Prefer(_) | CallbackPort::Any => any(),
+    }
+}
+
+/// The port of a `http://localhost:{port}/callback` redirect URI.
+fn redirect_port(redirect_uri: &str) -> Option<u16> {
+    url::Url::parse(redirect_uri).ok()?.port()
+}
+
 /// Run the whole interactive flow for `server_url`, blocking this (worker)
-/// thread: discovery → registration → browser/paste → exchange → persist.
+/// thread: discovery → a client (configured, entered, registered, or the
+/// user asked — [`plan_client`]) → browser/paste → exchange → persist.
 /// `paste_rx` delivers the user's pasted redirect URL; `open_browser` is the
 /// boundary's launcher (injected so tests need no display).
+#[allow(clippy::too_many_arguments)] // the flow's whole context, each one injected
 pub fn run_auth_flow(
     server_url: &str,
     challenge: Option<&str>,
     store_path: Option<&Path>,
+    settings: &AuthSettings,
     paste_rx: &mpsc::Receiver<String>,
     progress: &dyn AuthProgress,
     open_browser: &dyn Fn(&str),
     cancel: &CancelToken,
-) -> Result<(), String> {
-    let meta = discover(server_url, challenge)?;
-    // The loopback listener binds first (port 0 = ephemeral) so registration
-    // can name the exact redirect URI.
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("could not open the callback port: {e}"))?;
-    let port = listener
+) -> Result<(), AuthError> {
+    let config = settings.oauth.as_ref();
+    let meta = discover(server_url, challenge, config)?;
+    let stored = load_client(store_path, server_url);
+    // The callback port: the config's, else a pre-registered client's stable
+    // default, else the port a registration named (so it stays usable),
+    // else any — a fresh registration names whichever it gets.
+    let configured_id = config.and_then(|c| c.client_id.as_ref()).is_some();
+    let entered = stored.as_ref().is_some_and(|s| s.redirect_uri.is_none());
+    let port = match config.and_then(|c| c.callback_port) {
+        Some(port) => CallbackPort::Exactly(port),
+        None if configured_id || entered => CallbackPort::Prefer(settings.default_port),
+        None => stored
+            .as_ref()
+            .and_then(|s| s.redirect_uri.as_deref())
+            .and_then(redirect_port)
+            .map_or(CallbackPort::Any, CallbackPort::Prefer),
+    };
+    let listener = bind_callback(port)?;
+    let bound = listener
         .local_addr()
         .map_err(|e| format!("callback port: {e}"))?
         .port();
-    let redirect_uri = format!("http://localhost:{port}/callback");
-    // A client identity: reuse the stored one (its registration named an
-    // older port-specific redirect, but ASes match the URI from the request,
-    // and loopback URIs are exempt from exact matching per RFC 8252 —
-    // re-register when the server insists).
-    let stored = load_tokens(store_path, server_url);
-    let (client_id, client_secret) = match stored
-        .as_ref()
-        .filter(|t| !t.client_id.is_empty())
-        .map(|t| (t.client_id.clone(), t.client_secret.clone()))
-    {
-        Some(identity) => identity,
-        None => match &meta.registration_endpoint {
-            Some(endpoint) => register_client(endpoint, &redirect_uri)?,
-            None => {
-                return Err(
-                    "the server offers no client registration; add a pre-registered client".into(),
-                );
+    let redirect_uri = format!("http://localhost:{bound}/callback");
+    let client = match plan_client(config, stored.as_ref(), &meta, &redirect_uri) {
+        Ok(ClientPlan::Use(client)) => client,
+        Ok(ClientPlan::Register(endpoint)) => {
+            let registration = register_client(&endpoint, &redirect_uri)?;
+            save_client(
+                store_path,
+                server_url,
+                Some(&StoredClient {
+                    client_id: registration.client_id.clone(),
+                    client_secret: registration.client_secret.clone(),
+                    issuer: meta.issuer.clone(),
+                    redirect_uri: Some(redirect_uri.clone()),
+                    auth_method: registration.auth_method.clone(),
+                }),
+            );
+            ClientCredentials {
+                client_id: registration.client_id,
+                client_secret: registration.client_secret,
+                auth_method: registration.auth_method,
+                source: ClientSource::Registered,
             }
-        },
+        }
+        Err(mut request) => {
+            // The page asks for a client the *next* attempt will present, and
+            // that attempt listens where a pre-registered client does.
+            let next = config
+                .and_then(|c| c.callback_port)
+                .unwrap_or(settings.default_port);
+            if next != 0 {
+                request.redirect_uri = format!("http://localhost:{next}/callback");
+            }
+            return Err(AuthError::NeedsClient(request));
+        }
     };
+    let method = choose_client_auth(
+        &meta.auth_methods,
+        client.client_secret.is_some(),
+        client.auth_method.as_deref(),
+    );
+    // Discovery and registration take seconds; a flow the user backed out of
+    // meanwhile must not open a browser.
+    if cancel.is_cancelled() {
+        return Err(AuthError::Failed("cancelled".to_string()));
+    }
     let (verifier, code_challenge, state) = pkce_and_state();
     let authorize_url = build_authorize_url(
         &meta.authorization_endpoint,
-        &client_id,
+        &client.client_id,
         &redirect_uri,
         &code_challenge,
         &state,
         meta.scopes.as_deref(),
         server_url,
+        provider_authorize_params(meta.issuer.as_deref()),
     );
     progress.on_url(&authorize_url);
     open_browser(&authorize_url);
     let code = wait_for_code(&listener, &state, &meta, paste_rx, cancel)?;
-    let mut params = vec![
+    let (mut params, basic) =
+        client_auth_parts(&client.client_id, client.client_secret.as_deref(), method);
+    params.extend([
         ("grant_type".to_string(), "authorization_code".to_string()),
         ("code".to_string(), code),
         ("redirect_uri".to_string(), redirect_uri),
-        ("client_id".to_string(), client_id.clone()),
         ("code_verifier".to_string(), verifier),
         ("resource".to_string(), server_url.to_string()),
-    ];
-    if let Some(secret) = &client_secret {
-        params.push(("client_secret".to_string(), secret.clone()));
-    }
-    let response = post_form(&meta.token_endpoint, &params)
+    ]);
+    let (status, body) = post_form_raw(&meta.token_endpoint, &params, basic.as_deref())
         .map_err(|e| format!("token exchange failed: {e}"))?;
+    if !(200..300).contains(&status) {
+        return Err(AuthError::Failed(rejected_exchange(
+            status, &body, &client, store_path, server_url,
+        )));
+    }
+    let response: Value =
+        serde_json::from_str(&body).map_err(|e| format!("token exchange failed: bad JSON: {e}"))?;
     let prior = StoredTokens {
-        client_id,
-        client_secret,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
         token_endpoint: meta.token_endpoint.clone(),
         scope: meta.scopes.clone(),
+        auth_method: (method != ClientAuth::None).then(|| method.as_str().to_string()),
         ..Default::default()
     };
     let tokens = tokens_from_response(&response, &prior)
         .ok_or_else(|| "token response carried no access_token".to_string())?;
     save_tokens(store_path, server_url, Some(&tokens));
     Ok(())
+}
+
+/// Word a refused code exchange. `invalid_client` is a verdict on the
+/// client, not the login, so a client this app stored — typed credentials,
+/// or a registration — is forgotten and the next attempt starts fresh; a
+/// configured one points at the config.
+fn rejected_exchange(
+    status: u16,
+    body: &str,
+    client: &ClientCredentials,
+    store_path: Option<&Path>,
+    server_url: &str,
+) -> String {
+    let error = serde_json::from_str::<Value>(body.trim())
+        .ok()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string));
+    if error.as_deref() == Some("invalid_client") {
+        return match client.source {
+            ClientSource::Configured => "the authorization server rejected the configured \
+                 client (invalid_client) — check the server's oauth.clientId and its secret"
+                .to_string(),
+            ClientSource::Entered => {
+                save_client(store_path, server_url, None);
+                "the authorization server rejected the client ID or secret \
+                 (invalid_client) — authenticate again to enter them"
+                    .to_string()
+            }
+            ClientSource::Registered => {
+                save_client(store_path, server_url, None);
+                "the authorization server no longer accepts this app's registration \
+                 (invalid_client) — authenticate again to register afresh"
+                    .to_string()
+            }
+        };
+    }
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat: String = flat.chars().take(200).collect();
+    format!("token exchange failed: HTTP {status}: {flat}")
 }
 
 /// Wait for the authorization code from **either** side: the loopback
@@ -1360,6 +1929,7 @@ mod tests {
             "STATE",
             Some("read write"),
             "https://mcp.test/mcp",
+            &[],
         );
         assert!(url.starts_with("https://as.test/authorize?"));
         for needle in [
@@ -1374,7 +1944,16 @@ mod tests {
             assert!(url.contains(needle), "{url} missing {needle}");
         }
         // An endpoint that already has a query appends with `&`.
-        let url = build_authorize_url("https://as.test/a?x=1", "c", "r", "ch", "s", None, "res");
+        let url = build_authorize_url(
+            "https://as.test/a?x=1",
+            "c",
+            "r",
+            "ch",
+            "s",
+            None,
+            "res",
+            &[],
+        );
         assert!(url.contains("?x=1&response_type=code"));
         assert!(!url.contains("scope="));
     }
@@ -1464,14 +2043,7 @@ mod tests {
     }
 
     fn bare_meta() -> AuthServerMeta {
-        AuthServerMeta {
-            authorization_endpoint: String::new(),
-            token_endpoint: String::new(),
-            registration_endpoint: None,
-            scopes: None,
-            issuer: None,
-            iss_required: false,
-        }
+        AuthServerMeta::default()
     }
 
     #[test]
@@ -1532,6 +2104,547 @@ mod tests {
         assert!(page.contains("Authentication failed"), "{page}");
     }
 
+    fn meta_with(methods: &[&str], registration: Option<&str>) -> AuthServerMeta {
+        AuthServerMeta {
+            issuer: Some("https://as.test".to_string()),
+            registration_endpoint: registration.map(str::to_string),
+            auth_methods: methods.iter().map(|m| (*m).to_string()).collect(),
+            ..bare_meta()
+        }
+    }
+
+    fn configured(id: Option<&str>, secret: Option<&str>) -> crate::mcp::McpOAuthConfig {
+        crate::mcp::McpOAuthConfig {
+            client_id: id.map(str::to_string),
+            client_secret: secret.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_token_endpoint_hears_the_client_the_way_its_server_takes_it() {
+        use ClientAuth::{Basic, None as Public, Post};
+        let methods = |list: &[&str]| list.iter().map(|m| (*m).to_string()).collect::<Vec<_>>();
+        // No secret, no client authentication: a public client.
+        assert_eq!(
+            choose_client_auth(&methods(&["client_secret_basic"]), false, None),
+            Public
+        );
+        // The body is what every OAuth 2.1 server MUST accept, and what an
+        // unlisted method defaults to.
+        assert_eq!(choose_client_auth(&[], true, None), Post);
+        assert_eq!(
+            choose_client_auth(
+                &methods(&["client_secret_post", "client_secret_basic"]),
+                true,
+                None
+            ),
+            Post
+        );
+        // A server that takes Basic alone gets Basic — sending the secret in
+        // the body there was an `invalid_client` that cleared the grant.
+        assert_eq!(
+            choose_client_auth(&methods(&["client_secret_basic"]), true, None),
+            Basic
+        );
+        // What a registration settled wins while the server still lists it.
+        assert_eq!(
+            choose_client_auth(
+                &methods(&["client_secret_post", "client_secret_basic"]),
+                true,
+                Some("client_secret_basic")
+            ),
+            Basic
+        );
+    }
+
+    #[test]
+    fn basic_client_authentication_form_encodes_the_credentials() {
+        // RFC 6749 §2.3.1: each half is form-encoded before the base64.
+        assert_eq!(
+            basic_credentials("a b", "s:/"),
+            format!(
+                "Basic {}",
+                crate::clipboard::base64_encode(b"a%20b:s%3A%2F")
+            )
+        );
+    }
+
+    #[test]
+    fn a_configured_client_comes_first_with_its_stored_secret() {
+        let stored = StoredClient {
+            client_id: "cid".to_string(),
+            client_secret: Some("from-store".to_string()),
+            ..Default::default()
+        };
+        let plan = plan_client(
+            Some(&configured(Some("cid"), None)),
+            Some(&stored),
+            &meta_with(&["client_secret_post"], Some("https://as.test/register")),
+            "http://localhost:1/callback",
+        );
+        assert_eq!(
+            plan,
+            Ok(ClientPlan::Use(ClientCredentials {
+                client_id: "cid".to_string(),
+                client_secret: Some("from-store".to_string()),
+                auth_method: None,
+                source: ClientSource::Configured,
+            }))
+        );
+        // A secret stored for another client id is not this client's.
+        let other = StoredClient {
+            client_id: "old".to_string(),
+            ..stored.clone()
+        };
+        assert!(matches!(
+            plan_client(
+                Some(&configured(Some("cid"), Some("in-config"))),
+                Some(&other),
+                &meta_with(&[], None),
+                "r",
+            ),
+            Ok(ClientPlan::Use(ClientCredentials { client_secret: Some(s), .. })) if s == "in-config"
+        ));
+    }
+
+    #[test]
+    fn a_configured_client_without_the_secret_its_server_needs_asks_for_it() {
+        // Google's token endpoint takes client_secret_post/basic only: a
+        // client id alone would fail at the exchange, after the browser.
+        let plan = plan_client(
+            Some(&configured(Some("cid"), None)),
+            None,
+            &meta_with(&["client_secret_post", "client_secret_basic"], None),
+            "http://localhost:8976/callback",
+        );
+        assert_eq!(
+            plan,
+            Err(ClientRequest {
+                issuer: "https://as.test".to_string(),
+                client_id: Some("cid".to_string()),
+                redirect_uri: "http://localhost:8976/callback".to_string(),
+            })
+        );
+        // A server that takes public clients needs no secret.
+        assert!(matches!(
+            plan_client(
+                Some(&configured(Some("cid"), None)),
+                None,
+                &meta_with(&["none", "client_secret_post"], None),
+                "r",
+            ),
+            Ok(ClientPlan::Use(ClientCredentials {
+                client_secret: None,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn with_nothing_to_use_or_register_the_user_is_asked() {
+        // The spec's last registration step — the Google Calendar dead end.
+        assert_eq!(
+            plan_client(
+                None,
+                None,
+                &meta_with(&["client_secret_post"], None),
+                "redir"
+            ),
+            Err(ClientRequest {
+                issuer: "https://as.test".to_string(),
+                client_id: None,
+                redirect_uri: "redir".to_string(),
+            })
+        );
+        // Dynamic registration when the server offers it.
+        assert_eq!(
+            plan_client(
+                None,
+                None,
+                &meta_with(&[], Some("https://as.test/reg")),
+                "r"
+            ),
+            Ok(ClientPlan::Register("https://as.test/reg".to_string()))
+        );
+    }
+
+    #[test]
+    fn stored_credentials_belong_to_the_server_that_issued_them() {
+        let entered = StoredClient {
+            client_id: "typed".to_string(),
+            client_secret: Some("s".to_string()),
+            issuer: Some("https://as.test".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            plan_client(None, Some(&entered), &meta_with(&[], None), "r"),
+            Ok(ClientPlan::Use(ClientCredentials {
+                source: ClientSource::Entered,
+                ..
+            }))
+        ));
+        // SEP-2352: credentials are keyed by issuer — never presented to an
+        // authorization server that did not issue them.
+        let moved = AuthServerMeta {
+            issuer: Some("https://elsewhere.test".to_string()),
+            ..meta_with(&[], None)
+        };
+        assert!(matches!(
+            plan_client(None, Some(&entered), &moved, "r"),
+            Err(ClientRequest {
+                client_id: None,
+                ..
+            })
+        ));
+        // A registration is reused only on the redirect URI it registered —
+        // an exact-match server refuses any other.
+        let registered = StoredClient {
+            client_id: "dyn".to_string(),
+            issuer: Some("https://as.test".to_string()),
+            redirect_uri: Some("http://localhost:5000/callback".to_string()),
+            ..Default::default()
+        };
+        let meta = meta_with(&[], Some("https://as.test/reg"));
+        assert!(matches!(
+            plan_client(
+                None,
+                Some(&registered),
+                &meta,
+                "http://localhost:5000/callback"
+            ),
+            Ok(ClientPlan::Use(ClientCredentials {
+                source: ClientSource::Registered,
+                ..
+            }))
+        ));
+        assert_eq!(
+            plan_client(
+                None,
+                Some(&registered),
+                &meta,
+                "http://localhost:6000/callback"
+            ),
+            Ok(ClientPlan::Register("https://as.test/reg".to_string()))
+        );
+    }
+
+    #[test]
+    fn issuers_compare_exactly_but_for_a_root_trailing_slash() {
+        // Google's resource metadata names `https://accounts.google.com/`
+        // while its metadata says `https://accounts.google.com` — the one
+        // difference both official SDKs forgive.
+        assert!(issuers_match(
+            "https://accounts.google.com/",
+            "https://accounts.google.com"
+        ));
+        assert!(issuers_match("https://a.test", "https://a.test"));
+        assert!(!issuers_match(
+            "https://a.test/tenant/",
+            "https://a.test/tenant"
+        ));
+        assert!(!issuers_match("https://A.test", "https://a.test"));
+        assert!(!issuers_match("https://a.test", "https://b.test"));
+    }
+
+    #[test]
+    fn the_client_store_keeps_its_section_beside_the_grants() {
+        let client = StoredClient {
+            client_id: "cid".to_string(),
+            client_secret: Some("s".to_string()),
+            issuer: Some("https://as.test".to_string()),
+            redirect_uri: Some("http://localhost:1/callback".to_string()),
+            auth_method: Some("client_secret_basic".to_string()),
+        };
+        let tokens = StoredTokens {
+            access_token: "at".to_string(),
+            auth_method: Some("client_secret_basic".to_string()),
+            ..Default::default()
+        };
+        let both = record_tokens(
+            &record_client("", "https://s/mcp", Some(&client)),
+            "https://s/mcp",
+            Some(&tokens),
+        );
+        assert_eq!(
+            parse_client_store(&both).get("https://s/mcp"),
+            Some(&client)
+        );
+        assert_eq!(parse_token_store(&both).get("https://s/mcp"), Some(&tokens));
+        // Clearing the grant keeps the client; clearing the client keeps the grant.
+        let no_grant = record_tokens(&both, "https://s/mcp", None);
+        assert!(parse_client_store(&no_grant).contains_key("https://s/mcp"));
+        let no_client = record_client(&both, "https://s/mcp", None);
+        assert!(parse_token_store(&no_client).contains_key("https://s/mcp"));
+        assert!(parse_client_store(&no_client).is_empty());
+    }
+
+    #[test]
+    fn google_is_asked_for_a_refresh_token_its_own_way() {
+        // Google issues refresh tokens only for `access_type=offline` (it
+        // lists no `offline_access` scope), and re-issues one only with
+        // `prompt=consent` — without them a web client's grant dies hourly.
+        let url = build_authorize_url(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "cid",
+            "http://localhost:8976/callback",
+            "chal",
+            "st",
+            Some("https://www.googleapis.com/auth/calendar"),
+            "https://calendarmcp.googleapis.com/mcp/v1",
+            provider_authorize_params(Some("https://accounts.google.com")),
+        );
+        assert!(url.contains("access_type=offline"), "{url}");
+        assert_eq!(url.matches("prompt=").count(), 1, "{url}");
+        assert!(url.contains("prompt=consent"), "{url}");
+        assert!(provider_authorize_params(Some("https://as.test")).is_empty());
+    }
+
+    /// One token request the fixture's `/token` received.
+    #[derive(Debug, Clone)]
+    struct TokenRequest {
+        authorization: Option<String>,
+        form: std::collections::BTreeMap<String, String>,
+    }
+
+    /// A Google-shaped authorization server on one socket: resource
+    /// metadata naming the AS **with** a trailing slash, AS metadata whose
+    /// issuer has none, no registration endpoint, `iss` required on every
+    /// redirect, and a token endpoint that takes only the listed client
+    /// authentication methods and answers `invalid_client` otherwise.
+    struct AuthFixture {
+        base: String,
+        server_url: String,
+        token_requests: std::sync::Arc<std::sync::Mutex<Vec<TokenRequest>>>,
+    }
+
+    fn spawn_auth_fixture(methods: &'static [&'static str], secret: &'static str) -> AuthFixture {
+        use std::io::{BufRead, BufReader};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (base_t, requests_t) = (base.clone(), std::sync::Arc::clone(&token_requests));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let (mut length, mut authorization) = (0usize, None);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let (name, value) = header.split_once(':').unwrap_or_default();
+                    match name.to_ascii_lowercase().as_str() {
+                        "content-length" => length = value.trim().parse().unwrap_or(0),
+                        "authorization" => authorization = Some(value.trim().to_string()),
+                        _ => {}
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let json = |status: &str, body: String| {
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let response = if path == "/.well-known/oauth-protected-resource/mcp" {
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": format!("{base_t}/mcp"),
+                            "authorization_servers": [format!("{base_t}/")],
+                            "scopes_supported": ["calendar"],
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-authorization-server" {
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "issuer": base_t,
+                            "authorization_endpoint": format!("{base_t}/authorize"),
+                            "token_endpoint": format!("{base_t}/token"),
+                            "token_endpoint_auth_methods_supported": methods,
+                            "code_challenge_methods_supported": ["S256"],
+                            "authorization_response_iss_parameter_supported": true,
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/token" {
+                    let form: std::collections::BTreeMap<String, String> = body
+                        .split('&')
+                        .filter_map(|pair| pair.split_once('='))
+                        .map(|(k, v)| (url_decode(k), url_decode(v)))
+                        .collect();
+                    requests_t.lock().unwrap().push(TokenRequest {
+                        authorization: authorization.clone(),
+                        form: form.clone(),
+                    });
+                    let by_basic = authorization.as_deref()
+                        == Some(basic_credentials("cid", secret).as_str())
+                        && methods.contains(&"client_secret_basic");
+                    let by_post = form.get("client_secret").map(String::as_str) == Some(secret)
+                        && methods.contains(&"client_secret_post");
+                    if (by_basic || by_post) && form.contains_key("code_verifier") {
+                        json(
+                            "200 OK",
+                            r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3599}"#
+                                .to_string(),
+                        )
+                    } else {
+                        json(
+                            "401 Unauthorized",
+                            r#"{"error":"invalid_client"}"#.to_string(),
+                        )
+                    }
+                } else {
+                    json("404 Not Found", "{}".to_string())
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        AuthFixture {
+            server_url: format!("{base}/mcp"),
+            base,
+            token_requests,
+        }
+    }
+
+    struct Silent;
+    impl AuthProgress for Silent {
+        fn on_url(&self, _: &str) {}
+    }
+
+    /// The user's browser: follow the authorize URL straight back to its
+    /// redirect URI with a code, the flow's `state`, and the issuer's `iss`.
+    fn consenting_browser(issuer: String) -> impl Fn(&str) {
+        move |authorize: &str| {
+            let redirect = redirect_param(authorize, "redirect_uri").unwrap();
+            let state = redirect_param(authorize, "state").unwrap();
+            let port = redirect_port(&redirect).unwrap();
+            let path = format!(
+                "/callback?code=good&state={state}&iss={}",
+                url_encode(&issuer)
+            );
+            std::thread::spawn(move || browser_get(port, &path));
+        }
+    }
+
+    fn run_flow(
+        fixture: &AuthFixture,
+        store: &Path,
+        oauth: Option<crate::mcp::McpOAuthConfig>,
+    ) -> Result<(), AuthError> {
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        run_auth_flow(
+            &fixture.server_url,
+            None,
+            Some(store),
+            &AuthSettings {
+                oauth,
+                default_port: 0,
+            },
+            &paste_rx,
+            &Silent,
+            &consenting_browser(fixture.base.clone()),
+            &CancelToken::new(),
+        )
+    }
+
+    #[test]
+    fn a_configured_client_signs_in_where_nothing_can_be_registered() {
+        // The Google Calendar case end to end: no registration endpoint, a
+        // token endpoint taking Basic only, `iss` required, and the resource
+        // metadata naming the issuer with a trailing slash.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_basic"], "shh");
+        let result = run_flow(&fixture, &store, Some(configured(Some("cid"), Some("shh"))));
+        assert_eq!(result, Ok(()));
+        let tokens = load_tokens(Some(&store), &fixture.server_url).expect("a stored grant");
+        assert_eq!(tokens.access_token, "at-1");
+        assert_eq!(tokens.client_id, "cid");
+        assert_eq!(tokens.auth_method.as_deref(), Some("client_secret_basic"));
+        let requests = fixture.token_requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        // One method per request: the Basic header, no secret in the body.
+        assert_eq!(
+            requests[0].authorization.as_deref(),
+            Some(basic_credentials("cid", "shh").as_str())
+        );
+        assert!(!requests[0].form.contains_key("client_secret"));
+        assert_eq!(
+            requests[0].form.get("grant_type").map(String::as_str),
+            Some("authorization_code")
+        );
+    }
+
+    #[test]
+    fn with_no_client_to_present_the_flow_asks_for_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        match run_flow(&fixture, &store, None) {
+            Err(AuthError::NeedsClient(request)) => {
+                assert_eq!(request.issuer, fixture.base);
+                assert_eq!(request.client_id, None);
+                assert!(request.redirect_uri.starts_with("http://localhost:"));
+            }
+            other => panic!("expected a client request, got {other:?}"),
+        }
+        assert!(fixture.token_requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn credentials_entered_for_a_server_are_used_and_a_rejected_pair_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        let entered = |secret: &str| StoredClient {
+            client_id: "cid".to_string(),
+            client_secret: Some(secret.to_string()),
+            issuer: Some(fixture.base.clone()),
+            ..Default::default()
+        };
+        save_client(Some(&store), &fixture.server_url, Some(&entered("wrong")));
+        // A mistyped secret: the server says invalid_client, and the pair is
+        // dropped so the next attempt asks again instead of failing forever.
+        match run_flow(&fixture, &store, None) {
+            Err(AuthError::Failed(detail)) => {
+                assert!(detail.contains("invalid_client"), "{detail}")
+            }
+            other => panic!("expected the rejection, got {other:?}"),
+        }
+        assert_eq!(load_client(Some(&store), &fixture.server_url), None);
+        save_client(Some(&store), &fixture.server_url, Some(&entered("shh")));
+        assert_eq!(run_flow(&fixture, &store, None), Ok(()));
+        let requests = fixture.token_requests.lock().unwrap().clone();
+        assert_eq!(
+            requests
+                .last()
+                .unwrap()
+                .form
+                .get("client_secret")
+                .map(String::as_str),
+            Some("shh")
+        );
+        assert_eq!(
+            load_tokens(Some(&store), &fixture.server_url)
+                .unwrap()
+                .auth_method
+                .as_deref(),
+            Some("client_secret_post")
+        );
+    }
+
     #[test]
     fn a_challenge_yields_its_metadata_url_and_its_scope() {
         // Discovery runs blind without these: the server publishes its
@@ -1565,8 +2678,10 @@ mod tests {
             client_secret: None,
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read write".to_string()),
+            auth_method: None,
         };
-        let params = refresh_params(&tokens, "https://mcp.test/mcp");
+        let (params, basic) = refresh_params(&tokens, "https://mcp.test/mcp");
+        assert_eq!(basic, None);
         let get = |key: &str| {
             params
                 .iter()
@@ -1589,12 +2704,23 @@ mod tests {
             client_secret: Some("shh".to_string()),
             ..tokens
         };
-        let params = refresh_params(&confidential, "https://mcp.test/mcp");
+        let (params, basic) = refresh_params(&confidential, "https://mcp.test/mcp");
         assert!(
             params
                 .iter()
                 .any(|(k, v)| k == "client_secret" && v == "shh")
         );
+        assert_eq!(basic, None);
+        // A grant obtained with Basic refreshes with Basic — and never also
+        // puts the secret in the body (one method per request).
+        let basic_grant = StoredTokens {
+            auth_method: Some("client_secret_basic".to_string()),
+            ..confidential
+        };
+        let (params, basic) = refresh_params(&basic_grant, "https://mcp.test/mcp");
+        assert_eq!(basic, Some(basic_credentials("cid", "shh")));
+        assert!(!params.iter().any(|(k, _)| k == "client_secret"));
+        assert!(params.iter().any(|(k, v)| k == "client_id" && v == "cid"));
     }
 
     #[test]
@@ -1679,6 +2805,7 @@ mod tests {
                 "st",
                 scope,
                 "https://mcp.test/mcp",
+                &[],
             )
         };
         // OIDC releases a refresh token for `offline_access` only when
@@ -1804,6 +2931,7 @@ mod tests {
                 client_secret: None,
                 token_endpoint: token_url,
                 scope: None,
+                auth_method: None,
             }),
         );
         // Spawn every thread *before* joining any — a lazy `.map().map()`
@@ -1857,6 +2985,7 @@ mod tests {
                         client_secret: None,
                         token_endpoint: "https://as/token".to_string(),
                         scope: None,
+                        auth_method: None,
                     };
                     save_tokens(
                         Some(&path),
@@ -1887,6 +3016,7 @@ mod tests {
             client_secret: None,
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read".to_string()),
+            auth_method: None,
         };
         let written = record_tokens("", "https://mcp.test/mcp", Some(&tokens));
         let parsed = parse_token_store(&written);

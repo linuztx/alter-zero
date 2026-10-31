@@ -55,6 +55,34 @@ streamable-HTTP handshake that fails with a client error retries the same
 URL as a legacy SSE server (the MCP spec's backwards-compatibility recipe),
 so a bare `{"url": …}` works against any generation of server.
 
+### Pre-registered clients — the `oauth` object
+
+A remote entry may carry Claude Code's `oauth` object, for a server whose
+authorization server cannot register this app by itself — Google's MCP
+servers (`calendarmcp.googleapis.com`, `gmailmcp.googleapis.com`, the
+Cloud ones) are exactly that: no dynamic registration, no Client ID
+Metadata Documents, only an OAuth client the user creates in the provider's
+console:
+
+```json
+{ "mcpServers": {
+    "google-calendar": {
+      "url": "https://calendarmcp.googleapis.com/mcp/v1",
+      "oauth": { "clientId": "1234-abc.apps.googleusercontent.com",
+                 "callbackPort": 8976,
+                 "scopes": "https://www.googleapis.com/auth/calendar" } } } }
+```
+
+Every key is optional: `clientId` (the pre-registered client),
+`clientSecret` (accepted because Google's own setup guides write it there —
+the CLI and `/mcp` keep it in the token store instead), `callbackPort` (the
+redirect URI's fixed port), `scopes` (a space-separated string, Claude
+Code's spelling, or an array, Google's and Gemini CLI's — both read as one
+list, pinned ahead of discovery's), and `authServerMetadataUrl` (read the
+authorization server's metadata there instead of discovering it; `https`
+only, loopback excepted). The object's presence alone tells the app the
+server expects a sign-in. A stdio entry carrying one is a config error.
+
 ## Protocol versions — the dual-era client
 
 This client speaks the **modern `2026-07-28` revision** (stateless: no
@@ -99,8 +127,9 @@ The rule everywhere else applies here: **`src/mcp/` is pure**, the I/O lives
 in **`src/llm/mcp/`**.
 
 - `mcp::config` — the file parse (`McpFile`, `McpServerConfig`:
-  `Stdio { command, args, env }` / `Http { url, headers }` /
-  `Sse { url, headers }`, the `type`-defaulting rules, the per-project
+  `Stdio { command, args, env }` / `Http { url, headers, oauth }` /
+  `Sse { url, headers, oauth }` — `McpOAuthConfig` being the `oauth`
+  object above — the `type`-defaulting rules, the per-project
   disabled sets, scope labels). A server whose entry won't parse is reported
   by name (a red startup toast), never silence — the `SKILL.md` posture.
 - `mcp::names` — the naming contract. `normalize_name` maps anything outside
@@ -176,8 +205,16 @@ derives five, in this order:
 | `Header` | `✔ authenticated (config header)` | the config carries its own `Authorization` header |
 | `Expired` | `✘ expired` | tokens stored **and** the server refusing them |
 | `Authenticated` | `✔ authenticated` | tokens stored |
-| `NotRequired` | `✔ authenticated` | connected while presenting nothing |
-| `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, not serving |
+| `NotRequired` | `✔ authenticated` | connected while presenting nothing, and nothing says a sign-in is expected |
+| `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, and not serving — or serving anonymously while a sign-in **is** expected |
+
+**An anonymous connect proves nothing when the server expects a
+sign-in** — its config carries an `oauth` object, or it has already refused
+a call with a 401 (the challenge is kept). Google's servers answer
+`initialize` and `tools/list` to anyone and challenge only `tools/call`, so
+such a server used to read `✔ authenticated` with no Authenticate action
+until the model's first call failed; it now reads `✘ not authenticated`
+beside `✔ connected` and offers Authenticate from the start.
 
 A configured header outranks a stored grant because **the transport does
 the same** — it sends the header and never the bearer — so reporting the
@@ -322,6 +359,65 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
   server URL (0600, best-effort), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+
+  **Which client the flow presents** (`plan_client`) follows the spec's
+  registration order, and its last step is what used to be a dead end
+  (`the server offers no client registration; add a pre-registered
+  client`, with nowhere to add one):
+  1. **Pre-registered** — the config's `oauth.clientId`, its secret from
+     the config or from the token store's `clients` section (where the CLI
+     and the `/mcp` page put it). A configured id with no secret, against a
+     server whose `token_endpoint_auth_methods_supported` lists no `none`,
+     asks for the secret **before** the browser round rather than failing
+     at the exchange after it — Google is that server.
+  2. **Entered** — credentials the user typed on the `/mcp` auth page,
+     stored per server **with the issuer they were entered for**: the spec
+     binds static credentials to their authorization server (SEP-2352), so
+     a server whose metadata later names another issuer is asked again
+     rather than handed someone else's client.
+  3. **A dynamic registration already made** — reused only by a flow
+     listening on exactly the redirect URI it registered (an exact-match
+     server refuses any other port, so a re-authentication used to fail on
+     the stale registration); otherwise **a new one** (RFC 7591), stored the
+     same way with the `token_endpoint_auth_method` the server settled.
+  4. Otherwise **ask the user** — the spec's "prompt the user to enter the
+     client information": the flow returns `AuthError::NeedsClient` naming
+     the issuer and the redirect URI to register, and `/mcp` asks.
+
+  Client ID Metadata Documents would sit between 2 and 3; they need a
+  metadata document this project hosts at a stable `https` URL, and
+  Google's servers don't accept them anyway, so they stay out (below).
+
+  **The redirect port** is the config's `callbackPort` (that port or a
+  clear error — the provider was told this URI), else, for a pre-registered
+  or entered client, the stable `DEFAULT_CALLBACK_PORT` **8976**, else the
+  port an earlier registration named, else any free port. The stable port
+  is what makes a Google *Web application* client — the type Google's
+  Workspace MCP guides prescribe, which matches redirect URIs exactly —
+  workable: register `http://localhost:8976/callback` once. (`localhost`,
+  not `127.0.0.1`, is Claude Code's spelling, so a client registered for it
+  works here too; the listener binds `127.0.0.1`.)
+
+  **The token endpoint hears the client the way its server takes it**
+  (`choose_client_auth`): no secret, a public client; else the method a
+  registration settled while the server still lists it; else the form body
+  (`client_secret_post`, the method every OAuth 2.1 server MUST accept, and
+  this client's behaviour before it negotiated) unless the server lists
+  Basic and not the body. The method rides the stored grant, so the refresh
+  authenticates the same way — never both at once. An exchange refused
+  with `invalid_client` forgets a client this app stored (typed, or
+  registered), so the next attempt asks or registers afresh instead of
+  failing forever; a configured one points at the config.
+
+  **Google**: its authorization server issues refresh tokens only for
+  `access_type=offline` — it lists no `offline_access` scope — and
+  re-issues one only with `prompt=consent`, so the authorize URL carries
+  both when the issuer is `https://accounts.google.com`
+  (`provider_authorize_params`); without them a web client's grant expires
+  within the hour with nothing to renew it. Google's token endpoint wants
+  the client secret even from a desktop client, and an app still in
+  "Testing" gets refresh tokens that expire after seven days — a Google
+  console setting, not something a client can change.
 
   The callback port is served **without ever blocking on one connection**
   (`wait_for_code`): every connection the browser opens is taken and read
@@ -766,8 +862,12 @@ tools surface is the feature — and neither is their modern replacement, the
 `input_required`, and one that does anyway gets the recoverable red outcome
 rather than a stalled turn. `subscriptions/listen`, response caching
 (`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
-registration (we are not a hosted client with an `https` client id — DCR,
-deprecated but retained, is our registration path) stay out with it. Server
+registration stay out with it. CIMD is open to a CLI — the spec's own
+example is a loopback client — but it needs a client metadata document
+this project hosts at a stable `https` URL (its address *is* the client
+id), listing the exact redirect URIs; until one exists, pre-registered
+clients and DCR (deprecated in 2026-07-28 but retained) are the
+registration paths. Server
 `instructions` are shown in the detail page but not injected into the system
 prompt. WebSocket transport isn't offered (neither reference ships it for
 user servers). The dummy backend scripts no MCP scenario — the manager is

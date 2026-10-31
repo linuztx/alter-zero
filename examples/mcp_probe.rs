@@ -30,6 +30,7 @@ fn main() {
             // The spec's compat recipe: a refused streamable POST retries the
             // same URL as a legacy SSE server.
             sse_fallback: true,
+            oauth: None,
         }
     } else {
         McpServerConfig::Stdio {

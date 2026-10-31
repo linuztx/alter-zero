@@ -20,7 +20,7 @@ fn key(code: KeyCode) -> KeyEvent {
 fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSnapshot {
     // Auth derives the way the manager derives it (`crate::mcp::auth_state`):
     // a row only when the server demands auth or tokens are stored.
-    let auth = crate::mcp::auth_state(true, false, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope,
@@ -32,6 +32,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,

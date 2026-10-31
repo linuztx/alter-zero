@@ -9,7 +9,7 @@ use crate::mcp::{
 fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnapshot {
     // The auth row derives exactly as the manager derives it: only a server
     // that demands auth (or holds tokens) shows one.
-    let auth = crate::mcp::auth_state(true, false, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope: McpScope::User,
@@ -18,6 +18,7 @@ fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnaps
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,
