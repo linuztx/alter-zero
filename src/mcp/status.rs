@@ -137,11 +137,18 @@ impl McpAuthState {
 /// server that *connected* presenting nothing was never challenged, so it
 /// reads `NotRequired` instead of `✘ not authenticated` beside `✔ connected`
 /// — the reported lie about a connection with nothing wrong with it.
+///
+/// `offers_oauth` is the one exception to that last rule: a server that
+/// takes a sign-in (its entry names a client, or it publishes OAuth
+/// metadata) and connected presenting nothing is **not authenticated**, not
+/// public — Google's Workspace servers list their tools to anyone and
+/// refuse every call without a token (`docs/mcp.md`).
 #[must_use]
 pub fn auth_state(
     is_remote: bool,
     has_header: bool,
     has_tokens: bool,
+    offers_oauth: bool,
     status: &McpServerStatus,
 ) -> Option<McpAuthState> {
     if !is_remote {
@@ -153,7 +160,7 @@ pub fn auth_state(
     Some(match (has_tokens, status) {
         (true, McpServerStatus::NeedsAuth) => McpAuthState::Expired,
         (true, _) => McpAuthState::Authenticated,
-        (false, McpServerStatus::Connected) => McpAuthState::NotRequired,
+        (false, McpServerStatus::Connected) if !offers_oauth => McpAuthState::NotRequired,
         (false, _) => McpAuthState::NotAuthenticated,
     })
 }
@@ -277,6 +284,7 @@ mod tests {
                 url: "https://mcp.deepwiki.com/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: false,
+                oauth: None,
             },
             status,
             auth: Some(McpAuthState::NotAuthenticated),
@@ -331,37 +339,37 @@ mod tests {
         use McpServerStatus as S;
         // A stdio server has no auth story at all — there is no server to
         // authenticate *to*, so no row.
-        assert_eq!(auth_state(false, false, false, &S::Connected), None);
-        assert_eq!(auth_state(false, false, true, &S::Connected), None);
+        assert_eq!(auth_state(false, false, false, false, &S::Connected), None);
+        assert_eq!(auth_state(false, false, true, false, &S::Connected), None);
         // A remote server that connected presenting nothing was never
         // challenged: say so plainly. `✘ not authenticated` beside
         // `✔ connected` reads as a problem where there is none (deepwiki).
         assert_eq!(
-            auth_state(true, false, false, &S::Connected),
+            auth_state(true, false, false, false, &S::Connected),
             Some(McpAuthState::NotRequired)
         );
         // Stored tokens: the row reports the grant.
         assert_eq!(
-            auth_state(true, false, true, &S::Connected),
+            auth_state(true, false, true, false, &S::Connected),
             Some(McpAuthState::Authenticated)
         );
         assert_eq!(
-            auth_state(true, false, true, &S::Failed("x".to_string())),
+            auth_state(true, false, true, false, &S::Failed("x".to_string())),
             Some(McpAuthState::Authenticated)
         );
         // Tokens *plus* a server refusing them is the honest reading of a
         // dead grant — not "authenticated", and not "never logged in".
         assert_eq!(
-            auth_state(true, false, true, &S::NeedsAuth),
+            auth_state(true, false, true, false, &S::NeedsAuth),
             Some(McpAuthState::Expired)
         );
         // No tokens and not connected: nothing to show but the truth.
         assert_eq!(
-            auth_state(true, false, false, &S::NeedsAuth),
+            auth_state(true, false, false, false, &S::NeedsAuth),
             Some(McpAuthState::NotAuthenticated)
         );
         assert_eq!(
-            auth_state(true, false, false, &S::Pending),
+            auth_state(true, false, false, false, &S::Pending),
             Some(McpAuthState::NotAuthenticated)
         );
         // A written-down `Authorization` header outranks everything: the
@@ -369,11 +377,35 @@ mod tests {
         // grant would offer to re-run and clear a login the server never
         // sees.
         assert_eq!(
-            auth_state(true, true, false, &S::Connected),
+            auth_state(true, true, false, false, &S::Connected),
             Some(McpAuthState::Header)
         );
         assert_eq!(
-            auth_state(true, true, true, &S::NeedsAuth),
+            auth_state(true, true, true, false, &S::NeedsAuth),
+            Some(McpAuthState::Header)
+        );
+    }
+
+    #[test]
+    fn a_server_that_takes_a_sign_in_never_reads_as_public() {
+        use McpServerStatus as S;
+        // Google's Workspace servers answer `initialize` and `tools/list`
+        // to anyone and refuse every call without a token. Connected and
+        // presenting nothing, such a server is not public — it publishes
+        // its OAuth metadata — so the row says so, and the page offers the
+        // sign-in it would otherwise withhold.
+        assert_eq!(
+            auth_state(true, false, false, true, &S::Connected),
+            Some(McpAuthState::NotAuthenticated)
+        );
+        // A stored grant still reads as the grant.
+        assert_eq!(
+            auth_state(true, false, true, true, &S::Connected),
+            Some(McpAuthState::Authenticated)
+        );
+        // And a header still outranks it all.
+        assert_eq!(
+            auth_state(true, true, false, true, &S::Connected),
             Some(McpAuthState::Header)
         );
     }

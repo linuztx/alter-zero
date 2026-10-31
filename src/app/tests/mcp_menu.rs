@@ -9,7 +9,7 @@ use crate::mcp::{
 fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnapshot {
     // The auth row derives exactly as the manager derives it: only a server
     // that demands auth (or holds tokens) shows one.
-    let auth = crate::mcp::auth_state(true, false, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope: McpScope::User,
@@ -18,6 +18,7 @@ fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnaps
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,
@@ -179,7 +180,59 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
     );
     assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
     // The finished flow closes the page back to the server detail.
-    app.finish_mcp_auth();
+    let name = app
+        .mcp_menu
+        .as_ref()
+        .unwrap()
+        .current_server()
+        .unwrap()
+        .name
+        .clone();
+    assert!(!app.finish_mcp_auth(&name, true, "Authenticated"));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+}
+
+#[test]
+fn a_failed_sign_in_stays_on_its_page_until_retried_or_left() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    let name = app
+        .mcp_menu
+        .as_ref()
+        .unwrap()
+        .current_server()
+        .unwrap()
+        .name
+        .clone();
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    // Another server's outcome is not this page's to show.
+    assert!(!app.finish_mcp_auth("someone-else", false, "nope"));
+    // The page keeps the whole reason — the boundary skips the toast.
+    let reason = "accounts.google.com does not register OAuth clients automatically, …";
+    assert!(app.finish_mcp_auth(&name, false, reason));
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.error.as_deref(), Some(reason));
+    // Nothing is typed into a failure, and a paste is not routed to it.
+    assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::None);
+    assert!(!app.paste_into_mcp_auth("https://x"));
+    // Enter tries again, on a fresh page.
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: name.clone()
+        })
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(
+        (menu.page.clone(), menu.auth.error.clone()),
+        (McpPage::Auth, None)
+    );
+    // Esc from a failure goes back to the server's detail.
+    assert!(app.finish_mcp_auth(&name, false, reason));
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 

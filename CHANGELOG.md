@@ -12,7 +12,61 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **An MCP server whose sign-in registers nobody can be used now — Google
+  Calendar among them.** Google's MCP servers (Calendar, Gmail, Drive, …)
+  sign in through `accounts.google.com`, which neither registers clients on
+  the fly nor accepts client ID metadata documents, so authenticating one
+  ended on `the server offers no client registration; add a pre-registered
+  client` with nowhere to add one. A server's `mcp.json` entry now takes an
+  `oauth` block in Claude Code's spelling — `clientId`, `clientSecret`,
+  `callbackPort`, `scopes`, `authServerMetadataUrl` — and `alter-zero mcp
+  add` takes `--client-id`, `--client-secret` (read from `MCP_CLIENT_SECRET`
+  or asked for without echo, never typed on the command line) and
+  `--callback-port`. A file holding a client secret is kept readable by you
+  alone. When a sign-in still finds no client, the `/mcp` page says which
+  authorization server, what to add and where — for Google, which kind of
+  client to create — and Enter tries again after you edit the file, with no
+  restart (`docs/mcp.md` *A pre-registered client*, `docs/mcp-cli.md`).
+
 ### Fixed
+
+- **A Google MCP sign-in no longer lasts only an hour.** Google issues a
+  refresh token only when asked with `access_type=offline` — it refuses the
+  `offline_access` scope other providers use — so every Google sign-in
+  expired with its first access token. The sign-in now asks Google its own
+  way, and a stored grant renews itself like any other (`docs/mcp.md`).
+- **A server that lists its tools to anyone but refuses every call offers a
+  sign-in.** Google's Workspace servers answer the connect without a token,
+  so `/mcp` called them `✔ authenticated` and offered no way to sign in until
+  a tool call had already failed. A server that publishes OAuth metadata now
+  reads `✘ not authenticated` with an Authenticate action while connected,
+  and its page names the pre-registered client its entry configures.
+- **Refusing consent ends the sign-in at once.** A browser coming back with
+  `error=access_denied` used to leave the `/mcp` page waiting for the
+  five-minute timeout; it now ends with the authorization server's own
+  reason. A sign-in that fails stays on the page with its whole explanation
+  instead of a one-row toast that cut it short.
+- **A call refused for want of a permission asks for exactly that one.** A
+  server answering `403 insufficient_scope` used to read as a generic
+  failure — the challenge's `scope` could not even be read, because the
+  parser matched the `scope` inside `insufficient_scope`. The server now
+  stays connected, the model is told to have you re-authenticate, and the
+  next sign-in asks for the scopes the grant already had plus the ones
+  refused (`docs/mcp.md`).
+
+### Changed
+
+- **MCP sign-ins follow the 2026-07-28 authorization rules.** Protected
+  resource metadata that names a different server is never used, and the
+  `resource` sent is the metadata's own; authorization server metadata is
+  looked for in the spec's order and must name the issuer it was looked up
+  for; a server that does not advertise PKCE (S256), or whose endpoints are
+  neither HTTPS nor this machine, is refused before a browser opens; a
+  redirect without the right `state` is rejected; a client secret goes the
+  way the server advertises (HTTP Basic when it can); and a client
+  registered with one authorization server is never presented to another.
 
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a

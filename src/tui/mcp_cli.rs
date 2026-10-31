@@ -30,9 +30,32 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
             println!("{}", cli::help(HelpPage::Mcp, stdout_style()));
             0
         }
-        McpCli::Add { name, config } => {
+        McpCli::Add {
+            name,
+            config,
+            read_client_secret,
+        } => {
+            let mut config = config.clone();
+            if *read_client_secret {
+                let secret = match client_secret(name) {
+                    Ok(secret) => secret,
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return 1;
+                    }
+                };
+                if let McpServerConfig::Http {
+                    oauth: Some(oauth), ..
+                }
+                | McpServerConfig::Sse {
+                    oauth: Some(oauth), ..
+                } = &mut config
+                {
+                    oauth.client_secret = Some(secret);
+                }
+            }
             with_user_file(
-                |path, contents| match mcp::record_server(&contents, name, config) {
+                |path, contents| match mcp::record_server(&contents, name, &config) {
                     Ok(updated) => {
                         write_user_file(path, &updated)?;
                         println!(
@@ -133,7 +156,10 @@ fn read_user_file(path: &PathBuf) -> Result<String, String> {
     }
 }
 
-/// Write the updated document, creating the config dir on first use.
+/// Write the updated document, creating the config dir on first use. A
+/// document holding an OAuth client secret is kept owner-only (`0600`, the
+/// token store's mode): the secret is the one thing in it someone else
+/// could use.
 fn write_user_file(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent()
         && let Err(err) = std::fs::create_dir_all(parent)
@@ -141,7 +167,82 @@ fn write_user_file(path: &Path, contents: &str) -> Result<(), String> {
         return Err(format!("Failed to create {}: {err}", parent.display()));
     }
     std::fs::write(path, contents)
-        .map_err(|err| format!("Failed to write {}: {err}", path.display()))
+        .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
+    #[cfg(unix)]
+    if mcp::parse_mcp_file(contents)
+        .servers
+        .iter()
+        .any(|(_, config)| config.oauth().is_some_and(|o| o.client_secret.is_some()))
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("Failed to restrict {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The pre-registered client's secret for `--client-secret`: Claude Code's
+/// `MCP_CLIENT_SECRET` when set (the scripted path), else one line from
+/// stdin — asked for on the terminal without echo, or read as given when
+/// stdin is a pipe. Never an argument, which the shell would keep.
+fn client_secret(name: &str) -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if let Some(secret) = std::env::var("MCP_CLIENT_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(secret);
+    }
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.is_terminal() {
+        eprint!("Client secret for {name}: ");
+        let _ = std::io::stderr().flush();
+        let quiet = without_echo(&stdin);
+        let read = stdin.lock().read_line(&mut line);
+        drop(quiet);
+        eprintln!();
+        read.map_err(|err| format!("Failed to read the client secret: {err}"))?;
+    } else {
+        stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(|err| format!("Failed to read the client secret: {err}"))?;
+    }
+    let secret = line.trim().to_string();
+    if secret.is_empty() {
+        return Err("No client secret given (set MCP_CLIENT_SECRET, or type it when asked)".into());
+    }
+    Ok(secret)
+}
+
+/// Turns the terminal's echo off until dropped — so a typed secret never
+/// reaches the screen, and a failure to read it still restores the echo.
+struct EchoOff<'a> {
+    stdin: &'a std::io::Stdin,
+    restore: rustix::termios::Termios,
+}
+
+impl Drop for EchoOff<'_> {
+    fn drop(&mut self) {
+        let _ = rustix::termios::tcsetattr(
+            self.stdin,
+            rustix::termios::OptionalActions::Now,
+            &self.restore,
+        );
+    }
+}
+
+/// Echo off for the secret prompt; `None` when the terminal refuses, and
+/// the prompt then simply echoes.
+fn without_echo(stdin: &std::io::Stdin) -> Option<EchoOff<'_>> {
+    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
+    let restore = tcgetattr(stdin).ok()?;
+    let mut quiet = restore.clone();
+    quiet.local_modes.remove(LocalModes::ECHO);
+    tcsetattr(stdin, OptionalActions::Now, &quiet).ok()?;
+    Some(EchoOff { stdin, restore })
 }
 
 /// Parse the whole file for `list`/`get`, refusing a document that isn't
@@ -190,10 +291,37 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
                 println!("  Env: {}", masked(env, "="));
             }
         }
-        McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers } => {
+        McpServerConfig::Http {
+            url,
+            headers,
+            oauth,
+            ..
+        }
+        | McpServerConfig::Sse {
+            url,
+            headers,
+            oauth,
+        } => {
             println!("  URL: {url}");
             if !headers.is_empty() {
                 println!("  Headers: {}", masked(headers, ": "));
+            }
+            if let Some(oauth) = oauth {
+                if let Some(id) = &oauth.client_id {
+                    println!("  OAuth client: {id}");
+                }
+                if oauth.client_secret.is_some() {
+                    println!("  OAuth client secret: *****");
+                }
+                if let Some(port) = oauth.callback_port {
+                    println!("  OAuth callback: http://localhost:{port}/callback");
+                }
+                if let Some(scopes) = &oauth.scopes {
+                    println!("  OAuth scopes: {scopes}");
+                }
+                if let Some(meta) = &oauth.auth_server_metadata_url {
+                    println!("  OAuth metadata: {meta}");
+                }
             }
         }
     }

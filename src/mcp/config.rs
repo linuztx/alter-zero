@@ -30,6 +30,47 @@ impl McpScope {
     }
 }
 
+/// A remote server's OAuth client settings — the entry's `oauth` block, in
+/// Claude Code's spelling (`clientId`, `callbackPort`,
+/// `authServerMetadataUrl`) plus `clientSecret` and `scopes`
+/// (`docs/mcp.md` *A pre-registered client*). Every field is optional and
+/// a block that sets none parses as no block at all.
+///
+/// The block exists for the authorization servers that register nobody
+/// on the fly — Google's `accounts.google.com` offers neither dynamic
+/// client registration nor client ID metadata documents, so its MCP
+/// servers are reachable only through a client the user created
+/// themselves, and without somewhere to put it the flow could only fail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpOAuthConfig {
+    /// A pre-registered client id (`clientId`). It outranks every other way
+    /// of obtaining a client identity.
+    pub client_id: Option<String>,
+    /// The client's secret (`clientSecret`), for a client its authorization
+    /// server authenticates — Google's token endpoint demands one even
+    /// from a Desktop-app client.
+    pub client_secret: Option<String>,
+    /// A fixed loopback port for the callback (`callbackPort`): the
+    /// redirect URI becomes `http://localhost:{port}/callback`, which a
+    /// client type that matches redirect URIs exactly (Google's Web
+    /// application) must have registered.
+    pub callback_port: Option<u16>,
+    /// The scopes to request (`scopes`, a space-separated string or an
+    /// array), replacing the ones discovery would choose.
+    pub scopes: Option<String>,
+    /// The authorization server's own metadata document
+    /// (`authServerMetadataUrl`), fetched instead of discovering it.
+    pub auth_server_metadata_url: Option<String>,
+}
+
+impl McpOAuthConfig {
+    /// Does the block set nothing at all?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// One server's transport configuration, as declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerConfig {
@@ -48,11 +89,13 @@ pub enum McpServerConfig {
         url: String,
         headers: BTreeMap<String, String>,
         sse_fallback: bool,
+        oauth: Option<McpOAuthConfig>,
     },
     /// A legacy HTTP+SSE server (the 2024-11-05 dual-endpoint transport).
     Sse {
         url: String,
         headers: BTreeMap<String, String>,
+        oauth: Option<McpOAuthConfig>,
     },
 }
 
@@ -88,6 +131,16 @@ impl McpServerConfig {
     #[must_use]
     pub const fn is_remote(&self) -> bool {
         matches!(self, Self::Http { .. } | Self::Sse { .. })
+    }
+
+    /// The entry's `oauth` block — a remote server's pre-registered client.
+    /// `None` for stdio and for an entry that declared none.
+    #[must_use]
+    pub const fn oauth(&self) -> Option<&McpOAuthConfig> {
+        match self {
+            Self::Stdio { .. } => None,
+            Self::Http { oauth, .. } | Self::Sse { oauth, .. } => oauth.as_ref(),
+        }
     }
 
     /// Did the user write an `Authorization` header into the config? Such a
@@ -291,6 +344,7 @@ pub fn render_server(config: &McpServerConfig) -> Value {
             url,
             headers,
             sse_fallback,
+            oauth,
         } => {
             if !sse_fallback {
                 obj.insert("type".to_string(), "http".into());
@@ -299,12 +353,22 @@ pub fn render_server(config: &McpServerConfig) -> Value {
             if !headers.is_empty() {
                 obj.insert("headers".to_string(), string_map(headers));
             }
+            if let Some(oauth) = oauth {
+                obj.insert("oauth".to_string(), render_oauth(oauth));
+            }
         }
-        McpServerConfig::Sse { url, headers } => {
+        McpServerConfig::Sse {
+            url,
+            headers,
+            oauth,
+        } => {
             obj.insert("type".to_string(), "sse".into());
             obj.insert("url".to_string(), url.as_str().into());
             if !headers.is_empty() {
                 obj.insert("headers".to_string(), string_map(headers));
+            }
+            if let Some(oauth) = oauth {
+                obj.insert("oauth".to_string(), render_oauth(oauth));
             }
         }
     }
@@ -444,19 +508,121 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: false,
+            oauth: parse_oauth(obj.get("oauth"))?,
         }),
         Some("sse") => Ok(McpServerConfig::Sse {
             url: url()?,
             headers: string_map("headers")?,
+            oauth: parse_oauth(obj.get("oauth"))?,
         }),
         None if obj.contains_key("url") => Ok(McpServerConfig::Http {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: true,
+            oauth: parse_oauth(obj.get("oauth"))?,
         }),
         Some(other) => Err(format!("unsupported transport type \"{other}\"")),
         None => Err("entry needs a \"command\" (stdio) or a \"url\" (http/sse)".to_string()),
     }
+}
+
+/// The named remote server's entry as the user file declares it **now** —
+/// what a sign-in re-reads before it starts, so an `oauth` block added
+/// after launch (the failure page's own advice) counts without a restart.
+/// `None` when the entry is gone, no longer parses, or names another URL:
+/// a server that moved is a reconnect's business, not a sign-in's.
+#[must_use]
+pub fn current_remote_entry(contents: &str, name: &str, url: &str) -> Option<McpServerConfig> {
+    parse_mcp_file(contents)
+        .servers
+        .into_iter()
+        .find(|(entry, _)| entry == name)
+        .map(|(_, config)| config)
+        .filter(|config| config.url() == Some(url))
+}
+
+/// Parse a remote entry's `oauth` block ([`McpOAuthConfig`]). Absent, null
+/// or empty is no block; anything set must be well-formed, because a client
+/// the flow quietly ignored would land the user back on the
+/// no-registration dead end with nothing to say why. Unknown keys pass, as
+/// they do everywhere else in an entry.
+fn parse_oauth(block: Option<&Value>) -> Result<Option<McpOAuthConfig>, String> {
+    let obj = match block {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(obj)) => obj,
+        Some(_) => return Err("\"oauth\" must be an object".to_string()),
+    };
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match obj.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) if !text.trim().is_empty() => Ok(Some(text.trim().into())),
+            Some(_) => Err(format!("\"oauth.{key}\" must be a non-empty string")),
+        }
+    };
+    let callback_port = match obj.get("callbackPort") {
+        None | Some(Value::Null) => None,
+        Some(port) => Some(
+            port.as_u64()
+                .and_then(|port| u16::try_from(port).ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| "\"oauth.callbackPort\" must be a port (1–65535)".to_string())?,
+        ),
+    };
+    let scope_err = || "\"oauth.scopes\" must be a string or an array of strings".to_string();
+    let scopes = match obj.get("scopes") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(list)) => list.split_whitespace().map(str::to_string).collect(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::trim).ok_or_else(scope_err))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flat_map(str::split_whitespace)
+            .map(str::to_string)
+            .collect(),
+        Some(_) => return Err(scope_err()),
+    };
+    let auth_server_metadata_url = text("authServerMetadataUrl")?;
+    if let Some(meta) = &auth_server_metadata_url
+        && !url::Url::parse(meta).is_ok_and(|u| matches!(u.scheme(), "https" | "http"))
+    {
+        return Err("\"oauth.authServerMetadataUrl\" must be an http(s) URL".to_string());
+    }
+    let client_id = text("clientId")?;
+    let client_secret = text("clientSecret")?;
+    if client_secret.is_some() && client_id.is_none() {
+        return Err("\"oauth.clientSecret\" needs the \"clientId\" it belongs to".to_string());
+    }
+    let config = McpOAuthConfig {
+        client_id,
+        client_secret,
+        callback_port,
+        scopes: (!scopes.is_empty()).then(|| scopes.join(" ")),
+        auth_server_metadata_url,
+    };
+    Ok((!config.is_empty()).then_some(config))
+}
+
+/// The `oauth` block as [`parse_oauth`] reads it — Claude Code's spelling,
+/// unset keys omitted.
+fn render_oauth(oauth: &McpOAuthConfig) -> Value {
+    let text = |value: &Option<String>| value.as_deref().map(Value::from);
+    let fields = [
+        ("clientId", text(&oauth.client_id)),
+        ("clientSecret", text(&oauth.client_secret)),
+        ("callbackPort", oauth.callback_port.map(Value::from)),
+        ("scopes", text(&oauth.scopes)),
+        (
+            "authServerMetadataUrl",
+            text(&oauth.auth_server_metadata_url),
+        ),
+    ];
+    Value::Object(
+        fields
+            .into_iter()
+            .filter_map(|(key, value)| Some((key.to_string(), value?)))
+            .collect(),
+    )
 }
 
 /// Merge the scopes into the declared server list, first occurrence of a
@@ -565,6 +731,7 @@ mod tests {
                 url: "https://x/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: false,
+                oauth: None,
             }
         );
         assert_eq!(
@@ -572,6 +739,7 @@ mod tests {
             McpServerConfig::Sse {
                 url: "https://x/sse".to_string(),
                 headers: [("A".to_string(), "b".to_string())].into_iter().collect(),
+                oauth: None,
             }
         );
         assert_eq!(
@@ -736,6 +904,7 @@ mod tests {
             url: url.to_string(),
             headers: BTreeMap::new(),
             sse_fallback: false,
+            oauth: None,
         }
     }
 
@@ -766,15 +935,18 @@ mod tests {
                 url: "https://x/mcp".to_string(),
                 headers: map(&[("Authorization", "Bearer t")]),
                 sse_fallback: false,
+                oauth: None,
             },
             McpServerConfig::Http {
                 url: "https://x/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: true,
+                oauth: None,
             },
             McpServerConfig::Sse {
                 url: "https://x/sse".to_string(),
                 headers: map(&[("A", "b")]),
+                oauth: None,
             },
         ];
         for config in shapes {
@@ -791,6 +963,7 @@ mod tests {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: true,
+            oauth: None,
         });
         assert!(fallback.get("type").is_none(), "{fallback}");
         // Empty args/env/headers are omitted, matching absent-means-empty.
@@ -801,6 +974,184 @@ mod tests {
         assert_eq!(
             render_server(&http("https://x")),
             serde_json::json!({"type": "http", "url": "https://x"})
+        );
+    }
+
+    // ===== the `oauth` block (docs/mcp.md *A pre-registered client*) =====
+
+    fn google_client() -> McpOAuthConfig {
+        McpOAuthConfig {
+            client_id: Some("123-abc.apps.googleusercontent.com".to_string()),
+            client_secret: Some("GOCSPX-secret".to_string()),
+            callback_port: Some(8085),
+            scopes: Some("https://www.googleapis.com/auth/calendar openid".to_string()),
+            auth_server_metadata_url: Some(
+                "https://accounts.google.com/.well-known/openid-configuration".to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn an_oauth_block_carries_a_pre_registered_client() {
+        // The user's own Google Calendar entry, with the block that makes a
+        // server whose authorization server registers nobody reachable.
+        let file = parse_mcp_file(
+            r#"{"mcpServers": {
+                "google-calendar": {
+                    "url": "https://calendarmcp.googleapis.com/mcp/v1",
+                    "oauth": {
+                        "clientId": " 123-abc.apps.googleusercontent.com ",
+                        "clientSecret": "GOCSPX-secret",
+                        "callbackPort": 8085,
+                        "scopes": ["https://www.googleapis.com/auth/calendar", "openid"],
+                        "authServerMetadataUrl": "https://accounts.google.com/.well-known/openid-configuration"
+                    }
+                },
+                "legacy": {
+                    "type": "sse",
+                    "url": "https://x/sse",
+                    "oauth": {"clientId": "c", "scopes": "read  write"}
+                }
+            }}"#,
+        );
+        assert!(file.errors.is_empty(), "{:?}", file.errors);
+        let get = |name: &str| {
+            file.servers
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert_eq!(
+            get("google-calendar"),
+            McpServerConfig::Http {
+                url: "https://calendarmcp.googleapis.com/mcp/v1".to_string(),
+                headers: BTreeMap::new(),
+                sse_fallback: true,
+                oauth: Some(google_client()),
+            }
+        );
+        // A scope string is normalized to single spaces, like the array's
+        // join — it is one OAuth `scope` parameter either way.
+        assert_eq!(
+            get("legacy").oauth(),
+            Some(&McpOAuthConfig {
+                client_id: Some("c".to_string()),
+                scopes: Some("read write".to_string()),
+                ..Default::default()
+            })
+        );
+        // A stdio server has nothing to authenticate to, and a block that
+        // sets nothing is no block at all.
+        let file = parse_mcp_file(
+            r#"{"mcpServers": {
+                "local": {"command": "srv", "oauth": {"clientId": "c"}},
+                "bare": {"url": "https://x", "oauth": {}}
+            }}"#,
+        );
+        assert!(file.errors.is_empty(), "{:?}", file.errors);
+        for (_, config) in &file.servers {
+            assert_eq!(config.oauth(), None, "{config:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_oauth_block_is_reported_by_name() {
+        // Loud, never lenient: a client the flow silently ignored would
+        // send the user back to the "no client registration" dead end with
+        // nothing to say why.
+        for (block, needle) in [
+            (r#""x""#, "\"oauth\" must be an object"),
+            (r#"{"clientId": ""}"#, "\"oauth.clientId\""),
+            (r#"{"clientId": 7}"#, "\"oauth.clientId\""),
+            (r#"{"clientSecret": ["s"]}"#, "\"oauth.clientSecret\""),
+            (r#"{"clientSecret": "s"}"#, "\"oauth.clientSecret\" needs"),
+            (r#"{"callbackPort": 0}"#, "\"oauth.callbackPort\""),
+            (r#"{"callbackPort": 70000}"#, "\"oauth.callbackPort\""),
+            (r#"{"callbackPort": "8080"}"#, "\"oauth.callbackPort\""),
+            (r#"{"scopes": [1]}"#, "\"oauth.scopes\""),
+            (
+                r#"{"authServerMetadataUrl": "ftp://as/meta"}"#,
+                "\"oauth.authServerMetadataUrl\"",
+            ),
+        ] {
+            let file = parse_mcp_file(&format!(
+                r#"{{"mcpServers": {{"cal": {{"url": "https://x", "oauth": {block}}}}}}}"#
+            ));
+            assert!(file.servers.is_empty(), "{block} parsed");
+            assert_eq!(file.errors.len(), 1, "{block}: {:?}", file.errors);
+            assert!(
+                file.errors[0].starts_with("cal: ") && file.errors[0].contains(needle),
+                "{block}: {:?}",
+                file.errors
+            );
+        }
+    }
+
+    #[test]
+    fn an_oauth_block_round_trips_through_render() {
+        let shapes = [
+            McpServerConfig::Http {
+                url: "https://calendarmcp.googleapis.com/mcp/v1".to_string(),
+                headers: BTreeMap::new(),
+                sse_fallback: true,
+                oauth: Some(google_client()),
+            },
+            McpServerConfig::Sse {
+                url: "https://x/sse".to_string(),
+                headers: BTreeMap::new(),
+                oauth: Some(McpOAuthConfig {
+                    client_id: Some("c".to_string()),
+                    ..Default::default()
+                }),
+            },
+        ];
+        for config in shapes {
+            let rendered = render_server(&config).to_string();
+            assert_eq!(
+                parse_server_entry(&rendered),
+                Ok(config.clone()),
+                "{rendered}"
+            );
+        }
+        // Claude Code's spelling, unset keys omitted.
+        let rendered = render_server(&McpServerConfig::Http {
+            url: "https://x".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: true,
+            oauth: Some(McpOAuthConfig {
+                client_id: Some("c".to_string()),
+                callback_port: Some(8080),
+                ..Default::default()
+            }),
+        });
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "url": "https://x",
+                "oauth": {"clientId": "c", "callbackPort": 8080}
+            })
+        );
+    }
+
+    #[test]
+    fn a_sign_in_rereads_its_entry_from_the_file() {
+        let url = "https://calendarmcp.googleapis.com/mcp/v1";
+        let file = format!(
+            r#"{{"mcpServers": {{"cal": {{"url": "{url}", "oauth": {{"clientId": "c"}}}}}}}}"#
+        );
+        let entry = current_remote_entry(&file, "cal", url).expect("the entry");
+        assert_eq!(
+            entry.oauth().and_then(|o| o.client_id.as_deref()),
+            Some("c")
+        );
+        // Gone, unparseable, or moved: nothing to take.
+        assert_eq!(current_remote_entry(&file, "other", url), None);
+        assert_eq!(current_remote_entry("{not json", "cal", url), None);
+        assert_eq!(
+            current_remote_entry(&file, "cal", "https://moved.test/mcp"),
+            None
         );
     }
 
@@ -905,11 +1256,13 @@ mod tests {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: true,
+            oauth: None,
         };
         assert_eq!(fallback.transport_label(), "http");
         let sse = McpServerConfig::Sse {
             url: "https://x".to_string(),
             headers: BTreeMap::new(),
+            oauth: None,
         };
         assert_eq!(sse.transport_label(), "sse");
     }
@@ -947,6 +1300,7 @@ mod tests {
             url: "https://x/mcp".to_string(),
             headers: BTreeMap::new(),
             sse_fallback: false,
+            oauth: None,
         };
         assert_eq!(http.target(), "https://x/mcp");
         assert!(http.is_remote());

@@ -1198,7 +1198,11 @@ after `term.restore()`, `docs/cli.md` — and the **`mcp` subcommand family**,
 [--] {command} [args…]` (plus `add-json`/`remove`/`get`/`list`) edits the
 *user* MCP config file at that same pre-TUI boundary — codex's explicit
 url-or-command grammar with Claude Code's `--transport sse`/`--header`/
-duplicate-error ergonomics on top, a bare `--url` writing the type-less
+duplicate-error ergonomics and its OAuth client flags (`--client-id`,
+`--client-secret` — read from `MCP_CLIENT_SECRET` or a no-echo prompt, never
+an argument, into the entry's `oauth` block, the file then `0600` —
+`--callback-port`, `docs/mcp.md` *A pre-registered client*) on top, a bare
+`--url` writing the type-less
 http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in

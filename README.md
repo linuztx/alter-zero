@@ -215,7 +215,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 
 - **Subagents.** Delegate focused work to agents with their own context, model, and tool access. Built-in `general-purpose` and `explore` agents are editable, and you can open a running agent's session to chat, send follow-up work, or stop it — while the main agent does the same by each agent's id: checks its progress, sends a finished agent a follow-up with its context intact, or stops it.
 - **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `web-search` searches the web through Exa, Parallel, Tavily and Jina Reader with no key; `jina-reader` reads public webpages and PDFs through Jina Reader; `yt-dlp` guides media downloads with the separately installed CLI; `flaredantic` guides public localhost tunnels with the external `flare` CLI.
-- **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
+- **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth — with your own OAuth client where the server needs one, as Google's do. Manage connections with `/mcp` or `alter-zero mcp`.
 - **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.
 
 ### Pick up where you left off

@@ -115,6 +115,12 @@ struct ServerState {
     /// wire tool name → the server's raw tool name.
     wire_map: BTreeMap<String, String>,
     has_tokens: bool,
+    /// Does the server take an OAuth sign-in? Its entry names a
+    /// pre-registered client, it challenged us, or — asked once a bare
+    /// connect succeeded — it publishes protected-resource metadata. What
+    /// keeps a server that lists its tools openly but refuses every call
+    /// (Google's) from reading `✔ authenticated` with no way to sign in.
+    offers_oauth: bool,
     /// The last 401's `WWW-Authenticate` challenge. Discovery runs blind
     /// without it: the challenge names the `resource_metadata` URL a server
     /// publishes off the well-known path, and the `scope` the resource
@@ -184,6 +190,7 @@ impl McpManager {
                     transport: None,
                     wire_map: BTreeMap::new(),
                     has_tokens,
+                    offers_oauth: entry.config.oauth().is_some(),
                     challenge: None,
                     generation: 0,
                     entry,
@@ -305,6 +312,7 @@ impl McpManager {
             let bearer = config
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
+            let presented = bearer.is_some();
             let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
             // A 401 with a stored grant gets one forced refresh and one
             // retry before anyone is asked to re-authenticate — an access
@@ -337,6 +345,14 @@ impl McpManager {
                     Err(_) => {} // no grant, or a cleared dead one: needs-auth is truthful
                 }
             }
+            // A server that let us in presenting nothing may still take a
+            // sign-in — and refuse its calls without one (Google's). It is
+            // asked below, once the connect has been reported: a slow
+            // well-known lookup must not hold the row at `connecting…`.
+            let ask_about_oauth = result.is_ok()
+                && !presented
+                && !config.has_auth_header()
+                && config.oauth().is_none();
             let mut inner = manager.lock();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
@@ -344,6 +360,11 @@ impl McpManager {
             if server.generation != generation {
                 return; // a reconnect/disable superseded this attempt
             }
+            // A server we hold a grant for took a sign-in too — so clearing
+            // that grant leaves it `not authenticated`, never public.
+            server.offers_oauth = config.oauth().is_some()
+                || presented
+                || matches!(result, Err(ConnectError::NeedsAuth(_)));
             match result {
                 Ok(connection) => {
                     server.identity = Some(connection.identity);
@@ -385,6 +406,16 @@ impl McpManager {
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             drop(inner);
             manager.notify(McpEvent::Changed);
+            if ask_about_oauth && config.url().is_some_and(oauth::offers_oauth) {
+                let mut inner = manager.lock();
+                if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name)
+                    && server.generation == generation
+                {
+                    server.offers_oauth = true;
+                    drop(inner);
+                    manager.notify(McpEvent::Changed);
+                }
+            }
         });
     }
 
@@ -514,7 +545,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path) = {
+        let (url, challenge, client, config_path, auth_path, user_file) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -527,7 +558,18 @@ impl McpManager {
                 });
                 return;
             };
-            (url, server.challenge.clone(), inner.auth_path.clone())
+            (
+                url,
+                server.challenge.clone(),
+                server.entry.config.oauth().cloned(),
+                server.entry.config_path.clone(),
+                inner.auth_path.clone(),
+                // Only a user-file entry is re-read: a project file's edit
+                // re-pends `/trust`, which owns when it counts again.
+                (server.entry.scope == crate::mcp::McpScope::User)
+                    .then(|| inner.user_file.clone())
+                    .flatten(),
+            )
         };
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
@@ -559,9 +601,28 @@ impl McpManager {
                 manager: manager.clone(),
                 server: name.clone(),
             };
+            // The entry as the file declares it now: the failure page's
+            // advice is to add an `oauth` block, and trying again must see
+            // it without a restart.
+            let fresh = user_file
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|contents| crate::mcp::current_remote_entry(&contents, &name, &url));
+            let client = match fresh {
+                Some(config) => {
+                    let client = config.oauth().cloned();
+                    let mut inner = manager.lock();
+                    if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
+                        server.offers_oauth |= client.is_some();
+                        server.entry.config = config;
+                    }
+                    client
+                }
+                None => client,
+            };
             let result = oauth::run_auth_flow(
                 &url,
                 challenge.as_deref(),
+                client.as_ref(),
                 auth_path.as_deref(),
                 &paste_rx,
                 &progress,
@@ -580,7 +641,11 @@ impl McpManager {
             }
             let (ok, detail) = match result {
                 Ok(()) => (true, format!("Authenticated with {name}")),
-                Err(detail) => (false, detail),
+                Err(oauth::AuthFlowError::NoClient { issuer }) => (
+                    false,
+                    oauth::no_client_message(&name, &issuer, &config_path),
+                ),
+                Err(oauth::AuthFlowError::Failed(detail)) => (false, detail),
             };
             manager.notify(McpEvent::AuthDone {
                 server: name.clone(),
@@ -627,6 +692,7 @@ impl McpManager {
                     server.entry.config.is_remote(),
                     server.entry.config.has_auth_header(),
                     server.has_tokens,
+                    server.offers_oauth,
                     &server.status,
                 ),
                 identity: server.identity.clone(),
@@ -848,6 +914,33 @@ impl McpManager {
                 ToolOutcome::error(format!(
                     "the {server_name} MCP server requires authentication — \
                      ask the user to run /mcp and authenticate"
+                ))
+            }
+            Err(TransportError::InsufficientScope(challenge)) => {
+                // Step-up (`docs/mcp.md`): the grant works, just not for
+                // this. Keep the connection — the server's other tools still
+                // answer — and the challenge, whose scope the next sign-in
+                // adds to the grant's own.
+                let wanted = challenge
+                    .as_deref()
+                    .and_then(oauth::challenge_scope)
+                    .map(|scope| format!(" ({scope})"))
+                    .unwrap_or_default();
+                {
+                    let mut inner = self.lock();
+                    if let Some(server) = inner
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.entry.name == server_name)
+                        && challenge.is_some()
+                    {
+                        server.challenge = challenge;
+                    }
+                }
+                self.notify(McpEvent::Changed);
+                ToolOutcome::error(format!(
+                    "the {server_name} MCP server needs more permissions for this call{wanted} — \
+                     ask the user to run /mcp, open {server_name} and choose Re-authenticate"
                 ))
             }
             Err(TransportError::Cancelled) => ToolOutcome::error("tool call cancelled"),
@@ -1145,6 +1238,7 @@ mod tests {
                 url,
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -1527,6 +1621,7 @@ done
                 client_secret: None,
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
+                ..Default::default()
             }),
         );
     }
@@ -1542,6 +1637,7 @@ done
                         url: fixture.url.clone(),
                         headers: Default::default(),
                         sse_fallback: false,
+                        oauth: None,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -1759,6 +1855,236 @@ done
             Some(crate::mcp::McpAuthState::Authenticated)
         );
         manager.shutdown();
+    }
+
+    /// Google's Workspace shape: `initialize`/`tools/list` answer anyone,
+    /// the protected-resource metadata is published, and `tools/call`
+    /// refuses a missing token (401, a per-tool `resource_metadata`) and a
+    /// token without the `write` scope (403 `insufficient_scope`). Only
+    /// `Bearer wide` gets through.
+    fn spawn_open_listing_fixture() -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let root = base.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let (mut content_length, mut bearer) = (0usize, String::new());
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(rest) = lower.strip_prefix("authorization: bearer ") {
+                        bearer = rest.trim().to_string();
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let respond = |stream: &mut std::net::TcpStream, head: &str, body: &str| {
+                    let response = format!(
+                        "HTTP/1.1 {head}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                if path == "/.well-known/oauth-protected-resource/mcp" {
+                    let body = serde_json::json!({
+                        "resource": format!("{root}/mcp"),
+                        "authorization_servers": [format!("{root}/")],
+                    })
+                    .to_string();
+                    respond(&mut stream, "200 OK", &body);
+                    continue;
+                }
+                if !path.starts_with("/mcp") {
+                    respond(&mut stream, "404 Not Found", "");
+                    continue;
+                }
+                let request = serde_json::from_slice::<Value>(&body).unwrap_or_default();
+                let id = request.get("id").and_then(Value::as_u64);
+                let reply = |result: Value| {
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
+                };
+                match request
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                {
+                    "initialize" => respond(
+                        &mut stream,
+                        "200 OK",
+                        &reply(serde_json::json!({
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "open-listing", "version": "0"}
+                        })),
+                    ),
+                    "notifications/initialized" => respond(&mut stream, "202 Accepted", ""),
+                    "tools/list" => respond(
+                        &mut stream,
+                        "200 OK",
+                        &reply(serde_json::json!({"tools": [
+                            {"name": "create_event", "description": "Create.",
+                             "inputSchema": {"type": "object", "properties": {}}}
+                        ]})),
+                    ),
+                    "tools/call" if bearer.is_empty() => {
+                        let head = format!(
+                            "401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"{root}/.well-known/oauth-protected-resource/create_event\""
+                        );
+                        respond(&mut stream, &head, "");
+                    }
+                    "tools/call" if bearer != "wide" => respond(
+                        &mut stream,
+                        "403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"write\"",
+                        "",
+                    ),
+                    "tools/call" => respond(
+                        &mut stream,
+                        "200 OK",
+                        &reply(
+                            serde_json::json!({"content": [{"type": "text", "text": "created"}]}),
+                        ),
+                    ),
+                    _ => respond(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "method not found"}
+                        })
+                        .to_string(),
+                    ),
+                }
+            }
+        });
+        format!("{base}/mcp")
+    }
+
+    fn open_listing_manager(url: &str, auth_path: &std::path::Path) -> McpManager {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "cal".to_string(),
+                    config: McpServerConfig::Http {
+                        url: url.to_string(),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth: None,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(auth_path.to_path_buf()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn create_event() -> ToolCallRequest {
+        ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__cal__create_event".to_string(),
+            arguments: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_server_that_lists_openly_but_refuses_calls_offers_a_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let manager = open_listing_manager(&spawn_open_listing_fixture(), &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "cal");
+        // Connected presenting nothing, yet not public: it publishes its
+        // OAuth metadata, so the page says so and offers the sign-in.
+        let mut auth = None;
+        for _ in 0..200 {
+            auth = manager.snapshot()[0].auth;
+            if auth == Some(crate::mcp::McpAuthState::NotAuthenticated) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(auth, Some(crate::mcp::McpAuthState::NotAuthenticated));
+        // A call without a token is the sign-in's cue, challenge kept.
+        let outcome = manager.call_tool(&create_event(), &CancelToken::new());
+        assert!(!outcome.ok);
+        assert!(
+            outcome.output.contains("requires authentication"),
+            "{}",
+            outcome.output
+        );
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::NeedsAuth);
+        let challenge = manager.lock().servers[0]
+            .challenge
+            .clone()
+            .unwrap_or_default();
+        assert!(challenge.contains("resource_metadata"), "{challenge}");
+    }
+
+    #[test]
+    fn a_call_refused_for_scope_keeps_the_connection_and_asks_for_a_step_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let url = spawn_open_listing_fixture();
+        oauth::save_tokens(
+            Some(&auth_path),
+            &url,
+            Some(&super::oauth::StoredTokens {
+                access_token: "narrow".to_string(),
+                refresh_token: Some("rt".to_string()),
+                expires_at: Some(u64::MAX / 4),
+                client_id: "cid".to_string(),
+                // A refresh would fail loudly here: none may be attempted,
+                // since no refresh ever widens a grant.
+                token_endpoint: "http://127.0.0.1:9/token".to_string(),
+                scope: Some("read".to_string()),
+                ..Default::default()
+            }),
+        );
+        let manager = open_listing_manager(&url, &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "cal");
+        let outcome = manager.call_tool(&create_event(), &CancelToken::new());
+        assert!(!outcome.ok);
+        assert!(
+            outcome.output.contains("needs more permissions"),
+            "{}",
+            outcome.output
+        );
+        assert!(outcome.output.contains("(write)"), "{}", outcome.output);
+        // The server's other tools still answer: the connection stays, and
+        // the challenge waits for the Re-authenticate that steps up.
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Connected);
+        assert_eq!(
+            snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        let challenge = manager.lock().servers[0]
+            .challenge
+            .clone()
+            .unwrap_or_default();
+        assert!(challenge.contains("insufficient_scope"), "{challenge}");
+        // The grant is untouched.
+        let stored = oauth::load_tokens(Some(&auth_path), &url).unwrap();
+        assert_eq!(stored.access_token, "narrow");
     }
 
     #[test]

@@ -423,6 +423,12 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         value,
         width,
     ));
+    // The entry's pre-registered client, when it names one — the id is
+    // what the user pasted from their console, so seeing it here is how
+    // they know the block was read. Never the secret.
+    if let Some(client) = server.config.oauth().and_then(|o| o.client_id.as_deref()) {
+        lines.extend(field_lines("OAuth client:", client, value, width));
+    }
     if let Some(identity) = &server.identity {
         if !identity.capabilities.is_empty() {
             lines.push(field_line(
@@ -609,6 +615,26 @@ fn tool_lines_page(
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
 /// and the `URL >` paste-the-redirect fallback.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    if let Some(error) = &menu.auth.error {
+        // A failure stays on the page, worded in full and wrapped, never
+        // cut — "add a pre-registered client" is a paragraph, and the toast
+        // row it used to be squeezed into kept its first sentence.
+        let mut lines = vec![
+            model_rule(width),
+            title_line(
+                &format!("Could not authenticate with {}", server.name),
+                width,
+            ),
+            Line::default(),
+        ];
+        lines.extend(wrapped(error, Style::new().fg(tool_fail_color()), width));
+        lines.extend([
+            Line::default(),
+            dim_line(MCP_AUTH_RETRY_HINT, width),
+            model_rule(width),
+        ]);
+        return lines;
+    }
     let mut lines = vec![
         model_rule(width),
         title_line(&format!("Authenticating with {}…", server.name), width),

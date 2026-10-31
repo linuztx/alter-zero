@@ -55,6 +55,20 @@ streamable-HTTP handshake that fails with a client error retries the same
 URL as a legacy SSE server (the MCP spec's backwards-compatibility recipe),
 so a bare `{"url": …}` works against any generation of server.
 
+A remote entry may also carry an **`oauth` block** — the OAuth client it
+signs in with, in Claude Code's spelling (`clientId`, `callbackPort`,
+`authServerMetadataUrl`) plus `clientSecret` and `scopes` — for the
+authorization servers that register nobody on the fly. Google's are the
+reason it exists; *A pre-registered client* below is the whole story:
+
+```json
+"google-calendar": {
+  "url": "https://calendarmcp.googleapis.com/mcp/v1",
+  "oauth": { "clientId": "123-abc.apps.googleusercontent.com",
+             "clientSecret": "GOCSPX-…" }
+}
+```
+
 ## Protocol versions — the dual-era client
 
 This client speaks the **modern `2026-07-28` revision** (stateless: no
@@ -176,8 +190,21 @@ derives five, in this order:
 | `Header` | `✔ authenticated (config header)` | the config carries its own `Authorization` header |
 | `Expired` | `✘ expired` | tokens stored **and** the server refusing them |
 | `Authenticated` | `✔ authenticated` | tokens stored |
-| `NotRequired` | `✔ authenticated` | connected while presenting nothing |
-| `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, not serving |
+| `NotRequired` | `✔ authenticated` | connected while presenting nothing, and takes no sign-in |
+| `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, and either not serving or a server that takes a sign-in |
+
+**Connected is not the same as public.** Google's Workspace servers answer
+`initialize` and `tools/list` to anyone and refuse every `tools/call`
+without a token, so a bare connect used to read `✔ authenticated` — with no
+`Authenticate` action, since a public server has nothing to log into —
+until a call had already failed. A server **takes a sign-in** when its entry
+names an `oauth` client, when it ever challenged us, or when it publishes
+protected-resource metadata naming an authorization server; the last is
+asked once a bare connect has been reported (`oauth::offers_oauth`, on the
+connect worker, a five-second budget per well-known URL, never holding the
+row at `connecting…`). Such a server reads `NotAuthenticated` while
+connected, and its page offers `Authenticate`. DeepWiki publishes no
+metadata and stays `NotRequired`.
 
 A configured header outranks a stored grant because **the transport does
 the same** — it sends the header and never the bearer — so reporting the
@@ -237,7 +264,9 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     intact, because masking it would hide a 401 underneath, which is the
     very signal the token refresh acts on. Gated on having *sent* a session
     id, since a sessionless modern server answers an unknown **method**
-    with 404.
+    with 404. A **403 whose challenge says `insufficient_scope`** is not a
+    refusal but the spec's step-up cue (`transport::auth_refusal`):
+    `TransportError::InsufficientScope`, carrying the challenge.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
     base URL), requests POST there and answers arrive on the stream.
@@ -307,20 +336,27 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   forbids), the `MODERN_PROBE_TIMEOUT` slice before the handshake. That is
   paid on a background worker while the TUI runs, and it buys a revision
   that is true every time it is shown.
-- `oauth` — the RFC-shaped authorization-code + PKCE flow: protected-resource
-  metadata (RFC 9728) → authorization-server metadata (RFC 8414, with the
-  OIDC fallback path) → dynamic client registration (RFC 7591) when offered
-  (`application_type: "native"` — the 2026-07-28 requirement whose OIDC
-  default of `web` rejects a CLI's loopback redirect) → the authorize URL
-  (S256 challenge, `state`, RFC 8707 `resource`, and `offline_access`
-  folded into the scopes **only when the AS metadata offers it** —
-  SEP-2207's refresh-capable grant, never added blind) → a loopback
-  `TcpListener` callback server *and* the paste-the-redirect-URL fallback —
-  both accepted, whichever lands first, each validating the RFC 9207 `iss`
-  against the discovered issuer (byte-for-byte, absence rejected when the
-  metadata advertised the parameter) before the code is redeemed → the
-  token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
-  server URL (0600, best-effort), and ride every HTTP request as
+- `oauth` — the RFC-shaped authorization-code + PKCE flow, held to the
+  2026-07-28 authorization rules (*Signing in* below has them whole):
+  protected-resource metadata (RFC 9728, `discover_resource`) → authorization
+  server metadata (RFC 8414 + OIDC, `discover_auth_server`, or the entry's
+  `authServerMetadataUrl`) → a client identity in the spec's priority order
+  (`choose_client`: the entry's own `oauth` client, one this issuer
+  registered earlier, dynamic registration — RFC 7591 with
+  `application_type: "native"`, the 2026-07-28 requirement whose OIDC default
+  of `web` rejects a CLI's loopback redirect — and otherwise
+  `AuthFlowError::NoClient`) → the authorize URL (S256 challenge, `state`,
+  the RFC 8707 `resource` the metadata named, the scope `choose_scope` picks,
+  and the authorization server's own extras, `issuer_extras` — Google's
+  `access_type=offline`) → a loopback `TcpListener` callback server (on
+  `callbackPort` when configured) *and* the paste-the-redirect-URL fallback
+  — both accepted, whichever lands first, each checked by `read_redirect`
+  (`state` first, then the RFC 9207 `iss`, then a code or the server's own
+  refusal) → the token exchange, the client authenticating the way the
+  server advertises (`choose_token_auth`). Tokens persist in
+  `{config_home}/mcp-auth.json` keyed by server URL (0600, best-effort)
+  with how they were issued — the `resource`, the `issuer`, the token
+  endpoint's auth method — and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
 
   Two things the flow must get right or the grant is born unrenewable:
@@ -338,7 +374,13 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   operation refused) plus `offline_access` when the AS advertises it —
   **never** the AS's whole catalogue, which strict providers answer with
   `invalid_scope`, and never `offline_access` alone, which is not a
-  resource request.
+  resource request. **Google is the exception that proves the rule**: it
+  refuses the `offline_access` scope outright (`invalid_scope`) and never
+  lists it, so the union above rightly adds nothing there — and its grant
+  is renewable only when the authorize request carries
+  **`access_type=offline`**, with `prompt=consent` for a user who already
+  consented (`issuer_extras`, keyed on Google's issuer). Without it every
+  Google sign-in lasted the access token's hour.
 
   **Token refresh — why a session never asks twice** (`refresh_grant` and
   friends; the reference client's own bug class, fixed here the way its
@@ -363,10 +405,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   - **Rotation**: a returned `refresh_token` replaces the stored one
     (RFC 6749 §6's MUST — the AS may revoke the old one on rotation); an
     absent one keeps the old, never overwriting a live token with nothing.
-    The refresh request carries `grant_type`/`refresh_token`/`client_id`
-    (+ `client_secret` for a confidential client) and the RFC 8707
-    `resource` — and **no scope** (it could only narrow the grant) and no
-    PKCE (authorization-code only). The store is re-read before every
+    The refresh request carries `grant_type`/`refresh_token`, the client's
+    credentials the way the grant was issued with them (HTTP Basic, or
+    `client_id` + `client_secret` in the body), and the RFC 8707 `resource`
+    the grant was issued for — and **no scope** (it could only narrow the
+    grant) and no PKCE (authorization-code only). The store is re-read before every
     refresh, so another process's newer grant is used instead of burning a
     rotated token.
   - **Single-flight, per server.** Serializing the store's *write* does not
@@ -421,6 +464,153 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   saw them either way (`tool_specs`/`fingerprint`/`has_tools` all filter on
   `Connected`), so what this changes is only whether the page tells the
   truth while a server is down.
+
+## Signing in — a pre-registered client, and the 2026-07-28 rules
+
+### A pre-registered client
+
+The spec's client registration order (2026-07-28 *Client Registration*) is:
+a pre-registered client when the client has one, a **client ID metadata
+document** when the authorization server advertises
+`client_id_metadata_document_supported`, **dynamic registration** (RFC 7591,
+deprecated in favour of the documents but kept for compatibility) when it
+offers a `registration_endpoint` — and otherwise asking the user. This
+client has no metadata document to offer: one is an `https` URL the app
+would have to host, and it may carry no secret. So the order here is the
+entry's `oauth` client, a client the same authorization server registered
+earlier, dynamic registration, and then the user — who is answered with
+what to add and where (`no_client_message`), on the `/mcp` page.
+
+Google is the case that made it necessary. Every Google MCP server — the
+Workspace ones (Calendar, Gmail, Drive, …) and the Cloud ones (BigQuery,
+…) — signs in through `accounts.google.com`, which offers neither dynamic
+registration nor metadata documents, and whose token endpoint demands a
+secret (`client_secret_post`/`client_secret_basic`, no `none`) even from a
+Desktop-app client. A user reaches such a server only through a client they
+created themselves, and before the `oauth` block there was nowhere to put
+one: the flow ended on `the server offers no client registration; add a
+pre-registered client`, naming a step the config could not express.
+
+The block, in the entry it configures:
+
+| Key | What it does |
+|---|---|
+| `clientId` | the pre-registered client — it outranks every other way of getting one |
+| `clientSecret` | its secret, for a client the server authenticates (Google always does); needs `clientId` |
+| `callbackPort` | a fixed loopback port: the redirect URI becomes `http://localhost:{port}/callback`, which a client type that matches redirect URIs exactly (Google's *Web application*) must have registered; without it the port is whatever is free, which a *Desktop app* client accepts |
+| `scopes` | a string or an array, sent verbatim instead of the discovered scopes (Claude Code's rule for the same key) |
+| `authServerMetadataUrl` | the authorization server's metadata document, fetched instead of discovered |
+
+Every key is checked when the file is read — a port outside 1–65535, a
+secret with no id, a metadata URL that is not http(s) — and a bad block is
+the entry's red startup toast, never a client silently ignored. The
+secret belongs in the **user** file: a project's `.mcp.json` is shared, and
+`alter-zero mcp add --client-secret` (`docs/mcp-cli.md`) writes it there
+without it ever being typed on a command line, keeping the file `0600`.
+The server page shows the client id it read (`OAuth client:`), never the
+secret, so the user can see the block was picked up.
+
+A sign-in **re-reads its entry from the user file** first
+(`mcp::current_remote_entry`): the failure page's own advice is to add a
+block, and Enter (*try again*) on that page must see it without a
+restart. Only a user-file entry, and only while its URL is unchanged — a
+project file's edit re-pends `/trust`, and a moved server is a reconnect.
+
+#### Google Calendar, end to end
+
+1. In Google Cloud Console, in a project enrolled for the Workspace MCP
+   developer preview, enable the Calendar MCP API
+   (`calendarmcp.googleapis.com`) and, per Google's guide, the Calendar API.
+2. Configure the OAuth consent screen (Internal, or External with yourself
+   as a test user).
+3. Create an OAuth client ID of type **Desktop app**, and tick **Use this
+   client for an AI-powered agent** — from November 11, 2026 Google's
+   Workspace MCP servers reject clients without it, and a client cannot
+   gain it later. (A *Web application* client works too, with
+   `callbackPort` and `http://localhost:{port}/callback` registered.)
+4. `alter-zero mcp add google-calendar --url
+   https://calendarmcp.googleapis.com/mcp/v1 --client-id {id}
+   --client-secret`, or the block above by hand.
+5. `/mcp` → google-calendar → Authenticate.
+
+The server's metadata lists every Calendar scope, `calendar` itself
+included, and the spec asks for all of them when nothing narrower is known;
+`"scopes": "https://www.googleapis.com/auth/calendar.events
+https://www.googleapis.com/auth/calendar.calendarlist.readonly"` is the
+smallest set that covers all nine tools. An External app still in Google's
+*Testing* status gets refresh tokens that expire after seven days.
+`cargo run --example mcp_probe -- {url}` prints what a sign-in would find —
+the resource, the issuer, and whether it registers clients at all.
+
+### What a sign-in checks
+
+The 2026-07-28 authorization rules, each a refusal before any browser
+opens rather than a token sent somewhere it should not go:
+
+- **The resource metadata must name this server.** RFC 9728 has a client
+  ignore metadata whose `resource` is not the server it was fetched for;
+  `resource_match` grades it — the server's own URL (scheme and host case,
+  a trailing slash and the default port aside), a parent path on the same
+  origin (the MCP TypeScript SDK's allowance), or **foreign**, never used.
+  The 401's `resource_metadata` URL is tried first (the spec's MUST), then
+  the path-inserted and root well-known URLs, and a document naming the
+  server exactly wins over a parent's: Google's 401 names a **per-tool**
+  document (`…/oauth-protected-resource/list_calendars`) whose `resource` is
+  `https://calendarmcp.googleapis.com/mcp`, and the server's own
+  (`…/oauth-protected-resource/mcp/v1`) outranks it. The `resource` sent —
+  on the authorize request, the code exchange and every refresh — is the
+  accepted document's own spelling, byte for byte (the conformance suite's
+  rule), recorded with the grant.
+- **The authorization server metadata must name its issuer.** Looked for
+  in the spec's order (`auth_server_metadata_candidates`): for an issuer
+  with a path, RFC 8414's insertion, OIDC's insertion, OIDC's appending —
+  never the root, another tenant's on a multi-tenant host; for one without,
+  the two root documents. A document whose `issuer` is not the one the
+  resource metadata listed is skipped. The terminating `/` is the one
+  tolerance (`issuer_matches`): it is what RFC 8414's construction removes,
+  and Google lists `https://accounts.google.com/` for an issuer that calls
+  itself `https://accounts.google.com`. A server that publishes no
+  resource metadata (pre-2025-06-18) has its authorization server looked
+  for at its own origin — a guess, not a claim — so there is no listed
+  issuer to hold the document to (`issuer_accepted`); its own `issuer` is
+  still what the redirect's `iss` must match.
+- **PKCE must be advertised.** `code_challenge_methods_supported` without
+  `S256` is the spec's "refuse to proceed".
+- **Endpoints are HTTPS or this machine.** An authorization, token or
+  registration endpoint that is anything else — a `javascript:` or `file:`
+  URL a hostile document named, which the browser launcher would open as
+  given — refuses the metadata (`endpoint_allowed`).
+- **A redirect is believed in order** (`read_redirect`): `state` must match
+  — absent is a mismatch, it is the CSRF check — then RFC 9207's `iss`
+  (byte for byte; required when the metadata advertised it), and only then
+  the code, or the authorization server's refusal: `error=access_denied`
+  ends the flow at once with the server's own words, where it used to wait
+  out the five-minute timeout. An error whose `iss` does not check out is
+  reported as the mismatch and never displayed.
+- **The client authenticates the way the server advertises**
+  (`choose_token_auth`, the TypeScript SDK's order): the method a
+  registration returned, else HTTP Basic, else the secret in the body, else
+  none — a public client never picks a secret method. Basic credentials are
+  form-encoded before they are joined (RFC 6749 §2.3.1), and the id then
+  stays out of the body.
+- **Client credentials stay with their issuer** (SEP-2352): a stored
+  client is reused only with the authorization server that issued it — its
+  recorded `issuer`, or, for a grant stored before issuers were, the same
+  token endpoint.
+
+### Step-up — a call refused for want of a scope
+
+A 403 whose `WWW-Authenticate` says `error="insufficient_scope"` is the
+server saying the grant works, just not for this call. It is no reason to
+refresh (a refresh never widens a grant) or to drop the connection (the
+server's other tools still answer): `call_tool` keeps both, records the
+challenge on the server, and tells the model to have the user
+re-authenticate. That sign-in asks for **the scope the grant was requested
+with plus the challenged scopes** (`choose_scope`, SEP-2350's union) — so
+re-authorizing for one tool never costs another its permission. The
+challenge parser reads auth-params by name (`challenge_param`, RFC 7235):
+it used to find the `scope` inside `insufficient_scope` and so never read
+the parameter the step-up needs.
 
 ## The tool integration
 
@@ -609,6 +799,8 @@ mid-turn (the strip stays above it). Pages:
    mark on one row. An empty list names both file paths — "why isn't my
    server here?" is its only question.
 2. **Server detail** — the fact rows the state affords: `Status:`, `Auth:`
+   (and `OAuth client:` when the entry names one — the id, never the
+   secret),
    (only when auth matters — the `auth_state` rule above), `Protocol:` (the
    revision the era detection settled — `2026-07-28` on a modern server,
    whatever `initialize` negotiated on a legacy one; hidden until the server
@@ -628,8 +820,13 @@ mid-turn (the strip stays above it). Pages:
    copies it via the `/copy` clipboard seam), and offers the `URL >`
    paste-the-redirect fallback (a single-line field; paste routed to it
    while the page is up); the loopback callback resolves it from either
-   side. Esc backs out; the result lands as a toast + the server list
-   re-sorting itself.
+   side. Esc backs out. Success returns to the server page with a toast; a
+   **failure stays on the page** — `Could not authenticate with {server}`
+   over the whole reason in red, wrapped, never cut (the `/login` device
+   page's rule: "add a pre-registered client" is a paragraph no toast row
+   can hold), over `Enter to try again · Esc to go back`, with no field and
+   so no caret. Only a failure the page did not take — the menu closed
+   meanwhile — is a toast (`App::finish_mcp_auth` says which).
 
 ### Where the colour goes
 
@@ -752,8 +949,9 @@ tools surface is the feature — and neither is their modern replacement, the
 `input_required`, and one that does anyway gets the recoverable red outcome
 rather than a stalled turn. `subscriptions/listen`, response caching
 (`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
-registration (we are not a hosted client with an `https` client id — DCR,
-deprecated but retained, is our registration path) stay out with it. Server
+registration (we are not a hosted client with an `https` client id — a
+pre-registered client or DCR, deprecated but retained, is how a client
+identity is had; *Signing in* above) stay out with it. Server
 `instructions` are shown in the detail page but not injected into the system
 prompt. WebSocket transport isn't offered (neither reference ships it for
 user servers). The dummy backend scripts no MCP scenario — the manager is
@@ -768,8 +966,13 @@ classification, every cell/prompt/aggregation rendering, the
 commit-vs-repaint agreement), and the boundary against in-process fixtures:
 a modern stdio server (discover-first), a legacy one (the -32601 fallback),
 a strict modern HTTP server that *rejects* requests missing the 2026-07-28
-request metadata (so a green connect proves we send it), a `-32022`
-negotiation server, and an OAuth pair — an MCP endpoint demanding
+request metadata (so a green connect proves we send it), a
+Google-shaped server that lists openly and refuses calls (401 without a
+token, 403 `insufficient_scope` without the scope — the probe, the
+step-up), an authorization server that registers nobody (the whole
+interactive flow with a pre-registered client, the browser played by the
+test: Basic credentials, the metadata's `resource`, a refused consent, no
+client at all), a `-32022` negotiation server, and an OAuth pair — an MCP endpoint demanding
 `tok-{n}` beside a scripted token endpoint — driving the whole refresh
 matrix (mid-session 401 → refresh → retry with the server never leaving
 Connected; proactive pre-call refresh with **zero** 401s seen; connect-time

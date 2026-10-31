@@ -55,7 +55,11 @@ pub enum ConnectError {
 impl ConnectError {
     fn from_transport(e: TransportError) -> Self {
         match e {
-            TransportError::NeedsAuth(challenge) => Self::NeedsAuth(challenge),
+            // A connect refused for want of scope is a sign-in to redo with
+            // more — the same page, the challenge naming what to ask for.
+            TransportError::NeedsAuth(challenge) | TransportError::InsufficientScope(challenge) => {
+                Self::NeedsAuth(challenge)
+            }
             other => Self::Failed(other.to_string()),
         }
     }
@@ -102,6 +106,7 @@ pub fn connect(
             url,
             headers,
             sse_fallback,
+            ..
         } => {
             let remote = RemoteHeaders {
                 headers: headers.clone(),
@@ -122,7 +127,7 @@ pub fn connect(
                 Err(e) => Err(e),
             }
         }
-        McpServerConfig::Sse { url, headers } => connect_sse(
+        McpServerConfig::Sse { url, headers, .. } => connect_sse(
             url,
             RemoteHeaders {
                 headers: headers.clone(),
@@ -190,7 +195,11 @@ fn handshake(
         // Auth outranks era: the server wants credentials before it will
         // tell us anything — answer that first (era detection runs again on
         // the authenticated reconnect, like every other connect).
-        Err(e @ (TransportError::NeedsAuth(_) | TransportError::Cancelled)) => {
+        Err(
+            e @ (TransportError::NeedsAuth(_)
+            | TransportError::InsufficientScope(_)
+            | TransportError::Cancelled),
+        ) => {
             return Err(ConnectError::from_transport(e));
         }
         Err(TransportError::Rpc(error)) if is_modern_error(error.code) => {
@@ -409,6 +418,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -572,6 +582,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -686,6 +697,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -810,6 +822,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -919,6 +932,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let first =
@@ -960,6 +974,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         match connect(&config, None, None, Duration::from_secs(10), &cancel) {

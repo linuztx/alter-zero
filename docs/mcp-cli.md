@@ -63,8 +63,9 @@ gate or immediately re-pend it (`docs/project-config.md`).
 
 ```
 alter-zero mcp add <name> --url <URL> [--transport http|sse] [-H|--header "Name: Value"]...
+                   [--client-id <ID> [--client-secret]] [--callback-port <PORT>]
 alter-zero mcp add <name> [--transport stdio] [-e|--env KEY=VALUE]... [--] <command> [args...]
-alter-zero mcp add-json <name> <json>
+alter-zero mcp add-json [--client-secret] <name> <json>
 alter-zero mcp remove <name>
 alter-zero mcp get <name>
 alter-zero mcp list
@@ -101,6 +102,13 @@ alter-zero mcp list
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules
   and the `mcp__{server}__{tool}` wire name all agree with what was typed.
+- `--client-id <ID>`, `--client-secret` and `--callback-port <PORT>`
+  (remote only — with a command they are a usage error) fill the entry's
+  `oauth` block (`docs/mcp.md` *A pre-registered client*).
+  `--client-secret` takes **no value**: `--client-secret=…` is refused,
+  since a secret typed as an argument stays in the shell's history, which
+  is the whole reason the flag reads it instead (below); it needs the
+  `--client-id` it belongs to. A port is 1–65535.
 - `add-json <name> <json>` feeds the string to the config parser
   (`mcp::parse_server_entry` — the same `parse_server` every file read
   uses), so a README's `{"type":"http","url":…}` snippet round-trips
@@ -166,8 +174,18 @@ TUI.
   don't parse are stderr `warning:` lines, and the good ones still list.
 - `get`: the entry's facts (`Type:`, `Command:`/`URL:`, `Args:`, `Env:`/
   `Headers:` with **values masked** `*****` — headers routinely carry
-  bearer tokens, and codex masks for the same reason — then `File:`),
-  closed by the `Remove with: {bin} mcp remove {name}` hint line.
+  bearer tokens, and codex masks for the same reason — the `oauth` block's
+  `OAuth client:`, `OAuth client secret: *****`, `OAuth callback:`,
+  `OAuth scopes:` and `OAuth metadata:` rows when it sets them, then
+  `File:`), closed by the `Remove with: {bin} mcp remove {name}` hint
+  line.
+- `--client-secret` (on `add` and `add-json`) is answered at the boundary
+  before the write (`client_secret`): `MCP_CLIENT_SECRET` when set — the
+  scripted path, Claude Code's variable — else one line from stdin, asked
+  for on the terminal with echo off (`rustix` termios, restored by a drop
+  guard even when the read fails) or read as given from a pipe. Nothing
+  given is a loud exit 1 with nothing written. A write leaving any
+  `clientSecret` in the document sets the file to `0600`.
 
 Exit codes follow the house contract (`docs/cli.md`): **2** for grammar
 errors (the clap-shaped `error: {message}` over the `mcp` `Usage:` block on
@@ -195,17 +213,26 @@ a failed write — one plain stderr line), **0** for success and help.
   `mcp remove` escape hatch.
 - **`remove` of a missing name fails** (exit 1, Claude Code again):
   codex's "success" would let a scripted cleanup misspell a name forever.
-- **OAuth flags are out**: `--client-id`/`--callback-port` configure a
-  flow our `/mcp` Authenticate page negotiates by RFC discovery instead
-  (`docs/mcp.md`); nothing to persist means nothing to flag.
+- **The OAuth client flags are Claude Code's** — `--client-id`,
+  `--client-secret`, `--callback-port` — because discovery alone cannot
+  sign in to a server whose authorization server registers nobody
+  (Google's, `docs/mcp.md` *A pre-registered client*). They were left out
+  once on the grounds that RFC discovery negotiates everything; Google
+  Calendar is the counterexample. Where Claude Code puts the secret in the
+  system keychain, ours goes into the entry's `oauth` block in the user
+  file, which is then kept `0600` — the one file the session reads it from,
+  and the token store's own mode.
 
 ## Testing
 
 - `cli`: the whole `mcp` grammar — each subcommand's happy path, the
   raw-command capture (child flags kept, `--` for a leading-dash command,
   no help after `--`), `--env`/`--header` parsing and their form
-  conflicts, `--transport` refinement and its conflicts, name validation,
-  help everywhere, bare `mcp`/unknown-subcommand errors.
+  conflicts, `--transport` refinement and its conflicts, the OAuth client
+  flags (a secret with a value or without an id, a bad port, the flags on
+  a stdio server, `add-json --client-secret` without a `clientId`), name
+  validation, help everywhere — the `mcp` page held to 80 columns like the
+  main one — bare `mcp`/unknown-subcommand errors.
 - `mcp::config`: `render_server`/`parse_server_entry` round-trips for all
   four shapes (the type-less fallback included), `record_server` (fresh
   file, append order, sibling-key preservation, `Exists`, `InvalidJson`,
@@ -218,7 +245,10 @@ a failed write — one plain stderr line), **0** for success and help.
   via `CARGO_BIN_EXE_alter-zero`, `ALTER_ZERO_MCP_FILE` into a temp dir):
   add stdio + http + sse + add-json, the file's exact JSON, list order,
   get's masking, remove keeping order, duplicate/missing/invalid-file
-  exit codes, help, and the invalid file left byte-identical.
+  exit codes, help, the invalid file left byte-identical, and a client
+  secret taken from `MCP_CLIENT_SECRET` and from a piped stdin — written
+  into the `oauth` block, the file left `0600`, `get` masking it — with
+  none given failing loud and a command-line value refused.
 - `scripts/smoke.sh` Phase 84: the CLI installs the Phase 80 scripted
   stdio fixture into a temp user file, then the TUI boots against that
   same file and `/mcp` shows the server `✔ connected · 1 tool` — proving

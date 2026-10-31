@@ -913,7 +913,7 @@ pub fn cursor_visible(app: &App) -> bool {
         return false;
     }
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth;
+        return menu.page == crate::app::McpPage::Auth && menu.auth.error.is_none();
     }
     // The `/secrets` list is a menu; its form is typed into
     // (`docs/secrets.md`).
@@ -1212,7 +1212,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // field on a narrow terminal. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
-        if menu.page == crate::app::McpPage::Auth {
+        if menu.page == crate::app::McpPage::Auth && menu.auth.error.is_none() {
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)

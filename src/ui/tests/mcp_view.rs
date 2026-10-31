@@ -20,7 +20,7 @@ fn key(code: KeyCode) -> KeyEvent {
 fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSnapshot {
     // Auth derives the way the manager derives it (`crate::mcp::auth_state`):
     // a row only when the server demands auth or tokens are stored.
-    let auth = crate::mcp::auth_state(true, false, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope,
@@ -32,6 +32,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,
@@ -497,6 +498,7 @@ fn every_page_hugs_its_frame() {
         ("the auth page waiting for its URL", auth(false, false)),
         ("the auth page with its URL", auth(true, false)),
         ("the auth page checking a pasted URL", auth(true, true)),
+        ("a failed sign-in's page", failed_sign_in()),
     ] {
         for width in [40u16, 100] {
             assert_frame_hugs_content(
@@ -505,6 +507,97 @@ fn every_page_hugs_its_frame() {
             );
         }
     }
+}
+
+/// The auth page after a flow that found no client to sign in with.
+fn failed_sign_in() -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.finish_mcp_auth(
+        "linear",
+        false,
+        &crate::llm::mcp::no_client_message(
+            "linear",
+            "https://accounts.google.com",
+            "~/.alter-zero/mcp.json"
+        )
+    ));
+    app
+}
+
+#[test]
+fn a_failed_sign_in_keeps_its_whole_reason_on_the_page() {
+    // A toast row kept the first sentence of "add a pre-registered
+    // client"; the page keeps every word, wrapped, in the failure red, over
+    // the two keys that act on it — and no `URL >` field to type into.
+    let app = failed_sign_in();
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let text: String = lines
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("Could not authenticate with linear"),
+            "{text}"
+        );
+        for needle in [
+            "accounts.google.com does not register OAuth clients automatically",
+            "\"clientId\"",
+            "~/.alter-zero/mcp.json",
+            "Use this client for an AI-powered agent",
+            "Enter to try again · Esc to go back",
+        ] {
+            assert!(text.contains(needle), "{needle} missing at {width}: {text}");
+        }
+        assert!(!text.contains("URL >"), "{text}");
+        let reason_row = lines
+            .iter()
+            .find(|line| plain(line).contains("accounts.google.com"))
+            .expect("the reason");
+        assert!(
+            reason_row
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(tool_fail_color())),
+            "the reason wears the failure red"
+        );
+    }
+    // No field, so no caret.
+    assert!(!crate::ui::cursor_visible(&app));
+}
+
+#[test]
+fn a_pre_registered_client_shows_on_the_server_page() {
+    let mut server = snapshot("cal", McpScope::User, McpServerStatus::NeedsAuth);
+    server.config = McpServerConfig::Http {
+        url: "https://calendarmcp.googleapis.com/mcp/v1".to_string(),
+        headers: Default::default(),
+        sse_fallback: true,
+        oauth: Some(crate::mcp::McpOAuthConfig {
+            client_id: Some("123-abc.apps.googleusercontent.com".to_string()),
+            client_secret: Some("GOCSPX-never-shown".to_string()),
+            ..Default::default()
+        }),
+    };
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter));
+    let text: Vec<String> = mcp_view_lines(&app, 100).iter().map(plain).collect();
+    assert!(
+        text.iter().any(|row| row.contains("OAuth client:")
+            && row.contains("123-abc.apps.googleusercontent.com")),
+        "{text:#?}"
+    );
+    assert!(
+        !text.iter().any(|row| row.contains("GOCSPX")),
+        "the secret never shows"
+    );
 }
 
 #[test]

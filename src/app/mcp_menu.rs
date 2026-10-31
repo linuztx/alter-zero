@@ -125,6 +125,11 @@ pub struct McpAuthView {
     /// Set once the pasted URL was submitted — the field greys out while the
     /// exchange runs.
     pub submitted: bool,
+    /// Why the flow failed, shown whole in place of the URL and the field —
+    /// the `/login` device page's rule: an explanation is never closed away
+    /// with the page it explains, and "add a pre-registered client" is a
+    /// paragraph no toast row can hold (`docs/mcp.md`).
+    pub error: Option<String>,
 }
 
 /// The open `/mcp` menu.
@@ -226,16 +231,28 @@ impl App {
         }
     }
 
-    /// The auth flow finished — the auth page closes back to the server's
-    /// detail (the boundary raises the outcome toast beside this).
-    pub fn finish_mcp_auth(&mut self) {
-        if let Some(menu) = &mut self.mcp_menu
-            && menu.page == McpPage::Auth
-        {
+    /// The auth flow for `server` finished. Success closes the page back to
+    /// the server's detail; a failure **stays** on it, worded in full
+    /// ([`McpAuthView::error`]). Returns whether the open page took the
+    /// failure — the boundary toasts whatever it did not.
+    pub fn finish_mcp_auth(&mut self, server: &str, ok: bool, detail: &str) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
+            return false;
+        }
+        if ok {
             menu.page = McpPage::Server;
             menu.selected = 0;
             menu.auth = McpAuthView::default();
+            return false;
         }
+        menu.auth = McpAuthView {
+            error: Some(detail.to_string()),
+            ..McpAuthView::default()
+        };
+        true
     }
 
     /// The open menu's key handler — routed first from
@@ -403,6 +420,27 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
         };
+        // A failed flow's page: Enter tries again (the manager re-reads the
+        // entry's `oauth` block first, so an edit to the file counts), Esc
+        // goes back. Nothing else is typed here.
+        if menu.auth.error.is_some() {
+            return match key.code {
+                KeyCode::Enter => {
+                    let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
+                        return Action::None;
+                    };
+                    menu.auth = McpAuthView::default();
+                    Action::McpOp(McpOp::Authenticate { server })
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    menu.page = McpPage::Server;
+                    menu.selected = 0;
+                    menu.auth = McpAuthView::default();
+                    Action::None
+                }
+                _ => Action::None,
+            };
+        }
         match key.code {
             KeyCode::Esc => {
                 menu.page = McpPage::Server;
@@ -442,6 +480,7 @@ impl App {
     pub fn paste_into_mcp_auth(&mut self, text: &str) -> bool {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
+            && menu.auth.error.is_none()
         {
             menu.auth
                 .input

@@ -276,3 +276,142 @@ fn siblings_survive_and_an_empty_file_reports_where_to_add() {
     );
     assert!(text.contains("mcp add <name> --url <url>"), "{text}");
 }
+
+/// `mcp` with a piped stdin, `MCP_CLIENT_SECRET` set or cleared.
+fn mcp_with_secret(file: &PathBuf, args: &[&str], env: Option<&str>, stdin: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut command = Command::new(bin());
+    command
+        .arg("mcp")
+        .args(args)
+        .env("ALTER_ZERO_MCP_FILE", file)
+        .env_remove("MCP_CLIENT_SECRET")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(secret) = env {
+        command.env("MCP_CLIENT_SECRET", secret);
+    }
+    let mut child = command.spawn().expect("binary runs");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(stdin.as_bytes())
+        .expect("stdin written");
+    child.wait_with_output().expect("binary finishes")
+}
+
+#[test]
+fn a_client_secret_is_stored_from_the_environment_or_stdin_never_the_command_line() {
+    let (_dir, file) = scratch("client_secret");
+    let calendar = "https://calendarmcp.googleapis.com/mcp/v1";
+    // Claude Code's scripted path: MCP_CLIENT_SECRET.
+    let out = mcp_with_secret(
+        &file,
+        &[
+            "add",
+            "google-calendar",
+            "--url",
+            calendar,
+            "--client-id",
+            "123-abc.apps.googleusercontent.com",
+            "--client-secret",
+        ],
+        Some("GOCSPX-from-env"),
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written["mcpServers"]["google-calendar"],
+        serde_json::json!({
+            "url": calendar,
+            "oauth": {
+                "clientId": "123-abc.apps.googleusercontent.com",
+                "clientSecret": "GOCSPX-from-env"
+            }
+        })
+    );
+    // A file holding a secret is the owner's alone.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+    }
+    // `get` names the client and masks the secret.
+    let out = mcp(&file, &["get", "google-calendar"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("OAuth client: 123-abc.apps.googleusercontent.com"),
+        "{text}"
+    );
+    assert!(text.contains("OAuth client secret: *****"), "{text}");
+    assert!(
+        !text.contains("GOCSPX"),
+        "the secret must be masked: {text}"
+    );
+    // Without the variable, a piped stdin line is the secret.
+    let out = mcp_with_secret(
+        &file,
+        &[
+            "add-json",
+            "--client-secret",
+            "piped",
+            r#"{"type": "http", "url": "https://x.test/mcp", "oauth": {"clientId": "c", "callbackPort": 8085}}"#,
+        ],
+        None,
+        "s3cret-from-stdin\n",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written["mcpServers"]["piped"]["oauth"],
+        serde_json::json!({"clientId": "c", "clientSecret": "s3cret-from-stdin", "callbackPort": 8085})
+    );
+    // Nothing given at all: a loud failure, and nothing written.
+    let out = mcp_with_secret(
+        &file,
+        &[
+            "add",
+            "empty",
+            "--url",
+            "https://y",
+            "--client-id",
+            "c",
+            "--client-secret",
+        ],
+        None,
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("No client secret given"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"empty\""),
+        "a failed add writes nothing"
+    );
+    // On the command line it is refused outright.
+    let out = mcp(
+        &file,
+        &[
+            "add",
+            "leak",
+            "--url",
+            "https://z",
+            "--client-id",
+            "c",
+            "--client-secret=oops",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}

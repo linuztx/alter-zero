@@ -45,6 +45,11 @@ pub enum TransportError {
     /// `WWW-Authenticate` header when one was sent (the OAuth discovery
     /// seed).
     NeedsAuth(Option<String>),
+    /// The server answered 403 `insufficient_scope`: the token is good but
+    /// lacks a scope this operation needs — the spec's step-up cue, which
+    /// no token refresh can answer (a refresh never widens a grant).
+    /// Carries the challenge, whose `scope` names what is wanted.
+    InsufficientScope(Option<String>),
     /// A streamable-HTTP `initialize` was refused in a way the spec says to
     /// retry as legacy SSE (4xx other than 401 on a `sse_fallback` config).
     HttpRefused(String),
@@ -62,6 +67,7 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NeedsAuth(_) => write!(f, "authentication required"),
+            Self::InsufficientScope(_) => write!(f, "the token lacks a scope this call needs"),
             Self::HttpRefused(detail) => write!(f, "server refused the request: {detail}"),
             Self::Rpc(e) => write!(f, "server error: {e}"),
             Self::Timeout => write!(f, "timed out waiting for the server"),
@@ -69,6 +75,33 @@ impl std::fmt::Display for TransportError {
             Self::Failed(detail) => write!(f, "{detail}"),
         }
     }
+}
+
+/// The authorization refusal an HTTP status and its `WWW-Authenticate`
+/// challenge amount to, if any: a 401 is "authenticate", a 403 whose
+/// challenge says `insufficient_scope` is "authenticate for more" (RFC 6750
+/// §3.1, the spec's step-up). Any other 403 is an ordinary refusal.
+#[must_use]
+pub fn auth_refusal(status: u16, challenge: Option<String>) -> Option<TransportError> {
+    match status {
+        401 => Some(TransportError::NeedsAuth(challenge)),
+        403 if challenge
+            .as_deref()
+            .and_then(|c| super::oauth::challenge_param(c, "error"))
+            .is_some_and(|error| error == "insufficient_scope") =>
+        {
+            Some(TransportError::InsufficientScope(challenge))
+        }
+        _ => None,
+    }
+}
+
+/// A response's `WWW-Authenticate` challenge.
+fn challenge_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
 }
 
 /// One connected transport. Constructed by [`super::client::connect`];
@@ -683,13 +716,8 @@ fn post_blocking(
         Some(_) => PostOutcome::Session(new_session.clone(), Box::new(outcome)),
         None => outcome,
     };
-    if status.as_u16() == 401 {
-        let challenge = response
-            .headers()
-            .get("www-authenticate")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        return PostOutcome::Err(TransportError::NeedsAuth(challenge));
+    if let Some(refusal) = auth_refusal(status.as_u16(), challenge_of(response.headers())) {
+        return PostOutcome::Err(refusal);
     }
     // A 404 to a request that carried a session id means that session is
     // gone — the spec's cue to open a new one and replay. Gated on having
@@ -812,13 +840,10 @@ impl SseTransport {
                     return;
                 }
             };
-            if response.status().as_u16() == 401 {
-                let challenge = response
-                    .headers()
-                    .get("www-authenticate")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-                let _ = endpoint_tx.send(Err(TransportError::NeedsAuth(challenge)));
+            if let Some(refusal) =
+                auth_refusal(response.status().as_u16(), challenge_of(response.headers()))
+            {
+                let _ = endpoint_tx.send(Err(refusal));
                 return;
             }
             if !response.status().is_success() {
@@ -879,8 +904,10 @@ impl SseTransport {
             .body(body.to_string())
             .send()
             .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
-        if response.status().as_u16() == 401 {
-            return Err(TransportError::NeedsAuth(None));
+        if let Some(refusal) =
+            auth_refusal(response.status().as_u16(), challenge_of(response.headers()))
+        {
+            return Err(refusal);
         }
         if !response.status().is_success() {
             return Err(TransportError::Failed(format!(
@@ -1136,6 +1163,35 @@ mod tests {
             resolve_endpoint("https://x.test/sse", "https://y.test/m").unwrap(),
             "https://y.test/m"
         );
+    }
+
+    #[test]
+    fn a_403_asking_for_more_scope_is_a_step_up_not_a_refusal() {
+        let challenge = |text: &str| Some(text.to_string());
+        assert_eq!(
+            auth_refusal(401, challenge("Bearer resource_metadata=\"x\"")),
+            Some(TransportError::NeedsAuth(challenge(
+                "Bearer resource_metadata=\"x\""
+            )))
+        );
+        assert_eq!(
+            auth_refusal(401, None),
+            Some(TransportError::NeedsAuth(None))
+        );
+        // RFC 6750 §3.1: the token is fine, it just cannot do this — the
+        // spec's step-up cue, which a refresh would never answer.
+        let step_up = r#"Bearer error="insufficient_scope", scope="files:read files:write""#;
+        assert_eq!(
+            auth_refusal(403, challenge(step_up)),
+            Some(TransportError::InsufficientScope(challenge(step_up)))
+        );
+        // Any other 403 is an ordinary refusal, left to the caller.
+        assert_eq!(
+            auth_refusal(403, challenge("Bearer error=\"invalid_token\"")),
+            None
+        );
+        assert_eq!(auth_refusal(403, None), None);
+        assert_eq!(auth_refusal(200, None), None);
     }
 
     #[test]
