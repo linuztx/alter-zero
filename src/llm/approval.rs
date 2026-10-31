@@ -252,6 +252,19 @@ pub fn approve_call(
     if !force_ask && gate.allows(&request) {
         return Approval::Allow;
     }
+    // A command that provably only reads runs without auto mode's classifier
+    // — Claude Code's read-only fast path (docs/permissions.md): no round
+    // trip, no tokens, and no note, the `read` tool's own posture. It sits
+    // with the standing rules, which answer the same "may this run unasked?"
+    // without a model; a forced ask still asks, and the asking modes keep
+    // asking — only auto's machine reviewer is skipped.
+    if !force_ask
+        && gate.mode() == PermissionMode::Auto
+        && request.kind == PermissionKind::Bash
+        && reads_only(&request.target, std::env::current_dir().ok().as_deref())
+    {
+        return Approval::Allow;
+    }
     // The session scratchpad (docs/scratchpad.md) sits with the standing rules
     // rather than beside the classifier: a `write`/`edit` under the session's
     // own temp directory changes nothing of the user's, and the system prompt
@@ -354,6 +367,29 @@ pub fn approve_call(
             result: denial_result(None),
         },
     }
+}
+
+/// Whether `command`, run in `cwd`, provably only reads
+/// ([`crate::read_only::is_read_only`]) — the auto-mode fast path above. A
+/// `git` command in a directory laid out as a **bare repository** is the one
+/// exception the words cannot see: that directory's own `config` decides
+/// what any git command runs (`core.fsmonitor`), so it goes to the
+/// classifier like any command it cannot vouch for.
+fn reads_only(command: &str, cwd: Option<&std::path::Path>) -> bool {
+    if !crate::read_only::is_read_only(command) {
+        return false;
+    }
+    let runs_git = command.split_whitespace().any(|word| word == "git");
+    !(runs_git && cwd.is_some_and(looks_like_bare_repo))
+}
+
+/// Whether `dir` is laid out as a bare git repository — a `HEAD` file beside
+/// `objects/` or `refs/`, with no regular `.git/HEAD` of a working tree.
+fn looks_like_bare_repo(dir: &std::path::Path) -> bool {
+    if dir.join(".git").join("HEAD").is_file() {
+        return false;
+    }
+    dir.join("HEAD").is_file() && (dir.join("objects").is_dir() || dir.join("refs").is_dir())
 }
 
 #[cfg(test)]
@@ -987,11 +1023,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = gate_in(crate::permission::PermissionMode::Auto);
         let classify = |request: &PermissionRequest| {
-            assert_eq!(request.target, "ls -la");
-            assert_eq!(request.detail.as_deref(), Some("List files"));
+            assert_eq!(request.target, "cargo test");
+            assert_eq!(request.detail.as_deref(), Some("Run the tests"));
             Ok(ClassifierVerdict {
                 allow: true,
-                reason: "read-only".to_string(),
+                reason: "runs the project's tests".to_string(),
             })
         };
         let approval = approve_call(
@@ -1003,7 +1039,10 @@ mod tests {
             &tx,
             &CancelToken::new(),
             None,
-            &call("bash", r#"{"command":"ls -la","description":"List files"}"#),
+            &call(
+                "bash",
+                r#"{"command":"cargo test","description":"Run the tests"}"#,
+            ),
             None,
         );
         assert_eq!(
@@ -1013,6 +1052,179 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn auto_mode_runs_a_read_only_command_without_the_classifier() {
+        // Claude Code's read-only fast path (docs/permissions.md): a command
+        // that provably only reads needs no machine reviewer — no round trip,
+        // no tokens — and no note either, the `read` tool's own posture.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("a read-only command must not reach the classifier")
+        };
+        for command in [
+            "ls -la",
+            "grep -rn todo src",
+            "git status",
+            "cat README.md | head -20",
+        ] {
+            let args = serde_json::json!({ "command": command }).to_string();
+            let approval = approve_call(
+                Some(&gate),
+                Some(&classify),
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &CancelToken::new(),
+                None,
+                &call("bash", &args),
+                None,
+            );
+            assert_eq!(approval, Approval::Allow, "{command}");
+        }
+        assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn auto_mode_still_classifies_what_is_not_provably_read_only() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let consulted = std::cell::Cell::new(0);
+        let classify = |_: &PermissionRequest| {
+            consulted.set(consulted.get() + 1);
+            Ok(ClassifierVerdict {
+                allow: true,
+                reason: String::new(),
+            })
+        };
+        for command in [
+            "ls > listing.txt",
+            "ls *.rs",
+            "find . -delete",
+            "cd x && git log",
+        ] {
+            let args = serde_json::json!({ "command": command }).to_string();
+            let _ = approve_call(
+                Some(&gate),
+                Some(&classify),
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &CancelToken::new(),
+                None,
+                &call("bash", &args),
+                None,
+            );
+        }
+        assert_eq!(consulted.get(), 4, "each one went to the classifier");
+    }
+
+    #[test]
+    fn the_read_only_fast_path_belongs_to_auto_mode_alone() {
+        // Manual asks for every command and edit for every command — the
+        // posture the user chose; only auto's machine reviewer is skipped.
+        for mode in [
+            crate::permission::PermissionMode::Manual,
+            crate::permission::PermissionMode::Edit,
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let gate = gate_in(mode);
+            let cancel = CancelToken::new();
+            let waiter = {
+                let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+                std::thread::spawn(move || {
+                    approve_call(
+                        Some(&gate),
+                        None,
+                        None,
+                        &NoHooks,
+                        false,
+                        &tx,
+                        &cancel,
+                        None,
+                        &call("bash", r#"{"command":"ls -la"}"#),
+                        None,
+                    )
+                })
+            };
+            let request = loop {
+                if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                    break request;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            assert_eq!(request.target, "ls -la", "{mode:?} asked");
+            gate.resolve(&request.id, PermissionDecision::Approve);
+            assert_eq!(waiter.join().unwrap(), Approval::Allow);
+        }
+    }
+
+    #[test]
+    fn a_forced_ask_outranks_the_read_only_fast_path() {
+        // A `PreToolUse` hook's `ask` means a human decides (docs/hooks.md).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    None,
+                    &NoHooks,
+                    true,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"ls -la"}"#),
+                    None,
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
+    }
+
+    #[test]
+    fn a_git_read_in_a_directory_laid_out_as_a_bare_repository_is_no_fast_path() {
+        // A bare repository's own `config` can switch on a program any git
+        // command runs (`core.fsmonitor`), so in such a directory a `git`
+        // read is not provably a read — Claude Code's guard, ported.
+        let bare = tempfile::tempdir().unwrap();
+        std::fs::write(bare.path().join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir(bare.path().join("objects")).unwrap();
+        std::fs::create_dir(bare.path().join("refs")).unwrap();
+        assert!(!reads_only("git status", Some(bare.path())));
+        assert!(
+            reads_only("ls -la", Some(bare.path())),
+            "only git is affected"
+        );
+
+        let work = tempfile::tempdir().unwrap();
+        std::fs::create_dir(work.path().join(".git")).unwrap();
+        std::fs::write(work.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            work.path().join("HEAD"),
+            "a file that happens to be named HEAD",
+        )
+        .unwrap();
+        std::fs::create_dir(work.path().join("objects")).unwrap();
+        assert!(
+            reads_only("git status", Some(work.path())),
+            "a working tree with a real .git is an ordinary repository"
+        );
+        assert!(reads_only("git status", None), "no cwd to inspect");
     }
 
     #[test]
@@ -1330,7 +1542,9 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = PermissionGate::new();
         let cancel = CancelToken::new();
-        let call = call("bash", r#"{"command":"sleep 100"}"#);
+        // Not a read-only command: the gate's default mode is auto, which
+        // would run `sleep 100` unasked (docs/permissions.md).
+        let call = call("bash", r#"{"command":"python3 slow.py"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
             std::thread::spawn(move || {

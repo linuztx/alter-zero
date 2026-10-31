@@ -263,9 +263,9 @@ fn a_resumed_read_whose_file_is_gone_leaves_no_blank_rows() {
         image_block_lines(&history[0], 100).is_empty(),
         "no file, no rows"
     );
-    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM, true);
     images::set_policy(ImagePolicy::default());
-    let pictureless = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    let pictureless = conversation_lines(&history, 100, &PathDisplay::VERBATIM, true);
     assert_eq!(lines, pictureless, "not one row is held for the picture");
     restore();
 }
@@ -274,7 +274,7 @@ fn a_resumed_read_whose_file_is_gone_leaves_no_blank_rows() {
 fn the_conversation_puts_the_picture_between_the_cell_and_the_spacer() {
     let _guard = drawing(120);
     let history = vec![image_read("/tmp/cat.png", (700, 689))];
-    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM);
+    let lines = conversation_lines(&history, 100, &PathDisplay::VERBATIM, true);
     let marks: Vec<usize> = lines
         .iter()
         .enumerate()

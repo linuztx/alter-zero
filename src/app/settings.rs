@@ -145,6 +145,17 @@ impl App {
             return Action::Toast(format!("Can't change {} in this session", row.label));
         }
         if self.settings.cycle(row.key) {
+            // Every call is its own cell now: the reads the open group was
+            // holding are rendered by the rebuild the row triggers — and the
+            // other way, the reads a running turn committed as cells become
+            // the open group it holds (docs/tool-groups.md).
+            if row.key == SettingKey::Verbose {
+                if self.settings.verbose {
+                    self.drop_tool_group();
+                } else {
+                    self.hold_trailing_group();
+                }
+            }
             Action::SettingChanged(row.key)
         } else {
             Action::None

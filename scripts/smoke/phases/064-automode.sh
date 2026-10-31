@@ -8,10 +8,12 @@ smoke_begin
 # runs with ALTER_ZERO_PERMISSION_MODE=manual exported; these launches unset
 # it, so the session comes up in the DEFAULT — auto — with the footer saying
 # so before any key is pressed. In auto the dummy's "auto permission" demo is
-# decided by the offline heuristic classifier: the read-only listing runs with
-# a dim '⎿ Allowed by auto mode classifier' row on its finished cell, the
-# delete is rejected red 'Denied by auto mode classifier', NO prompt ever
-# opens, and nothing is written — the default is never saved. One Shift+Tab
+# decided without the user: the read-only listing takes the fast path past
+# the classifier and carries no note, the test run is allowed by the offline
+# heuristic classifier with a dim '⎿ Allowed by auto mode classifier' row on
+# its finished cell, the delete is rejected red 'Denied by auto mode
+# classifier', NO prompt ever opens, and nothing is written — the default is
+# never saved. One Shift+Tab
 # step is master (persisted as "master"), where the same demo runs both
 # commands silently; a second is manual, which must be written out now that
 # an absent mode means auto, so a relaunch in the same directory comes back
@@ -35,8 +37,13 @@ submit "$S64" "auto permission demo"
 auto_done="$(wait_pane 15 "$S64" -F "the delete was blocked")" ||
 	fail "the auto-mode demo never resolved both classifier verdicts"
 dump "captured pane (auto — the classifier decided, no prompt)" "$auto_done"
-expect_has "$auto_done" -F "● Bash(ls -la)" "the allowed command's cell is missing"
+expect_has "$auto_done" -F "● Bash(ls -la)" "the read-only command's cell is missing"
+expect_has "$auto_done" -F "● Bash(pytest -q)" "the classifier-allowed command's cell is missing"
 expect_has "$auto_done" -F "⎿  Allowed by auto mode classifier" "the allowed cell lacks its classifier note row"
+# The listing never met the classifier: nothing between its cell and the
+# test run's may carry the note (docs/permissions.md, the read-only fast path).
+listing_cell="$(sed -n '/● Bash(ls -la)/,/● Bash(pytest -q)/p' <<<"$auto_done")"
+expect_lacks "$listing_cell" -F "Allowed by auto mode classifier" "the read-only listing went through the classifier"
 expect_has "$auto_done" -F "Denied by auto mode classifier" "the delete was not denied by the classifier"
 expect_has "$auto_done" -F "Reason:" "the denied cell lacks the classifier's reason line"
 if [ -f "$PERMS64" ] && grep -qF '"mode"' "$PERMS64"; then
@@ -51,7 +58,7 @@ expect_has "$master_footer" -F "Mode: master" "the master toast is missing"
 wait_file 5 "$PERMS64" -F '"mode": "master"' ||
 	fail "the master mode did not persist to permissions.json"
 submit "$S64" "auto permission demo again"
-master_done="$(wait_pane 15 "$S64" -F "both commands ran to completion")" ||
+master_done="$(wait_pane 15 "$S64" -F "all three commands ran to completion")" ||
 	fail "the master-mode demo never completed"
 dump "captured pane (master — everything ran silently)" "$master_done"
 
@@ -82,16 +89,21 @@ wait_gone 10 "$S64" || fail "the relaunched app did not quit on Ctrl+C"
 launch "$S64" 100 44 "$APP64_EDIT"
 seeded_pane="$(pane "$S64")"
 expect_has "$seeded_pane" -E "dummy_model_name · .*edit$" "ALTER_ZERO_PERMISSION_MODE=edit did not seed the run over the saved manual"
-# Edit mode covers file changes, not commands, so the demo's listing asks:
-# option 2 saves a rule while the gate's live mode is the seed.
+# Edit mode covers file changes, not commands, so the demo's listing asks
+# (the read-only fast path is auto mode's alone): option 2 saves a rule while
+# the gate's live mode is the seed. The test run asks next and is allowed
+# once, then the delete is refused.
 submit "$S64" "auto permission demo"
 wait_for 10 "$S64" -F "Do you want to proceed?" ||
 	fail "edit mode did not ask about the demo's listing"
 keys "$S64" 2
 wait_file 5 "$PERMS64" -F '"ls *"' ||
 	fail "option 2 on the listing did not save its rule"
+wait_for 10 "$S64" -F "don't ask again for: pytest" ||
+	fail "the test run's prompt never opened after the listing's rule"
+keys "$S64" 1
 wait_for 10 "$S64" -F "don't ask again for: rm" ||
-	fail "the delete's prompt never opened after the listing's rule"
+	fail "the delete's prompt never opened after the test run's"
 keys "$S64" 3
 seeded_done="$(wait_pane 15 "$S64" -F "the delete was blocked")" ||
 	fail "the seeded demo never finished"

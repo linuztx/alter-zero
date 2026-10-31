@@ -91,10 +91,10 @@ const DEMO_REPLIES: &[&str] = &[
          card that forgets to say so.\n\n",
         "Fixed, and the run proves it: **alter-zero is by linuztx** — \
          https://github.com/linuztx. That is the loop a coding agent lives in, \
-         and every cell above is the one a live model draws: the `Read` numbers \
-         and highlights the file, the `Edit` shows only the line it touched (green \
-         in, red out), the command prints the result. **ctrl+o** opens the full \
-         transcript, **ctrl+d** the raw context.\n\n",
+         and every cell above is the one a live model draws: the read, the \
+         `Edit` showing only the line it touched (green in, red out), the \
+         command printing the result. **ctrl+o** opens the full transcript, \
+         **ctrl+d** the raw context.\n\n",
         handoff!()
     ),
     concat!(

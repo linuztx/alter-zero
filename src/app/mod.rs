@@ -59,6 +59,7 @@ mod status;
 mod tasks;
 mod theme;
 mod tips;
+mod tool_group;
 mod tools;
 mod trust_menu;
 mod turn;
@@ -116,6 +117,10 @@ pub use self::status::{
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
 pub use self::tips::ShownTip;
+pub use self::tool_group::{
+    EditLines, GROUP_HINT_HOLD, GroupCounts, GroupHintItem, GroupKind, ToolPlacement, edit_lines,
+    group_counts, group_kind, group_run, is_group_member, leading_group_calls, pending_edit_lines,
+};
 pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
     ToolStatus, apply_tool_screen,
@@ -317,6 +322,18 @@ pub struct App {
     /// Bumped by every change to the running call's output or header, so the
     /// transcript cache sees a same-length redraw (`45%` → `46%`).
     tool_revision: u64,
+    /// Where the **open collapsed group** starts in [`history`](App::history)
+    /// — the reads and searches recorded since, held out of scrollback while
+    /// the strip shows them as one live cell, until something that is not
+    /// part of the group arrives and the boundary commits them as one line
+    /// (`docs/tool-groups.md`). `None` with no group open, and always with
+    /// **Verbose output** on.
+    tool_group: Option<usize>,
+    /// Which of the open group's calls its `⎿` row is showing, and since when
+    /// — stepped on the boundary's frame clock so every call's value gets the
+    /// row in turn ([`App::advance_group_hint`], `docs/tool-groups.md` *The
+    /// hint row*).
+    group_hint: tool_group::GroupHint,
     /// The id [`start_tool_batch`](App::start_tool_batch) stamps the next
     /// announced batch with ([`ToolCall::batch`]) — a plain counter, so two
     /// rounds' calls can never be mistaken for one parallel batch by the
@@ -1215,6 +1232,8 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        // The group's calls went with the history they were held in.
+        self.drop_tool_group();
         // A cleared slate holds no tasks — the boundary resets the shared
         // registry beside this (docs/task-tools.md).
         self.tasks = crate::tasks::TaskStore::default();

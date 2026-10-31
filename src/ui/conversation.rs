@@ -17,32 +17,49 @@ pub(super) fn is_shell_header(item: &HistoryItem) -> bool {
 }
 
 /// The slice of `history` that has actually reached scrollback: everything
-/// except the trailing cells of a **parallel MCP run still in flight**, whose
-/// lines the commit path is holding until the run ends ([`held_run_len`],
-/// `docs/mcp.md`) — the live strip speaks for them meanwhile. Every rebuild
-/// renders *this*, so a repaint landing mid-run can't paint a line the commit
-/// is about to write.
+/// except what the commit path is still holding while the live strip speaks
+/// for it — the **open collapsed group** from `group_start` on
+/// ([`App::tool_group_range`](crate::app::App::tool_group_range),
+/// `docs/tool-groups.md`), else the trailing cells of a **parallel MCP run
+/// still in flight** ([`held_run_len`], `docs/mcp.md`). Every rebuild renders
+/// *this*, so a repaint landing mid-group or mid-run can't paint a line the
+/// commit is about to write.
 #[must_use]
 pub fn committed_history<'a>(
     history: &'a [HistoryItem],
     queue: &VecDeque<ToolCall>,
+    group_start: Option<usize>,
 ) -> &'a [HistoryItem] {
-    &history[..history.len() - super::tool::held_run_len(history, queue)]
+    match group_start {
+        Some(start) => &history[..start.min(history.len())],
+        None => &history[..history.len() - super::tool::held_run_len(history, queue)],
+    }
 }
 
 /// Build the whole conversation as styled lines, mirroring how it was streamed
 /// to scrollback: each message's wrapped lines (or each tool call's collapsed
 /// peek), with a blank spacer after every item. Used to repaint after a resize
 /// clears the screen, or when returning from the tool-output view.
+///
+/// Unless `verbose` (the `/settings` **Verbose output** row), a run of reads,
+/// searches and listings is one settled line — the one the commit path wrote
+/// when the group closed ([`tool_group_lines`], `docs/tool-groups.md`).
 #[must_use]
 pub fn conversation_lines(
     history: &[HistoryItem],
     width: u16,
     paths: &PathDisplay,
+    verbose: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut index = 0;
     while index < history.len() {
+        if !verbose && let Some(len) = crate::app::group_run(&history[index..], paths) {
+            lines.extend(tool_group_lines(&history[index..index + len], width, paths));
+            lines.push(Line::default());
+            index += len;
+            continue;
+        }
         // A **parallel MCP run** — consecutive cells of one announced batch,
         // all resolved ok — is one act, so it collapses to the single
         // `Called deepwiki 2 times (ctrl+o to expand)` line the commit path
@@ -99,8 +116,9 @@ pub fn repaint_lines(
     width: u16,
     max_rows: usize,
     paths: &PathDisplay,
+    verbose: bool,
 ) -> Vec<Line<'static>> {
-    keep_last_rows(conversation_lines(history, width, paths), max_rows)
+    keep_last_rows(conversation_lines(history, width, paths, verbose), max_rows)
 }
 
 /// The repaint tail for a mid-stream conversation rebuild
@@ -120,8 +138,9 @@ pub fn repaint_tail(
     width: u16,
     max_rows: usize,
     paths: &PathDisplay,
+    verbose: bool,
 ) -> Vec<Line<'static>> {
-    let mut lines = conversation_lines(history, width, paths);
+    let mut lines = conversation_lines(history, width, paths, verbose);
     if let Some(text) = streaming.filter(|text| !text.is_empty()) {
         lines.extend(render.committed_rows(text, width));
     }

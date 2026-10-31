@@ -740,6 +740,8 @@ pub struct PathDisplay {
     cwd: Option<PathBuf>,
     /// The absolute home directory, when one is known.
     home: Option<PathBuf>,
+    /// The session's scratchpad, when it has one (`docs/scratchpad.md`).
+    scratchpad: Option<PathBuf>,
 }
 
 impl PathDisplay {
@@ -748,6 +750,7 @@ impl PathDisplay {
     pub const VERBATIM: Self = Self {
         cwd: None,
         home: None,
+        scratchpad: None,
     };
 
     /// The policy for a session launched in `cwd` with the user's `home`. A
@@ -759,7 +762,32 @@ impl PathDisplay {
         Self {
             cwd: cwd.is_absolute().then_some(cwd),
             home: home.filter(|home| home.is_absolute()),
+            scratchpad: None,
         }
+    }
+
+    /// The same policy, knowing the session's scratchpad `dir` — an absolute
+    /// one; a relative directory is no scratchpad at all.
+    #[must_use]
+    pub fn with_scratchpad(mut self, dir: Option<PathBuf>) -> Self {
+        self.scratchpad = dir.filter(|dir| dir.is_absolute());
+        self
+    }
+
+    /// Whether `path` names a file in a session's scratchpad — this
+    /// session's own, wherever `ALTER_ZERO_SCRATCHPAD_DIR` put it, or any
+    /// session's by the layout, so a resumed conversation still knows the
+    /// files an earlier process wrote there
+    /// ([`scratchpad::is_session_scratchpad`](crate::scratchpad::is_session_scratchpad)).
+    /// What folds a `write`/`edit` into the collapsed group as a scratchpad
+    /// edit (`docs/tool-groups.md`).
+    #[must_use]
+    pub fn in_scratchpad(&self, path: &str) -> bool {
+        let path = std::path::Path::new(path);
+        self.scratchpad
+            .as_deref()
+            .is_some_and(|root| crate::scratchpad::contains(root, path))
+            || crate::scratchpad::is_session_scratchpad(path)
     }
 
     /// `path` as the screen shows it — [`header_path`](crate::llm::tools::header_path)

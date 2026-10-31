@@ -43,6 +43,7 @@ mod spinner;
 mod tasks;
 mod theme;
 mod tips;
+mod tool_group;
 mod tools;
 mod trust_menu;
 mod turn;

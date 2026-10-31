@@ -87,7 +87,12 @@ impl Session<'_> {
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
-        self.app.set_pulse(self.clocks.loop_start.elapsed());
+        let now = self.clocks.loop_start.elapsed();
+        self.app.set_pulse(now);
+        // The open read/search group's `⎿` row steps through its calls on
+        // the same clock, each value held long enough to read
+        // (docs/tool-groups.md *The hint row*).
+        self.app.advance_group_hint(now);
         // The `/usage` page's countdowns run on the wall clock
         // (docs/usage.md).
         if self.app.usage_page.is_some() {
@@ -463,9 +468,11 @@ impl Session<'_> {
         // The purge takes the encoded pictures with it, so a picture whose
         // file has gone since it was drawn — or since the conversation was
         // recorded — must not reserve its rows again (`docs/images.md`).
+        let held = self.app.tool_group_range().map(|range| range.start);
         recheck_pictures(ui::committed_history(
             &self.app.history,
             self.app.tool_queue(),
+            held,
         ));
         // The purge drops every committed row (screen and scrollback alike),
         // so nothing is "already committed" any more: reset, and let the
@@ -477,15 +484,17 @@ impl Session<'_> {
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
         let tail = ui::repaint_tail(
-            // Only what has actually reached scrollback: a parallel MCP run
-            // still in flight has cells recorded but held, and the strip is
-            // showing them (`docs/mcp.md`).
-            ui::committed_history(&self.app.history, self.app.tool_queue()),
+            // Only what has actually reached scrollback: the open read/search
+            // group, or a parallel MCP run still in flight, has cells
+            // recorded but held, and the strip is showing them
+            // (`docs/tool-groups.md`, `docs/mcp.md`).
+            ui::committed_history(&self.app.history, self.app.tool_queue(), held),
             self.app.streaming_text(),
             &mut self.render,
             screen.width,
             RESIZE_REFLOW_MAX_ROWS,
             self.app.path_display(),
+            self.app.settings().verbose,
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).
@@ -540,7 +549,7 @@ impl Session<'_> {
         // Only the agent's committed cells, the main view's rule
         // (`ui::committed_history`, `docs/mcp.md`) — and its pictures looked
         // for again, the main rebuild's rule.
-        let history = ui::committed_history(&run.history, &run.tool_queue).to_vec();
+        let history = ui::committed_history(&run.history, &run.tool_queue, None).to_vec();
         recheck_pictures(&history);
         let streaming = run.streaming.clone().filter(|text| !text.is_empty());
         // The preview comes FIRST, as in `repaint_conversation`: it injects
@@ -550,7 +559,10 @@ impl Session<'_> {
         // (`docs/agent-view-streaming.md`).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
-        let mut tail = ui::conversation_lines(&history, screen.width, self.app.path_display());
+        // An agent's session view keeps a cell per call: its commits are
+        // keyed on the records its own run makes (docs/tool-groups.md).
+        let mut tail =
+            ui::conversation_lines(&history, screen.width, self.app.path_display(), true);
         if let Some(text) = &streaming {
             tail.extend(self.agent_render.committed_rows(text, screen.width));
         }

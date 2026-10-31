@@ -250,7 +250,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -262,10 +262,10 @@ submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
-`agent`, `status`, `tips`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
+`agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -901,8 +901,12 @@ the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
 codex's grey base is right for a metric and unreadable for a header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
 tool's output there), tail-following its last `REASONING_PEEK_LINES` (3)
-wrapped rows; at the phase's end the cell shape goes away entirely and it
-**collapses** into one committed **bullet-less** two-tone
+wrapped rows — none of it while a collapsed read/search group is open,
+whose cell keeps the strip (the status line's `Thinking for Ns` the one sign,
+the open group outranking the block in `ui::live::preview_lines`) and whose
+line the thought then settles into unseen, Ctrl+O its only view
+(`docs/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
+away entirely and it **collapses** into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
 the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
@@ -1266,7 +1270,38 @@ nothing new probes as zero) in
 `docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
-`docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
+`docs/parallel-tools.md`; the **collapsed read/search groups** (Claude Code's
+non-verbose tool view, the default unless `/settings` **Verbose output** is
+on: a run of `Read` calls and `bash` commands that only read —
+`read_only::read_kind`'s listings, searches and reads, never an image read —
+and the `write`/`edit` calls that succeeded in a session's **scratchpad**,
+their own leading clause `Making 1 scratchpad edit +55…` with the edits'
+`+A -D` dim beside it, a scratchpad `write` still being generated
+counted as it streams and its path wrapped under the corner rather than cut
+(`PathDisplay::in_scratchpad` — this session's directory or any session's by
+its layout, so a `/resume` repaints the same line; `docs/tool-groups.md`
+*Scratchpad edits*) —
+is one cell, the live `● Searching for 1 pattern, reading 2 files…` over a
+`⎿` hint naming the calls **one at a time in the order they ran** — a
+queue, not the reference's throttle, which drops the values a fast parallel
+batch produces during its hold and so jumps to the last: each value held
+`app::GROUP_HINT_HOLD` (the reference's 700 ms) and none skipped,
+`App::advance_group_hint` stepping it on the boundary's frame clock, a
+closed group resetting it (`docs/tool-groups.md` *The hint row*) — its
+bullet blinking for as long as the group is open, between calls too, then one dim bullet-less `Searched for 1
+pattern, read 2 files (ctrl+o to expand)` line once something that is not a
+read arrives — reply text, a call of another kind, an error, the turn's end;
+the grouping is a property of the history (`app::group_run`, the parallel MCP
+run's pattern), the open group held by the commit path from
+`App::tool_group`'s index on (`App::place_resolved_tool`, the boundary's
+`close_tool_group` at every close point, `ui::committed_history` leaving it
+out of rebuilds), every thought it held shown only in Ctrl+O — no block
+while it streams, no `Thought for` line once it settles; Ctrl+O always
+verbose, an agent session view per call; the
+dummy's `explore` and `scratchpad` scenarios and `smoke.sh` Phases 146 and
+147, every other phase exporting `ALTER_ZERO_VERBOSE=1`) in
+`docs/tool-groups.md`; the
+**live-streaming `bash` tool** (a running command
 tails its output — a four-row window ending at the lowest row **still
 moving** (`app::LiveTail`: each live row stamped with the command clock
 when its text last changed, a row active within `LIVE_ACTIVE_SPAN` (2 s)
@@ -1886,7 +1921,13 @@ mode** (`permission::PermissionMode` — **`auto` by default**, a session
 starting there unless the project saved another mode or the
 `ALTER_ZERO_PERMISSION_MODE` run seed names one; `manual` asks for
 everything, `edit` auto-approves `write`/`edit` while commands still ask,
-`auto` additionally sends a non-allowlisted `bash` command to the **auto
+`auto` runs a command that **provably only reads** unasked and unnoted —
+`read_only::is_read_only`, Claude Code's `checkReadOnlyConstraints` ported:
+every segment an allowlisted program with only its table's flags, and any
+expansion, file redirect, writing flag or `git` in a bare-repo-shaped cwd
+refusing it, `llm::approval`'s fast path under a forced ask
+(`docs/permissions.md` *Read-only commands skip the classifier*) — and
+sends any other non-allowlisted `bash` command to the **auto
 mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
@@ -2561,7 +2602,9 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-eighteen rows (**Hide thinking**, **Show images**, **Image width**,
+nineteen rows (**Hide thinking**, **Verbose output** — **off** by default,
+so a run of reads, searches and listings folds into one collapsed line,
+`docs/tool-groups.md` —, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,

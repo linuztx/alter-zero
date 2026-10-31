@@ -442,7 +442,13 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
                     render_live(area, &mut buf, app);
                     let _ = cursor_position(area, app);
                     // mirror main.rs::repaint_conversation
-                    let _ = repaint_lines(&app.history, w, usize::from(h), &PathDisplay::VERBATIM);
+                    let _ = repaint_lines(
+                        &app.history,
+                        w,
+                        usize::from(h),
+                        &PathDisplay::VERBATIM,
+                        true,
+                    );
                     // mirror the streaming commit path
                     if let Some(text) = app.streaming_text() {
                         let mut render = StreamRender::new();

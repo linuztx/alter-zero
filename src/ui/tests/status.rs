@@ -654,7 +654,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
             cache_write: 0,
         }),
     ];
-    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();

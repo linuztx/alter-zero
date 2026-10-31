@@ -117,6 +117,16 @@ executing wins, because that is what the user is waiting on.
 The status line keeps its `· Thinking for 12s` clause: it is the *timer*, the
 block is the *content*.
 
+**No block, and no cell, while a collapsed read/search group is open.** A
+thought between two reads leaves the strip to the group's cell, which outranks
+the reasoning branch in `ui::live::preview_lines` and `ui::preview_rows`
+alike, so the cell does not grow a block on every thought and shrink back at
+the next call; the status line's clause is all the strip says, and Ctrl+O
+shows the text as it streams. Settled, the thought is held with the group and
+commits nothing of its own: the group's line is all the conversation shows,
+and Ctrl+O — or **Verbose output** — shows the thought (`docs/tool-groups.md`
+*Thoughts*).
+
 ### The committed cell
 
 `ThinkingEnd` closes the buffer and appends `HistoryItem::Reasoning`:

@@ -27,12 +27,14 @@ const EXAMPLES: &[&str] = &[
     "stream some markdown to me",
     "call agents for weather",
     "run three pings in parallel",
+    "draft a game in your scratchpad",
     "show me a diff",
     "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
     "load a skill for me",
     "refresh the package databases with pacman",
     "run an interactive installer",
+    "explore the project for me",
     "hello there",
 ];
 
@@ -454,6 +456,178 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
         ends[2].contains(last),
         "the last frame is what the report says: {last:?} in {}",
         ends[2]
+    );
+}
+
+#[test]
+fn the_scratchpad_demo_writes_then_edits_a_file_in_the_sessions_scratchpad() {
+    // docs/tool-groups.md *Scratchpad edits*: a `write` generated the way a
+    // live model generates one — its arguments in token-sized pieces, so it
+    // streams into the group's line — then a one-line `edit`, both into the
+    // session's own scratchpad and resolving with the executor's reports.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "scratchpad")
+        .expect("the scratchpad demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the scratchpad demo is a script");
+    };
+    let dir = std::path::PathBuf::from("/tmp/alter-zero-7/s9/scratchpad");
+    let events =
+        script(&Cue::new("draft a game in your scratchpad", 0).with_scratchpad(Some(dir.clone())));
+    let file = dir.join("guess_the_number.py").display().to_string();
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. } => Some((name.as_str(), args.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![("Write", file.as_str()), ("Edit", file.as_str())]
+    );
+    // The write streams: many argument pieces under one slot before its batch.
+    let write_pieces = events
+        .iter()
+        .take_while(|e| !matches!(e, StreamEvent::ToolBatch(_)))
+        .filter(|e| matches!(e, StreamEvent::ToolCallDelta(piece) if piece.name.is_empty()))
+        .count();
+    assert!(write_pieces > 10, "only {write_pieces} pieces");
+    // Both resolve with the executor's reports — a new file, then a one-line
+    // change.
+    let reports: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolAnswered { display, .. } => display.lines().next(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports[0].starts_with("Wrote 25 lines to "), "{reports:?}");
+    assert!(reports[1].ends_with("(+1 -1)"), "{reports:?}");
+    // Without a scratchpad the demo still writes into one by its layout.
+    let events = script(&Cue::new("draft a game in your scratchpad", 0));
+    let path = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolStart { args, .. } => Some(args.clone()),
+            _ => None,
+        })
+        .expect("a call");
+    assert!(
+        crate::scratchpad::is_session_scratchpad(std::path::Path::new(&path)),
+        "{path}"
+    );
+}
+
+#[test]
+fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
+    // docs/tool-groups.md: the offline demo of the collapsed read/search
+    // group — a listing, a thought, a parallel round of a search and two
+    // reads, then a command that runs something. Every call before the last
+    // is one the group takes and nothing is said between them, so the group
+    // stays open across all three rounds; the last call is no read and
+    // closes it, keeping a cell of its own.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "explore")
+        .expect("the explore demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the explore demo is a script");
+    };
+    let events = script(&Cue::new("explore the project for me", 0));
+    let starts: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. } => Some((name.as_str(), args.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            ("Bash", "ls -la"),
+            ("Bash", "grep -rn 'card()' ."),
+            ("Read", "about.py"),
+            ("Bash", "head -n 20 README.md"),
+            ("Bash", "python3 about.py"),
+        ]
+    );
+    let reads =
+        |name: &str, args: &str| name == "Read" || crate::read_only::read_kind(args).is_some();
+    let (last, before) = starts.split_last().expect("calls");
+    assert!(
+        before.iter().all(|(name, args)| reads(name, args)),
+        "every call before the last joins the group: {before:?}"
+    );
+    assert!(!reads(last.0, last.1), "the last call closes it: {last:?}");
+    // Three rounds, the middle one a parallel batch.
+    let batches: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolBatch(calls) => Some(calls.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(batches, vec![1, 3, 1]);
+    // Nothing is said from the first call to the last one, so nothing closes
+    // the group early — but the model thinks between the first two rounds,
+    // and the thought settles inside the open group.
+    let first = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::ToolBatch(_)))
+        .expect("a batch");
+    let last_start = events
+        .iter()
+        .rposition(|e| matches!(e, StreamEvent::ToolStart { .. }))
+        .expect("a start");
+    assert!(
+        !events[first..last_start]
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Chunk(_))),
+        "no reply text between the reads"
+    );
+    // Two thoughts: one between the first two rounds, one after the parallel
+    // round — the pause a live model takes before its next call, in which the
+    // row steps through each of the round's values (docs/tool-groups.md *The
+    // hint row*).
+    let thoughts: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ThinkingStart))
+        .map(|(i, _)| i)
+        .collect();
+    let batches_at: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StreamEvent::ToolBatch(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(thoughts.len(), 2, "{events:?}");
+    assert!(batches_at[0] < thoughts[0] && thoughts[0] < batches_at[1]);
+    assert!(batches_at[1] < thoughts[1] && thoughts[1] < batches_at[2]);
+    // Every call resolves green with the real executor's output.
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                assert!(ok, "every call succeeds: {output}");
+                Some(output.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 5);
+    assert!(
+        ends[2].trim_start().starts_with("1 #!/usr/bin/env python3"),
+        "the read is the executor's numbered gutter: {}",
+        ends[2]
+    );
+    assert!(
+        ends[1].contains("about.py:10:def card() -> str:"),
+        "the search finds what the read shows: {}",
+        ends[1]
     );
 }
 

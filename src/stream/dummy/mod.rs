@@ -132,6 +132,10 @@ pub struct DummyAi {
     /// settles in the offline demo exactly as it does live
     /// (`docs/background.md`).
     background: Option<crate::background::BackgroundRegistry>,
+    /// The session's scratchpad, when it has one — where the scratchpad demo
+    /// writes, so its calls fold into the collapsed group as they would live
+    /// (`docs/tool-groups.md` *Scratchpad edits*).
+    scratchpad: Option<std::path::PathBuf>,
 }
 
 impl Default for DummyAi {
@@ -144,6 +148,7 @@ impl Default for DummyAi {
             agents: None,
             steer: crate::steer::SteerQueue::new(),
             background: None,
+            scratchpad: None,
         }
     }
 }
@@ -172,6 +177,14 @@ impl DummyAi {
     #[must_use]
     pub fn with_chunk_delay(mut self, chunk_delay: Duration) -> Self {
         self.chunk_delay = chunk_delay;
+        self
+    }
+
+    /// Tell the dummy the session's scratchpad, where its scratchpad demo
+    /// writes (`docs/tool-groups.md` *Scratchpad edits*).
+    #[must_use]
+    pub fn with_scratchpad(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.scratchpad = dir;
         self
     }
 
@@ -255,6 +268,7 @@ impl ReplySource for DummyAi {
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
         let agents = self.agents.clone();
+        let scratchpad = self.scratchpad.clone();
         let inputs = Inputs {
             steer: self.steer.clone(),
             board: self.background.clone(),
@@ -266,7 +280,7 @@ impl ReplySource for DummyAi {
             if cancel.is_cancelled() {
                 return;
             }
-            let cue = Cue::new(&prompt, image_count);
+            let cue = Cue::new(&prompt, image_count).with_scratchpad(scratchpad);
             match scenario::select(&cue, permissions.is_some(), ask.is_some(), agents.is_some())
                 .play
             {

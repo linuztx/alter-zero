@@ -295,6 +295,10 @@ impl Session<'_> {
             // Read by the `read` executor per call — nothing to redraw, since
             // this row is about the request and not the screen.
             SettingKey::AutoResizeImages => self.sync_image_policy(),
+            // Every committed read and search changes shape — one collapsed
+            // line, or a cell per call — so the conversation is rebuilt from
+            // history at once, the Show images rule (docs/tool-groups.md).
+            SettingKey::Verbose => rebuild = true,
             // Read where they are used — nothing to rebuild. The ask timeout
             // is read by the draw tick on every reading of the idle clock, so
             // `never` stops a running wait at once (docs/ask.md).

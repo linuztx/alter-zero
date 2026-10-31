@@ -54,6 +54,7 @@ mod tasks;
 mod theme_view;
 mod tips;
 mod tool;
+mod tool_group;
 mod transcript;
 mod trust_view;
 mod usage_view;

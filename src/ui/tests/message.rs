@@ -104,7 +104,7 @@ fn inline_conversation_never_shows_the_timestamp() {
     // The "only in Ctrl+O" invariant: the inline repaint path must never
     // carry a stamp, even though its history items hold one.
     let history = stamped_history();
-    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -126,7 +126,7 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
         timestamp: String::new(),
     });
     let history = [msg(Role::User, "hi"), note.clone()];
-    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let inline: String = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -151,7 +151,7 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
 #[test]
 fn conversation_lines_lays_out_a_turn_with_a_trailing_blank() {
     let history = [msg(Role::User, "hi"), msg(Role::Assistant, "hello")];
-    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -169,7 +169,7 @@ fn conversation_lines_puts_one_blank_between_trailing_break_text_and_a_tool() {
         msg(Role::Assistant, "I'll do it.\n\n"),
         HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "out")),
     ];
-    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -196,7 +196,7 @@ fn conversation_lines_renders_a_tool_call_between_messages() {
         HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "a\nb")),
         msg(Role::Assistant, "done"),
     ];
-    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -213,7 +213,7 @@ fn conversation_lines_renders_a_tool_call_between_messages() {
 fn repaint_lines_keeps_only_the_last_max_rows() {
     // Lines are: "❯ one", "● two", "" → keep the last 2.
     let history = [msg(Role::User, "one"), msg(Role::Assistant, "two")];
-    let texts: Vec<String> = repaint_lines(&history, 80, 2, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = repaint_lines(&history, 80, 2, &PathDisplay::VERBATIM, true)
         .iter()
         .map(plain)
         .collect();
@@ -224,14 +224,14 @@ fn repaint_lines_keeps_only_the_last_max_rows() {
 fn repaint_lines_returns_everything_when_it_fits() {
     let history = [msg(Role::User, "hi")];
     assert_eq!(
-        repaint_lines(&history, 80, 100, &PathDisplay::VERBATIM).len(),
+        repaint_lines(&history, 80, 100, &PathDisplay::VERBATIM, true).len(),
         2
     ); // message + blank
 }
 
 #[test]
 fn repaint_lines_of_empty_history_is_empty() {
-    assert!(repaint_lines(&[], 80, 10, &PathDisplay::VERBATIM).is_empty());
+    assert!(repaint_lines(&[], 80, 10, &PathDisplay::VERBATIM, true).is_empty());
 }
 
 #[test]
@@ -254,14 +254,16 @@ fn repaint_tail_repaints_the_partial_reply_rows_already_committed() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        true,
     )
     .iter()
     .map(plain)
     .collect();
-    let mut expected: Vec<String> = repaint_lines(&history, width, 100, &PathDisplay::VERBATIM)
-        .iter()
-        .map(plain)
-        .collect();
+    let mut expected: Vec<String> =
+        repaint_lines(&history, width, 100, &PathDisplay::VERBATIM, true)
+            .iter()
+            .map(plain)
+            .collect();
     expected.extend(committed);
     assert_eq!(tail, expected);
 }
@@ -287,6 +289,7 @@ fn repaint_tail_then_commit_catches_up_without_duplicate_or_gap() {
         width,
         100,
         &PathDisplay::VERBATIM,
+        true,
     )
     .iter()
     .map(plain)
@@ -307,11 +310,18 @@ fn repaint_tail_then_commit_catches_up_without_duplicate_or_gap() {
 fn repaint_tail_without_a_stream_matches_repaint_lines() {
     let history = [msg(Role::User, "one"), msg(Role::Assistant, "two")];
     let mut render = StreamRender::new();
-    let tail: Vec<String> =
-        repaint_tail(&history, None, &mut render, 80, 2, &PathDisplay::VERBATIM)
-            .iter()
-            .map(plain)
-            .collect();
+    let tail: Vec<String> = repaint_tail(
+        &history,
+        None,
+        &mut render,
+        80,
+        2,
+        &PathDisplay::VERBATIM,
+        true,
+    )
+    .iter()
+    .map(plain)
+    .collect();
     assert_eq!(tail, vec!["● two", ""]);
 }
 
@@ -331,6 +341,7 @@ fn repaint_tail_cap_keeps_the_newest_rows_including_the_partial() {
         width,
         2,
         &PathDisplay::VERBATIM,
+        true,
     )
     .iter()
     .map(plain)
@@ -357,6 +368,7 @@ fn repaint_tail_after_a_width_change_carries_no_stale_rows() {
         40,
         100,
         &PathDisplay::VERBATIM,
+        true,
     );
     assert!(tail.is_empty(), "no stale-width rows repainted");
     let recommitted: Vec<String> = render.commit(partial, 40).iter().map(plain).collect();
@@ -444,7 +456,7 @@ fn conversation_lines_keep_the_compaction_marker_collapsed() {
     // The inline repaint shows the one-line cell + the spacer — the summary
     // body is Ctrl+O-only.
     let history = vec![HistoryItem::Compaction(bare_compaction("kept the gist"))];
-    let lines = conversation_lines(&history, 80, &PathDisplay::VERBATIM);
+    let lines = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true);
     assert_eq!(lines.len(), 2, "marker + spacer: {:?}", lines.len());
     assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
 }
@@ -464,7 +476,7 @@ fn conversation_lines_keep_the_shell_cell_flush() {
         }),
         HistoryItem::Tool(t),
     ];
-    let texts: Vec<String> = conversation_lines(&history, 40, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = conversation_lines(&history, 40, &PathDisplay::VERBATIM, true)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();

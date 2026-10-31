@@ -101,6 +101,41 @@ pub fn contains(root: &Path, path: &Path) -> bool {
     path.starts_with(&root) && path != root
 }
 
+/// Is `path` a file inside **some** session's scratchpad — the
+/// `{tmp}/alter-zero-{uid}/{session}/scratchpad/…` layout [`session_root`] and
+/// [`scratchpad_dir`] build — whichever session wrote it?
+///
+/// Display only (`docs/tool-groups.md` *Scratchpad edits*): a conversation
+/// resumed in a new process has a scratchpad of its own, and the files its
+/// earlier session wrote are still scratchpad files. The permission gate's
+/// exemption asks [`contains`] about this session's own scratchpad alone.
+/// Lexical like `contains`: absolute, and a `..` anywhere refuses.
+#[must_use]
+pub fn is_session_scratchpad(path: &Path) -> bool {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return false;
+    }
+    let names: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    // The per-user root, the session, the leaf — and something inside it.
+    names.windows(4).any(|window| {
+        let user_root = window[0]
+            .to_str()
+            .and_then(|name| name.strip_prefix("alter-zero-"))
+            .is_some_and(|uid| !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()));
+        user_root && window[2] == SCRATCHPAD_LEAF
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +196,31 @@ mod tests {
             root,
             Path::new("/tmp/alter-zero-1000/s1/scratchpad-elsewhere/x")
         ));
+    }
+
+    #[test]
+    fn any_sessions_scratchpad_is_recognised_by_its_layout() {
+        // A conversation resumed in a new process has a new scratchpad, so
+        // the files its earlier session wrote are found by the layout.
+        for path in [
+            "/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/scratchpad/notes.md",
+            "/var/folders/x1/T/alter-zero-501/a-1/scratchpad/sub/b.py",
+        ] {
+            assert!(is_session_scratchpad(Path::new(path)), "{path}");
+        }
+        for path in [
+            // The directory itself, a sibling leaf, no session segment.
+            "/tmp/alter-zero-1000/s1/scratchpad",
+            "/tmp/alter-zero-1000/s1/tasks/x.output",
+            "/tmp/alter-zero-1000/scratchpad/notes.md",
+            // Not this app's per-user root.
+            "/tmp/alter-zero-me/s1/scratchpad/notes.md",
+            "/tmp/claude-1000/s1/scratchpad/notes.md",
+            // Relative, or climbing out.
+            "alter-zero-1000/s1/scratchpad/notes.md",
+            "/tmp/alter-zero-1000/s1/scratchpad/../../../../etc/passwd",
+        ] {
+            assert!(!is_session_scratchpad(Path::new(path)), "{path}");
+        }
     }
 }

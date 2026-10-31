@@ -438,11 +438,13 @@ pub fn classifier_denial_result(reason: Option<&str>) -> String {
     )
 }
 
-/// Program prefixes the offline heuristic classifier treats as read-only
-/// inspection — a deliberately small subset of Claude Code's read-only
-/// allowlist, enough for the dummy's auto-mode demo. Subcommand tools keep
-/// their verb (the [`segment_prefix`] shape), so `git status` is safe while
-/// bare `git` — and so `git push` — is not.
+/// Program prefixes the offline heuristic classifier treats as safe —
+/// read-only inspection (a deliberately small subset of Claude Code's
+/// read-only allowlist) plus running the project's own tests, enough for the
+/// dummy's auto-mode demo, whose read-only listing never reaches this list
+/// at all (the approve seam's fast path, `crate::read_only`). Subcommand
+/// tools keep their verb (the [`segment_prefix`] shape), so `git status` is
+/// safe while bare `git` — and so `git push` — is not.
 const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "cat",
     "date",
@@ -461,6 +463,7 @@ const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
     "printf",
     "ps",
     "pwd",
+    "pytest",
     "rg",
     "stat",
     "tail",
@@ -554,75 +557,168 @@ impl CommandScope {
 }
 
 /// Split a command into its pipeline/list segments on `|`, `||`, `&&`, `&`,
-/// `;` and newlines, respecting single and double quotes. Empty segments are
-/// dropped.
+/// `;` and newlines the way `bash -c` does (`scan_command`): quotes keep an
+/// operator literal, a backslash escapes the next character, and a `#`
+/// comment hides nothing. Empty segments are dropped; a quote that never
+/// closes leaves the command whole, as one segment.
 #[must_use]
 pub fn command_segments(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
+    scan_command(command).map_or_else(
+        || {
+            Some(command.trim())
+                .filter(|command| !command.is_empty())
+                .map(String::from)
+                .into_iter()
+                .collect()
+        },
+        |scanned| scanned.segments,
+    )
+}
+
+/// A command as `bash -c` splits it: its segments, and whether anything in
+/// it is beyond what a prefix can summarize.
+struct Scanned {
+    /// Each segment's text as written — trimmed, comments dropped, blank ones
+    /// left out.
+    segments: Vec<String>,
+    /// A redirect, a substitution or a subshell's parenthesis outside quotes,
+    /// or a substitution inside double quotes, where it still runs: a prefix
+    /// would silently drop it, so the scope can only be exact. Quotes defuse
+    /// the rest — `echo "a > b"` redirects nothing.
+    exact: bool,
+}
+
+/// The quotes the scanner is inside.
+#[derive(Clone, Copy)]
+enum Quoting {
+    /// `'…'`: nothing is special but the closing quote.
+    Single,
+    /// `"…"` and `$"…"`: a backslash escapes, a substitution runs.
+    Double,
+    /// `$'…'`: a backslash escapes, `\'` included, and nothing runs.
+    AnsiC,
+}
+
+/// Read `command` the way `bash -c` does, as far as splitting it goes. A
+/// saved rule matches a command segment by segment, so a segment read as one
+/// that bash runs as two lets a rule cover a command nobody approved: the
+/// old quote-only splitter read `echo \"; rm -rf ~; echo \"` as one `echo`.
+/// Outside quotes a backslash escapes the next character (before a newline
+/// it continues the line, and is removed whole), and a `#` opening a word
+/// comments out the rest of its line. `None` for a quote that never closes —
+/// a line bash refuses.
+fn scan_command(command: &str) -> Option<Scanned> {
+    let mut segments = Vec::new();
     let mut current = String::new();
-    let mut quote: Option<char> = None;
+    let mut exact = false;
+    let mut quoting: Option<Quoting> = None;
+    // Whether the next character opens a word — where a `#` comments.
+    let mut word_start = true;
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
-        if let Some(q) = quote {
+        if let Some(inside) = quoting {
             current.push(c);
-            if c == q {
-                quote = None;
+            match (inside, c) {
+                (Quoting::Single | Quoting::AnsiC, '\'') | (Quoting::Double, '"') => {
+                    quoting = None;
+                }
+                (Quoting::Double | Quoting::AnsiC, '\\') => current.extend(chars.next()),
+                (Quoting::Double, '`') => exact = true,
+                (Quoting::Double, '$') if chars.peek() == Some(&'(') => exact = true,
+                _ => {}
             }
             continue;
         }
         match c {
-            '\'' | '"' => {
-                quote = Some(c);
+            ' ' | '\t' => {
                 current.push(c);
+                word_start = true;
             }
-            '|' | '&' => {
-                if chars.peek() == Some(&c) {
-                    chars.next(); // a doubled `||` / `&&` operator
+            '\n' => {
+                end_segment(&mut segments, &mut current);
+                word_start = true;
+            }
+            '#' if word_start => while chars.next_if(|&next| next != '\n').is_some() {},
+            '\\' => {
+                current.push(c);
+                match chars.next() {
+                    // The word state a continuation interrupts carries on
+                    // past it: `ls \` + newline + `#…` still comments.
+                    Some('\n') => current.push('\n'),
+                    escaped => {
+                        current.extend(escaped);
+                        word_start = false;
+                    }
                 }
-                out.push(std::mem::take(&mut current));
             }
-            ';' | '\n' => out.push(std::mem::take(&mut current)),
-            _ => current.push(c),
+            '\'' | '"' => {
+                current.push(c);
+                quoting = Some(if c == '\'' {
+                    Quoting::Single
+                } else {
+                    Quoting::Double
+                });
+                word_start = false;
+            }
+            '$' => {
+                current.push(c);
+                word_start = false;
+                match chars.peek() {
+                    Some('\'') => quoting = Some(Quoting::AnsiC),
+                    Some('"') => quoting = Some(Quoting::Double),
+                    Some('(') => exact = true,
+                    _ => {}
+                }
+                if quoting.is_some() {
+                    current.extend(chars.next());
+                }
+            }
+            '`' => {
+                current.push(c);
+                exact = true;
+                word_start = false;
+            }
+            ';' | '|' | '&' if !(c == '&' && chars.peek() == Some(&'>')) => {
+                // `;;`, `||`, `|&` and `&&` are one operator each.
+                if matches!(
+                    (c, chars.peek()),
+                    (';', Some(';')) | ('|', Some('|' | '&')) | ('&', Some('&'))
+                ) {
+                    chars.next();
+                }
+                end_segment(&mut segments, &mut current);
+                word_start = true;
+            }
+            '<' | '>' | '&' | '(' | ')' => {
+                // A redirect — its `&` (`2>&1`, `&>`) and `>|` included, so
+                // neither reads as a separator — or a subshell.
+                current.push(c);
+                if matches!((c, chars.peek()), ('<' | '>', Some('&')) | ('>', Some('|'))) {
+                    current.extend(chars.next());
+                }
+                exact = true;
+                word_start = true;
+            }
+            _ => {
+                current.push(c);
+                word_start = false;
+            }
         }
     }
-    out.push(current);
-    out.into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    if quoting.is_some() {
+        return None;
+    }
+    end_segment(&mut segments, &mut current);
+    Some(Scanned { segments, exact })
 }
 
-/// Whether a segment carries a redirect or a substitution — something a prefix
-/// would silently drop, so the scope degrades to an exact match. Quote-aware:
-/// `>`/`<` are literal inside quotes (`echo "a > b"` redirects nothing — the
-/// old raw `contains` degraded it for no reason), while `` ` `` and `$(` stay
-/// live inside **double** quotes (`"$(whoami)"` runs) and are inert only in
-/// single ones.
-fn has_redirect(segment: &str) -> bool {
-    let mut quote: Option<char> = None;
-    let mut chars = segment.chars().peekable();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some('\'') => {
-                if c == '\'' {
-                    quote = None;
-                }
-            }
-            Some(_) => match c {
-                '"' => quote = None,
-                '`' => return true,
-                '$' if chars.peek() == Some(&'(') => return true,
-                _ => {}
-            },
-            None => match c {
-                '\'' | '"' => quote = Some(c),
-                '>' | '<' | '`' => return true,
-                '$' if chars.peek() == Some(&'(') => return true,
-                _ => {}
-            },
-        }
+/// Move the segment being read into `segments`, unless it is blank.
+fn end_segment(segments: &mut Vec<String>, current: &mut String) {
+    let segment = std::mem::take(current);
+    let segment = segment.trim();
+    if !segment.is_empty() {
+        segments.push(segment.to_string());
     }
-    false
 }
 
 /// Programs whose second word is a *subcommand* worth keeping in the rule:
@@ -681,6 +777,16 @@ const COMMAND_WRAPPERS: &[&str] = &[
     "setsid", "sh", "source", "su", "sudo", "time", "timeout", "watch", "xargs", "zsh",
 ];
 
+/// Bash's reserved words, and the builtins that run what they are handed
+/// (`.` sources a file, `builtin` runs a builtin by name): each leads a
+/// segment without being its program, so a rule stored for one would cover
+/// whatever runs behind it — `then rm -rf ~` under the `then *` an earlier
+/// `if …; then …; fi` stored.
+const RESERVED_LEADS: &[&str] = &[
+    "!", ".", "[[", "builtin", "case", "coproc", "do", "elif", "else", "for", "function", "if",
+    "select", "then", "until", "while", "{", "}",
+];
+
 /// Is this token a bare subcommand word (letters/digits/`-`/`_`) rather than a
 /// flag, a path, or a value?
 fn subcommand_like(token: &str) -> bool {
@@ -695,14 +801,15 @@ fn subcommand_like(token: &str) -> bool {
 /// the tools that have them (`git status --short` → `git status`,
 /// `python3 script.py` → `python3`, `ls -la` → `ls`). `None` when no prefix
 /// can honestly summarize the segment: an env assignment (`FOO=1 …` can
-/// redirect what the program does — think `PATH=…`) or a command wrapper
-/// (`sudo …`, `sh -c …` — the "argument" is itself a command), both of which
-/// degrade the whole scope to an exact match.
+/// redirect what the program does — think `PATH=…`), a command wrapper
+/// (`sudo …`, `sh -c …` — the "argument" is itself a command) or a reserved
+/// word (`then …`, `{ …`, `. file`), all of which degrade the whole scope to
+/// an exact match.
 #[must_use]
 pub fn segment_prefix(segment: &str) -> Option<String> {
     let mut tokens = segment.split_whitespace();
     let first = tokens.next()?;
-    if first.contains('=') || COMMAND_WRAPPERS.contains(&first) {
+    if first.contains('=') || COMMAND_WRAPPERS.contains(&first) || RESERVED_LEADS.contains(&first) {
         return None;
     }
     match tokens.next() {
@@ -716,16 +823,17 @@ pub fn segment_prefix(segment: &str) -> Option<String> {
 /// Reduce a command to what the session allowlist stores and shows.
 #[must_use]
 pub fn command_scope(command: &str) -> CommandScope {
-    let segments = command_segments(command);
     let exact = || CommandScope::Exact(command.trim().to_string());
-    if segments.is_empty() {
+    // A quote that never closes is a line bash refuses whole: there is no
+    // segment to summarize, so only the byte-identical command matches.
+    let Some(scanned) = scan_command(command) else {
+        return exact();
+    };
+    if scanned.exact || scanned.segments.is_empty() {
         return exact();
     }
     let mut keys = Vec::new();
-    for segment in &segments {
-        if has_redirect(segment) {
-            return exact();
-        }
+    for segment in &scanned.segments {
         match segment_prefix(segment) {
             Some(prefix) => keys.push(prefix),
             None => return exact(),
@@ -1511,6 +1619,102 @@ mod tests {
             command_scope(r#"echo "`whoami`""#),
             CommandScope::Exact(_)
         ));
+    }
+
+    #[test]
+    fn a_command_splits_where_bash_splits_it() {
+        // An escaped quote is a literal character, a `#` opening a word
+        // comments out the rest of its line, and `$'…'` takes backslash
+        // escapes: in each, `rm -rf ~` is a command of its own.
+        assert_eq!(
+            command_segments(r#"echo \"; rm -rf ~; echo \""#),
+            vec![r#"echo \""#, "rm -rf ~", r#"echo \""#]
+        );
+        assert_eq!(
+            command_segments("echo #'\nrm -rf ~\n#'"),
+            vec!["echo", "rm -rf ~"]
+        );
+        assert_eq!(
+            command_segments(r"echo $'\'' ; rm -rf ~ ; echo '\'"),
+            vec![r"echo $'\''", "rm -rf ~", r"echo '\'"]
+        );
+        // A line continuation is removed whole, so the `#` after it still
+        // opens a word.
+        assert_eq!(
+            command_segments("ls \\\n#'\nrm -rf ~\n#'"),
+            vec!["ls \\", "rm -rf ~"]
+        );
+        // …and nowhere else: a `#` inside a word, an escaped `;`, and an
+        // escaped quote inside double quotes are all literal.
+        assert_eq!(command_segments("echo a#b; ls"), vec!["echo a#b", "ls"]);
+        assert_eq!(
+            command_segments(r"find . -exec ls {} \;"),
+            vec![r"find . -exec ls {} \;"]
+        );
+        assert_eq!(
+            command_segments(r#"echo "a\"; rm -rf ~; echo \"b""#),
+            vec![r#"echo "a\"; rm -rf ~; echo \"b""#]
+        );
+        // A redirect's `&` and `|` are part of it, not separators.
+        assert_eq!(command_segments("ls 2>&1 | head"), vec!["ls 2>&1", "head"]);
+        assert_eq!(command_segments("ls >| out"), vec!["ls >| out"]);
+    }
+
+    #[test]
+    fn a_saved_rule_never_covers_a_command_hidden_behind_quoting() {
+        // The splitter used to read each of these as one `echo` segment, so a
+        // saved `echo *` rule ran `rm -rf ~` without asking, in any mode.
+        let mut rules = PermissionRules::default();
+        rules.remember(&request(PermissionKind::Bash, "echo hi"));
+        assert!(rules.allows(&request(PermissionKind::Bash, "echo there")));
+        for command in [
+            r#"echo \"; rm -rf ~; echo \""#,
+            "echo #'\nrm -rf ~\n#'",
+            r"echo $'\'' ; rm -rf ~ ; echo '\'",
+            "echo \\\n#'\nrm -rf ~\n#'",
+            r"echo $'\'' > /etc/passwd",
+        ] {
+            assert!(
+                !rules.allows(&request(PermissionKind::Bash, command)),
+                "{command:?}"
+            );
+        }
+        // A quote that never closes is a line bash refuses: only the
+        // byte-identical command could ever match it.
+        assert!(matches!(command_scope("ls \""), CommandScope::Exact(_)));
+    }
+
+    #[test]
+    fn a_reserved_word_a_group_or_a_sourced_file_degrades_the_scope() {
+        // Each leads a segment without being its program, so a rule stored
+        // for one — `then *`, `{ *`, `. *` — would cover whatever runs behind
+        // it.
+        for command in [
+            "if [ -f x ]; then make; fi",
+            "for f in a b; do echo $f; done",
+            "while true; do make; done",
+            "! grep -q x f",
+            "{ make; }",
+            "(cd src && make)",
+            ". ./venv/bin/activate",
+            "builtin echo hi",
+        ] {
+            assert!(
+                matches!(command_scope(command), CommandScope::Exact(_)),
+                "{command:?}"
+            );
+        }
+        // A rule an earlier session stored for one of them covers nothing now.
+        let mut rules = PermissionRules::default();
+        rules
+            .prefixes
+            .extend(["if", "then", "fi", "."].map(String::from));
+        for command in ["if true; then rm -rf ~; fi", ". /tmp/evil.sh"] {
+            assert!(
+                !rules.allows(&request(PermissionKind::Bash, command)),
+                "{command:?}"
+            );
+        }
     }
 
     // --- the session rules ---

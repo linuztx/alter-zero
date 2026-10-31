@@ -78,11 +78,13 @@ fn generating(index: usize, name: &str, arguments: &str) -> StreamEvent {
 /// runs the script to prove it. The last cell is the credit itself, printed by
 /// code the middle cell changed.
 ///
-/// The file runs a few lines past the cell's ten-row peek on purpose: the
-/// committed `Read` then carries the `… +N lines (ctrl+o to expand)` tail, so
-/// the turn that answers *anything* is also the one that teaches the key —
-/// and the transcript has something to expand that the inline cell doesn't
-/// show (`scripts/smoke.sh` pages to `__main__` to prove it).
+/// The file runs a few lines past the cell's ten-row peek on purpose: with
+/// **Verbose output** on the committed `Read` carries the `… +N lines (ctrl+o
+/// to expand)` tail, and off it folds into the `Read 1 file (ctrl+o to
+/// expand)` line (`docs/tool-groups.md`), so either way the turn that answers
+/// *anything* is also the one that teaches the key — and the transcript has
+/// something to expand that the inline cell doesn't show (`scripts/smoke.sh`
+/// pages to `__main__` to prove it).
 const DUMMY_ABOUT_PATH: &str = "about.py";
 const DUMMY_ABOUT_V1: &str = "#!/usr/bin/env python3\n\
     \"\"\"Print the alter-zero calling card.\"\"\"\n\n\
@@ -1196,6 +1198,199 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY),
         truncated: false,
     });
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The file the **scratchpad** demo drafts (`docs/tool-groups.md`
+/// *Scratchpad edits*).
+const DUMMY_GUESS_NAME: &str = "guess_the_number.py";
+
+/// Where the scratchpad demo writes when the session has no scratchpad — a
+/// path in a session's scratchpad by the layout, so the group still takes it.
+const DUMMY_SCRATCHPAD_FALLBACK: &str = "/tmp/alter-zero-0/demo/scratchpad";
+
+/// The game the scratchpad demo writes, twenty-five lines.
+const DUMMY_GUESS_V1: &str = "#!/usr/bin/env python3\n\
+    \"\"\"Guess the number — a scratch draft.\"\"\"\n\n\
+    import random\n\n\
+    LOW, HIGH = 1, 100\n\n\n\
+    def play() -> None:\n    \
+    secret = random.randint(LOW, HIGH)\n    \
+    tries = 0\n    \
+    while True:\n        \
+    guess = int(input(f\"Guess a number between {LOW} and {HIGH}: \"))\n        \
+    tries += 1\n        \
+    if guess < secret:\n            \
+    print(\"Higher.\")\n        \
+    elif guess > secret:\n            \
+    print(\"Lower.\")\n        \
+    else:\n            \
+    print(f\"Got it in {tries} tries.\")\n            \
+    return\n\n\n\
+    if __name__ == \"__main__\":\n    \
+    play()\n";
+
+/// The **scratchpad** demo's narration (`docs/tool-groups.md` *Scratchpad
+/// edits*).
+const SCRATCHPAD_REPLY: &str = concat!(
+    "I'll draft the game in my scratchpad first, so nothing lands in your \
+     project until it plays right.\n\n",
+    "Drafted and tuned: a smaller range makes a quicker game. Unless **Verbose \
+     output** is on in `/settings`, the write and the edit went into the one \
+     line above — a scratchpad file is scratch work, not your project's — \
+     and **ctrl+o** shows both whole.\n\n",
+    handoff!()
+);
+
+/// One scripted round of a single call whose arguments stream in token-sized
+/// pieces, the way a live model generates a `write` — so it streams into its
+/// cell, or into the collapsed group's line (`docs/write-streaming.md`).
+fn streamed_round(call: &ScriptedCall) -> Vec<StreamEvent> {
+    let mut events = vec![generating(0, &call.name.to_ascii_lowercase(), "")];
+    events.extend(
+        tokens(&call.arguments)
+            .iter()
+            .map(|piece| generating(0, "", piece)),
+    );
+    events.push(StreamEvent::ToolBatch(vec![call.summary()]));
+    events.push(call.start());
+    events.push(call.end());
+    events
+}
+
+/// The **scratchpad** demo (`docs/tool-groups.md` *Scratchpad edits*): the
+/// model drafts a game in its session scratchpad — a `write` generated the
+/// way a live model generates one, so the collapsed group's `Making 1
+/// scratchpad edit +N…` line counts the lines as they arrive, then a one-line
+/// `edit` — and the reply closes the group as `Made 2 scratchpad edits +26
+/// -1`. Both calls resolve with the real executor's reports.
+pub(in crate::stream) fn scratchpad_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let dir = cue.scratchpad().map_or_else(
+        || std::path::PathBuf::from(DUMMY_SCRATCHPAD_FALLBACK),
+        std::path::Path::to_path_buf,
+    );
+    let path = dir.join(DUMMY_GUESS_NAME).display().to_string();
+    let (first, second) = reply_parts(SCRATCHPAD_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.extend(streamed_round(&ScriptedCall::write(&path, DUMMY_GUESS_V1)));
+    // One line changed: a smaller range for a quicker game.
+    let tuned = DUMMY_GUESS_V1.replacen("LOW, HIGH = 1, 100", "LOW, HIGH = 1, 50", 1);
+    events.extend(round(&[ScriptedCall::edit(&path, DUMMY_GUESS_V1, &tuned)]));
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The **explore** demo's narration (`docs/tool-groups.md`): what the reads
+/// folded into, and the one call that kept a cell.
+const EXPLORE_REPLY: &str = concat!(
+    "I'll get my bearings before touching anything: list the folder, search \
+     for where the card is built, and read the files that matter.\n\n",
+    "Found it: `card()` in `about.py` builds the one line the script prints. \
+     Unless **Verbose output** is on in `/settings`, the listing, the search \
+     and the reads went into the one line above — **ctrl+o** shows every call \
+     whole — while the script that actually ran kept a cell of its own.\n\n",
+    handoff!()
+);
+
+/// The thought the explore demo has between its first two rounds — the strip
+/// keeps showing the open group's cell while it streams, its bullet blinking
+/// through it, and only the status line says the model is thinking
+/// (`docs/tool-groups.md` *Thoughts*).
+const EXPLORE_THINKING: &str =
+    "One script and a README. Find where the card is built,\nthen read both.";
+
+/// The thought after the explore demo's parallel round — a live model's pause
+/// before its next call, in which the group's `⎿` row steps through each of
+/// the round's values in turn (`docs/tool-groups.md` *The hint row*). Like
+/// the first thought, it shows only in Ctrl+O: the group held both, and its
+/// line is all the conversation shows of them.
+const EXPLORE_SECOND_THINKING: &str =
+    "card() builds the line, and the README says to run it.\nRun it and see.";
+
+/// What the explore demo's `ls -la` lists.
+const EXPLORE_LISTING: &str = "total 24\n\
+    drwxr-xr-x  4 you you 4096 Oct 28 09:12 .\n\
+    drwxr-xr-x 18 you you 4096 Oct 28 09:10 ..\n\
+    drwxr-xr-x  8 you you 4096 Oct 28 09:12 .git\n\
+    -rw-r--r--  1 you you  118 Oct 28 09:12 README.md\n\
+    -rwxr-xr-x  1 you you  365 Oct 28 09:12 about.py\n\
+    drwxr-xr-x  2 you you 4096 Oct 28 09:12 tests";
+
+/// The explore demo's search — `grep -rn 'card()' .` over [`DUMMY_ABOUT_V1`].
+const EXPLORE_GREP: &str = "./about.py:10:def card() -> str:\n./about.py:16:    print(card())";
+
+/// The README the explore demo reads the head of.
+const EXPLORE_README: &str = "# about\n\n\
+    A one-file calling card for alter-zero.\n\n\
+    Run it with `python3 about.py`.";
+
+/// What the explore demo's script prints — the card before the default
+/// turn's edit wires the credit in.
+const EXPLORE_RUN: &str = "alter-zero — an autonomous AI agent that lives in your terminal";
+
+/// One scripted thinking phase streaming `text`.
+fn thought(text: &str) -> Vec<StreamEvent> {
+    let mut events = vec![StreamEvent::ThinkingStart];
+    events.extend(chunks(text).into_iter().map(StreamEvent::ThinkingChunk));
+    events.push(StreamEvent::ThinkingEnd);
+    events
+}
+
+/// One scripted round: each call generated — its wire name, then its
+/// verbatim arguments — the batch announced, then every call run in order.
+fn round(calls: &[ScriptedCall]) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+    for (slot, call) in calls.iter().enumerate() {
+        events.push(generating(slot, &call.name.to_ascii_lowercase(), ""));
+        events.push(generating(slot, "", &call.arguments));
+    }
+    events.push(StreamEvent::ToolBatch(
+        calls.iter().map(ScriptedCall::summary).collect(),
+    ));
+    for call in calls {
+        events.push(call.start());
+        if call.streams {
+            events.extend(tool_output_events(&call.output));
+        }
+        events.push(call.end());
+    }
+    events
+}
+
+/// The **explore** demo (`docs/tool-groups.md`): the model finding its way
+/// around before it changes anything — a listing; a thought; a parallel
+/// round of a search and two reads, whose values the group's `⎿` row shows
+/// one after another; another thought; then a command that runs something.
+/// Nothing is said between the reads, so they are one collapsed group from
+/// the first call to the last read, its bullet blinking between the rounds
+/// too; the script run closes it and keeps a cell of its own. Every call
+/// resolves with the real executor's output, so Ctrl+O expands them as the
+/// live ones.
+pub(in crate::stream) fn explore_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let (first, second) = reply_parts(EXPLORE_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.extend(round(&[ScriptedCall::command(
+        "ls -la",
+        EXPLORE_LISTING,
+        0,
+    )]));
+    events.extend(thought(EXPLORE_THINKING));
+    events.extend(round(&[
+        ScriptedCall::command("grep -rn 'card()' .", EXPLORE_GREP, 0),
+        ScriptedCall::read(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1),
+        ScriptedCall::command("head -n 20 README.md", EXPLORE_README, 0),
+    ]));
+    events.extend(thought(EXPLORE_SECOND_THINKING));
+    events.extend(round(&[ScriptedCall::command(
+        &format!("python3 {DUMMY_ABOUT_PATH}"),
+        EXPLORE_RUN,
+        0,
+    )]));
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);
     events

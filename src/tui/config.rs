@@ -1261,6 +1261,12 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(on) = env_flag_set("ALTER_ZERO_TOOLS") {
         settings.tools = on;
     }
+    // The **Verbose output** row: every tool call its own cell for the run
+    // (docs/tool-groups.md) — the smoke suite exports it so its phases keep
+    // the per-call cells they assert on.
+    if let Some(on) = env_flag_set("ALTER_ZERO_VERBOSE") {
+        settings.verbose = on;
+    }
     // `ALTER_ZERO_HOOKS` seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
     // seeds Tools — an override for this run, never saved (docs/hooks.md).
     // It used to be ANDed over the row instead, which could only ever turn

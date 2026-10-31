@@ -76,6 +76,10 @@
 //!   notation, the transcript and screen views of a pseudo-terminal's output,
 //!   and when a waiting call returns (pure; the processes live in
 //!   [`background`] — see `docs/interactive-shell.md`).
+//! - [`read_only`]   — the `bash` commands that only read: what one reads (a
+//!   search, a file read, a listing — the collapsed tool cell's clauses) and
+//!   whether it provably only reads, so auto mode runs it without its
+//!   classifier (pure; see `docs/tool-groups.md`).
 //! - [`reminder`]    — the `<system-reminder>` the derived context leads
 //!   with: the wrapper and its preamble over the sections the project doc,
 //!   the skills and the subagent types each render (pure; see
@@ -166,6 +170,7 @@ pub mod paste;
 pub mod permission;
 pub mod project_doc;
 pub mod pty;
+pub mod read_only;
 pub mod reminder;
 pub mod scratchpad;
 pub mod secrets;

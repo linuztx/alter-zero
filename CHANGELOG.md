@@ -12,6 +12,59 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Reads, searches and listings fold into one line.** An agent finding its
+  way around a project used to fill the screen with a cell per call: every
+  `ls`, every `grep`, every file it read, each with its output under it.
+  A run of them is now one cell that says what the run is doing,
+  `● Searching for 1 pattern, reading 2 files, listing 1 directory…`, over
+  the command or file it is on, wrapped onto more rows when it is too long
+  for one rather than cut short. When the agent runs several at once, that
+  row names each one in turn, in the order they ran, for 0.7 seconds
+  each, instead of jumping to the last; a command still running after two
+  seconds shows how long it has run and how many lines it has printed. Its
+  bullet keeps blinking between calls, since the next one is often another
+  read, and once something else happens (another kind of call, a reply, an
+  error, the end of the turn) it settles into one dim line: `Searched for 1
+  pattern, read 2 files, listed 1 directory (ctrl+o to expand)`. What the
+  agent thinks between those calls stays out of the conversation: no
+  thinking block opens under the cell while it thinks (the status line says
+  it is thinking), and no `Thought for …` line is added once it is done.
+  Ctrl+O still shows every thought and every call with its full output. A
+  read that was refused, interrupted or moved to the background keeps its
+  own cell, and so does a read of an image, so its picture still draws. The
+  new **Verbose output** row in `/settings` brings back a cell per call and
+  a line per thought, and `ALTER_ZERO_VERBOSE=1` sets it for one run
+  (`docs/tool-groups.md`).
+- **Scratchpad files fold into that line too.** The agent keeps its
+  throwaway work, a script to try something or a note, in its session
+  scratchpad, and every file it wrote or changed there used to get a full
+  cell with the file's contents under it. Those writes and edits now join
+  the line beside the reads: `● Making 1 scratchpad edit +55… (ctrl+o to
+  expand)` over the file's path while the agent writes it, the count of
+  added lines going up as the file streams in, then `Made 1 scratchpad edit
+  +55 (ctrl+o to expand)` once the agent moves on, the lines added and
+  removed shown dim beside the count. A long path wraps under the line
+  instead of losing the file name, and a resumed session folds the files
+  its earlier run wrote the same way. An edit that failed or was refused
+  keeps its own red cell, and **Verbose output** still brings back a cell
+  per call (`docs/tool-groups.md`).
+
+### Changed
+
+- **Auto mode runs commands that only read without asking the
+  classifier.** In auto mode every command used to wait on a safety check
+  by the model, even `ls` or `git status`, and each check is a request to
+  your provider. A command that provably only reads (`ls -la`,
+  `grep -rn foo src`, `cat README.md | head -20`, `git log --oneline`) now
+  runs straight away, with no `Allowed by auto mode classifier` note under
+  it. Anything the check cannot be sure of still goes to the classifier:
+  a redirect into a file, `$(…)`, an unknown flag, a flag that writes such
+  as `find -delete` or `sort -o`, or `git` in a folder that looks like a
+  bare repository. Manual and edit modes still ask about every command
+  (`docs/permissions.md`).
+
 ### Fixed
 
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
@@ -25,6 +78,18 @@ release heading when a version is cut.
   of looking finished. A reply stopped by the model's context window or by a
   content filter now ends on a notice naming the cause, too. Ctrl+O shows
   each continuation and what the model was told (`docs/unfinished-replies.md`).
+- **A saved command rule no longer covers a command hidden by quoting.**
+  "Don't ask again" on a command saves a rule for its program, such as
+  `echo *`, and a later command runs without asking when every part of it
+  is covered. Splitting a command into its parts only took quotes into
+  account, so a command like `echo \"; rm -rf ~; echo \"`, where the
+  backslash makes the quote an ordinary character, read as one `echo` and
+  ran `rm -rf ~` unasked. A `#` comment or `$'…'` quoting could do the same.
+  Commands are now split the way bash runs them. A command that starts
+  with a keyword such as `if`, `then`, `do` or `{`, with `.` or `builtin`,
+  or with a subshell's `(` now only ever matches a rule for that exact
+  command, since a rule saved for `then` used to cover whatever came after
+  it (`docs/permissions.md`).
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
   Resuming such a session left a screenful of empty rows between the
