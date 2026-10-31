@@ -30,6 +30,12 @@ release heading when a version is cut.
   for a refresh token so the login renews itself instead of lapsing within
   the hour. A client you enter for one provider is never sent to another
   (`docs/mcp.md`).
+- **`alter-zero mcp add` takes Claude Code's `--client-id`, `--client-secret`
+  and `--callback-port`.** The secret is never a command-line argument: it
+  comes from `MCP_CLIENT_SECRET`, a prompt that doesn't echo, or a pipe, and
+  is kept in `~/.alter-zero/mcp-auth.json` (readable only by you) rather
+  than in `mcp.json`. `mcp add-json` takes `--client-secret` too, and
+  `mcp get` shows the client without its secret (`docs/mcp-cli.md`).
 
 ### Fixed
 

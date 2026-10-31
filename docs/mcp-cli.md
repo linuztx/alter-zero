@@ -63,8 +63,9 @@ gate or immediately re-pend it (`docs/project-config.md`).
 
 ```
 alter-zero mcp add <name> --url <URL> [--transport http|sse] [-H|--header "Name: Value"]...
+                          [--client-id <ID> [--client-secret]] [--callback-port <PORT>]
 alter-zero mcp add <name> [--transport stdio] [-e|--env KEY=VALUE]... [--] <command> [args...]
-alter-zero mcp add-json <name> <json>
+alter-zero mcp add-json <name> <json> [--client-secret]
 alter-zero mcp remove <name>
 alter-zero mcp get <name>
 alter-zero mcp list
@@ -111,6 +112,45 @@ alter-zero mcp list
   the description, the six `Usage:` forms, the aligned `Options:` — except
   after `--`, where tokens are the command's own. Bare `alter-zero mcp` is
   a usage error naming the subcommands.
+
+### Pre-registered OAuth clients (`--client-id`, `--client-secret`, `--callback-port`)
+
+Claude Code's flags, for a server whose authorization server cannot
+register this app by itself — Google's MCP servers are exactly that
+(`docs/mcp.md` *Pre-registered clients*):
+
+```
+$ alter-zero mcp add google-calendar --url https://calendarmcp.googleapis.com/mcp/v1 \
+    --client-id 1234-abc.apps.googleusercontent.com --client-secret --callback-port 8976
+Client secret for 1234-abc.apps.googleusercontent.com:
+Added http MCP server "google-calendar" (https://calendarmcp.googleapis.com/mcp/v1)
+OAuth client: 1234-abc.apps.googleusercontent.com (secret kept in /home/user/.alter-zero/mcp-auth.json)
+File: /home/user/.alter-zero/mcp.json
+```
+
+- `--client-id <ID>` and `--callback-port <PORT>` (1–65535) write the
+  entry's `oauth` object (`clientId`, `callbackPort`) — remote servers only,
+  a usage error with a command.
+- `--client-secret` is a **switch, never a value**: a secret on the command
+  line lands in the shell's history and the process list, so
+  `--client-secret=…` is refused with the way around it. The secret comes
+  from Claude Code's `MCP_CLIENT_SECRET`, else a **no-echo prompt** when
+  stdin is a terminal (`rustix` termios, the modes restored after), else
+  one line of stdin — a script's pipe. It is read **before anything is
+  written**, so a server whose secret could not be had is never left
+  half-added, and an empty one is a loud exit 1.
+- The secret goes to the **token store**, `{config_home}/mcp-auth.json`
+  (owner-only — the `clients` section, beside the client id it belongs
+  to), and **never into `mcp.json`**: the config file is the kind of file
+  people paste into issues and dotfile repos. The sign-in finds it there by
+  the server's URL and the matching id. That store write is the one
+  `store_client` path that reports failure; the TUI's writers stay
+  best-effort.
+- `--client-secret` needs a client to belong to: `--client-id` on `add`,
+  the entry's own `"oauth": {"clientId": …}` on `add-json` (its one flag).
+- `mcp get` prints `OAuth client:`, `Callback port:`, `Scopes:` and where
+  the secret is kept (`stored`, or `in the config file` for a hand-written
+  `clientSecret`) — never the secret itself.
 
 ### The writers (pure, `src/mcp/config.rs`)
 

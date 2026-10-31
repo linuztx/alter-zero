@@ -30,16 +30,48 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
             println!("{}", cli::help(HelpPage::Mcp, stdout_style()));
             0
         }
-        McpCli::Add { name, config } => {
+        McpCli::Add {
+            name,
+            config,
+            client_secret,
+        } => {
+            // The secret is read before anything is written: a server whose
+            // secret could not be had is not left half-added.
+            let client_id = config.oauth().and_then(|o| o.client_id.clone());
+            let secret = match (client_secret, &client_id) {
+                (true, Some(client_id)) => match read_client_secret(client_id) {
+                    Ok(secret) => Some(secret),
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return 1;
+                    }
+                },
+                _ => None,
+            };
             with_user_file(
                 |path, contents| match mcp::record_server(&contents, name, config) {
                     Ok(updated) => {
+                        let kept = match (&secret, &client_id, config.url()) {
+                            (Some(secret), Some(client_id), Some(url)) => {
+                                Some(keep_client_secret(url, client_id, secret)?)
+                            }
+                            _ => None,
+                        };
                         write_user_file(path, &updated)?;
                         println!(
                             "Added {} MCP server \"{name}\" ({})",
                             config.transport_label(),
                             config.target()
                         );
+                        if let Some(client_id) = &client_id {
+                            match kept {
+                                Some(store) => println!(
+                                    "OAuth client: {client_id} (secret kept in {})",
+                                    store.display()
+                                ),
+                                None => println!("OAuth client: {client_id}"),
+                            }
+                        }
                         println!("File: {}", path.display());
                         Ok(())
                     }
@@ -98,6 +130,83 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
             Ok(())
         }),
     }
+}
+
+/// The client secret `--client-secret` asks for: Claude Code's
+/// `MCP_CLIENT_SECRET`, else typed at a no-echo prompt when stdin is a
+/// terminal, else one line of stdin (a script's pipe). Never an argument —
+/// that would put it in the shell's history and the process list.
+fn read_client_secret(client_id: &str) -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal};
+    if let Ok(secret) = std::env::var("MCP_CLIENT_SECRET")
+        && !secret.trim().is_empty()
+    {
+        return Ok(secret.trim().to_string());
+    }
+    let stdin = std::io::stdin();
+    let line = if stdin.is_terminal() {
+        prompt_hidden(&format!("Client secret for {client_id}: "))?
+    } else {
+        let mut line = String::new();
+        stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read the client secret: {e}"))?;
+        line
+    };
+    let secret = line.trim().to_string();
+    if secret.is_empty() {
+        return Err(
+            "No client secret given: set MCP_CLIENT_SECRET, pipe it on stdin, \
+             or type it when asked"
+                .to_string(),
+        );
+    }
+    Ok(secret)
+}
+
+/// Prompt on stderr and read one line from the terminal with echo off,
+/// restoring the terminal's modes afterwards.
+fn prompt_hidden(prompt: &str) -> Result<String, String> {
+    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
+    use std::io::{BufRead, Write};
+    use std::os::fd::AsFd;
+    let stdin = std::io::stdin();
+    let fd = stdin.as_fd();
+    let original = tcgetattr(fd).map_err(|e| format!("Failed to read the terminal: {e}"))?;
+    let mut silent = original.clone();
+    silent.local_modes.remove(LocalModes::ECHO);
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    tcsetattr(fd, OptionalActions::Now, &silent)
+        .map_err(|e| format!("Failed to hide the input: {e}"))?;
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+    let _ = tcsetattr(fd, OptionalActions::Now, &original);
+    // The Enter that ended the line was not echoed either.
+    eprintln!();
+    read.map_err(|e| format!("Failed to read the client secret: {e}"))?;
+    Ok(line)
+}
+
+/// Keep a configured client's secret in the token store (owner-only), where
+/// the sign-in finds it beside the client id it belongs to. Returns the
+/// store's path for the confirmation line.
+fn keep_client_secret(url: &str, client_id: &str, secret: &str) -> Result<PathBuf, String> {
+    let Some(store) = config::mcp_auth_path() else {
+        return Err("No token store path (set HOME or ALTER_ZERO_CONFIG_DIR)".to_string());
+    };
+    alter_zero::llm::mcp::store_client(
+        &store,
+        url,
+        Some(&alter_zero::llm::mcp::StoredClient {
+            client_id: client_id.to_string(),
+            client_secret: Some(secret.to_string()),
+            ..Default::default()
+        }),
+    )
+    .map_err(|e| format!("Failed to write {}: {e}", store.display()))?;
+    Ok(store)
 }
 
 /// Resolve the user file, read it (missing = empty), and run the
@@ -195,11 +304,40 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
             if !headers.is_empty() {
                 println!("  Headers: {}", masked(headers, ": "));
             }
+            if let Some(oauth) = config.oauth() {
+                print_oauth(url, oauth);
+            }
         }
     }
     println!("  File: {}", path.display());
     println!();
     println!("Remove with: {} mcp remove {name}", bin_name());
+}
+
+/// The `oauth` object's facts — and where the client's secret is kept, but
+/// never the secret itself.
+fn print_oauth(url: &str, oauth: &mcp::McpOAuthConfig) {
+    if let Some(client_id) = &oauth.client_id {
+        println!("  OAuth client: {client_id}");
+    }
+    if let Some(port) = oauth.callback_port {
+        println!("  Callback port: {port}");
+    }
+    if let Some(scopes) = &oauth.scopes {
+        println!("  Scopes: {scopes}");
+    }
+    if let Some(metadata) = &oauth.auth_server_metadata_url {
+        println!("  Auth server metadata: {metadata}");
+    }
+    let stored = config::mcp_auth_path()
+        .and_then(|store| alter_zero::llm::mcp::load_client(Some(&store), url))
+        .filter(|client| Some(&client.client_id) == oauth.client_id.as_ref())
+        .is_some_and(|client| client.client_secret.is_some());
+    if oauth.client_secret.is_some() {
+        println!("  Client secret: in the config file");
+    } else if stored {
+        println!("  Client secret: stored");
+    }
 }
 
 /// `KEY=*****, Other=*****` — names visible, values masked.

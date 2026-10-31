@@ -173,20 +173,27 @@ pub fn load_tokens(path: Option<&Path>, server_url: &str) -> Option<StoredTokens
 /// Persist (or delete) one server's tokens — read-modify-write, owner-only,
 /// best-effort like every other config write.
 pub fn save_tokens(path: Option<&Path>, server_url: &str, tokens: Option<&StoredTokens>) {
-    write_store(path, |existing| record_tokens(existing, server_url, tokens));
+    if let Some(path) = path {
+        let _ = write_store(path, |existing| record_tokens(existing, server_url, tokens));
+    }
 }
 
 /// The store's one write path: under [`STORE_LOCK`], read the file, apply
-/// `update`, and commit the result write-then-rename, owner-only.
-fn write_store(path: Option<&Path>, update: impl FnOnce(&str) -> String) {
-    let Some(path) = path else { return };
+/// `update`, and commit the result write-then-rename, owner-only. The TUI's
+/// writers ignore the result like every other config write; the CLI's
+/// ([`store_client`]) must not.
+fn write_store(path: &Path, update: impl FnOnce(&str) -> String) -> std::io::Result<()> {
     let _guard = STORE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let existing = match std::fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
     let updated = update(&existing);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
     // Write-then-rename, so a crash mid-write can't leave a truncated store:
     // a half-written file parses as *no* servers, silently unauthenticating
@@ -195,12 +202,13 @@ fn write_store(path: Option<&Path>, update: impl FnOnce(&str) -> String) {
     if std::fs::write(&temp, &updated).is_ok() {
         set_owner_only(&temp);
         if std::fs::rename(&temp, path).is_ok() {
-            return;
+            return Ok(());
         }
         let _ = std::fs::remove_file(&temp);
     }
-    let _ = std::fs::write(path, updated);
+    std::fs::write(path, updated)?;
     set_owner_only(path);
+    Ok(())
 }
 
 /// A client identity kept for one server, apart from its grant so a cleared
@@ -298,9 +306,21 @@ pub fn load_client(path: Option<&Path>, server_url: &str) -> Option<StoredClient
 }
 
 /// Persist (or delete) one server's client — the token store's own
-/// locked, owner-only, write-then-rename read-modify-write.
+/// locked, owner-only, write-then-rename read-modify-write, best-effort.
 pub fn save_client(path: Option<&Path>, server_url: &str, client: Option<&StoredClient>) {
-    write_store(path, |existing| record_client(existing, server_url, client));
+    if let Some(path) = path {
+        let _ = store_client(path, server_url, client);
+    }
+}
+
+/// [`save_client`] for a caller that must report a failed write — the
+/// `mcp add --client-secret` CLI (`docs/mcp-cli.md`).
+pub fn store_client(
+    path: &Path,
+    server_url: &str,
+    client: Option<&StoredClient>,
+) -> std::io::Result<()> {
+    write_store(path, |existing| record_client(existing, server_url, client))
 }
 
 /// `0600` — the store holds refresh tokens, which the spec requires be kept

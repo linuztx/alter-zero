@@ -25,7 +25,7 @@ pub use self::oauth::{
     parse_redirect, parse_token_store, pkce_and_state, plan_client, provider_authorize_params,
     record_client, record_tokens, redirect_param, refresh_failure_kind, refresh_grant,
     refresh_if_stale, refresh_params, register_client, run_auth_flow, save_client, save_tokens,
-    tokens_fresh, url_decode, url_encode, validate_issuer, with_offline_access,
+    store_client, tokens_fresh, url_decode, url_encode, validate_issuer, with_offline_access,
 };
 pub use self::transport::{
     HttpTransport, RemoteHeaders, SseTransport, StdioTransport, Transport, TransportError,

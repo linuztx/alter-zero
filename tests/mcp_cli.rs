@@ -276,3 +276,122 @@ fn siblings_survive_and_an_empty_file_reports_where_to_add() {
     );
     assert!(text.contains("mcp add <name> --url <url>"), "{text}");
 }
+
+/// Run `alter-zero mcp …` with the user file at `file`, the config home
+/// (where the token store lives) at `home`, extra environment, and `stdin`
+/// piped in.
+fn mcp_in(
+    file: &PathBuf,
+    home: &std::path::Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: &str,
+) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(bin())
+        .arg("mcp")
+        .args(args)
+        .env("ALTER_ZERO_MCP_FILE", file)
+        .env("ALTER_ZERO_CONFIG_DIR", home)
+        .env_remove("MCP_CLIENT_SECRET")
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("binary runs");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(stdin.as_bytes())
+        .expect("stdin written");
+    child.wait_with_output().expect("binary exits")
+}
+
+const CALENDAR: &str = "https://calendarmcp.googleapis.com/mcp/v1";
+
+#[test]
+fn a_client_secret_goes_to_the_token_store_never_the_config() {
+    let (dir, file) = scratch("client_secret_env");
+    let home = dir.join("home");
+    let out = mcp_in(
+        &file,
+        &home,
+        &[
+            "add",
+            "cal",
+            "--url",
+            CALENDAR,
+            "--client-id",
+            "cid.apps",
+            "--client-secret",
+            "--callback-port",
+            "8976",
+        ],
+        &[("MCP_CLIENT_SECRET", "GOCSPX-shh")],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("OAuth client: cid.apps"), "{text}");
+    assert!(!text.contains("GOCSPX-shh"), "{text}");
+    // The config carries Claude Code's `oauth` object and no secret.
+    let written = std::fs::read_to_string(&file).expect("config written");
+    assert!(!written.contains("GOCSPX-shh"), "{written}");
+    let config: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+    assert_eq!(
+        config["mcpServers"]["cal"],
+        serde_json::json!({"url": CALENDAR, "oauth": {"clientId": "cid.apps", "callbackPort": 8976}})
+    );
+    // The secret sits in the owner-only token store, beside its client id.
+    let store_path = home.join("mcp-auth.json");
+    let store: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("store written"))
+            .expect("valid JSON");
+    assert_eq!(store["clients"][CALENDAR]["client_id"], "cid.apps");
+    assert_eq!(store["clients"][CALENDAR]["client_secret"], "GOCSPX-shh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&store_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the store is owner-only");
+    }
+    // `get` names the client and says the secret is kept, never its value.
+    let out = mcp_in(&file, &home, &["get", "cal"], &[], "");
+    let text = stdout(&out);
+    assert!(text.contains("OAuth client: cid.apps"), "{text}");
+    assert!(text.contains("Callback port: 8976"), "{text}");
+    assert!(text.contains("Client secret: stored"), "{text}");
+    assert!(!text.contains("GOCSPX-shh"), "{text}");
+}
+
+#[test]
+fn a_piped_secret_is_read_and_a_missing_one_writes_nothing() {
+    let (dir, file) = scratch("client_secret_stdin");
+    let home = dir.join("home");
+    let args = [
+        "add",
+        "cal",
+        "--url",
+        CALENDAR,
+        "--client-id",
+        "cid",
+        "--client-secret",
+    ];
+    // Nothing on stdin and no MCP_CLIENT_SECRET: a loud failure, and the
+    // server is not half-added without the secret it needs.
+    let out = mcp_in(&file, &home, &args, &[], "");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("MCP_CLIENT_SECRET"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!file.exists(), "nothing written without the secret");
+    // A script pipes it in.
+    let out = mcp_in(&file, &home, &args, &[], "piped-secret\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let store = std::fs::read_to_string(home.join("mcp-auth.json")).expect("store written");
+    assert!(store.contains("piped-secret"), "{store}");
+}
