@@ -86,6 +86,11 @@ release heading when a version is cut.
   is the reason, as in Claude Code and codex and as the `/hooks` page says;
   the call used to go on to the auto-mode classifier and the permission
   prompt as if the hook had said nothing (`docs/hooks.md`).
+- **A tool call's dim note row keeps every note.** A call allowed by the
+  auto-mode classifier that a hook also commented on showed only the hook's
+  note, and a hook that ran before a call lost its note to one that ran
+  after it. The row now lists each note in the order it came, separated by
+  `·`, in the main conversation and in an agent's own view.
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a
   tool round, sometimes after a long thought that used up its whole output

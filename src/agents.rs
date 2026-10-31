@@ -726,7 +726,7 @@ impl AgentRun {
                 if let Some(front) = self.tool_queue.front_mut()
                     && front.status == ToolStatus::Running
                 {
-                    front.approval_note = Some(note.clone());
+                    front.add_note(note);
                 }
             }
             StreamEvent::ToolOutput(chunk) => {
@@ -3324,6 +3324,35 @@ mod tests {
         assert_eq!(
             tool.approval_note.as_deref(),
             Some("Allowed by auto mode classifier")
+        );
+    }
+
+    #[test]
+    fn apply_keeps_every_note_a_subagents_call_collects() {
+        // The main session's rule on the agent's own transcript: an approval
+        // note and a hook's note share the row instead of the last winning.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "ls -la".to_string(),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolNote(
+            "Allowed by auto mode classifier".to_string(),
+        ));
+        run.apply(&StreamEvent::ToolNote("Context added by hook".to_string()));
+        run.apply(&StreamEvent::ToolEnd {
+            output: "Exit code: 0\ntotal 40".to_string(),
+            ok: true,
+            truncated: false,
+        });
+        let HistoryItem::Tool(tool) = run.history.last().expect("the call recorded") else {
+            panic!("a tool call lands in the transcript");
+        };
+        assert_eq!(
+            tool.approval_note.as_deref(),
+            Some("Allowed by auto mode classifier · Context added by hook")
         );
     }
 

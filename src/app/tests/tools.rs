@@ -270,6 +270,25 @@ fn set_tool_note_rides_the_running_call_into_history() {
 }
 
 #[test]
+fn every_note_a_call_collects_stays_on_its_row() {
+    // One call can collect several notes — its approval, then a PreToolUse
+    // hook's, then a PostToolUse hook's — and the cell's one dim row keeps
+    // them all, in order, rather than the last alone.
+    let mut app = App::new();
+    app.start_tool("Bash", "ls -la", None);
+    app.set_tool_note("Allowed by auto mode classifier");
+    app.set_tool_note("Context added by hook");
+    app.set_tool_note("Flagged by hook: lint failed");
+    let finished = app.end_tool("Exit code: 0\ntotal 40", true).expect("ran");
+    assert_eq!(
+        finished.approval_note.as_deref(),
+        Some(
+            "Allowed by auto mode classifier · Context added by hook · Flagged by hook: lint failed"
+        )
+    );
+}
+
+#[test]
 fn set_tool_note_ignores_a_waiting_sibling_and_an_idle_queue() {
     // The note always follows its own call's ToolStart — a batch whose front
     // is still Waiting (and an empty queue) must not pick it up.
