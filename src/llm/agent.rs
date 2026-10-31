@@ -765,7 +765,10 @@ pub fn run_agent(
                         (Some(id), _) => {
                             let _ = tx.send(StreamEvent::ToolBackgrounded {
                                 id: id.clone(),
-                                output: outcome.output.clone(),
+                                // What the model read — a hook's context
+                                // included — since the record keeps this and
+                                // the cell shows its fixed row either way.
+                                output: outcome.context_text().to_string(),
                             });
                         }
                         (None, Some(context)) if outcome.ok => {
@@ -2052,14 +2055,15 @@ mod tests {
             result.contains("launched in the background") && result.contains("reviewed by policy"),
             "the model reads the launch text and the hook's context: {result}"
         );
-        // The cell still shows the fixed backgrounded row — the launch text
-        // rides the event untouched.
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, StreamEvent::ToolBackgrounded { .. })),
-            "{events:?}"
-        );
+        // The cell shows its fixed backgrounded row whatever the text, so
+        // the event carries what the model read: that is what the record
+        // keeps and every later turn replays — the launch text alone used
+        // to, and the hook's context vanished after this round.
+        let recorded = events.iter().find_map(|e| match e {
+            StreamEvent::ToolBackgrounded { output, .. } => Some(output.as_str()),
+            _ => None,
+        });
+        assert_eq!(recorded, Some(result.as_str()), "{events:?}");
         // And PostToolUse stays silent: the call has not finished.
         assert_eq!(hooks.posts(), Vec::<(String, bool)>::new());
     }

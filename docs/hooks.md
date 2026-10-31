@@ -379,7 +379,9 @@ somewhere for every hook verdict to land, under another name. **No new
   `{event} hook additional context:` label, through the
   existing `ToolAnswered { display, result }` split, so the cell stays clean
   while `context_output` carries what the model actually read. Both are
-  recorded, both survive a `/resume`.
+  recorded, both survive a `/resume` — a call handed to the background
+  included, whose recorded launch text used to drop the context after the
+  round that read it.
 
 Two additions were needed for the conversation-level events, because nothing
 existing could express them:

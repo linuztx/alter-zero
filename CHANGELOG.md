@@ -91,6 +91,9 @@ release heading when a version is cut.
   and so was its note (a warning from a broken sibling hook, a
   `systemMessage`). The agent now reads the context after the refusal, and
   the note sits under the red cell (`docs/hooks.md`).
+- **A hook's context stays with a command sent to the background.** The
+  agent read it when the command was launched, but the conversation kept
+  only the launch text, so the next turn no longer had it (`docs/hooks.md`).
 - **A tool call's dim note row keeps every note.** A call allowed by the
   auto-mode classifier that a hook also commented on showed only the hook's
   note, and a hook that ran before a call lost its note to one that ran
