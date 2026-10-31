@@ -604,6 +604,44 @@ pub(super) fn tool_dim_color() -> Color {
     palette().dim
 }
 
+// ===== Meta highlights (docs/meta-highlights.md) =====
+// The dim meta lines — the turn summary, the `Thought for …` line, the status
+// line's metrics, a fold's `… +N lines (ctrl+o to expand)`, a running
+// command's clock, a collapsed group, the footer — keep their words dim and
+// lift the two things a reader scans them for: the **values** in the theme's
+// second ink, and the **keys** a hint names in a softened accent. Built where
+// the row is built (`ui::meta::MetaSpans`), never found in its text after.
+
+/// How far each hue this feature adds is mixed toward [`tool_dim_color`] —
+/// the hint key's accent, the footer's mode and gauge colours. Softened, so a
+/// key repeated down the whole scrollback stays calmer than the accent the
+/// pickers select with; under half, so the `ansi` theme — whose colours have
+/// no components to mix and step to the nearer end — keeps the hue itself.
+pub(super) const META_TINT_DIM_MIX: f32 = 0.35;
+
+/// A theme hue softened the feature's one way: [`META_TINT_DIM_MIX`] of the
+/// way toward the dim.
+fn meta_tint(color: Color) -> Color {
+    lerp_color(color, tool_dim_color(), META_TINT_DIM_MIX)
+}
+
+/// A **value** inside a dim meta line — `45s`, `12.3k`, `+48`, a group's
+/// `3` — in the theme's second ink (`text_muted`): brighter than the dim
+/// words around it, never as loud as the reply. On a light theme that ink is
+/// the darker one, which is what stands out there.
+pub(super) fn meta_value_color() -> Color {
+    palette().text_muted
+}
+
+/// A **key** a dim hint names — `ctrl+o`, `esc`, `ctrl+b`, `↓` — in the
+/// accent every other key hint wears (the permission prompt's, the Ctrl+R
+/// line's, the `?` band's), softened by [`META_TINT_DIM_MIX`]: these hints
+/// repeat down the whole scrollback, and at full strength they would outshout
+/// the inline code and the selections that wear the accent.
+pub(super) fn meta_key_color() -> Color {
+    meta_tint(menu_selected_color())
+}
+
 // ===== The task tools' live checklist (docs/task-tools.md) =====
 
 /// The checklist's status glyphs — Claude Code's `figures` trio: pending's
@@ -2607,6 +2645,38 @@ pub(super) const FOOTER_SEPARATOR: &str = " · ";
 /// status-line style.
 pub(super) fn footer_color() -> Color {
     tool_dim_color()
+}
+
+/// The permission mode's colour at the footer's right edge — by **how much
+/// runs without asking** (`docs/meta-highlights.md`), Claude Code's mode line
+/// in this theme's palette: `manual` stays the footer's dim (everything asks,
+/// nothing to flag), `edit` the softened purple (Claude Code's accept-edits
+/// colour), `auto` — the default — the softened accent a hint key wears, and
+/// `master`, which runs everything unasked, the softened error red (Claude
+/// Code's bypass-permissions red).
+pub(super) fn footer_mode_color(mode: crate::permission::PermissionMode) -> Color {
+    use crate::permission::PermissionMode;
+    match mode {
+        PermissionMode::Manual => footer_color(),
+        PermissionMode::Edit => meta_tint(palette().purple),
+        PermissionMode::Auto => meta_key_color(),
+        PermissionMode::Master => meta_tint(error_color()),
+    }
+}
+
+/// The context gauge's colour by how full the window is (`share`, used over
+/// the window): a plain [`meta_value_color`] while there is room, the softened
+/// caution amber from [`CONTEXT_USAGE_WARN_SHARE`], the softened error red from
+/// [`CONTEXT_USAGE_FULL_SHARE`] — the `/context` page's own thresholds, the
+/// second the one auto-compact runs at (`docs/meta-highlights.md`).
+pub(super) fn footer_gauge_color(share: f64) -> Color {
+    if share >= CONTEXT_USAGE_FULL_SHARE {
+        meta_tint(error_color())
+    } else if share >= CONTEXT_USAGE_WARN_SHARE {
+        meta_tint(palette().warning)
+    } else {
+        meta_value_color()
+    }
 }
 
 /// The least gap kept between the footer's left chain and the permission

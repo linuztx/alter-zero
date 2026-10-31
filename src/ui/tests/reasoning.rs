@@ -7,8 +7,8 @@ use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
 use crate::ui::theme::{
-    SHIMMER_SWEEP, TOOL_PULSE_PERIOD, reasoning_label_color, reasoning_shimmer_base, shimmer_base,
-    shimmer_highlight,
+    SHIMMER_SWEEP, TOOL_PULSE_PERIOD, meta_key_color, meta_value_color, reasoning_label_color,
+    reasoning_shimmer_base, shimmer_base, shimmer_highlight,
 };
 use crate::ui::wrap::cols;
 
@@ -54,20 +54,39 @@ fn the_settled_line_carries_no_bullet() {
 }
 
 #[test]
-fn the_settled_line_is_dim_throughout() {
+fn the_settled_line_is_dim_with_its_values_and_key_lifted() {
     // `Done for Ns`'s exact dress. A finished thought is a footnote about work
     // already done, so it settles into the transcript instead of competing
     // with the reply it sits above — the weight belongs to the live block.
+    // Its words stay dim; the two numbers it reports and the key it names
+    // are lifted (docs/meta-highlights.md).
     let lines = reasoning_lines(&thought("…", 3, 12), 80);
-    let [span] = lines[0].spans.as_slice() else {
-        panic!("one tone across the whole row, got {:?}", lines[0].spans);
-    };
+    let spans = &lines[0].spans;
     assert_eq!(
-        span.content,
+        plain(&lines[0]),
         "Thought for 3s · 12 tokens (ctrl+o to expand)"
     );
-    assert_eq!(span.style.fg, Some(reasoning_label_color()));
-    assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(pieces_in(spans, meta_value_color()), ["3s", "12"]);
+    assert_eq!(pieces_in(spans, meta_key_color()), ["ctrl+o"]);
+    assert_eq!(
+        pieces_in(spans, reasoning_label_color()).concat(),
+        "Thought for  ·  tokens ( to expand)",
+        "every word stays dim"
+    );
+    for span in spans {
+        assert!(
+            !span.style.add_modifier.contains(Modifier::BOLD),
+            "{span:?}"
+        );
+        assert_eq!(span.style.bg, None, "{span:?}");
+    }
+}
+
+#[test]
+fn a_thought_with_no_tokens_lifts_its_elapsed_alone() {
+    let lines = reasoning_lines(&thought("…", 65, 0), 80);
+    assert_eq!(plain(&lines[0]), "Thought for 1m 5s (ctrl+o to expand)");
+    assert_eq!(pieces_in(&lines[0].spans, meta_value_color()), ["1m 5s"]);
 }
 
 #[test]
@@ -158,13 +177,17 @@ fn the_transcript_label_is_the_same_dim_line_with_no_background() {
     // A thought looks like the same thing wherever you meet it: the settled
     // line wears exactly what the inline one wears, minus the expand hint.
     let lines = reasoning_full_lines(&thought("hm", 3, 12), 40);
-    let [span] = lines[0].spans.as_slice() else {
-        panic!("one label span, got {:?}", lines[0].spans);
-    };
-    assert_eq!(span.content, "Thought for 3s · 12 tokens");
-    assert_eq!(span.style.fg, Some(reasoning_label_color()));
-    assert!(!span.style.add_modifier.contains(Modifier::BOLD));
-    assert_eq!(span.style.bg, None, "no band, no padding to the width");
+    let inline = reasoning_lines(&thought("hm", 3, 12), 40);
+    assert_eq!(plain(&lines[0]), "Thought for 3s · 12 tokens");
+    assert_eq!(
+        lines[0].spans[..],
+        inline[0].spans[..lines[0].spans.len()],
+        "the inline line's own pieces, in its own dress"
+    );
+    for span in &lines[0].spans {
+        assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(span.style.bg, None, "no band, no padding to the width");
+    }
 }
 
 #[test]

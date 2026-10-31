@@ -43,7 +43,9 @@ All of it to the live block, none to the settled line:
 
 The settled line is dim on both surfaces so a thought looks like the same thing
 wherever you meet it, and so it never competes with the assistant reply it sits
-directly above.
+directly above. Inside the dim, its two values — the elapsed and the token
+count — lift to the theme's second ink and the hint's `ctrl+o` takes the
+softened accent, as in every dim meta line (`docs/meta-highlights.md`).
 
 The full text is never lost — it expands in the **Ctrl+O transcript** like a
 tool call's output, records into the rollout, and comes back on `/resume`.
@@ -141,8 +143,9 @@ pub struct Reasoning {
 ```
 
 `ui::reasoning_lines` renders it as one unwrapped, **bullet-less**, dim line —
-`summary_lines`' shape *and* its colour (`status_done_color()`), so the pair that
-brackets a turn reads as a pair:
+`summary_lines`' shape *and* its colour (`status_done_color()`), its values and
+key lifted the same way (`docs/meta-highlights.md`), so the pair that brackets
+a turn reads as a pair:
 
 ```
 Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)

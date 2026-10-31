@@ -36,6 +36,7 @@ mod mascot_view;
 mod mcp_view;
 mod menu;
 mod message;
+mod meta;
 mod model_view;
 mod offline;
 mod palette;
@@ -117,6 +118,16 @@ pub(super) fn painted_title_wears_the_dress(buf: &Buffer, y: u16) -> bool {
 /// Concatenate a line's span contents into its plain text.
 pub(super) fn plain(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The contents of the spans wearing `color`, in order — how a test reads
+/// which pieces of a dim row were lifted (`docs/meta-highlights.md`).
+pub(super) fn pieces_in(spans: &[Span], color: Color) -> Vec<String> {
+    spans
+        .iter()
+        .filter(|span| span.style.fg == Some(color))
+        .map(|span| span.content.to_string())
+        .collect()
 }
 
 /// Read row `y` of a buffer back as a string.

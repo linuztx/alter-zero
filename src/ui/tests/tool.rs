@@ -3,12 +3,13 @@
 
 use super::*;
 use crate::ui::theme::{
-    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, INLINE_DIFF_MARK_MIN_CONTRAST, TOOL_BULLET,
-    TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS, TOOL_HEADER_MAX_LINES,
-    TOOL_HEADER_MAX_ROWS, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_PULSE_PERIOD, TOOL_TRUNCATED_MARKER,
-    tool_args_color, tool_diff_add_bg, tool_diff_add_color, tool_diff_add_mark_bg,
-    tool_diff_del_bg, tool_diff_del_color, tool_diff_del_mark_bg, tool_dim_color, tool_fail_color,
-    tool_ok_color, tool_output_color, tool_running_color, tool_waiting_color,
+    CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, INLINE_DIFF_MARK_MIN_CONTRAST,
+    TOOL_BACKGROUND_HINT, TOOL_BULLET, TOOL_FOLD_ROWS, TOOL_HEADER_ELLIPSIS, TOOL_HEADER_MAX_COLS,
+    TOOL_HEADER_MAX_LINES, TOOL_HEADER_MAX_ROWS, TOOL_JSON_PRETTY_MAX_BYTES, TOOL_PULSE_PERIOD,
+    TOOL_TRUNCATED_MARKER, meta_key_color, meta_value_color, tool_args_color, tool_diff_add_bg,
+    tool_diff_add_color, tool_diff_add_mark_bg, tool_diff_del_bg, tool_diff_del_color,
+    tool_diff_del_mark_bg, tool_dim_color, tool_fail_color, tool_ok_color, tool_output_color,
+    tool_running_color, tool_waiting_color,
 };
 use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::{cols, contrast_ratio};
@@ -4969,4 +4970,121 @@ fn the_strip_follows_the_apps_live_tail() {
         rows.len(),
         "the strip is sized by the same walk it is painted from"
     );
+}
+
+// --- meta highlights (docs/meta-highlights.md): a fold's count and key, a
+// running command's clock ---
+
+fn nine_lines() -> String {
+    (1..=9)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_fold_hint_lifts_its_count_and_its_key() {
+    let lines = tool_lines(
+        &tool("Bash", "seq 6", ToolStatus::Ok, "l1\nl2\nl3\nl4\nl5\nl6"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let hint = lines.last().unwrap();
+    assert_eq!(plain(hint), "     … +3 lines (ctrl+o to expand)");
+    assert_eq!(pieces_in(&hint.spans, meta_value_color()), ["+3"]);
+    assert_eq!(pieces_in(&hint.spans, meta_key_color()), ["ctrl+o"]);
+    assert_eq!(
+        pieces_in(&hint.spans, tool_dim_color()).concat(),
+        "     …  lines ( to expand)",
+        "every word stays dim"
+    );
+}
+
+#[test]
+fn the_running_clock_lifts_its_count_its_elapsed_and_its_wait() {
+    let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &nine_lines());
+    let lines = running_command_lines(
+        &t,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let clock = lines.last().unwrap();
+    assert_eq!(plain(clock).trim(), "+5 lines (9s · wait 2m)");
+    assert_eq!(
+        pieces_in(&clock.spans, meta_value_color()),
+        ["+5", "9s", "2m"]
+    );
+    assert_eq!(
+        pieces_in(&clock.spans, tool_dim_color()).concat().trim(),
+        "lines ( · wait )",
+        "the words and the corner's indent stay dim"
+    );
+}
+
+#[test]
+fn a_clock_row_alone_lifts_its_elapsed_and_its_wait() {
+    let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
+    let lines = running_command_lines(
+        &t,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(61),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let clock = lines.last().unwrap();
+    assert_eq!(plain(clock).trim(), "(1m 1s · wait 2m)");
+    assert_eq!(pieces_in(&clock.spans, meta_value_color()), ["1m 1s", "2m"]);
+}
+
+#[test]
+fn a_silent_commands_running_row_lifts_its_clock() {
+    let t = tool("Bash", "sleep 100", ToolStatus::Running, "");
+    let lines = running_command_lines(
+        &t,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(10),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let row = lines.last().unwrap();
+    assert_eq!(plain(row), "  ⎿  Running… (10s · wait 2m)");
+    assert_eq!(pieces_in(&row.spans, meta_value_color()), ["10s", "2m"]);
+}
+
+#[test]
+fn the_shell_running_row_lifts_its_elapsed() {
+    let row = crate::ui::tool::shell_running_line(Duration::from_secs(75));
+    assert_eq!(plain(&row), "  ⎿  Running… (1m 15s)");
+    assert_eq!(pieces_in(&row.spans, meta_value_color()), ["1m 15s"]);
+}
+
+#[test]
+fn a_backgrounded_cell_lifts_the_manager_key() {
+    let lines = tool_lines(
+        &tool("Bash", "npm run dev", ToolStatus::Backgrounded, "launched"),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let row = &lines[1];
+    assert_eq!(plain(row), "  ⎿  Running in the background (↓ to manage)");
+    assert_eq!(pieces_in(&row.spans, meta_key_color()), ["↓"]);
+}
+
+#[test]
+fn the_ctrl_b_hint_lifts_its_key() {
+    let row = crate::ui::tool::hint_row(1, TOOL_BACKGROUND_HINT);
+    assert_eq!(plain(&row).trim(), TOOL_BACKGROUND_HINT);
+    assert_eq!(pieces_in(&row.spans, meta_key_color()), ["ctrl+b"]);
+}
+
+#[test]
+fn a_called_mcp_line_lifts_its_key() {
+    let line = crate::ui::tool::mcp_called_line(&["deepwiki"]);
+    assert!(plain(&line).ends_with(EXPAND_HINT), "{:?}", plain(&line));
+    assert_eq!(pieces_in(&line.spans, meta_key_color()), ["ctrl+o"]);
 }

@@ -49,18 +49,18 @@ chrome paints is one of these or derived from one:
 | role | what wears it |
 | --- | --- |
 | `text` | the reply text, the composer prompt, a tool's name/arguments/output, the shimmer's crest, the comet's head |
-| `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor |
-| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), timestamps |
+| `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor, the **values** inside a dim meta line (`docs/meta-highlights.md`) |
+| `dim` | the `⎿` corners and placeholders, the words of the footer, the hints and the meta lines, a waiting or running bullet (the one grey it blinks in), timestamps |
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
-| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title) |
+| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title); softened, a dim hint's **key** and the footer's `auto` mode |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
 | `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well, a reply's blockquotes (codex's green) |
-| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast |
-| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
-| `purple` | the context view's tool tag, the `/resume` toolbar's focus |
+| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast; softened, the footer gauge from 90% and the `master` mode |
+| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning; softened, the footer gauge from 75% |
+| `purple` | the context view's tool tag, the `/resume` toolbar's focus; softened, the footer's `edit` mode |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
 | `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`); a changed run's ink is held to 3:1 against them, lifted toward `text` where the code theme's colour won't read |
 | `shimmer_base` | the status verb's resting grey, under the sweep to `text` |
@@ -74,7 +74,9 @@ is `agent_view_label_bg()`, the agent session view's composer chip, whose
 `header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
 `shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`,
 `toast_error_color()` is `error` mixed a third of the way to `dim`
-(`docs/toast.md`), and so
+(`docs/toast.md`), `meta_value_color()` is `text_muted` and
+`meta_key_color()` the `accent` mixed `META_TINT_DIM_MIX` (35%) of the way to
+`dim` — the "softened" every hue in `docs/meta-highlights.md` wears — and so
 on): the roles are what `theme.rs` has always named, the palette is what
 each theme paints them with, so a new theme is one table of twenty-one
 values and nothing else. The Catppuccin flavours take the flavour's own

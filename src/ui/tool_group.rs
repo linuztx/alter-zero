@@ -21,6 +21,8 @@
 //! Every call stays whole in the Ctrl+O transcript; this is only what the
 //! conversation shows of them.
 
+use super::file_cell::gutter_row_spans;
+use super::meta::{MetaSpans, hint_spans, value_style};
 use super::theme::*;
 use super::tool::{bullet_span, command_display_lines, result_row};
 use super::wrap::{cols, truncate_cols, wrap_output};
@@ -85,14 +87,15 @@ fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
 }
 
 /// The clauses as styled spans — `Read `, **`2`**, ` files, listed `, … —
-/// every piece in `style`, the counts bold on top of it, the first verb
-/// capitalised, the scratchpad edits' `+55 -2` in `dim`. `ellipsis` closes
-/// an open group's line (`…`).
+/// every word in `style`, the counts in `count` (bold on top of it), the
+/// first verb capitalised, the scratchpad edits' `+55 -2` in `lines`.
+/// `ellipsis` closes an open group's line (`…`).
 fn summary_spans(
     counts: GroupCounts,
     active: bool,
     style: Style,
-    dim: Style,
+    count: Style,
+    lines_style: Style,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, clause) in clauses(counts, active).into_iter().enumerate() {
@@ -104,16 +107,16 @@ fn summary_spans(
         spans.push(Span::styled(format!("{verb} "), style));
         spans.push(Span::styled(
             clause.count.to_string(),
-            style.add_modifier(Modifier::BOLD),
+            count.add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(format!(" {}", clause.noun), style));
-        // `+55 -2`, dim beside the clause; a side that changed nothing is
-        // left out.
+        // `+55 -2` beside the clause; a side that changed nothing is left
+        // out.
         let lines = clause.lines.unwrap_or_default();
-        for (count, sign) in [(lines.added, '+'), (lines.removed, '-')] {
-            if count > 0 {
+        for (changed, sign) in [(lines.added, '+'), (lines.removed, '-')] {
+            if changed > 0 {
                 spans.push(Span::styled(" ".to_string(), style));
-                spans.push(Span::styled(format!("{sign}{count}"), dim));
+                spans.push(Span::styled(format!("{sign}{changed}"), lines_style));
             }
         }
     }
@@ -131,13 +134,13 @@ fn capitalize(text: &str) -> String {
 }
 
 /// `spans` laid out in `room` columns with the dim `(ctrl+o to expand)` hint
-/// after them: the hint goes first when the row is too narrow for both, then
-/// the clauses are cut with a `…` (into one span — a cut count would read as
-/// a different number).
+/// after them, its key tinted (`docs/meta-highlights.md`): the hint goes
+/// first when the row is too narrow for both, then the clauses are cut with
+/// a `…` (into one span — a cut count would read as a different number).
 fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'static>> {
     let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
     if cols(&text) + cols(EXPAND_HINT) <= room {
-        spans.push(Span::styled(EXPAND_HINT.to_string(), hint));
+        spans.extend(hint_spans(EXPAND_HINT, hint));
         return spans;
     }
     if cols(&text) <= room {
@@ -171,7 +174,9 @@ pub fn tool_group_lines(
     let counts = group_counts(members, paths);
     let style = Style::new().fg(reasoning_label_color());
     vec![Line::from(fit(
-        summary_spans(counts, false, style, style),
+        // Its words dim, its counts and lines changed lifted
+        // (docs/meta-highlights.md).
+        summary_spans(counts, false, style, value_style(style), value_style(style)),
         style,
         usize::from(width),
     ))]
@@ -215,27 +220,50 @@ fn path_hint_rows(path: &str, room: usize) -> Vec<Line<'static>> {
 /// A command on the `⎿` row — `$ ` and then every line of it, **wrapped**
 /// rather than cut, each row after the first hanging under the text after
 /// the `$ ` — with its `clock` whole at the end: on the last row when it
-/// fits there, else on a row of its own.
-fn command_hint_rows(command: &str, clock: Option<&str>, room: usize) -> Vec<Line<'static>> {
+/// fits there, else on a row of its own. The clock's values are lifted and
+/// the command's own text never is (`docs/meta-highlights.md`).
+fn command_hint_rows(command: &str, clock: Option<&GroupClock>, room: usize) -> Vec<Line<'static>> {
     let hang = " ".repeat(cols(TOOL_GROUP_COMMAND_PROMPT));
     let text_room = room.saturating_sub(cols(TOOL_GROUP_COMMAND_PROMPT)).max(1);
     let mut rows = wrap_output(command, u16::try_from(text_room).unwrap_or(u16::MAX));
-    if let Some(clock) = clock {
-        match rows.last_mut() {
-            Some(last) if cols(last.trim_end()) + cols(clock) <= text_room => {
+    // Where the clock goes: after the last row's text when it fits there
+    // (with the space that sets it off the command), else a row of its own.
+    let on_last = clock.is_some_and(|clock| {
+        rows.last_mut().is_some_and(|last| {
+            let fits = cols(last.trim_end()) + 1 + clock.cols() <= text_room;
+            if fits {
                 last.truncate(last.trim_end().len());
-                last.push_str(clock);
             }
-            _ => rows.push(clock.trim_start().to_string()),
-        }
-    }
-    rows.into_iter()
-        .enumerate()
-        .map(|(at, row)| match at {
-            0 => result_row(0, format!("{TOOL_GROUP_COMMAND_PROMPT}{row}")),
-            _ => result_row(1, format!("{hang}{row}")),
+            fits
         })
-        .collect()
+    });
+    let prefix = |at: usize| match at {
+        0 => TOOL_GROUP_COMMAND_PROMPT.to_string(),
+        _ => hang.clone(),
+    };
+    let dim = Style::new().fg(tool_dim_color());
+    let count = rows.len();
+    let mut lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(at, row)| {
+            let mut line = result_row(usize::from(at > 0), format!("{}{row}", prefix(at)));
+            if on_last
+                && at + 1 == count
+                && let Some(clock) = clock
+            {
+                line.spans.push(Span::styled(" ".to_string(), dim));
+                line.spans.extend(clock.spans(dim));
+            }
+            line
+        })
+        .collect();
+    if let Some(clock) = clock.filter(|_| !on_last) {
+        let mut spans = vec![Span::styled(prefix(count), dim)];
+        spans.extend(clock.spans(dim));
+        lines.push(gutter_row_spans(usize::from(count > 0), spans));
+    }
+    lines
 }
 
 /// The **open** group's live cell — the held reads plus, with `with_queue`,
@@ -311,7 +339,13 @@ pub(super) fn live_group_lines(
     let dim = Style::new().fg(tool_dim_color());
     let room = usize::from(width).saturating_sub(cols(TOOL_BULLET));
     let mut spans = vec![bullet_span(tool_running_color(), pulse)];
-    spans.extend(fit(summary_spans(counts, true, label, dim), dim, room));
+    // The counts bold in the white clause; the lines changed a value
+    // beside it (docs/meta-highlights.md).
+    spans.extend(fit(
+        summary_spans(counts, true, label, label, value_style(dim)),
+        dim,
+        room,
+    ));
     let mut lines = vec![Line::from(spans)];
     if let Some(item) = app.group_hint(with_queue) {
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));
@@ -319,11 +353,42 @@ pub(super) fn live_group_lines(
             HintText::Path(path) => lines.extend(path_hint_rows(&path, room)),
             HintText::Command(command) => {
                 let clock = group_clock(app, item, with_queue);
-                lines.extend(command_hint_rows(&command, clock.as_deref(), room));
+                lines.extend(command_hint_rows(&command, clock.as_ref(), room));
             }
         }
     }
     lines
+}
+
+/// The clock a running command's hint row wears — `(12s)`, then `(12s · 34
+/// lines)` once it has printed: the command's own runtime and how much it
+/// has printed, both values (`docs/meta-highlights.md`).
+struct GroupClock {
+    time: String,
+    printed: usize,
+}
+
+impl GroupClock {
+    fn spans(&self, dim: Style) -> Vec<Span<'static>> {
+        let mut meta = MetaSpans::new(dim);
+        meta.text("(").value(self.time.clone());
+        if self.printed > 0 {
+            let noun = if self.printed == 1 { " line" } else { " lines" };
+            meta.text(TOOL_CLOCK_SEPARATOR)
+                .value(self.printed.to_string())
+                .text(noun);
+        }
+        meta.text(")");
+        meta.into_spans()
+    }
+
+    /// Its width on the row.
+    fn cols(&self) -> usize {
+        self.spans(Style::new())
+            .iter()
+            .map(|span| cols(&span.content))
+            .sum()
+    }
 }
 
 /// What the hint row adds while it shows a command that has run
@@ -331,7 +396,7 @@ pub(super) fn live_group_lines(
 /// has printed — the reference's collapsed group, so a long search does not
 /// look frozen. Only the running command's own value wears it: a row still
 /// showing an earlier call never borrows the clock of the one behind it.
-fn group_clock(app: &App, shown: GroupHintItem<'_>, with_queue: bool) -> Option<String> {
+fn group_clock(app: &App, shown: GroupHintItem<'_>, with_queue: bool) -> Option<GroupClock> {
     let GroupHintItem::Call(shown) = shown else {
         return None;
     };
@@ -343,10 +408,8 @@ fn group_clock(app: &App, shown: GroupHintItem<'_>, with_queue: bool) -> Option<
     let elapsed = app
         .command_elapsed()
         .filter(|elapsed| *elapsed >= TOOL_GROUP_CLOCK_DELAY)?;
-    let time = crate::app::format_elapsed(elapsed.as_secs());
-    Some(match command_display_lines(running).len() {
-        0 => format!(" ({time})"),
-        1 => format!(" ({time}{TOOL_CLOCK_SEPARATOR}1 line)"),
-        printed => format!(" ({time}{TOOL_CLOCK_SEPARATOR}{printed} lines)"),
+    Some(GroupClock {
+        time: crate::app::format_elapsed(elapsed.as_secs()),
+        printed: command_display_lines(running).len(),
     })
 }

@@ -273,6 +273,33 @@ fn an_open_plan_keeps_showing_at_rest_and_on_later_turns() {
 }
 
 #[test]
+fn the_idle_count_lines_numbers_are_values() {
+    // docs/meta-highlights.md: the numbers stay bold and lift out of the dim
+    // around them.
+    let mut store = store_of(&["a", "b", "c"]);
+    store
+        .run_update(r#"{"taskId":"1","status":"completed"}"#)
+        .unwrap();
+    store
+        .run_update(r#"{"taskId":"2","status":"in_progress"}"#)
+        .unwrap();
+    let line = &idle_task_lines(&store, 60)[0];
+    let value = crate::ui::theme::meta_value_color();
+    assert_eq!(pieces_in(&line.spans, value), ["3", "1", "1", "1"]);
+    for span in line
+        .spans
+        .iter()
+        .filter(|span| span.style.fg == Some(value))
+    {
+        assert!(span.style.add_modifier.contains(Modifier::BOLD), "{span:?}");
+    }
+    assert_eq!(
+        pieces_in(&line.spans, tool_dim_color()).concat(),
+        "   tasks ( done,  in progress,  open)"
+    );
+}
+
+#[test]
 fn the_idle_count_line_names_in_progress_work_too() {
     let mut store = store_of(&["a", "b", "c"]);
     store

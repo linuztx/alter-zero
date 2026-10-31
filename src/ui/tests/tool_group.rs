@@ -7,7 +7,8 @@ use super::*;
 use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
-    TOOL_PULSE_PERIOD, reasoning_label_color, tool_dim_color, tool_running_color,
+    TOOL_PULSE_PERIOD, meta_key_color, meta_value_color, reasoning_label_color, tool_dim_color,
+    tool_running_color,
 };
 use crate::ui::tool_group::{live_group_lines, tool_group_lines};
 use crate::ui::wrap::cols;
@@ -51,13 +52,15 @@ fn a_settled_group_is_one_dim_bullet_less_line_in_the_references_clause_order() 
         texts(&lines),
         ["Searched for 1 pattern, read 1 file, listed 1 directory (ctrl+o to expand)"]
     );
-    assert!(
-        lines[0]
-            .spans
-            .iter()
-            .all(|span| span.style.fg == Some(reasoning_label_color())),
-        "dim throughout, the settled thought's dress: {:?}",
-        lines[0]
+    // The settled thought's dress: its words dim, the counts it reports
+    // lifted and the key it names tinted (docs/meta-highlights.md).
+    let spans = &lines[0].spans;
+    assert_eq!(pieces_in(spans, meta_value_color()), ["1", "1", "1"]);
+    assert_eq!(pieces_in(spans, meta_key_color()), ["ctrl+o"]);
+    assert_eq!(
+        pieces_in(spans, reasoning_label_color()).concat(),
+        "Searched for  pattern, read  file, listed  directory ( to expand)",
+        "every word stays dim: {spans:?}"
     );
 }
 
@@ -81,6 +84,11 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
         .find(|span| span.content == "3")
         .expect("the count is its own span");
     assert!(count.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        count.style.fg,
+        Some(meta_value_color()),
+        "a count is a value, lifted out of the dim"
+    );
 }
 
 #[test]
@@ -311,6 +319,28 @@ fn a_command_running_two_seconds_shows_its_clock_on_the_hint_row() {
 }
 
 #[test]
+fn a_hint_rows_clock_lifts_its_values_and_never_the_commands_digits() {
+    // docs/meta-highlights.md: the clock's time and line count are values;
+    // a `42` in the command itself is nobody's value.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "grep -rn 42 .", None);
+    app.push_tool_output("a.rs:1: 42\nb.rs:2: 42\n");
+    app.set_command_elapsed(Some(Duration::from_secs(65)));
+    let lines = live_group_lines(&app, 80, None, true);
+    assert_eq!(plain(&lines[1]), "  ⎿  $ grep -rn 42 . (1m 5s · 2 lines)");
+    assert_eq!(
+        pieces_in(&lines[1].spans, meta_value_color()),
+        ["1m 5s", "2"]
+    );
+    // Moved to a row of its own, the clock keeps its dress.
+    let narrow = live_group_lines(&app, 30, None, true);
+    let clock = narrow.last().expect("the clock's own row");
+    assert_eq!(plain(clock), "       (1m 5s · 2 lines)");
+    assert_eq!(pieces_in(&clock.spans, meta_value_color()), ["1m 5s", "2"]);
+}
+
+#[test]
 fn the_clock_rides_only_the_running_commands_own_value() {
     // A row still showing an earlier call's value never wears the clock of
     // the command running behind it.
@@ -531,14 +561,10 @@ fn scratchpad_edits_settle_as_made_with_the_lines_they_changed() {
             .unwrap_or_else(|| panic!("no {text:?} span in {spans:?}"))
     };
     assert!(span("2").style.add_modifier.contains(Modifier::BOLD));
-    // The lines changed are dim, like the rest of the settled line — never
-    // the diff colours, and never bold like the count.
+    // The lines changed are values like the count (docs/meta-highlights.md)
+    // — never the diff colours, and never bold like the count.
     for count in ["+57", "-1"] {
-        assert_eq!(
-            span(count).style.fg,
-            Some(reasoning_label_color()),
-            "{count}"
-        );
+        assert_eq!(span(count).style.fg, Some(meta_value_color()), "{count}");
         assert!(!span(count).style.add_modifier.contains(Modifier::BOLD));
     }
 }
@@ -577,13 +603,20 @@ fn an_open_scratchpad_edit_is_making_over_its_whole_path() {
             "  ⎿  /tmp/alter-zero-0/s1/scratchpad/guess_the_number.py",
         ]
     );
-    // Its lines are dim, in the `(ctrl+o to expand)` hint's colour.
+    // Its lines are a value, lifted beside the white clause; the hint's
+    // key is tinted and its words stay dim (docs/meta-highlights.md).
     let added = lines[0]
         .spans
         .iter()
         .find(|span| span.content == "+55")
         .expect("a +55 span");
-    assert_eq!(added.style.fg, Some(tool_dim_color()));
+    assert_eq!(added.style.fg, Some(meta_value_color()));
+    assert_eq!(pieces_in(&lines[0].spans, meta_key_color()), ["ctrl+o"]);
+    assert_eq!(
+        pieces_in(&lines[0].spans[1..], tool_dim_color()).concat(),
+        " ( to expand)",
+        "past the bullet (at rest, the running grey)"
+    );
     // Too wide for the row, the path wraps under the corner instead of
     // losing its file name to a cut…
     assert_eq!(

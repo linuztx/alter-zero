@@ -15,9 +15,16 @@ modelled on the spinner line in openai/codex and Claude Code.
 ─────────────────────────────────────
 ```
 
+The parenthesised metrics are dim with their **values** lifted — the
+elapsed, the token count, the thinking time in the theme's second ink — and
+the interrupt hint's `esc` in the softened accent every hint key wears
+(`docs/meta-highlights.md`); the retry and offline clauses keep their amber
+whole.
+
 On finish the status line is replaced by a dim summary committed to scrollback,
 opening with the **past tense of the verb the line wore** — `Working…` ends as
-`Worked for …`:
+`Worked for …` — its values (the elapsed, the token receipt, the shells still
+running) lifted the same way:
 
 ```
 > Hi
@@ -234,7 +241,9 @@ transcript (stamp-free there — only user messages display a timestamp):
   an interrupted turn, whose total then reads `≈` (`docs/interrupt.md`).
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
   (the seconds humanized by `format_elapsed` — `Worked for 20s`,
-  `Generated for 1m 30s`).
+  `Generated for 1m 30s`), its values lifted (`docs/meta-highlights.md`) and
+  word-wrapped by the span-aware `wrap_inline` into exactly the rows the
+  plain `wrap_text` made.
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same

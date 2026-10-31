@@ -1,7 +1,7 @@
 # The session-context footer under the input box
 
-Port of openai/codex's footer **status line**: a single dim row pinned directly
-below the input box's bottom rule, giving ambient session context —
+Port of openai/codex's footer **status line**: a single quiet row pinned
+directly below the input box's bottom rule, giving ambient session context —
 
 ```
 ────────────────────────────────────────────────────────────
@@ -15,6 +15,13 @@ below the input box's bottom rule, giving ambient session context —
 session's **permission mode** (`auto` until a project saves another, the
 posture Shift+Tab cycles — `docs/permissions.md`; hidden when permissions are
 disabled). See `CLAUDE.md` for where this sits in the runtime model.
+
+The row is dim, but not all of it (`docs/meta-highlights.md`): the model
+name, the context gauge and the shell count are **values**, in the theme's
+second ink; the gauge turns the softened amber from 75% of the window and the
+softened red from 90%; and the permission mode wears **how much runs without
+asking** — `manual` dim, `edit` purple, `auto` the softened accent, `master`
+red. The cwd, the thinking mode, the speed tier and the separators stay dim.
 
 ## What codex does (findings)
 
@@ -77,19 +84,22 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   band-replaces-footer swap is decided; `live_height` adds it,
   [`render_live`]/`cursor_position` pass it, so reserve and paint can't drift.
 - `footer_line(app, width) -> Line` — `FOOTER_INDENT` (two spaces, codex's
-  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, every span dim
-  (`footer_color()`/`FOOTER_SEPARATOR`); the content is truncated with a
+  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, the model a value
+  (`meta_value_color()`) and the rest dim (`footer_color()`/`FOOTER_SEPARATOR`,
+  `docs/meta-highlights.md`); the content is truncated with a
   trailing `…` when it overflows the width (codex's
   `truncate_line_with_ellipsis_if_overflow`). Two later segments append to the
   same dim ` · ` chain when they apply — the **context gauge**
   `{used}/{window} ({pct}%)` whenever the model's context window is known
   (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
-  decimal — `docs/compact.md`) and the running **background shell** count
+  decimal — `docs/compact.md`; coloured by `footer_gauge_color(share)`: a
+  value while there is room, amber from `CONTEXT_USAGE_WARN_SHARE`, red from
+  `CONTEXT_USAGE_FULL_SHARE`) and the running **background shell** count
   (`docs/background.md`) — and one segment sits *outside* the chain, pinned
   flush at the row's **right edge**: the **permission mode**
   (`auto`/`manual`/`edit`/`master` — `App::permission_mode`, injected by the
   boundary and `None` while permissions are disabled, which drops it;
-  `docs/permissions.md`). Its
+  `docs/permissions.md`), coloured by `footer_mode_color(mode)`. Its
   columns plus a `FOOTER_MODE_GAP` gutter are reserved off the chain's budget
   up front, so the `…` truncation always eats the left content and never the
   one segment with a safety meaning. A full row reads
@@ -108,8 +118,9 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   view, and it alone drives auto-compact.
   That last segment is the one **focusable** one: ↓ from an idle composer
   lights it on the palette cyan (`footer_focus_bg()`/`footer_focus_fg()`) and
-  Enter opens the ↓ manager band, Claude-Code-style. Only that span's style
-  changes — the row keeps every other segment, dim as ever — and the
+  Enter opens the ↓ manager band, Claude-Code-style. Only that segment's style
+  changes — the count and its noun become one chip, and the row keeps every
+  other segment as it was — and the
   truncation path carries the style through, so a narrow width cuts the lit
   segment without losing the highlight (see `docs/background.md`).
 - `display_cwd(path, home) -> String` — codex's `format_directory_display`
@@ -133,8 +144,9 @@ reseat, resizes) already accounts for the row.
 
 - **Not configurable.** Codex's `/statusline` lets users pick items (branch,
   context %, …) and theme colours; ours is the fixed default pair — model +
-  cwd — in the all-dim no-colour style. More items later are new spans in
-  `footer_line`.
+  cwd — plus the gauge, the shells and the mode, in the theme's own colours
+  where a segment says something (`docs/meta-highlights.md`). More items
+  later are new spans in `footer_line`.
 - **Fewer footer modes.** Codex multiplexes quit reminders, Esc hints, and
   queue hints through the same row; our slot has exactly four occupants — the
   context line, the Ctrl+R search line, the `!` shell-mode hint, and the
@@ -155,9 +167,12 @@ reseat, resizes) already accounts for the row.
 - `ui`: `footer_rows` is 0 without session info / 1 with it / 0 when a band is
   open — and 1 whenever a Ctrl+R search is open or shell mode is on, session
   info or not (see `docs/history-search.md` / `docs/shell-command.md`, which
-  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}` all-dim with the dim
-  separator; a ↓-focused shell count lights up on cyan while every other
-  segment keeps its text and dim styling; it truncates with `…` at narrow
+  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}`
+  with the model a value and the cwd and separator dim; the gauge is a value,
+  then amber, then red as the window fills; each permission mode wears its
+  colour; the shell count's number is a value; a ↓-focused shell count
+  lights up on cyan as one chip while every other segment keeps its text and
+  styling; it truncates with `…` at narrow
   widths; `display_cwd` maps home →
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last

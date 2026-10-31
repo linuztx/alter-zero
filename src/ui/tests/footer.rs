@@ -7,7 +7,8 @@ use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
 use crate::ui::theme::{
     FOOTER_INDENT, SEARCH_PROMPT, error_color, footer_color, footer_focus_bg, footer_focus_fg,
-    search_query_color, shell_mode_color, toast_color, toast_error_color,
+    footer_gauge_color, footer_mode_color, meta_value_color, search_query_color, shell_mode_color,
+    toast_color, toast_error_color,
 };
 use crate::ui::wrap::cols;
 
@@ -85,7 +86,8 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     );
     assert!(text.ends_with("manual"), "{text}");
     assert_eq!(cols(&text), 120, "flush at the right edge: {text:?}");
-    // Dim like every other segment (codex's no-theme-colours status line).
+    // `manual` asks for everything, so it stays dim — nothing to flag
+    // (docs/meta-highlights.md).
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
     assert_eq!(mode_span.style.fg, Some(footer_color()));
@@ -574,10 +576,13 @@ fn footer_rows_yields_to_an_open_band() {
 fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
     let line = footer_line(&with_session(), 60);
     assert_eq!(plain(&line), "  dummy_model_name · ~/alter-zero");
-    // spans = [indent, model, separator, cwd] — every segment dim (codex's
-    // no-theme-colours status line), the indent unstyled.
+    // spans = [indent, model, separator, cwd] — the indent unstyled, the
+    // model the session's identity and so a value, the rest dim (codex's
+    // quiet status line, docs/meta-highlights.md).
     assert_eq!(line.spans[0].style.fg, None);
-    for span in &line.spans[1..] {
+    assert_eq!(line.spans[1].content, "dummy_model_name");
+    assert_eq!(line.spans[1].style.fg, Some(meta_value_color()));
+    for span in &line.spans[2..] {
         assert_eq!(
             span.style.fg,
             Some(footer_color()),
@@ -613,7 +618,9 @@ fn footer_line_shows_the_thinking_mode_beside_the_model() {
     )));
     let line = footer_line(&app, 60);
     assert_eq!(plain(&line), "  dummy_model_name medium · ~/alter-zero");
-    for span in &line.spans[1..] {
+    // The model is a value; the mode beside it qualifies it, dim.
+    assert_eq!(line.spans[1].style.fg, Some(meta_value_color()));
+    for span in &line.spans[2..] {
         assert_eq!(
             span.style.fg,
             Some(footer_color()),
@@ -1054,7 +1061,8 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         plain(&line),
         "  dummy_model_name medium fast · ~/alter-zero"
     );
-    for span in &line.spans[1..] {
+    assert_eq!(line.spans[1].style.fg, Some(meta_value_color()));
+    for span in &line.spans[2..] {
         assert_eq!(
             span.style.fg,
             Some(footer_color()),
@@ -1082,4 +1090,93 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         plain(&footer_line(&app, 60)),
         "  dummy_model_name ultrafast · ~/alter-zero"
     );
+}
+
+// --- meta highlights (docs/meta-highlights.md): the footer's model, gauge
+// and shell count are values, the gauge turns as the window fills, and the
+// permission mode wears its risk ---
+
+/// An app whose context gauge reads `used` of a 100k window.
+fn gauged(used: u64) -> App {
+    let mut app = App::new();
+    app.set_session_info("some-model", "~/x");
+    app.set_context_window(Some(100_000));
+    app.begin_stream();
+    app.apply_usage(&crate::stream::TokenUsage {
+        input: used,
+        output: 0,
+        cached: 0,
+        cache_write: 0,
+        ..crate::stream::TokenUsage::default()
+    });
+    app
+}
+
+fn gauge_span(app: &App) -> Span<'static> {
+    footer_line(app, 120)
+        .spans
+        .into_iter()
+        .find(|span| span.content.contains('%'))
+        .expect("the gauge segment")
+}
+
+#[test]
+fn the_gauge_is_a_value_while_the_window_has_room() {
+    let span = gauge_span(&gauged(4_500));
+    assert_eq!(span.content, "4.5k/100k (4.5%)");
+    assert_eq!(span.style.fg, Some(meta_value_color()));
+}
+
+#[test]
+fn the_gauge_turns_amber_then_red_as_the_window_fills() {
+    let warn = gauge_span(&gauged(78_000));
+    assert_eq!(warn.content, "78k/100k (78.0%)");
+    assert_eq!(warn.style.fg, Some(footer_gauge_color(0.78)));
+    assert_ne!(warn.style.fg, Some(meta_value_color()), "filling is news");
+    let full = gauge_span(&gauged(93_000));
+    assert_eq!(full.style.fg, Some(footer_gauge_color(0.93)));
+    assert_ne!(
+        full.style.fg, warn.style.fg,
+        "full reads apart from filling"
+    );
+}
+
+#[test]
+fn the_permission_mode_wears_its_risk() {
+    use crate::permission::PermissionMode;
+    let mut app = with_session();
+    for mode in [
+        PermissionMode::Manual,
+        PermissionMode::Edit,
+        PermissionMode::Auto,
+        PermissionMode::Master,
+    ] {
+        app.set_permission_mode(Some(mode));
+        let line = footer_line(&app, 80);
+        let span = line.spans.last().expect("the mode span");
+        assert_eq!(span.content, mode.label());
+        assert_eq!(span.style.fg, Some(footer_mode_color(mode)), "{mode:?}");
+    }
+}
+
+#[test]
+fn the_shell_counts_number_is_a_value_until_focused() {
+    let mut app = App::new();
+    app.set_session_info("kimi-k2", "~/repo");
+    app.bg_started("bash_1", "ping x.com", None, true, None);
+    app.bg_started("bash_2", "ping y.com", None, true, None);
+    let line = footer_line(&app, 80);
+    assert_eq!(plain(&line).trim_end(), "  kimi-k2 · ~/repo · 2 shells");
+    assert_eq!(pieces_in(&line.spans, meta_value_color()), ["kimi-k2", "2"]);
+    // Focused, the whole segment is one chip: number and noun alike.
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let focused = footer_line(&app, 80);
+    let chip: String = focused
+        .spans
+        .iter()
+        .filter(|span| span.style.bg == Some(footer_focus_bg()))
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(chip, "2 shells");
 }

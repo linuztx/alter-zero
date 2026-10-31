@@ -3,6 +3,8 @@
 //! the dim `Done for Ns` summary it commits.
 //! See `docs/status-indicator.md`.
 
+use super::inline::wrap_inline;
+use super::meta::MetaSpans;
 use super::theme::*;
 use super::wrap::{blend_color, breath, clamp_spans, hop, lerp_color, ping_pong};
 use super::*;
@@ -417,23 +419,25 @@ pub fn styled_status_line(
         status.elapsed,
         base,
     ));
-    // The parenthesised metrics are dim, except the retry clause, which carries
-    // its own warning colour — so it is built as its own span between the
-    // (dim) token and hint clauses.
-    spans.push(Span::styled(
-        format!(" ({}", format_elapsed(status.elapsed.as_secs())),
-        dim,
-    ));
+    // The parenthesised metrics are dim with their values lifted and the
+    // interrupt hint's key tinted (docs/meta-highlights.md), except the retry
+    // clause, which carries its own warning colour whole — so it is built as
+    // its own span between the token and hint clauses.
+    let mut metrics = MetaSpans::new(dim);
+    metrics
+        .text(" (")
+        .value(format_elapsed(status.elapsed.as_secs()));
     if status.tokens > 0 {
         let arrow = match status.arrow {
             TokenArrow::Down => STATUS_ARROW_DOWN,
             TokenArrow::Up => STATUS_ARROW_UP,
         };
-        spans.push(Span::styled(
-            format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
-            dim,
-        ));
+        metrics
+            .text(format!(" · {arrow} "))
+            .value(format_token_count(status.tokens))
+            .text(" tokens");
     }
+    spans.extend(metrics.into_spans());
     if let Some(retry) = status.retry {
         spans.push(Span::styled(
             format!(" · retrying {}/{}", retry.attempt, retry.max),
@@ -451,13 +455,13 @@ pub fn styled_status_line(
             Style::new().fg(status_offline_color()),
         ));
     }
+    let mut tail = MetaSpans::new(dim);
     if let Some(thinking) = status.thinking {
-        spans.push(Span::styled(
-            format!(" · Thinking for {}", format_elapsed(thinking.as_secs())),
-            dim,
-        ));
+        tail.text(" · Thinking for ")
+            .value(format_elapsed(thinking.as_secs()));
     }
-    spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));
+    tail.text(" · ").hint(STATUS_INTERRUPT_HINT).text(")");
+    spans.extend(tail.into_spans());
     clamp_spans(spans, width as usize)
 }
 
@@ -475,7 +479,12 @@ pub fn styled_status_line(
 /// never wraps" premise the token clause outgrew).
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
-    let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
+    // The receipt's words are dim and its values lifted
+    // (docs/meta-highlights.md), so it is built piece by piece and wrapped
+    // by the span-aware wrapper — the same greedy rows `wrap_text` made.
+    let mut meta = MetaSpans::new(Style::new().fg(status_done_color()));
+    meta.text(format!("{} for ", summary.verb))
+        .value(format_elapsed(summary.secs));
     let total = summary.tokens.saturating_add(summary.estimated);
     if total > 0 {
         // The turn's real billed tokens, with the cache-served share beside
@@ -485,37 +494,42 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
         // premium). A zero half is omitted; absent usage (the dummy, a `!`
         // shell) keeps the bare shape. See docs/prompt-caching.md. An
         // interrupted turn adds the share its cut round never reported, and
-        // the mark says the total is partly a guess (docs/interrupt.md).
+        // the mark says the total is partly a guess (docs/interrupt.md) — it
+        // belongs to the number, so it is lifted with it.
         let mark = if summary.estimated > 0 {
             SUMMARY_ESTIMATE_MARK
         } else {
             ""
         };
-        text.push_str(&format!(" · {mark}{} tokens", format_token_count(total)));
-        let mut cache: Vec<String> = Vec::new();
-        if summary.cached > 0 {
-            cache.push(format!("{} cached", format_token_count(summary.cached)));
-        }
-        if summary.cache_write > 0 {
-            cache.push(format!(
-                "{} written",
-                format_token_count(summary.cache_write)
-            ));
-        }
-        if !cache.is_empty() {
-            text.push_str(&format!(" ({})", cache.join(" · ")));
+        meta.text(" · ")
+            .value(format!("{mark}{}", format_token_count(total)))
+            .text(" tokens");
+        let halves = [(summary.cached, "cached"), (summary.cache_write, "written")];
+        let mut halves = halves
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .peekable();
+        if halves.peek().is_some() {
+            meta.text(" (");
+            for (i, (count, label)) in halves.enumerate() {
+                if i > 0 {
+                    meta.text(" · ");
+                }
+                meta.value(format_token_count(count))
+                    .text(format!(" {label}"));
+            }
+            meta.text(")");
         }
     }
     if summary.shells > 0 {
         let plural = if summary.shells == 1 { "" } else { "s" };
-        text.push_str(&format!(
-            " · {} shell{plural} still running",
-            summary.shells
-        ));
+        meta.text(" · ")
+            .value(summary.shells.to_string())
+            .text(format!(" shell{plural} still running"));
     }
-    wrap_text(&text, width)
+    wrap_inline(&meta.into_segments(), width)
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(status_done_color()))))
+        .map(Line::from)
         .collect()
 }
 

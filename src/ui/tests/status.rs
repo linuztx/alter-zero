@@ -7,10 +7,10 @@ use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
     INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
-    header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
-    spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
-    status_offline_color, status_retry_color, tool_diff_add_color, tool_diff_del_color,
-    tool_dim_color, tool_pulse_dim,
+    header_gradient_start, meta_key_color, meta_value_color, shimmer_base, shimmer_highlight,
+    spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color,
+    status_done_color, status_offline_color, status_retry_color, tool_diff_add_color,
+    tool_diff_del_color, tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -900,10 +900,22 @@ fn the_turn_summary_wraps_to_the_width() {
         assert!(
             line.spans
                 .iter()
-                .all(|s| s.style.fg == Some(status_done_color())),
-            "every row keeps the summary's dim dress: {line:?}"
+                .filter(|s| !s.content.trim().is_empty())
+                .all(|s| s.style.fg == Some(status_done_color())
+                    || s.style.fg == Some(meta_value_color())),
+            "every row keeps the summary's dress — its words dim, its values \
+             lifted (docs/meta-highlights.md): {line:?}"
         );
     }
+    let values: Vec<String> = lines
+        .iter()
+        .flat_map(|line| pieces_in(&line.spans, meta_value_color()))
+        .collect();
+    assert_eq!(
+        values,
+        ["1m", "35s", "1.5M", "1.2M", "2"],
+        "a value wrapped across rows keeps its dress on both"
+    );
     let all = lines
         .iter()
         .map(plain)
@@ -1323,4 +1335,143 @@ fn render_live_wears_the_session_spinner_on_the_status_row() {
         "the status row opens with the dots spinner"
     );
     assert_eq!(buf[(0, 0)].fg, status_color(), "the white head");
+}
+
+// --- meta highlights (docs/meta-highlights.md): the dim metrics and the
+// summary's receipt lift their values and the interrupt hint's key ---
+
+/// The status line's spans from its metrics' opening ` (` on — what follows
+/// the spinner and the shimmering verb.
+fn metrics_spans(line: &Line<'static>) -> Vec<Span<'static>> {
+    let start = line
+        .spans
+        .iter()
+        .position(|span| span.content.starts_with(" ("))
+        .expect("the metrics open with ` (`");
+    line.spans[start..].to_vec()
+}
+
+#[test]
+fn the_status_metrics_lift_their_values_and_the_interrupt_key() {
+    let line = status_line(&status(1_200, TokenArrow::Down, 65, Some(3)), 200);
+    let metrics = metrics_spans(&line);
+    assert_eq!(
+        metrics
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        " (1m 5s · ↓ 1.2k tokens · Thinking for 3s · esc to interrupt)",
+        "the text is unchanged"
+    );
+    assert_eq!(
+        pieces_in(&metrics, meta_value_color()),
+        ["1m 5s", "1.2k", "3s"],
+        "the elapsed, the token count and the thinking time are values"
+    );
+    assert_eq!(pieces_in(&metrics, meta_key_color()), ["esc"]);
+    for span in &metrics {
+        let fg = span.style.fg;
+        assert!(
+            fg == Some(status_detail_color())
+                || fg == Some(meta_value_color())
+                || fg == Some(meta_key_color()),
+            "every other piece stays dim: {span:?}"
+        );
+    }
+}
+
+#[test]
+fn a_status_line_with_no_tokens_lifts_its_elapsed_alone() {
+    let line = status_line(&status(0, TokenArrow::Up, 7, None), 200);
+    let metrics = metrics_spans(&line);
+    assert_eq!(pieces_in(&metrics, meta_value_color()), ["7s"]);
+    assert_eq!(pieces_in(&metrics, meta_key_color()), ["esc"]);
+}
+
+#[test]
+fn the_retry_and_offline_clauses_keep_their_warning_over_the_values() {
+    // A clause with a state of its own keeps its one colour whole: the
+    // amber is the news, not the number in it.
+    let line = status_line(&status_retrying(2, 3, 900), 200);
+    let retry = line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("retrying"))
+        .expect("the retry clause");
+    assert_eq!(retry.style.fg, Some(status_retry_color()));
+    assert!(retry.content.contains("2/3"), "{retry:?}");
+}
+
+#[test]
+fn the_summary_lifts_its_receipt_values_and_keeps_its_words_dim() {
+    let summary = TurnSummary {
+        verb: "Worked",
+        secs: 45,
+        timestamp: String::new(),
+        shells: 2,
+        tokens: 12_300,
+        estimated: 0,
+        cached: 8_000,
+        cache_write: 1_200,
+    };
+    let lines = summary_lines(&summary, 200);
+    assert_eq!(lines.len(), 1, "one line at a wide width");
+    assert_eq!(
+        plain(&lines[0]),
+        "Worked for 45s · 12.3k tokens (8k cached · 1.2k written) · 2 shells still running"
+    );
+    let spans = &lines[0].spans;
+    assert_eq!(
+        pieces_in(spans, meta_value_color()),
+        ["45s", "12.3k", "8k", "1.2k", "2"]
+    );
+    for span in spans.iter().filter(|s| !s.content.trim().is_empty()) {
+        assert!(
+            span.style.fg == Some(status_done_color()) || span.style.fg == Some(meta_value_color()),
+            "a word is dim, a value lifted: {span:?}"
+        );
+    }
+}
+
+#[test]
+fn an_interrupted_summary_lifts_its_estimate_with_its_mark() {
+    // The `≈` belongs to the number it qualifies (docs/interrupt.md).
+    let summary = TurnSummary {
+        verb: "Worked",
+        secs: 8,
+        timestamp: String::new(),
+        shells: 0,
+        tokens: 20_000,
+        estimated: 4_300,
+        cached: 0,
+        cache_write: 0,
+    };
+    let lines = summary_lines(&summary, 200);
+    assert_eq!(plain(&lines[0]), "Worked for 8s · ≈24.3k tokens");
+    assert_eq!(
+        pieces_in(&lines[0].spans, meta_value_color()),
+        ["8s", "≈24.3k"]
+    );
+}
+
+#[test]
+fn the_summary_wraps_exactly_as_its_plain_text_did() {
+    // The receipt wraps through the span-aware wrapper now; its rows must
+    // be the very rows the plain `wrap_text` made, at every width.
+    let summary = TurnSummary {
+        verb: "Worked",
+        secs: 3_725,
+        timestamp: String::new(),
+        shells: 3,
+        tokens: 1_534_000,
+        estimated: 0,
+        cached: 1_200_000,
+        cache_write: 48_000,
+    };
+    let text =
+        "Worked for 1h 2m · 1.5M tokens (1.2M cached · 48k written) · 3 shells still running";
+    for width in 4..=100u16 {
+        let rows: Vec<String> = summary_lines(&summary, width).iter().map(plain).collect();
+        assert_eq!(rows, wrap_text(text, width), "width {width}");
+    }
 }

@@ -76,12 +76,13 @@ pub fn idle_task_lines(store: &TaskStore, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The count line: `{total} tasks ({done} done[, {n} in progress], {open}
-/// open)` — dim, with the numbers bold (Claude Code's standalone header).
-/// Never pluralized ("1 tasks"), matching the reference.
+/// open)` — dim, with the numbers bold (Claude Code's standalone header) and
+/// lifted as values (`docs/meta-highlights.md`). Never pluralized
+/// ("1 tasks"), matching the reference.
 fn task_count_line(store: &TaskStore) -> Line<'static> {
     let counts = store.counts();
     let dim = Style::new().fg(tool_dim_color());
-    let bold = dim.add_modifier(Modifier::BOLD);
+    let bold = super::meta::value_style(dim).add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled(TASK_IDLE_INDENT.to_string(), dim),
         Span::styled(counts.total.to_string(), bold),

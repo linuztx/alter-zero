@@ -266,18 +266,24 @@ pub fn backtrack_hint_line() -> Line<'static> {
 }
 
 /// The footer's single line: the `FOOTER_INDENT`, then `{model} · {cwd}` —
-/// every segment dim (codex's no-theme-colours status line, the separator dim
-/// like its ` · `) — cut with a trailing `…` when it overflows `width`
-/// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
-/// model carries its thinking mode right beside the name (`{model} {mode}`,
-/// Ctrl+T cycles it — `docs/reasoning.md`). Empty when no session info has
-/// been injected.
+/// quiet, codex's status line, the separator dim like its ` · ` — cut with a
+/// trailing `…` when it overflows `width` (codex's
+/// `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable model
+/// carries its thinking mode right beside the name (`{model} {mode}`, Ctrl+T
+/// cycles it — `docs/reasoning.md`). Empty when no session info has been
+/// injected.
+///
+/// Dim, but not all of it (`docs/meta-highlights.md`): the model — the
+/// session's identity — the context gauge and the shell count are values,
+/// the gauge turning amber and then red as the window fills, and the
+/// permission mode at the right edge wears its risk.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
         return Line::default();
     };
     let dim = Style::new().fg(footer_color());
+    let value = Style::new().fg(meta_value_color());
     // The permission mode is pinned flush at the row's RIGHT edge — its own
     // zone, like the transcript separator's right-aligned percentage, not
     // another ` · ` segment — so however long the model/cwd/gauge chain
@@ -286,17 +292,17 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // columns (plus a gap) come off the chain's budget up front. Absent
     // while permissions are disabled: nothing asks, and a mode would be a
     // lie.
-    let mode = app.permission_mode().map(|mode| mode.label());
-    let reserved = mode.map_or(0, |label| cols(label) + FOOTER_MODE_GAP);
+    let mode = app.permission_mode();
+    let reserved = mode.map_or(0, |mode| cols(mode.label()) + FOOTER_MODE_GAP);
     // The model segment names the conversation on screen: inside a subagent's
     // session view, a type pinned to another model shows that model — and no
     // thinking mode, which the launch dropped along with the session's model
     // (`docs/subagents.md`) — while an inheriting type keeps the session's
     // pair (`docs/agent-context-gauge.md`).
     let mut segments = match app.viewed_agent_model() {
-        Some(pinned) => vec![Span::styled(pinned.to_string(), dim)],
+        Some(pinned) => vec![Span::styled(pinned.to_string(), value)],
         None => {
-            let mut model = vec![Span::styled(session.model.clone(), dim)];
+            let mut model = vec![Span::styled(session.model.clone(), value)];
             if let Some(thinking) = &app.thinking {
                 model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
             }
@@ -320,9 +326,13 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // (`App::context_gauge`, docs/agent-context-gauge.md; reading the lead's
     // pair there was the reported bug). Both counts are humanized by the
     // status line's token formatter; the share keeps one decimal.
+    // The gauge is a value, and the one footer fact that moves *toward* a
+    // problem, so it turns amber and then red as the window fills — the
+    // `/context` page's own thresholds (docs/meta-highlights.md).
     if let Some((used, window)) = app.context_gauge() {
         #[allow(clippy::cast_precision_loss)] // display only — one decimal
-        let pct = used as f64 * 100.0 / window as f64;
+        let share = used as f64 / window as f64;
+        let pct = share * 100.0;
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
         segments.push(Span::styled(
             format!(
@@ -330,7 +340,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
                 format_token_count(usize::try_from(used).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(window).unwrap_or(usize::MAX))
             ),
-            dim,
+            Style::new().fg(footer_gauge_color(share)),
         ));
     }
     // Running background shells append a `· {n} shell(s)` count — the ↓
@@ -341,13 +351,18 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let shells = app.background().len();
     if shells > 0 {
         let plural = if shells == 1 { "" } else { "s" };
-        let style = if app.background_focused() {
-            Style::new().fg(footer_focus_fg()).bg(footer_focus_bg())
-        } else {
-            dim
-        };
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
-        segments.push(Span::styled(format!("{shells} shell{plural}"), style));
+        if app.background_focused() {
+            // Focused, the whole segment is one chip.
+            segments.push(Span::styled(
+                format!("{shells} shell{plural}"),
+                Style::new().fg(footer_focus_fg()).bg(footer_focus_bg()),
+            ));
+        } else {
+            // Its number a value (docs/meta-highlights.md).
+            segments.push(Span::styled(shells.to_string(), value));
+            segments.push(Span::styled(format!(" shell{plural}"), dim));
+        }
     }
     let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT) + reserved);
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
@@ -373,15 +388,19 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     }
     // Seat the mode flush against the right edge: pad the gap the reservation
-    // held back (at least [`FOOTER_MODE_GAP`]), then the label, dim like the
-    // rest of the row.
-    if let Some(label) = mode {
+    // held back (at least [`FOOTER_MODE_GAP`]), then the label, coloured by
+    // how much it lets run unasked (docs/meta-highlights.md).
+    if let Some(mode) = mode {
+        let label = mode.label();
         let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
         let pad = (width as usize).saturating_sub(used + cols(label));
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
-        spans.push(Span::styled(label.to_string(), dim));
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::new().fg(footer_mode_color(mode)),
+        ));
     }
     Line::from(spans)
 }

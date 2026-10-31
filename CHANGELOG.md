@@ -64,6 +64,19 @@ release heading when a version is cut.
   as `find -delete` or `sort -o`, or `git` in a folder that looks like a
   bare repository. Manual and edit modes still ask about every command
   (`docs/permissions.md`).
+- **The grey lines now show what matters in them.** The summary under a
+  reply, the `Thought for …` line, the status line's timer and token count,
+  `… +N lines (ctrl+o to expand)`, a running command's clock, a folded
+  group of reads and the footer were grey from end to end, so the number
+  or the key you were looking for was as faint as the words around it.
+  Their words stay grey; the numbers (`45s`, `12.3k`, `+48`) are now in a
+  brighter tone, and the keys a hint names (`ctrl+o`, `esc`, `ctrl+b`,
+  `↓`) in a softened version of your theme's accent colour, so both follow
+  `/theme`. In the footer the model name and context gauge are brighter
+  too, the gauge turns amber past 75% of the context window and red past
+  90%, and the permission mode at the right edge is coloured by how much
+  it lets run without asking: `manual` grey, `edit` purple, `auto` the
+  accent, `master` red (`docs/meta-highlights.md`).
 
 ### Fixed
 

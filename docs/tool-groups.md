@@ -155,10 +155,11 @@ enough for Ctrl+B keeps that hint too, hung off the group's cell.
 Read 1 file, listed 1 directory (ctrl+o to expand)
 ```
 
-Bullet-less, flush at the margin and dim throughout — the settled thought's
-dress (`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
+Bullet-less, flush at the margin and dim — the settled thought's dress
+(`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
 expand)`), since what is left is a fact about the turn rather than something
-happening. The counts stay bold.
+happening. The counts stay bold and lift to the theme's second ink, and the
+hint's `ctrl+o` takes the softened accent (`docs/meta-highlights.md`).
 
 ## Which calls join a group
 
@@ -244,9 +245,9 @@ Made 2 scratchpad edits +26 -1 (ctrl+o to expand)
 ```
 
 - The clause is `Making`/`made` **N** `scratchpad edit(s)`, then the lines
-  the edits added and removed, `+A -D`, **dim** — the `(ctrl+o to expand)`
-  hint's colour on the live line, the line's own dim once it settles, never
-  bold like the count — with a side that changed nothing left out (a new file
+  the edits added and removed, `+A -D`, a **value** in the theme's second ink
+  on both lines (`docs/meta-highlights.md`), never bold like the count — with
+  a side that changed nothing left out (a new file
   reads `+25`, never `+25 -0`). Not the diff colours a file cell's `Updated …
   (+A -D)` corner wears: the line is a summary, and the green and red belong
   to the cells Ctrl+O expands.

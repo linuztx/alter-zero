@@ -3,7 +3,10 @@
 //! See `docs/tools.md` and `docs/tool-streaming.md`.
 
 use super::assistant::expand_code_tabs;
-use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
+use super::file_cell::{
+    diff_line_color, file_cell_lines, gutter_row, gutter_row_spans, is_diff_tool,
+};
+use super::meta::{MetaSpans, hint_spans};
 use super::theme::*;
 use super::wrap::{WrapMode, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim};
 use super::*;
@@ -420,13 +423,23 @@ pub(super) fn shown_args(name: &str, args: &str, paths: &PathDisplay) -> String 
     }
 }
 
-/// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
+/// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek — its
+/// count a value and its key lifted (`docs/meta-highlights.md`).
 pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
-    let dim = Style::new().fg(tool_dim_color());
-    Line::from(vec![
-        Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
-        Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
-    ])
+    let mut meta = MetaSpans::new(Style::new().fg(tool_dim_color()));
+    meta.text(TOOL_MORE_PREFIX)
+        .value(format!("+{hidden}"))
+        .text(" lines")
+        .hint(EXPAND_HINT);
+    Line::from(meta.into_spans())
+}
+
+/// A dim `⎿` row whose text is a **hint**, its keys lifted
+/// (`docs/meta-highlights.md`): the backgrounded cell's fixed `Running in the
+/// background (↓ to manage)` corner row (`index` 0) and the delayed
+/// `(ctrl+b to run in background)` under a running command (a continuation).
+pub(super) fn hint_row(index: usize, hint: &str) -> Line<'static> {
+    gutter_row_spans(index, hint_spans(hint, Style::new().fg(tool_dim_color())))
 }
 
 /// The live preview row for a running `!` shell command: `⎿ Running…
@@ -437,10 +450,11 @@ pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
 /// [`render_live`]; the committed cell renders its output, not `Running…`.
 /// See `docs/shell-command.md`.
 pub(super) fn shell_running_line(elapsed: Duration) -> Line<'static> {
-    result_row(
-        0,
-        format!("{TOOL_RUNNING} ({})", format_elapsed(elapsed.as_secs())),
-    )
+    let mut meta = MetaSpans::new(Style::new().fg(tool_dim_color()));
+    meta.text(format!("{TOOL_RUNNING} ("))
+        .value(format_elapsed(elapsed.as_secs()))
+        .text(")");
+    gutter_row_spans(0, meta.into_spans())
 }
 
 /// The output of `tool` split into display lines (a single trailing blank from a
@@ -621,12 +635,15 @@ fn pretty_json_line(line: &str) -> Option<String> {
 /// a deadline: the command goes on as a session when it passes
 /// (`docs/bash-tools.md`, `docs/tool-streaming.md` *The clock row is always
 /// there*).
-fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
-    format!(
-        "({}{TOOL_CLOCK_SEPARATOR}{TOOL_TIMEOUT_LABEL}{})",
-        format_elapsed(elapsed.as_secs()),
-        format_timeout(wait_ms)
-    )
+///
+/// Pushed onto `meta`, its two times values (`docs/meta-highlights.md`).
+fn command_clock_clause(meta: &mut MetaSpans, elapsed: Duration, wait_ms: u64) {
+    meta.text("(")
+        .value(format_elapsed(elapsed.as_secs()))
+        .text(TOOL_CLOCK_SEPARATOR)
+        .text(TOOL_TIMEOUT_LABEL)
+        .value(format_timeout(wait_ms))
+        .text(")");
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
@@ -689,12 +706,15 @@ pub(super) fn running_command_lines(
         }
         other => crate::llm::tools::session_wait_ms(&other.to_ascii_lowercase(), arguments),
     };
-    let clock = command_clock_clause(elapsed, wait_ms);
+    let dim = Style::new().fg(tool_dim_color());
     let display = command_display_lines(tool);
     if display.is_empty() {
         // Nothing printed yet: the clause rides the `⎿ Running…` row, so a
         // silent command still shows it is alive and how long it may be.
-        lines.push(result_row(0, format!("{TOOL_RUNNING} {clock}")));
+        let mut meta = MetaSpans::new(dim);
+        meta.text(format!("{TOOL_RUNNING} "));
+        command_clock_clause(&mut meta, elapsed, wait_ms);
+        lines.push(gutter_row_spans(0, meta.into_spans()));
         return lines;
     }
     let peek_width = (width as usize)
@@ -752,13 +772,14 @@ pub(super) fn running_command_lines(
     // The clock row closes the cell whatever is hidden: `+N lines` in front
     // of the clause when rows sit outside the window, the clause alone when
     // the output fits. A continuation row (index ≥ 1) so it indents under
-    // the content column; it is meta, so it stays the dim `result_row`.
-    let footer = if hidden > 0 {
-        format!("+{hidden} lines {clock}")
-    } else {
-        clock
-    };
-    lines.push(result_row(shown, footer));
+    // the content column; it is meta, so it stays dim, its count and its
+    // two times lifted (docs/meta-highlights.md).
+    let mut footer = MetaSpans::new(dim);
+    if hidden > 0 {
+        footer.value(format!("+{hidden}")).text(" lines ");
+    }
+    command_clock_clause(&mut footer, elapsed, wait_ms);
+    lines.push(gutter_row_spans(shown, footer.into_spans()));
     lines
 }
 
@@ -947,13 +968,13 @@ fn mcp_cell_lines(
 /// leaves in scrollback: the settled thinking line's shape, because what is
 /// left is a fact about the turn (`docs/mcp.md`).
 pub(super) fn mcp_called_line(servers: &[&str]) -> Line<'static> {
-    Line::from(Span::styled(
-        format!(
-            "{MCP_CALLED_PREFIX}{}{EXPAND_HINT}",
-            crate::mcp::batch_label(servers)
-        ),
-        Style::new().fg(reasoning_label_color()),
+    let mut meta = MetaSpans::new(Style::new().fg(reasoning_label_color()));
+    meta.text(format!(
+        "{MCP_CALLED_PREFIX}{}",
+        crate::mcp::batch_label(servers)
     ))
+    .hint(EXPAND_HINT);
+    Line::from(meta.into_spans())
 }
 
 /// The batch and server of a **collapsible** MCP cell: an MCP call that
@@ -1160,10 +1181,7 @@ fn mcp_calling_header(
         ),
     ];
     if cols(TOOL_BULLET) + cols(label) + cols(EXPAND_HINT) <= width as usize {
-        spans.push(Span::styled(
-            EXPAND_HINT.to_string(),
-            Style::new().fg(tool_dim_color()),
-        ));
+        spans.extend(hint_spans(EXPAND_HINT, Style::new().fg(tool_dim_color())));
     }
     Line::from(spans)
 }
@@ -1247,7 +1265,7 @@ fn tool_cell_body(
     // the model-facing launch text, never displayed (docs/background.md). A
     // `!` shell cell stays headerless like its other states.
     if tool.status == ToolStatus::Backgrounded {
-        let row = result_row(0, TOOL_BACKGROUNDED.to_string());
+        let row = hint_row(0, TOOL_BACKGROUNDED);
         if tool.shell {
             return vec![row];
         }
@@ -1542,7 +1560,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // live output belongs to the ↓ manager, and the final output arrives as
     // the completion notice (docs/background.md).
     if tool.status == ToolStatus::Backgrounded {
-        let row = result_row(0, TOOL_BACKGROUNDED.to_string());
+        let row = hint_row(0, TOOL_BACKGROUNDED);
         if tool.shell {
             return vec![row];
         }

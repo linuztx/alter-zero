@@ -62,6 +62,7 @@ mod mascot_view;
 mod mcp_view;
 mod menu;
 mod message;
+mod meta;
 mod model_view;
 mod offline;
 mod palette;

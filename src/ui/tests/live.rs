@@ -1304,3 +1304,22 @@ fn a_queued_write_previews_its_head_under_waiting() {
         "{texts:#?}"
     );
 }
+
+#[test]
+fn the_ctrl_b_hint_under_a_running_command_lifts_its_key() {
+    // docs/meta-highlights.md: the key a hint names takes the softened
+    // accent, the rest of the row stays dim.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "ping google.com -c 50", None);
+    app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY));
+    let lines = preview_tool_lines(&app, 60);
+    let hint = lines
+        .iter()
+        .find(|line| plain(line).trim() == TOOL_BACKGROUND_HINT)
+        .expect("the hint row");
+    assert_eq!(
+        pieces_in(&hint.spans, crate::ui::theme::meta_key_color()),
+        ["ctrl+b"]
+    );
+}

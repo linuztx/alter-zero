@@ -4,7 +4,8 @@ use super::*;
 use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
-    TOOL_BULLET, TOOL_PULSE_PERIOD, tool_dim_color, tool_fail_color, tool_ok_color,
+    TOOL_BACKGROUND_HINT, TOOL_BACKGROUND_HINT_DELAY, TOOL_BULLET, TOOL_PULSE_PERIOD,
+    meta_key_color, meta_value_color, tool_dim_color, tool_fail_color, tool_ok_color,
     tool_output_color, tool_running_color,
 };
 use crate::ui::wrap::cols;
@@ -1468,5 +1469,140 @@ fn an_agent_views_strip_streams_the_subagents_write_like_the_main_one() {
             "      1 one",
             "      2 two",
         ]
+    );
+}
+
+// ===== meta highlights (docs/meta-highlights.md): an agent's counters and
+// receipts are values, the keys its hints name are tinted; what the agent is
+// doing (its activity row) is content and stays dim =====
+
+fn two_agents(background: bool, status: crate::agents::AgentStatus) -> crate::app::AgentGroup {
+    crate::app::AgentGroup {
+        background,
+        agents: vec![
+            agent_entry("a1", "Fetch Warsaw", status),
+            agent_entry("a2", "Fetch Manila", status),
+        ],
+        timestamp: String::new(),
+        batch: None,
+    }
+}
+
+#[test]
+fn a_finished_trees_counters_are_values_and_its_hint_key_tinted() {
+    let lines = agent_group_lines(&two_agents(false, crate::agents::AgentStatus::Done), 80);
+    assert_eq!(pieces_in(&lines[0].spans, meta_key_color()), ["ctrl+o"]);
+    for row in [&lines[1], &lines[3]] {
+        assert_eq!(
+            plain(row).split_once(" · ").unwrap().1,
+            "2 tool uses · 16.1k tokens"
+        );
+        assert_eq!(pieces_in(&row.spans, meta_value_color()), ["2", "16.1k"]);
+    }
+}
+
+#[test]
+fn a_background_launchs_header_tints_both_keys() {
+    let lines = agent_group_lines(&two_agents(true, crate::agents::AgentStatus::Running), 80);
+    assert_eq!(
+        pieces_in(&lines[0].spans, meta_key_color()),
+        ["↓", "ctrl+o"]
+    );
+}
+
+#[test]
+fn a_lone_finished_agent_lifts_its_receipt_and_its_key() {
+    let mut group = two_agents(false, crate::agents::AgentStatus::Done);
+    group.agents.truncate(1);
+    let lines = agent_group_lines(&group, 80);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts,
+        [
+            "● Agent(Fetch Warsaw)",
+            "  ⎿  Done (2 tool uses · 16.1k tokens · 39s)",
+            "  (ctrl+o to expand)",
+        ]
+    );
+    assert_eq!(
+        pieces_in(&lines[1].spans, meta_value_color()),
+        ["2", "16.1k", "39s"]
+    );
+    assert_eq!(pieces_in(&lines[2].spans, meta_key_color()), ["ctrl+o"]);
+}
+
+#[test]
+fn a_lone_background_launch_tints_its_keys() {
+    let mut group = two_agents(true, crate::agents::AgentStatus::Running);
+    group.agents.truncate(1);
+    let lines = agent_group_lines(&group, 80);
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Running in the background (↓ to manage · ctrl+o to expand)"
+    );
+    assert_eq!(
+        pieces_in(&lines[1].spans, meta_key_color()),
+        ["↓", "ctrl+o"]
+    );
+}
+
+#[test]
+fn the_transcript_agent_cells_receipt_is_lifted() {
+    let entry = agent_entry("a1", "Fetch Warsaw", crate::agents::AgentStatus::Done);
+    let lines = agent_cell_lines(
+        &AgentCellView::of_entry(&entry, false),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let footer = lines.last().expect("the settle footer");
+    assert_eq!(
+        plain(footer),
+        "  ⎿  Done (2 tool uses · 16.1k tokens · 39s)"
+    );
+    assert_eq!(
+        pieces_in(&footer.spans, meta_value_color()),
+        ["2", "16.1k", "39s"]
+    );
+}
+
+#[test]
+fn a_running_agent_groups_ctrl_b_hint_tints_its_key() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[
+            spec("a1", "Fetch Warsaw", false),
+            spec("a2", "Fetch Manila", false),
+        ],
+    );
+    app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY));
+    let lines = live_agent_group_lines(&app, 80);
+    let hint = lines
+        .iter()
+        .find(|line| plain(line).trim() == TOOL_BACKGROUND_HINT)
+        .expect("the Ctrl+B hint row");
+    assert_eq!(pieces_in(&hint.spans, meta_key_color()), ["ctrl+b"]);
+}
+
+#[test]
+fn a_roster_rows_runtime_and_tokens_are_values() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    app.apply_agent_event("a1", &crate::stream::StreamEvent::Chunk("19°C".into()));
+    app.set_agent_runtime("a1", Duration::from_secs(48));
+    let lines = agent_list_lines(&app, 100);
+    let row = &lines[2];
+    let text = plain(row);
+    let (_, suffix) = text.rsplit_once("Fetch Warsaw ").unwrap();
+    let tokens = suffix
+        .split_once("· ↓ ")
+        .and_then(|(_, rest)| rest.strip_suffix(" tokens"))
+        .expect("a token count")
+        .to_string();
+    assert_eq!(
+        pieces_in(&row.spans, meta_value_color()),
+        ["48s".to_string(), tokens]
     );
 }

@@ -278,6 +278,28 @@ fn a_finished_write_of_one_huge_line_shows_the_committed_cut() {
 }
 
 #[test]
+fn the_count_less_cut_hint_lifts_its_key() {
+    // docs/meta-highlights.md: the same key every fold names, in the same
+    // tint, whether or not a count sits in front of it.
+    let content = "x".repeat(2_000);
+    let committed = tool_lines(
+        &committed_call("a.min.js", &content),
+        WIDTH,
+        &PathDisplay::VERBATIM,
+    );
+    let hint = committed.last().expect("the hint row");
+    assert_eq!(plain(hint).trim(), "… (ctrl+o to expand)");
+    assert_eq!(
+        pieces_in(&hint.spans, crate::ui::theme::meta_key_color()),
+        ["ctrl+o"]
+    );
+    assert_eq!(
+        pieces_in(&hint.spans, crate::ui::theme::tool_dim_color()).concat(),
+        "     … ( to expand)"
+    );
+}
+
+#[test]
 fn before_its_first_line_the_corner_says_writing_alone() {
     let mut drafts = ToolDrafts::default();
     drafts.push(&ToolCallFragment {

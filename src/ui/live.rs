@@ -16,7 +16,7 @@ use super::layout::{
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
-    ctrl_b_hint, is_command_tool, live_tool_lines, result_row, running_command_lines,
+    ctrl_b_hint, hint_row, is_command_tool, live_tool_lines, running_command_lines,
     shell_running_line,
 };
 use super::*;
@@ -326,7 +326,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
-            lines.push(result_row(1, hint.to_string()));
+            lines.push(hint_row(1, hint));
         }
     }
     // Each queued previewed call owns the next adopted draft, in queue order
@@ -371,7 +371,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
-            lines.push(result_row(1, hint.to_string()));
+            lines.push(hint_row(1, hint));
         }
     }
     lines

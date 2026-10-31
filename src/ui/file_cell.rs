@@ -5,6 +5,7 @@
 use super::assistant::{code_content_head_rows, code_content_rows, code_content_tail_rows};
 use super::inline::wrap_inline_hanging;
 use super::inline_diff::{RefineRow, refine_rows};
+use super::meta::MetaSpans;
 use super::theme::*;
 use super::tool::{more_hint_line, result_row, tool_header_lines, tool_output_lines};
 use super::wrap::{cols, legible_on, truncate_cols};
@@ -25,15 +26,21 @@ pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Li
 /// chain-of-thought (`docs/thinking-stream.md`). The corner/indent stays dim
 /// either way; this is the one place that geometry lives.
 pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Line<'static> {
+    gutter_row_spans(index, vec![Span::styled(text, style)])
+}
+
+/// [`gutter_row`] over already-styled `spans` — a meta row whose values and
+/// keys are lifted inside its dim (`docs/meta-highlights.md`). The corner or
+/// its indent stays dim.
+pub(super) fn gutter_row_spans(index: usize, spans: Vec<Span<'static>>) -> Line<'static> {
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
     } else {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
-    Line::from(vec![
-        Span::styled(prefix, Style::new().fg(tool_dim_color())),
-        Span::styled(text, style),
-    ])
+    let mut row = vec![Span::styled(prefix, Style::new().fg(tool_dim_color()))];
+    row.extend(spans);
+    Line::from(row)
 }
 
 /// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`
@@ -521,11 +528,10 @@ fn peek_hint_line(hidden: usize, cut: bool) -> Option<Line<'static>> {
         return Some(more_hint_line(hidden));
     }
     cut.then(|| {
-        let dim = Style::new().fg(tool_dim_color());
-        Line::from(vec![
-            Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
-            Span::styled(EXPAND_HINT.trim_start().to_string(), dim),
-        ])
+        // Its key lifted like every fold's (docs/meta-highlights.md).
+        let mut meta = MetaSpans::new(Style::new().fg(tool_dim_color()));
+        meta.text(TOOL_MORE_PREFIX).hint(EXPAND_HINT.trim_start());
+        Line::from(meta.into_spans())
     })
 }
 

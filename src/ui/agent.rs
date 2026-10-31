@@ -2,8 +2,10 @@
 //! group cells, the footer roster, and the inline session view.
 //! See `docs/agent-tool.md`.
 
+use super::file_cell::gutter_row_spans;
+use super::meta::{MetaSpans, hint_spans};
 use super::theme::*;
-use super::tool::{bullet_span, result_row, shown_args};
+use super::tool::{bullet_span, hint_row, shown_args};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
@@ -17,18 +19,21 @@ fn agent_count_phrase(count: usize) -> String {
 }
 
 /// ` · {n} tool use[s] · {tokens} tokens` — a tree row's counters clause
-/// (omitted while both are zero, and on a background-launch cell).
-fn agent_counters_clause(tool_uses: usize, tokens: u64) -> String {
-    let mut clause = String::new();
+/// (omitted while both are zero, and on a background-launch cell): dim, its
+/// two counts values (`docs/meta-highlights.md`).
+fn agent_counters(tool_uses: usize, tokens: u64) -> Vec<Span<'static>> {
+    let mut meta = MetaSpans::new(Style::new().fg(tool_dim_color()));
     if tool_uses > 0 || tokens > 0 {
         let plural = if tool_uses == 1 { "" } else { "s" };
-        clause.push_str(&format!(" · {tool_uses} tool use{plural}"));
-        clause.push_str(&format!(
-            " · {} tokens",
-            format_token_count(usize::try_from(tokens).unwrap_or(usize::MAX))
-        ));
+        meta.text(" · ")
+            .value(tool_uses.to_string())
+            .text(format!(" tool use{plural} · "))
+            .value(format_token_count(
+                usize::try_from(tokens).unwrap_or(usize::MAX),
+            ))
+            .text(" tokens");
     }
-    clause
+    meta.into_spans()
 }
 
 /// Clip `text` to `max` display columns, marking a cut with
@@ -107,7 +112,7 @@ fn agent_status_color(status: crate::agents::AgentStatus) -> Color {
 fn agent_tree_rows(
     is_last: bool,
     description: &str,
-    counters: &str,
+    counters: Vec<Span<'static>>,
     status: Option<(&str, Color)>,
     width: u16,
 ) -> Vec<Line<'static>> {
@@ -121,17 +126,18 @@ fn agent_tree_rows(
     };
     let dim = Style::new().fg(tool_dim_color());
     let mut description = description.to_string();
-    let counters_cols = cols(counters);
+    let counters_cols: usize = counters.iter().map(|span| cols(&span.content)).sum();
     if cols(&description) + counters_cols > budget {
         description = truncate_cols(&description, budget.saturating_sub(counters_cols + 1));
         description.push('…');
     }
-    let mut lines = vec![Line::from(vec![
+    let mut row = vec![
         Span::styled(AGENT_TREE_INDENT.to_string(), dim),
         Span::styled(connector.to_string(), dim),
         Span::styled(description, Style::new().fg(tool_output_color())),
-        Span::styled(counters.to_string(), dim),
-    ])];
+    ];
+    row.extend(counters);
+    let mut lines = vec![Line::from(row)];
     if let Some((status, color)) = status {
         let rail = if is_last {
             AGENT_TREE_BLANK
@@ -158,11 +164,12 @@ fn agent_group_header(
     text: String,
     hint: &str,
 ) -> Line<'static> {
-    Line::from(vec![
+    let mut spans = vec![
         bullet_span(color, blink),
         Span::styled(text, Style::new().fg(tool_name_color())),
-        Span::styled(hint.to_string(), Style::new().fg(tool_dim_color())),
-    ])
+    ];
+    spans.extend(hint_spans(hint, Style::new().fg(tool_dim_color())));
+    Line::from(spans)
 }
 
 /// A **single** agent's `● Agent({description})` cell header — the tool-cell
@@ -185,16 +192,25 @@ fn agent_cell_header(color: Color, blink: Option<Duration>, description: &str) -
 }
 
 /// The `Done ({n} tool uses · {tokens} tokens · {elapsed})` settle clause
-/// shared by the Ctrl+O cell footer and the single-agent committed cell. The
-/// runtime humanizes past a minute (`6m 2s`, never a bare `362s`) — the
+/// shared by the Ctrl+O cell footer and the single-agent committed cell —
+/// dim, its three values lifted (`docs/meta-highlights.md`). The runtime
+/// humanizes past a minute (`6m 2s`, never a bare `362s`) — the
 /// [`format_elapsed`] contract every runtime display shares.
-fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
-    format!(
-        "Done ({tool_uses} tool use{} · {} tokens · {})",
-        if tool_uses == 1 { "" } else { "s" },
-        format_token_count(usize::try_from(tokens).unwrap_or(usize::MAX)),
-        format_elapsed(secs),
-    )
+fn agent_done_spans(tool_uses: usize, tokens: u64, secs: u64) -> Vec<Span<'static>> {
+    let mut meta = MetaSpans::new(Style::new().fg(tool_dim_color()));
+    meta.text("Done (")
+        .value(tool_uses.to_string())
+        .text(format!(
+            " tool use{} · ",
+            if tool_uses == 1 { "" } else { "s" }
+        ))
+        .value(format_token_count(
+            usize::try_from(tokens).unwrap_or(usize::MAX),
+        ))
+        .text(" tokens · ")
+        .value(format_elapsed(secs))
+        .text(")");
+    meta.into_spans()
 }
 
 /// The **live** cell of a lone agent — `● Agent({description})` over its
@@ -231,7 +247,7 @@ fn single_live_agent_lines(
             .background_hint_elapsed()
             .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
     {
-        lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+        lines.push(hint_row(1, TOOL_BACKGROUND_HINT));
     }
     lines
 }
@@ -256,27 +272,25 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     if let [entry] = group.agents.as_slice() {
         let dim = Style::new().fg(tool_dim_color());
         let mut lines = vec![agent_cell_header(color, None, &entry.description)];
-        let (settle, settle_color) = if group.background {
-            (AGENT_BACKGROUNDED.to_string(), tool_dim_color())
+        let settle = if group.background {
+            hint_spans(AGENT_BACKGROUNDED, dim)
         } else {
             match entry.status {
-                crate::agents::AgentStatus::Done => (
-                    agent_done_clause(entry.tool_uses, entry.tokens, entry.secs),
-                    tool_dim_color(),
-                ),
-                status if status.is_final() => (status.label().to_string(), tool_fail_color()),
-                status => (status.label().to_string(), tool_dim_color()),
+                crate::agents::AgentStatus::Done => {
+                    agent_done_spans(entry.tool_uses, entry.tokens, entry.secs)
+                }
+                status if status.is_final() => vec![Span::styled(
+                    status.label().to_string(),
+                    Style::new().fg(tool_fail_color()),
+                )],
+                status => vec![Span::styled(status.label().to_string(), dim)],
             }
         };
-        lines.push(Line::from(vec![
-            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-            Span::styled(settle, Style::new().fg(settle_color)),
-        ]));
+        lines.push(gutter_row_spans(0, settle));
         if !group.background {
-            lines.push(Line::from(vec![
-                Span::raw(INDENT.to_string()),
-                Span::styled(EXPAND_HINT.trim_start().to_string(), dim),
-            ]));
+            let mut hint = vec![Span::raw(INDENT.to_string())];
+            hint.extend(hint_spans(EXPAND_HINT.trim_start(), dim));
+            lines.push(Line::from(hint));
         }
         return lines;
     }
@@ -310,7 +324,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
             lines.extend(agent_tree_rows(
                 is_last,
                 &entry.description,
-                "",
+                Vec::new(),
                 None,
                 width,
             ));
@@ -318,7 +332,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
             lines.extend(agent_tree_rows(
                 is_last,
                 &entry.description,
-                &agent_counters_clause(entry.tool_uses, entry.tokens),
+                agent_counters(entry.tool_uses, entry.tokens),
                 Some((entry.status.label(), agent_status_color(entry.status))),
                 width,
             ));
@@ -360,7 +374,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         lines.extend(agent_tree_rows(
             i + 1 == count,
             &run.description,
-            &agent_counters_clause(run.tool_uses, run.tokens),
+            agent_counters(run.tool_uses, run.tokens),
             Some((activity.as_str(), agent_status_color(run.status))),
             width,
         ));
@@ -373,7 +387,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             .background_hint_elapsed()
             .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
     {
-        lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+        lines.push(hint_row(1, TOOL_BACKGROUND_HINT));
     }
     lines
 }
@@ -597,24 +611,25 @@ pub(super) fn agent_cell_lines(
             ]));
         }
     }
-    // The settle footer.
-    let footer: Option<(String, Color)> = match cell.status {
-        crate::agents::AgentStatus::Done => Some((
-            agent_done_clause(cell.tool_uses, cell.tokens, cell.secs),
-            tool_dim_color(),
-        )),
-        crate::agents::AgentStatus::Interrupted => {
-            Some(("Interrupted".to_string(), tool_fail_color()))
+    // The settle footer — its receipt's values and its hint's key lifted
+    // (docs/meta-highlights.md).
+    let fail = |text: &str| {
+        vec![Span::styled(
+            text.to_string(),
+            Style::new().fg(tool_fail_color()),
+        )]
+    };
+    let footer: Option<Vec<Span<'static>>> = match cell.status {
+        crate::agents::AgentStatus::Done => {
+            Some(agent_done_spans(cell.tool_uses, cell.tokens, cell.secs))
         }
-        crate::agents::AgentStatus::Failed => Some(("Failed".to_string(), tool_fail_color())),
-        _ if cell.background => Some((TOOL_BACKGROUNDED.to_string(), tool_dim_color())),
+        crate::agents::AgentStatus::Interrupted => Some(fail("Interrupted")),
+        crate::agents::AgentStatus::Failed => Some(fail("Failed")),
+        _ if cell.background => Some(hint_spans(TOOL_BACKGROUNDED, dim)),
         _ => None,
     };
-    if let Some((text, color)) = footer {
-        lines.push(Line::from(vec![
-            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-            Span::styled(text, Style::new().fg(color)),
-        ]));
+    if let Some(spans) = footer {
+        lines.push(gutter_row_spans(0, spans));
     }
     lines
 }
@@ -735,30 +750,38 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             text_style = text_style.add_modifier(Modifier::BOLD);
         }
         // `{type}  {description}` truncated so the ` {elapsed} · ↓ {n} tokens`
-        // suffix always fits.
-        let mut suffix = format!(" {}", format_elapsed(run.runtime.as_secs()));
+        // suffix always fits — dim, its runtime and tokens values
+        // (docs/meta-highlights.md).
+        let mut suffix = MetaSpans::new(dim);
+        suffix
+            .text(" ")
+            .value(format_elapsed(run.runtime.as_secs()));
         if run.tokens > 0 {
-            suffix.push_str(&format!(
-                " · {} {} tokens",
-                STATUS_ARROW_DOWN,
-                format_token_count(usize::try_from(run.tokens).unwrap_or(usize::MAX))
-            ));
+            suffix
+                .text(format!(" · {STATUS_ARROW_DOWN} "))
+                .value(format_token_count(
+                    usize::try_from(run.tokens).unwrap_or(usize::MAX),
+                ))
+                .text(" tokens");
         }
+        let suffix = suffix.into_spans();
+        let suffix_cols: usize = suffix.iter().map(|span| cols(&span.content)).sum();
         let lead = format!("{marker}{bullet}");
         let budget = (width as usize)
-            .saturating_sub(cols(&lead) + cols(&suffix))
+            .saturating_sub(cols(&lead) + suffix_cols)
             .max(1);
         let mut name = format!("{}  {}", run.agent_type, run.description);
         if cols(&name) > budget {
             name = truncate_cols(&name, budget.saturating_sub(1));
             name.push('…');
         }
-        lines.push(Line::from(vec![
+        let mut row = vec![
             Span::styled(marker.to_string(), Style::new().fg(menu_selected_color())),
             Span::styled(bullet.to_string(), bullet_style),
             Span::styled(name, text_style),
-            Span::styled(suffix, dim),
-        ]));
+        ];
+        row.extend(suffix);
+        lines.push(Line::from(row));
     }
     lines
 }

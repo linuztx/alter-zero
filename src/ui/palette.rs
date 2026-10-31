@@ -34,11 +34,12 @@ pub(super) struct Palette {
     /// output, the status verb's shimmer crest — the brightest ink.
     pub text: Color,
     /// A quieter ink: an unselected model id, a settings value, the comet's
-    /// mid-tail, the thinking header's shimmer floor.
+    /// mid-tail, the thinking header's shimmer floor — and the **values**
+    /// inside a dim meta line (`docs/meta-highlights.md`).
     pub text_muted: Color,
     /// The dim everything secondary wears: the `⎿` corners and placeholders,
-    /// the footer, the hints, the counters, a waiting or resting-running
-    /// bullet, the timestamps.
+    /// the words of the footer, the hints and the meta lines, a waiting or
+    /// resting-running bullet, the timestamps.
     pub dim: Color,
     /// The composer box's rules and every framed view's.
     pub border: Color,

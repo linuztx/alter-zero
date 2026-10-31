@@ -265,7 +265,7 @@ of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
+`file_cell`, `inline_diff`, `tool_group`, `meta`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -909,8 +909,10 @@ line the thought then settles into unseen, Ctrl+O its only view
 away entirely and it **collapses** into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
-the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
-`Done for Ns`'s exact dress, so the pair bracketing a turn reads as a pair);
+the turn — **dim**, its values and the hint's key lifted like every dim meta
+line's (`docs/meta-highlights.md`; `reasoning_label_color()` =
+`status_done_color()`, `Done for Ns`'s exact dress, so the pair bracketing a
+turn reads as a pair);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
 the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
@@ -3690,6 +3692,17 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   message. `render_live` and `cursor_position` share the `input_box` helper, which
   reserves the band and footer so the cursor stays put when they open; `tool_lines`
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
+- **A dim meta line lifts its values and its keys** (`docs/meta-highlights.md`).
+  The summary, the thought line, the status metrics, a fold's `… +N lines`,
+  a running command's clock, a collapsed group, the agent tree and the
+  footer keep their words dim, their values (durations, counts, sizes) in
+  `meta_value_color()` — the theme's `text_muted` — and the keys a hint names
+  in `meta_key_color()`, the accent softened toward the dim. Mark them where
+  the row is built (`ui::meta::MetaSpans`, `hint_spans` for a hint constant's
+  `{key} to {action}` clauses), never by scanning a finished row's text: a
+  row around a path, a command or a model's words would light up digits that
+  are nobody's value. A new inline hint constant joins
+  `every_inline_hint_names_its_keys`.
 - **The agent's own name is one constant** — `alter_zero::APP_NAME`. Every
   string in which the app speaks its name reads it: the startup banner's title
   (`ui::theme::HEADER_NAME`) and the `AskUserQuestion` cell's headline

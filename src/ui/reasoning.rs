@@ -19,6 +19,7 @@
 //! collapsed-inline / expanded-in-Ctrl+O contract a tool call has.
 
 use super::file_cell::gutter_row_styled;
+use super::meta::MetaSpans;
 use super::status::shimmer_spans_from;
 use super::theme::*;
 use super::tool::bullet_span;
@@ -63,31 +64,32 @@ fn thinking_header(blink: Option<Duration>, label: Vec<Span<'static>>) -> Line<'
     Line::from(spans)
 }
 
-/// The settled phase's label — `Thought for {elapsed}` — and, separately, its
-/// `· {n} tokens` metrics. Split because the two surfaces compose them
-/// differently: inline the `EXPAND_HINT` follows, in Ctrl+O nothing does.
+/// The settled phase's line — `Thought for {elapsed} · {n} tokens` — with the
+/// `EXPAND_HINT` after it when `hint` (inline; in Ctrl+O nothing follows,
+/// since that *is* the expansion).
 ///
+/// Dim, the same on both surfaces: a finished thought is a footnote about
+/// work already done — the weight belongs to the live block, which is where
+/// something is still happening. Its words stay dim while the two values it
+/// reports and the hint's key are lifted (`docs/meta-highlights.md`).
 /// [`format_elapsed`] humanizes the seconds and [`format_token_count`] the
 /// tokens, so this reads like every other duration and count in the TUI. A
 /// zero token count (an old rollout, a backend that reported none and
-/// estimated nothing) yields empty metrics rather than claiming `· 0 tokens`.
-fn thought_label(reasoning: &Reasoning) -> String {
-    format!("{REASONING_DONE}{}", format_elapsed(reasoning.secs))
-}
-
-/// The settled line's span: dim, the same on both surfaces. A finished
-/// thought is a footnote about work already done — the weight belongs to the
-/// live block, which is where something is still happening.
-fn settled_span(text: String) -> Span<'static> {
-    Span::styled(text, Style::new().fg(reasoning_label_color()))
-}
-
-/// See [`thought_label`] — `" · 1.5k tokens"`, or empty when unknown.
-fn thought_metrics(reasoning: &Reasoning) -> String {
-    if reasoning.tokens == 0 {
-        return String::new();
+/// estimated nothing) leaves the clause out rather than claiming
+/// `· 0 tokens`.
+fn settled_spans(reasoning: &Reasoning, hint: bool) -> Vec<Span<'static>> {
+    let mut meta = MetaSpans::new(Style::new().fg(reasoning_label_color()));
+    meta.text(REASONING_DONE)
+        .value(format_elapsed(reasoning.secs));
+    if reasoning.tokens > 0 {
+        meta.text(" · ")
+            .value(format_token_count(reasoning.tokens))
+            .text(" tokens");
     }
-    format!(" · {} tokens", format_token_count(reasoning.tokens))
+    if hint {
+        meta.hint(EXPAND_HINT);
+    }
+    meta.into_spans()
 }
 
 /// The settled thinking phase as **committed** lines: one dim, **bullet-less**
@@ -95,30 +97,21 @@ fn thought_metrics(reasoning: &Reasoning) -> String {
 /// [`summary_lines`] shape (`width` is unused, kept for the uniform `*_lines`
 /// signature).
 ///
-/// No bullet, and dim throughout — `Done for Ns`'s exact dress. The
-/// `● Thinking…` header meant *something is happening*, and nothing is any
-/// more; what is left is a fact about the turn, so it settles into the
-/// transcript rather than competing with the reply it sits above. The
-/// `EXPAND_HINT` says where the thought itself went, the same promise a capped
-/// tool peek makes.
+/// No bullet, and dim — `Done for Ns`'s exact dress. The `● Thinking…`
+/// header meant *something is happening*, and nothing is any more; what is
+/// left is a fact about the turn, so it settles into the transcript rather
+/// than competing with the reply it sits above. The `EXPAND_HINT` says where
+/// the thought itself went, the same promise a capped tool peek makes.
 #[must_use]
 pub fn reasoning_lines(reasoning: &Reasoning, _width: u16) -> Vec<Line<'static>> {
-    vec![Line::from(settled_span(format!(
-        "{}{}{EXPAND_HINT}",
-        thought_label(reasoning),
-        thought_metrics(reasoning)
-    )))]
+    vec![Line::from(settled_spans(reasoning, true))]
 }
 
 /// The Ctrl+O transcript's expanded cell: the same dim settled line — minus
 /// the `(ctrl+o to expand)` hint, since this *is* the expansion — over the
 /// whole chain-of-thought in the `⎿` gutter.
 pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(settled_span(format!(
-        "{}{}",
-        thought_label(reasoning),
-        thought_metrics(reasoning)
-    )))];
+    let mut lines = vec![Line::from(settled_spans(reasoning, false))];
     lines.extend(gutter_body(&reasoning.text, width));
     lines
 }

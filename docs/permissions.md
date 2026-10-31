@@ -394,8 +394,10 @@ scope is the exact command.
 The session has a **permission posture**, `permission::PermissionMode`, pinned
 flush at the footer's **right edge** (`{model} · {cwd}      auto` — its own
 zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
-can never eat it; `docs/footer.md`) and **cycled** with **Shift+Tab** from the
-composer, one step per press in increasing autonomy:
+can never eat it; `docs/footer.md`), coloured by how much it lets run unasked
+— `manual` dim, `edit` the softened purple, `auto` the softened accent,
+`master` the softened red (`docs/meta-highlights.md`) — and **cycled** with
+**Shift+Tab** from the composer, one step per press in increasing autonomy:
 
 - **manual** — every `write`/`edit` and every `bash` command asks, as above.
   The most cautious posture, and the one a mode that can't be read degrades
