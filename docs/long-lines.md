@@ -384,7 +384,9 @@ rule showed every row of it: a cell meant as a ten-row glimpse painted a
 screenful of minified CSS into scrollback, the hint under it still counting
 six lines. The bound §7 leaned on held for a `read`, whose output the tool
 caps, and for nothing else: what a model *writes* has no cap, and the rows
-of a committed cell stay in the user's scrollback for good.
+of a committed cell stay in the user's scrollback for good. It was §0's
+lesson in the file cells' dress: a cell whose height depends on how its
+content happens to be shaped is a cell you cannot skim.
 
 So the ten rows are a ceiling now. Of §7's rule, only what happens to the
 line that runs into it changes:
@@ -421,12 +423,19 @@ What §7 was for survives it:
 - An edit still shows the `+` row of a replaced line whenever the context and
   the `-` row before it leave a row — the start rule is §7's own — cut on the
   rows left instead of carried past the ceiling. A `-` row that reaches the
-  ceiling itself leaves its `+` row unstarted, as it did under §7.
+  ceiling itself leaves its `+` row unstarted, as it did under §7. Sharing
+  the rows out between the two halves would show more of the replacement,
+  but only by cutting the old line in the middle of the cell, which is the
+  per-line cap of §1 again.
 
-The marker is §2's, back for this one cut: without it a line stopped at the
-ceiling reads as a line that ended there. It takes the row's last column,
-dim, on the row's own tint, so an added line's green band runs unbroken to
-the cut; the row's content gives up the columns it needs from its end.
+The marker is §2's, back for this one cut, and the exec fold's reason for
+doing without one does not carry over. The fold's hint counts rows, so the
+`+N lines` under its third row already says that row's text goes on. A file
+cell's hint counts file lines, and its code rows hard-break at the width, so
+a full last row reads the same whether its line ends there or runs on for a
+thousand rows; only the `…` says which. It takes the row's last column, dim,
+on the row's own tint, so an added line's green band runs unbroken to the
+cut; the row's content gives up the columns it needs from its end.
 
 **The hint still counts whole lines.** `+6 lines` is lines 5–10, the file
 lines the peek never started, so the gutter's last number plus the hint is
