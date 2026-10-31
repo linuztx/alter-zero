@@ -39,6 +39,18 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **An MCP tool that needs more permission now says so.** A call refused
+  because the sign-in lacked a permission (a 403 `insufficient_scope`)
+  failed as a bare `HTTP 403`. The server now stays connected, the model is
+  told to have you re-authenticate, and that sign-in asks for the new
+  permission together with the ones you already granted (`docs/mcp.md`).
+- **An MCP sign-in no longer trusts metadata meant for another server.**
+  The sign-in now checks that the server's metadata speaks for that server
+  and that the provider's metadata names the provider it was looked up
+  for, instead of falling back to a document that could belong to a
+  different provider on the same host. It also reads the server's
+  challenge properly, where a request for more permission used to lose the
+  permission it named (`docs/mcp.md`).
 - **Cancelling an MCP server's sign-in no longer leaves `/mcp` waiting for
   five minutes.** Pressing Cancel on the provider's consent screen sends the
   browser back with a refusal, which the sign-in read as an unrelated

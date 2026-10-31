@@ -84,6 +84,10 @@ pub struct StoredTokens {
     /// (`client_secret_post`/`client_secret_basic`) — the refresh must do
     /// the same. `None` reads as the body, the pre-negotiation behaviour.
     pub auth_method: Option<String>,
+    /// The RFC 8707 resource indicator the grant was issued for — the
+    /// refresh presents the same one. `None` (an older grant) is the
+    /// server's URL.
+    pub resource: Option<String>,
 }
 
 /// Parse the store document into `server_url → tokens`.
@@ -110,6 +114,7 @@ pub fn parse_token_store(contents: &str) -> std::collections::BTreeMap<String, S
                     token_endpoint: text("token_endpoint").unwrap_or_default(),
                     scope: text("scope"),
                     auth_method: text("token_endpoint_auth_method"),
+                    resource: text("resource"),
                 },
             ))
         })
@@ -152,6 +157,9 @@ pub fn record_tokens(contents: &str, server_url: &str, tokens: Option<&StoredTok
                 }
                 if let Some(method) = &tokens.auth_method {
                     entry.insert("token_endpoint_auth_method".into(), method.clone().into());
+                }
+                if let Some(resource) = &tokens.resource {
+                    entry.insert("resource".into(), resource.clone().into());
                 }
                 servers.insert(server_url.to_string(), Value::Object(entry));
             }
@@ -428,7 +436,13 @@ pub fn refresh_params(
             ),
         ],
     );
-    params.push(("resource".to_string(), server_url.to_string()));
+    params.push((
+        "resource".to_string(),
+        tokens
+            .resource
+            .clone()
+            .unwrap_or_else(|| server_url.to_string()),
+    ));
     (params, basic)
 }
 
@@ -578,6 +592,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .map(str::to_string)
             .or_else(|| prior.scope.clone()),
         auth_method: prior.auth_method.clone(),
+        resource: prior.resource.clone(),
     })
 }
 
@@ -635,22 +650,145 @@ pub fn form_encode(pairs: &[(String, String)]) -> String {
         .join("&")
 }
 
-/// One `key="value"` parameter out of a 401's `WWW-Authenticate` challenge.
+/// The auth-params of a `WWW-Authenticate` challenge, names lower-cased:
+/// `name=token` and `name="quoted, \"escaped\" value"` pairs, the scheme
+/// names between them skipped. A real tokenizer rather than a substring
+/// search: `scope` used to be found inside `error="insufficient_scope"`,
+/// so a step-up challenge's own scope read as absent.
+fn challenge_params(challenge: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = challenge.chars().collect();
+    let mut params = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') {
+            i += 1;
+        }
+        let start = i;
+        while i < chars.len() && !chars[i].is_whitespace() && !matches!(chars[i], '=' | ',') {
+            i += 1;
+        }
+        let name: String = chars[start..i].iter().collect();
+        let mut j = i;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '=' || name.is_empty() {
+            // A scheme name (or a stray `=`): skip it, always moving on.
+            i = if i == start { i + 1 } else { i };
+            continue;
+        }
+        j += 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let mut value = String::new();
+        if chars.get(j) == Some(&'"') {
+            j += 1;
+            while j < chars.len() && chars[j] != '"' {
+                if chars[j] == '\\' && j + 1 < chars.len() {
+                    j += 1;
+                }
+                value.push(chars[j]);
+                j += 1;
+            }
+            j += 1; // the closing quote
+        } else {
+            while j < chars.len() && chars[j] != ',' && !chars[j].is_whitespace() {
+                value.push(chars[j]);
+                j += 1;
+            }
+        }
+        params.push((name.to_ascii_lowercase(), value));
+        i = j;
+    }
+    params
+}
+
+/// One parameter out of a 401's (or 403's) `WWW-Authenticate` challenge, by
+/// its whole name.
 #[must_use]
 pub fn challenge_param(challenge: &str, key: &str) -> Option<String> {
-    let lower = challenge.to_ascii_lowercase();
-    let at = lower.find(&key.to_ascii_lowercase())?;
-    let rest = &challenge[at + key.len()..];
-    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
-    // A quoted value may contain spaces (a scope list is exactly that), so
-    // only an unquoted one ends at whitespace.
-    let (rest, terminators): (&str, &[char]) = match rest.strip_prefix('"') {
-        Some(rest) => (rest, &['"']),
-        None => (rest, &['"', ',', ' ']),
+    let key = key.to_ascii_lowercase();
+    challenge_params(challenge)
+        .into_iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Is this a step-up challenge — a 403's `error="insufficient_scope"`: the
+/// token is good, the operation wants more scope than it carries.
+#[must_use]
+pub fn is_insufficient_scope(challenge: &str) -> bool {
+    challenge_param(challenge, "error").as_deref() == Some("insufficient_scope")
+}
+
+/// The union of two space-separated scope lists, first-seen order kept —
+/// the step-up request (2026-07-28, SEP-2350): what was already requested
+/// plus what the challenge wants, so re-authorizing never trades the old
+/// permissions for the new.
+#[must_use]
+pub fn union_scopes(held: Option<&str>, wanted: Option<&str>) -> Option<String> {
+    let mut scopes: Vec<&str> = Vec::new();
+    for scope in held
+        .into_iter()
+        .chain(wanted)
+        .flat_map(str::split_whitespace)
+    {
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    (!scopes.is_empty()).then(|| scopes.join(" "))
+}
+
+/// Where to look for an authorization server's metadata, in the order the
+/// MCP spec gives: an issuer with a path tries the OAuth path-insert, the
+/// OIDC path-insert and the OIDC path-append forms — never a root document,
+/// which belongs to whatever *other* issuer the host serves (Entra tenants,
+/// Keycloak realms) — and one without a path tries the two roots.
+#[must_use]
+pub fn metadata_candidates(issuer: &str) -> Vec<String> {
+    let Ok(parsed) = url::Url::parse(issuer) else {
+        return Vec::new();
     };
-    let end = rest.find(terminators).unwrap_or(rest.len());
-    let value = rest[..end].trim();
-    (!value.is_empty()).then(|| value.to_string())
+    let origin = parsed.origin().ascii_serialization();
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() {
+        return vec![
+            format!("{origin}/.well-known/oauth-authorization-server"),
+            format!("{origin}/.well-known/openid-configuration"),
+        ];
+    }
+    vec![
+        format!("{origin}/.well-known/oauth-authorization-server{path}"),
+        format!("{origin}/.well-known/openid-configuration{path}"),
+        format!("{origin}{path}/.well-known/openid-configuration"),
+    ]
+}
+
+/// May a protected-resource document naming `resource` speak for
+/// `server_url`? The official SDKs' rule (`checkResourceAllowed`): the same
+/// origin, and the resource's path a prefix of the server's on segment
+/// bounds — so Google's per-tool metadata, naming `/mcp` for a server at
+/// `/mcp/v1`, is accepted, and a document for another host is not.
+#[must_use]
+pub fn resource_allowed(server_url: &str, resource: &str) -> bool {
+    let (Ok(server), Ok(resource)) = (url::Url::parse(server_url), url::Url::parse(resource))
+    else {
+        return false;
+    };
+    if server.origin() != resource.origin() {
+        return false;
+    }
+    let with_slash = |path: &str| {
+        if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        }
+    };
+    with_slash(server.path()).starts_with(&with_slash(resource.path()))
 }
 
 /// The `resource_metadata` URL a 401's `WWW-Authenticate` challenge names
@@ -940,6 +1078,10 @@ pub struct AuthServerMeta {
     /// `token_endpoint_auth_methods_supported` — how a client may
     /// authenticate at the token endpoint ([`choose_client_auth`]).
     pub auth_methods: Vec<String>,
+    /// The RFC 8707 resource indicator every authorization and token request
+    /// carries: the protected-resource metadata's `resource`, else the
+    /// server's URL.
+    pub resource: String,
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -1002,12 +1144,24 @@ pub fn discover(
         server_url,
         "oauth-protected-resource",
     ));
+    // A document is only taken when its `resource` speaks for this server
+    // (RFC 9728 §3.3, by the SDKs' prefix rule); one naming another server
+    // is skipped for the next candidate rather than trusted.
     for candidate in candidates {
         if let Ok(value) = get_json(&candidate) {
-            resource_meta = Some(value);
-            break;
+            let names = value.get("resource").and_then(Value::as_str);
+            if names.is_none_or(|resource| resource_allowed(server_url, resource)) {
+                resource_meta = Some(value);
+                break;
+            }
         }
     }
+    // The resource indicator every token request carries (RFC 8707): the
+    // canonical URI the metadata names, else the server's own URL.
+    let resource = resource_meta
+        .as_ref()
+        .and_then(|meta| meta.get("resource").and_then(Value::as_str))
+        .map_or_else(|| server_url.to_string(), str::to_string);
     // The challenge's own `scope` outranks the resource's metadata: the spec
     // makes it authoritative for the operation that was refused, so a server
     // wanting more than it advertises gets what it actually asked for.
@@ -1033,21 +1187,28 @@ pub fn discover(
         None => (None, None),
     };
     // 2. AS metadata: the configured document, else the named server's,
-    //    else the MCP server's own origin's.
-    let as_candidates = match config.and_then(|c| c.auth_server_metadata_url.clone()) {
-        Some(url) => vec![url],
-        None => {
-            let auth_base = auth_server.unwrap_or_else(|| origin_of(server_url));
-            let mut candidates = well_known_candidates(&auth_base, "oauth-authorization-server");
-            candidates.extend(well_known_candidates(&auth_base, "openid-configuration"));
-            candidates
-        }
-    };
+    //    else the MCP server's own origin's — and a document is used only
+    //    when its `issuer` is the one it was sought for (RFC 8414 §3.3, the
+    //    2026-07-28 spec's MUST), a configured document excepted.
+    let (as_candidates, expected_issuer) =
+        match config.and_then(|c| c.auth_server_metadata_url.clone()) {
+            Some(url) => (vec![url], None),
+            None => {
+                let auth_base = auth_server.unwrap_or_else(|| origin_of(server_url));
+                (metadata_candidates(&auth_base), Some(auth_base))
+            }
+        };
     let mut last_err = String::from("no authorization-server metadata found");
     for candidate in as_candidates {
         match get_json(&candidate) {
             Ok(meta) => {
                 let field = |key: &str| meta.get(key).and_then(Value::as_str).map(str::to_string);
+                if let (Some(expected), Some(issuer)) = (&expected_issuer, field("issuer"))
+                    && !issuers_match(expected, &issuer)
+                {
+                    last_err = format!("{candidate}: names issuer {issuer}, not {expected}");
+                    continue;
+                }
                 let (Some(authorization_endpoint), Some(token_endpoint)) =
                     (field("authorization_endpoint"), field("token_endpoint"))
                 else {
@@ -1090,6 +1251,7 @@ pub fn discover(
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
+                    resource,
                 });
             }
             Err(e) => last_err = format!("{candidate}: {e}"),
@@ -1516,7 +1678,13 @@ pub fn run_auth_flow(
     cancel: &CancelToken,
 ) -> Result<(), AuthError> {
     let config = settings.oauth.as_ref();
-    let meta = discover(server_url, challenge, config)?;
+    let mut meta = discover(server_url, challenge, config)?;
+    // A step-up keeps what the grant already had: the union of the scopes
+    // requested before and the challenge's (2026-07-28, SEP-2350).
+    if challenge.is_some_and(is_insufficient_scope) {
+        let held = load_tokens(store_path, server_url).and_then(|tokens| tokens.scope);
+        meta.scopes = union_scopes(held.as_deref(), meta.scopes.as_deref());
+    }
     let stored = load_client(store_path, server_url);
     // The callback port: the config's, else a pre-registered client's stable
     // default, else the port a registration named (so it stays usable),
@@ -1590,7 +1758,7 @@ pub fn run_auth_flow(
         &code_challenge,
         &state,
         meta.scopes.as_deref(),
-        server_url,
+        &meta.resource,
         provider_authorize_params(meta.issuer.as_deref()),
     );
     progress.on_url(&authorize_url);
@@ -1603,7 +1771,7 @@ pub fn run_auth_flow(
         ("code".to_string(), code),
         ("redirect_uri".to_string(), redirect_uri),
         ("code_verifier".to_string(), verifier),
-        ("resource".to_string(), server_url.to_string()),
+        ("resource".to_string(), meta.resource.clone()),
     ]);
     let (status, body) = post_form_raw(&meta.token_endpoint, &params, basic.as_deref())
         .map_err(|e| format!("token exchange failed: {e}"))?;
@@ -1620,6 +1788,7 @@ pub fn run_auth_flow(
         token_endpoint: meta.token_endpoint.clone(),
         scope: meta.scopes.clone(),
         auth_method: (method != ClientAuth::None).then(|| method.as_str().to_string()),
+        resource: Some(meta.resource.clone()),
         ..Default::default()
     };
     let tokens = tokens_from_response(&response, &prior)
@@ -1940,6 +2109,27 @@ pub(super) mod fixtures {
                             "resource": format!("{base_t}/mcp"),
                             "authorization_servers": [format!("{base_t}/")],
                             "scopes_supported": ["calendar"],
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-protected-resource/other" {
+                    // Metadata speaking for another server entirely.
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": "https://elsewhere.test/mcp",
+                            "authorization_servers": ["https://evil.test/"],
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-protected-resource/tenant-mcp" {
+                    // A path issuer this host publishes no metadata for: only
+                    // the root document (another issuer's) exists.
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": format!("{base_t}/tenant-mcp"),
+                            "authorization_servers": [format!("{base_t}/tenant")],
                         })
                         .to_string(),
                     )
@@ -2589,6 +2779,136 @@ mod tests {
         )
     }
 
+    fn run_flow_at(
+        fixture: &AuthFixture,
+        server: &str,
+        challenge: Option<&str>,
+        store: &Path,
+    ) -> Result<(), AuthError> {
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        run_auth_flow(
+            server,
+            challenge,
+            Some(store),
+            &AuthSettings {
+                oauth: Some(configured(Some("cid"), Some("shh"))),
+                default_port: 0,
+            },
+            &paste_rx,
+            &Silent,
+            &consenting_browser(fixture.base.clone()),
+            &CancelToken::new(),
+        )
+    }
+
+    fn last_resource(fixture: &AuthFixture) -> Option<String> {
+        let requests = fixture.token_requests.lock().unwrap();
+        requests
+            .last()
+            .and_then(|r| r.form.get("resource").cloned())
+    }
+
+    #[test]
+    fn the_resource_indicator_is_the_one_the_metadata_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        let server = format!("{}/mcp/v1", fixture.base);
+        // Google's shape: the 401 names per-tool metadata for the parent
+        // `/mcp`, which may speak for `/mcp/v1` — and is the canonical URI
+        // the token is minted for, on the exchange and the refresh alike.
+        let challenge = format!(
+            r#"Bearer resource_metadata="{}/.well-known/oauth-protected-resource/mcp""#,
+            fixture.base
+        );
+        assert_eq!(
+            run_flow_at(&fixture, &server, Some(&challenge), &store),
+            Ok(())
+        );
+        let parent = format!("{}/mcp", fixture.base);
+        assert_eq!(last_resource(&fixture).as_deref(), Some(parent.as_str()));
+        let grant = load_tokens(Some(&store), &server).expect("a grant");
+        assert_eq!(grant.resource.as_deref(), Some(parent.as_str()));
+        let (params, _) = refresh_params(&grant, &server);
+        assert!(params.contains(&("resource".to_string(), parent.clone())));
+        // Metadata speaking for another server is never trusted: discovery
+        // falls back to this server's own, and its own URL is the resource.
+        let foreign = format!(
+            r#"Bearer resource_metadata="{}/.well-known/oauth-protected-resource/other""#,
+            fixture.base
+        );
+        assert_eq!(
+            run_flow_at(&fixture, &server, Some(&foreign), &store),
+            Ok(())
+        );
+        assert_eq!(last_resource(&fixture).as_deref(), Some(server.as_str()));
+    }
+
+    #[test]
+    fn a_step_up_sign_in_asks_for_the_held_scopes_and_the_wanted_ones() {
+        struct Capture(std::sync::Mutex<Option<String>>);
+        impl AuthProgress for Capture {
+            fn on_url(&self, url: &str) {
+                *self.0.lock().unwrap() = Some(url.to_string());
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        save_tokens(
+            Some(&store),
+            &fixture.server_url,
+            Some(&StoredTokens {
+                access_token: "old".to_string(),
+                scope: Some("calendar".to_string()),
+                ..Default::default()
+            }),
+        );
+        let challenge = format!(
+            r#"Bearer error="insufficient_scope", scope="admin", resource_metadata="{}/.well-known/oauth-protected-resource/mcp""#,
+            fixture.base
+        );
+        let capture = Capture(std::sync::Mutex::new(None));
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let result = run_auth_flow(
+            &fixture.server_url,
+            Some(&challenge),
+            Some(&store),
+            &AuthSettings {
+                oauth: Some(configured(Some("cid"), Some("shh"))),
+                default_port: 0,
+            },
+            &paste_rx,
+            &capture,
+            &consenting_browser(fixture.base.clone()),
+            &CancelToken::new(),
+        );
+        assert_eq!(result, Ok(()));
+        let url = capture.0.lock().unwrap().clone().expect("an authorize URL");
+        assert_eq!(
+            redirect_param(&url, "scope").as_deref(),
+            Some("calendar admin")
+        );
+    }
+
+    #[test]
+    fn a_path_issuer_is_never_served_another_issuers_root_metadata() {
+        // The resource names `{base}/tenant`, whose metadata does not exist;
+        // the host's root document belongs to the issuer `{base}`. Using it
+        // would send the user to the wrong authorization server.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        let server = format!("{}/tenant-mcp", fixture.base);
+        match run_flow_at(&fixture, &server, None, &store) {
+            Err(AuthError::Failed(detail)) => {
+                assert!(detail.contains("could not discover"), "{detail}");
+            }
+            other => panic!("expected discovery to fail, got {other:?}"),
+        }
+        assert!(fixture.token_requests.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn a_configured_client_signs_in_where_nothing_can_be_registered() {
         // The Google Calendar case end to end: no registration endpoint, a
@@ -2676,6 +2996,103 @@ mod tests {
     }
 
     #[test]
+    fn challenge_params_are_whole_names_never_substrings() {
+        // `scope` used to be found inside `error="insufficient_scope"`, so a
+        // step-up challenge's own scope read as absent.
+        let challenge =
+            r#"Bearer error="insufficient_scope", scope="a b", resource_metadata="https://x/m""#;
+        assert_eq!(challenge_scope(challenge).as_deref(), Some("a b"));
+        assert_eq!(
+            challenge_param(challenge, "error").as_deref(),
+            Some("insufficient_scope")
+        );
+        assert_eq!(
+            challenge_resource_metadata(challenge).as_deref(),
+            Some("https://x/m")
+        );
+        // Names are case-insensitive, quoted values may hold commas and
+        // escaped quotes, and a longer name never answers for a shorter one.
+        let tricky = r#"Bearer XSCOPE="no", Scope="read, write", realm="say \"hi\"""#;
+        assert_eq!(challenge_scope(tricky).as_deref(), Some("read, write"));
+        assert_eq!(
+            challenge_param(tricky, "realm").as_deref(),
+            Some(r#"say "hi""#)
+        );
+        assert!(is_insufficient_scope(challenge));
+        assert!(!is_insufficient_scope(r#"Bearer error="invalid_token""#));
+    }
+
+    #[test]
+    fn authorization_server_metadata_is_sought_in_the_spec_order() {
+        // An issuer with a path: OAuth path-insert, OIDC path-insert, OIDC
+        // path-append — never a root document, which belongs to whatever
+        // other issuer that host serves (Entra tenants, Keycloak realms).
+        assert_eq!(
+            metadata_candidates("https://auth.test/tenant1"),
+            [
+                "https://auth.test/.well-known/oauth-authorization-server/tenant1",
+                "https://auth.test/.well-known/openid-configuration/tenant1",
+                "https://auth.test/tenant1/.well-known/openid-configuration",
+            ]
+        );
+        // Without a path (a trailing slash is no path): the two roots.
+        assert_eq!(
+            metadata_candidates("https://accounts.google.com/"),
+            [
+                "https://accounts.google.com/.well-known/oauth-authorization-server",
+                "https://accounts.google.com/.well-known/openid-configuration",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_resource_names_this_server_or_a_parent_of_it() {
+        // The official SDKs' rule (`checkResourceAllowed`): same origin, and
+        // the resource's path a prefix of the server's on segment bounds.
+        let server = "https://calendarmcp.googleapis.com/mcp/v1";
+        assert!(resource_allowed(
+            server,
+            "https://calendarmcp.googleapis.com/mcp/v1"
+        ));
+        // Google's per-tool metadata names the parent `/mcp`.
+        assert!(resource_allowed(
+            server,
+            "https://calendarmcp.googleapis.com/mcp"
+        ));
+        assert!(resource_allowed(
+            server,
+            "https://calendarmcp.googleapis.com/"
+        ));
+        assert!(!resource_allowed(
+            server,
+            "https://calendarmcp.googleapis.com/mc"
+        ));
+        assert!(!resource_allowed(
+            server,
+            "https://calendarmcp.googleapis.com/mcp/v1/x"
+        ));
+        assert!(!resource_allowed(server, "https://evil.test/mcp/v1"));
+        assert!(!resource_allowed(
+            server,
+            "http://calendarmcp.googleapis.com/mcp/v1"
+        ));
+    }
+
+    #[test]
+    fn a_step_up_asks_for_what_was_held_and_what_is_wanted() {
+        // 2026-07-28 (SEP-2350): the union of the scopes already requested
+        // and the challenge's — re-asking for the challenge's alone would
+        // trade the old permissions for the new.
+        assert_eq!(
+            union_scopes(Some("read write"), Some("write admin")).as_deref(),
+            Some("read write admin")
+        );
+        assert_eq!(union_scopes(None, Some("a")).as_deref(), Some("a"));
+        assert_eq!(union_scopes(Some("a"), None).as_deref(), Some("a"));
+        assert_eq!(union_scopes(None, None), None);
+    }
+
+    #[test]
     fn a_challenge_yields_its_metadata_url_and_its_scope() {
         // Discovery runs blind without these: the server publishes its
         // resource metadata off the well-known path and names the scope it
@@ -2709,6 +3126,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read write".to_string()),
             auth_method: None,
+            resource: None,
         };
         let (params, basic) = refresh_params(&tokens, "https://mcp.test/mcp");
         assert_eq!(basic, None);
@@ -2962,6 +3380,7 @@ mod tests {
                 token_endpoint: token_url,
                 scope: None,
                 auth_method: None,
+                resource: None,
             }),
         );
         // Spawn every thread *before* joining any — a lazy `.map().map()`
@@ -3016,6 +3435,7 @@ mod tests {
                         token_endpoint: "https://as/token".to_string(),
                         scope: None,
                         auth_method: None,
+                        resource: None,
                     };
                     save_tokens(
                         Some(&path),
@@ -3047,6 +3467,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read".to_string()),
             auth_method: None,
+            resource: None,
         };
         let written = record_tokens("", "https://mcp.test/mcp", Some(&tokens));
         let parsed = parse_token_store(&written);

@@ -56,6 +56,10 @@ impl ConnectError {
     fn from_transport(e: TransportError) -> Self {
         match e {
             TransportError::NeedsAuth(challenge) => Self::NeedsAuth(challenge),
+            // A server that wants more scope before it will even connect
+            // needs a sign-in all the same — with the challenge, so the
+            // step-up asks for what it wants.
+            TransportError::InsufficientScope(challenge) => Self::NeedsAuth(Some(challenge)),
             other => Self::Failed(other.to_string()),
         }
     }

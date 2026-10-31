@@ -941,6 +941,27 @@ impl McpManager {
                      ask the user to run /mcp and authenticate"
                 ))
             }
+            Err(TransportError::InsufficientScope(challenge)) => {
+                // A step-up, not a dead login: the token still serves every
+                // other tool, so the connection stays. The challenge is kept
+                // so the next sign-in asks for the union of scopes.
+                {
+                    let mut inner = self.lock();
+                    if let Some(server) = inner
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.entry.name == server_name)
+                    {
+                        server.challenge = Some(challenge);
+                    }
+                }
+                self.notify(McpEvent::Changed);
+                ToolOutcome::error(format!(
+                    "the {server_name} MCP server needs more permission for {raw_tool} than \
+                     the current sign-in granted — ask the user to run /mcp and \
+                     re-authenticate {server_name}"
+                ))
+            }
             Err(TransportError::Cancelled) => ToolOutcome::error("tool call cancelled"),
             Err(other) => {
                 ToolOutcome::error(format!("MCP tool call failed ({server_name}): {other}"))
@@ -1461,6 +1482,9 @@ done
         required: Arc<std::sync::atomic::AtomicUsize>,
         /// How many requests `/mcp` answered 401.
         unauthorized: Arc<std::sync::atomic::AtomicUsize>,
+        /// When set, `tools/call` answers 403 `insufficient_scope` — a good
+        /// token that lacks the scope the call needs.
+        step_up: Arc<std::sync::atomic::AtomicBool>,
     }
 
     /// A canned streamable-HTTP MCP server plus its OAuth token endpoint on
@@ -1475,7 +1499,9 @@ done
         let required = Arc::new(AtomicUsize::new(1));
         let issued_t = Arc::new(AtomicUsize::new(1));
         let unauthorized = Arc::new(AtomicUsize::new(0));
+        let step_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (required_t, unauthorized_t) = (Arc::clone(&required), Arc::clone(&unauthorized));
+        let step_up_t = Arc::clone(&step_up);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -1580,6 +1606,14 @@ done
                         .to_string();
                         respond(&mut stream, "200 OK", "", &body);
                     }
+                    "tools/call" if step_up_t.load(Ordering::SeqCst) => {
+                        respond(
+                            &mut stream,
+                            "403 Forbidden",
+                            "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"admin\"\r\n",
+                            "{}",
+                        );
+                    }
                     "tools/call" => {
                         let body = serde_json::json!({
                             "jsonrpc": "2.0", "id": id,
@@ -1604,6 +1638,7 @@ done
             token_url: format!("http://127.0.0.1:{port}/token"),
             required,
             unauthorized,
+            step_up,
         }
     }
 
@@ -1620,6 +1655,7 @@ done
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
                 auth_method: None,
+                resource: None,
             }),
         );
     }
@@ -1797,6 +1833,50 @@ done
         );
         assert!(!outcome.ok, "a cancelled call is not a success");
         manager.shutdown();
+    }
+
+    #[test]
+    fn a_call_wanting_more_scope_keeps_the_connection_and_asks_to_step_up() {
+        // 403 `insufficient_scope` is not a dead login: the token still works
+        // for every other tool. The server stays connected, the challenge is
+        // kept so the next sign-in asks for the union of scopes, and the
+        // model is told why — not "HTTP 403".
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_status(&manager, "fix", |s| *s == McpServerStatus::Connected);
+        fixture
+            .step_up
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let outcome = manager.call_tool(
+            &ToolCallRequest {
+                id: "1".to_string(),
+                name: "mcp__fix__hello".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &CancelToken::new(),
+        );
+        assert!(!outcome.ok);
+        assert!(
+            outcome.output.contains("re-authenticate"),
+            "{}",
+            outcome.output
+        );
+        assert!(!outcome.output.contains("HTTP 403"), "{}", outcome.output);
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Connected);
+        assert!(
+            !manager.tool_specs().is_empty(),
+            "the other tools stay offered"
+        );
+        let challenge = manager.lock().servers[0].challenge.clone();
+        assert!(
+            challenge.is_some_and(|c| oauth::is_insufficient_scope(&c)),
+            "the step-up challenge is kept for the next sign-in"
+        );
     }
 
     #[test]

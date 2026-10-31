@@ -45,6 +45,10 @@ pub enum TransportError {
     /// `WWW-Authenticate` header when one was sent (the OAuth discovery
     /// seed).
     NeedsAuth(Option<String>),
+    /// The server answered 403 with `error="insufficient_scope"`: the token
+    /// is good, the operation wants more scope than it carries — a step-up,
+    /// not a dead login. Carries the challenge (its `scope` is the ask).
+    InsufficientScope(String),
     /// A streamable-HTTP `initialize` was refused in a way the spec says to
     /// retry as legacy SSE (4xx other than 401 on a `sse_fallback` config).
     HttpRefused(String),
@@ -62,6 +66,12 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NeedsAuth(_) => write!(f, "authentication required"),
+            Self::InsufficientScope(_) => {
+                write!(
+                    f,
+                    "the server wants more permission than the sign-in granted"
+                )
+            }
             Self::HttpRefused(detail) => write!(f, "server refused the request: {detail}"),
             Self::Rpc(e) => write!(f, "server error: {e}"),
             Self::Timeout => write!(f, "timed out waiting for the server"),
@@ -683,13 +693,8 @@ fn post_blocking(
         Some(_) => PostOutcome::Session(new_session.clone(), Box::new(outcome)),
         None => outcome,
     };
-    if status.as_u16() == 401 {
-        let challenge = response
-            .headers()
-            .get("www-authenticate")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        return PostOutcome::Err(TransportError::NeedsAuth(challenge));
+    if let Some(verdict) = auth_verdict(&response) {
+        return PostOutcome::Err(verdict);
     }
     // A 404 to a request that carried a session id means that session is
     // gone — the spec's cue to open a new one and replay. Gated on having
@@ -761,6 +766,27 @@ fn post_blocking(
             "unexpected response body: {}",
             one_line(&text, 200)
         ))),
+    }
+}
+
+/// The authorization verdict a response carries, if any: a 401 is a login
+/// to (re)do, its challenge kept for discovery; a 403 whose challenge says
+/// `insufficient_scope` is a good token wanting more scope (a step-up).
+/// Any other 403 is an ordinary refusal.
+fn auth_verdict(response: &reqwest::blocking::Response) -> Option<TransportError> {
+    let challenge = || {
+        response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    match response.status().as_u16() {
+        401 => Some(TransportError::NeedsAuth(challenge())),
+        403 => challenge()
+            .filter(|c| super::oauth::is_insufficient_scope(c))
+            .map(TransportError::InsufficientScope),
+        _ => None,
     }
 }
 
@@ -879,8 +905,8 @@ impl SseTransport {
             .body(body.to_string())
             .send()
             .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
-        if response.status().as_u16() == 401 {
-            return Err(TransportError::NeedsAuth(None));
+        if let Some(verdict) = auth_verdict(&response) {
+            return Err(verdict);
         }
         if !response.status().is_success() {
             return Err(TransportError::Failed(format!(

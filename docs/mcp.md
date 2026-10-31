@@ -360,6 +360,43 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   server URL (0600, best-effort), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
 
+  **Discovery trusts only metadata that speaks for this server**
+  (`discover`, the 2026-07-28 spec's MUSTs, by the official SDKs' rules):
+  - A protected-resource document is taken only when its `resource` names
+    this server or a parent of it — same origin, path prefix on segment
+    bounds (`resource_allowed`, the SDKs' `checkResourceAllowed`), which is
+    what lets Google's per-tool metadata (`resource` `…/mcp` for a server at
+    `…/mcp/v1`) through while a document naming another host is skipped
+    for the next candidate. Its `resource` is then the **RFC 8707
+    indicator** on the authorize request, the exchange and every refresh
+    (`AuthServerMeta::resource`, kept on the grant), else the server's URL.
+  - Authorization-server metadata is sought in the spec's order
+    (`metadata_candidates`): for an issuer with a path, the OAuth
+    path-insert, the OIDC path-insert and the OIDC path-append forms —
+    **never a root document**, which belongs to whatever other issuer the
+    host serves (Entra tenants, Keycloak realms: the old fallback could
+    send the user to the wrong authorization server); without a path, the
+    two roots. A document whose `issuer` is not the one it was sought for
+    is rejected (`issuers_match`: byte for byte but for one trailing `/` on
+    a bare origin — Google's resource metadata names
+    `https://accounts.google.com/`, its metadata says
+    `https://accounts.google.com`). A configured `authServerMetadataUrl`
+    is taken as given.
+  - `WWW-Authenticate` is read by a real auth-param tokenizer
+    (`challenge_params`: whole names, case-insensitive, quoted values with
+    commas and escapes). The substring search it replaced found `scope`
+    inside `error="insufficient_scope"`, so a step-up challenge's own scope
+    read as absent.
+
+  **Step-up** (403 `insufficient_scope`): a call refused for want of scope
+  is a good token, not a dead login, so the transports report it apart
+  (`TransportError::InsufficientScope`) and the manager **keeps the
+  connection** — every other tool still works — keeps the challenge, and
+  tells the model the user should re-authenticate. That sign-in asks for
+  the **union** of the scopes the grant was requested with and the
+  challenge's (2026-07-28, SEP-2350), so the new permission never costs the
+  old ones. At connect, where no tool works yet, it reads as needs-auth.
+
   **Which client the flow presents** (`plan_client`) follows the spec's
   registration order, and its last step is what used to be a dead end
   (`the server offers no client registration; add a pre-registered
