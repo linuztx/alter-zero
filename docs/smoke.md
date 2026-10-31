@@ -154,6 +154,7 @@ was not a safe transformation until each carried its own.
 | `work_dir [NAME]` | a short working directory under the phase's isolated HOME, so the footer renders the cwd as `~/{NAME}`. A phase asserting the footer's **tail** (the `· N shells` count, the context gauge) must launch in one, with `$APP_ABS`/`$BIN_ABS` |
 | `smoke_on_exit CMD…` | run at teardown — a stub server to kill |
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
+| `strip_sgr` | stdin with its SGR escapes dropped — match **text** in a `pane … -e` frame or a `pipe-pane` recording through it, since a dim meta line colours its values and keys apart from its words (`docs/meta-highlights.md`); assert the colours on the unstripped bytes |
 
 A turn's summary wears the past tense of the status verb it ended on
 (`Worked for 3s`, `Generated for 1m 5s` — `docs/status-indicator.md`), and a

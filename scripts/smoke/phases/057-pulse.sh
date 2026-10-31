@@ -77,11 +77,13 @@ pulse_doubles="${pulse_rest#* }"
 pulse_second_grey="$(printf '%s' "$pulse_colours" | tr ',' '\n' | awk -F';' '
 	NF == 3 && $1 + 0 <= 127 && $2 + 0 <= 132 && $3 + 0 <= 156 && $0 != "127;132;156" { print; exit }')"
 echo "==== Phase 57: frames with the running bullet hidden: $pulse_hidden · every header shown: $pulse_shown · more than one hidden: $pulse_doubles ===="
-# Let the turn finish so the resolved colour can be checked.
+# Let the turn finish so the resolved colour can be checked. The summary is
+# found with the colours stripped — its values wear their own colour
+# (docs/meta-highlights.md) — while the frame kept is the coloured one.
 pulse_done=""
 for _ in $(seq 1 400); do
 	cap="$(tmux capture-pane -t "$S57" -p -e 2>/dev/null)"
-	if printf '%s' "$cap" | grep -qE "$SUMMARY_RE"; then
+	if printf '%s' "$cap" | strip_sgr | grep -qE "$SUMMARY_RE"; then
 		pulse_done="$cap"
 		break
 	fi

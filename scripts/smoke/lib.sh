@@ -588,3 +588,12 @@ count_footers() { printf '%s\n' "$1" | grep -cF 'dummy_model_name ·'; }
 count_msg_lines() { printf '%s\n' "$1" | grep -cF "❯ $2"; }
 # The committed turn summaries in a capture, whatever verbs they wear.
 count_summaries() { printf '%s\n' "$1" | grep -cE "^$SUMMARY_RE"; }
+
+# stdin with every SGR escape (`ESC[…m`) dropped — what a phase matches
+# TEXT against when it reads a `capture-pane -e` frame or a `pipe-pane`
+# recording: a dim meta line paints its values and keys in their own colours
+# (docs/meta-highlights.md), so `Worked for 12s` or `+5 lines (9s · wait 2m)`
+# carries escapes between its words there. The colours themselves are
+# asserted on the unstripped bytes. Byte-wise (`LC_ALL=C`), so a raw
+# recording's partial UTF-8 passes through untouched.
+strip_sgr() { LC_ALL=C sed "s/$(printf '\033')\[[0-9;:]*m//g"; }

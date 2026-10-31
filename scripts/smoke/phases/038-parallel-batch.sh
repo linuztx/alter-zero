@@ -61,11 +61,13 @@ fi
 # and the assertion below still reads the real `+N lines (Ns · wait 2m)`
 # row — the elapsed beside the timeout the call runs under, the tool's 2m
 # default here since the demo's scripted call names none
-# (docs/tool-streaming.md).
+# (docs/tool-streaming.md). The recording is matched with its colours
+# stripped: the row's count and its two times wear their own colour
+# (docs/meta-highlights.md), so escapes sit between its words in the bytes.
 batch_tail=""
 for _ in $(seq 1 200); do # up to ~20s — the tail streams as each ping runs
-	if grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39"; then
-		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39" | head -4)"
+	if strip_sgr <"$RAW39" | grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)'; then
+		batch_tail="$(strip_sgr <"$RAW39" | grep -aoE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' | head -4)"
 		break
 	fi
 	sleep 0.1
