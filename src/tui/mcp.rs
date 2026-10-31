@@ -92,6 +92,7 @@ pub(crate) fn load_mcp_sources(
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
         default_callback_port: alter_zero::llm::mcp::DEFAULT_CALLBACK_PORT,
+        open_browser: None,
         cwd: Some(cwd.to_path_buf()),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
@@ -150,6 +151,12 @@ impl Session<'_> {
                 }
             }
             McpOp::SubmitAuthUrl { text } => manager.submit_auth_paste(&text),
+            McpOp::SaveAuthClient {
+                server,
+                issuer,
+                client_id,
+                client_secret,
+            } => manager.save_client(&server, &issuer, &client_id, client_secret.as_deref()),
         }
     }
 
@@ -163,15 +170,24 @@ impl Session<'_> {
                 self.app.set_mcp_auth_url(&server, &url);
             }
             McpEvent::AuthNeedsClient { server, request } => {
-                self.app.finish_mcp_auth();
-                self.toast(
-                    format!(
-                        "{server}: {} can't register this app — add the OAuth client you \
-                         created there as \"oauth\" in the server's config",
-                        request.issuer
-                    ),
-                    ToastKind::Error,
+                // The auth page asks for the client; a page the user already
+                // left says it in a toast instead.
+                let shown = self.app.ask_mcp_client(
+                    &server,
+                    &request.issuer,
+                    request.client_id.as_deref(),
+                    &request.redirect_uri,
                 );
+                if !shown {
+                    self.toast(
+                        format!(
+                            "{server}: {} needs an OAuth client you create there — \
+                             Authenticate in /mcp to enter it",
+                            request.issuer
+                        ),
+                        ToastKind::Error,
+                    );
+                }
             }
             McpEvent::AuthDone { server, ok, detail } => {
                 self.app.finish_mcp_auth();

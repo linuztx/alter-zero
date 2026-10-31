@@ -2087,6 +2087,27 @@ pub(super) const MCP_AUTH_RETURN_NOTE: &str =
     "Return here after authenticating in your browser. Press Esc to go back.";
 pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
 pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
+/// The auth page's client form, shown when the authorization server
+/// registers no client for this app (`docs/mcp.md` *Pre-registered
+/// clients*). The two notes follow the issuer's host.
+pub(super) const MCP_CLIENT_NOTE: &str =
+    " can't register this app by itself, so it needs an OAuth client you create there.";
+pub(super) const MCP_CLIENT_SECRET_NOTE: &str =
+    " needs the secret of the OAuth client this server's config names.";
+/// Where Google's clients are made — its Workspace MCP guides prescribe a
+/// web client marked for agents, which matches redirect URIs exactly.
+pub(super) const MCP_CLIENT_GOOGLE_HINT: &str = "Create one at \
+    console.cloud.google.com/apis/credentials: an OAuth client ID of type Web application, \
+    marked “Use this client for an AI-powered agent”, with the redirect URI below.";
+pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI: ";
+pub(super) const MCP_CLIENT_REDIRECT_NOTE: &str =
+    "Register it with the client if the provider asks for a redirect URI.";
+/// The form's two prompts, padded to one width so the values line up.
+pub(super) const MCP_CLIENT_ID_PROMPT: &str = "Client ID     > ";
+pub(super) const MCP_CLIENT_SECRET_PROMPT: &str = "Client secret > ";
+pub(super) const MCP_CLIENT_HINT: &str =
+    "Tab to switch fields · Enter to continue · Esc to go back";
+pub(super) const MCP_CLIENT_SECRET_HINT: &str = "Enter to continue · Esc to go back";
 
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =

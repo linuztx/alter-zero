@@ -503,4 +503,12 @@ pub enum McpOp {
     /// Enter on the auth page's `URL >` field: hand the pasted redirect URL
     /// to the waiting flow.
     SubmitAuthUrl { text: String },
+    /// The auth page's client form, submitted: keep the client the user
+    /// created with `issuer` for this server, and start the flow again.
+    SaveAuthClient {
+        server: String,
+        issuer: String,
+        client_id: String,
+        client_secret: Option<String>,
+    },
 }

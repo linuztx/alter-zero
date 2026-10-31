@@ -96,7 +96,9 @@ pub use self::login::{
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
-pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
+pub use self::mcp_menu::{
+    McpAuthView, McpClientField, McpClientForm, McpMenu, McpPage, McpServerAction, server_actions,
+};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;

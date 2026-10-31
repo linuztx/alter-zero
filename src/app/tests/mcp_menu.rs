@@ -1,7 +1,7 @@
 //! The `/mcp` manager's state machine (`docs/mcp.md`).
 
 use super::*;
-use crate::app::{McpOp, McpPage, McpServerAction, server_actions};
+use crate::app::{McpClientField, McpClientForm, McpOp, McpPage, McpServerAction, server_actions};
 use crate::mcp::{
     McpAuthState, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo,
 };
@@ -182,6 +182,139 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
     // The finished flow closes the page back to the server detail.
     app.finish_mcp_auth();
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+}
+
+/// The `linear` server's auth page, its flow just started.
+fn on_linear_auth_page() -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app
+}
+
+fn client_form(app: &App) -> Option<McpClientForm> {
+    app.mcp_menu.as_ref().and_then(|m| m.auth.client.clone())
+}
+
+#[test]
+fn a_server_that_registers_no_client_asks_for_one_on_the_auth_page() {
+    // The spec's "prompt the user to enter the client information" — the
+    // Google Calendar dead end, turned into a form.
+    let mut app = on_linear_auth_page();
+    assert!(app.ask_mcp_client(
+        "linear",
+        "https://accounts.google.com",
+        None,
+        "http://localhost:8976/callback"
+    ));
+    let form = client_form(&app).expect("the form is up");
+    assert_eq!(form.field, McpClientField::ClientId);
+    assert_eq!(form.redirect_uri, "http://localhost:8976/callback");
+    for c in "cid.apps".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    // Enter on the id moves to the secret rather than submitting half a pair.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::Secret);
+    // A pasted secret lands in the focused field, line breaks dropped.
+    assert!(app.paste_into_mcp_auth("GOCSPX-abc\n"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "cid.apps".to_string(),
+            client_secret: Some("GOCSPX-abc".to_string()),
+        })
+    );
+    // The page waits on the flow the save restarts.
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.client, None);
+    assert_eq!(menu.auth.url, None);
+}
+
+#[test]
+fn the_client_form_switches_fields_edits_and_backs_out() {
+    let mut app = on_linear_auth_page();
+    app.ask_mcp_client(
+        "linear",
+        "https://as.test",
+        None,
+        "http://localhost:8976/callback",
+    );
+    // Enter on an empty id goes nowhere.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::ClientId);
+    for c in "abX".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(client_form(&app).unwrap().client_id, "ab");
+    // Tab and the arrows move between the two fields; `c` is just a letter
+    // here (there is no URL to copy yet).
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::Secret);
+    app.on_key(key(KeyCode::Char('c')));
+    assert_eq!(client_form(&app).unwrap().client_secret, "c");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::ClientId);
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::Secret);
+    // A public client may leave the secret empty.
+    app.on_key(key(KeyCode::Backspace));
+    assert!(matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            client_secret: None,
+            ..
+        })
+    ));
+    // Esc backs out to the server page; no flow is running to cancel.
+    let mut app = on_linear_auth_page();
+    app.ask_mcp_client("linear", "https://as.test", None, "r");
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Server);
+    assert_eq!(menu.auth.client, None);
+}
+
+#[test]
+fn a_configured_client_is_asked_only_for_its_secret() {
+    let mut app = on_linear_auth_page();
+    app.ask_mcp_client("linear", "https://accounts.google.com", Some("cid"), "r");
+    let form = client_form(&app).unwrap();
+    assert_eq!(form.field, McpClientField::Secret);
+    assert_eq!(form.fixed_client_id.as_deref(), Some("cid"));
+    // The id is the config's: nothing to switch to.
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(client_form(&app).unwrap().field, McpClientField::Secret);
+    // The server needs a secret, so an empty one submits nothing.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    for c in "shh".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "cid".to_string(),
+            client_secret: Some("shh".to_string()),
+        })
+    );
+}
+
+#[test]
+fn a_client_request_for_a_page_no_longer_open_is_not_shown() {
+    let mut app = on_linear_auth_page();
+    app.on_key(key(KeyCode::Esc)); // back to the server page
+    assert!(!app.ask_mcp_client("linear", "https://as.test", None, "r"));
+    // Another server's page is not this request's either.
+    let mut app = on_linear_auth_page();
+    assert!(!app.ask_mcp_client("deepwiki", "https://as.test", None, "r"));
+    assert_eq!(client_form(&app), None);
 }
 
 #[test]

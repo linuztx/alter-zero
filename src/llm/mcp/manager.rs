@@ -71,6 +71,9 @@ pub struct McpSources {
     /// fixes none — [`oauth::DEFAULT_CALLBACK_PORT`] in the app; `0` (any
     /// free port) in tests.
     pub default_callback_port: u16,
+    /// What opens the browser on an authorize URL — `None` is the system's
+    /// launcher (`xdg-open`/`open`); tests pass a no-op.
+    pub open_browser: Option<fn(&str)>,
     /// The session cwd stdio children run in.
     pub cwd: Option<PathBuf>,
     pub startup_timeout: Duration,
@@ -145,6 +148,7 @@ struct Inner {
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
     default_callback_port: u16,
+    open_browser: fn(&str),
     cwd: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
@@ -215,6 +219,7 @@ impl McpManager {
                 user_file: sources.user_file,
                 auth_path,
                 default_callback_port: sources.default_callback_port,
+                open_browser: sources.open_browser.unwrap_or(open_browser),
                 cwd: sources.cwd,
                 startup_timeout: if sources.startup_timeout.is_zero() {
                     DEFAULT_STARTUP_TIMEOUT
@@ -531,7 +536,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path, settings) = {
+        let (url, challenge, auth_path, settings, launch) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -553,6 +558,7 @@ impl McpManager {
                 server.challenge.clone(),
                 inner.auth_path.clone(),
                 settings,
+                inner.open_browser,
             )
         };
         let (paste_tx, paste_rx) = mpsc::channel();
@@ -594,7 +600,7 @@ impl McpManager {
                 &settings,
                 &paste_rx,
                 &progress,
-                &open_browser,
+                &launch,
                 &cancel,
             );
             let current = {
@@ -641,6 +647,40 @@ impl McpManager {
                 manager.spawn_connect(&name);
             }
         });
+    }
+
+    /// Keep a client the user entered for one server (the auth page's client
+    /// form), bound to the issuer it was created with, then start the flow
+    /// again — this time it has a client to present.
+    pub fn save_client(
+        &self,
+        name: &str,
+        issuer: &str,
+        client_id: &str,
+        client_secret: Option<&str>,
+    ) {
+        let target = {
+            let inner = self.lock();
+            inner
+                .servers
+                .iter()
+                .find(|s| s.entry.name == name)
+                .and_then(|s| s.entry.config.url().map(str::to_string))
+                .map(|url| (url, inner.auth_path.clone()))
+        };
+        if let Some((url, auth_path)) = target {
+            oauth::save_client(
+                auth_path.as_deref(),
+                &url,
+                Some(&oauth::StoredClient {
+                    client_id: client_id.to_string(),
+                    client_secret: client_secret.map(str::to_string),
+                    issuer: Some(issuer.to_string()),
+                    ..Default::default()
+                }),
+            );
+        }
+        self.authenticate(name);
     }
 
     /// Hand the auth flow a pasted redirect URL (the `URL >` fallback).
@@ -1813,6 +1853,146 @@ done
             Some(crate::mcp::McpAuthState::Authenticated)
         );
         manager.shutdown();
+    }
+
+    /// The next event `want` accepts, skipping the rest (bounded).
+    fn next_event(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<McpEvent>,
+        want: impl Fn(&McpEvent) -> bool,
+    ) -> McpEvent {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(event) if want(&event) => return event,
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("the wanted MCP event never arrived");
+    }
+
+    /// A manager over the Google-shaped fixture's server, its browser a
+    /// no-op — consent is played through the paste field instead.
+    fn auth_manager(
+        fixture: &oauth::fixtures::AuthFixture,
+        store: &std::path::Path,
+        oauth: Option<crate::mcp::McpOAuthConfig>,
+    ) -> (McpManager, tokio::sync::mpsc::UnboundedReceiver<McpEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "cal".to_string(),
+                    config: McpServerConfig::Http {
+                        url: fixture.server_url.clone(),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(store.to_path_buf()),
+                open_browser: Some(|_| {}),
+                ..Default::default()
+            },
+        );
+        (manager, rx)
+    }
+
+    /// The user's consent, through the paste field: the authorize URL's own
+    /// `state`, a code, and the issuer's `iss`.
+    fn paste_consent(manager: &McpManager, authorize: &str, issuer: &str) {
+        let state = oauth::redirect_param(authorize, "state").expect("a state");
+        manager.submit_auth_paste(&format!(
+            "http://localhost/callback?code=good&state={state}&iss={}",
+            oauth::url_encode(issuer)
+        ));
+    }
+
+    #[test]
+    fn a_server_that_registers_no_client_asks_and_signs_in_with_what_was_entered() {
+        // The Google Calendar path through the manager: no client anywhere,
+        // the page asks, the user's client is kept for this issuer, and the
+        // flow it restarts ends in a grant.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = oauth::fixtures::spawn_auth_fixture(&["client_secret_post"], "shh");
+        let (manager, mut rx) = auth_manager(&fixture, &store, None);
+        manager.authenticate("cal");
+        let McpEvent::AuthNeedsClient { server, request } =
+            next_event(&mut rx, |e| matches!(e, McpEvent::AuthNeedsClient { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(server, "cal");
+        assert_eq!(request.issuer, fixture.base);
+        assert_eq!(request.client_id, None);
+        manager.save_client("cal", &request.issuer, "cid", Some("shh"));
+        let McpEvent::AuthUrl { url, .. } =
+            next_event(&mut rx, |e| matches!(e, McpEvent::AuthUrl { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(url.contains("client_id=cid"), "{url}");
+        paste_consent(&manager, &url, &fixture.base);
+        let McpEvent::AuthDone { ok, detail, .. } =
+            next_event(&mut rx, |e| matches!(e, McpEvent::AuthDone { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(ok, "{detail}");
+        let client = oauth::load_client(Some(&store), &fixture.server_url).expect("kept");
+        assert_eq!(client.issuer.as_deref(), Some(fixture.base.as_str()));
+        assert_eq!(
+            oauth::load_tokens(Some(&store), &fixture.server_url)
+                .expect("a grant")
+                .access_token,
+            "at-1"
+        );
+    }
+
+    #[test]
+    fn a_configured_client_signs_in_without_being_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = oauth::fixtures::spawn_auth_fixture(&["client_secret_basic"], "shh");
+        let (manager, mut rx) = auth_manager(
+            &fixture,
+            &store,
+            Some(crate::mcp::McpOAuthConfig {
+                client_id: Some("cid".to_string()),
+                client_secret: Some("shh".to_string()),
+                ..Default::default()
+            }),
+        );
+        // The config says a sign-in is expected: the page offers it before
+        // anything has failed.
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        manager.authenticate("cal");
+        let McpEvent::AuthUrl { url, .. } = next_event(&mut rx, |e| {
+            assert!(
+                !matches!(e, McpEvent::AuthNeedsClient { .. }),
+                "a configured client is never asked for"
+            );
+            matches!(e, McpEvent::AuthUrl { .. })
+        }) else {
+            unreachable!()
+        };
+        paste_consent(&manager, &url, &fixture.base);
+        let McpEvent::AuthDone { ok, detail, .. } =
+            next_event(&mut rx, |e| matches!(e, McpEvent::AuthDone { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(ok, "{detail}");
+        let tokens = oauth::load_tokens(Some(&store), &fixture.server_url).expect("a grant");
+        assert_eq!(tokens.auth_method.as_deref(), Some("client_secret_basic"));
     }
 
     #[test]

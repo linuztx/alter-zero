@@ -1850,8 +1850,136 @@ fn callback_verdict(
     }
 }
 
+/// Test fixtures shared with the manager's tests.
+#[cfg(test)]
+pub(super) mod fixtures {
+    use super::*;
+
+    /// One token request the fixture's `/token` received.
+    #[derive(Debug, Clone)]
+    pub(in crate::llm::mcp) struct TokenRequest {
+        pub authorization: Option<String>,
+        pub form: std::collections::BTreeMap<String, String>,
+    }
+
+    /// A Google-shaped authorization server on one socket: resource
+    /// metadata naming the AS **with** a trailing slash, AS metadata whose
+    /// issuer has none, no registration endpoint, `iss` required on every
+    /// redirect, and a token endpoint that takes only the listed client
+    /// authentication methods and answers `invalid_client` otherwise.
+    pub(in crate::llm::mcp) struct AuthFixture {
+        pub base: String,
+        pub server_url: String,
+        pub token_requests: std::sync::Arc<std::sync::Mutex<Vec<TokenRequest>>>,
+    }
+
+    pub(in crate::llm::mcp) fn spawn_auth_fixture(
+        methods: &'static [&'static str],
+        secret: &'static str,
+    ) -> AuthFixture {
+        use std::io::{BufRead, BufReader};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (base_t, requests_t) = (base.clone(), std::sync::Arc::clone(&token_requests));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let (mut length, mut authorization) = (0usize, None);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let (name, value) = header.split_once(':').unwrap_or_default();
+                    match name.to_ascii_lowercase().as_str() {
+                        "content-length" => length = value.trim().parse().unwrap_or(0),
+                        "authorization" => authorization = Some(value.trim().to_string()),
+                        _ => {}
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let json = |status: &str, body: String| {
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let response = if path == "/.well-known/oauth-protected-resource/mcp" {
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": format!("{base_t}/mcp"),
+                            "authorization_servers": [format!("{base_t}/")],
+                            "scopes_supported": ["calendar"],
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-authorization-server" {
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "issuer": base_t,
+                            "authorization_endpoint": format!("{base_t}/authorize"),
+                            "token_endpoint": format!("{base_t}/token"),
+                            "token_endpoint_auth_methods_supported": methods,
+                            "code_challenge_methods_supported": ["S256"],
+                            "authorization_response_iss_parameter_supported": true,
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/token" {
+                    let form: std::collections::BTreeMap<String, String> = body
+                        .split('&')
+                        .filter_map(|pair| pair.split_once('='))
+                        .map(|(k, v)| (url_decode(k), url_decode(v)))
+                        .collect();
+                    requests_t.lock().unwrap().push(TokenRequest {
+                        authorization: authorization.clone(),
+                        form: form.clone(),
+                    });
+                    let by_basic = authorization.as_deref()
+                        == Some(basic_credentials("cid", secret).as_str())
+                        && methods.contains(&"client_secret_basic");
+                    let by_post = form.get("client_secret").map(String::as_str) == Some(secret)
+                        && methods.contains(&"client_secret_post");
+                    if (by_basic || by_post) && form.contains_key("code_verifier") {
+                        json(
+                            "200 OK",
+                            r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3599}"#
+                                .to_string(),
+                        )
+                    } else {
+                        json(
+                            "401 Unauthorized",
+                            r#"{"error":"invalid_client"}"#.to_string(),
+                        )
+                    }
+                } else {
+                    json("404 Not Found", "{}".to_string())
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        AuthFixture {
+            server_url: format!("{base}/mcp"),
+            base,
+            token_requests,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::*;
     use super::*;
 
     #[test]
@@ -2398,124 +2526,6 @@ mod tests {
         assert_eq!(url.matches("prompt=").count(), 1, "{url}");
         assert!(url.contains("prompt=consent"), "{url}");
         assert!(provider_authorize_params(Some("https://as.test")).is_empty());
-    }
-
-    /// One token request the fixture's `/token` received.
-    #[derive(Debug, Clone)]
-    struct TokenRequest {
-        authorization: Option<String>,
-        form: std::collections::BTreeMap<String, String>,
-    }
-
-    /// A Google-shaped authorization server on one socket: resource
-    /// metadata naming the AS **with** a trailing slash, AS metadata whose
-    /// issuer has none, no registration endpoint, `iss` required on every
-    /// redirect, and a token endpoint that takes only the listed client
-    /// authentication methods and answers `invalid_client` otherwise.
-    struct AuthFixture {
-        base: String,
-        server_url: String,
-        token_requests: std::sync::Arc<std::sync::Mutex<Vec<TokenRequest>>>,
-    }
-
-    fn spawn_auth_fixture(methods: &'static [&'static str], secret: &'static str) -> AuthFixture {
-        use std::io::{BufRead, BufReader};
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (base_t, requests_t) = (base.clone(), std::sync::Arc::clone(&token_requests));
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_err() {
-                    continue;
-                }
-                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
-                let (mut length, mut authorization) = (0usize, None);
-                loop {
-                    let mut header = String::new();
-                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
-                        break;
-                    }
-                    let (name, value) = header.split_once(':').unwrap_or_default();
-                    match name.to_ascii_lowercase().as_str() {
-                        "content-length" => length = value.trim().parse().unwrap_or(0),
-                        "authorization" => authorization = Some(value.trim().to_string()),
-                        _ => {}
-                    }
-                }
-                let mut body = vec![0u8; length];
-                let _ = reader.read_exact(&mut body);
-                let body = String::from_utf8_lossy(&body).to_string();
-                let json = |status: &str, body: String| {
-                    format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
-                let response = if path == "/.well-known/oauth-protected-resource/mcp" {
-                    json(
-                        "200 OK",
-                        serde_json::json!({
-                            "resource": format!("{base_t}/mcp"),
-                            "authorization_servers": [format!("{base_t}/")],
-                            "scopes_supported": ["calendar"],
-                        })
-                        .to_string(),
-                    )
-                } else if path == "/.well-known/oauth-authorization-server" {
-                    json(
-                        "200 OK",
-                        serde_json::json!({
-                            "issuer": base_t,
-                            "authorization_endpoint": format!("{base_t}/authorize"),
-                            "token_endpoint": format!("{base_t}/token"),
-                            "token_endpoint_auth_methods_supported": methods,
-                            "code_challenge_methods_supported": ["S256"],
-                            "authorization_response_iss_parameter_supported": true,
-                        })
-                        .to_string(),
-                    )
-                } else if path == "/token" {
-                    let form: std::collections::BTreeMap<String, String> = body
-                        .split('&')
-                        .filter_map(|pair| pair.split_once('='))
-                        .map(|(k, v)| (url_decode(k), url_decode(v)))
-                        .collect();
-                    requests_t.lock().unwrap().push(TokenRequest {
-                        authorization: authorization.clone(),
-                        form: form.clone(),
-                    });
-                    let by_basic = authorization.as_deref()
-                        == Some(basic_credentials("cid", secret).as_str())
-                        && methods.contains(&"client_secret_basic");
-                    let by_post = form.get("client_secret").map(String::as_str) == Some(secret)
-                        && methods.contains(&"client_secret_post");
-                    if (by_basic || by_post) && form.contains_key("code_verifier") {
-                        json(
-                            "200 OK",
-                            r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3599}"#
-                                .to_string(),
-                        )
-                    } else {
-                        json(
-                            "401 Unauthorized",
-                            r#"{"error":"invalid_client"}"#.to_string(),
-                        )
-                    }
-                } else {
-                    json("404 Not Found", "{}".to_string())
-                };
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        AuthFixture {
-            server_url: format!("{base}/mcp"),
-            base,
-            token_requests,
-        }
     }
 
     struct Silent;

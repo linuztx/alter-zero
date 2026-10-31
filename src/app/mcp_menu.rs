@@ -125,6 +125,56 @@ pub struct McpAuthView {
     /// Set once the pasted URL was submitted — the field greys out while the
     /// exchange runs.
     pub submitted: bool,
+    /// The client form, while the flow waits on the user for an OAuth
+    /// client (`docs/mcp.md` *Pre-registered clients*).
+    pub client: Option<McpClientForm>,
+}
+
+/// The auth page's client form: the authorization server registers no
+/// client for this app, so the user enters one they created with the
+/// provider — the spec's "prompt the user to enter the client information".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpClientForm {
+    /// The authorization server that issues the client, as its issuer names
+    /// itself.
+    pub issuer: String,
+    /// The redirect URI the flow listens on — what a provider that matches
+    /// redirect URIs exactly needs registered.
+    pub redirect_uri: String,
+    /// The config's client id, when only its secret is asked for.
+    pub fixed_client_id: Option<String>,
+    pub client_id: String,
+    pub client_secret: String,
+    /// The field taking keys.
+    pub field: McpClientField,
+}
+
+/// The client form's two fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum McpClientField {
+    #[default]
+    ClientId,
+    Secret,
+}
+
+impl McpClientForm {
+    /// The focused field's text.
+    fn focused(&mut self) -> &mut String {
+        match self.field {
+            McpClientField::ClientId => &mut self.client_id,
+            McpClientField::Secret => &mut self.client_secret,
+        }
+    }
+
+    /// Move between the fields — a configured id has no field to move to.
+    fn switch(&mut self) {
+        if self.fixed_client_id.is_none() {
+            self.field = match self.field {
+                McpClientField::ClientId => McpClientField::Secret,
+                McpClientField::Secret => McpClientField::ClientId,
+            };
+        }
+    }
 }
 
 /// The open `/mcp` menu.
@@ -224,6 +274,39 @@ impl App {
         {
             menu.auth.url = Some(url.to_string());
         }
+    }
+
+    /// The auth flow has no client to present: show the client form on the
+    /// auth page — `false` when that page is no longer open for `server` (the
+    /// boundary then says it in a toast instead).
+    pub fn ask_mcp_client(
+        &mut self,
+        server: &str,
+        issuer: &str,
+        client_id: Option<&str>,
+        redirect_uri: &str,
+    ) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
+            return false;
+        }
+        menu.auth = McpAuthView {
+            client: Some(McpClientForm {
+                issuer: issuer.to_string(),
+                redirect_uri: redirect_uri.to_string(),
+                fixed_client_id: client_id.map(str::to_string),
+                field: if client_id.is_some() {
+                    McpClientField::Secret
+                } else {
+                    McpClientField::ClientId
+                },
+                ..McpClientForm::default()
+            }),
+            ..McpAuthView::default()
+        };
+        true
     }
 
     /// The auth flow finished — the auth page closes back to the server's
@@ -403,6 +486,9 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
         };
+        if menu.auth.client.is_some() {
+            return self.on_key_mcp_client(key);
+        }
         match key.code {
             KeyCode::Esc => {
                 menu.page = McpPage::Server;
@@ -437,15 +523,77 @@ impl App {
         Action::None
     }
 
-    /// Route a bracketed paste into the auth page's `URL >` field (the
-    /// redirect URL is long — pasting is the point).
+    /// The client form's keys: the two fields, Enter to move on and then
+    /// submit, Esc back to the server page — the flow already ended, so there
+    /// is nothing to cancel.
+    fn on_key_mcp_client(&mut self, key: KeyEvent) -> Action {
+        let Some(menu) = &mut self.mcp_menu else {
+            return Action::None;
+        };
+        let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
+            return Action::None;
+        };
+        let Some(form) = &mut menu.auth.client else {
+            return Action::None;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                menu.page = McpPage::Server;
+                menu.selected = 0;
+                menu.auth = McpAuthView::default();
+            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => form.switch(),
+            KeyCode::Enter => {
+                let client_id = form
+                    .fixed_client_id
+                    .clone()
+                    .unwrap_or_else(|| form.client_id.trim().to_string());
+                let secret = form.client_secret.trim().to_string();
+                if client_id.is_empty() {
+                    return Action::None;
+                }
+                if form.field == McpClientField::ClientId {
+                    form.field = McpClientField::Secret;
+                    return Action::None;
+                }
+                // A configured id is asked for its secret because its server
+                // needs one; a typed pair may be a public client.
+                if secret.is_empty() && form.fixed_client_id.is_some() {
+                    return Action::None;
+                }
+                let issuer = form.issuer.clone();
+                menu.auth = McpAuthView::default();
+                return Action::McpOp(McpOp::SaveAuthClient {
+                    server,
+                    issuer,
+                    client_id,
+                    client_secret: (!secret.is_empty()).then_some(secret),
+                });
+            }
+            KeyCode::Backspace => {
+                form.focused().pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.focused().push(c);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Route a bracketed paste into the auth page's field — the client
+    /// form's focused field, else the `URL >` field (the redirect URL is
+    /// long — pasting is the point).
     pub fn paste_into_mcp_auth(&mut self, text: &str) -> bool {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
         {
-            menu.auth
-                .input
-                .push_str(text.replace(['\n', '\r'], "").trim());
+            let text = text.replace(['\n', '\r'], "");
+            if let Some(form) = &mut menu.auth.client {
+                form.focused().push_str(text.trim());
+                return true;
+            }
+            menu.auth.input.push_str(text.trim());
             menu.auth.submitted = false;
             return true;
         }

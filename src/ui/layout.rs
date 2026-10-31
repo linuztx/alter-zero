@@ -1213,17 +1213,30 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
         if menu.page == crate::app::McpPage::Auth {
-            let x =
-                cols(MODEL_INDENT)
-                    + cols(super::theme::MCP_AUTH_PROMPT)
-                    + cols(&menu.auth.input).min(usize::from(area.width).saturating_sub(
-                        cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
-                    ));
+            // The field taking keys: the client form's focused one (the
+            // secret counted as its mask, one column a character), else the
+            // `URL >` paste field.
+            let (prompt, typed) = match &menu.auth.client {
+                Some(form) => match form.field {
+                    crate::app::McpClientField::ClientId => {
+                        (super::theme::MCP_CLIENT_ID_PROMPT, cols(&form.client_id))
+                    }
+                    crate::app::McpClientField::Secret => (
+                        super::theme::MCP_CLIENT_SECRET_PROMPT,
+                        form.client_secret.chars().count(),
+                    ),
+                },
+                None => (super::theme::MCP_AUTH_PROMPT, cols(&menu.auth.input)),
+            };
+            let x = cols(MODEL_INDENT)
+                + cols(prompt)
+                + typed.min(
+                    usize::from(area.width).saturating_sub(cols(MODEL_INDENT) + cols(prompt) + 1),
+                );
             let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
             let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
             let [_, body] = view_split(area, rows);
-            let field =
-                super::model_view::view_row_of(&lines, super::theme::MCP_AUTH_PROMPT).unwrap_or(0);
+            let field = super::model_view::view_row_of(&lines, prompt).unwrap_or(0);
             let row = anchored_view_row(rows, body, field);
             return (x, view_cursor_y(area, body, row));
         }

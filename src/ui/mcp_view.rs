@@ -10,7 +10,7 @@ use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
-use crate::app::{McpMenu, McpPage, server_actions};
+use crate::app::{McpClientField, McpClientForm, McpMenu, McpPage, server_actions};
 use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name};
 
 /// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
@@ -607,13 +607,19 @@ fn tool_lines_page(
 }
 
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
-/// and the `URL >` paste-the-redirect fallback.
+/// and the `URL >` paste-the-redirect fallback — or, while the flow waits on
+/// the user for an OAuth client, the client form.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         title_line(&format!("Authenticating with {}…", server.name), width),
         Line::default(),
     ];
+    if let Some(form) = &menu.auth.client {
+        lines.extend(client_form_lines(form, width));
+        lines.push(model_rule(width));
+        return lines;
+    }
     // Wrapped like its sibling notes — the three narrate one flow.
     lines.extend(dim_wrapped(MCP_AUTH_BROWSER_NOTE, width));
     lines.push(Line::default());
@@ -660,6 +666,96 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     // Wrapped: "Press Esc to go back" is the note's actionable tail.
     lines.extend(dim_wrapped(MCP_AUTH_RETURN_NOTE, width));
     lines.push(model_rule(width));
+    lines
+}
+
+/// An issuer's host — `accounts.google.com` for `https://accounts.google.com`
+/// — the name a person knows the provider by.
+fn issuer_host(issuer: &str) -> String {
+    url::Url::parse(issuer)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| issuer.to_string())
+}
+
+/// One form field: the prompt, then the value — the tail of a value wider
+/// than the room, so the end being typed stays in view.
+fn client_field(prompt: &str, value: &str, focused: bool, width: u16) -> Line<'static> {
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(prompt))
+        .max(1);
+    let mut shown = value.to_string();
+    while cols(&shown) > room {
+        shown.remove(0);
+    }
+    let ink = if focused {
+        ai_color()
+    } else {
+        model_meta_color()
+    };
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(prompt.to_string(), Style::new().fg(model_meta_color())),
+        Span::styled(shown, Style::new().fg(ink)),
+    ])
+}
+
+/// The client form: who issues the client and where (Google's console, by
+/// name), the redirect URI to register with it, the two fields — the secret
+/// masked, never drawn — and the keys. A configured id is shown, not asked.
+fn client_form_lines(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
+    let host = issuer_host(&form.issuer);
+    let mut lines = Vec::new();
+    let note = match form.fixed_client_id {
+        Some(_) => format!("{host}{MCP_CLIENT_SECRET_NOTE}"),
+        None => format!("{host}{MCP_CLIENT_NOTE}"),
+    };
+    lines.extend(dim_wrapped(&note, width));
+    // The flow's own issuer comparison, so the page's "this is Google" can
+    // never disagree with the flow's.
+    if form.fixed_client_id.is_none()
+        && crate::llm::mcp::issuers_match(&form.issuer, "https://accounts.google.com")
+    {
+        lines.extend(dim_wrapped(MCP_CLIENT_GOOGLE_HINT, width));
+    }
+    lines.push(Line::default());
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(MCP_CLIENT_REDIRECT_LABEL))
+        .max(1) as u16;
+    for (index, row) in wrap_output(&form.redirect_uri, room)
+        .into_iter()
+        .enumerate()
+    {
+        let label = if index == 0 {
+            MCP_CLIENT_REDIRECT_LABEL.to_string()
+        } else {
+            " ".repeat(cols(MCP_CLIENT_REDIRECT_LABEL))
+        };
+        lines.push(Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(label, Style::new().fg(model_meta_color())),
+            Span::styled(row, Style::new().fg(model_selected_color())),
+        ]));
+    }
+    lines.extend(dim_wrapped(MCP_CLIENT_REDIRECT_NOTE, width));
+    lines.push(Line::default());
+    let id_focused = form.fixed_client_id.is_none() && form.field == McpClientField::ClientId;
+    let id = form.fixed_client_id.as_deref().unwrap_or(&form.client_id);
+    lines.push(client_field(MCP_CLIENT_ID_PROMPT, id, id_focused, width));
+    let mask: String =
+        std::iter::repeat_n(LOGIN_MASK_CHAR, form.client_secret.chars().count()).collect();
+    lines.push(client_field(
+        MCP_CLIENT_SECRET_PROMPT,
+        &mask,
+        form.field == McpClientField::Secret,
+        width,
+    ));
+    lines.push(Line::default());
+    let hint = match form.fixed_client_id {
+        Some(_) => MCP_CLIENT_SECRET_HINT,
+        None => MCP_CLIENT_HINT,
+    };
+    lines.extend(dim_wrapped(hint, width));
     lines
 }
 

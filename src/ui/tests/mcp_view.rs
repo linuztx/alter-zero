@@ -7,9 +7,10 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP,
-    mcp_description_color, mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color,
-    model_meta_color, tool_fail_color, tool_ok_color,
+    HOOKS_DETAIL_HINT, MCP_CLIENT_ID_PROMPT, MCP_CLIENT_SECRET_PROMPT, MCP_FIELD_COL,
+    MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP, mcp_description_color,
+    mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color, model_meta_color,
+    tool_fail_color, tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -534,6 +535,127 @@ fn the_auth_caret_sits_on_the_url_field_at_any_width() {
                 crate::ui::cursor_position(area, &app),
                 (10, field as u16),
                 "the caret ends the typed text (submitted {submitted}, width {width})"
+            );
+        }
+    }
+}
+
+/// linear's auth page showing the client form.
+fn client_form_app(client_id: Option<&str>, issuer: &str) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.ask_mcp_client(
+        "linear",
+        issuer,
+        client_id,
+        "http://localhost:8976/callback"
+    ));
+    app
+}
+
+#[test]
+fn the_client_form_names_the_issuer_and_never_draws_the_secret() {
+    let mut app = client_form_app(None, "https://as.test");
+    for c in "cid".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Tab));
+    for c in "hunter2".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Authenticating with linear…"), "{all}");
+    // Who issues the client, and the redirect URI to register with it.
+    assert!(all.contains("as.test can't register this app"), "{all}");
+    assert!(all.contains("http://localhost:8976/callback"), "{all}");
+    assert!(all.contains(&format!("{MCP_CLIENT_ID_PROMPT}cid")), "{all}");
+    assert!(
+        all.contains(&format!("{MCP_CLIENT_SECRET_PROMPT}•••••••")),
+        "{all}"
+    );
+    assert!(!all.contains("hunter2"), "the secret is never drawn");
+    // Nothing is waiting on a browser yet.
+    assert!(!all.contains("A browser window will open"), "{all}");
+}
+
+#[test]
+fn google_is_pointed_at_its_console() {
+    let all = texts(&client_form_app(None, "https://accounts.google.com")).join("\n");
+    assert!(all.contains("accounts.google.com can't register"), "{all}");
+    assert!(all.contains("console.cloud.google.com"), "{all}");
+    let other = texts(&client_form_app(None, "https://as.test")).join("\n");
+    assert!(!other.contains("console.cloud.google.com"), "{other}");
+}
+
+#[test]
+fn a_configured_client_shows_its_id_and_asks_for_the_secret() {
+    let all = texts(&client_form_app(
+        Some("cid.apps"),
+        "https://accounts.google.com",
+    ))
+    .join("\n");
+    assert!(
+        all.contains(&format!("{MCP_CLIENT_ID_PROMPT}cid.apps")),
+        "{all}"
+    );
+    assert!(all.contains(MCP_CLIENT_SECRET_PROMPT), "{all}");
+    // There is one field to fill, so no talk of switching between two.
+    assert!(!all.contains("Tab to switch"), "{all}");
+}
+
+#[test]
+fn the_client_form_caret_ends_the_focused_field() {
+    let mut app = client_form_app(None, "https://as.test");
+    for c in "cid".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let indent = crate::ui::wrap::cols(crate::ui::theme::MODEL_INDENT) as u16;
+    let seat = |app: &App, prompt: &str, typed: u16, width: u16| {
+        let lines = mcp_view_lines(app, width);
+        let field = lines
+            .iter()
+            .position(|line| plain(line).contains(prompt))
+            .expect("the focused field");
+        let area = Rect::new(0, 0, width, lines.len() as u16);
+        assert_eq!(
+            crate::ui::cursor_position(area, app),
+            (
+                indent + crate::ui::wrap::cols(prompt) as u16 + typed,
+                field as u16
+            ),
+            "{prompt} at width {width}"
+        );
+    };
+    for width in [40u16, 100] {
+        seat(&app, MCP_CLIENT_ID_PROMPT, 3, width);
+    }
+    app.on_key(key(KeyCode::Tab));
+    app.on_key(key(KeyCode::Char('a')));
+    app.on_key(key(KeyCode::Char('b')));
+    for width in [40u16, 100] {
+        seat(&app, MCP_CLIENT_SECRET_PROMPT, 2, width);
+    }
+    assert!(crate::ui::cursor_visible(&app));
+}
+
+#[test]
+fn the_client_form_hugs_its_frame() {
+    for (what, app) in [
+        ("the client form", client_form_app(None, "https://as.test")),
+        (
+            "Google's client form",
+            client_form_app(None, "https://accounts.google.com"),
+        ),
+        (
+            "a configured client's secret form",
+            client_form_app(Some("cid"), "https://accounts.google.com"),
+        ),
+    ] {
+        for width in [40u16, 100] {
+            assert_frame_hugs_content(
+                &format!("{what} at width {width}"),
+                &mcp_view_lines(&app, width),
             );
         }
     }

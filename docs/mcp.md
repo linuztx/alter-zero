@@ -741,6 +741,25 @@ mid-turn (the strip stays above it). Pages:
    side. Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
 
+   When the flow has **no client to present** (`McpEvent::AuthNeedsClient`
+   — nothing configured or entered, and the authorization server registers
+   none), the same page turns into the **client form**, the spec's "prompt
+   the user to enter the client information": who issues the client, by
+   the issuer's host (`accounts.google.com can't register this app by
+   itself…`), with a pointer to Google's console when it is Google; the
+   redirect URI to register with it (the stable `http://localhost:8976/
+   callback`, or the configured port's); then `Client ID >` and `Client
+   secret >` fields — Tab/↑/↓ between them, Enter on the id moving on and on
+   the secret submitting, a paste landing in the focused field, the secret
+   drawn as its mask and never as itself. A configured `clientId` missing
+   only its secret is shown read-only over the secret field, and that
+   secret may not be left empty (its server needs one); a typed pair may be
+   a public client. Submitting (`McpOp::SaveAuthClient`) keeps the client in
+   the token store bound to that issuer and starts the flow again, which now
+   has a client to present. Esc returns to the server page — the flow
+   already ended, so nothing is cancelled. A request whose page the user
+   already left becomes a toast pointing back at Authenticate.
+
 ### Where the colour goes
 
 The twin borrows the `/hooks` frame but **not** its flat white titles, and

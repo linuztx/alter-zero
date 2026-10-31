@@ -22,10 +22,14 @@ release heading when a version is cut.
   one. A server's entry in `mcp.json` can now carry an `oauth` object in the
   same shape Claude Code writes: `clientId`, `callbackPort`, `scopes` and
   `authServerMetadataUrl`, plus `clientSecret`, which Google's own setup
-  guides put there. The sign-in authenticates to the provider in whichever
-  way it accepts, and asks Google for a refresh token so the login renews
-  itself instead of lapsing within the hour. A client you enter for one
-  provider is never sent to another (`docs/mcp.md`).
+  guides put there. Without one, `/mcp` now asks for the client when the
+  provider can't register the app: Authenticate shows who issues it, the
+  redirect URI to register with it, and fields for the client ID and secret,
+  with a pointer to Google's console for Google's servers. The sign-in
+  authenticates to the provider in whichever way it accepts, and asks Google
+  for a refresh token so the login renews itself instead of lapsing within
+  the hour. A client you enter for one provider is never sent to another
+  (`docs/mcp.md`).
 
 ### Fixed
 
