@@ -385,7 +385,7 @@ impl<'t> Session<'t> {
             ),
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
-            // The **Hooks** row — off until a directory turns it on, with
+            // The **Hooks** row — on until a directory turns it off, with
             // `ALTER_ZERO_HOOKS` already merged over it for this run.
             enabled: settings.hooks,
             handles: hook_handles,

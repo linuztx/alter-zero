@@ -64,6 +64,13 @@ release heading when a version is cut.
   as `find -delete` or `sort -o`, or `git` in a folder that looks like a
   bare repository. Manual and edit modes still ask about every command
   (`docs/permissions.md`).
+- **Hooks run by default.** The `/settings` **Hooks** row used to be off in
+  every folder until you turned it on there, so a `~/.alter-zero/hooks.json`
+  did nothing in a folder you had not set it up in. It is now on: your own
+  hooks file runs everywhere, as in Claude Code. A project's
+  `.alter-zero/hooks.json` still runs only after you approve it with
+  `/trust`. Turning the row off in a folder is remembered for that folder,
+  and `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/settings.md`).
 - **What a hook tells the agent is short and says which hook spoke.** When
   a hook refused a tool call, the agent used to read a five-line paragraph
   that never said which hook had refused it. It now reads one line in

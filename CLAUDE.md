@@ -2250,8 +2250,9 @@ beside Claude Code's `scratchpad_dir`. User-level config only — a
 project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
-when no file resolved and **off until a directory turns it on**
-(`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
+when no file resolved and **on until a directory turns it off**
+(`docs/per-directory-state.md` — the user's own file runs with no opt-in, a
+project's waits for `/trust`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
 Phase 133 the session events through a refusing stub provider, and Phase
@@ -2740,9 +2741,10 @@ written as a **read-modify-write** over the file itself (the directory's
 entry re-read, `SessionSettings::copy_value` moving across only the cycled
 key, `SettingsFile::record_value`) so an `ALTER_ZERO_*` override merged in at
 startup can never *stick*: the environment wins for the run, per setting,
-and only the row the user actually cycled is saved. **Hooks** and
-**Checkpoints** default to `false` — each runs code on the user's behalf, so a
-directory opts in. The `/model` selection is per directory the same way
+and only the row the user actually cycled is saved. **Checkpoints** default
+to `false` — a whole-cwd snapshot before the first frame, so a directory opts
+in — while **Hooks** default to `true`: the user's own `hooks.json` runs with
+no opt-in, a project's still waits for `/trust`, and a directory opts out. The `/model` selection is per directory the same way
 (`llm::settings::Settings`'s `projects` map over the top-level **last**
 selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`

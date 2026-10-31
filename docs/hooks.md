@@ -582,12 +582,15 @@ never did. Like every shell child, a hook runs without the herdr pane id
 
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it
-reports `false (unavailable)` when no config file resolved. It is **off by
-default** and **per working directory** (`docs/per-directory-state.md`): a
-hooks file written for one project should not fire in every project, so a
-directory opts in — one cycle records `"hooks": true` in its `settings.json`
-entry. `ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value
-off — the `ALTER_ZERO_TOOLS` pattern) and is never saved.
+reports `false (unavailable)` when no config file resolved. It is **on by
+default** and **per working directory** (`docs/per-directory-state.md`): the
+user's own `hooks.json` runs with no opt-in, as in Claude Code (codex asks
+the user to trust each new or changed hook at startup instead), while a
+project's file still contributes nothing until `/trust` approves it — the
+gate the old opt-in stood in for. A directory that should not run them opts
+out: one cycle records `"hooks": false` in its `settings.json` entry.
+`ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value off — the
+`ALTER_ZERO_TOOLS` pattern) and is never saved.
 
 ## Module layout
 
