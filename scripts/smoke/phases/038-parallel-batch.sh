@@ -62,10 +62,15 @@ fi
 # row — the elapsed beside the timeout the call runs under, the tool's 2m
 # default here since the demo's scripted call names none
 # (docs/tool-streaming.md).
+#
+# The footer's numbers are spans of their own in the theme's emphasis
+# (docs/emphasis.md), so the recording carries a colour escape between the
+# pieces: it is read with its SGR sequences stripped.
 batch_tail=""
 for _ in $(seq 1 200); do # up to ~20s — the tail streams as each ping runs
-	if grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39"; then
-		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39" | head -4)"
+	batch_plain="$(sed -E $'s/\x1b\\[[0-9;]*m//g' "$RAW39")"
+	if grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' <<<"$batch_plain"; then
+		batch_tail="$(grep -aoE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' <<<"$batch_plain" | head -4)"
 		break
 	fi
 	sleep 0.1
