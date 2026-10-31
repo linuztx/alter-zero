@@ -2223,6 +2223,24 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_request_hook_that_exits_two_denies_the_call() {
+        let hooks = hooks_for(
+            r#"{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command",
+              "command":"echo 'never in prod' >&2; exit 2"}]}]}}"#,
+        );
+        match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Deny { display, result }) => {
+                assert_eq!(display, "Blocked by hook: never in prod");
+                assert!(
+                    result.starts_with("Blocked by PermissionRequest hook: never in prod\n"),
+                    "{result}"
+                );
+            }
+            other => panic!("exit 2 must deny, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_broken_permission_request_sibling_rides_the_allow_note() {
         // Two handlers: one that cannot spawn (a warning) and one that
         // allows. The warning must not vanish — it rides the visible note so

@@ -78,7 +78,9 @@ Fourteen events are modelled. What each may return:
 
 **Exit codes** (Claude Code's semantics, verbatim): `0` — success, stdout is
 read as a verdict when it starts with `{`, else treated as plain text. `2` —
-**block**, and the reason is **stderr**, not stdout. Any other non-zero — a
+**block**, and the reason is **stderr**, not stdout; for `PermissionRequest`,
+which answers in permissions, a block is a **deny** (it used to fall through
+to the classifier and the prompt). Any other non-zero — a
 non-blocking error, surfaced to the user and otherwise ignored. Stdout that
 starts with `{` but fails to parse is a non-blocking error too, never a
 silent allow.

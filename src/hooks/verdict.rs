@@ -192,9 +192,14 @@ fn parse_answer(run: &HookRun, event: HookEvent) -> ParsedHook {
     // one place the contract reads the other stream.
     if code == 2 {
         let reason = run.stderr.trim();
-        let reason = if reason.is_empty() { NO_REASON } else { reason };
+        let reason = truncate_output(if reason.is_empty() { NO_REASON } else { reason });
+        // `PermissionRequest` answers in permissions, so its exit 2 is a
+        // deny — both references', and what the `/hooks` menu promises.
+        let deny = event == HookEvent::PermissionRequest;
         return ParsedHook {
-            block_reason: Some(truncate_output(reason)),
+            permission: deny.then_some(HookPermission::Deny),
+            permission_reason: deny.then(|| reason.clone()),
+            block_reason: Some(reason),
             ..ParsedHook::default()
         };
     }
@@ -432,6 +437,25 @@ mod tests {
             "exit 2 always blocks"
         );
         assert_eq!(NO_REASON, "no reason given");
+    }
+
+    #[test]
+    fn exit_two_from_a_permission_request_hook_is_a_deny() {
+        // Both references, and the `/hooks` menu's own description: exit 2
+        // denies, stderr the reason. A bare block would fall through to the
+        // classifier and the prompt, since that event answers in permissions.
+        let run = HookRun {
+            command: "./guard.sh".into(),
+            exit_code: Some(2),
+            stderr: "never in prod".into(),
+            ..HookRun::default()
+        };
+        let parsed = parse_run(&run, HookEvent::PermissionRequest);
+        assert_eq!(parsed.permission, Some(HookPermission::Deny));
+        assert_eq!(parsed.permission_reason.as_deref(), Some("never in prod"));
+        assert_eq!(parsed.block_reason.as_deref(), Some("never in prod"));
+        // Every other event keeps exit 2 a block and nothing more.
+        assert_eq!(parse_run(&run, HookEvent::PreToolUse).permission, None);
     }
 
     #[test]

@@ -82,6 +82,10 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A `PermissionRequest` hook that exits `2` denies the call.** Its stderr
+  is the reason, as in Claude Code and codex and as the `/hooks` page says;
+  the call used to go on to the auto-mode classifier and the permission
+  prompt as if the hook had said nothing (`docs/hooks.md`).
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a
   tool round, sometimes after a long thought that used up its whole output
