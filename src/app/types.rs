@@ -104,8 +104,8 @@ pub struct HookNote {
     /// The short transcript heading (`Stop hook`, `UserPromptSubmit hook`).
     pub label: String,
     /// Verbatim what the model reads as a user-role message — formatted by
-    /// the producer (`Stop hook feedback:\n…`, the system-reminder-wrapped
-    /// additional context), so the replay is exactly the wire text.
+    /// the producer (`Stop hook (…/hooks.json): …`, the system-reminder-
+    /// wrapped additional context), so the replay is exactly the wire text.
     pub text: String,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,

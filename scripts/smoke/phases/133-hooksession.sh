@@ -21,7 +21,9 @@ smoke_begin
 #   - a bare --resume fires nothing while its picker is up: dismissed, the
 #     fresh conversation begins (`startup`); picked, the resumed one does
 #     (`resume`, under its own id) and the fresh one, never begun, gets no
-#     SessionEnd.
+#     SessionEnd;
+#   - the context the model reads names its hook and the hooks.json that
+#     configures it — the user's file, and a trusted project's its own.
 HS_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 HS_BODIES="$SMOKE_TMP/bodies133.jsonl"
 python3 - "$HS_PORT" "$HS_BODIES" <<'PY' &
@@ -128,6 +130,9 @@ case "$hs_transcript" in
 esac
 [ -f "$hs_transcript" ] || fail "the transcript the first prompt names does not exist: $hs_transcript"
 expect_file_has "$HS_BODIES" -F "smoke133-session-context" "the SessionStart context never reached the first request"
+# …naming the hook that added it and the hooks.json it is configured in —
+# the loader's absolute path (docs/hooks.md *What the model reads*).
+expect_file_has "$HS_BODIES" -F "SessionStart hook ($HS_HOOKS): smoke133-session-context" "the SessionStart context reached the model without its hook's name and file"
 
 # /clear ends the conversation and begins another, with an id of its own —
 # and a prompt sent while its SessionStart still sleeps waits for it.
@@ -204,3 +209,30 @@ sleep 3
 submit "$S133D" "/quit"
 wait_gone 5 "$S133D" || fail "the offline app did not exit on /quit"
 expect_eq "$(hs_events | wc -l | tr -d ' ')" "0" "session events the offline demo fired"
+
+# With the user's file and a trusted project's merged, each hook names its
+# own hooks.json. A temp project (no .git — the root is the cwd, its physical
+# path, as the app reads it) adds a SessionStart hook, and trust.json is
+# seeded with the file's fingerprint the way /trust records an approval.
+HS_PROJ="$(cd "$(mktemp -d)" && pwd -P)"
+smoke_on_exit rm -rf "$HS_PROJ"
+mkdir -p "$HS_PROJ/.alter-zero"
+HS_PROJ_HOOKS="$HS_PROJ/.alter-zero/hooks.json"
+printf '%s\n' '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo smoke133-project-context"}]}]}}' >"$HS_PROJ_HOOKS"
+python3 - "$SMOKE_CFG/trust.json" "$HS_PROJ" "$HS_PROJ_HOOKS" <<'PY'
+import hashlib, json, sys
+trust, root, hooks = sys.argv[1:4]
+digest = hashlib.sha256(open(hooks, "rb").read()).hexdigest()
+with open(trust, "w", encoding="utf-8") as out:
+    json.dump({"projects": {root: {"files": {hooks: "sha256:" + digest}}}}, out)
+PY
+: >"$HS_BODIES"
+HS_REAL_PROJECT="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $HS_ENV ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_PROVIDERS_FILE=$HS_PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in $BIN_ABS"
+S133T="${S}_hooksession_project"
+launch -c "$HS_PROJ" "$S133T" 100 30 "$HS_REAL_PROJECT"
+submit "$S133T" "smoke133 project"
+wait_pane 20 "$S133T" -F "smoke133 refused" >/dev/null || fail "the trusted project's turn never showed its error"
+expect_file_has "$HS_BODIES" -F "SessionStart hook ($HS_HOOKS): smoke133-session-context" "the user hook's context did not name the user's hooks.json"
+expect_file_has "$HS_BODIES" -F "SessionStart hook ($HS_PROJ_HOOKS): smoke133-project-context" "the project hook's context did not name the project's hooks.json"
+submit "$S133T" "/quit"
+wait_gone 5 "$S133T" || fail "the app did not exit on /quit in the trusted project"

@@ -85,6 +85,18 @@ impl HookEvent {
         }
     }
 
+    /// How the model hears which hook spoke (`docs/hooks.md` *What the model
+    /// reads*): `PreToolUse hook (/home/u/.alter-zero/hooks.json)` — the
+    /// event, then the `hooks.json` that configures the handler, codex's
+    /// `source_path`, when it is known.
+    #[must_use]
+    pub fn hook_label(self, source: Option<&std::path::Path>) -> String {
+        match source {
+            Some(file) => format!("{} hook ({})", self.name(), file.display()),
+            None => format!("{} hook", self.name()),
+        }
+    }
+
     /// The event a `hooks.json` key names, or `None` for one we don't model
     /// (Claude Code has thirty-odd; a config mentioning `FileChanged` must
     /// load fine and simply never fire it).
@@ -144,6 +156,20 @@ mod tests {
         for name in ["PostToolUseFailure", "StopFailure", "Notification"] {
             assert!(HookEvent::from_name(name).is_some(), "{name} is unmodelled");
         }
+    }
+
+    #[test]
+    fn a_hook_is_named_by_its_event_and_the_file_that_configures_it() {
+        // What the model reads in front of every hook's words (docs/hooks.md
+        // *What the model reads*): the event, then — codex's `source_path` —
+        // the hooks.json the handler came from, so the agent knows where the
+        // rule it just met is written.
+        let file = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+        assert_eq!(
+            HookEvent::PreToolUse.hook_label(Some(file)),
+            "PreToolUse hook (/home/u/.alter-zero/hooks.json)"
+        );
+        assert_eq!(HookEvent::Stop.hook_label(None), "Stop hook");
     }
 
     #[test]

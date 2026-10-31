@@ -1123,7 +1123,7 @@ mod tests {
             message(Role::Assistant, "done"),
             HistoryItem::HookNote(crate::app::HookNote {
                 label: "Stop hook".into(),
-                text: "Stop hook feedback:\ntests are red".into(),
+                text: "Stop hook (/cfg/hooks.json): tests are red".into(),
                 timestamp: String::new(),
             }),
             message(Role::Assistant, "fixed for real"),
@@ -1136,7 +1136,10 @@ mod tests {
             vec![
                 (ContextRole::User, "fix it"),
                 (ContextRole::Assistant, "done"),
-                (ContextRole::User, "Stop hook feedback:\ntests are red"),
+                (
+                    ContextRole::User,
+                    "Stop hook (/cfg/hooks.json): tests are red"
+                ),
                 (ContextRole::Assistant, "fixed for real"),
             ]
         );

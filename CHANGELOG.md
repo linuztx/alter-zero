@@ -53,6 +53,22 @@ release heading when a version is cut.
 
 ### Changed
 
+- **What a hook tells the model is short and says which hook spoke.**
+  When a lifecycle hook refused a call, the model used to read three
+  paragraphs about it. It now reads one line naming the hook and the file
+  it is configured in, `Blocked by PreToolUse hook
+  (/home/you/.alter-zero/hooks.json): no rm -rf`, then `Do not retry the
+  call unchanged; address the reason or ask the user.` Every other hook
+  text has the same shape, so the agent can tell you which guard stopped it
+  and where that guard is written:
+  - a `PostToolUse` block appends `Flagged by PostToolUse hook (…): …`
+    after the call's output;
+  - a Stop hook's feedback reads `Stop hook (…): …`;
+  - context a hook adds carries the same label, including the context
+    `PostToolUse` and `SubagentStart` hooks add, which used to reach the
+    model with no label at all.
+
+  A block with no reason reads `no reason given` (`docs/hooks.md`).
 - **Auto mode runs commands that only read without asking the
   classifier.** In auto mode every command used to wait on a safety check
   by the model, even `ls` or `git status`, and each check is a request to

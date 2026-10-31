@@ -15,7 +15,7 @@
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::exec::ToolProgress;
-use super::hooks::{HookSink, block_texts as hook_block_texts};
+use super::hooks::HookSink;
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
     summarize_call_naming,
@@ -405,9 +405,8 @@ pub fn run_agent(
                 // (the runner polls the token; an interrupt never fires
                 // Stop, so it always breaks the chain).
                 if !cancel.is_cancelled()
-                    && let Some(reason) = hooks.stop(stop_hook_active, &text, cancel)
+                    && let Some((label, feedback)) = hooks.stop(stop_hook_active, &text, cancel)
                 {
-                    let (label, feedback) = super::hooks::stop_feedback_texts(&reason);
                     let _ = tx.send(StreamEvent::HookNote {
                         label,
                         text: feedback.clone(),
@@ -533,8 +532,7 @@ pub fn run_agent(
                     let mut launchable: Vec<ToolCallRequest> = Vec::new();
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
-                        if let Some(reason) = &hook.blocked {
-                            let (display, result) = hook_block_texts(reason);
+                        if let Some((display, result)) = hook.blocked {
                             let _ = tx.send(tool_start_event(call, session_command));
                             let _ = tx.send(StreamEvent::ToolRejected {
                                 display,
@@ -629,8 +627,7 @@ pub fn run_agent(
                     // own command decides. A hook may refuse the call, rewrite
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
-                    if let Some(reason) = &hook.blocked {
-                        let (display, result) = hook_block_texts(reason);
+                    if let Some((display, result)) = hook.blocked {
                         let _ = tx.send(tool_start_event(call, session_command));
                         // The permission gate's own rejection event, reused
                         // whole: red cell, model-facing text on
@@ -894,8 +891,11 @@ fn tool_start_event(
 
 #[cfg(test)]
 mod tests {
-    use super::super::hooks::{HookSink, NoHooks, PostToolVerdict, PreToolVerdict};
+    use super::super::hooks::{
+        HookSink, NoHooks, PostToolVerdict, PreToolVerdict, block_texts, stop_feedback_texts,
+    };
     use super::*;
+    use crate::hooks::HookEvent;
     use crate::llm::ToolCallSpec;
     use std::cell::RefCell;
     use tokio::sync::mpsc::unbounded_channel;
@@ -1502,17 +1502,20 @@ mod tests {
             stop_hook_active: bool,
             last_message: &str,
             _cancel: &CancelToken,
-        ) -> Option<String> {
+        ) -> Option<(String, String)> {
             self.stop_seen
                 .lock()
                 .expect("not poisoned")
                 .push((stop_hook_active, last_message.to_string()));
             let mut stops = self.stops.lock().expect("not poisoned");
-            if stops.is_empty() {
+            let reason = if stops.is_empty() {
                 None
             } else {
                 stops.remove(0)
-            }
+            };
+            // A real sink hands back the finished texts; the fixture's
+            // reasons go through the same builder.
+            reason.map(|reason| stop_feedback_texts(HookEvent::Stop, None, &reason))
         }
     }
 
@@ -1623,7 +1626,11 @@ mod tests {
         )];
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no subagents today".to_string()),
+                blocked: Some(block_texts(
+                    HookEvent::PreToolUse,
+                    None,
+                    "no subagents today",
+                )),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()
@@ -1727,7 +1734,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(notes, vec!["Stop hook feedback:\ntests are red"]);
+        assert_eq!(notes, vec!["Stop hook: tests are red"]);
         assert_eq!(
             events
                 .iter()
@@ -1755,10 +1762,7 @@ mod tests {
             vec![
                 ("user".to_string(), "fix it".to_string()),
                 ("assistant".to_string(), "answer 1".to_string()),
-                (
-                    "user".to_string(),
-                    "Stop hook feedback:\ntests are red".to_string()
-                ),
+                ("user".to_string(), "Stop hook: tests are red".to_string()),
             ]
         );
     }
@@ -2028,7 +2032,11 @@ mod tests {
     fn a_pre_tool_use_block_refuses_the_call_through_the_rejection_path() {
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no destructive deletes".to_string()),
+                blocked: Some(block_texts(
+                    HookEvent::PreToolUse,
+                    None,
+                    "no destructive deletes",
+                )),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()

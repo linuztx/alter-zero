@@ -483,8 +483,8 @@ const HOOKS_REPLY: &str = concat!(
      You configure them in `~/.alter-zero/hooks.json`; I'll try two `bash` \
      calls so you can see both halves.\n\n",
     "That's the pair. The first call never ran: a **PreToolUse** hook exited \
-     `2`, so its stderr became the refusal — red cell for you, a stop-and-wait \
-     instruction for me. The second ran, and a **PostToolUse** hook attached a \
+     `2`, so its stderr became the refusal — red cell for you, a one-line \
+     refusal naming the hook for me. The second ran, and a **PostToolUse** hook attached a \
      note; the dim `⎿` row is the record, and the text itself rides into my \
      context rather than onto the cell. Hooks can also rewrite a call's \
      arguments or answer the permission prompt in your place.\n\n",
@@ -527,9 +527,11 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         arguments: Some(serde_json::json!({ "command": BLOCKED }).to_string()),
     });
     // Both texts, as the live runner sends them: the short one is the red
-    // cell, the long one is what the model reads — and what the rollout keeps
-    // on `ToolCall::context_output`, so Ctrl+D and a `/resume` show it too.
-    let (display, result) = crate::llm::hooks::block_texts(HOOK_REASON);
+    // cell, the one naming the hook is what the model reads — and what the
+    // rollout keeps on `ToolCall::context_output`, so Ctrl+D and a `/resume`
+    // show it too.
+    let (display, result) =
+        crate::llm::hooks::block_texts(crate::hooks::HookEvent::PreToolUse, None, HOOK_REASON);
     events.push(StreamEvent::ToolRejected {
         display,
         result,
@@ -551,8 +553,11 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     // built by the very function the live loop calls
     // (`llm::hooks::stop_feedback_texts`), so the Ctrl+O row is
     // byte-for-byte the live one (docs/hooks.md).
-    let (label, text) =
-        crate::llm::hooks::stop_feedback_texts("demo only — the transcript keeps this note");
+    let (label, text) = crate::llm::hooks::stop_feedback_texts(
+        crate::hooks::HookEvent::Stop,
+        None,
+        "demo only — the transcript keeps this note",
+    );
     events.push(StreamEvent::HookNote { label, text });
     events.push(StreamEvent::StreamDone);
     events

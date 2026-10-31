@@ -122,7 +122,7 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
     // the label over the wire text.
     let note = HistoryItem::HookNote(crate::app::HookNote {
         label: "Stop hook".to_string(),
-        text: "Stop hook feedback:\ntests are red".to_string(),
+        text: "Stop hook (/cfg/hooks.json): tests are red".to_string(),
         timestamp: String::new(),
     });
     let history = [msg(Role::User, "hi"), note.clone()];

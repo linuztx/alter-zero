@@ -1674,6 +1674,21 @@ fn run_agent_calls(
 /// pending-input seam, and its outcome + final message list land back in the
 /// registry for the parent's wait loop / a later continuation. See
 /// `docs/agent-tool.md`.
+/// What a `SubagentStart` hook hands the agent it launched (`docs/hooks.md`
+/// *What the model reads*): its context as one system-reminder — the shape
+/// the session's own SessionStart context takes — so the agent never reads a
+/// hook's words as the lead's instruction. `None` when the hooks said nothing.
+fn subagent_start_note(
+    hooks: &dyn HookSink,
+    agent_id: &str,
+    agent_type: &str,
+    cancel: &CancelToken,
+) -> Option<ChatMessage> {
+    let contexts = hooks.subagent_start(agent_id, agent_type, cancel);
+    super::hooks::context_note_texts("SubagentStart", &contexts)
+        .map(|(_, text)| ChatMessage::user(&text))
+}
+
 fn spawn_subagent_run(
     config: &SubagentConfig,
     registry: AgentRegistry,
@@ -1744,9 +1759,12 @@ fn spawn_subagent_run(
         // parent launching a batch of agents must not block on each one's
         // hook in turn, and whatever the hook returns is context for *this*
         // agent — so it has to land before the first round, which is here.
-        for note in hooks.subagent_start(&id, &agent_type, &cancel) {
-            messages.push(ChatMessage::user(&note));
-        }
+        messages.extend(subagent_start_note(
+            hooks.as_ref(),
+            &id,
+            &agent_type,
+            &cancel,
+        ));
         // The forwarder tags every event with the agent id and tracks the
         // terminal outcome, while its `RunRecorder` keeps the final reply
         // text (the last uninterrupted text run is the agent's final message
@@ -2171,6 +2189,48 @@ mod tests {
     /// An encoder whose files are all unreadable.
     fn failing_encode(_path: &Path) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn a_subagent_start_hooks_context_reaches_the_agent_as_one_reminder() {
+        // A launched agent reads its hook context the way the session reads
+        // a SessionStart hook's: one system-reminder, each entry naming its
+        // hook, never a bare user message it could take for the lead's
+        // instruction (docs/hooks.md *What the model reads*).
+        #[derive(Debug)]
+        struct Briefing;
+        impl HookSink for Briefing {
+            fn subagent_start(
+                &self,
+                agent_id: &str,
+                agent_type: &str,
+                _cancel: &CancelToken,
+            ) -> Vec<String> {
+                assert_eq!((agent_id, agent_type), ("a1", "explore"));
+                vec!["SubagentStart hook (/cfg/hooks.json): the repo root is /srv/app".into()]
+            }
+        }
+        let note = subagent_start_note(&Briefing, "a1", "explore", &CancelToken::new())
+            .expect("the hook's context is delivered");
+        assert_eq!(note.role, "user");
+        assert_eq!(
+            note.content,
+            MessageContent::Text(
+                "<system-reminder>\nSubagentStart hook (/cfg/hooks.json): the repo root is \
+                 /srv/app\n</system-reminder>"
+                    .into()
+            )
+        );
+        // A hook that says nothing adds nothing.
+        assert_eq!(
+            subagent_start_note(
+                &crate::llm::hooks::NoHooks,
+                "a1",
+                "explore",
+                &CancelToken::new()
+            ),
+            None
+        );
     }
 
     #[test]

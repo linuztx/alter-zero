@@ -20,6 +20,7 @@
 //!   is running when it is not.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -48,6 +49,13 @@ pub struct MatcherGroup {
     pub matcher: Option<String>,
     #[serde(default)]
     pub hooks: Vec<HookHandler>,
+    /// The `hooks.json` this group was read from, stamped by
+    /// [`HooksFile::with_source`] — never part of the file itself. It survives
+    /// [`HooksFile::merged`], so each handler of the merged session file still
+    /// names its own layer to the model (`docs/hooks.md` *What the model
+    /// reads*).
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 /// One handler inside a group.
@@ -118,6 +126,9 @@ pub struct CommandHook {
     /// default of its own to drift from this one.
     pub timeout_secs: u64,
     pub status_message: Option<String>,
+    /// The `hooks.json` that configures it, when the file was read from one —
+    /// what the model-facing texts name ([`super::HookEvent::hook_label`]).
+    pub source: Option<PathBuf>,
 }
 
 impl CommandHook {
@@ -151,6 +162,17 @@ impl HooksFile {
             return Ok(Self::default());
         }
         serde_json::from_str(text).map_err(|err| err.to_string())
+    }
+
+    /// This file, every group stamped as read from `file` — the loader's
+    /// half of naming a hook's source (`docs/hooks.md` *What the model
+    /// reads*); `parse` sees only text.
+    #[must_use]
+    pub fn with_source(mut self, file: &Path) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            group.source = Some(file.to_path_buf());
+        }
+        self
     }
 
     /// This layer with `project`'s matcher groups appended per event — the
@@ -223,7 +245,7 @@ impl HooksFile {
                 continue;
             }
             for handler in &group.hooks {
-                match handler.resolve() {
+                match handler.resolve(group.source.as_deref()) {
                     Ok(hook) => {
                         // `"async": true` parses so a config shared with
                         // another tool loads, but every v1 hook is
@@ -253,8 +275,9 @@ impl HooksFile {
 }
 
 impl HookHandler {
-    /// The runnable form, or why this handler is being skipped.
-    fn resolve(&self) -> Result<CommandHook, String> {
+    /// The runnable form — naming `source`, its group's file — or why this
+    /// handler is being skipped.
+    fn resolve(&self, source: Option<&Path>) -> Result<CommandHook, String> {
         if let HandlerKind::Other(kind) = &self.kind {
             return Err(format!(
                 "handler type {kind:?} is not \"command\" — skipped"
@@ -282,6 +305,7 @@ impl HookHandler {
                 .filter(|t| *t > 0)
                 .unwrap_or(CommandHook::DEFAULT_TIMEOUT_SECS),
             status_message: self.status_message.clone(),
+            source: source.map(Path::to_path_buf),
         })
     }
 }
@@ -321,6 +345,7 @@ mod tests {
                 command: "./guard.sh".to_string(),
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
+                source: None,
             }]
         );
     }
@@ -644,6 +669,7 @@ mod tests {
                 command: "./guard.sh".to_string(),
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
+                source: None,
             }]
         );
     }
@@ -657,6 +683,40 @@ mod tests {
         assert_eq!(
             HooksFile::default().merged(&project).description.as_deref(),
             Some("project guards")
+        );
+    }
+
+    #[test]
+    fn every_handler_knows_the_file_that_configures_it_across_the_merge() {
+        // The model-facing texts name the hooks.json a hook came from
+        // (docs/hooks.md *What the model reads*), and the session's file is
+        // the user's and the project's merged — so each group keeps its own.
+        let user = parse(SAMPLE).with_source(Path::new("/home/u/.alter-zero/hooks.json"));
+        let project = parse(
+            r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command","command":"./extra.sh"}]}]}}"#,
+        )
+        .with_source(Path::new("/repo/.alter-zero/hooks.json"));
+        let sources: Vec<Option<PathBuf>> = user
+            .merged(&project)
+            .select(HookEvent::PreToolUse, Some("bash"))
+            .handlers
+            .into_iter()
+            .map(|h| h.source)
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                Some(PathBuf::from("/home/u/.alter-zero/hooks.json")),
+                Some(PathBuf::from("/repo/.alter-zero/hooks.json")),
+            ]
+        );
+        // A file parsed from bare text (a test, the /hooks browser) names none.
+        assert_eq!(
+            parse(SAMPLE)
+                .select(HookEvent::PreToolUse, Some("bash"))
+                .handlers[0]
+                .source,
+            None
         );
     }
 

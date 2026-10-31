@@ -519,7 +519,13 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
     };
     match std::fs::read_to_string(path) {
         Ok(text) => match alter_zero::hooks::HooksFile::parse(&text) {
-            Ok(file) => (file, None),
+            // Stamped with where it was read, so a hook's texts name this
+            // file to the model — absolute, the path the agent's own file
+            // tools take (`docs/hooks.md` *What the model reads*).
+            Ok(file) => (
+                file.with_source(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())),
+                None,
+            ),
             Err(err) => (
                 empty(),
                 Some(format!("hooks.json: {err} — hooks are off this session")),

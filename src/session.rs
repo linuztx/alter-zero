@@ -1079,7 +1079,7 @@ mod tests {
         // context still carries what the model read mid-turn (docs/hooks.md).
         let item = HistoryItem::HookNote(crate::app::HookNote {
             label: "Stop hook".into(),
-            text: "Stop hook feedback:\ntests are red".into(),
+            text: "Stop hook (/cfg/hooks.json): tests are red".into(),
             timestamp: "03:20 PM".into(),
         });
         let line = item_line(&item, "t");

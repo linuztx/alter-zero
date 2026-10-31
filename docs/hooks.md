@@ -202,8 +202,8 @@ never existed:
   before `StreamDone` — on a real answer only: an empty reply is continued
   first, and a turn that gives up on one ends through `StopFailure` instead
   (`docs/unfinished-replies.md`). A block appends the reply-so-far as an assistant
-  message and the feedback (`Stop hook feedback:\n{reason}`, Claude Code's
-  exact wording) as the next user message, flips `stop_hook_active`, and the
+  message and the feedback (`Stop hook ({hooks.json}): {reason}`, *What the
+  model reads* below) as the next user message, flips `stop_hook_active`, and the
   **same turn runs another round** — so the status line keeps working, the
   queue and token tally are untouched, and `dispatch_after_turn`'s
   turn-end checkpoint lands *after* every continuation: a formatter hook's
@@ -361,8 +361,9 @@ somewhere for every hook verdict to land, under another name. **No new
   gate's own two-text rejection. It already renders as a red cell, already
   keeps the longer model-facing text on `ToolCall::context_output`, already
   round-trips through the rollout, and already shows correctly in Ctrl+D. A
-  hook block is spelled `⎿ Blocked by hook: {reason}` and the model reads the
-  stop-and-wait instruction.
+  hook block is spelled `⎿ Blocked by hook: {reason}`, and the model reads
+  which hook refused, the file it is configured in and not to retry (*What
+  the model reads*).
 - **A `PreToolUse` allow** is `Approval::AllowNoted { note }` — the auto-mode
   classifier's existing "this ran without you" provenance row.
 - **`additionalContext`** rides `StreamEvent::ToolNote` for the dim `⎿` row
@@ -383,8 +384,8 @@ existing could express them:
   Ctrl+O transcript under its dim `● {label}` heading, replayed **verbatim**
   by `context_messages` as the user-role message the model actually read,
   and round-tripped through the rollout so a `/resume` keeps it. Context
-  wire text uses Claude Code's exact shape — the
-  `<system-reminder>`-wrapped `{event} hook additional context: …`. The
+  wire text is its entries inside a `<system-reminder>`, each naming its
+  hook (*What the model reads*). The
   agent loop's own continuation prompts ride it too — the note an empty or
   cut-off reply is answered with, under `Empty reply` / `Reply cut off`
   (`docs/unfinished-replies.md`) — because a continuation needs exactly what
@@ -399,6 +400,62 @@ permission refusal — never produce capped output. Routing an **executed**
 call's resolution through them does, so without it a hook-amended `bash`
 whose output hit `TOOL_OUTPUT_MAX_BYTES` silently lost the `…` marker its
 expanded cell appends. `false` at every site where nothing ran.
+
+## What the model reads
+
+Every hook text the model reads has one shape, `[Verb by ]{Event} hook
+({hooks.json}): {the hook's own words}`. The verb appears only where the hook
+acted on a call. The file is the `hooks.json` that configures the handler,
+as an absolute path, the form the agent's own file tools take:
+
+| when | the model reads | where |
+| ---- | --------------- | ----- |
+| `PreToolUse` / `PermissionRequest` refuses a call | `Blocked by PreToolUse hook (/home/u/.alter-zero/hooks.json): no rm -rf outside ./tmp` then `Do not retry the call unchanged; address the reason or ask the user.` | the call's result |
+| `PostToolUse` / `PostToolUseFailure` blocks | `Flagged by PostToolUse hook (…): tests are red` | appended after the call's output |
+| a tool event's `additionalContext` | `PostToolUse hook (…): the build id is ZX-4417` | appended after the call's output |
+| `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreCompact` context | `<system-reminder>`, `SessionStart hook (…): …`, `</system-reminder>` on their own lines | a user message after the prompt (`SubagentStart`: after the agent's launch prompt) |
+| `Stop` / `SubagentStop` blocks | `Stop hook (…): tests are red` | the next user message |
+
+A refusal or block with no reason reads `no reason given` (`hooks::NO_REASON`).
+The cell keeps the hook's own words (`⎿ Blocked by hook: …`), since the user
+knows their hooks; the event and the file are for the model.
+
+**Why this shape.** It replaced a three-paragraph refusal ("A configured
+lifecycle hook blocked this tool call. / Reason: … / Do not retry the same
+call. Address the reason, or explain to the user why the call is needed and
+wait for their instruction.") and context that reached the model **with no
+label at all**: a `PostToolUse` hook's note was appended to `ls`'s output as
+if `ls` had printed it, and a `SubagentStart` hook's was a bare user message
+the agent could take for the lead's instruction. codex is the model for the
+length. Its refusal is one line, `Command blocked by PreToolUse hook:
+{reason}. Command: {command}` (`core/src/hook_runtime.rs`), and its Stop
+continuation is the reason alone, tagged with the run's file:
+`<hook_prompt hook_run_id="stop:0:/abs/hooks.json">…`. Ours takes the same
+event-plus-file identity and uses it everywhere, in one plain-text label. That
+lets the agent tell the user where a guard is written, and read or edit the
+file when asked. A refusal keeps one instruction line, because the failure it
+prevents (a model re-running the identical blocked call) is real. Where the
+hook's words are themselves the instruction (a Stop block, a flag after the
+call), there is no instruction line.
+
+**The hook's command is not named.** It can be an unbounded inline `jq`
+one-liner. The file is always a short path, and the agent finds the command
+in it.
+
+**How the file gets there.** `HooksFile::parse` sees only text, so the loaders
+stamp what they read with `HooksFile::with_source`. The user's file
+(`tui::config::load_hooks`, made absolute) and a trusted project's
+(`tui::trust`) are stamped separately, onto each matcher group. That stamp
+survives `merged`, so a merged session file still knows each handler's own
+layer. `select` copies it onto the `CommandHook`, the runner onto the
+`HookRun`, and `parse_run` labels each context entry while the run is still
+in hand (`HookEvent::hook_label`). The winning block keeps its file in
+`HookOutcome::block_source`. The sink formats every text the model reads:
+`block_texts`, `stop_feedback_texts`, `context_note_texts` and
+`post_verdict`. The loop only places them: `PreToolVerdict::blocked` is the
+`(display, result)` pair, and `HookSink::stop` returns the `(label, text)`
+note. A file parsed from bare text (a test, the offline demo) names none, and
+its label drops the parenthesis.
 
 **Injected context appends at the frontier, never at the front.** The obvious
 design — reuse the `user_instructions` slot — is wrong twice over. That slot
@@ -592,7 +649,7 @@ runner calls — so the offline cell is byte-for-byte the one a real `hooks.json
 produces, the rule every other scripted demo follows with the real executor's
 formatters. **`smoke.sh` Phase 72** drives it and asserts the blocked call
 produced no output of its own, the allowed one kept its output under the
-provenance row, the model-facing paragraph never reached scrollback, the
+provenance row, the model-facing text never reached scrollback, the
 Ctrl+O transcript kept the refusal, and the demo's closing Stop-hook
 feedback note stayed cell-less inline while the transcript recorded it.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
@@ -606,7 +663,9 @@ up the first frame, its context reaches the first request, the prompt's
 file, the refused turn fires `StopFailure` typed `invalid_request`, a
 `/clear` moves the id on (`SessionEnd` naming the old one, the turn sent
 during the new `SessionStart` waiting for it), a quit's `SessionEnd` comes
-last; a bare `--resume` fires nothing while its picker is up, then
+last, and every SessionStart context names its hook and its own hooks.json,
+the user's and a trusted project's, in the request the provider got; a bare
+`--resume` fires nothing while its picker is up, then
 `SessionStart(startup)` when it is dismissed or `SessionStart(resume)`
 under the picked conversation's id — with no `SessionEnd` for the fresh
 conversation the boot held, which never began — and the offline demo fires
@@ -669,6 +728,18 @@ Verified against both sources, and chosen — not accidental:
 - **Oversized output is capped in memory at 64 KiB** as it is read, with a
   truncation marker — codex spills to a temp file with a preview instead
   (~2.5k-token default); nobody has needed the spill here yet.
+- **A `PostToolUse` block keeps the call's output.** codex replaces the
+  model-visible output with the hook's feedback (`RespondToModel(message)`
+  in `core/src/tools/registry.rs`). We append `Flagged by …: {reason}` after
+  it, since a hook saying "tests are red" is worth little without the tests
+  it is about.
+- **A refusal carries one instruction; codex's carries none.** `Do not retry
+  the call unchanged; address the reason or ask the user.` That is the whole
+  of it, down from three paragraphs (*What the model reads*).
+- **Context is labelled where codex's is not.** codex sends `additionalContext`
+  as a bare `developer` message whose role marks it as the harness's. Ours
+  lands beside text it did not come from, a tool's output or the user's
+  prompt, so each entry names its hook.
 
 ## Known gaps
 

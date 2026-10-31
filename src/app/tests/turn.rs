@@ -2448,7 +2448,7 @@ fn record_hook_note_slots_after_the_flushed_segment() {
     app.begin_stream();
     app.push_chunk("first answer");
     app.flush_streaming_segment();
-    app.record_hook_note("Stop hook", "Stop hook feedback:\ntests are red");
+    app.record_hook_note("Stop hook", "Stop hook (/cfg/hooks.json): tests are red");
     app.push_chunk("second answer");
     app.finish_stream();
     let kinds: Vec<String> = app

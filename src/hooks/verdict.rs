@@ -18,6 +18,8 @@
 //! with `{` but does not parse is a non-blocking error too, never a silent
 //! allow: it means the script meant to say something and got it wrong.
 
+use std::path::PathBuf;
+
 use serde_json::Value;
 
 use super::event::HookEvent;
@@ -40,6 +42,9 @@ pub struct HookRun {
     pub stderr: String,
     /// Why there is no exit code, when there isn't one.
     pub error: Option<String>,
+    /// The `hooks.json` that configures the handler, when known — what the
+    /// model-facing texts name ([`HookEvent::hook_label`]).
+    pub source: Option<PathBuf>,
 }
 
 /// What a hook said about a call it was asked to gate.
@@ -71,12 +76,17 @@ pub struct ParsedHook {
     pub stop_reason: Option<String>,
     /// Something was wrong with the hook itself. Never blocks.
     pub warning: Option<String>,
+    /// The `hooks.json` of the handler that said all this, from its run.
+    pub source: Option<PathBuf>,
 }
 
 /// Several handlers' answers, resolved into the one the caller acts on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HookOutcome {
     pub block_reason: Option<String>,
+    /// The `hooks.json` of the hook whose block won — the file the model is
+    /// told refused it (`docs/hooks.md` *What the model reads*).
+    pub block_source: Option<PathBuf>,
     pub permission: Option<HookPermission>,
     pub permission_reason: Option<String>,
     pub updated_input: Option<String>,
@@ -122,9 +132,10 @@ pub fn truncate_output(text: &str) -> String {
     format!("{}\n… (hook output truncated)", &text[..end])
 }
 
-/// Stands in when a hook refuses a call but says nothing about why — the cell
-/// and the model both need *something*, and "the hook said no" beats a blank.
-const UNEXPLAINED: &str = "blocked by a hook (no reason given)";
+/// Stands in when a hook refuses but says nothing about why — the cell and
+/// the model both need *something*, and the texts around it already say a
+/// hook refused (`Blocked by hook: no reason given`).
+pub const NO_REASON: &str = "no reason given";
 
 /// The events whose plain-text stdout becomes context. Claude Code's rule:
 /// for these, a handler that just prints is feeding the model — for
@@ -139,9 +150,22 @@ const PLAIN_STDOUT_IS_CONTEXT: &[HookEvent] = &[
     HookEvent::PreCompact,
 ];
 
-/// Read one handler's run.
+/// Read one handler's run. What it adds to the conversation names it: each
+/// context entry leads with [`HookEvent::hook_label`], since it lands beside
+/// text it did not come from — a tool's output, the user's prompt — and the
+/// verdict keeps the run's file for a block's texts to name.
 #[must_use]
 pub fn parse_run(run: &HookRun, event: HookEvent) -> ParsedHook {
+    let mut parsed = read_run(run, event);
+    if let Some(context) = &mut parsed.additional_context {
+        *context = format!("{}: {context}", event.hook_label(run.source.as_deref()));
+    }
+    parsed.source.clone_from(&run.source);
+    parsed
+}
+
+/// [`parse_run`]'s reading of the exit code and stdout, the hook's own words.
+fn read_run(run: &HookRun, event: HookEvent) -> ParsedHook {
     // The child never reported a status: it could not be spawned, it timed
     // out, or a signal took it. Fail **open** with a warning — a broken hook
     // wedging every tool call is worse than the guard being briefly absent,
@@ -158,11 +182,7 @@ pub fn parse_run(run: &HookRun, event: HookEvent) -> ParsedHook {
     // one place the contract reads the other stream.
     if code == 2 {
         let reason = run.stderr.trim();
-        let reason = if reason.is_empty() {
-            UNEXPLAINED
-        } else {
-            reason
-        };
+        let reason = if reason.is_empty() { NO_REASON } else { reason };
         return ParsedHook {
             block_reason: Some(truncate_output(reason)),
             ..ParsedHook::default()
@@ -250,7 +270,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
                 let message = text(&specific["decision"]["message"]);
                 parsed.permission_reason.clone_from(&message);
                 parsed.block_reason =
-                    Some(truncate_output(message.as_deref().unwrap_or(UNEXPLAINED)));
+                    Some(truncate_output(message.as_deref().unwrap_or(NO_REASON)));
             }
             _ => {}
         }
@@ -264,8 +284,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
                 parsed.permission = Some(HookPermission::Deny);
                 // A deny *is* a block, so callers that only look at
                 // `block_reason` (every one that cannot ask a user) behave.
-                parsed.block_reason =
-                    Some(truncate_output(reason.as_deref().unwrap_or(UNEXPLAINED)));
+                parsed.block_reason = Some(truncate_output(reason.as_deref().unwrap_or(NO_REASON)));
             }
             other => warnings.push(format!(
                 "hook {} returned unknown permissionDecision {other:?} — ignored",
@@ -320,8 +339,9 @@ const fn rank(permission: HookPermission) -> u8 {
 pub fn merge(parsed: Vec<ParsedHook>) -> HookOutcome {
     let mut outcome = HookOutcome::default();
     for hook in parsed {
-        if outcome.block_reason.is_none() {
+        if outcome.block_reason.is_none() && hook.block_reason.is_some() {
             outcome.block_reason = hook.block_reason;
+            outcome.block_source = hook.source;
         }
         // Strictest wins; among equals the first, so a config's order still
         // decides whose reason the user reads.
@@ -359,6 +379,7 @@ mod tests {
             stdout: stdout.into(),
             stderr: String::new(),
             error: None,
+            source: None,
         }
     }
 
@@ -376,6 +397,7 @@ mod tests {
             stdout: "this is not the reason".into(),
             stderr: "no destructive deletes".into(),
             error: None,
+            source: None,
         };
         let parsed = parse_run(&run, HookEvent::PreToolUse);
         assert_eq!(
@@ -393,7 +415,11 @@ mod tests {
             ..HookRun::default()
         };
         let parsed = parse_run(&run, HookEvent::PreToolUse);
-        assert!(parsed.block_reason.is_some(), "exit 2 always blocks");
+        assert_eq!(
+            parsed.block_reason.as_deref(),
+            Some("no reason given"),
+            "exit 2 always blocks, and says plainly that no reason came"
+        );
     }
 
     #[test]
@@ -443,13 +469,13 @@ mod tests {
             parse_run(&run, HookEvent::UserPromptSubmit)
                 .additional_context
                 .as_deref(),
-            Some("remember: the API moved")
+            Some("UserPromptSubmit hook: remember: the API moved")
         );
         assert_eq!(
             parse_run(&run, HookEvent::SessionStart)
                 .additional_context
                 .as_deref(),
-            Some("remember: the API moved")
+            Some("SessionStart hook: remember: the API moved")
         );
         // PreCompact's stdout is Claude Code's "custom compact
         // instructions" channel — context too.
@@ -457,7 +483,7 @@ mod tests {
             parse_run(&run, HookEvent::PreCompact)
                 .additional_context
                 .as_deref(),
-            Some("remember: the API moved")
+            Some("PreCompact hook: remember: the API moved")
         );
         // A tool-path hook's chatter is informational, not context.
         assert_eq!(
@@ -597,13 +623,52 @@ mod tests {
 
     #[test]
     fn additional_context_is_read_from_the_hook_specific_object() {
-        let parsed = parse(
-            r#"{"hookSpecificOutput":{"hookEventName":"PostToolUse",
-                 "additionalContext":"the linter reformatted it"}}"#,
+        let parsed = parse_run(
+            &ok_stdout(
+                r#"{"hookSpecificOutput":{"hookEventName":"PostToolUse",
+                     "additionalContext":"the linter reformatted it"}}"#,
+            ),
+            HookEvent::PostToolUse,
         );
         assert_eq!(
             parsed.additional_context.as_deref(),
-            Some("the linter reformatted it")
+            Some("PostToolUse hook: the linter reformatted it")
+        );
+    }
+
+    #[test]
+    fn a_context_names_the_hook_and_the_file_that_added_it() {
+        // Context is appended to what the model reads, beside text it did not
+        // come from — a tool's output, the user's prompt — so each entry says
+        // which hook wrote it and where that hook is configured
+        // (docs/hooks.md *What the model reads*).
+        let file = PathBuf::from("/home/u/.alter-zero/hooks.json");
+        let run = HookRun {
+            source: Some(file.clone()),
+            ..ok_stdout(
+                r#"{"hookSpecificOutput":{"hookEventName":"PostToolUse",
+                     "additionalContext":"the build id is ZX-4417"}}"#,
+            )
+        };
+        let parsed = parse_run(&run, HookEvent::PostToolUse);
+        assert_eq!(
+            parsed.additional_context.as_deref(),
+            Some("PostToolUse hook (/home/u/.alter-zero/hooks.json): the build id is ZX-4417")
+        );
+        assert_eq!(
+            parsed.source,
+            Some(file.clone()),
+            "the verdict keeps its file"
+        );
+        let plain = HookRun {
+            source: Some(file),
+            ..ok_stdout("branch main, 3 open PRs")
+        };
+        assert_eq!(
+            parse_run(&plain, HookEvent::SessionStart)
+                .additional_context
+                .as_deref(),
+            Some("SessionStart hook (/home/u/.alter-zero/hooks.json): branch main, 3 open PRs")
         );
     }
 
@@ -616,7 +681,10 @@ mod tests {
             r#"{"systemMessage":"ok","hookSpecificOutput":{"hookEventName":"PreToolUse",
                  "watchPaths":["/a"],"additionalContext":"c"}}"#,
         );
-        assert_eq!(parsed.additional_context.as_deref(), Some("c"));
+        assert_eq!(
+            parsed.additional_context.as_deref(),
+            Some("PreToolUse hook: c")
+        );
         assert_eq!(parsed.system_message.as_deref(), Some("ok"));
         assert!(parsed.warning.is_none());
     }
@@ -643,6 +711,40 @@ mod tests {
             },
         ]);
         assert_eq!(outcome.block_reason.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn the_winning_block_keeps_the_file_of_the_hook_that_gave_it() {
+        // The model reads which hooks.json refused it; with several layers
+        // merged, that is the first blocking hook's file, never a quieter
+        // sibling's.
+        let from = |file: &str| Some(PathBuf::from(file));
+        let outcome = merge(vec![
+            ParsedHook {
+                source: from("/home/u/.alter-zero/hooks.json"),
+                ..ParsedHook::default()
+            },
+            ParsedHook {
+                block_reason: Some("not on main".into()),
+                source: from("/repo/.alter-zero/hooks.json"),
+                ..ParsedHook::default()
+            },
+            ParsedHook {
+                block_reason: Some("second".into()),
+                source: from("/elsewhere/hooks.json"),
+                ..ParsedHook::default()
+            },
+        ]);
+        assert_eq!(outcome.block_reason.as_deref(), Some("not on main"));
+        assert_eq!(outcome.block_source, from("/repo/.alter-zero/hooks.json"));
+        // A quiet sibling's file is not an outcome: nothing blocked.
+        assert!(
+            merge(vec![ParsedHook {
+                source: from("/home/u/.alter-zero/hooks.json"),
+                ..ParsedHook::default()
+            }])
+            .is_quiet()
+        );
     }
 
     #[test]
