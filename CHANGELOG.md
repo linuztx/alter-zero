@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Cancelling an MCP server's sign-in no longer leaves `/mcp` waiting for
+  five minutes.** Pressing Cancel on the provider's consent screen sends the
+  browser back with a refusal, which the sign-in read as an unrelated
+  request, so the page sat on "Authenticating…" until it timed out. The
+  refusal now ends the sign-in at once with the provider's reason. A browser
+  connection that never sends anything can no longer stall the sign-in
+  either, and the browser tab only says "Authentication complete" once the
+  app has actually accepted the result (`docs/mcp.md`).
+
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a
   tool round, sometimes after a long thought that used up its whole output

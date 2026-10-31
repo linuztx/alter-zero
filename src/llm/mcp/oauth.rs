@@ -587,9 +587,8 @@ pub fn build_authorize_url(
     format!("{authorization_endpoint}{sep}{query}")
 }
 
-/// One query parameter out of a redirect URL/path/query —
-/// [`parse_redirect`]'s extractor generalized, because RFC 9207's `iss`
-/// rides beside `code` and the validation wants it by name.
+/// One query parameter out of a redirect URL/path/query, by name — the
+/// `code`, the `state`, a refusal's `error`, and RFC 9207's `iss`.
 #[must_use]
 pub fn redirect_param(text: &str, key: &str) -> Option<String> {
     let text = text.trim();
@@ -664,28 +663,64 @@ pub fn with_offline_access(base: Option<&str>, as_supported: &[String]) -> Optio
     Some(format!("{base} {OFFLINE_ACCESS}"))
 }
 
-/// Parse `code` and `state` out of a pasted redirect URL (or a bare
-/// `?code=…` query, or the callback request path).
+/// `code` and `state` out of a redirect URL, path or bare query — the shape
+/// the ChatGPT and Claude sign-ins read (`llm::chatgpt`, `llm::claude`);
+/// [`parse_callback`] is the fuller reading the MCP flow acts on.
 #[must_use]
 pub fn parse_redirect(text: &str) -> Option<(String, Option<String>)> {
-    let text = text.trim();
-    let query = text
-        .split_once('?')
-        .map_or(text, |(_, query)| query)
-        .split('#')
-        .next()
-        .unwrap_or_default();
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        match key {
-            "code" => code = Some(url_decode(value)),
-            "state" => state = Some(url_decode(value)),
-            _ => {}
+    match parse_callback(text) {
+        Callback::Code { code, state } => Some((code, state)),
+        Callback::Denied { .. } | Callback::Other => None,
+    }
+}
+
+/// What one request on the loopback port — or one pasted redirect URL —
+/// carried back from the authorization server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callback {
+    /// The authorization code, and the `state` it rode with.
+    Code { code: String, state: Option<String> },
+    /// The authorization server's refusal (RFC 6749 §4.1.2.1): `error` is
+    /// `access_denied` when the user pressed Cancel on the consent screen.
+    Denied {
+        error: String,
+        description: Option<String>,
+        state: Option<String>,
+    },
+    /// Not the redirect at all — a favicon fetch, a stale tab.
+    Other,
+}
+
+/// Read a callback request path (or a pasted redirect URL / bare query): a
+/// code wins, else an `error` is the server's refusal, else it is some other
+/// request on the port.
+#[must_use]
+pub fn parse_callback(text: &str) -> Callback {
+    let state = redirect_param(text, "state");
+    if let Some(code) = redirect_param(text, "code") {
+        return Callback::Code { code, state };
+    }
+    match redirect_param(text, "error") {
+        Some(error) => Callback::Denied {
+            error,
+            description: redirect_param(text, "error_description"),
+            state,
+        },
+        None => Callback::Other,
+    }
+}
+
+impl Callback {
+    /// The refusal as the flow reports it — `access_denied: The user said
+    /// no`, or the bare code when the server gave no description.
+    fn refusal(error: &str, description: Option<&str>) -> String {
+        match description {
+            Some(description) => {
+                format!("the authorization server refused ({error}: {description})")
+            }
+            None => format!("the authorization server refused ({error})"),
         }
     }
-    code.filter(|c| !c.is_empty()).map(|c| (c, state))
 }
 
 /// The PKCE pair (verifier, S256 challenge) and a `state`, from fresh
@@ -1057,6 +1092,7 @@ fn wait_for_code(
         .set_nonblocking(true)
         .map_err(|e| format!("callback port: {e}"))?;
     let started = Instant::now();
+    let mut pending: Vec<PendingRequest> = Vec::new();
     loop {
         if cancel.is_cancelled() {
             return Err("cancelled".to_string());
@@ -1067,62 +1103,181 @@ fn wait_for_code(
         // The pasted redirect URL — the headless/remote path.
         match paste_rx.try_recv() {
             Ok(text) => {
-                if let Some((code, got_state)) = parse_redirect(&text) {
-                    if got_state.as_deref().is_some_and(|got| got != state) {
-                        return Err("the pasted URL's state doesn't match".to_string());
-                    }
-                    validate_issuer(
-                        redirect_param(&text, "iss").as_deref(),
-                        meta.issuer.as_deref(),
-                        meta.iss_required,
-                    )?;
-                    return Ok(code);
+                if let Some(verdict) = callback_verdict(&text, state, meta, "pasted URL") {
+                    return verdict;
                 }
                 // Not parseable — keep waiting; the page shows the format.
             }
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {}
         }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buffer = [0u8; 4096];
-                let read = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or_default();
-                let parsed = parse_redirect(path);
-                let ok = parsed.is_some();
-                let body = if ok {
-                    "<html><body><h3>Authentication complete.</h3>You can close this tab and return to the terminal.</body></html>"
-                } else {
-                    "<html><body><h3>Waiting for authentication…</h3></body></html>"
-                };
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-                if let Some((code, got_state)) = parsed {
-                    if got_state.as_deref().is_some_and(|got| got != state) {
-                        return Err("the callback's state doesn't match".to_string());
+        // Take every connection the browser opened, then service each without
+        // blocking: a speculative preconnect sends nothing, and a blocking
+        // read on it froze this loop — the real callback, the paste field and
+        // Esc with it.
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if stream.set_nonblocking(true).is_ok() {
+                        pending.push(PendingRequest::new(stream));
                     }
-                    validate_issuer(
-                        redirect_param(path, "iss").as_deref(),
-                        meta.issuer.as_deref(),
-                        meta.iss_required,
-                    )?;
-                    return Ok(code);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(format!("callback port: {e}")),
+            }
+        }
+        let mut index = 0;
+        while index < pending.len() {
+            match pending[index].poll() {
+                RequestRead::Waiting if pending[index].opened.elapsed() < IDLE_CONNECTION => {
+                    index += 1;
+                }
+                RequestRead::Waiting | RequestRead::Closed => {
+                    pending.swap_remove(index);
+                }
+                RequestRead::Line(path) => {
+                    let request = pending.swap_remove(index);
+                    let verdict = callback_verdict(&path, state, meta, "callback");
+                    // The browser hears the verdict, never a guess made
+                    // before the state and `iss` were checked.
+                    let page = match &verdict {
+                        Some(Ok(_)) => CALLBACK_COMPLETE_PAGE,
+                        Some(Err(_)) => CALLBACK_FAILED_PAGE,
+                        None => CALLBACK_WAITING_PAGE,
+                    };
+                    request.respond(page);
+                    if let Some(verdict) = verdict {
+                        return verdict;
+                    }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL);
-            }
-            Err(e) => return Err(format!("callback port: {e}")),
         }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// How long a connection may sit on the callback port without sending its
+/// request line before it is dropped — a preconnect the browser never used.
+const IDLE_CONNECTION: Duration = Duration::from_secs(30);
+
+/// The pages the browser lands on. None of them echo anything the
+/// authorization server sent: the terminal has the details.
+const CALLBACK_COMPLETE_PAGE: &str = "<html><body><h3>Authentication complete.</h3>You can close this tab and return to the terminal.</body></html>";
+const CALLBACK_FAILED_PAGE: &str = "<html><body><h3>Authentication failed.</h3>Return to the terminal for the reason.</body></html>";
+const CALLBACK_WAITING_PAGE: &str =
+    "<html><body><h3>Waiting for authentication…</h3></body></html>";
+
+/// One connection on the callback port, read until its request line.
+struct PendingRequest {
+    stream: std::net::TcpStream,
+    buffer: Vec<u8>,
+    opened: Instant,
+}
+
+/// What one non-blocking read of a [`PendingRequest`] found.
+enum RequestRead {
+    /// Nothing complete yet.
+    Waiting,
+    /// The peer went away (or the read failed) before a request line.
+    Closed,
+    /// The request target of a complete request line.
+    Line(String),
+}
+
+impl PendingRequest {
+    /// The request line must fit in this much — a redirect with a long code
+    /// and an `iss` is a few hundred bytes.
+    const MAX_HEAD: usize = 16 * 1024;
+
+    fn new(stream: std::net::TcpStream) -> Self {
+        Self {
+            stream,
+            buffer: Vec::new(),
+            opened: Instant::now(),
+        }
+    }
+
+    fn poll(&mut self) -> RequestRead {
+        let mut chunk = [0u8; 4096];
+        loop {
+            if let Some(end) = self.buffer.windows(2).position(|w| w == b"\r\n") {
+                let line = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
+                return match line.split_whitespace().nth(1) {
+                    Some(target) => RequestRead::Line(target.to_string()),
+                    None => RequestRead::Closed,
+                };
+            }
+            if self.buffer.len() > Self::MAX_HEAD {
+                return RequestRead::Closed;
+            }
+            match self.stream.read(&mut chunk) {
+                Ok(0) => return RequestRead::Closed,
+                Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return RequestRead::Waiting;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return RequestRead::Closed,
+            }
+        }
+    }
+
+    /// Answer with `page` and close — best-effort, bounded, blocking.
+    fn respond(mut self, page: &str) {
+        let _ = self.stream.set_nonblocking(false);
+        let _ = self.stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = self.stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                page.len()
+            )
+            .as_bytes(),
+        );
+    }
+}
+
+/// What one redirect (a callback path or a pasted URL) settles, if
+/// anything: the code, or the end of the flow. `None` keeps waiting — a
+/// request that isn't the redirect, or a refusal carrying another flow's
+/// `state` (a stale tab must not end this one). The RFC 9207 `iss` check
+/// runs before a code is redeemed **and** before a refusal is acted on: an
+/// error from an unvalidated server is not shown (2026-07-28 authorization).
+fn callback_verdict(
+    text: &str,
+    state: &str,
+    meta: &AuthServerMeta,
+    source: &str,
+) -> Option<Result<String, String>> {
+    let check_issuer = || {
+        validate_issuer(
+            redirect_param(text, "iss").as_deref(),
+            meta.issuer.as_deref(),
+            meta.iss_required,
+        )
+    };
+    match parse_callback(text) {
+        Callback::Code {
+            code,
+            state: got_state,
+        } => {
+            if got_state.as_deref().is_some_and(|got| got != state) {
+                return Some(Err(format!("the {source}'s state doesn't match")));
+            }
+            Some(check_issuer().map(|()| code))
+        }
+        Callback::Denied {
+            error,
+            description,
+            state: got_state,
+        } => {
+            if got_state.as_deref().is_some_and(|got| got != state) {
+                return None;
+            }
+            Some(
+                check_issuer()
+                    .and_then(|()| Err(Callback::refusal(&error, description.as_deref()))),
+            )
+        }
+        Callback::Other => None,
     }
 }
 
@@ -1225,21 +1380,156 @@ mod tests {
     }
 
     #[test]
-    fn redirect_parses_from_urls_paths_and_queries() {
+    fn callbacks_parse_from_urls_paths_and_queries() {
+        let code = |code: &str, state: Option<&str>| Callback::Code {
+            code: code.to_string(),
+            state: state.map(str::to_string),
+        };
         assert_eq!(
-            parse_redirect("http://localhost:1/callback?code=abc&state=s1"),
+            parse_callback("http://localhost:1/callback?code=abc&state=s1"),
+            code("abc", Some("s1"))
+        );
+        assert_eq!(parse_callback("/callback?code=a%2Fb"), code("a/b", None));
+        assert_eq!(parse_callback("code=xyz&state=q"), code("xyz", Some("q")));
+        // A parameter with no `=` (a trailing `&`) costs nothing.
+        assert_eq!(
+            parse_callback("/callback?code=abc&state=s1&"),
+            code("abc", Some("s1"))
+        );
+        assert_eq!(parse_callback("plain text"), Callback::Other);
+        // The sign-ins' narrower reading: a code, or nothing.
+        assert_eq!(
+            parse_redirect("/callback?code=abc&state=s1"),
             Some(("abc".to_string(), Some("s1".to_string())))
         );
-        assert_eq!(
-            parse_redirect("/callback?code=a%2Fb"),
-            Some(("a/b".to_string(), None))
-        );
-        assert_eq!(
-            parse_redirect("code=xyz&state=q"),
-            Some(("xyz".to_string(), Some("q".to_string())))
-        );
         assert_eq!(parse_redirect("https://x/cb?error=denied"), None);
-        assert_eq!(parse_redirect("plain text"), None);
+    }
+
+    #[test]
+    fn a_callback_names_its_code_its_refusal_or_nothing() {
+        assert_eq!(
+            parse_callback("/callback?code=abc&state=s1"),
+            Callback::Code {
+                code: "abc".to_string(),
+                state: Some("s1".to_string()),
+            }
+        );
+        // RFC 6749 §4.1.2.1: a refused authorization comes back as `error`
+        // (Cancel on the consent screen is `access_denied`) — a verdict, not
+        // a stray request to wait past.
+        assert_eq!(
+            parse_callback(
+                "/callback?error=access_denied&error_description=The+user+said+no&state=s1"
+            ),
+            Callback::Denied {
+                error: "access_denied".to_string(),
+                description: Some("The user said no".to_string()),
+                state: Some("s1".to_string()),
+            }
+        );
+        assert_eq!(parse_callback("/favicon.ico"), Callback::Other);
+        assert_eq!(parse_callback("/callback"), Callback::Other);
+    }
+
+    #[test]
+    fn a_denied_consent_ends_the_wait_instead_of_the_timeout() {
+        // Cancel on the consent screen used to read as "not the callback",
+        // so the flow sat on the port for the whole five-minute budget.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        std::thread::spawn(move || browser_get(port, "/callback?error=access_denied&state=st"));
+        let started = Instant::now();
+        let err = wait_for_code(
+            &listener,
+            "st",
+            &bare_meta(),
+            &paste_rx,
+            &CancelToken::new(),
+        )
+        .expect_err("a refusal ends the flow");
+        assert!(err.contains("access_denied"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// `GET {path}` against the loopback port; returns the response page.
+    fn browser_get(port: u16, path: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut page = String::new();
+        let _ = stream.read_to_string(&mut page);
+        page
+    }
+
+    fn bare_meta() -> AuthServerMeta {
+        AuthServerMeta {
+            authorization_endpoint: String::new(),
+            token_endpoint: String::new(),
+            registration_endpoint: None,
+            scopes: None,
+            issuer: None,
+            iss_required: false,
+        }
+    }
+
+    #[test]
+    fn an_idle_connection_never_holds_up_the_callback() {
+        // Browsers open speculative connections to a page's origin and may
+        // send nothing on them. A blocking read on one froze the whole wait
+        // — the real callback, the paste field and Esc included.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            drop(idle);
+        });
+        let browser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            browser_get(port, "/callback?code=abc&state=st")
+        });
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let started = Instant::now();
+        let code = wait_for_code(
+            &listener,
+            "st",
+            &bare_meta(),
+            &paste_rx,
+            &CancelToken::new(),
+        );
+        assert_eq!(code.as_deref(), Ok("abc"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the idle socket held the callback up for {:?}",
+            started.elapsed()
+        );
+        assert!(browser.join().unwrap().contains("Authentication complete"));
+    }
+
+    #[test]
+    fn the_browser_hears_complete_only_for_a_code_the_flow_accepted() {
+        // The page used to say "complete" before the state was checked, so a
+        // forged or stale redirect read as a success in the browser while
+        // the terminal reported the failure.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let browser =
+            std::thread::spawn(move || browser_get(port, "/callback?code=abc&state=forged"));
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let err = wait_for_code(
+            &listener,
+            "st",
+            &bare_meta(),
+            &paste_rx,
+            &CancelToken::new(),
+        )
+        .expect_err("a mismatched state ends the flow");
+        assert!(err.contains("state"), "{err}");
+        let page = browser.join().unwrap();
+        assert!(!page.contains("Authentication complete"), "{page}");
+        assert!(page.contains("Authentication failed"), "{page}");
     }
 
     #[test]

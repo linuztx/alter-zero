@@ -323,6 +323,20 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   server URL (0600, best-effort), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
 
+  The callback port is served **without ever blocking on one connection**
+  (`wait_for_code`): every connection the browser opens is taken and read
+  non-blockingly until its request line arrives, because browsers open
+  speculative connections that send nothing, and a blocking read on one
+  froze the whole wait — the real callback, the paste field and Esc with
+  it. A redirect carrying `error=` (`access_denied` is Cancel on the
+  consent screen) **ends the flow** with the server's reason instead of
+  reading as a stray request and waiting out the five-minute budget — after
+  the same `iss` check a code gets, since an error from an unvalidated
+  server must not be acted on, and only when its `state` is this flow's (a
+  stale tab must not end it). The browser's page is chosen **after** that
+  verdict, so a forged or stale redirect never reads "Authentication
+  complete", and no page echoes what the server sent.
+
   Two things the flow must get right or the grant is born unrenewable:
   **`offline_access`** is what actually buys a refresh token, and SEP-2207
   deliberately keeps it out of the *protected resource's* metadata
