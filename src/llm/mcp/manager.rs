@@ -134,6 +134,9 @@ struct ServerState {
     /// publishes off the well-known path, and the `scope` the resource
     /// actually wants (`docs/mcp.md`).
     challenge: Option<String>,
+    /// The server answered anonymously but publishes protected-resource
+    /// metadata (RFC 9728): it expects a sign-in all the same.
+    advertises_auth: bool,
     /// Bumped on disable/reconnect so a stale connect thread's result is
     /// dropped instead of resurrecting an old state.
     generation: u64,
@@ -204,6 +207,7 @@ impl McpManager {
                     wire_map: BTreeMap::new(),
                     has_tokens,
                     challenge: None,
+                    advertises_auth: false,
                     generation: 0,
                     entry,
                 }
@@ -300,6 +304,7 @@ impl McpManager {
             server.identity = None;
             server.tools.clear();
             server.wire_map.clear();
+            server.advertises_auth = false;
             server.has_tokens = server
                 .entry
                 .config
@@ -327,6 +332,12 @@ impl McpManager {
             let bearer = config
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
+            // A connect presenting nothing at all may meet a server that
+            // serves its listing to anyone and challenges only the call.
+            let anonymous = bearer.is_none()
+                && config.is_remote()
+                && !config.has_auth_header()
+                && config.oauth().is_none();
             let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
             // A 401 with a stored grant gets one forced refresh and one
             // retry before anyone is asked to re-authenticate — an access
@@ -366,6 +377,7 @@ impl McpManager {
             if server.generation != generation {
                 return; // a reconnect/disable superseded this attempt
             }
+            let probe = anonymous && result.is_ok();
             match result {
                 Ok(connection) => {
                     server.identity = Some(connection.identity);
@@ -407,6 +419,25 @@ impl McpManager {
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             drop(inner);
             manager.notify(McpEvent::Changed);
+            // Does the anonymous server publish protected-resource metadata?
+            // Then it expects a sign-in, and `/mcp` offers one before the
+            // first call is refused. Off the lock; the row updates when the
+            // answer lands, and a newer connect's state is never touched.
+            if probe
+                && let Some(url) = config.url()
+                && oauth::probe_protected(url)
+            {
+                let mut inner = manager.lock();
+                if let Some(server) = inner
+                    .servers
+                    .iter_mut()
+                    .find(|s| s.entry.name == name && s.generation == generation)
+                {
+                    server.advertises_auth = true;
+                }
+                drop(inner);
+                manager.notify(McpEvent::Changed);
+            }
         });
     }
 
@@ -744,7 +775,9 @@ impl McpManager {
                     server.entry.config.is_remote(),
                     server.entry.config.has_auth_header(),
                     server.has_tokens,
-                    server.entry.config.oauth().is_some() || server.challenge.is_some(),
+                    server.entry.config.oauth().is_some()
+                        || server.challenge.is_some()
+                        || server.advertises_auth,
                     &server.status,
                 ),
                 identity: server.identity.clone(),
@@ -2306,6 +2339,147 @@ done
         );
         assert!(outcome.ok, "{}", outcome.output);
         assert_eq!(outcome.output, "region eu-west4");
+        manager.shutdown();
+    }
+
+    /// A streamable-HTTP server that, like Google's, answers `initialize`
+    /// and `tools/list` to anyone; `protected` decides whether it publishes
+    /// RFC 9728 protected-resource metadata at the path-aware well-known URL.
+    fn spawn_anonymous_fixture(protected: bool) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server_url = format!("{base}/mcp");
+        let url_t = server_url.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let reply = |status: &str, body: String| {
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let response = if line.starts_with("GET /.well-known/oauth-protected-resource/mcp ")
+                {
+                    if protected {
+                        reply(
+                            "200 OK",
+                            serde_json::json!({"resource": url_t,
+                                "authorization_servers": ["https://as.test"]})
+                            .to_string(),
+                        )
+                    } else {
+                        reply("404 Not Found", "{}".to_string())
+                    }
+                } else if line.starts_with("GET ") {
+                    reply("404 Not Found", "{}".to_string())
+                } else {
+                    let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                    match parsed.get("method").and_then(Value::as_str).unwrap_or("") {
+                        "initialize" => reply(
+                            "200 OK",
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                                "protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                                "serverInfo": {"name": "anonymous", "version": "0"}}})
+                            .to_string(),
+                        ),
+                        "tools/list" => reply(
+                            "200 OK",
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [
+                                {"name": "hello", "description": "Hi.",
+                                 "inputSchema": {"type": "object", "properties": {}}}]}})
+                            .to_string(),
+                        ),
+                        "notifications/initialized" => {
+                            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .to_string()
+                        }
+                        _ => reply(
+                            "200 OK",
+                            serde_json::json!({"jsonrpc": "2.0", "id": id,
+                                "error": {"code": -32601, "message": "unknown"}})
+                            .to_string(),
+                        ),
+                    }
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        server_url
+    }
+
+    fn anonymous_manager(url: String) -> McpManager {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "anon".to_string(),
+                    config: McpServerConfig::Http {
+                        url,
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth: None,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_server_publishing_resource_metadata_is_offered_a_sign_in_up_front() {
+        // Google's servers list their tools to anyone and refuse only the
+        // call — with a bare `{"url": …}` config the page read "✔
+        // authenticated" and offered no Authenticate until the model's first
+        // call failed. Their published protected-resource metadata says a
+        // sign-in is expected.
+        let manager = anonymous_manager(spawn_anonymous_fixture(true));
+        manager.start_connections();
+        wait_status(&manager, "anon", |s| *s == McpServerStatus::Connected);
+        for _ in 0..200 {
+            if manager.snapshot()[0].auth == Some(crate::mcp::McpAuthState::NotAuthenticated) {
+                manager.shutdown();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("auth stayed {:?}", manager.snapshot()[0].auth);
+    }
+
+    #[test]
+    fn a_public_server_still_reads_as_needing_nothing() {
+        let manager = anonymous_manager(spawn_anonymous_fixture(false));
+        manager.start_connections();
+        wait_status(&manager, "anon", |s| *s == McpServerStatus::Connected);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::NotRequired)
+        );
         manager.shutdown();
     }
 

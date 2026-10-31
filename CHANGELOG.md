@@ -30,6 +30,12 @@ release heading when a version is cut.
   for a refresh token so the login renews itself instead of lapsing within
   the hour. A client you enter for one provider is never sent to another
   (`docs/mcp.md`).
+- **`/mcp` offers to sign in to a server like Google Calendar before its
+  first call fails.** Google's servers list their tools to anyone and refuse
+  only the calls, so a plain `{"url": …}` entry read "✔ authenticated" with
+  no Authenticate option until the model hit an error. A server that
+  publishes OAuth metadata now reads "✘ not authenticated" with
+  Authenticate offered as soon as it connects.
 - **`${VAR}` references in `mcp.json` now expand, as in Claude Code.** A
   `.mcp.json` written for Claude Code often reads a token from the
   environment, such as `"Authorization": "Bearer ${GITHUB_TOKEN}"`, and

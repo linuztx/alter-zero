@@ -1138,6 +1138,51 @@ fn post_form_raw(
     Ok((status, response.text().unwrap_or_default()))
 }
 
+/// Does this protected-resource document (RFC 9728) declare `server_url`
+/// an OAuth-protected resource? It must name an authorization server and
+/// speak for this server ([`resource_allowed`]).
+#[must_use]
+pub fn advertises_protection(server_url: &str, prm: &Value) -> bool {
+    let names_a_server = prm
+        .get("authorization_servers")
+        .and_then(Value::as_array)
+        .is_some_and(|servers| servers.iter().any(Value::is_string));
+    let for_this_server = prm
+        .get("resource")
+        .and_then(Value::as_str)
+        .is_none_or(|resource| resource_allowed(server_url, resource));
+    names_a_server && for_this_server
+}
+
+/// How long the protected-resource probe waits per document — it runs on a
+/// connect worker after the server is already usable, so a slow answer only
+/// delays the `Auth:` row.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// After an anonymous connect: does `server_url` publish protected-resource
+/// metadata at its well-known location? A server that lists its tools to
+/// anyone and challenges only the call (Google's) says up front this way
+/// that a sign-in is expected. Path-aware URL first, then the root.
+#[must_use]
+pub fn probe_protected(server_url: &str) -> bool {
+    let Ok(client) = crate::llm::http_client(PROBE_TIMEOUT) else {
+        return false;
+    };
+    well_known_candidates(server_url, "oauth-protected-resource")
+        .into_iter()
+        .any(|candidate| {
+            client
+                .get(&candidate)
+                .header("Accept", "application/json")
+                .header("MCP-Protocol-Version", crate::mcp::PROTOCOL_VERSION)
+                .send()
+                .ok()
+                .filter(|response| response.status().is_success())
+                .and_then(|response| response.json::<Value>().ok())
+                .is_some_and(|prm| advertises_protection(server_url, &prm))
+        })
+}
+
 /// Resolve the authorization server for `server_url`, seeded by the 401's
 /// challenge when one was captured. A server's `oauth` config can pin the
 /// scopes and name the metadata document outright
@@ -3090,6 +3135,26 @@ mod tests {
             server,
             "http://calendarmcp.googleapis.com/mcp/v1"
         ));
+    }
+
+    #[test]
+    fn protected_resource_metadata_marks_a_server_that_expects_a_sign_in() {
+        let server = "https://calendarmcp.googleapis.com/mcp/v1";
+        let prm = |value: serde_json::Value| advertises_protection(server, &value);
+        assert!(prm(serde_json::json!({
+            "resource": server,
+            "authorization_servers": ["https://accounts.google.com/"]
+        })));
+        // No authorization server named: nothing to sign in to.
+        assert!(!prm(
+            serde_json::json!({"resource": server, "authorization_servers": []})
+        ));
+        assert!(!prm(serde_json::json!({"resource": server})));
+        // A document speaking for another server says nothing about this one.
+        assert!(!prm(serde_json::json!({
+            "resource": "https://elsewhere.test/mcp",
+            "authorization_servers": ["https://as.test"]
+        })));
     }
 
     #[test]

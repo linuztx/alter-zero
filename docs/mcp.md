@@ -226,8 +226,16 @@ derives five, in this order:
 | `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, and not serving — or serving anonymously while a sign-in **is** expected |
 
 **An anonymous connect proves nothing when the server expects a
-sign-in** — its config carries an `oauth` object, or it has already refused
-a call with a 401 (the challenge is kept). Google's servers answer
+sign-in** — its config carries an `oauth` object, it has already refused a
+call with a 401 (the challenge is kept), or it **publishes protected-resource
+metadata**: after a connect that presented nothing (no stored grant, no
+`Authorization` header, no `oauth` object), the connect worker asks the
+server's well-known `oauth-protected-resource` URLs (path-aware, then root;
+5 s each, off the lock, the row updating when the answer lands), and a
+document naming an authorization server for this server
+(`oauth::advertises_protection`) is RFC 9728's own statement that the
+server is OAuth-protected. That is what makes a bare `{"url": …}` Google
+entry offer Authenticate from the start. Google's servers answer
 `initialize` and `tools/list` to anyone and challenge only `tools/call`, so
 such a server used to read `✔ authenticated` with no Authenticate action
 until the model's first call failed; it now reads `✘ not authenticated`
