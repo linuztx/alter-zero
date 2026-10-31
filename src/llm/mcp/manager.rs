@@ -836,19 +836,38 @@ impl McpManager {
                 .iter()
                 .find(|s| s.wire_map.contains_key(&call.name))
                 .and_then(|server| {
+                    let raw_tool = server.wire_map.get(&call.name)?.clone();
+                    // The `x-mcp-header` annotations this call must mirror
+                    // (2026-07-28); a tool whose annotations are invalid was
+                    // never offered over a transport that mirrors them.
+                    let header_params = server
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name == raw_tool)
+                        .and_then(|tool| crate::mcp::header_params(&tool.input_schema).ok())
+                        .unwrap_or_default();
                     Some((
                         server.entry.name.clone(),
-                        server.wire_map.get(&call.name)?.clone(),
+                        raw_tool,
                         server.transport.clone()?,
                         server.entry.config.url().map(str::to_string),
                         inner.auth_path.clone(),
                         inner.tool_timeout,
                         server.generation,
+                        header_params,
                     ))
                 })
         };
-        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout, generation)) =
-            lookup
+        let Some((
+            server_name,
+            raw_tool,
+            transport,
+            server_url,
+            auth_path,
+            timeout,
+            generation,
+            header_params,
+        )) = lookup
         else {
             // A server that just asked for a sign-in dropped its tools; a
             // later call to one of them (the same batch, the same turn) hears
@@ -870,6 +889,7 @@ impl McpManager {
             Err(_) if call.arguments.trim().is_empty() => Value::Object(Default::default()),
             Err(e) => return ToolOutcome::error(format!("invalid tool arguments: {e}")),
         };
+        let param_headers = crate::mcp::param_headers(&header_params, &arguments);
         let request = |refreshed_bearer: Option<String>| {
             let mut transport = transport
                 .lock()
@@ -877,9 +897,10 @@ impl McpManager {
             if let Some(bearer) = refreshed_bearer {
                 transport.set_bearer(Some(bearer));
             }
-            transport.request(
+            transport.request_with_params(
                 "tools/call",
                 call_params(&raw_tool, &arguments),
+                param_headers.clone(),
                 timeout,
                 cancel,
             )
@@ -2241,6 +2262,51 @@ done
         assert!(ok, "{detail}");
         let tokens = oauth::load_tokens(Some(&store), &fixture.server_url).expect("a grant");
         assert_eq!(tokens.auth_method.as_deref(), Some("client_secret_basic"));
+    }
+
+    #[test]
+    fn a_modern_call_mirrors_its_annotated_arguments() {
+        // The enforcing 2026-07-28 fixture refuses `query` without a matching
+        // `Mcp-Param-Region` — so a green call proves the manager sends it —
+        // and lists a tool whose annotation is invalid, which is never
+        // offered.
+        let url = super::super::client::tests::spawn_modern_http_fixture();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "modern".to_string(),
+                    config: McpServerConfig::Http {
+                        url,
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth: None,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_status(&manager, "modern", |s| *s == McpServerStatus::Connected);
+        assert_eq!(
+            manager.fingerprint(),
+            ["mcp__modern__greet", "mcp__modern__query"]
+        );
+        let outcome = manager.call_tool(
+            &ToolCallRequest {
+                id: "1".to_string(),
+                name: "mcp__modern__query".to_string(),
+                arguments: r#"{"region": "eu-west4", "sql": "select 1"}"#.to_string(),
+            },
+            &CancelToken::new(),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "region eu-west4");
+        manager.shutdown();
     }
 
     #[test]

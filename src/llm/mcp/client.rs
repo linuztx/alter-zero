@@ -292,6 +292,12 @@ fn finish(
         }
         cursor = next;
     }
+    // Over modern streamable HTTP a tool whose `x-mcp-header` annotations
+    // break the 2026-07-28 constraints MUST be left out — one malformed
+    // definition must not take the server's other tools down with it.
+    if transport.mirrors_params() {
+        tools.retain(|tool| crate::mcp::header_params(&tool.input_schema).is_ok());
+    }
     Ok(Connection {
         transport,
         identity,
@@ -300,7 +306,7 @@ fn finish(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
@@ -446,7 +452,7 @@ mod tests {
     /// error otherwise), `tools/call` must carry `Mcp-Name` — so a green
     /// connect + call *proves* the client sends the 2026-07-28 request
     /// metadata.
-    fn spawn_modern_http_fixture() -> String {
+    pub(in crate::llm::mcp) fn spawn_modern_http_fixture() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -461,6 +467,7 @@ mod tests {
                 let mut method_header = String::new();
                 let mut name_header = String::new();
                 let mut version_header = String::new();
+                let mut region_header: Option<String> = None;
                 loop {
                     let mut header = String::new();
                     if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
@@ -478,6 +485,11 @@ mod tests {
                     }
                     if let Some(rest) = lower.strip_prefix("mcp-protocol-version:") {
                         version_header = rest.trim().to_string();
+                    }
+                    if lower.starts_with("mcp-param-region:") {
+                        region_header = header
+                            .split_once(':')
+                            .map(|(_, value)| value.trim().to_string());
                     }
                 }
                 let mut body = vec![0u8; content_length];
@@ -539,8 +551,38 @@ mod tests {
                             "jsonrpc": "2.0", "id": id,
                             "result": {"resultType": "complete", "tools": [
                                 {"name": "greet", "description": "Greet.",
-                                 "inputSchema": {"type": "object", "properties": {}}}
+                                 "inputSchema": {"type": "object", "properties": {}}},
+                                {"name": "query", "description": "Query a region.",
+                                 "inputSchema": {"type": "object", "properties": {
+                                     "region": {"type": "string", "x-mcp-header": "Region"},
+                                     "sql": {"type": "string"}}}},
+                                {"name": "broken", "description": "A number can't be a header.",
+                                 "inputSchema": {"type": "object", "properties": {
+                                     "n": {"type": "number", "x-mcp-header": "N"}}}}
                             ], "ttlMs": 60000, "cacheScope": "public"}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", &body);
+                    }
+                    "tools/call"
+                        if parsed["params"]["name"] == "query"
+                            && region_header.as_deref()
+                                != parsed["params"]["arguments"]["region"].as_str() =>
+                    {
+                        // The server's half of `x-mcp-header`: the mirrored
+                        // header must match the body, or HeaderMismatch.
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32020, "message": "Mcp-Param-Region mismatch"}
+                        })
+                        .to_string();
+                        respond(&mut stream, "400 Bad Request", &body);
+                    }
+                    "tools/call" if parsed["params"]["name"] == "query" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"resultType": "complete", "content": [{"type": "text",
+                                "text": format!("region {}", region_header.unwrap_or_default())}]}
                         })
                         .to_string();
                         respond(&mut stream, "200 OK", &body);
@@ -572,6 +614,59 @@ mod tests {
     }
 
     #[test]
+    fn a_modern_http_server_hears_annotated_parameters_as_headers() {
+        // 2026-07-28: `x-mcp-header` parameters are mirrored into
+        // `Mcp-Param-*` headers, and a server enforcing it refuses a call
+        // without them — HeaderMismatch.
+        let url = spawn_modern_http_fixture();
+        let config = McpServerConfig::Http {
+            url,
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let cancel = CancelToken::new();
+        let mut connection =
+            connect(&config, None, None, Duration::from_secs(10), &cancel).expect("connect");
+        assert!(connection.transport.mirrors_params());
+        let query = connection
+            .tools
+            .iter()
+            .find(|t| t.name == "query")
+            .expect("listed")
+            .clone();
+        let arguments = serde_json::json!({"region": "us-west1", "sql": "select 1"});
+        let headers = crate::mcp::param_headers(
+            &crate::mcp::header_params(&query.input_schema).expect("valid"),
+            &arguments,
+        );
+        let result = connection
+            .transport
+            .request_with_params(
+                "tools/call",
+                crate::mcp::call_params("query", &arguments),
+                headers,
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect("call");
+        assert_eq!(
+            crate::mcp::parse_call_result(&result).text,
+            "region us-west1"
+        );
+        let refused = connection.transport.request(
+            "tools/call",
+            crate::mcp::call_params("query", &arguments),
+            Duration::from_secs(10),
+            &cancel,
+        );
+        assert!(
+            matches!(&refused, Err(TransportError::Rpc(e)) if e.code == -32020),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
     fn a_modern_http_server_connects_statelessly_with_request_metadata() {
         let url = spawn_modern_http_fixture();
         let config = McpServerConfig::Http {
@@ -585,7 +680,9 @@ mod tests {
             connect(&config, None, None, Duration::from_secs(10), &cancel).expect("connect");
         assert_eq!(connection.identity.name, "modern-http");
         assert_eq!(connection.identity.protocol_version, "2026-07-28");
-        assert_eq!(connection.tools.len(), 1);
+        // The invalidly annotated tool is left out; the others stay.
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["greet", "query"]);
         // A call carries the Mcp-Name header (the fixture echoes it back).
         let result = connection
             .transport

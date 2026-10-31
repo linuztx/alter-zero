@@ -106,6 +106,32 @@ impl Transport {
         }
     }
 
+    /// [`Self::request`] for a `tools/call` whose tool annotates parameters
+    /// with `x-mcp-header`: a modern streamable-HTTP transport mirrors them
+    /// as these `Mcp-Param-*` headers (the 2026-07-28 MUST); every other
+    /// transport and era ignores them.
+    pub fn request_with_params(
+        &mut self,
+        method: &str,
+        params: Value,
+        param_headers: Vec<(String, String)>,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
+        match self {
+            Self::Http(t) => t.request_with(method, params, param_headers, deadline, cancel),
+            other => other.request(method, params, deadline, cancel),
+        }
+    }
+
+    /// Does this transport mirror tool parameters into headers — a
+    /// streamable-HTTP connection settled in the modern era? Such a
+    /// connection MUST also leave out tools whose annotations are invalid.
+    #[must_use]
+    pub const fn mirrors_params(&self) -> bool {
+        matches!(self, Self::Http(t) if t.modern.is_some())
+    }
+
     /// Send a notification (no response expected).
     pub fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
         match self {
@@ -418,6 +444,9 @@ struct ModernHeaders {
     /// `Mcp-Name` — `params.name`/`params.uri` for the three methods that
     /// have one (`tools/call`, `resources/read`, `prompts/get`).
     name: Option<String>,
+    /// `Mcp-Param-*` — a `tools/call`'s `x-mcp-header` parameters, already
+    /// encoded ([`crate::mcp::param_headers`]).
+    params: Vec<(String, String)>,
 }
 
 /// What one POST resolved to, off the worker thread.
@@ -509,7 +538,12 @@ impl HttpTransport {
 
     /// The modern request-metadata headers for one request, when the
     /// transport is in modern mode.
-    fn modern_headers(&self, method: &str, params: &Value) -> Option<ModernHeaders> {
+    fn modern_headers(
+        &self,
+        method: &str,
+        params: &Value,
+        param_headers: Vec<(String, String)>,
+    ) -> Option<ModernHeaders> {
         self.modern.as_ref()?;
         let name = matches!(method, "tools/call" | "resources/read" | "prompts/get")
             .then(|| {
@@ -523,6 +557,7 @@ impl HttpTransport {
         Some(ModernHeaders {
             method: method.to_string(),
             name,
+            params: param_headers,
         })
     }
 
@@ -533,17 +568,29 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        self.request_with(method, params, Vec::new(), deadline, cancel)
+    }
+
+    fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        param_headers: Vec<(String, String)>,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let mut outcome = self.send_once(method, &params, deadline, cancel)?;
+        let mut outcome =
+            self.send_once(method, &params, param_headers.clone(), deadline, cancel)?;
         if matches!(outcome, PostOutcome::SessionExpired) {
             // The session died under us. Start a new one and replay, so a
             // server restart or an idle timeout costs a round trip instead
             // of the whole connection.
             self.reinitialize(deadline, cancel)?;
-            outcome = self.send_once(method, &params, deadline, cancel)?;
+            outcome = self.send_once(method, &params, param_headers, deadline, cancel)?;
         }
         match outcome {
             PostOutcome::Response(result) => result.map_err(TransportError::Rpc),
@@ -563,12 +610,13 @@ impl HttpTransport {
         &mut self,
         method: &str,
         params: &Value,
+        param_headers: Vec<(String, String)>,
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<PostOutcome, TransportError> {
         let id = self.next_id;
         self.next_id += 1;
-        let modern = self.modern_headers(method, params);
+        let modern = self.modern_headers(method, params, param_headers);
         let outcome = self.post(
             request(id, method, params.clone()),
             Some(id),
@@ -608,6 +656,7 @@ impl HttpTransport {
         match self.send_once(
             "initialize",
             &initialize_params_for(&version),
+            Vec::new(),
             deadline,
             cancel,
         )? {
@@ -634,7 +683,7 @@ impl HttpTransport {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let modern = self.modern_headers(method, &params);
+        let modern = self.modern_headers(method, &params, Vec::new());
         let outcome = self.post(
             notification(method, params),
             None,
@@ -680,6 +729,9 @@ fn post_blocking(
         req = req.header("Mcp-Method", header_value(&headers.method));
         if let Some(name) = &headers.name {
             req = req.header("Mcp-Name", header_value(name));
+        }
+        for (name, value) in &headers.params {
+            req = req.header(name.as_str(), value.as_str());
         }
     }
     let response = match req.body(body.to_string()).send() {

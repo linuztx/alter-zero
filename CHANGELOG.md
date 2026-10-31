@@ -51,6 +51,13 @@ release heading when a version is cut.
   different provider on the same host. It also reads the server's
   challenge properly, where a request for more permission used to lose the
   permission it named (`docs/mcp.md`).
+- **Tools on newer MCP servers that route on an argument now work.** The
+  current MCP revision (2026-07-28) lets a server mark tool parameters,
+  such as a region or a repository, to be copied into request headers, and
+  a server that relies on it refused every call that lacked them with a
+  header mismatch. The app now sends them, and leaves out the rare tool
+  whose markings are malformed instead of losing the whole server
+  (`docs/mcp.md`).
 - **Long MCP tool calls are no longer cut off at one minute.** Over HTTP,
   every tool call ended after 60 seconds whatever
   `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` said (two minutes by default). The

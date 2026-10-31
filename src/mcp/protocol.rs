@@ -277,6 +277,167 @@ pub fn header_value(text: &str) -> String {
     format!("=?base64?{}?=", b64_standard(text.as_bytes()))
 }
 
+/// One tool parameter its server asks to have mirrored into an
+/// `Mcp-Param-{name}` request header — the 2026-07-28 Streamable HTTP
+/// transport's `x-mcp-header` schema extension, which lets intermediaries
+/// route on an argument without parsing the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderParam {
+    /// The header's name part: `Region` for `Mcp-Param-Region`.
+    pub name: String,
+    /// The chain of `properties` keys from the schema root to the parameter.
+    pub path: Vec<String>,
+}
+
+/// JSON-Schema keywords whose values are subschemas — a schema, a list of
+/// them, or a map of them. Everything else (`default`, `enum`, `const`,
+/// `examples`) is data, and an `x-mcp-header` key inside data is not an
+/// annotation.
+const SUBSCHEMA_KEYWORDS: &[&str] = &[
+    "items",
+    "prefixItems",
+    "additionalItems",
+    "additionalProperties",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+    "contains",
+    "propertyNames",
+    "not",
+    "if",
+    "then",
+    "else",
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "patternProperties",
+    "dependentSchemas",
+    "$defs",
+    "definitions",
+];
+
+/// The keywords among [`SUBSCHEMA_KEYWORDS`] whose value maps names to
+/// schemas.
+const SUBSCHEMA_MAPS: &[&str] = &[
+    "patternProperties",
+    "dependentSchemas",
+    "$defs",
+    "definitions",
+];
+
+/// A tool's `x-mcp-header` annotations, validated against the 2026-07-28
+/// constraints: a non-empty HTTP token, case-insensitively unique, on a
+/// `string`/`integer`/`boolean` parameter reached from the root through
+/// `properties` keys alone — never through `items`, a composition or
+/// conditional keyword, or `$ref`. `Err` names the first violation: over
+/// Streamable HTTP such a tool MUST be left out of the tool list.
+pub fn header_params(input_schema: &Value) -> Result<Vec<HeaderParam>, String> {
+    let mut found = Vec::new();
+    collect_header_params(input_schema, Some(&[]), &mut found)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for param in &found {
+        if !seen.insert(param.name.to_ascii_lowercase()) {
+            return Err(format!("x-mcp-header \"{}\" is used twice", param.name));
+        }
+    }
+    Ok(found)
+}
+
+/// Walk one schema: `path` is `Some` while it is statically reachable
+/// through `properties` keys (empty at the root), `None` anywhere else.
+fn collect_header_params(
+    schema: &Value,
+    path: Option<&[String]>,
+    found: &mut Vec<HeaderParam>,
+) -> Result<(), String> {
+    let Some(obj) = schema.as_object() else {
+        return Ok(());
+    };
+    if let Some(annotation) = obj.get("x-mcp-header") {
+        let Some(path) = path.filter(|path| !path.is_empty()) else {
+            return Err(
+                "an x-mcp-header sits outside a parameter reached through \"properties\""
+                    .to_string(),
+            );
+        };
+        let name = annotation
+            .as_str()
+            .ok_or_else(|| "an x-mcp-header that is not a string".to_string())?;
+        if name.is_empty() || !name.bytes().all(is_header_token) {
+            return Err(format!(
+                "x-mcp-header \"{name}\" is not an HTTP header name token"
+            ));
+        }
+        if !matches!(
+            obj.get("type").and_then(Value::as_str),
+            Some("string" | "integer" | "boolean")
+        ) {
+            return Err(format!(
+                "x-mcp-header \"{name}\" is on a parameter that isn't a string, integer or boolean"
+            ));
+        }
+        found.push(HeaderParam {
+            name: name.to_string(),
+            path: path.to_vec(),
+        });
+    }
+    if let Some(properties) = obj.get("properties").and_then(Value::as_object) {
+        for (key, child) in properties {
+            let child_path = path.map(|path| {
+                let mut next = path.to_vec();
+                next.push(key.clone());
+                next
+            });
+            collect_header_params(child, child_path.as_deref(), found)?;
+        }
+    }
+    for keyword in SUBSCHEMA_KEYWORDS {
+        match obj.get(*keyword) {
+            Some(Value::Object(map)) if SUBSCHEMA_MAPS.contains(keyword) => {
+                for child in map.values() {
+                    collect_header_params(child, None, found)?;
+                }
+            }
+            Some(child @ Value::Object(_)) => collect_header_params(child, None, found)?,
+            Some(Value::Array(children)) => {
+                for child in children {
+                    collect_header_params(child, None, found)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// RFC 9110 §5.6.2's `tchar` — what an HTTP field name is made of.
+fn is_header_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// The `Mcp-Param-*` headers one `tools/call` carries: each annotated
+/// parameter's value at its path — a string as-is, an integer in decimal, a
+/// boolean as `true`/`false` — encoded like `Mcp-Name` ([`header_value`]).
+/// An absent or `null` value sends no header.
+#[must_use]
+pub fn param_headers(params: &[HeaderParam], arguments: &Value) -> Vec<(String, String)> {
+    params
+        .iter()
+        .filter_map(|param| {
+            let mut value = arguments;
+            for key in &param.path {
+                value = value.get(key)?;
+            }
+            let text = match value {
+                Value::String(text) => text.clone(),
+                Value::Bool(flag) => flag.to_string(),
+                Value::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+                _ => return None,
+            };
+            Some((format!("Mcp-Param-{}", param.name), header_value(&text)))
+        })
+        .collect()
+}
+
 /// Standard base64 (RFC 4648 §4, with padding) — the sentinel encoding's
 /// alphabet.
 fn b64_standard(bytes: &[u8]) -> String {
@@ -705,6 +866,138 @@ mod tests {
         );
         assert_eq!(choose_version(&["2099-01-01".to_string()]), None);
         assert_eq!(choose_version(&[]), None);
+    }
+
+    fn annotated(schema: serde_json::Value) -> Result<Vec<HeaderParam>, String> {
+        header_params(&schema)
+    }
+
+    #[test]
+    fn annotated_parameters_are_collected_with_their_paths() {
+        let params = annotated(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "region": {"type": "string", "x-mcp-header": "Region"},
+                "query": {"type": "string"},
+                // Nested is fine while every step is `properties`.
+                "target": {"type": "object", "properties": {
+                    "id": {"type": "integer", "x-mcp-header": "Target-Id"},
+                    "dry": {"type": "boolean", "x-mcp-header": "Dry"}
+                }},
+                // A data keyword's content is data, never an annotation.
+                "mode": {"type": "string", "default": {"x-mcp-header": "Nope"}}
+            }
+        }))
+        .expect("valid");
+        let paths: Vec<(String, Vec<String>)> =
+            params.into_iter().map(|p| (p.name, p.path)).collect();
+        assert_eq!(
+            paths,
+            [
+                ("Region".to_string(), vec!["region".to_string()]),
+                (
+                    "Target-Id".to_string(),
+                    vec!["target".to_string(), "id".to_string()]
+                ),
+                (
+                    "Dry".to_string(),
+                    vec!["target".to_string(), "dry".to_string()]
+                ),
+            ]
+        );
+        assert_eq!(
+            annotated(serde_json::json!({"type": "object"})),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn an_annotation_breaking_the_spec_invalidates_the_tool() {
+        // 2026-07-28 Streamable HTTP: such a tool is excluded from the list.
+        let bad = |schema: serde_json::Value, why: &str| {
+            let err = annotated(schema).expect_err(why);
+            assert!(!err.is_empty(), "{why}");
+        };
+        bad(
+            serde_json::json!({"properties": {"a": {"type": "string", "x-mcp-header": ""}}}),
+            "empty",
+        );
+        bad(
+            serde_json::json!({"properties": {"a": {"type": "string", "x-mcp-header": "Has Space"}}}),
+            "not a token",
+        );
+        bad(
+            serde_json::json!({"properties": {
+                "a": {"type": "string", "x-mcp-header": "Name"},
+                "b": {"type": "string", "x-mcp-header": "name"}
+            }}),
+            "case-insensitively duplicated",
+        );
+        bad(
+            serde_json::json!({"properties": {"a": {"type": "number", "x-mcp-header": "N"}}}),
+            "number is not permitted",
+        );
+        bad(
+            serde_json::json!({"properties": {"a": {"type": "object", "x-mcp-header": "O"}}}),
+            "not a primitive",
+        );
+        bad(
+            serde_json::json!({"properties": {"a": {"type": "array",
+                "items": {"type": "string", "x-mcp-header": "I"}}}}),
+            "under items",
+        );
+        bad(
+            serde_json::json!({"properties": {"a": {"oneOf": [
+                {"type": "string", "x-mcp-header": "One"}]}}}),
+            "under a composition keyword",
+        );
+        bad(
+            serde_json::json!({"$defs": {"r": {"type": "string", "x-mcp-header": "Ref"}},
+                               "properties": {"a": {"$ref": "#/$defs/r"}}}),
+            "reachable only through $ref",
+        );
+        bad(
+            serde_json::json!({"x-mcp-header": "Root"}),
+            "on the root, not a parameter",
+        );
+    }
+
+    #[test]
+    fn a_call_mirrors_its_annotated_arguments_into_headers() {
+        let params = annotated(serde_json::json!({"properties": {
+            "region": {"type": "string", "x-mcp-header": "Region"},
+            "greeting": {"type": "string", "x-mcp-header": "Greeting"},
+            "count": {"type": "integer", "x-mcp-header": "Count"},
+            "dry": {"type": "boolean", "x-mcp-header": "Dry"},
+            "absent": {"type": "string", "x-mcp-header": "Absent"},
+            "nothing": {"type": "string", "x-mcp-header": "Nothing"},
+            "target": {"properties": {"id": {"type": "integer", "x-mcp-header": "Target-Id"}}}
+        }}))
+        .expect("valid");
+        let headers = param_headers(
+            &params,
+            &serde_json::json!({
+                "region": "us-west1",
+                "greeting": "Hello, 世界",
+                "count": -7,
+                "dry": false,
+                "nothing": null,
+                "target": {"id": 42}
+            }),
+        );
+        assert_eq!(
+            headers,
+            [
+                ("Mcp-Param-Region".to_string(), "us-west1".to_string()),
+                (
+                    "Mcp-Param-Greeting".to_string(),
+                    "=?base64?SGVsbG8sIOS4lueVjA==?=".to_string()
+                ),
+                ("Mcp-Param-Count".to_string(), "-7".to_string()),
+                ("Mcp-Param-Dry".to_string(), "false".to_string()),
+                ("Mcp-Param-Target-Id".to_string(), "42".to_string()),
+            ]
+        );
     }
 
     #[test]

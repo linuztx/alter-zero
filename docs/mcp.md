@@ -266,7 +266,26 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     version header from the first probe (it MUST match the `_meta`), plus
     `Mcp-Method` on every request and `Mcp-Name` on `tools/call` (the
     `header_value` sentinel encoding for non-header-safe names), and no
-    sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
+    sessions. A `tools/call` also carries an **`Mcp-Param-{Name}`** header
+    per parameter its tool annotates with **`x-mcp-header`** (the
+    2026-07-28 transport's MUST, so intermediaries can route on an argument
+    without parsing the body; GitHub's server annotates `owner`/`repo`):
+    `mcp::header_params` validates a tool's annotations and
+    `mcp::param_headers` renders a call's — a string as-is, an integer in
+    decimal, a boolean as `true`/`false`, the `Mcp-Name` sentinel encoding
+    for anything not header-safe, no header for an absent or `null` value.
+    A server enforcing it answers a missing or wrong header with `-32020
+    HeaderMismatch`. A tool whose annotations break the spec's constraints
+    (an empty or non-token name, a case-insensitive duplicate, a `number`
+    or non-primitive parameter, or an annotation reached through `items`,
+    a composition or conditional keyword, or `$ref`) is **left out of the
+    tool list** over a modern HTTP connection, as the spec requires, so one
+    malformed definition doesn't take the server's other tools with it.
+    The schema walk visits JSON-Schema applicator keywords only, so an
+    `x-mcp-header` key inside a `default` or an `enum` is data, not an
+    annotation. (The spec's SHOULD — re-listing the tools after a
+    `HeaderMismatch` and retrying — is not done; the call fails with the
+    server's message.) A 4xx whose body parses as a JSON-RPC error surfaces as that
     error (a modern server answers version/header problems as `400` + a
     modern error body), else as the refusal the SSE fallback keys on;
     notifications POST and take **any** 2xx as accepted, a body included
