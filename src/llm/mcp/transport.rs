@@ -500,6 +500,7 @@ impl HttpTransport {
                 modern.as_ref(),
                 &body,
                 want_id,
+                request_timeout(deadline),
             );
             let _ = tx.send(outcome);
         });
@@ -649,6 +650,7 @@ impl HttpTransport {
 }
 
 /// The blocking POST body — runs on a worker thread.
+#[allow(clippy::too_many_arguments)] // one POST's whole context, each injected
 fn post_blocking(
     url: &str,
     remote: &RemoteHeaders,
@@ -657,8 +659,9 @@ fn post_blocking(
     modern: Option<&ModernHeaders>,
     body: &Value,
     want_id: Option<u64>,
+    timeout: Duration,
 ) -> PostOutcome {
-    let client = match crate::llm::http_client(HTTP_OP_TIMEOUT) {
+    let client = match crate::llm::http_client(timeout) {
         Ok(client) => client,
         Err(e) => return PostOutcome::Err(TransportError::Failed(e.to_string())),
     };
@@ -751,6 +754,11 @@ fn post_blocking(
             "the event stream ended before the response arrived".to_string(),
         ));
     }
+    // A notification has no response to wait for: any 2xx accepts it, a
+    // body (some servers answer `{}`) included.
+    if want_id.is_none() {
+        return wrap(PostOutcome::Accepted);
+    }
     let text = match response.text() {
         Ok(text) => text,
         Err(e) => return PostOutcome::Err(TransportError::Failed(format!("read failed: {e}"))),
@@ -767,6 +775,15 @@ fn post_blocking(
             one_line(&text, 200)
         ))),
     }
+}
+
+/// The HTTP client's own timeout for one POST: never shorter than the
+/// caller's deadline. `wait_channel` enforces that deadline (and Esc); this
+/// only backstops the worker thread, so it must not undercut it — the fixed
+/// 60 s it replaced cut every tool call off there, whatever
+/// `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` said, and a quiet SSE answer with it.
+fn request_timeout(deadline: Duration) -> Duration {
+    deadline.max(HTTP_OP_TIMEOUT) + Duration::from_secs(5)
 }
 
 /// The authorization verdict a response carries, if any: a 401 is a login
@@ -967,12 +984,24 @@ impl SseTransport {
 
 /// Resolve the `endpoint` event's URI against the stream URL (it is usually
 /// relative — `/messages?sessionId=…`).
+/// Resolve the legacy stream's `endpoint` event against the stream URL. The
+/// endpoint must share the stream's origin: every POST to it carries the
+/// bearer and the configured headers, so one on another origin would hand
+/// the user's credentials to whoever the event named (the TS SDK refuses
+/// it too).
 fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError> {
     let base = url::Url::parse(base)
         .map_err(|e| TransportError::Failed(format!("bad stream URL: {e}")))?;
-    base.join(endpoint.trim())
-        .map(|u| u.to_string())
-        .map_err(|e| TransportError::Failed(format!("bad endpoint URI: {e}")))
+    let joined = base
+        .join(endpoint.trim())
+        .map_err(|e| TransportError::Failed(format!("bad endpoint URI: {e}")))?;
+    if joined.origin() != base.origin() {
+        return Err(TransportError::Failed(format!(
+            "the server named an endpoint on another origin ({}) — refused",
+            joined.origin().ascii_serialization()
+        )));
+    }
+    Ok(joined.to_string())
 }
 
 /// The command a stdio server runs as: piped stdio, the session
@@ -1158,9 +1187,61 @@ mod tests {
             resolve_endpoint("https://x.test/a/sse", "msgs").unwrap(),
             "https://x.test/a/msgs"
         );
+        // Every POST to the endpoint carries the bearer and the configured
+        // headers, so an `endpoint` event naming another origin would hand
+        // the user's credentials to it — refused, as the TS SDK refuses.
+        assert!(resolve_endpoint("https://x.test/sse", "https://y.test/m").is_err());
+        assert!(resolve_endpoint("https://x.test/sse", "//y.test/m").is_err());
+        assert!(resolve_endpoint("https://x.test/sse", "http://x.test/m").is_err());
         assert_eq!(
-            resolve_endpoint("https://x.test/sse", "https://y.test/m").unwrap(),
-            "https://y.test/m"
+            resolve_endpoint("https://x.test/sse", "https://x.test/m").unwrap(),
+            "https://x.test/m"
+        );
+    }
+
+    #[test]
+    fn a_request_may_run_as_long_as_its_deadline() {
+        // The HTTP client's own 60 s timeout cut every streamable-HTTP tool
+        // call off there, whatever ALTER_ZERO_MCP_TOOL_TIMEOUT_MS said (its
+        // default is 120 s) — a quiet SSE stream died the same way.
+        assert!(request_timeout(Duration::from_secs(120)) >= Duration::from_secs(120));
+        assert!(request_timeout(Duration::from_secs(900)) >= Duration::from_secs(900));
+        assert!(request_timeout(Duration::from_secs(1)) >= HTTP_OP_TIMEOUT);
+    }
+
+    #[test]
+    fn a_notification_answered_with_a_body_is_still_accepted() {
+        // `200 {}` to `notifications/initialized` failed the whole connect
+        // as an "unexpected response body", though a notification has no
+        // response to wait for.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/mcp",
+            listener.local_addr().unwrap().port()
+        );
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                );
+            }
+        });
+        let outcome = post_blocking(
+            &url,
+            &RemoteHeaders::default(),
+            None,
+            None,
+            None,
+            &notification("notifications/initialized", Value::Null),
+            None,
+            HTTP_OP_TIMEOUT,
+        );
+        assert!(
+            matches!(outcome, PostOutcome::Accepted),
+            "a notification is accepted"
         );
     }
 

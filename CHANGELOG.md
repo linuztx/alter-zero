@@ -51,6 +51,28 @@ release heading when a version is cut.
   different provider on the same host. It also reads the server's
   challenge properly, where a request for more permission used to lose the
   permission it named (`docs/mcp.md`).
+- **Long MCP tool calls are no longer cut off at one minute.** Over HTTP,
+  every tool call ended after 60 seconds whatever
+  `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` said (two minutes by default). The
+  configured timeout now applies (`docs/mcp.md`).
+- **Disabling an MCP server no longer erases an `mcp.json` with a typo in
+  it.** If your user file didn't parse, a Disable in `/mcp` rewrote it with
+  every server definition gone. The file is now left alone, the change
+  holds for the session, and a red notice says why it wasn't saved.
+- **A busy sign-in server no longer logs you out of an MCP server.** A
+  token refresh answered with `temporarily_unavailable` or `server_error`
+  deleted your working login. It is now kept and retried.
+- **"Clear authentication" in `/mcp` now actually signs the server out.**
+  The open connection kept using the cleared login, so tool calls went on
+  working while the page said you weren't signed in. After a sign-in lapses
+  mid-turn, the model is told why the server's tools stopped working instead
+  of "unknown MCP tool".
+- **Connecting to MCP servers is more robust.** A server that answers a
+  notification with `200 {}` no longer fails to connect, a server reporting
+  an absurdly long token lifetime no longer makes every call renew the
+  login, and a legacy SSE
+  server can no longer redirect the app's requests, and your credentials,
+  to another site.
 - **Cancelling an MCP server's sign-in no longer leaves `/mcp` waiting for
   five minutes.** Pressing Cancel on the provider's consent screen sends the
   browser back with a refusal, which the sign-in read as an unrelated

@@ -387,10 +387,24 @@ pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
     };
     if matches!(status, 400 | 401) {
         let parsed = serde_json::from_str::<Value>(body.trim()).ok();
+        // RFC 6749 §5.2's verdicts on the grant or the client — the ones a
+        // retry cannot change. `temporarily_unavailable`, `server_error` and
+        // anything unrecognised are a server having a bad moment.
         let error = parsed
             .as_ref()
             .and_then(|v| v.get("error"))
-            .and_then(Value::as_str);
+            .and_then(Value::as_str)
+            .filter(|error| {
+                matches!(
+                    *error,
+                    "invalid_grant"
+                        | "invalid_client"
+                        | "invalid_request"
+                        | "unauthorized_client"
+                        | "unsupported_grant_type"
+                        | "invalid_scope"
+                )
+            });
         if let Some(error) = error {
             let description = parsed
                 .as_ref()
@@ -582,7 +596,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| prior.refresh_token.clone()),
-        expires_at: expires_in.map(|secs| unix_now() + secs),
+        expires_at: expires_in.map(|secs| unix_now().saturating_add(secs)),
         client_id: prior.client_id.clone(),
         client_secret: prior.client_secret.clone(),
         token_endpoint: prior.token_endpoint.clone(),
@@ -3207,6 +3221,16 @@ mod tests {
             refresh_failure_kind(Some(400), "<html>proxy error</html>"),
             F::Transient(_)
         ));
+        // An authorization server that is merely busy or broken says so with
+        // an `error` too — deleting a working grant over it was the bug the
+        // whole classification exists to prevent.
+        for error in ["temporarily_unavailable", "server_error", "slow_down"] {
+            let body = format!(r#"{{"error":"{error}"}}"#);
+            assert!(
+                matches!(refresh_failure_kind(Some(400), &body), F::Transient(_)),
+                "{error} must keep the grant"
+            );
+        }
         assert!(matches!(
             refresh_failure_kind(None, "connect timeout"),
             F::Transient(_)
@@ -3479,6 +3503,18 @@ mod tests {
         let parsed = parse_token_store(&deleted);
         assert!(!parsed.contains_key("https://mcp.test/mcp"));
         assert!(parsed.contains_key("https://other/mcp"));
+    }
+
+    #[test]
+    fn an_absurd_lifetime_saturates_instead_of_overflowing() {
+        // A server's `expires_in` is input: `now + u64::MAX` panicked in a
+        // debug build and wrapped to the past in a release one.
+        let tokens = tokens_from_response(
+            &serde_json::json!({"access_token": "at", "expires_in": u64::MAX}),
+            &StoredTokens::default(),
+        )
+        .expect("a grant");
+        assert_eq!(tokens.expires_at, Some(u64::MAX));
     }
 
     #[test]

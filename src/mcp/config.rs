@@ -232,18 +232,16 @@ pub fn parse_disabled(contents: &str, project: &str) -> std::collections::BTreeS
 /// read-modify-write core (the boundary reads the file, calls this, writes
 /// the result). An empty set **drops** the project entry (the file stays a
 /// diff from everything-on), and every other key — the `mcpServers` map,
-/// other projects — passes through untouched.
-#[must_use]
+/// other projects — passes through untouched. A file that doesn't parse is
+/// refused ([`McpWriteError::InvalidJson`]), never replaced: rewriting it
+/// as `{"projects": …}` deleted every server declared in it.
 pub fn record_disabled(
     contents: &str,
     project: &str,
     disabled: &std::collections::BTreeSet<String>,
-) -> String {
-    let mut value: Value = serde_json::from_str(contents.trim())
-        .ok()
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let root = value.as_object_mut().expect("object ensured above");
+) -> Result<String, McpWriteError> {
+    let mut value = Value::Object(parse_document(contents)?);
+    let root = value.as_object_mut().expect("an object by construction");
     let projects = root
         .entry("projects")
         .or_insert_with(|| Value::Object(Default::default()));
@@ -262,7 +260,7 @@ pub fn record_disabled(
             root.remove("projects");
         }
     }
-    serde_json::to_string_pretty(&value).unwrap_or_else(|_| contents.to_string())
+    Ok(serde_json::to_string_pretty(&value).expect("JSON values always serialize"))
 }
 
 /// Why a CLI write ([`record_server`]/[`remove_server`]) was refused — the
@@ -1219,18 +1217,37 @@ mod tests {
         let mut disabled = std::collections::BTreeSet::new();
         disabled.insert("github".to_string());
         let base = r#"{"mcpServers": {"github": {"url": "https://g"}}}"#;
-        let written = record_disabled(base, "/home/me/proj", &disabled);
+        let written = record_disabled(base, "/home/me/proj", &disabled).unwrap();
         assert_eq!(parse_disabled(&written, "/home/me/proj"), disabled);
         assert!(parse_disabled(&written, "/other").is_empty());
         // The servers map survived the RMW.
         assert_eq!(parse_mcp_file(&written).servers.len(), 1);
         // Emptying the set drops the project entry entirely.
-        let cleared = record_disabled(&written, "/home/me/proj", &Default::default());
+        let cleared = record_disabled(&written, "/home/me/proj", &Default::default()).unwrap();
         assert!(!cleared.contains("projects"));
         // A name not installed here is kept for the checkout that has it —
         // record only replaces the one project's own set.
-        let other = record_disabled(&written, "/other", &["x".to_string()].into_iter().collect());
+        let other =
+            record_disabled(&written, "/other", &["x".to_string()].into_iter().collect()).unwrap();
         assert_eq!(parse_disabled(&other, "/home/me/proj"), disabled);
+    }
+
+    #[test]
+    fn a_disable_never_rewrites_a_file_it_cannot_read() {
+        // A trailing comma in the user file, then a Disable in `/mcp`: the
+        // file used to be rewritten as `{"projects": …}`, every server in it
+        // gone. Refused instead, the CLI writers' posture.
+        let disabled: std::collections::BTreeSet<String> = ["x".to_string()].into();
+        assert!(matches!(
+            record_disabled(
+                r#"{"mcpServers": {"a": {"url": "https://a"}},}"#,
+                "/p",
+                &disabled
+            ),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        // An empty (or missing) file is a fresh one.
+        assert!(record_disabled("", "/p", &disabled).is_ok());
     }
 
     #[test]

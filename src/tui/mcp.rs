@@ -124,9 +124,14 @@ impl Session<'_> {
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
-                manager.set_disabled(&server, disabled);
                 let state = if disabled { "disabled" } else { "enabled" };
-                self.toast(format!("{server} {state}"), ToastKind::Info);
+                match manager.set_disabled(&server, disabled) {
+                    Ok(()) => self.toast(format!("{server} {state}"), ToastKind::Info),
+                    Err(reason) => self.toast(
+                        format!("{server} {state} for this session only — {reason}"),
+                        ToastKind::Error,
+                    ),
+                }
             }
             McpOp::Authenticate { server } => manager.authenticate(&server),
             McpOp::ClearAuth { server } => {

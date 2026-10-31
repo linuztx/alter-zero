@@ -105,7 +105,11 @@ project file, which may be shared with a team:
 
 — the `skills.json` pattern exactly: read-modify-write, best-effort, an
 empty set drops the entry, a name not installed here is kept (the same file
-serves a checkout elsewhere).
+serves a checkout elsewhere). A user file that doesn't parse is **never
+rewritten** (`record_disabled` refuses it, the CLI writers' posture): the
+toggle holds for the session and a red toast says why it didn't persist,
+where the old silent fresh-`{}` fallback replaced the file with
+`{"projects": …}` and every server declared in it was gone.
 
 The **user** file can be edited from the command line — `alter-zero mcp add
 {name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before
@@ -265,7 +269,14 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
     error (a modern server answers version/header problems as `400` + a
     modern error body), else as the refusal the SSE fallback keys on;
-    notifications POST and ignore the body. A **404 to a request that
+    notifications POST and take **any** 2xx as accepted, a body included
+    (a `200 {}` to `notifications/initialized` used to fail the whole
+    connect as an "unexpected response body"). A 401 is `NeedsAuth` with
+    its challenge, a 403 whose challenge says `insufficient_scope` is a
+    step-up (`auth_verdict`, shared with the legacy transport). The HTTP
+    client's own timeout is never shorter than the request's deadline
+    (`request_timeout`) — a fixed 60 s used to cut every tool call off
+    there, whatever `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` said. A **404 to a request that
     carried a session id** means that session is gone (a restart, an idle
     timeout): the spec's answer is a fresh `initialize` at the settled
     revision, a repeated `notifications/initialized`, and a replay of the
@@ -277,7 +288,10 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     with 404.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
-    base URL), requests POST there and answers arrive on the stream.
+    base URL, and refused unless it shares the stream's origin — every POST
+    carries the bearer and the configured headers, so another origin would
+    receive the user's credentials), requests POST there and answers
+    arrive on the stream.
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines.
@@ -358,7 +372,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   metadata advertised the parameter) before the code is redeemed → the
   token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
   server URL (0600, best-effort), and ride every HTTP request as
-  `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+  `Authorization: Bearer …`. "Clear authentication" deletes the grant and
+  **reconnects** without it — the live transport kept sending the cleared
+  bearer, so calls went on working under a page saying "not
+  authenticated". A client the user entered stays (a rejected one is
+  forgotten on its own; a configured `clientId` always wins over it).
 
   **Discovery trusts only metadata that speaks for this server**
   (`discover`, the 2026-07-28 spec's MUSTs, by the official SDKs' rules):
@@ -499,8 +517,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     known expiry) gets **one forced refresh and one retry** — at connect
     and per call — before anyone is asked to re-authenticate.
   - **Classification is the contract** (`RefreshFailure`,
-    `refresh_failure_kind`): only the AS's own structured verdict on a
-    400/401 (`invalid_grant` and friends) is **permanent** — the dead grant
+    `refresh_failure_kind`): only the AS's own verdict on the grant or the
+    client — RFC 6749 §5.2's `invalid_grant`, `invalid_client`,
+    `invalid_request`, `unauthorized_client`, `unsupported_grant_type`,
+    `invalid_scope` on a 400/401 — is **permanent** (a
+    `temporarily_unavailable` or `server_error` there is a server having a
+    bad moment, and used to delete a working grant) — the dead grant
     is *cleared* (kept, it would loop the failure into every request) and
     the server truthfully reads `needs authentication`. Network failures,
     5xx, 429, or an unreadable body are **transient**: the grant is kept
@@ -558,6 +580,14 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   `tokio` unbounded sender — the file-search/clipboard worker pattern), so
   the UI is repainted the moment a server connects, fails, or finishes
   authenticating.
+
+  A call the server refuses with a 401 that no refresh can cure tears down
+  **only the connection that call used** (a reconnect that landed
+  meanwhile — a fresh sign-in — is newer than the refusal and stays),
+  dropping the identity and tools with it and re-reading whether a grant is
+  still stored. A later call to one of that server's dropped tools hears
+  the same "requires authentication" reason, not "unknown MCP tool", which
+  sent a model hunting for a typo.
 
   A connect attempt **starts from nothing**: alongside dropping the old
   transport (which kills a stdio child), it clears the identity, the tools

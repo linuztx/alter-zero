@@ -416,8 +416,12 @@ impl McpManager {
     }
 
     /// Enable/disable one server for this project, persisting the choice in
-    /// the user file (read-modify-write) and reporting the change.
-    pub fn set_disabled(&self, name: &str, disabled: bool) {
+    /// the user file (read-modify-write) and reporting the change. The
+    /// toggle always holds for the session; `Err` says why it was not
+    /// persisted — a file that can't be read or parsed is left untouched
+    /// rather than rewritten without the servers declared in it.
+    pub fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
+        let persisted;
         {
             let mut inner = self.lock();
             if disabled {
@@ -430,14 +434,10 @@ impl McpManager {
                 inner.project.clone(),
                 inner.disabled.clone(),
             );
-            if let Some(path) = user_file {
-                let existing = std::fs::read_to_string(&path).unwrap_or_default();
-                let updated = crate::mcp::record_disabled(&existing, &project, &set);
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, updated);
-            }
+            persisted = match user_file {
+                Some(path) => persist_disabled(&path, &project, &set),
+                None => Ok(()),
+            };
             if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
                 server.generation += 1;
                 if disabled {
@@ -453,6 +453,7 @@ impl McpManager {
         if !disabled && !self.lock().untrusted.contains(name) {
             self.spawn_connect(name);
         }
+        persisted
     }
 
     /// The `/trust` seam (`docs/project-config.md`): grant or revoke the
@@ -517,17 +518,43 @@ impl McpManager {
     /// Delete a server's stored OAuth tokens (the `/mcp` "Clear
     /// authentication" action).
     pub fn clear_auth(&self, name: &str) {
-        {
+        let reconnect = {
             let mut inner = self.lock();
             let auth_path = inner.auth_path.clone();
-            if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
-                if let Some(url) = server.entry.config.url() {
-                    oauth::save_tokens(auth_path.as_deref(), url, None);
-                }
-                server.has_tokens = false;
+            let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
+                return;
+            };
+            if let Some(url) = server.entry.config.url() {
+                oauth::save_tokens(auth_path.as_deref(), url, None);
             }
-        }
+            server.has_tokens = false;
+            // The live transport still carries the cleared bearer: connect
+            // afresh without it, so the page and the calls agree the login
+            // is gone (a disabled or untrusted server has no connection).
+            !matches!(
+                server.status,
+                McpServerStatus::Disabled | McpServerStatus::Untrusted
+            )
+        };
         self.notify(McpEvent::Changed);
+        if reconnect {
+            self.spawn_connect(name);
+        }
+    }
+
+    /// The server a wire name belongs to, when that server is waiting on a
+    /// sign-in (its tools dropped with the refused connection).
+    fn server_awaiting_auth(&self, wire: &str) -> Option<String> {
+        let (server_part, _) = crate::mcp::parse_wire_name(wire)?;
+        let inner = self.lock();
+        inner
+            .servers
+            .iter()
+            .find(|s| {
+                s.status == McpServerStatus::NeedsAuth
+                    && crate::mcp::normalize_name(&s.entry.name) == server_part
+            })
+            .map(|s| s.entry.name.clone())
     }
 
     /// Start the interactive OAuth flow for one server on a worker thread.
@@ -816,11 +843,23 @@ impl McpManager {
                         server.entry.config.url().map(str::to_string),
                         inner.auth_path.clone(),
                         inner.tool_timeout,
+                        server.generation,
                     ))
                 })
         };
-        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout)) = lookup
+        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout, generation)) =
+            lookup
         else {
+            // A server that just asked for a sign-in dropped its tools; a
+            // later call to one of them (the same batch, the same turn) hears
+            // that reason, not "unknown MCP tool" — which sends a model
+            // hunting for a typo.
+            if let Some(name) = self.server_awaiting_auth(&call.name) {
+                return ToolOutcome::error(format!(
+                    "the {name} MCP server requires authentication — \
+                     ask the user to run /mcp and authenticate"
+                ));
+            }
             return ToolOutcome::error(format!(
                 "unknown MCP tool: {} (run /mcp to see the connected servers)",
                 call.name
@@ -920,10 +959,14 @@ impl McpManager {
             Err(TransportError::NeedsAuth(challenge)) => {
                 {
                     let mut inner = self.lock();
+                    let auth_path = inner.auth_path.clone();
+                    // Only the connection this call used is torn down: a
+                    // reconnect that landed meanwhile (a fresh sign-in) is
+                    // newer than this refusal and stays.
                     if let Some(server) = inner
                         .servers
                         .iter_mut()
-                        .find(|s| s.entry.name == server_name)
+                        .find(|s| s.entry.name == server_name && s.generation == generation)
                     {
                         if challenge.is_some() {
                             server.challenge = challenge;
@@ -931,8 +974,13 @@ impl McpManager {
                         server.status = McpServerStatus::NeedsAuth;
                         server.generation += 1;
                         server.transport = None;
+                        server.identity = None;
                         server.tools.clear();
                         server.wire_map.clear();
+                        // The refresh above may have cleared a dead grant.
+                        server.has_tokens = server.entry.config.url().is_some_and(|url| {
+                            oauth::load_tokens(auth_path.as_deref(), url).is_some()
+                        });
                     }
                 }
                 self.notify(McpEvent::Changed);
@@ -980,6 +1028,30 @@ impl McpManager {
             server.transport = None;
         }
     }
+}
+
+/// Write the project's disabled set into the user file — refusing, rather
+/// than replacing, a file that can't be read or doesn't parse.
+fn persist_disabled(
+    path: &std::path::Path,
+    project: &str,
+    set: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let updated = crate::mcp::record_disabled(&existing, project, set).map_err(|e| match e {
+        crate::mcp::McpWriteError::InvalidJson(reason) => {
+            format!("{} isn't valid JSON ({reason})", path.display())
+        }
+        other => format!("{other:?}"),
+    })?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, updated).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 /// Open the system browser on the authorize URL — best-effort, detached
@@ -1428,16 +1500,44 @@ done
                 ..Default::default()
             },
         );
-        manager.set_disabled("fix", true);
+        assert_eq!(manager.set_disabled("fix", true), Ok(()));
         let snapshot = manager.snapshot();
         assert_eq!(snapshot[0].status, McpServerStatus::Disabled);
         let written = std::fs::read_to_string(&user_file).unwrap();
         assert!(crate::mcp::parse_disabled(&written, "/proj").contains("fix"));
         // Enable clears the persisted set and reconnects.
-        manager.set_disabled("fix", false);
+        assert_eq!(manager.set_disabled("fix", false), Ok(()));
         let written = std::fs::read_to_string(&user_file).unwrap();
         assert!(crate::mcp::parse_disabled(&written, "/proj").is_empty());
         wait_connected(&manager, "fix");
+        manager.shutdown();
+    }
+
+    #[test]
+    fn a_disable_over_an_unreadable_file_holds_for_the_session_only() {
+        // The file had a syntax error: the toggle still takes for this
+        // session, the file is left exactly as the user wrote it, and the
+        // caller hears why it did not persist.
+        let dir = tempfile::tempdir().unwrap();
+        let user_file = dir.path().join("mcp.json");
+        let broken = r#"{"mcpServers": {"fix": {"command": "x"}},}"#;
+        std::fs::write(&user_file, broken).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                project: "/proj".to_string(),
+                user_file: Some(user_file.clone()),
+                ..Default::default()
+            },
+        );
+        let refused = manager
+            .set_disabled("fix", true)
+            .expect_err("not persisted");
+        assert!(refused.contains("valid JSON"), "{refused}");
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::Disabled);
+        assert_eq!(std::fs::read_to_string(&user_file).unwrap(), broken);
         manager.shutdown();
     }
 
@@ -1902,6 +2002,74 @@ done
             snapshot[0].auth,
             Some(crate::mcp::McpAuthState::NotAuthenticated)
         );
+        manager.shutdown();
+    }
+
+    fn hello(manager: &McpManager) -> ToolOutcome {
+        manager.call_tool(
+            &ToolCallRequest {
+                id: "1".to_string(),
+                name: "mcp__fix__hello".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &CancelToken::new(),
+        )
+    }
+
+    #[test]
+    fn a_call_refused_for_auth_leaves_a_truthful_page_and_a_truthful_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::InvalidGrant);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_status(&manager, "fix", |s| *s == McpServerStatus::Connected);
+        // The login dies mid-session: tok-1 refused, the refresh rejected.
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let first = hello(&manager);
+        assert!(
+            first.output.contains("requires authentication"),
+            "{}",
+            first.output
+        );
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::NeedsAuth);
+        // The dead connection's facts go with it, and the cleared grant
+        // reads as cleared — not "expired" over a token that is gone.
+        assert_eq!(snapshot[0].identity, None);
+        assert_eq!(
+            snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        // A later call in the same turn hears the same reason, not "unknown
+        // MCP tool" — the model would otherwise go looking for a typo.
+        let second = hello(&manager);
+        assert!(
+            second.output.contains("requires authentication"),
+            "{}",
+            second.output
+        );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn clearing_the_login_stops_the_live_connection_from_using_it() {
+        // Clear authentication deleted the stored grant while the transport
+        // kept sending its bearer: calls went on working and the page said
+        // "not authenticated" with nothing to act on.
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_status(&manager, "fix", |s| *s == McpServerStatus::Connected);
+        manager.clear_auth("fix");
+        wait_status(&manager, "fix", |s| *s == McpServerStatus::NeedsAuth);
+        assert!(!hello(&manager).ok);
         manager.shutdown();
     }
 
