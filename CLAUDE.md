@@ -2218,8 +2218,14 @@ and quit (after the turn and agents are cancelled), naming the conversation
 that ends and **only for one whose start fired**
 (`ModelSession::end_conversation` — a still-queued source means it never
 started, so no end, the source dropped). A block
-*is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
-`ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
+*is* `Approval::Reject`'s two-text split (red cell, model-facing text,
+`ToolCall::context_output`, `/resume`-safe) — and every text a hook gives the
+model is codex's terse shape (`docs/hooks.md` *What the model reads*:
+`Blocked by PreToolUse hook: {reason}`, `{event} hook feedback: …`, `Stop
+hook feedback: …`), each decision naming its handler on a `Hook: {command}`
+line (`ParsedHook::blocked_by`, carried beside the reason it gave, so the
+hook named is the one whose words the model reads) and only a refusal adding
+one line on what to do — a `PreToolUse` allow *is*
 `Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
 **and** the auto-mode classifier — ask means a human), and
 `additionalContext` rides `ToolNote` for the dim `⎿` row plus the

@@ -362,9 +362,9 @@ pub enum StreamEvent {
     /// the turn is over before the first request. The loop rolls the
     /// just-recorded user message back out of history (the recorder's
     /// shrink-rewrite erases it from the rollout — Claude Code's "erased
-    /// from context"), purge-repaints, and commits a red notice carrying
-    /// `reason` and the original prompt so the user sees exactly what was
-    /// refused and why. Sent **instead of** [`StreamEvent::StreamDone`] —
+    /// from context"), returns the text to the composer, purge-repaints, and
+    /// commits the red one-line `Prompt blocked by UserPromptSubmit hook:
+    /// {reason}` notice. Sent **instead of** [`StreamEvent::StreamDone`] —
     /// nothing else follows it.
     PromptBlocked { reason: String },
     /// The model launched a **group of subagents** this round (its `agent`

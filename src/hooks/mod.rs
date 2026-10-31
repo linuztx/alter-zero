@@ -46,6 +46,6 @@ pub use self::payload::{
     stop_payload, subagent_start_payload, subagent_stop_payload, user_prompt_submit_payload,
 };
 pub use self::verdict::{
-    HOOK_OUTPUT_MAX_BYTES, HookOutcome, HookPermission, HookRun, ParsedHook, merge, parse_run,
-    truncate_output,
+    HOOK_OUTPUT_MAX_BYTES, HookBlock, HookOutcome, HookPermission, HookRun, NO_REASON, ParsedHook,
+    merge, parse_run, truncate_output,
 };

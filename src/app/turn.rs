@@ -801,7 +801,7 @@ impl App {
         }
         self.record_message(
             Role::Error,
-            format!("UserPromptSubmit hook blocked the prompt\nReason: {reason}"),
+            format!("Prompt blocked by UserPromptSubmit hook: {reason}"),
         );
         // The pop was a non-append mutation even when the take bumped
         // already — cheap insurance for the transcript cache's frozen

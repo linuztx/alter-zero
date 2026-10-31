@@ -58,6 +58,10 @@ pub enum HookPermission {
 pub struct ParsedHook {
     /// Set when this handler blocked, with the reason it gave.
     pub block_reason: Option<String>,
+    /// The configured command of the handler that blocked — set with
+    /// [`block_reason`](Self::block_reason) and never without it, so the
+    /// model can be told which hook refused it (`docs/hooks.md`).
+    pub blocked_by: Option<String>,
     pub permission: Option<HookPermission>,
     /// The reason behind [`permission`](Self::permission), when given.
     pub permission_reason: Option<String>,
@@ -73,10 +77,31 @@ pub struct ParsedHook {
     pub warning: Option<String>,
 }
 
+/// A hook's refusal — or, from `Stop`, its demand that the agent keep going:
+/// what it said, and which handler said it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBlock {
+    pub reason: String,
+    /// The handler's configured command; `None` when no real handler ran (a
+    /// test's fake sink, the offline demo).
+    pub hook: Option<String>,
+}
+
+impl From<&str> for HookBlock {
+    fn from(reason: &str) -> Self {
+        Self {
+            reason: reason.to_string(),
+            hook: None,
+        }
+    }
+}
+
 /// Several handlers' answers, resolved into the one the caller acts on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HookOutcome {
     pub block_reason: Option<String>,
+    /// The handler [`block_reason`](Self::block_reason) came from.
+    pub blocked_by: Option<String>,
     pub permission: Option<HookPermission>,
     pub permission_reason: Option<String>,
     pub updated_input: Option<String>,
@@ -97,14 +122,13 @@ impl HookOutcome {
         *self == Self::default()
     }
 
-    /// The `additionalContext` entries as one block, or `None` when there
-    /// were none.
+    /// The block, if any, with the handler that gave it.
     #[must_use]
-    pub fn context_note(&self) -> Option<String> {
-        if self.additional_context.is_empty() {
-            return None;
-        }
-        Some(self.additional_context.join("\n\n"))
+    pub fn block(&self) -> Option<HookBlock> {
+        Some(HookBlock {
+            reason: self.block_reason.clone()?,
+            hook: self.blocked_by.clone(),
+        })
     }
 }
 
@@ -122,9 +146,10 @@ pub fn truncate_output(text: &str) -> String {
     format!("{}\n… (hook output truncated)", &text[..end])
 }
 
-/// Stands in when a hook refuses a call but says nothing about why — the cell
-/// and the model both need *something*, and "the hook said no" beats a blank.
-const UNEXPLAINED: &str = "blocked by a hook (no reason given)";
+/// Stands in when a hook refuses but says nothing about why — the cell and
+/// the model both need *something*. It is read after `Blocked by hook:`, so
+/// it says only what is missing.
+pub const NO_REASON: &str = "no reason given";
 
 /// The events whose plain-text stdout becomes context. Claude Code's rule:
 /// for these, a handler that just prints is feeding the model — for
@@ -142,6 +167,15 @@ const PLAIN_STDOUT_IS_CONTEXT: &[HookEvent] = &[
 /// Read one handler's run.
 #[must_use]
 pub fn parse_run(run: &HookRun, event: HookEvent) -> ParsedHook {
+    let mut parsed = parse_answer(run, event);
+    if parsed.block_reason.is_some() {
+        parsed.blocked_by = Some(run.command.clone());
+    }
+    parsed
+}
+
+/// [`parse_run`] before the block is attributed to its handler.
+fn parse_answer(run: &HookRun, event: HookEvent) -> ParsedHook {
     // The child never reported a status: it could not be spawned, it timed
     // out, or a signal took it. Fail **open** with a warning — a broken hook
     // wedging every tool call is worse than the guard being briefly absent,
@@ -158,11 +192,7 @@ pub fn parse_run(run: &HookRun, event: HookEvent) -> ParsedHook {
     // one place the contract reads the other stream.
     if code == 2 {
         let reason = run.stderr.trim();
-        let reason = if reason.is_empty() {
-            UNEXPLAINED
-        } else {
-            reason
-        };
+        let reason = if reason.is_empty() { NO_REASON } else { reason };
         return ParsedHook {
             block_reason: Some(truncate_output(reason)),
             ..ParsedHook::default()
@@ -250,7 +280,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
                 let message = text(&specific["decision"]["message"]);
                 parsed.permission_reason.clone_from(&message);
                 parsed.block_reason =
-                    Some(truncate_output(message.as_deref().unwrap_or(UNEXPLAINED)));
+                    Some(truncate_output(message.as_deref().unwrap_or(NO_REASON)));
             }
             _ => {}
         }
@@ -264,8 +294,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
                 parsed.permission = Some(HookPermission::Deny);
                 // A deny *is* a block, so callers that only look at
                 // `block_reason` (every one that cannot ask a user) behave.
-                parsed.block_reason =
-                    Some(truncate_output(reason.as_deref().unwrap_or(UNEXPLAINED)));
+                parsed.block_reason = Some(truncate_output(reason.as_deref().unwrap_or(NO_REASON)));
             }
             other => warnings.push(format!(
                 "hook {} returned unknown permissionDecision {other:?} — ignored",
@@ -321,7 +350,10 @@ pub fn merge(parsed: Vec<ParsedHook>) -> HookOutcome {
     let mut outcome = HookOutcome::default();
     for hook in parsed {
         if outcome.block_reason.is_none() {
+            // The reason and its handler travel together, so the hook named
+            // to the model is the one whose words it reads.
             outcome.block_reason = hook.block_reason;
+            outcome.blocked_by = hook.blocked_by;
         }
         // Strictest wins; among equals the first, so a config's order still
         // decides whose reason the user reads.
@@ -393,7 +425,64 @@ mod tests {
             ..HookRun::default()
         };
         let parsed = parse_run(&run, HookEvent::PreToolUse);
-        assert!(parsed.block_reason.is_some(), "exit 2 always blocks");
+        // Read after `Blocked by hook:` — so it says only what is missing.
+        assert_eq!(
+            parsed.block_reason.as_deref(),
+            Some("no reason given"),
+            "exit 2 always blocks"
+        );
+        assert_eq!(NO_REASON, "no reason given");
+    }
+
+    #[test]
+    fn a_block_names_the_handler_that_gave_it() {
+        let guard = "~/.alter-zero/hooks/guard.sh";
+        let exit_two = HookRun {
+            command: guard.into(),
+            exit_code: Some(2),
+            stderr: "no destructive deletes".into(),
+            ..HookRun::default()
+        };
+        assert_eq!(
+            parse_run(&exit_two, HookEvent::PreToolUse)
+                .blocked_by
+                .as_deref(),
+            Some(guard)
+        );
+        for (stdout, event) in [
+            (
+                r#"{"decision":"block","reason":"not on main"}"#,
+                HookEvent::PostToolUse,
+            ),
+            (
+                r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+                     "permissionDecision":"deny","permissionDecisionReason":"read-only day"}}"#,
+                HookEvent::PreToolUse,
+            ),
+            (
+                r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest",
+                     "decision":{"behavior":"deny"}}}"#,
+                HookEvent::PermissionRequest,
+            ),
+        ] {
+            let run = HookRun {
+                command: guard.into(),
+                ..ok_stdout(stdout)
+            };
+            assert_eq!(
+                parse_run(&run, event).blocked_by.as_deref(),
+                Some(guard),
+                "{stdout}"
+            );
+        }
+        // Only a block is attributed: a hook that merely spoke stays quiet
+        // about who it is, so a silent set of hooks is still quiet.
+        let spoke = parse(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+                 "additionalContext":"heads up"}}"#,
+        );
+        assert_eq!(spoke.blocked_by, None);
+        assert!(merge(vec![parse("")]).is_quiet());
     }
 
     #[test]
@@ -646,6 +735,41 @@ mod tests {
     }
 
     #[test]
+    fn the_kept_reason_keeps_its_own_handler() {
+        let outcome = merge(vec![
+            ParsedHook {
+                additional_context: Some("lint clean".into()),
+                ..ParsedHook::default()
+            },
+            ParsedHook {
+                block_reason: Some("first".into()),
+                blocked_by: Some("./a.sh".into()),
+                ..ParsedHook::default()
+            },
+            ParsedHook {
+                block_reason: Some("second".into()),
+                blocked_by: Some("./b.sh".into()),
+                ..ParsedHook::default()
+            },
+        ]);
+        assert_eq!(
+            outcome.block(),
+            Some(HookBlock {
+                reason: "first".into(),
+                hook: Some("./a.sh".into()),
+            })
+        );
+        assert_eq!(merge(vec![ParsedHook::default()]).block(), None);
+        assert_eq!(
+            HookBlock::from("tests are red"),
+            HookBlock {
+                reason: "tests are red".into(),
+                hook: None,
+            }
+        );
+    }
+
+    #[test]
     fn deny_outranks_ask_which_outranks_allow_whatever_the_order() {
         let allow = ParsedHook {
             permission: Some(HookPermission::Allow),
@@ -707,7 +831,6 @@ mod tests {
             },
         ]);
         assert_eq!(outcome.additional_context, vec!["one", "two"]);
-        assert_eq!(outcome.context_note().as_deref(), Some("one\n\ntwo"));
     }
 
     #[test]

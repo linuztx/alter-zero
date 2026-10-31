@@ -21,6 +21,7 @@ use super::tools::{
     summarize_call_naming,
 };
 use super::{ChatMessage, ContentPart, LlmError};
+use crate::hooks::HookEvent;
 use crate::permission::Approval;
 use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
 
@@ -405,9 +406,9 @@ pub fn run_agent(
                 // (the runner polls the token; an interrupt never fires
                 // Stop, so it always breaks the chain).
                 if !cancel.is_cancelled()
-                    && let Some(reason) = hooks.stop(stop_hook_active, &text, cancel)
+                    && let Some(block) = hooks.stop(stop_hook_active, &text, cancel)
                 {
-                    let (label, feedback) = super::hooks::stop_feedback_texts(&reason);
+                    let (label, feedback) = super::hooks::stop_feedback_texts(&block);
                     let _ = tx.send(StreamEvent::HookNote {
                         label,
                         text: feedback.clone(),
@@ -533,8 +534,9 @@ pub fn run_agent(
                     let mut launchable: Vec<ToolCallRequest> = Vec::new();
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
-                        if let Some(reason) = &hook.blocked {
-                            let (display, result) = hook_block_texts(reason);
+                        if let Some(block) = &hook.blocked {
+                            let (display, result) =
+                                hook_block_texts(HookEvent::PreToolUse.name(), block);
                             let _ = tx.send(tool_start_event(call, session_command));
                             let _ = tx.send(StreamEvent::ToolRejected {
                                 display,
@@ -629,8 +631,9 @@ pub fn run_agent(
                     // own command decides. A hook may refuse the call, rewrite
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
-                    if let Some(reason) = &hook.blocked {
-                        let (display, result) = hook_block_texts(reason);
+                    if let Some(block) = &hook.blocked {
+                        let (display, result) =
+                            hook_block_texts(HookEvent::PreToolUse.name(), block);
                         let _ = tx.send(tool_start_event(call, session_command));
                         // The permission gate's own rejection event, reused
                         // whole: red cell, model-facing text on
@@ -1421,7 +1424,7 @@ mod tests {
         /// can prove the event fires only for calls that succeeded.
         posts: std::sync::Mutex<Vec<(String, bool)>>,
         /// Scripted `stop` answers, popped front-first; empty = never block.
-        stops: std::sync::Mutex<Vec<Option<String>>>,
+        stops: std::sync::Mutex<Vec<Option<crate::hooks::HookBlock>>>,
         /// Every `stop` dispatch: the loop-guard flag and the last message it
         /// was shown.
         stop_seen: std::sync::Mutex<Vec<(bool, String)>>,
@@ -1502,7 +1505,7 @@ mod tests {
             stop_hook_active: bool,
             last_message: &str,
             _cancel: &CancelToken,
-        ) -> Option<String> {
+        ) -> Option<crate::hooks::HookBlock> {
             self.stop_seen
                 .lock()
                 .expect("not poisoned")
@@ -1623,7 +1626,7 @@ mod tests {
         )];
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no subagents today".to_string()),
+                blocked: Some("no subagents today".into()),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()
@@ -1670,7 +1673,10 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
-        assert!(result.contains("no subagents today"), "{result}");
+        assert!(
+            result.starts_with("Blocked by PreToolUse hook: no subagents today\n"),
+            "{result}"
+        );
     }
 
     #[test]
@@ -1683,7 +1689,13 @@ mod tests {
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
         let hooks = FakeHooks {
-            stops: std::sync::Mutex::new(vec![Some("tests are red".to_string()), None]),
+            stops: std::sync::Mutex::new(vec![
+                Some(crate::hooks::HookBlock {
+                    reason: "tests are red".into(),
+                    hook: Some("./stop.sh".into()),
+                }),
+                None,
+            ]),
             ..FakeHooks::default()
         };
         let mut messages = vec![ChatMessage::user("fix it")];
@@ -1727,7 +1739,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(notes, vec!["Stop hook feedback:\ntests are red"]);
+        assert_eq!(
+            notes,
+            vec!["Stop hook feedback: tests are red\nHook: ./stop.sh"]
+        );
         assert_eq!(
             events
                 .iter()
@@ -1757,7 +1772,7 @@ mod tests {
                 ("assistant".to_string(), "answer 1".to_string()),
                 (
                     "user".to_string(),
-                    "Stop hook feedback:\ntests are red".to_string()
+                    "Stop hook feedback: tests are red\nHook: ./stop.sh".to_string()
                 ),
             ]
         );
@@ -1775,7 +1790,7 @@ mod tests {
             let (tx, _rx) = unbounded_channel();
             let cancel = CancelToken::new();
             let hooks = FakeHooks {
-                stops: std::sync::Mutex::new(vec![Some("never".to_string())]),
+                stops: std::sync::Mutex::new(vec![Some("never".into())]),
                 ..FakeHooks::default()
             };
             let outcome = RefCell::new(Some(outcome));
@@ -2028,7 +2043,10 @@ mod tests {
     fn a_pre_tool_use_block_refuses_the_call_through_the_rejection_path() {
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no destructive deletes".to_string()),
+                blocked: Some(crate::hooks::HookBlock {
+                    reason: "no destructive deletes".into(),
+                    hook: Some("./guard.sh".into()),
+                }),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()
@@ -2055,9 +2073,12 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
             "a blocked call never runs: {events:?}"
         );
-        assert!(
-            result.contains("no destructive deletes"),
-            "the model is told why: {result}"
+        assert_eq!(
+            result,
+            "Blocked by PreToolUse hook: no destructive deletes\n\
+             Hook: ./guard.sh\n\
+             Do not retry the same call; address the reason or ask the user.",
+            "the model is told why, by which hook, and what to do"
         );
     }
 

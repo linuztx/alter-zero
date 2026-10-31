@@ -202,8 +202,9 @@ never existed:
   before `StreamDone` — on a real answer only: an empty reply is continued
   first, and a turn that gives up on one ends through `StopFailure` instead
   (`docs/unfinished-replies.md`). A block appends the reply-so-far as an assistant
-  message and the feedback (`Stop hook feedback:\n{reason}`, Claude Code's
-  exact wording) as the next user message, flips `stop_hook_active`, and the
+  message and the feedback (`Stop hook feedback: {reason}` over the hook's
+  `Hook: {command}` line — *What the model reads*, below) as the next user
+  message, flips `stop_hook_active`, and the
   **same turn runs another round** — so the status line keeps working, the
   queue and token tally are untouched, and `dispatch_after_turn`'s
   turn-end checkpoint lands *after* every continuation: a formatter hook's
@@ -255,7 +256,8 @@ never existed:
   history (the recorder's shrink-rewrite erases it from the rollout — the
   reference's "erased from context", so nothing a secrets-filter censored
   can reach a later turn), returns the text to the composer, purge-repaints
-  the echo away, and commits a red reason-only notice. `additionalContext`
+  the echo away, and commits a red one-line notice, `Prompt blocked by
+  UserPromptSubmit hook: {reason}`. `additionalContext`
   injects even on a block — both references' rule. A loop-initiated turn (a
   background completion's follow-up) is marked synthetic and skips the
   event: its prompt is not the user's. Only a sink running the turn's hooks
@@ -361,12 +363,14 @@ somewhere for every hook verdict to land, under another name. **No new
   gate's own two-text rejection. It already renders as a red cell, already
   keeps the longer model-facing text on `ToolCall::context_output`, already
   round-trips through the rollout, and already shows correctly in Ctrl+D. A
-  hook block is spelled `⎿ Blocked by hook: {reason}` and the model reads the
-  stop-and-wait instruction.
+  hook block is spelled `⎿ Blocked by hook: {reason}` and the model reads
+  which event's hook refused, the hook's command and one line on what to do
+  (*What the model reads*, below).
 - **A `PreToolUse` allow** is `Approval::AllowNoted { note }` — the auto-mode
   classifier's existing "this ran without you" provenance row.
 - **`additionalContext`** rides `StreamEvent::ToolNote` for the dim `⎿` row
-  the user sees, and is appended to the **model-facing** result through the
+  the user sees, and is appended to the **model-facing** result, under its
+  `{event} hook additional context:` label, through the
   existing `ToolAnswered { display, result }` split, so the cell stays clean
   while `context_output` carries what the model actually read. Both are
   recorded, both survive a `/resume`.
@@ -408,6 +412,65 @@ providers key the prompt prefix, so front-injection would invalidate the
 prompt cache every single turn. Hook context therefore lands on the tool call
 that produced it: cache-stable, `/resume`-safe, and — being an append —
 needing no `history_generation` bump.
+
+## What the model reads
+
+Every hook text the model reads has codex's shape: one line saying which
+event's hook spoke and what it said, the hook named under it when it
+decided something, and an instruction only where a call was refused. Each
+is built by one function in `llm::hooks`, which the offline demo calls too.
+
+| the hook…                                        | the model reads                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------- |
+| refuses a call (`PreToolUse`)                    | `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Do not retry the same call; address the reason or ask the user.` — as the call's result |
+| denies it (`PermissionRequest`)                  | the same, as `Blocked by PermissionRequest hook: …`                              |
+| blocks a result (`PostToolUse`, `PostToolUseFailure`) | `{event} hook feedback: {reason}` · `Hook: {command}` — after the call's own output |
+| adds context to a call                           | `{event} hook additional context: {text}` — after the call's own output          |
+| adds context to a turn or an agent (`SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreCompact`) | that line inside `<system-reminder>` tags, as a user message |
+| blocks a stop (`Stop`, `SubagentStop`)           | `Stop hook feedback: {reason}` · `Hook: {command}` — the next user message       |
+| blocks a prompt (`UserPromptSubmit`)             | nothing that turn (the prompt is erased); the red `Prompt blocked by UserPromptSubmit hook: {reason}` notice replays as an `[error]` line on later turns |
+
+(`·` separates lines.) A refusal used to be five lines that never said
+which hook refused — `A configured lifecycle hook blocked this tool call.`,
+`Reason: …`, two sentences of instruction — and a `PostToolUse` block was
+`A lifecycle hook flagged this result: …`.
+
+**A decision names its hook by its command.** The handler's configured
+command travels with the reason it gave (`ParsedHook::blocked_by`, merged
+beside `block_reason` into `HookOutcome::block`), so with several handlers
+the hook named is the one whose words the model read. The command is what
+the user wrote in `hooks.json`: for a script it *is* the hook's path, which
+the agent can read when it needs the rule, and it is the name the user knows
+the hook by when the agent has to explain a refusal. Only its first line
+shows, cut to 80 characters with `…` marking the cut, since an inline
+program is not a name. codex names no hook on a refusal — its `Command: …`
+suffix echoes the model's own call back, which the call's arguments already
+carry here — and only a Stop continuation carries one, the `hooks.json`
+path in its `hook_run_id`; Claude Code names the command. A
+context line names its event and not its hook: it reports a fact rather
+than a decision anyone will ask about.
+
+**Only a refusal carries an instruction.** A refused call is where a model
+reliably does the wrong thing next — the identical call again — so it gets
+one line. Feedback and context say nothing about what to do with them,
+because what they say is what to do.
+
+**Context is labelled** because it always shares its place with text it
+must not be mistaken for. codex gives `additionalContext` a developer
+message of its own; ours is appended to the call's result (the cache-stable
+frontier above) or sent as a user message, where unlabelled text reads as
+the tool's output or as the user talking. `SubagentStart` context used to
+arrive exactly that way, as bare user messages at the top of the agent's
+first turn; it is wrapped like the session's now (`subagent_start_note`).
+
+**A refusal without a reason reads `no reason given`** (`hooks::NO_REASON`):
+exit 2 with empty stderr, a deny with no message, `continue: false` with no
+`stopReason`. It follows `Blocked by hook:`, so it says only what is
+missing; the old `blocked by a hook (no reason given)` made the cell say it
+twice.
+
+A rollout recorded before this wording keeps what it was sent with: a
+`/resume` replays what the model actually read.
 
 ## A worked config
 
@@ -588,17 +651,18 @@ a scripted turn with both halves of the contract:
 ```
 
 Its refusal text comes from `llm::hooks::block_texts` — the function the live
-runner calls — so the offline cell is byte-for-byte the one a real `hooks.json`
-produces, the rule every other scripted demo follows with the real executor's
-formatters. **`smoke.sh` Phase 72** drives it and asserts the blocked call
-produced no output of its own, the allowed one kept its output under the
-provenance row, the model-facing paragraph never reached scrollback, the
-Ctrl+O transcript kept the refusal, and the demo's closing Stop-hook
-feedback note stayed cell-less inline while the transcript recorded it.
+runner calls, handed a stand-in hook command — so the offline cell is
+byte-for-byte the one a real `hooks.json` produces, the rule every other
+scripted demo follows with the real executor's formatters. **`smoke.sh`
+Phase 72** drives it and asserts the blocked call produced no output of its
+own, the allowed one kept its output under the provenance row, the
+model-facing lines never reached scrollback, the Ctrl+O transcript kept the
+refusal, and the demo's closing Stop-hook feedback note stayed cell-less
+inline while the transcript recorded it, with the hook that gave it.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
 prompt`) through the real loop arm: the blocked submission leaves scrollback
 (exactly the composer's restored copy of the text remains) under the red
-reason-only notice. **Phase 133** drives the session events, which need a
+one-line notice. **Phase 133** drives the session events, which need a
 real backend, against a stub provider that refuses every request: a
 `SessionStart` hook that sleeps 2 s fires before any prompt without holding
 up the first frame, its context reaches the first request, the prompt's
@@ -642,8 +706,13 @@ Verified against both sources, and chosen — not accidental:
 - **`{`-prefixed stdout that fails to parse is a loud warning** here and in
   codex; Claude Code swallows it silently (`hooks.ts:447-450`) and treats
   the output as plain text. Loud beats silent for a guard.
-- **Exit 2 with empty stderr still blocks** (with a stand-in reason) — the
-  Claude Code behaviour (`'No stderr output'`); codex fails open there.
+- **Exit 2 with empty stderr still blocks** (with `no reason given` as its
+  reason) — the Claude Code behaviour (`'No stderr output'`); codex fails
+  open there.
+- **A `PostToolUse` block keeps the call's output.** codex replaces the
+  result with the hook's feedback; here the feedback follows it, since the
+  call already ran and what it printed is still true — a linter's complaint
+  about a file does not make the test results above it wrong.
 - **`Notification` keeps its place in the event order.** Claude Code fires
   its notification hooks without awaiting them, so a slow one can land
   after the events that followed it; here it runs on the notification

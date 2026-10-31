@@ -14,11 +14,11 @@ smoke_begin
 S73="${S}_promptblock"
 launch "$S73" 100 30
 submit "$S73" "hook demo: block my prompt"
-block_pane="$(wait_pane 10 "$S73" -S -200 -- -F "blocked the prompt")" # up to ~10s
+block_pane="$(wait_pane 10 "$S73" -S -200 -- -F "Prompt blocked by")" # up to ~10s
 echo "==== Phase 73: captured pane (prompt blocked by hook) ===="
 printf '%s\n' "$block_pane"
-expect_has "$block_pane" -F "UserPromptSubmit hook blocked the prompt" "the block notice never rendered"
-expect_has "$block_pane" -F "Reason: no prompts about hooks" "the notice lost the hook's reason"
+# One line: which event's hook refused, then its reason.
+expect_has "$block_pane" -F "Prompt blocked by UserPromptSubmit hook: no prompts about hooks" "the block notice never rendered, or lost the hook's reason"
 block_echoes="$(printf '%s\n' "$block_pane" | grep -cF "hook demo: block my prompt" || true)"
 if [ "$block_echoes" -ne 1 ]; then
 	fail "expected exactly the composer's copy of the blocked text, saw $block_echoes (the sent-message echo must be rolled back, the composer must get the draft back)"

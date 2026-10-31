@@ -1743,8 +1743,11 @@ fn spawn_subagent_run(
         // thread rather than at `registry.register`, for two reasons: the
         // parent launching a batch of agents must not block on each one's
         // hook in turn, and whatever the hook returns is context for *this*
-        // agent — so it has to land before the first round, which is here.
-        for note in hooks.subagent_start(&id, &agent_type, &cancel) {
+        // agent — so it has to land before the first round, which is here,
+        // wrapped so it never reads as the lead talking.
+        if let Some(note) =
+            super::hooks::subagent_start_note(hooks.as_ref(), &id, &agent_type, &cancel)
+        {
             messages.push(ChatMessage::user(&note));
         }
         // The forwarder tags every event with the agent id and tracks the

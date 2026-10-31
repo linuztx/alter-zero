@@ -64,6 +64,21 @@ release heading when a version is cut.
   as `find -delete` or `sort -o`, or `git` in a folder that looks like a
   bare repository. Manual and edit modes still ask about every command
   (`docs/permissions.md`).
+- **What a hook tells the agent is short and says which hook spoke.** When
+  a hook refused a tool call, the agent used to read a five-line paragraph
+  that never said which hook had refused it. It now reads one line in
+  codex's shape, `Blocked by PreToolUse hook: no destructive deletes`, then
+  the hook's command (`Hook: ~/.alter-zero/hooks/guard.sh`), so it can read
+  the rule or tell you which hook to change, then one line telling it not to
+  retry the same call. A `Stop` hook's feedback, a `PostToolUse` hook's
+  complaint and a `PermissionRequest` hook's denial name their hook the same
+  way. Context a hook adds to a call is labelled (`PostToolUse hook
+  additional context: …`), so it no longer reads as the call's own output,
+  and context a `SubagentStart` hook gives a new agent is wrapped like the
+  session's instead of arriving as if the lead had said it. A prompt a hook
+  refuses shows one line, `Prompt blocked by UserPromptSubmit hook: …`, and
+  a hook that refuses without a reason now reads `no reason given` instead
+  of saying "blocked" twice (`docs/hooks.md`).
 
 ### Fixed
 

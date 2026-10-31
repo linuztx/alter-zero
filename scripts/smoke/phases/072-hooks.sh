@@ -29,10 +29,11 @@ hooks_after_blocked="$(printf '%s\n' "$hooks_pane" | awk '/● Bash\(rm -rf buil
 expect_has "$hooks_after_blocked" -F "Blocked by hook" "the blocked call produced output of its own; it must never have run (saw: $hooks_after_blocked)"
 expect_has "$hooks_pane" -F "Context added by hook" "the PostToolUse hook left no dim provenance row on the cell it annotated"
 expect_has "$hooks_pane" -F "drwxr-xr-x" "the allowed call lost its own output"
-# The long stop-and-wait instruction is what the MODEL reads
-# (ToolCall::context_output). It must not be committed to the conversation —
-# the one-line cell is the transcript's record.
-expect_lacks "$hooks_pane" -F "A configured lifecycle hook blocked this tool call." "the model-facing hook text was committed to scrollback; only the short cell line may show"
+# The model reads more than the cell shows — the event, the hook's command
+# and what to do (ToolCall::context_output). None of that may be committed to
+# the conversation: the one-line cell is the transcript's record.
+expect_lacks "$hooks_pane" -F "Blocked by PreToolUse hook" "the model-facing hook text was committed to scrollback; only the short cell line may show"
+expect_lacks "$hooks_pane" -F "Do not retry the same call" "the model-facing instruction was committed to scrollback"
 # A Stop hook's feedback note is CELL-LESS inline (docs/hooks.md): the demo
 # ends with one, and it must not have painted a row in the conversation.
 expect_lacks "$hooks_pane" -F "Stop hook feedback" "the hook note leaked into the inline conversation"
@@ -50,6 +51,7 @@ hooks_overlay_tail="$(tmux capture-pane -t "$S72" -p)"
 echo "==== Phase 72: captured overlay tail (the hook note) ===="
 printf '%s\n' "$hooks_overlay_tail"
 expect_has "$hooks_overlay_tail" -F "Stop hook feedback" "the Ctrl+O transcript lost the hook note"
+expect_has "$hooks_overlay_tail" -F "Hook: ~/.alter-zero/hooks/stop.sh" "the Ctrl+O transcript lost the hook that gave the note"
 tmux send-keys -t "$S72" q
 sleep 0.3
 tmux kill-session -t "$S72" 2>/dev/null || true
