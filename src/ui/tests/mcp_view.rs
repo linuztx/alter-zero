@@ -7,8 +7,8 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_CLIENT_ID_PROMPT, MCP_CLIENT_SECRET_PROMPT, MCP_FIELD_COL,
-    MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP, mcp_description_color,
+    HOOKS_DETAIL_HINT, MCP_AUTH_RETRY_HINT, MCP_CLIENT_ID_PROMPT, MCP_CLIENT_SECRET_PROMPT,
+    MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP, mcp_description_color,
     mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color, model_meta_color,
     tool_fail_color, tool_ok_color,
 };
@@ -659,6 +659,83 @@ fn the_client_form_hugs_its_frame() {
             );
         }
     }
+}
+
+const REJECTED: &str = "the authorization server rejected the client ID or secret \
+                        (invalid_client) — authenticate again to enter them";
+
+/// linear's auth page after its flow failed with `reason`.
+fn failed_auth_app(reason: &str) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.finish_mcp_auth("linear", false, reason));
+    app
+}
+
+#[test]
+fn a_failed_sign_in_shows_its_whole_reason_and_how_to_retry() {
+    let app = failed_auth_app(REJECTED);
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join(" ");
+        assert!(
+            text.contains("Could not authenticate with linear"),
+            "{text}"
+        );
+        // Wrapped, never cut: every word of the reason is on the page.
+        for word in REJECTED.split_whitespace() {
+            assert!(text.contains(word), "{word} missing at {width}: {text}");
+        }
+        for word in MCP_AUTH_RETRY_HINT.split_whitespace() {
+            assert!(text.contains(word), "{word} missing at {width}: {text}");
+        }
+        // The flow is over: no URL, no paste field.
+        assert!(!text.contains("URL >"), "{text}");
+        assert_frame_hugs_content(&format!("the failed page at {width}"), &lines);
+    }
+    // The reason wears the failure colour.
+    let lines = mcp_view_lines(&app, 100);
+    let reason_row = lines
+        .iter()
+        .find(|line| plain(line).contains("invalid_client"))
+        .expect("the reason");
+    assert!(
+        reason_row
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(tool_fail_color()) && span.content.contains("client")),
+        "{reason_row:?}"
+    );
+    // Nothing is typed there, so no caret shows.
+    assert!(!crate::ui::cursor_visible(&app));
+}
+
+#[test]
+fn the_server_page_names_its_configured_client_never_its_secret() {
+    // The id is what the user pasted from their console: seeing it is how
+    // they know the block was read.
+    let mut server = snapshot("cal", McpScope::User, McpServerStatus::Connected);
+    server.config = McpServerConfig::Http {
+        url: "https://calendarmcp.googleapis.com/mcp/v1".to_string(),
+        headers: Default::default(),
+        sse_fallback: false,
+        oauth: Some(crate::mcp::McpOAuthConfig {
+            client_id: Some("cid.apps.googleusercontent.com".to_string()),
+            client_secret: Some("GOCSPX-shh".to_string()),
+            ..Default::default()
+        }),
+    };
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(
+        all.lines()
+            .any(|line| line.contains("OAuth client:") && line.contains("cid.apps")),
+        "{all}"
+    );
+    assert!(!all.contains("GOCSPX-shh"), "{all}");
 }
 
 #[test]

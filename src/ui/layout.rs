@@ -912,8 +912,10 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
+    // The auth page's field is typed into — unless the flow failed, when
+    // the page is a reason to read, with nothing to type.
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth;
+        return menu.page == crate::app::McpPage::Auth && menu.auth.error.is_none();
     }
     // The `/secrets` list is a menu; its form is typed into
     // (`docs/secrets.md`).
@@ -1212,7 +1214,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // field on a narrow terminal. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
-        if menu.page == crate::app::McpPage::Auth {
+        if menu.page == crate::app::McpPage::Auth && menu.auth.error.is_none() {
             // The field taking keys: the client form's focused one (the
             // secret counted as its mask, one column a character), else the
             // `URL >` paste field.

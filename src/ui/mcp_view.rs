@@ -417,6 +417,12 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         value,
         width,
     ));
+    // The configured client's id, when the entry names one: it is what the
+    // user pasted from their provider's console, so seeing it is how they
+    // know the block was read. Never the secret.
+    if let Some(client_id) = server.config.oauth().and_then(|o| o.client_id.as_deref()) {
+        lines.extend(field_lines("OAuth client:", client_id, value, width));
+    }
     lines.extend(field_lines(
         "Config location:",
         &server.config_path,
@@ -615,6 +621,26 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
         title_line(&format!("Authenticating with {}…", server.name), width),
         Line::default(),
     ];
+    if let Some(error) = &menu.auth.error {
+        // A failure stays on the page, worded in full and wrapped, never
+        // cut at the width as the toast row it used to be did.
+        let mut lines = vec![
+            model_rule(width),
+            title_line(
+                &format!("Could not authenticate with {}", server.name),
+                width,
+            ),
+            Line::default(),
+        ];
+        let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+        for row in wrap_output(error, room) {
+            lines.push(mcp_line(&row, Style::new().fg(tool_fail_color()), width));
+        }
+        lines.push(Line::default());
+        lines.extend(dim_wrapped(MCP_AUTH_RETRY_HINT, width));
+        lines.push(model_rule(width));
+        return lines;
+    }
     if let Some(form) = &menu.auth.client {
         lines.extend(client_form_lines(form, width));
         lines.push(model_rule(width));

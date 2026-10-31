@@ -224,18 +224,17 @@ impl Session<'_> {
                 }
             }
             McpEvent::AuthDone { server, ok, detail } => {
-                self.app.finish_mcp_auth();
-                let kind = if ok {
-                    ToastKind::Info
-                } else {
-                    ToastKind::Error
-                };
-                let text = if ok {
-                    detail
-                } else {
-                    format!("{server}: {detail}")
-                };
-                self.toast(text, kind);
+                // A failure the open auth page took stays there in full;
+                // only what it did not take (a success, or a page the user
+                // already left) is a toast.
+                if !self.app.finish_mcp_auth(&server, ok, &detail) {
+                    let (text, kind) = if ok {
+                        (detail, ToastKind::Info)
+                    } else {
+                        (format!("{server}: {detail}"), ToastKind::Error)
+                    };
+                    self.toast(text, kind);
+                }
             }
         }
         if let Some(manager) = &self.mcp {

@@ -28,8 +28,10 @@ release heading when a version is cut.
   with a pointer to Google's console for Google's servers. The sign-in
   authenticates to the provider in whichever way it accepts, and asks Google
   for a refresh token so the login renews itself instead of lapsing within
-  the hour. A client you enter for one provider is never sent to another
-  (`docs/mcp.md`).
+  the hour. A client you enter for one provider is never sent to another.
+  If a sign-in fails, `/mcp` keeps the whole reason on the page with Enter
+  to try again, where a one-line notice used to cut it off, and a server's
+  page shows the client ID it was configured with (`docs/mcp.md`).
 - **`/mcp` offers to sign in to a server like Google Calendar before its
   first call fails.** Google's servers list their tools to anyone and refuse
   only the calls, so a plain `{"url": …}` entry read "✔ authenticated" with

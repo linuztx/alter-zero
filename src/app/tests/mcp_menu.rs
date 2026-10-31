@@ -179,8 +179,9 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
         })
     );
     assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
-    // The finished flow closes the page back to the server detail.
-    app.finish_mcp_auth();
+    // A successful flow closes the page back to the server detail, and the
+    // boundary toasts it (the page did not take it).
+    assert!(!app.finish_mcp_auth("linear", true, "Authenticated with linear"));
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -315,6 +316,49 @@ fn a_client_request_for_a_page_no_longer_open_is_not_shown() {
     let mut app = on_linear_auth_page();
     assert!(!app.ask_mcp_client("deepwiki", "https://as.test", None, "r"));
     assert_eq!(client_form(&app), None);
+}
+
+#[test]
+fn a_failed_sign_in_keeps_its_reason_on_the_page() {
+    // The `/login` device page's rule: an explanation is never closed away
+    // with the page it explains. A toast row cut a sentence like this one
+    // at the terminal's width.
+    let reason = "the authorization server rejected the client ID or secret \
+                  (invalid_client) — authenticate again to enter them";
+    let mut app = on_linear_auth_page();
+    assert!(
+        app.finish_mcp_auth("linear", false, reason),
+        "the page took it"
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.error.as_deref(), Some(reason));
+    // Typing does nothing there; Enter tries again from a fresh page.
+    assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::None);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: "linear".to_string()
+        })
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.error, None);
+    // Esc goes back to the server, cancelling nothing (no flow runs).
+    app.finish_mcp_auth("linear", false, reason);
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+}
+
+#[test]
+fn a_failure_no_open_page_takes_is_left_to_the_toast() {
+    // The page was left, or belongs to another server: not this page's.
+    let mut app = on_linear_auth_page();
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.finish_mcp_auth("linear", false, "nope"));
+    let mut app = on_linear_auth_page();
+    assert!(!app.finish_mcp_auth("deepwiki", false, "nope"));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.error, None);
 }
 
 #[test]

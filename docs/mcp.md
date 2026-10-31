@@ -839,7 +839,10 @@ mid-turn (the strip stays above it). Pages:
    while the one before its tool count stayed dim, two colours of the same
    mark on one row. An empty list names both file paths — "why isn't my
    server here?" is its only question.
-2. **Server detail** — the fact rows the state affords: `Status:`, `Auth:`
+2. **Server detail** — the fact rows the state affords (an entry naming a
+   pre-registered client adds `OAuth client:` with its id — what the user
+   pasted from the provider's console, so seeing it is how they know the
+   block was read; never the secret): `Status:`, `Auth:`
    (only when auth matters — the `auth_state` rule above), `Protocol:` (the
    revision the era detection settled — `2026-07-28` on a modern server,
    whatever `initialize` negotiated on a legacy one; hidden until the server
@@ -859,8 +862,14 @@ mid-turn (the strip stays above it). Pages:
    copies it via the `/copy` clipboard seam), and offers the `URL >`
    paste-the-redirect fallback (a single-line field; paste routed to it
    while the page is up); the loopback callback resolves it from either
-   side. Esc backs out; the result lands as a toast + the server list
-   re-sorting itself.
+   side. Esc backs out. A success closes the page with a toast; a
+   **failure stays on the page**, worded in full and wrapped in the
+   failure colour under `Could not authenticate with {server}`, over
+   `Enter to try again · Esc to go back` and no caret (nothing is typed
+   there) — the `/login` device page's rule that an explanation is never
+   closed away with the page it explains, since a toast row cut a reason
+   like `invalid_client`'s advice at the terminal's width. A failure whose
+   page the user already left is still a toast.
 
    When the flow has **no client to present** (`McpEvent::AuthNeedsClient`
    — nothing configured or entered, and the authorization server registers
