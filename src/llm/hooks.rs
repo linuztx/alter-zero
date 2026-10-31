@@ -598,8 +598,11 @@ pub struct CommandHooks {
     context: HookContext,
     /// The detach-helper path threaded from `main` — see [`subprocess`].
     detach_helper: Option<PathBuf>,
-    /// Where handlers run, and what `*_PROJECT_DIR` is set to.
+    /// Where handlers run.
     cwd: PathBuf,
+    /// What `*_PROJECT_DIR` is set to: the project root, which is the `cwd`
+    /// unless [`with_project_dir`](Self::with_project_dir) says otherwise.
+    project_dir: PathBuf,
     /// The live handles — gate, conversation, pending session sources —
     /// resolved at **dispatch** time, so a payload reports the session as it
     /// is when the hook fires.
@@ -624,9 +627,21 @@ impl CommandHooks {
             file,
             context,
             detach_helper,
+            project_dir: cwd.clone(),
             cwd,
             handles,
         })
+    }
+
+    /// Export `dir` as `$ALTER_ZERO_PROJECT_DIR` (and `$CLAUDE_PROJECT_DIR`)
+    /// while handlers keep running in the `cwd` — the boundary passes the
+    /// project root ([`crate::trust::hooks_project_dir`]), so a command
+    /// written as `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…` finds the
+    /// project's scripts from any subdirectory.
+    #[must_use]
+    pub fn with_project_dir(mut self, dir: PathBuf) -> Self {
+        self.project_dir = dir;
+        self
     }
 
     /// The context as of **now**: the stored session facts with the
@@ -692,13 +707,14 @@ impl CommandHooks {
             ..HookRun::default()
         };
         let cwd = self.cwd.clone();
+        let project_dir = self.project_dir.clone();
         let spawned = subprocess::spawn_shell_with(
             self.detach_helper.as_deref(),
             &handler.command,
             move |cmd| {
                 cmd.stdin(std::process::Stdio::piped()).current_dir(&cwd);
                 for var in PROJECT_DIR_VARS {
-                    cmd.env(var, &cwd);
+                    cmd.env(var, &project_dir);
                 }
             },
         );
@@ -2875,6 +2891,48 @@ mod tests {
             serde_json::json!("the handoff summary")
         );
         let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_hook_found_through_the_project_dir_runs_from_a_subdirectory() {
+        // The documented way to reach a project's own hook scripts:
+        // "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…" — which must resolve
+        // to the project root even when the session runs in a subdirectory,
+        // where the hook itself still runs.
+        let project = std::env::temp_dir().join("alter-zero-hook-project-dir");
+        let _ = std::fs::remove_dir_all(&project);
+        let scripts = project.join(".alter-zero").join("hooks");
+        let subdir = project.join("src");
+        std::fs::create_dir_all(&scripts).expect("scripts dir");
+        std::fs::create_dir_all(&subdir).expect("subdir");
+        let guard = scripts.join("guard.sh");
+        std::fs::write(
+            &guard,
+            "#!/bin/sh\necho \"guarded from $(pwd)\" >&2\nexit 2\n",
+        )
+        .expect("script");
+        let mut perms = std::fs::metadata(&guard).expect("script").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&guard, perms).expect("chmod");
+        let file = HooksFile::parse(&pre_hook(
+            "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh",
+        ))
+        .expect("fixture parses");
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            subdir.clone(),
+            HookHandles::default(),
+        )
+        .expect("runnable")
+        .with_project_dir(project.clone());
+        let block = hooks
+            .pre_tool_use(&call("bash", "{}"), &CancelToken::new())
+            .blocked
+            .expect("the project's guard ran and blocked");
+        assert_eq!(block.reason, format!("guarded from {}", subdir.display()));
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]

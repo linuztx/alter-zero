@@ -373,6 +373,16 @@ impl<'t> Session<'t> {
             file: std::sync::Arc::new(hooks_file),
             session_id: session_id.clone(),
             cwd: cwd.clone(),
+            // `$ALTER_ZERO_PROJECT_DIR`: the root the project layer reads
+            // `.alter-zero/` from, so a project hook reaching its own
+            // scripts finds them from any subdirectory (docs/hooks.md).
+            project_dir: alter_zero::trust::hooks_project_dir(
+                &cwd,
+                alter_zero::project_doc::find_project_root(&cwd).as_deref(),
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .as_deref(),
+            ),
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
             // The **Hooks** row — off until a directory turns it on, with

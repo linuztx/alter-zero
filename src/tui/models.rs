@@ -1625,8 +1625,11 @@ pub(crate) struct HookSetup {
     /// recorder publishes the conversation's (which is this same id for a
     /// fresh session's first conversation, `docs/hooks.md`).
     pub(crate) session_id: String,
-    /// Where handlers run, and what `*_PROJECT_DIR` points at.
+    /// Where handlers run.
     pub(crate) cwd: std::path::PathBuf,
+    /// What `*_PROJECT_DIR` points at: the project root
+    /// (`trust::hooks_project_dir`), the `cwd` outside a repository.
+    pub(crate) project_dir: std::path::PathBuf,
     /// The tty-detach helper, so a hook child is severed from the terminal
     /// like every other shell child (`docs/tty-detach.md`).
     pub(crate) detach_helper: Option<std::path::PathBuf>,
@@ -1685,6 +1688,7 @@ impl HookSetup {
             self.cwd.clone(),
             self.handles.clone(),
         )
+        .map(|hooks| hooks.with_project_dir(self.project_dir.clone()))
     }
 }
 

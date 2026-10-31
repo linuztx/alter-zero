@@ -54,6 +54,21 @@ pub fn is_project_root(root: &Path, home: Option<&Path>) -> bool {
     home != Some(root)
 }
 
+/// The directory a hook knows as the project — `$ALTER_ZERO_PROJECT_DIR`,
+/// and Claude Code's `$CLAUDE_PROJECT_DIR` — given the session's `cwd` and
+/// the nearest `.git` ancestor-or-self `found` there: that root when it is
+/// one ([`is_project_root`]), else the `cwd`. The root the project layer
+/// reads `.alter-zero/` from, so a project's `hooks.json` reaching its own
+/// scripts as `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…` finds them
+/// from any subdirectory (`docs/hooks.md`).
+#[must_use]
+pub fn hooks_project_dir(cwd: &Path, found: Option<&Path>, home: Option<&Path>) -> PathBuf {
+    match found {
+        Some(root) if is_project_root(root, home) => root.to_path_buf(),
+        _ => cwd.to_path_buf(),
+    }
+}
+
 /// The project's hooks file: `{root}/.alter-zero/hooks.json`.
 #[must_use]
 pub fn project_hooks_file(root: &Path) -> PathBuf {
@@ -292,6 +307,32 @@ fn serialize(projects: &BTreeMap<String, BTreeMap<String, String>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hooks_project_dir_is_the_root_the_project_layer_reads() {
+        let home = Some(Path::new("/home/u"));
+        // Launched in a subdirectory: the repository's root, where the
+        // project's `.alter-zero/hooks.json` and its scripts live.
+        assert_eq!(
+            hooks_project_dir(Path::new("/repo/src"), Some(Path::new("/repo")), home),
+            PathBuf::from("/repo")
+        );
+        // No repository above: the directory it was launched in.
+        assert_eq!(
+            hooks_project_dir(Path::new("/tmp/scratch"), None, home),
+            PathBuf::from("/tmp/scratch")
+        );
+        // A repository at home is never the project (`is_project_root`):
+        // `{home}/.alter-zero` is the user's own config home.
+        assert_eq!(
+            hooks_project_dir(
+                Path::new("/home/u/code/x"),
+                Some(Path::new("/home/u")),
+                home
+            ),
+            PathBuf::from("/home/u/code/x")
+        );
+    }
 
     #[test]
     fn fingerprint_is_stable_and_content_sensitive() {

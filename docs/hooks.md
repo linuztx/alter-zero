@@ -562,10 +562,23 @@ session continues with hooks off.
 
 The child is spawned through the same **tty-detach tier walk** every other
 shell child uses (`docs/tty-detach.md`), so a hook that tries to prompt on
-`/dev/tty` fails fast instead of hijacking the TUI. It inherits the session's
+`/dev/tty` fails fast instead of hijacking the TUI. It runs in the session's
 cwd and gets `ALTER_ZERO_PROJECT_DIR` — plus `CLAUDE_PROJECT_DIR`, so scripts
-written for Claude Code find their project root unchanged — and, like every
-shell child, runs without the herdr pane id (`docs/herdr.md`).
+written for Claude Code find their project root unchanged — set to the
+**project root**: the nearest `.git` ancestor, the root the project layer
+reads `.alter-zero/` from, and the cwd outside a repository or when that
+ancestor is the home directory (`trust::hooks_project_dir`). So a project
+reaches its own scripts the same way from any subdirectory:
+
+```json
+{ "type": "command",
+  "command": "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh" }
+```
+
+It used to be the cwd, so launched in `repo/src` that command named a script
+that does not exist, the hook failed open, and a guard it was meant to run
+never did. Like every shell child, a hook runs without the herdr pane id
+(`docs/herdr.md`).
 
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it
@@ -693,7 +706,11 @@ neither end. **Phase 134** raises a real permission prompt (the stub asks
 for one `bash` call) under a `Notification` hook that sleeps 4 s: answered
 at once, the command runs at once, and the hooks still record
 `PreToolUse`, `Notification`, `PostToolUse` in that order — on the
-previous build the notifier landed last.
+previous build the notifier landed last. **Phase 134b** trusts a project's
+own `hooks.json` whose guard is `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh`
+and launches in the repository's `src/`: the guard runs (in the cwd), the
+stub's `rm -rf build/` never does, and the model reads the hook and the
+project's `hooks.json` by path.
 
 Three layers cover the rest:
 

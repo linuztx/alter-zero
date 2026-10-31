@@ -83,6 +83,13 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
+  started in.** A hook written as
+  `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now
+  finds the project's script when the app is started in a subdirectory of
+  the repository. It used to point at that subdirectory, so the script was
+  not found and the hook silently did nothing. `$CLAUDE_PROJECT_DIR` gets the
+  same value; hooks still run in the folder you started in (`docs/hooks.md`).
 - **A `PermissionRequest` hook that exits `2` denies the call.** Its stderr
   is the reason, as in Claude Code and codex and as the `/hooks` page says;
   the call used to go on to the auto-mode classifier and the permission
