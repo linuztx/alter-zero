@@ -193,7 +193,9 @@ in **`src/llm/mcp/`**.
   anything else renders as compact JSON so nothing is dropped), `is_error` →
   the red cell, a modern `resultType: "input_required"` (a multi-round-trip
   request this capability-less client can't answer) → a recoverable red
-  outcome, and a first `image` content item → a `data:` URL riding
+  outcome, any other `resultType` but `complete` (or none) → a failed call
+  (the spec's MUST: the tasks extension's `task` result is a handle, not
+  the tool's answer), and a first `image` content item → a `data:` URL riding
   `ToolOutcome::image` (the `read` tool's channel, so a vision model *sees*
   an MCP image).
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,

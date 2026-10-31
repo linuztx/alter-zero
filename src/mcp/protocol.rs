@@ -622,18 +622,34 @@ pub struct CallOutcome {
 /// resolves as a recoverable error — this client advertises no input
 /// capabilities, so a compliant server shouldn't send one, and stalling a
 /// tool call on input nobody will provide would hang the turn; an absent
-/// `resultType` is `complete` (the compatibility rule for earlier servers).
+/// `resultType` is `complete` (the compatibility rule for earlier servers),
+/// and any other is a failed call — the spec's MUST, since a result this
+/// client does not know (the tasks extension's `task`) is not the tool's
+/// answer, whatever its content says.
 #[must_use]
 pub fn parse_call_result(result: &Value) -> CallOutcome {
-    if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
-        return CallOutcome {
-            text: "the server requested additional user input mid-call (a 2026-07-28 \
-                   multi-round-trip request), which this client does not support — \
-                   retry with complete arguments"
-                .to_string(),
-            ok: false,
-            image: None,
-        };
+    match result.get("resultType").and_then(Value::as_str) {
+        None | Some("complete") => {}
+        Some("input_required") => {
+            return CallOutcome {
+                text: "the server requested additional user input mid-call (a 2026-07-28 \
+                       multi-round-trip request), which this client does not support — \
+                       retry with complete arguments"
+                    .to_string(),
+                ok: false,
+                image: None,
+            };
+        }
+        Some(other) => {
+            return CallOutcome {
+                text: format!(
+                    "the server answered with a result of type \"{other}\", which this \
+                     client does not support"
+                ),
+                ok: false,
+                image: None,
+            };
+        }
     }
     let ok = !result
         .get("isError")
@@ -1031,6 +1047,26 @@ mod tests {
         }));
         assert!(ok.ok);
         assert_eq!(ok.text, "hi");
+    }
+
+    #[test]
+    fn a_result_type_this_client_does_not_know_is_a_failed_call() {
+        // The spec's MUST: an unknown `resultType` is invalid, never read as
+        // `complete` — the tasks extension's `task` result carries a handle,
+        // not the tool's answer, and its content must not reach the model as
+        // one.
+        let outcome = parse_call_result(&json!({
+            "resultType": "task",
+            "task": {"taskId": "t1", "status": "working"},
+            "content": [{"type": "text", "text": "looks like an answer"}]
+        }));
+        assert!(!outcome.ok);
+        assert!(outcome.text.contains("\"task\""), "{}", outcome.text);
+        assert!(
+            !outcome.text.contains("looks like an answer"),
+            "{}",
+            outcome.text
+        );
     }
 
     #[test]

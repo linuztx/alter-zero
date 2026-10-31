@@ -66,6 +66,11 @@ release heading when a version is cut.
   permission it named. A provider that doesn't advertise PKCE protection,
   or that names a sign-in address that isn't HTTPS, is refused with that
   reason, as the MCP specification requires (`docs/mcp.md`).
+- **An MCP tool's unfinished answer is no longer taken as its result.** A
+  server on the current MCP revision can answer a call with a result type
+  this app doesn't handle yet, such as a background task's handle, and its
+  text was handed to the model as if the tool had finished. Such a call now
+  fails with the type named (`docs/mcp.md`).
 - **Tools on newer MCP servers that route on an argument now work.** The
   current MCP revision (2026-07-28) lets a server mark tool parameters,
   such as a region or a repository, to be copied into request headers, and
