@@ -68,9 +68,10 @@ release heading when a version is cut.
   a hook refused a tool call, the agent used to read a five-line paragraph
   that never said which hook had refused it. It now reads one line in
   codex's shape, `Blocked by PreToolUse hook: no destructive deletes`, then
-  the hook's command (`Hook: ~/.alter-zero/hooks/guard.sh`), so it can read
-  the rule or tell you which hook to change, then one line telling it not to
-  retry the same call. A `Stop` hook's feedback, a `PostToolUse` hook's
+  the hook's command (`Hook: ~/.alter-zero/hooks/guard.sh`) and the
+  `hooks.json` it is configured in (`Config: /home/you/.alter-zero/hooks.json`,
+  or a trusted project's own), so it can read the rule or tell you exactly
+  where to change it, then one line telling it not to retry the same call. A `Stop` hook's feedback, a `PostToolUse` hook's
   complaint and a `PermissionRequest` hook's denial name their hook the same
   way. Context a hook adds to a call is labelled (`PostToolUse hook
   additional context: …`), so it no longer reads as the call's own output,

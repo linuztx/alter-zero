@@ -205,7 +205,7 @@ never existed:
   first, and a turn that gives up on one ends through `StopFailure` instead
   (`docs/unfinished-replies.md`). A block appends the reply-so-far as an assistant
   message and the feedback (`Stop hook feedback: {reason}` over the hook's
-  `Hook: {command}` line — *What the model reads*, below) as the next user
+  `Hook:` and `Config:` lines — *What the model reads*, below) as the next user
   message, flips `stop_hook_active`, and the
   **same turn runs another round** — so the status line keeps working, the
   queue and token tally are untouched, and `dispatch_after_turn`'s
@@ -430,12 +430,12 @@ is built by one function in `llm::hooks`, which the offline demo calls too.
 
 | the hook…                                        | the model reads                                                                 |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| refuses a call (`PreToolUse`)                    | `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Do not retry the same call; address the reason or ask the user.` — as the call's result, any context it also added after it |
+| refuses a call (`PreToolUse`)                    | `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Config: {hooks.json}` · `Do not retry the same call; address the reason or ask the user.` — as the call's result, any context it also added after it |
 | denies it (`PermissionRequest`)                  | the same, as `Blocked by PermissionRequest hook: …`                              |
-| blocks a result (`PostToolUse`, `PostToolUseFailure`) | `{event} hook feedback: {reason}` · `Hook: {command}` — after the call's own output |
+| blocks a result (`PostToolUse`, `PostToolUseFailure`) | `{event} hook feedback: {reason}` · `Hook: {command}` · `Config: {hooks.json}` — after the call's own output |
 | adds context to a call                           | `{event} hook additional context: {text}` — after the call's own output          |
 | adds context to a turn or an agent (`SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreCompact`) | that line inside `<system-reminder>` tags, as a user message |
-| blocks a stop (`Stop`, `SubagentStop`)           | `Stop hook feedback: {reason}` · `Hook: {command}` — the next user message       |
+| blocks a stop (`Stop`, `SubagentStop`)           | `Stop hook feedback: {reason}` · `Hook: {command}` · `Config: {hooks.json}` — the next user message       |
 | blocks a prompt (`UserPromptSubmit`)             | nothing that turn (the prompt is erased); the red `Prompt blocked by UserPromptSubmit hook: {reason}` notice replays as an `[error]` line on later turns |
 
 (`·` separates lines.) A refusal used to be five lines that never said
@@ -443,19 +443,26 @@ which hook refused — `A configured lifecycle hook blocked this tool call.`,
 `Reason: …`, two sentences of instruction — and a `PostToolUse` block was
 `A lifecycle hook flagged this result: …`.
 
-**A decision names its hook by its command.** The handler's configured
-command travels with the reason it gave (`ParsedHook::blocked_by`, merged
-beside `block_reason` into `HookOutcome::block`), so with several handlers
-the hook named is the one whose words the model read. The command is what
-the user wrote in `hooks.json`: for a script it *is* the hook's path, which
-the agent can read when it needs the rule, and it is the name the user knows
-the hook by when the agent has to explain a refusal. Only its first line
-shows, cut to 80 characters with `…` marking the cut, since an inline
-program is not a name. codex names no hook on a refusal — its `Command: …`
-suffix echoes the model's own call back, which the call's arguments already
-carry here — and only a Stop continuation carries one, the `hooks.json`
-path in its `hook_run_id`; Claude Code names the command. A
-context line names its event and not its hook: it reports a fact rather
+**A decision names its hook by its command and its file.** The handler
+that gave the reason travels with it (`ParsedHook::blocked_by`, a
+`HookOrigin` merged beside `block_reason` into `HookOutcome::block`), so
+with several handlers the hook named is the one whose words the model read.
+`Hook:` is its command as the user wrote it: for a script it *is* the
+hook's path, which the agent can read when it needs the rule, and it is the
+name the user knows the hook by. Only its first line shows, cut to 80
+characters with `…` marking the cut, since an inline program is not a name.
+`Config:` is the absolute path of the `hooks.json` it is configured in —
+the user's own or a trusted project's, which matters once the two layers
+merge — so the agent can read the file, or tell the user exactly where to
+change the rule. Each group learns its file when it is loaded
+(`HooksFile::with_source`, a field the JSON never carries), the selection
+copies it onto the handler (`CommandHook::source`) and the run onto its
+report (`HookRun::file`); a config parsed from text alone has none, and its
+verdicts name only the command. codex names no hook on a refusal — its
+`Command: …` suffix echoes the model's own call back, which the call's
+arguments already carry here — and only a Stop continuation carries one,
+the `hooks.json` path in its `hook_run_id`; Claude Code names the command.
+A context line names its event and not its hook: it reports a fact rather
 than a decision anyone will ask about.
 
 **Only a refusal carries an instruction.** A refused call is where a model

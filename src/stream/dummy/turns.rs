@@ -504,6 +504,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     const ALLOWED: &str = "ls -la src";
     const HOOK_REASON: &str = "no destructive deletes outside ./tmp";
     const HOOK_COMMAND: &str = "~/.alter-zero/hooks/no-deletes.sh";
+    const HOOKS_FILE: &str = "~/.alter-zero/hooks.json";
     const HOOK_NOTE: &str = "Context added by hook";
 
     let (first, second) = reply_parts(HOOKS_REPLY);
@@ -535,7 +536,10 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         crate::hooks::HookEvent::PreToolUse.name(),
         &crate::hooks::HookBlock {
             reason: HOOK_REASON.to_string(),
-            hook: Some(HOOK_COMMAND.to_string()),
+            hook: Some(crate::hooks::HookOrigin {
+                command: HOOK_COMMAND.to_string(),
+                file: Some(HOOKS_FILE.into()),
+            }),
         },
     );
     events.push(StreamEvent::ToolRejected {
@@ -561,7 +565,10 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     // byte-for-byte the live one (docs/hooks.md).
     let (label, text) = crate::llm::hooks::stop_feedback_texts(&crate::hooks::HookBlock {
         reason: "demo only — the transcript keeps this note".to_string(),
-        hook: Some("~/.alter-zero/hooks/stop.sh".to_string()),
+        hook: Some(crate::hooks::HookOrigin {
+            command: "~/.alter-zero/hooks/stop.sh".to_string(),
+            file: Some(HOOKS_FILE.into()),
+        }),
     });
     events.push(StreamEvent::HookNote { label, text });
     events.push(StreamEvent::StreamDone);

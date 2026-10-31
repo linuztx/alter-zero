@@ -2222,10 +2222,13 @@ started, so no end, the source dropped). A block
 `ToolCall::context_output`, `/resume`-safe) — and every text a hook gives the
 model is codex's terse shape (`docs/hooks.md` *What the model reads*:
 `Blocked by PreToolUse hook: {reason}`, `{event} hook feedback: …`, `Stop
-hook feedback: …`), each decision naming its handler on a `Hook: {command}`
-line (`ParsedHook::blocked_by`, carried beside the reason it gave, so the
-hook named is the one whose words the model reads) and only a refusal adding
-one line on what to do — a `PreToolUse` allow *is*
+hook feedback: …`), each decision naming its handler on `Hook: {command}`
+and `Config: {hooks.json}` lines (`ParsedHook::blocked_by`, a `HookOrigin`
+carried beside the reason it gave, so the hook named is the one whose words
+the model reads; each group's file stamped at load by
+`HooksFile::with_source`, so a merged user + project config still knows
+which file a handler came from) and only a refusal adding one line on what
+to do — a `PreToolUse` allow *is*
 `Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
 **and** the auto-mode classifier — ask means a human), and
 `additionalContext` rides `ToolNote` for the dim `⎿` row plus the

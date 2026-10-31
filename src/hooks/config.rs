@@ -20,6 +20,7 @@
 //!   is running when it is not.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -48,6 +49,11 @@ pub struct MatcherGroup {
     pub matcher: Option<String>,
     #[serde(default)]
     pub hooks: Vec<HookHandler>,
+    /// The `hooks.json` this group was read from — never in the file itself:
+    /// [`HooksFile::with_source`] stamps it, so a merged config still knows
+    /// which file each handler came from.
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 /// One handler inside a group.
@@ -118,6 +124,8 @@ pub struct CommandHook {
     /// default of its own to drift from this one.
     pub timeout_secs: u64,
     pub status_message: Option<String>,
+    /// The `hooks.json` it is configured in, when it came from a file.
+    pub source: Option<PathBuf>,
 }
 
 impl CommandHook {
@@ -151,6 +159,16 @@ impl HooksFile {
             return Ok(Self::default());
         }
         serde_json::from_str(text).map_err(|err| err.to_string())
+    }
+
+    /// This file read from `path`: every group remembers it, so a verdict can
+    /// name the `hooks.json` its hook is configured in (`docs/hooks.md`).
+    #[must_use]
+    pub fn with_source(mut self, path: &Path) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            group.source = Some(path.to_path_buf());
+        }
+        self
     }
 
     /// This layer with `project`'s matcher groups appended per event — the
@@ -224,7 +242,8 @@ impl HooksFile {
             }
             for handler in &group.hooks {
                 match handler.resolve() {
-                    Ok(hook) => {
+                    Ok(mut hook) => {
+                        hook.source.clone_from(&group.source);
                         // `"async": true` parses so a config shared with
                         // another tool loads, but every v1 hook is
                         // synchronous. Running it inline is the safe reading
@@ -282,12 +301,15 @@ impl HookHandler {
                 .filter(|t| *t > 0)
                 .unwrap_or(CommandHook::DEFAULT_TIMEOUT_SECS),
             status_message: self.status_message.clone(),
+            source: None,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
 
     const SAMPLE: &str = r#"{
@@ -321,7 +343,45 @@ mod tests {
                 command: "./guard.sh".to_string(),
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
+                source: None,
             }]
+        );
+    }
+
+    #[test]
+    fn a_selected_handler_knows_the_file_it_came_from() {
+        // The user's file and a trusted project's, merged as the loader
+        // merges them: each handler keeps the hooks.json it was read from, so
+        // a verdict can tell the model where its hook is configured.
+        let user = Path::new("/home/u/.alter-zero/hooks.json");
+        let project = Path::new("/repo/.alter-zero/hooks.json");
+        let merged = parse(SAMPLE).with_source(user).merged(
+            &parse(
+                r#"{"hooks":{"PreToolUse":[{"hooks":[
+                     {"type":"command","command":"./project.sh"}]}]}}"#,
+            )
+            .with_source(project),
+        );
+        let files: Vec<(String, Option<PathBuf>)> = merged
+            .select(HookEvent::PreToolUse, Some("bash"))
+            .handlers
+            .into_iter()
+            .map(|hook| (hook.command, hook.source))
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                ("./guard.sh".to_string(), Some(user.to_path_buf())),
+                ("./project.sh".to_string(), Some(project.to_path_buf())),
+            ]
+        );
+        // A config parsed from text alone came from no file.
+        assert_eq!(
+            parse(SAMPLE)
+                .select(HookEvent::PreToolUse, Some("bash"))
+                .handlers[0]
+                .source,
+            None
         );
     }
 
@@ -644,6 +704,7 @@ mod tests {
                 command: "./guard.sh".to_string(),
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
+                source: None,
             }]
         );
     }

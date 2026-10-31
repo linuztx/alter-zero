@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use crate::frontmatter::truncate_chars;
 use crate::hooks::{
-    CommandHook, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookContext, HookEvent, HookOutcome,
+    CommandHook, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookContext, HookEvent, HookOrigin, HookOutcome,
     HookPermission, HookRun, HooksFile, NO_REASON, ParsedHook, merge, parse_run, truncate_output,
 };
 use crate::stream::CancelToken;
@@ -688,6 +688,7 @@ impl CommandHooks {
     fn run_handler(&self, handler: &CommandHook, payload: &str, cancel: &CancelToken) -> HookRun {
         let mut run = HookRun {
             command: handler.command.clone(),
+            file: handler.source.clone(),
             ..HookRun::default()
         };
         let cwd = self.cwd.clone();
@@ -1002,7 +1003,7 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
             "{} hook feedback: {}{}",
             event.name(),
             block.reason,
-            hook_line(block.hook.as_deref())
+            hook_lines(block.hook.as_ref())
         )
     });
     let context: Vec<String> = feedback.into_iter().chain(added.clone()).collect();
@@ -1020,20 +1021,34 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
 /// path and its flags, not for an inline program.
 const HOOK_LABEL_MAX_CHARS: usize = 80;
 
-/// The `Hook: {command}` line a decision names its handler on, newline first
-/// — the command's first line, cut to [`HOOK_LABEL_MAX_CHARS`] with `…`
-/// marking what was dropped; empty when no handler is known. The command is
-/// what the user wrote in `hooks.json`, so it is the name they know the hook
-/// by and the path the agent can read the hook at.
-fn hook_line(hook: Option<&str>) -> String {
-    let Some(command) = hook.map(str::trim).filter(|command| !command.is_empty()) else {
+/// The lines a decision names its handler on, each newline first: `Hook:
+/// {command}` — the command's first line, cut to [`HOOK_LABEL_MAX_CHARS`]
+/// with `…` marking what was dropped — then `Config: {path}`, the
+/// `hooks.json` it is configured in; empty when no handler is known. The
+/// command is what the user wrote, so it is the name they know the hook by
+/// and the path the agent can read it at; the file is where to look to see
+/// or change the rule (codex's `hook_run_id` names it on a Stop prompt).
+fn hook_lines(origin: Option<&HookOrigin>) -> String {
+    let Some(origin) = origin else {
         return String::new();
     };
-    let label = match command.split_once('\n') {
-        Some((first, _)) => truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS),
-        None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
-    };
-    format!("\nHook: {label}")
+    let mut lines = String::new();
+    let command = origin.command.trim();
+    if !command.is_empty() {
+        let label = match command.split_once('\n') {
+            Some((first, _)) => {
+                truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS)
+            }
+            None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
+        };
+        lines.push_str("\nHook: ");
+        lines.push_str(&label);
+    }
+    if let Some(file) = &origin.file {
+        lines.push_str("\nConfig: ");
+        lines.push_str(&file.display().to_string());
+    }
+    lines
 }
 
 /// The one instruction a refused call carries: not the same call again, and
@@ -1053,7 +1068,7 @@ pub fn block_texts(event: &str, block: &HookBlock) -> (String, String) {
         format!("Blocked by hook: {reason}"),
         format!(
             "Blocked by {event} hook: {reason}{}\n{BLOCKED_NEXT_STEP}",
-            hook_line(block.hook.as_deref())
+            hook_lines(block.hook.as_ref())
         ),
     )
 }
@@ -1138,7 +1153,7 @@ pub fn stop_feedback_texts(block: &HookBlock) -> (String, String) {
         format!(
             "Stop hook feedback: {}{}",
             block.reason,
-            hook_line(block.hook.as_deref())
+            hook_lines(block.hook.as_ref())
         ),
     )
 }
@@ -1497,15 +1512,20 @@ mod tests {
             "PreToolUse",
             &HookBlock {
                 reason: "no destructive deletes".into(),
-                hook: Some("~/.alter-zero/hooks/guard.sh".into()),
+                hook: Some(HookOrigin {
+                    command: "~/.alter-zero/hooks/guard.sh".into(),
+                    file: Some("/home/u/.alter-zero/hooks.json".into()),
+                }),
             },
         );
-        // The cell keeps its short line; the model reads three.
+        // The cell keeps its short line; the model reads the hook, the file
+        // it is configured in, and what to do.
         assert_eq!(display, "Blocked by hook: no destructive deletes");
         assert_eq!(
             result,
             "Blocked by PreToolUse hook: no destructive deletes\n\
              Hook: ~/.alter-zero/hooks/guard.sh\n\
+             Config: /home/u/.alter-zero/hooks.json\n\
              Do not retry the same call; address the reason or ask the user."
         );
         // No handler known (a fake sink, the demo): no `Hook:` line to guess.
@@ -1548,11 +1568,17 @@ mod tests {
         assert_eq!(
             stop_feedback_texts(&HookBlock {
                 reason: "tests are red".into(),
-                hook: Some("./stop.sh".into()),
+                hook: Some(HookOrigin {
+                    command: "./stop.sh".into(),
+                    file: Some("/repo/.alter-zero/hooks.json".into()),
+                }),
             }),
             (
                 "Stop hook".to_string(),
-                "Stop hook feedback: tests are red\nHook: ./stop.sh".to_string()
+                "Stop hook feedback: tests are red\n\
+                 Hook: ./stop.sh\n\
+                 Config: /repo/.alter-zero/hooks.json"
+                    .to_string()
             )
         );
         assert_eq!(
@@ -1606,6 +1632,33 @@ mod tests {
 
         let allowed = hooks.pre_tool_use(&call("bash", r#"{"command":"ls"}"#), &CancelToken::new());
         assert_eq!(allowed, PreToolVerdict::default(), "a silent hook allows");
+    }
+
+    #[test]
+    fn a_verdict_names_the_hooks_json_its_hook_was_read_from() {
+        let path = PathBuf::from("/home/u/.alter-zero/hooks.json");
+        let file = HooksFile::parse(&pre_hook("echo no >&2; exit 2"))
+            .expect("fixture parses")
+            .with_source(&path);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable");
+        let block = hooks
+            .pre_tool_use(&call("bash", "{}"), &CancelToken::new())
+            .blocked
+            .expect("the hook blocks");
+        assert_eq!(
+            block.hook,
+            Some(HookOrigin {
+                command: "echo no >&2; exit 2".into(),
+                file: Some(path),
+            })
+        );
     }
 
     #[test]
@@ -2302,8 +2355,8 @@ mod tests {
         assert!(
             feedback
                 .hook
-                .as_deref()
-                .is_some_and(|h| h.starts_with("tee ")),
+                .as_ref()
+                .is_some_and(|h| h.command.starts_with("tee ")),
             "the hook is named: {feedback:?}"
         );
         let written = std::fs::read_to_string(&probe).expect("the stop hook ran");

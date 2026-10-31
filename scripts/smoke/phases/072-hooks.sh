@@ -52,6 +52,7 @@ echo "==== Phase 72: captured overlay tail (the hook note) ===="
 printf '%s\n' "$hooks_overlay_tail"
 expect_has "$hooks_overlay_tail" -F "Stop hook feedback" "the Ctrl+O transcript lost the hook note"
 expect_has "$hooks_overlay_tail" -F "Hook: ~/.alter-zero/hooks/stop.sh" "the Ctrl+O transcript lost the hook that gave the note"
+expect_has "$hooks_overlay_tail" -F "Config: ~/.alter-zero/hooks.json" "the Ctrl+O transcript lost the hooks.json the note's hook is configured in"
 tmux send-keys -t "$S72" q
 sleep 0.3
 tmux kill-session -t "$S72" 2>/dev/null || true

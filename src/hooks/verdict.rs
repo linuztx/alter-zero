@@ -18,6 +18,8 @@
 //! with `{` but does not parse is a non-blocking error too, never a silent
 //! allow: it means the script meant to say something and got it wrong.
 
+use std::path::PathBuf;
+
 use serde_json::Value;
 
 use super::event::HookEvent;
@@ -33,6 +35,8 @@ pub const HOOK_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 pub struct HookRun {
     /// The configured command, for warning messages.
     pub command: String,
+    /// The `hooks.json` the handler was read from, when it came from a file.
+    pub file: Option<PathBuf>,
     /// `None` when the child never produced one — a spawn failure, a timeout,
     /// or a signal.
     pub exit_code: Option<i32>,
@@ -58,10 +62,11 @@ pub enum HookPermission {
 pub struct ParsedHook {
     /// Set when this handler blocked, with the reason it gave.
     pub block_reason: Option<String>,
-    /// The configured command of the handler that blocked — set with
+    /// The handler that blocked — set with
     /// [`block_reason`](Self::block_reason) and never without it, so the
-    /// model can be told which hook refused it (`docs/hooks.md`).
-    pub blocked_by: Option<String>,
+    /// model can be told which hook refused it and where it is configured
+    /// (`docs/hooks.md`).
+    pub blocked_by: Option<HookOrigin>,
     pub permission: Option<HookPermission>,
     /// The reason behind [`permission`](Self::permission), when given.
     pub permission_reason: Option<String>,
@@ -77,14 +82,33 @@ pub struct ParsedHook {
     pub warning: Option<String>,
 }
 
+/// Which configured handler a verdict came from: its command, and the
+/// `hooks.json` it is configured in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookOrigin {
+    pub command: String,
+    /// The file the handler was read from; `None` for a config parsed from
+    /// text alone (a test fixture) or a hook nothing real ran (the demo).
+    pub file: Option<PathBuf>,
+}
+
+impl From<&str> for HookOrigin {
+    fn from(command: &str) -> Self {
+        Self {
+            command: command.to_string(),
+            file: None,
+        }
+    }
+}
+
 /// A hook's refusal — or, from `Stop`, its demand that the agent keep going:
 /// what it said, and which handler said it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookBlock {
     pub reason: String,
-    /// The handler's configured command; `None` when no real handler ran (a
-    /// test's fake sink, the offline demo).
-    pub hook: Option<String>,
+    /// The handler that said it; `None` when no real handler ran (a test's
+    /// fake sink).
+    pub hook: Option<HookOrigin>,
 }
 
 impl From<&str> for HookBlock {
@@ -101,7 +125,7 @@ impl From<&str> for HookBlock {
 pub struct HookOutcome {
     pub block_reason: Option<String>,
     /// The handler [`block_reason`](Self::block_reason) came from.
-    pub blocked_by: Option<String>,
+    pub blocked_by: Option<HookOrigin>,
     pub permission: Option<HookPermission>,
     pub permission_reason: Option<String>,
     pub updated_input: Option<String>,
@@ -169,7 +193,10 @@ const PLAIN_STDOUT_IS_CONTEXT: &[HookEvent] = &[
 pub fn parse_run(run: &HookRun, event: HookEvent) -> ParsedHook {
     let mut parsed = parse_answer(run, event);
     if parsed.block_reason.is_some() {
-        parsed.blocked_by = Some(run.command.clone());
+        parsed.blocked_by = Some(HookOrigin {
+            command: run.command.clone(),
+            file: run.file.clone(),
+        });
     }
     parsed
 }
@@ -394,8 +421,7 @@ mod tests {
             command: "./h.sh".into(),
             exit_code: Some(0),
             stdout: stdout.into(),
-            stderr: String::new(),
-            error: None,
+            ..HookRun::default()
         }
     }
 
@@ -412,7 +438,7 @@ mod tests {
             exit_code: Some(2),
             stdout: "this is not the reason".into(),
             stderr: "no destructive deletes".into(),
-            error: None,
+            ..HookRun::default()
         };
         let parsed = parse_run(&run, HookEvent::PreToolUse);
         assert_eq!(
@@ -459,6 +485,24 @@ mod tests {
     }
 
     #[test]
+    fn a_block_names_the_file_its_handler_is_configured_in() {
+        let run = HookRun {
+            command: "./guard.sh".into(),
+            file: Some("/home/u/.alter-zero/hooks.json".into()),
+            exit_code: Some(2),
+            stderr: "no destructive deletes".into(),
+            ..HookRun::default()
+        };
+        assert_eq!(
+            parse_run(&run, HookEvent::PreToolUse).blocked_by,
+            Some(HookOrigin {
+                command: "./guard.sh".into(),
+                file: Some("/home/u/.alter-zero/hooks.json".into()),
+            })
+        );
+    }
+
+    #[test]
     fn a_block_names_the_handler_that_gave_it() {
         let guard = "~/.alter-zero/hooks/guard.sh";
         let exit_two = HookRun {
@@ -470,6 +514,7 @@ mod tests {
         assert_eq!(
             parse_run(&exit_two, HookEvent::PreToolUse)
                 .blocked_by
+                .map(|origin| origin.command)
                 .as_deref(),
             Some(guard)
         );
@@ -494,7 +539,10 @@ mod tests {
                 ..ok_stdout(stdout)
             };
             assert_eq!(
-                parse_run(&run, event).blocked_by.as_deref(),
+                parse_run(&run, event)
+                    .blocked_by
+                    .map(|origin| origin.command)
+                    .as_deref(),
                 Some(guard),
                 "{stdout}"
             );

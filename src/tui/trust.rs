@@ -176,8 +176,15 @@ pub(crate) fn load_project_layer(cwd: &Path) -> (Option<ProjectLayer>, Option<St
     };
     let layer = ProjectLayer {
         trusted: trust_file.has_project(&project),
-        hooks: hooks_path
-            .and_then(|path| load_file(path, hooks::HooksFile::parse, &trust_file, &project)),
+        hooks: hooks_path.and_then(|path| {
+            // Every handler remembers the project's file, so a verdict can
+            // name it beside the user's own.
+            let source = path.clone();
+            let parse = move |text: &str| {
+                hooks::HooksFile::parse(text).map(|file| file.with_source(&source))
+            };
+            load_file(path, parse, &trust_file, &project)
+        }),
         mcp_alter: mcp_alter_path
             .and_then(|path| load_file(path, parse_mcp, &trust_file, &project)),
         mcp_compat: mcp_compat_path
