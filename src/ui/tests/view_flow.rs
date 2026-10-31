@@ -32,6 +32,7 @@ fn tall_mcp_app() -> App {
             name: "ask_question".to_string(),
             description: "describe ".repeat(300),
             input_schema: serde_json::json!({"type": "object"}),
+            header_params: Vec::new(),
         }],
     }]);
     app.mcp_menu.as_mut().unwrap().page = McpPage::Tool { tool: 0 };

@@ -129,6 +129,24 @@ impl Transport {
         }
     }
 
+    /// [`request`](Self::request) with the call's `Mcp-Param-{Name}`
+    /// headers (`x-mcp-header`, `docs/mcp.md`) — sent only by a modern
+    /// streamable-HTTP transport, the one the spec asks it of; stdio and
+    /// the legacy SSE transport ignore them, as it allows.
+    pub fn request_with_headers(
+        &mut self,
+        method: &str,
+        params: Value,
+        headers: &[(String, String)],
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
+        match self {
+            Self::Http(t) => t.request_with(method, params, headers, deadline, cancel),
+            _ => self.request(method, params, deadline, cancel),
+        }
+    }
+
     /// Send a notification (no response expected).
     pub fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
         match self {
@@ -441,6 +459,9 @@ struct ModernHeaders {
     /// `Mcp-Name` — `params.name`/`params.uri` for the three methods that
     /// have one (`tools/call`, `resources/read`, `prompts/get`).
     name: Option<String>,
+    /// `Mcp-Param-{Name}` — a `tools/call`'s `x-mcp-header` arguments,
+    /// already named and encoded ([`crate::mcp::param_headers`]).
+    params: Vec<(String, String)>,
 }
 
 /// What one POST resolved to, off the worker thread.
@@ -545,6 +566,7 @@ impl HttpTransport {
         Some(ModernHeaders {
             method: method.to_string(),
             name,
+            params: Vec::new(),
         })
     }
 
@@ -555,17 +577,29 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        self.request_with(method, params, &[], deadline, cancel)
+    }
+
+    /// One request carrying `param_headers` (modern mode only).
+    fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        param_headers: &[(String, String)],
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let mut outcome = self.send_once(method, &params, deadline, cancel)?;
+        let mut outcome = self.send_once(method, &params, param_headers, deadline, cancel)?;
         if matches!(outcome, PostOutcome::SessionExpired) {
             // The session died under us. Start a new one and replay, so a
             // server restart or an idle timeout costs a round trip instead
             // of the whole connection.
             self.reinitialize(deadline, cancel)?;
-            outcome = self.send_once(method, &params, deadline, cancel)?;
+            outcome = self.send_once(method, &params, param_headers, deadline, cancel)?;
         }
         match outcome {
             PostOutcome::Response(result) => result.map_err(TransportError::Rpc),
@@ -585,12 +619,16 @@ impl HttpTransport {
         &mut self,
         method: &str,
         params: &Value,
+        param_headers: &[(String, String)],
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<PostOutcome, TransportError> {
         let id = self.next_id;
         self.next_id += 1;
-        let modern = self.modern_headers(method, params);
+        let modern = self.modern_headers(method, params).map(|mut headers| {
+            headers.params = param_headers.to_vec();
+            headers
+        });
         let outcome = self.post(
             request(id, method, params.clone()),
             Some(id),
@@ -630,6 +668,7 @@ impl HttpTransport {
         match self.send_once(
             "initialize",
             &initialize_params_for(&version),
+            &[],
             deadline,
             cancel,
         )? {
@@ -700,6 +739,9 @@ fn post_blocking(
         req = req.header("Mcp-Method", header_value(&headers.method));
         if let Some(name) = &headers.name {
             req = req.header("Mcp-Name", header_value(name));
+        }
+        for (name, value) in &headers.params {
+            req = req.header(name.as_str(), value.as_str());
         }
     }
     let response = match req.body(body.to_string()).send() {

@@ -29,6 +29,11 @@ release heading when a version is cut.
   authorization server, what to add and where — for Google, which kind of
   client to create — and Enter tries again after you edit the file, with no
   restart (`docs/mcp.md` *A pre-registered client*, `docs/mcp-cli.md`).
+- **Tool arguments marked `x-mcp-header` ride as `Mcp-Param-*` headers.**
+  The 2026-07-28 MCP revision lets a server ask for a tool argument to be
+  repeated as an HTTP header (a region a load balancer routes on, say) and
+  requires clients to send it; a tool whose annotation breaks the spec's
+  rules is left out of the tool list, as the spec directs (`docs/mcp.md`).
 
 ### Fixed
 
@@ -67,6 +72,8 @@ release heading when a version is cut.
   redirect without the right `state` is rejected; a client secret goes the
   way the server advertises (HTTP Basic when it can); and a client
   registered with one authorization server is never presented to another.
+  An MCP tool result of a type this client does not know is reported as an
+  error instead of being read as complete.
 
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a

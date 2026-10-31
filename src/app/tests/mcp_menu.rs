@@ -28,6 +28,7 @@ fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnaps
                 name: format!("tool_{i}"),
                 description: format!("Tool {i}."),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                header_params: Vec::new(),
             })
             .collect(),
     }

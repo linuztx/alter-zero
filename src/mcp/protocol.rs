@@ -380,6 +380,134 @@ pub struct McpToolInfo {
     /// `parameters` — normalized to an object schema when absent/malformed
     /// (a validating provider rejects anything else).
     pub input_schema: Value,
+    /// The schema's `x-mcp-header` annotations ([`header_params`]) — the
+    /// arguments a modern streamable-HTTP call mirrors into
+    /// `Mcp-Param-{Name}` headers.
+    pub header_params: Vec<HeaderParam>,
+}
+
+/// One `x-mcp-header` annotation (2026-07-28, `docs/mcp.md`): the header's
+/// name portion (`Mcp-Param-{name}`) and the chain of `properties` keys
+/// leading to the argument it mirrors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderParam {
+    pub name: String,
+    pub path: Vec<String>,
+}
+
+/// The `x-mcp-header` annotations a tool's input schema carries, held to the
+/// spec's constraints — a valid header-name token, unique without regard to
+/// case, on an `integer`/`string`/`boolean` property reached from the root
+/// through `properties` keys alone (never `items`, a composition, a
+/// conditional or a `$ref`). `Err` names the violation: the spec has a
+/// streamable-HTTP client **exclude** such a tool rather than guess at its
+/// headers, and a server checking them would refuse every call anyway.
+pub fn header_params(schema: &Value) -> Result<Vec<HeaderParam>, String> {
+    fn scan(
+        node: &Value,
+        reachable: Option<&[String]>,
+        found: &mut Vec<HeaderParam>,
+    ) -> Result<(), String> {
+        match node {
+            Value::Object(object) => {
+                if let Some(annotation) = object.get(HEADER_ANNOTATION) {
+                    let path = reachable.filter(|path| !path.is_empty()).ok_or_else(|| {
+                        "an x-mcp-header outside the schema's properties".to_string()
+                    })?;
+                    let name = annotation
+                        .as_str()
+                        .filter(|name| !name.is_empty() && name.bytes().all(is_tchar))
+                        .ok_or_else(|| {
+                            format!("x-mcp-header {annotation} is not a header-name token")
+                        })?;
+                    let kind = object.get("type").and_then(Value::as_str);
+                    if !matches!(kind, Some("string" | "integer" | "boolean")) {
+                        return Err(format!(
+                            "x-mcp-header {name} is on a {} property, not a string, integer \
+                             or boolean",
+                            kind.unwrap_or("untyped")
+                        ));
+                    }
+                    if found.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+                        return Err(format!("x-mcp-header {name} appears twice"));
+                    }
+                    found.push(HeaderParam {
+                        name: name.to_string(),
+                        path: path.to_vec(),
+                    });
+                }
+                for (key, value) in object {
+                    match (key.as_str(), value, reachable) {
+                        (HEADER_ANNOTATION, ..) => {}
+                        ("properties", Value::Object(properties), Some(path)) => {
+                            for (property, schema) in properties {
+                                let mut path = path.to_vec();
+                                path.push(property.clone());
+                                scan(schema, Some(&path), found)?;
+                            }
+                        }
+                        _ => scan(value, None, found)?,
+                    }
+                }
+                Ok(())
+            }
+            Value::Array(items) => items.iter().try_for_each(|item| scan(item, None, found)),
+            _ => Ok(()),
+        }
+    }
+    let mut found = Vec::new();
+    scan(schema, Some(&[]), &mut found)?;
+    Ok(found)
+}
+
+/// The schema extension property naming a header ([`header_params`]).
+const HEADER_ANNOTATION: &str = "x-mcp-header";
+
+/// RFC 9110 `tchar` — what a header name may be made of.
+const fn is_tchar(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
+/// The `Mcp-Param-{Name}` headers one call's `arguments` produce: each
+/// annotated argument's value at its exact path, a string as itself, an
+/// integer in decimal and a boolean as `true`/`false`, all through
+/// [`header_value`]'s encoding (the `Mcp-Name` rule). An argument that is
+/// absent — or not the primitive its schema promised — sends no header.
+#[must_use]
+pub fn param_headers(params: &[HeaderParam], arguments: &Value) -> Vec<(String, String)> {
+    params
+        .iter()
+        .filter_map(|param| {
+            let value = param
+                .path
+                .iter()
+                .try_fold(arguments, |node, key| node.get(key))?;
+            let text = match value {
+                Value::String(text) => text.clone(),
+                Value::Bool(flag) => flag.to_string(),
+                Value::Number(number) if number.is_i64() || number.is_u64() => number.to_string(),
+                _ => return None,
+            };
+            Some((format!("Mcp-Param-{}", param.name), header_value(&text)))
+        })
+        .collect()
 }
 
 /// Parse one `tools/list` page: the tools plus the `nextCursor` when the
@@ -405,10 +533,15 @@ pub fn parse_tools_page(result: &Value) -> (Vec<McpToolInfo>, Option<String>) {
                         Some(schema @ Value::Object(_)) => schema.clone(),
                         _ => json!({"type": "object", "properties": {}}),
                     };
+                    // A tool whose `x-mcp-header` annotations break the
+                    // rules is left out, as the spec directs — never sent
+                    // half its headers.
+                    let header_params = header_params(&input_schema).ok()?;
                     Some(McpToolInfo {
                         name,
                         description,
                         input_schema,
+                        header_params,
                     })
                 })
                 .collect()
@@ -464,15 +597,31 @@ pub struct CallOutcome {
 /// `resultType` is `complete` (the compatibility rule for earlier servers).
 #[must_use]
 pub fn parse_call_result(result: &Value) -> CallOutcome {
-    if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
-        return CallOutcome {
-            text: "the server requested additional user input mid-call (a 2026-07-28 \
-                   multi-round-trip request), which this client does not support — \
-                   retry with complete arguments"
-                .to_string(),
-            ok: false,
-            image: None,
-        };
+    match result.get("resultType").and_then(Value::as_str) {
+        None | Some("complete") => {}
+        Some("input_required") => {
+            return CallOutcome {
+                text: "the server requested additional user input mid-call (a 2026-07-28 \
+                       multi-round-trip request), which this client does not support — \
+                       retry with complete arguments"
+                    .to_string(),
+                ok: false,
+                image: None,
+            };
+        }
+        // The spec's MUST: a result type this client does not know is
+        // invalid, never read as `complete` (a `task` result's content is
+        // not the tool's answer).
+        Some(other) => {
+            return CallOutcome {
+                text: format!(
+                    "the server answered with a result of type \"{other}\", which this client \
+                     does not support"
+                ),
+                ok: false,
+                image: None,
+            };
+        }
     }
     let ok = !result
         .get("isError")
@@ -851,5 +1000,166 @@ mod tests {
         assert_eq!(empty.text, "(no content)");
         let empty_err = parse_call_result(&json!({"isError": true}));
         assert_eq!(empty_err.text, "tool call failed");
+    }
+
+    #[test]
+    fn an_unknown_result_type_is_invalid_not_complete() {
+        // The spec's MUST: an unrecognized `resultType` is invalid. A
+        // `task` result's content is not the tool's answer.
+        let task = parse_call_result(&json!({
+            "resultType": "task",
+            "content": [{"type": "text", "text": "queued"}]
+        }));
+        assert!(!task.ok);
+        assert!(task.text.contains("\"task\""), "{}", task.text);
+        let complete = parse_call_result(&json!({
+            "resultType": "complete",
+            "content": [{"type": "text", "text": "done"}]
+        }));
+        assert_eq!((complete.ok, complete.text.as_str()), (true, "done"));
+    }
+
+    #[test]
+    fn x_mcp_header_annotations_are_read_and_held_to_the_rules() {
+        // The spec's own example, plus a nested property reached through
+        // `properties` alone.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "region": {"type": "string", "x-mcp-header": "Region"},
+                "query": {"type": "string"},
+                "options": {"type": "object", "properties": {
+                    "dryRun": {"type": "boolean", "x-mcp-header": "Dry-Run"}
+                }}
+            }
+        });
+        assert_eq!(
+            header_params(&schema),
+            Ok(vec![
+                HeaderParam {
+                    name: "Region".to_string(),
+                    path: vec!["region".to_string()],
+                },
+                HeaderParam {
+                    name: "Dry-Run".to_string(),
+                    path: vec!["options".to_string(), "dryRun".to_string()],
+                },
+            ])
+        );
+        // Nothing annotated, nothing to send.
+        assert_eq!(header_params(&json!({"type": "object"})), Ok(Vec::new()));
+        // Every violation makes the tool definition invalid.
+        for (why, schema) in [
+            (
+                "not a token",
+                json!({"properties": {"a": {"type": "string", "x-mcp-header": "Has Space"}}}),
+            ),
+            (
+                "empty",
+                json!({"properties": {"a": {"type": "string", "x-mcp-header": ""}}}),
+            ),
+            (
+                "a number",
+                json!({"properties": {"a": {"type": "number", "x-mcp-header": "A"}}}),
+            ),
+            (
+                "an object",
+                json!({"properties": {"a": {"type": "object", "x-mcp-header": "A"}}}),
+            ),
+            (
+                "a duplicate without regard to case",
+                json!({"properties": {
+                    "a": {"type": "string", "x-mcp-header": "Tenant"},
+                    "b": {"type": "string", "x-mcp-header": "tenant"}
+                }}),
+            ),
+            (
+                "inside items",
+                json!({"properties": {"a": {"type": "array",
+                    "items": {"type": "string", "x-mcp-header": "A"}}}}),
+            ),
+            (
+                "inside a composition",
+                json!({"properties": {"a": {"anyOf": [
+                    {"type": "string", "x-mcp-header": "A"}]}}}),
+            ),
+            (
+                "under $defs",
+                json!({"$defs": {"T": {"type": "string", "x-mcp-header": "A"}},
+                       "properties": {"a": {"$ref": "#/$defs/T"}}}),
+            ),
+            (
+                "on the root",
+                json!({"type": "object", "x-mcp-header": "A"}),
+            ),
+        ] {
+            assert!(header_params(&schema).is_err(), "{why}");
+        }
+    }
+
+    #[test]
+    fn annotated_arguments_become_encoded_param_headers() {
+        let params = vec![
+            HeaderParam {
+                name: "Region".to_string(),
+                path: vec!["region".to_string()],
+            },
+            HeaderParam {
+                name: "Greeting".to_string(),
+                path: vec!["greeting".to_string()],
+            },
+            HeaderParam {
+                name: "Limit".to_string(),
+                path: vec!["opts".to_string(), "limit".to_string()],
+            },
+            HeaderParam {
+                name: "Dry".to_string(),
+                path: vec!["dry".to_string()],
+            },
+            HeaderParam {
+                name: "Absent".to_string(),
+                path: vec!["absent".to_string()],
+            },
+        ];
+        let headers = param_headers(
+            &params,
+            &json!({
+                "region": "us-west1",
+                "greeting": "Hello, 世界",
+                "opts": {"limit": 42},
+                "dry": false,
+                "query": "SELECT 1"
+            }),
+        );
+        // The spec's encoding table: plain ASCII as itself, anything else in
+        // the base64 sentinel; an absent argument sends no header at all.
+        assert_eq!(
+            headers,
+            [
+                ("Mcp-Param-Region".to_string(), "us-west1".to_string()),
+                (
+                    "Mcp-Param-Greeting".to_string(),
+                    "=?base64?SGVsbG8sIOS4lueVjA==?=".to_string()
+                ),
+                ("Mcp-Param-Limit".to_string(), "42".to_string()),
+                ("Mcp-Param-Dry".to_string(), "false".to_string()),
+            ]
+        );
+        // A value that is not the primitive its schema promised sends none.
+        assert!(param_headers(&params[..1], &json!({"region": 1.5})).is_empty());
+    }
+
+    #[test]
+    fn a_tool_with_an_invalid_header_annotation_is_left_out_of_the_list() {
+        let (tools, _) = parse_tools_page(&json!({"tools": [
+            {"name": "good", "inputSchema": {"type": "object", "properties": {
+                "region": {"type": "string", "x-mcp-header": "Region"}}}},
+            {"name": "bad", "inputSchema": {"type": "object", "properties": {
+                "ratio": {"type": "number", "x-mcp-header": "Ratio"}}}},
+            {"name": "plain", "inputSchema": {"type": "object"}}
+        ]}));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["good", "plain"]);
+        assert_eq!(tools[0].header_params.len(), 1);
     }
 }

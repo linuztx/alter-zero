@@ -54,6 +54,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
                 },
                 "required": ["repoName", "question"]
             }),
+            header_params: Vec::new(),
         }],
     }
 }

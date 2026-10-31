@@ -294,6 +294,7 @@ mod tests {
                     name: format!("t{i}"),
                     description: String::new(),
                     input_schema: json!({"type": "object", "properties": {}}),
+                    header_params: Vec::new(),
                 })
                 .collect(),
         }

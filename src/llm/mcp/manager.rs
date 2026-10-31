@@ -784,9 +784,17 @@ impl McpManager {
                 .iter()
                 .find(|s| s.wire_map.contains_key(&call.name))
                 .and_then(|server| {
+                    let raw_tool = server.wire_map.get(&call.name)?.clone();
+                    let header_params = server
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name == raw_tool)
+                        .map(|tool| tool.header_params.clone())
+                        .unwrap_or_default();
                     Some((
                         server.entry.name.clone(),
-                        server.wire_map.get(&call.name)?.clone(),
+                        raw_tool,
+                        header_params,
                         server.transport.clone()?,
                         server.entry.config.url().map(str::to_string),
                         inner.auth_path.clone(),
@@ -794,7 +802,8 @@ impl McpManager {
                     ))
                 })
         };
-        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout)) = lookup
+        let Some((server_name, raw_tool, header_params, transport, server_url, auth_path, timeout)) =
+            lookup
         else {
             return ToolOutcome::error(format!(
                 "unknown MCP tool: {} (run /mcp to see the connected servers)",
@@ -813,9 +822,11 @@ impl McpManager {
             if let Some(bearer) = refreshed_bearer {
                 transport.set_bearer(Some(bearer));
             }
-            transport.request(
+            // `x-mcp-header`: the annotated arguments ride as headers too.
+            transport.request_with_headers(
                 "tools/call",
                 call_params(&raw_tool, &arguments),
+                &crate::mcp::param_headers(&header_params, &arguments),
                 timeout,
                 cancel,
             )
@@ -1084,6 +1095,7 @@ mod tests {
                         name: name.into(),
                         description: format!("{name} tool"),
                         input_schema: serde_json::json!({"type": "object"}),
+                        header_params: Vec::new(),
                     })
                     .collect();
             }
@@ -2085,6 +2097,95 @@ done
         // The grant is untouched.
         let stored = oauth::load_tokens(Some(&auth_path), &url).unwrap();
         assert_eq!(stored.access_token, "narrow");
+    }
+
+    /// A modern (2026-07-28) streamable-HTTP server whose one tool marks its
+    /// `region` argument `x-mcp-header: Region` and answers each call with
+    /// the `Mcp-Param-Region` header it received (or `none`).
+    fn spawn_header_echo_fixture() -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let (mut content_length, mut region) = (0usize, None);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("mcp-param-region:") {
+                        region = Some(header["mcp-param-region:".len()..].trim().to_string());
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let request = serde_json::from_slice::<Value>(&body).unwrap_or_default();
+                let id = request.get("id").and_then(Value::as_u64);
+                let result = match request.get("method").and_then(Value::as_str) {
+                    Some("server/discover") => serde_json::json!({
+                        "resultType": "complete",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}},
+                        "_meta": {"io.modelcontextprotocol/serverInfo":
+                            {"name": "geo", "version": "1"}}
+                    }),
+                    Some("tools/list") => serde_json::json!({
+                        "resultType": "complete",
+                        "tools": [{"name": "where", "inputSchema": {
+                            "type": "object",
+                            "properties": {"region": {"type": "string", "x-mcp-header": "Region"}}
+                        }}]
+                    }),
+                    Some("tools/call") => serde_json::json!({
+                        "resultType": "complete",
+                        "content": [{"type": "text",
+                                     "text": region.unwrap_or_else(|| "none".to_string())}]
+                    }),
+                    _ => serde_json::json!({}),
+                };
+                let body =
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    #[test]
+    fn an_annotated_argument_rides_its_mcp_param_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager =
+            open_listing_manager(&spawn_header_echo_fixture(), &dir.path().join("a.json"));
+        manager.start_connections();
+        wait_connected(&manager, "cal");
+        let call = |arguments: &str| ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__cal__where".to_string(),
+            arguments: arguments.to_string(),
+        };
+        let outcome = manager.call_tool(&call(r#"{"region": "us-west1"}"#), &CancelToken::new());
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "us-west1");
+        // No value at the annotated path, no header.
+        let outcome = manager.call_tool(&call("{}"), &CancelToken::new());
+        assert_eq!(outcome.output, "none");
     }
 
     #[test]

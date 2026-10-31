@@ -252,7 +252,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     version header from the first probe (it MUST match the `_meta`), plus
     `Mcp-Method` on every request and `Mcp-Name` on `tools/call` (the
     `header_value` sentinel encoding for non-header-safe names), and no
-    sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
+    sessions. A modern `tools/call` also carries an `Mcp-Param-{Name}`
+    header for every argument its tool's schema marks `x-mcp-header`
+    (`mcp::header_params` reads and checks the annotations when the tools
+    are listed — a token name, unique without regard to case, on a string,
+    integer or boolean property reached through `properties` alone — and a
+    tool breaking them is **left out of the list**, as the spec directs;
+    `mcp::param_headers` encodes the values the way `Mcp-Name` is). A
+    `HeaderMismatch` (`-32020`) answer is not retried after a re-list — the
+    spec's SHOULD; the error reaches the model as any other does. A 4xx
+    whose body parses as a JSON-RPC error surfaces as that
     error (a modern server answers version/header problems as `400` + a
     modern error body), else as the refusal the SSE fallback keys on;
     notifications POST and ignore the body. A **404 to a request that
@@ -951,7 +960,9 @@ rather than a stalled turn. `subscriptions/listen`, response caching
 (`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
 registration (we are not a hosted client with an `https` client id — a
 pre-registered client or DCR, deprecated but retained, is how a client
-identity is had; *Signing in* above) stay out with it. Server
+identity is had; *Signing in* above) stay out with it. A `resultType` this
+client does not know (the tasks extension's `task`, say) is the spec's
+"invalid", reported as a failed call rather than read as complete. Server
 `instructions` are shown in the detail page but not injected into the system
 prompt. WebSocket transport isn't offered (neither reference ships it for
 user servers). The dummy backend scripts no MCP scenario — the manager is
@@ -966,7 +977,8 @@ classification, every cell/prompt/aggregation rendering, the
 commit-vs-repaint agreement), and the boundary against in-process fixtures:
 a modern stdio server (discover-first), a legacy one (the -32601 fallback),
 a strict modern HTTP server that *rejects* requests missing the 2026-07-28
-request metadata (so a green connect proves we send it), a
+request metadata (so a green connect proves we send it), a modern server
+echoing the `Mcp-Param-Region` header its `x-mcp-header` tool asks for, a
 Google-shaped server that lists openly and refuses calls (401 without a
 token, 403 `insufficient_scope` without the scope — the probe, the
 step-up), an authorization server that registers nobody (the whole
