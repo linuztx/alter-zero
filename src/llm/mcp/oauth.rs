@@ -1138,6 +1138,28 @@ fn post_form_raw(
     Ok((status, response.text().unwrap_or_default()))
 }
 
+/// May the flow send the user, or a token request, to this endpoint?
+/// HTTPS, or plain HTTP to this machine's loopback (a local server, a test)
+/// — the spec requires HTTPS for every authorization-server endpoint, and
+/// the authorize URL goes to the browser launcher as given, so a `file:` or
+/// `javascript:` endpoint a hostile metadata document named would be opened.
+#[must_use]
+pub fn endpoint_allowed(endpoint: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => parsed.host().is_some(),
+        "http" => match parsed.host() {
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// Does this protected-resource document (RFC 9728) declare `server_url`
 /// an OAuth-protected resource? It must name an authorization server and
 /// speak for this server ([`resource_allowed`]).
@@ -1258,6 +1280,9 @@ pub fn discover(
             }
         };
     let mut last_err = String::from("no authorization-server metadata found");
+    // A document that was found but refused explains a failure better than a
+    // later candidate's 404, so the first refusal is the one reported.
+    let mut refusal: Option<String> = None;
     for candidate in as_candidates {
         match get_json(&candidate) {
             Ok(meta) => {
@@ -1265,15 +1290,46 @@ pub fn discover(
                 if let (Some(expected), Some(issuer)) = (&expected_issuer, field("issuer"))
                     && !issuers_match(expected, &issuer)
                 {
-                    last_err = format!("{candidate}: names issuer {issuer}, not {expected}");
+                    refusal.get_or_insert(format!(
+                        "{candidate}: names issuer {issuer}, not {expected}"
+                    ));
                     continue;
                 }
                 let (Some(authorization_endpoint), Some(token_endpoint)) =
                     (field("authorization_endpoint"), field("token_endpoint"))
                 else {
-                    last_err = format!("{candidate}: missing endpoints");
+                    refusal.get_or_insert(format!("{candidate}: missing endpoints"));
                     continue;
                 };
+                let registration_endpoint = field("registration_endpoint");
+                if let Some(unsafe_endpoint) = [
+                    Some(&authorization_endpoint),
+                    Some(&token_endpoint),
+                    registration_endpoint.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|endpoint| !endpoint_allowed(endpoint))
+                {
+                    refusal.get_or_insert(format!(
+                        "{candidate}: names an endpoint that is neither HTTPS nor this \
+                         machine ({unsafe_endpoint})"
+                    ));
+                    continue;
+                }
+                // The spec's MUST (2025-11-25 on): refuse to proceed when the
+                // server does not advertise S256, rather than run a code flow
+                // it may not protect.
+                if !string_list(&meta, "code_challenge_methods_supported")
+                    .iter()
+                    .any(|method| method == "S256")
+                {
+                    refusal.get_or_insert(format!(
+                        "{candidate}: the authorization server does not advertise PKCE \
+                         (S256), so its code flow can't be protected"
+                    ));
+                    continue;
+                }
                 let as_scopes: Vec<String> = meta
                     .get("scopes_supported")
                     .and_then(Value::as_array)
@@ -1302,7 +1358,7 @@ pub fn discover(
                 return Ok(AuthServerMeta {
                     authorization_endpoint,
                     token_endpoint,
-                    registration_endpoint: field("registration_endpoint"),
+                    registration_endpoint,
                     scopes,
                     issuer: field("issuer"),
                     iss_required: meta
@@ -1317,7 +1373,8 @@ pub fn discover(
         }
     }
     Err(format!(
-        "could not discover the authorization server ({last_err})"
+        "could not discover the authorization server ({})",
+        refusal.unwrap_or(last_err)
     ))
 }
 
@@ -2192,6 +2249,44 @@ pub(super) mod fixtures {
                         })
                         .to_string(),
                     )
+                } else if let Some(variant) = path
+                    .strip_prefix("/.well-known/oauth-protected-resource/")
+                    .and_then(|rest| rest.strip_suffix("-mcp"))
+                    .filter(|v| matches!(*v, "nopkce" | "unsafe"))
+                {
+                    // A path issuer of its own per variant, so its metadata
+                    // can break one rule at a time.
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": format!("{base_t}/{variant}-mcp"),
+                            "authorization_servers": [format!("{base_t}/{variant}")],
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-authorization-server/nopkce" {
+                    // No `code_challenge_methods_supported`: PKCE unadvertised.
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "issuer": format!("{base_t}/nopkce"),
+                            "authorization_endpoint": format!("{base_t}/authorize"),
+                            "token_endpoint": format!("{base_t}/token"),
+                        })
+                        .to_string(),
+                    )
+                } else if path == "/.well-known/oauth-authorization-server/unsafe" {
+                    // A token endpoint over plain HTTP to another host.
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "issuer": format!("{base_t}/unsafe"),
+                            "authorization_endpoint": format!("{base_t}/authorize"),
+                            "token_endpoint": "http://as.test/token",
+                            "code_challenge_methods_supported": ["S256"],
+                        })
+                        .to_string(),
+                    )
                 } else if path == "/.well-known/oauth-authorization-server" {
                     json(
                         "200 OK",
@@ -2948,6 +3043,50 @@ mod tests {
             redirect_param(&url, "scope").as_deref(),
             Some("calendar admin")
         );
+    }
+
+    #[test]
+    fn only_https_or_this_machine_may_be_an_oauth_endpoint() {
+        // The authorize URL goes to the browser launcher as given, so a
+        // hostile metadata document naming `file:` or `javascript:` would
+        // be opened; and the spec requires HTTPS for every endpoint.
+        for allowed in [
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "http://127.0.0.1:8080/token",
+            "http://localhost/token",
+            "http://[::1]:9/token",
+        ] {
+            assert!(endpoint_allowed(allowed), "{allowed}");
+        }
+        for refused in [
+            "http://as.test/token",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "not a url",
+        ] {
+            assert!(!endpoint_allowed(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn metadata_without_pkce_or_with_an_unsafe_endpoint_is_refused() {
+        // 2025-11-25 and later: a client MUST refuse to proceed when the
+        // authorization server does not advertise S256 — a code flow it may
+        // not protect is not run at all.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let fixture = spawn_auth_fixture(&["client_secret_post"], "shh");
+        for (variant, needle) in [("nopkce", "PKCE"), ("unsafe", "HTTPS")] {
+            let server = format!("{}/{variant}-mcp", fixture.base);
+            match run_flow_at(&fixture, &server, None, &store) {
+                Err(AuthError::Failed(detail)) => {
+                    assert!(detail.contains(needle), "{variant}: {detail}");
+                }
+                other => panic!("{variant}: expected a refusal, got {other:?}"),
+            }
+        }
+        assert!(fixture.token_requests.lock().unwrap().is_empty());
     }
 
     #[test]

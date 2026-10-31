@@ -439,7 +439,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     a bare origin — Google's resource metadata names
     `https://accounts.google.com/`, its metadata says
     `https://accounts.google.com`). A configured `authServerMetadataUrl`
-    is taken as given.
+    is taken as given for its issuer, and held to the next two rules like
+    any other document.
+  - A document is **refused** when it does not advertise PKCE `S256`
+    (`code_challenge_methods_supported` — the spec's MUST since 2025-11-25:
+    refuse to proceed rather than run a code flow the server may not
+    protect; the TS SDK proceeds anyway, so a server omitting the field
+    worked there and is refused here), or when its authorization, token or
+    registration endpoint is neither HTTPS nor this machine's loopback
+    (`endpoint_allowed` — the spec requires HTTPS, and the authorize URL
+    goes to the browser launcher as given, so a `file:` or `javascript:`
+    endpoint a hostile document named would otherwise be opened). A
+    refused document is reported over a later candidate's 404: the reason
+    the user can act on is the one shown.
   - `WWW-Authenticate` is read by a real auth-param tokenizer
     (`challenge_params`: whole names, case-insensitive, quoted values with
     commas and escapes). The substring search it replaced found `scope`
