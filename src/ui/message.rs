@@ -5,6 +5,7 @@
 //! [`conversation`](super::conversation).
 
 use super::assistant::{assistant_lines, expand_code_tabs};
+use super::emphasis::meta_spans;
 use super::theme::*;
 use super::wrap::{cols, wrap_output};
 use super::*;
@@ -91,9 +92,11 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
         Span::styled(SYSTEM_BULLET.to_string(), bullet_style),
         Span::raw(COMPACTED_NOTICE.to_string()),
     ];
+    // The meta after the notice is dim, its numbers in the theme's emphasis
+    // (`docs/emphasis.md`).
     if compaction.before > 0 || compaction.after > 0 {
-        spans.push(Span::styled(
-            format!(
+        spans.extend(meta_spans(
+            &format!(
                 " · {} → {} tokens",
                 format_token_count(usize::try_from(compaction.before).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(compaction.after).unwrap_or(usize::MAX)),
@@ -102,8 +105,8 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
         ));
     }
     if compaction.secs > 0 {
-        spans.push(Span::styled(
-            format!(" · {}", format_elapsed(compaction.secs)),
+        spans.extend(meta_spans(
+            &format!(" · {}", format_elapsed(compaction.secs)),
             dim,
         ));
     }

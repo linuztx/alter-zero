@@ -26,10 +26,11 @@ TIPS_JSON="$SMOKE_CFG/tips.json"
 TIP_ROW="⎿  Tip: "
 
 # The catalog in walk order, one tip per line, read from the source so a
-# reordered or edited catalog moves this phase with it (`tips::TIPS`).
+# reordered or edited catalog moves this phase with it (`tips::TIPS`), its
+# backtick marks dropped as the row drops them (docs/emphasis.md).
 mapfile -t TIPS_CATALOG < <(
 	sed -n '/^pub const TIPS: &\[&str\] = &\[/,/^\];/p' "$SMOKE_ROOT/src/tips.rs" |
-		sed -n 's/^    "\(.*\)",$/\1/p' | sed 's/\\"/"/g'
+		sed -n 's/^    "\(.*\)",$/\1/p' | sed 's/\\"/"/g' | tr -d '`'
 )
 if [ "${#TIPS_CATALOG[@]}" -lt 4 ]; then
 	fail "could not read the tip catalog out of src/tips.rs (${#TIPS_CATALOG[@]} entries)"

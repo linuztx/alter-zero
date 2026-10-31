@@ -59,10 +59,11 @@ tmux kill-session -t "$S25" 2>/dev/null
 # fallback actually reached the clipboard — tmux's buffer holds the reply tail
 # (docs/copy.md).
 expect_has "$copy_empty" -F "No agent response to copy" "/copy with no assistant message did not show 'No agent response to copy'"
-# Mocha is the fixture's default theme: an info toast wears its dim (#7f849c),
-# the footer's colour — Phase 120's check for /diff's info toast.
-if ! printf '%s\n' "$copy_empty_styled" | grep -F 'No agent response to copy' | grep -qF '38;2;127;132;156'; then
-	fail "/copy with nothing to copy is not styled as a dim info toast"
+# Mocha is the fixture's default theme: an info toast wears its emphasis
+# (#85b9cb, the soft accent the facts in dim meta wear, docs/emphasis.md) —
+# Phase 120's check for /diff's info toast.
+if ! printf '%s\n' "$copy_empty_styled" | grep -F 'No agent response to copy' | grep -qF '38;2;133;185;203'; then
+	fail "/copy with nothing to copy is not styled as an info toast"
 fi
 expect_has "$copy_ok" -F "Copied last message to clipboard" "/copy did not confirm with 'Copied last message to clipboard'"
 expect_has "$copy_clip" -F "$SETTLED_REPLY" "/copy's OSC 52 fallback did not put the reply on the clipboard (tmux buffer missing the reply tail)"

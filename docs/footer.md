@@ -77,8 +77,12 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   band-replaces-footer swap is decided; `live_height` adds it,
   [`render_live`]/`cursor_position` pass it, so reserve and paint can't drift.
 - `footer_line(app, width) -> Line` — `FOOTER_INDENT` (two spaces, codex's
-  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, every span dim
-  (`footer_color()`/`FOOTER_SEPARATOR`); the content is truncated with a
+  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, dim
+  (`footer_color()`/`FOOTER_SEPARATOR`) but for the row's **facts**, which
+  wear the theme's emphasis (`docs/emphasis.md`): the model with its thinking
+  mode and speed tier, the gauge's `{pct}%`, the shells' count and the
+  permission mode, `master` in the caution amber
+  (`footer_master_mode_color()`); the content is truncated with a
   trailing `…` when it overflows the width (codex's
   `truncate_line_with_ellipsis_if_overflow`). Two later segments append to the
   same dim ` · ` chain when they apply — the **context gauge**
@@ -133,8 +137,8 @@ reseat, resizes) already accounts for the row.
 
 - **Not configurable.** Codex's `/statusline` lets users pick items (branch,
   context %, …) and theme colours; ours is the fixed default pair — model +
-  cwd — in the all-dim no-colour style. More items later are new spans in
-  `footer_line`.
+  cwd — dim but for its facts (`docs/emphasis.md`). More items later are new
+  spans in `footer_line`.
 - **Fewer footer modes.** Codex multiplexes quit reminders, Esc hints, and
   queue hints through the same row; our slot has exactly four occupants — the
   context line, the Ctrl+R search line, the `!` shell-mode hint, and the
@@ -155,9 +159,10 @@ reseat, resizes) already accounts for the row.
 - `ui`: `footer_rows` is 0 without session info / 1 with it / 0 when a band is
   open — and 1 whenever a Ctrl+R search is open or shell mode is on, session
   info or not (see `docs/history-search.md` / `docs/shell-command.md`, which
-  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}` all-dim with the dim
-  separator; a ↓-focused shell count lights up on cyan while every other
-  segment keeps its text and dim styling; it truncates with `…` at narrow
+  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}`,
+  the model in the emphasis and the separator and cwd dim; a ↓-focused shell
+  count lights up on cyan while every other segment keeps its text and
+  styling; it truncates with `…` at narrow
   widths; `display_cwd` maps home →
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last

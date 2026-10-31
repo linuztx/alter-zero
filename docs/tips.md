@@ -31,7 +31,9 @@ watching the screen with nothing to do. This is that row.
   verb already moves every 30 s, `docs/status-indicator.md`).
 - **It hangs off the status line** — directly under it, in the `⎿` gutter
   a tool's output hangs from, inside the status slot and above its trailing
-  gap. Dim throughout, word-wrapped under the gutter on a terminal too
+  gap. Dim but for the key or command it teaches, which takes the theme's
+  emphasis (the catalog marks it, below; `docs/emphasis.md`), word-wrapped
+  under the gutter on a terminal too
   narrow for it (every tip fits one row at 80 columns).
 - **Live only.** The row goes when the turn does and is never committed:
   no scrollback line, no history item, nothing in Ctrl+O, the rollout or the
@@ -58,7 +60,12 @@ hold the catalog to the rules a reader relies on:
 - **every `/command` it names is in `COMMANDS`**, so a renamed command
   cannot leave a tip pointing at nothing;
 - no duplicates, nothing empty, no trailing period (Claude Code's tips read
-  as fragments of a sentence, and so do these).
+  as fragments of a sentence, and so do these);
+- **what a tip teaches is marked in backticks** (``Press `ctrl+o` to …``):
+  `tips::parts` splits an entry at its marks, the row draws the marked part in
+  the theme's emphasis and never shows the backticks (`tips::plain_text` is
+  the shown text), and every tip naming a key, a `/command` or `alter-zero`
+  marks it (`docs/emphasis.md`).
 
 The order interleaves keys, commands and the command line so neighbours
 differ, and opens on the tip that leads to all the others (`?` for the

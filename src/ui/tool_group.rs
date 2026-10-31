@@ -21,6 +21,8 @@
 //! Every call stays whole in the Ctrl+O transcript; this is only what the
 //! conversation shows of them.
 
+use super::emphasis::{emphasized, meta_spans};
+use super::file_cell::gutter_row_spans;
 use super::theme::*;
 use super::tool::{bullet_span, command_display_lines, result_row};
 use super::wrap::{cols, truncate_cols, wrap_output};
@@ -85,13 +87,14 @@ fn clauses(counts: GroupCounts, active: bool) -> Vec<Clause> {
 }
 
 /// The clauses as styled spans — `Read `, **`2`**, ` files, listed `, … —
-/// every piece in `style`, the counts bold on top of it, the first verb
+/// every piece in `style`, the counts in `count`, the first verb
 /// capitalised, the scratchpad edits' `+55 -2` in `dim`. `ellipsis` closes
 /// an open group's line (`…`).
 fn summary_spans(
     counts: GroupCounts,
     active: bool,
     style: Style,
+    count: Style,
     dim: Style,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
@@ -102,10 +105,7 @@ fn summary_spans(
             format!(", {}", clause.verb)
         };
         spans.push(Span::styled(format!("{verb} "), style));
-        spans.push(Span::styled(
-            clause.count.to_string(),
-            style.add_modifier(Modifier::BOLD),
-        ));
+        spans.push(Span::styled(clause.count.to_string(), count));
         spans.push(Span::styled(format!(" {}", clause.noun), style));
         // `+55 -2`, dim beside the clause; a side that changed nothing is
         // left out.
@@ -131,13 +131,14 @@ fn capitalize(text: &str) -> String {
 }
 
 /// `spans` laid out in `room` columns with the dim `(ctrl+o to expand)` hint
-/// after them: the hint goes first when the row is too narrow for both, then
-/// the clauses are cut with a `…` (into one span — a cut count would read as
-/// a different number).
+/// after them, its key in the theme's emphasis (`docs/emphasis.md`): the
+/// hint goes first when the row is too narrow for both, then the clauses are
+/// cut with a `…` (into one span — a cut count would read as a different
+/// number).
 fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'static>> {
     let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
     if cols(&text) + cols(EXPAND_HINT) <= room {
-        spans.push(Span::styled(EXPAND_HINT.to_string(), hint));
+        spans.extend(meta_spans(EXPAND_HINT, hint));
         return spans;
     }
     if cols(&text) <= room {
@@ -170,8 +171,12 @@ pub fn tool_group_lines(
     });
     let counts = group_counts(members, paths);
     let style = Style::new().fg(reasoning_label_color());
+    // Dim but for its facts: the counts, bold in the theme's emphasis, and
+    // the hint's key (`docs/emphasis.md`). The lines a scratchpad edit
+    // changed stay dim, a detail of the count beside them.
+    let count = emphasized(style).add_modifier(Modifier::BOLD);
     vec![Line::from(fit(
-        summary_spans(counts, false, style, style),
+        summary_spans(counts, false, style, count, style),
         style,
         usize::from(width),
     ))]
@@ -215,25 +220,41 @@ fn path_hint_rows(path: &str, room: usize) -> Vec<Line<'static>> {
 /// A command on the `⎿` row — `$ ` and then every line of it, **wrapped**
 /// rather than cut, each row after the first hanging under the text after
 /// the `$ ` — with its `clock` whole at the end: on the last row when it
-/// fits there, else on a row of its own.
+/// fits there, else on a row of its own. All of it dim, the clock's numbers
+/// in the theme's emphasis (`docs/emphasis.md`); the command is never read
+/// for facts, since a number in it (`head -n 20`) is the command's own.
 fn command_hint_rows(command: &str, clock: Option<&str>, room: usize) -> Vec<Line<'static>> {
     let hang = " ".repeat(cols(TOOL_GROUP_COMMAND_PROMPT));
     let text_room = room.saturating_sub(cols(TOOL_GROUP_COMMAND_PROMPT)).max(1);
-    let mut rows = wrap_output(command, u16::try_from(text_room).unwrap_or(u16::MAX));
+    // Each row's command text, and the clock when it rides that row.
+    let mut rows: Vec<(String, Option<&str>)> =
+        wrap_output(command, u16::try_from(text_room).unwrap_or(u16::MAX))
+            .into_iter()
+            .map(|row| (row, None))
+            .collect();
     if let Some(clock) = clock {
         match rows.last_mut() {
-            Some(last) if cols(last.trim_end()) + cols(clock) <= text_room => {
+            Some((last, tail)) if cols(last.trim_end()) + cols(clock) <= text_room => {
                 last.truncate(last.trim_end().len());
-                last.push_str(clock);
+                *tail = Some(clock);
             }
-            _ => rows.push(clock.trim_start().to_string()),
+            _ => rows.push((String::new(), Some(clock.trim_start()))),
         }
     }
+    let dim = Style::new().fg(tool_dim_color());
     rows.into_iter()
         .enumerate()
-        .map(|(at, row)| match at {
-            0 => result_row(0, format!("{TOOL_GROUP_COMMAND_PROMPT}{row}")),
-            _ => result_row(1, format!("{hang}{row}")),
+        .map(|(at, (text, clock))| {
+            let lead = if at == 0 {
+                format!("{TOOL_GROUP_COMMAND_PROMPT}{text}")
+            } else {
+                format!("{hang}{text}")
+            };
+            let mut spans = vec![Span::styled(lead, dim)];
+            if let Some(clock) = clock {
+                spans.extend(meta_spans(clock, dim));
+            }
+            gutter_row_spans(usize::from(at > 0), spans)
         })
         .collect()
 }
@@ -311,7 +332,13 @@ pub(super) fn live_group_lines(
     let dim = Style::new().fg(tool_dim_color());
     let room = usize::from(width).saturating_sub(cols(TOOL_BULLET));
     let mut spans = vec![bullet_span(tool_running_color(), pulse)];
-    spans.extend(fit(summary_spans(counts, true, label, dim), dim, room));
+    // A header, not dim meta: its counts stay its own bold white.
+    let count = label.add_modifier(Modifier::BOLD);
+    spans.extend(fit(
+        summary_spans(counts, true, label, count, dim),
+        dim,
+        room,
+    ));
     let mut lines = vec![Line::from(spans)];
     if let Some(item) = app.group_hint(with_queue) {
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));

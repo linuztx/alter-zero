@@ -604,6 +604,17 @@ pub(super) fn tool_dim_color() -> Color {
     palette().dim
 }
 
+/// The theme's soft accent: what the **facts** inside dim meta text wear so
+/// the eye can find them, while the text around them stays dim
+/// (`docs/emphasis.md`). A fact is a key a hint names (`ctrl+o`, `esc`,
+/// `ctrl+b`, a `↓` you press), a number a summary or a clock reports (`12s`,
+/// `6.1k`, `+42`), the footer's model and permission mode, and an info
+/// toast. It is louder than [`tool_dim_color`] and quieter than the accent
+/// the pickers select with ([`menu_selected_color`]).
+pub(super) fn emphasis_color() -> Color {
+    palette().emphasis
+}
+
 // ===== The task tools' live checklist (docs/task-tools.md) =====
 
 /// The checklist's status glyphs — Claude Code's `figures` trio: pending's
@@ -2603,10 +2614,19 @@ pub(super) const FOOTER_INDENT: &str = "  ";
 /// Separator between the footer's segments (codex's dim ` · `).
 pub(super) const FOOTER_SEPARATOR: &str = " · ";
 
-/// The footer's text colour — every segment dim, codex's no-theme-colours
-/// status-line style.
+/// The footer's text colour — dim, codex's no-theme-colours status-line
+/// style — for everything but its facts: the model the session talks to, the
+/// share of the context window used, the running shells' count and the
+/// permission mode wear [`emphasis_color`] (`docs/emphasis.md`).
 pub(super) fn footer_color() -> Color {
     tool_dim_color()
+}
+
+/// The `master` permission mode in the footer: the caution amber, since that
+/// mode runs every call unasked (`docs/permissions.md`). The other modes wear
+/// [`emphasis_color`].
+pub(super) fn footer_master_mode_color() -> Color {
+    palette().warning
 }
 
 /// The least gap kept between the footer's left chain and the permission
@@ -2639,23 +2659,25 @@ pub(super) fn footer_focus_fg() -> Color {
 /// footer and the queued messages.
 pub(super) const TOAST_INDENT: &str = "  ";
 
-/// An info toast's colour (a confirmation / soft rejection) — dim, like the footer.
+/// An info toast's colour (a confirmation / soft rejection): the theme's
+/// emphasis, since it answers something the user just did and a dim line
+/// above the box was easy to miss (`docs/emphasis.md`, `docs/toast.md`).
 pub(super) fn toast_color() -> Color {
-    tool_dim_color()
+    emphasis_color()
 }
 
-/// How far an error toast's red is mixed toward the info toast's dim — 0 the
-/// full error red, 1 the dim. A third of the way keeps a failure red at a
+/// How far an error toast's red is mixed toward the dim — 0 the full error
+/// red, 1 the dim. A third of the way keeps a failure red at a
 /// glance without the four-second line outshouting the error bullet. See
 /// docs/toast.md.
 pub(super) const TOAST_ERROR_DIM_MIX: f32 = 0.35;
 
 /// An error toast's colour (a failure — a `Copy failed`, a refused model
 /// switch): the theme's error red mixed [`TOAST_ERROR_DIM_MIX`] of the way
-/// toward [`toast_color`], a softer red than the error bullet's. A named
+/// toward [`tool_dim_color`], a softer red than the error bullet's. A named
 /// terminal red (the `ansi` theme) has nothing to mix and stays itself.
 pub(super) fn toast_error_color() -> Color {
-    lerp_color(error_color(), toast_color(), TOAST_ERROR_DIM_MIX)
+    lerp_color(error_color(), tool_dim_color(), TOAST_ERROR_DIM_MIX)
 }
 
 // --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,

@@ -8,8 +8,8 @@
 //! goes away entirely: the committed line is bullet-less
 //! (`Thought for 3s · 228 tokens (ctrl+o to expand)`), the
 //! [`summary_lines`](super::summary_lines) shape, because a finished thought
-//! is turn meta rather than a cell — dim on both surfaces, `Done for Ns`'s
-//! exact dress. The weight and the motion live in the block above, which is
+//! is turn meta rather than a cell — dim on both surfaces but for its facts,
+//! `Done for Ns`'s exact dress. The weight and the motion live in the block above, which is
 //! where something is still happening.
 //!
 //! Nothing here ever renders the chain-of-thought into a *committed* row —
@@ -18,6 +18,7 @@
 //! runs and in [`reasoning_full_lines`] afterwards, which is exactly the
 //! collapsed-inline / expanded-in-Ctrl+O contract a tool call has.
 
+use super::emphasis::meta_spans;
 use super::file_cell::gutter_row_styled;
 use super::status::shimmer_spans_from;
 use super::theme::*;
@@ -75,11 +76,13 @@ fn thought_label(reasoning: &Reasoning) -> String {
     format!("{REASONING_DONE}{}", format_elapsed(reasoning.secs))
 }
 
-/// The settled line's span: dim, the same on both surfaces. A finished
-/// thought is a footnote about work already done — the weight belongs to the
-/// live block, which is where something is still happening.
-fn settled_span(text: String) -> Span<'static> {
-    Span::styled(text, Style::new().fg(reasoning_label_color()))
+/// The settled line's spans: dim, the same on both surfaces, its facts (how
+/// long, how many tokens, the `ctrl+o` that expands it) in the theme's
+/// emphasis (`docs/emphasis.md`). A finished thought is a footnote about work
+/// already done — the weight belongs to the live block, which is where
+/// something is still happening.
+fn settled_spans(text: &str) -> Vec<Span<'static>> {
+    meta_spans(text, Style::new().fg(reasoning_label_color()))
 }
 
 /// See [`thought_label`] — `" · 1.5k tokens"`, or empty when unknown.
@@ -95,7 +98,7 @@ fn thought_metrics(reasoning: &Reasoning) -> String {
 /// [`summary_lines`] shape (`width` is unused, kept for the uniform `*_lines`
 /// signature).
 ///
-/// No bullet, and dim throughout — `Done for Ns`'s exact dress. The
+/// No bullet, and dim but for its facts — `Done for Ns`'s exact dress. The
 /// `● Thinking…` header meant *something is happening*, and nothing is any
 /// more; what is left is a fact about the turn, so it settles into the
 /// transcript rather than competing with the reply it sits above. The
@@ -103,7 +106,7 @@ fn thought_metrics(reasoning: &Reasoning) -> String {
 /// tool peek makes.
 #[must_use]
 pub fn reasoning_lines(reasoning: &Reasoning, _width: u16) -> Vec<Line<'static>> {
-    vec![Line::from(settled_span(format!(
+    vec![Line::from(settled_spans(&format!(
         "{}{}{EXPAND_HINT}",
         thought_label(reasoning),
         thought_metrics(reasoning)
@@ -114,7 +117,7 @@ pub fn reasoning_lines(reasoning: &Reasoning, _width: u16) -> Vec<Line<'static>>
 /// the `(ctrl+o to expand)` hint, since this *is* the expansion — over the
 /// whole chain-of-thought in the `⎿` gutter.
 pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(settled_span(format!(
+    let mut lines = vec![Line::from(settled_spans(&format!(
         "{}{}",
         thought_label(reasoning),
         thought_metrics(reasoning)

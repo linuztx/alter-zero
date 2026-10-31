@@ -21,6 +21,7 @@ mod classifier_view;
 mod context_usage_view;
 mod context_view;
 mod donate_view;
+mod emphasis;
 mod export_view;
 mod file_cell;
 mod footer;
@@ -117,6 +118,16 @@ pub(super) fn painted_title_wears_the_dress(buf: &Buffer, y: u16) -> bool {
 /// Concatenate a line's span contents into its plain text.
 pub(super) fn plain(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The text of every span that wears the theme's emphasis — the facts a dim
+/// meta line picks out (`docs/emphasis.md`), in order.
+pub(super) fn emphasized_texts(spans: &[Span<'_>]) -> Vec<String> {
+    spans
+        .iter()
+        .filter(|span| span.style.fg == Some(crate::ui::theme::emphasis_color()))
+        .map(|span| span.content.to_string())
+        .collect()
 }
 
 /// Read row `y` of a buffer back as a string.

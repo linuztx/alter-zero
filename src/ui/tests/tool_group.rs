@@ -7,7 +7,8 @@ use super::*;
 use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
-    TOOL_PULSE_PERIOD, reasoning_label_color, tool_dim_color, tool_running_color,
+    TOOL_PULSE_PERIOD, emphasis_color, reasoning_label_color, tool_dim_color, tool_name_color,
+    tool_running_color,
 };
 use crate::ui::tool_group::{live_group_lines, tool_group_lines};
 use crate::ui::wrap::cols;
@@ -55,10 +56,13 @@ fn a_settled_group_is_one_dim_bullet_less_line_in_the_references_clause_order() 
         lines[0]
             .spans
             .iter()
-            .all(|span| span.style.fg == Some(reasoning_label_color())),
-        "dim throughout, the settled thought's dress: {:?}",
+            .all(|span| span.style.fg == Some(reasoning_label_color())
+                || span.style.fg == Some(emphasis_color())),
+        "dim but for its facts, the settled thought's dress: {:?}",
         lines[0]
     );
+    // The counts and the key are the facts (docs/emphasis.md).
+    assert_eq!(emphasized_texts(&lines[0].spans), ["1", "1", "1", "ctrl+o"]);
 }
 
 #[test]
@@ -81,6 +85,47 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
         .find(|span| span.content == "3")
         .expect("the count is its own span");
     assert!(count.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        count.style.fg,
+        Some(emphasis_color()),
+        "a settled count is bold in the theme's emphasis"
+    );
+}
+
+#[test]
+fn the_live_line_keeps_its_counts_white_and_picks_out_its_key() {
+    // The open group's line is a header, not dim meta: its counts stay its
+    // bold white, and only the dim `(ctrl+o to expand)` names its key in the
+    // theme's emphasis (docs/emphasis.md).
+    let app = holding_a_read("mathutil.py");
+    let lines = live_group_lines(&app, 80, None, true);
+    let count = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == "1")
+        .expect("the count is its own span");
+    assert_eq!(count.style.fg, Some(tool_name_color()));
+    assert!(count.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(emphasized_texts(&lines[0].spans), ["ctrl+o"]);
+}
+
+#[test]
+fn the_hint_rows_clock_picks_out_its_numbers_but_never_the_commands() {
+    // A number in the command is the command's (`head -n 20`): only the
+    // clock the app adds is meta, so only its facts take the emphasis.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "head -n 20 a.rs", None);
+    app.set_command_elapsed(Some(Duration::from_secs(12)));
+    app.push_tool_output("a\n");
+    let lines = live_group_lines(&app, 80, None, true);
+    assert_eq!(plain(&lines[1]), "  ⎿  $ head -n 20 a.rs (12s · 1 line)");
+    assert_eq!(emphasized_texts(&lines[1].spans), ["12s", "1"]);
+    // A clock on a row of its own, under a command too wide to share one.
+    let lines = live_group_lines(&app, 30, None, true);
+    let clock = lines.last().unwrap();
+    assert_eq!(plain(clock).trim(), "(12s · 1 line)");
+    assert_eq!(emphasized_texts(&clock.spans), ["12s", "1"]);
 }
 
 #[test]

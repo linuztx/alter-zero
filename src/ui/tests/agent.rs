@@ -1470,3 +1470,75 @@ fn an_agent_views_strip_streams_the_subagents_write_like_the_main_one() {
         ]
     );
 }
+
+// --- the facts inside the agent cells' meta (docs/emphasis.md) ---
+
+#[test]
+fn a_settled_lone_agent_picks_out_its_receipt_and_its_key() {
+    use crate::agents::AgentStatus;
+    let group = crate::app::AgentGroup {
+        background: false,
+        agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
+        timestamp: String::new(),
+        batch: None,
+    };
+    let lines = agent_group_lines(&group, 80);
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Done (2 tool uses · 16.1k tokens · 39s)"
+    );
+    assert_eq!(emphasized_texts(&lines[1].spans), ["2", "16.1k", "39s"]);
+    assert_eq!(plain(&lines[2]), "  (ctrl+o to expand)");
+    assert_eq!(emphasized_texts(&lines[2].spans), ["ctrl+o"]);
+    // The red settle of an interrupted agent names no fact to pick out.
+    let mut stopped = group.clone();
+    stopped.agents[0].status = AgentStatus::Interrupted;
+    let lines = agent_group_lines(&stopped, 80);
+    assert!(emphasized_texts(&lines[1].spans).is_empty());
+    // The Ctrl+O cell's footer wears the same receipt.
+    let full = agent_group_full_lines(&group, 80, &PathDisplay::VERBATIM);
+    let footer = full
+        .iter()
+        .find(|line| plain(line).contains("Done ("))
+        .expect("the settle footer");
+    assert_eq!(emphasized_texts(&footer.spans), ["2", "16.1k", "39s"]);
+}
+
+#[test]
+fn an_agent_trees_header_hint_and_counters_pick_out_their_facts() {
+    use crate::agents::AgentStatus;
+    let group = crate::app::AgentGroup {
+        background: false,
+        agents: vec![
+            agent_entry("a1", "Fetch Warsaw", AgentStatus::Done),
+            agent_entry("a2", "Fetch Manila", AgentStatus::Done),
+        ],
+        timestamp: String::new(),
+        batch: None,
+    };
+    let lines = agent_group_lines(&group, 80);
+    assert_eq!(emphasized_texts(&lines[0].spans), ["ctrl+o"]);
+    assert_eq!(emphasized_texts(&lines[1].spans), ["2", "16.1k"]);
+    let launched = crate::app::AgentGroup {
+        background: true,
+        ..group.clone()
+    };
+    let lines = agent_group_lines(&launched, 80);
+    assert_eq!(emphasized_texts(&lines[0].spans), ["↓", "ctrl+o"]);
+}
+
+#[test]
+fn the_rosters_runtime_and_tally_are_its_facts() {
+    let mut app = App::new();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    app.set_agent_runtime("a1", Duration::from_secs(48));
+    let lines = agent_list_lines(&app, 100);
+    assert!(plain(&lines[2]).ends_with(" 48s"), "{}", plain(&lines[2]));
+    assert_eq!(emphasized_texts(&lines[2].spans), ["48s"]);
+    // The agent's type and description are its name, never facts.
+    assert!(
+        !emphasized_texts(&lines[2].spans)
+            .iter()
+            .any(|text| text.contains("Fetch"))
+    );
+}

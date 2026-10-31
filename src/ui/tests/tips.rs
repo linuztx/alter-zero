@@ -4,7 +4,7 @@
 use super::*;
 use crate::tasks::TaskStore;
 use crate::tips::{TIP_DELAY, TIPS};
-use crate::ui::theme::tool_dim_color;
+use crate::ui::theme::{emphasis_color, tool_dim_color};
 use crate::ui::wrap::cols;
 
 fn row(buf: &Buffer, y: u16, width: u16) -> String {
@@ -57,14 +57,45 @@ fn the_tip_hangs_in_the_gutter_behind_its_label() {
 }
 
 #[test]
-fn the_tip_is_dim_throughout() {
+fn the_tip_is_dim_but_for_what_it_teaches() {
     // Claude Code dims the whole row: it is a hint beside the work, never a
-    // line that competes with it.
-    for line in tip_lines(TIPS[0], 80) {
+    // line that competes with it. Only the key or command it teaches, the
+    // catalog's backtick mark, takes the theme's emphasis, and the marks
+    // themselves never show (docs/emphasis.md).
+    let lines = tip_lines(TIPS[0], 80);
+    assert_eq!(
+        plain(&lines[0]),
+        "  ⎿  Tip: Press ? on an empty prompt to see the keyboard shortcuts"
+    );
+    assert_eq!(emphasized_texts(&lines[0].spans), ["?"]);
+    for line in &lines {
         for span in &line.spans {
-            assert_eq!(span.style.fg, Some(tool_dim_color()), "{:?}", span.content);
+            if span.style.fg != Some(emphasis_color()) {
+                assert_eq!(span.style.fg, Some(tool_dim_color()), "{:?}", span.content);
+            }
         }
     }
+    let lines = tip_lines("Run `alter-zero update` to install the latest release", 80);
+    assert_eq!(
+        plain(&lines[0]),
+        "  ⎿  Tip: Run alter-zero update to install the latest release"
+    );
+    assert_eq!(emphasized_texts(&lines[0].spans), ["alter-zero", "update"]);
+}
+
+#[test]
+fn a_wrapped_tip_keeps_its_emphasis_on_the_row_it_lands_on() {
+    let lines = tip_lines("Press `ctrl+o` to see the whole transcript", 24);
+    assert!(
+        lines.len() > 1,
+        "{:?}",
+        lines.iter().map(plain).collect::<Vec<_>>()
+    );
+    let marked: Vec<String> = lines
+        .iter()
+        .flat_map(|line| emphasized_texts(&line.spans))
+        .collect();
+    assert_eq!(marked, ["ctrl+o"]);
 }
 
 #[test]
@@ -111,7 +142,10 @@ fn render_live_hangs_the_tip_directly_under_the_status() {
         "{:?}",
         row(&buf, 0, width)
     );
-    assert_eq!(row(&buf, 1, width), format!("  ⎿  Tip: {}", TIPS[0]));
+    assert_eq!(
+        row(&buf, 1, width),
+        format!("  ⎿  Tip: {}", crate::tips::plain_text(TIPS[0]))
+    );
     assert_eq!(row(&buf, 2, width), "", "the status slot's trailing gap");
     assert!(row(&buf, 3, width).starts_with('─'), "then the box's rule");
     // The caret stays on the prompt row, the tip counted above it.
@@ -140,7 +174,10 @@ fn the_strip_counts_the_tip_it_paints() {
     let lines = crate::ui::live::strip_lines(&app, width, None, 0);
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(texts.len(), 3, "{texts:?}");
-    assert_eq!(texts[1], format!("  ⎿  Tip: {}", TIPS[0]));
+    assert_eq!(
+        texts[1],
+        format!("  ⎿  Tip: {}", crate::tips::plain_text(TIPS[0]))
+    );
     assert_eq!(
         crate::ui::live::strip_content_rows(&app, width, 0),
         u16::try_from(lines.len()).unwrap()
@@ -186,5 +223,8 @@ fn a_picker_opened_mid_turn_keeps_the_tip_above_itself() {
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
     assert!(row(&buf, 0, width).contains("Working…"));
-    assert_eq!(row(&buf, 1, width), format!("  ⎿  Tip: {}", TIPS[0]));
+    assert_eq!(
+        row(&buf, 1, width),
+        format!("  ⎿  Tip: {}", crate::tips::plain_text(TIPS[0]))
+    );
 }

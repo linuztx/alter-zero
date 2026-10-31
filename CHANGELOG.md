@@ -53,6 +53,22 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The facts in dim lines stand out in your theme's colour.** The lines
+  about the work (the status line's clock and tokens, `Worked for 12s ·
+  6.1k tokens`, `Thought for 3s`, `… +42 lines (ctrl+o to expand)`, a
+  running command's `(22s · wait 2m)`, an agent's `Done (3 tool uses ·
+  12.3k tokens · 45s)`, the spinner tip and the footer) were one flat grey,
+  so the numbers and keys in them were as hard to spot as the words around
+  them. The lines stay dim, and their facts now wear a soft version of the
+  theme's accent: every key a hint names (`ctrl+o`, `esc`, `ctrl+b`, the
+  `↓` that opens the manager), every time and count, the key or command a
+  tip teaches, and in the footer the model, the share of the context window
+  used, the running shells and the permission mode, with `master` in amber
+  since it runs everything without asking. A confirmation toast such as
+  `Copied last message to clipboard` takes the same colour instead of the
+  grey it was easy to miss in. Every theme has its own shade, light Latte
+  and the terminal-colours `ansi` included, and `/theme` switches it with
+  the rest (`docs/emphasis.md`).
 - **Auto mode runs commands that only read without asking the
   classifier.** In auto mode every command used to wait on a safety check
   by the model, even `ls` or `git status`, and each check is a request to

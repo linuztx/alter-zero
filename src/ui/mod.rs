@@ -47,6 +47,7 @@ mod context_view;
 mod conversation;
 mod diff_view;
 mod donate_view;
+mod emphasis;
 mod export_view;
 mod file_cell;
 mod footer;

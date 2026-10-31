@@ -528,3 +528,23 @@ fn user_messages_still_wrap_at_word_boundaries() {
         .collect();
     assert_eq!(rows, vec!["❯ hello", "  world", "  again"]);
 }
+
+#[test]
+fn the_compaction_cells_shrink_and_time_are_its_facts() {
+    // docs/emphasis.md: the cell's meta stays dim, its numbers do not.
+    let compaction = crate::app::Compaction {
+        summary: "s".into(),
+        timestamp: String::new(),
+        before: 88_000,
+        after: 2_100,
+        auto: true,
+        secs: 12,
+    };
+    let line = &compaction_lines(&compaction, 120)[0];
+    assert!(
+        plain(line).ends_with("· 88k → 2.1k tokens · 12s · auto"),
+        "{}",
+        plain(line)
+    );
+    assert_eq!(emphasized_texts(&line.spans), ["88k", "2.1k", "12s"]);
+}

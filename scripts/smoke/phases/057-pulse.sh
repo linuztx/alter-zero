@@ -77,12 +77,14 @@ pulse_doubles="${pulse_rest#* }"
 pulse_second_grey="$(printf '%s' "$pulse_colours" | tr ',' '\n' | awk -F';' '
 	NF == 3 && $1 + 0 <= 127 && $2 + 0 <= 132 && $3 + 0 <= 156 && $0 != "127;132;156" { print; exit }')"
 echo "==== Phase 57: frames with the running bullet hidden: $pulse_hidden · every header shown: $pulse_shown · more than one hidden: $pulse_doubles ===="
-# Let the turn finish so the resolved colour can be checked.
+# Let the turn finish so the resolved colour can be checked. The summary is
+# matched on the plain text: its time is a span of its own in the theme's
+# emphasis (docs/emphasis.md), so the escaped capture carries an SGR inside
+# `Worked for 12s`. The escaped capture is what the colour check reads.
 pulse_done=""
 for _ in $(seq 1 400); do
-	cap="$(tmux capture-pane -t "$S57" -p -e 2>/dev/null)"
-	if printf '%s' "$cap" | grep -qE "$SUMMARY_RE"; then
-		pulse_done="$cap"
+	if tmux capture-pane -t "$S57" -p 2>/dev/null | grep -qE "$SUMMARY_RE"; then
+		pulse_done="$(tmux capture-pane -t "$S57" -p -e 2>/dev/null)"
 		break
 	fi
 	sleep 0.1

@@ -4970,3 +4970,97 @@ fn the_strip_follows_the_apps_live_tail() {
         "the strip is sized by the same walk it is painted from"
     );
 }
+
+// --- the facts inside a cell's meta rows (docs/emphasis.md) ---
+
+#[test]
+fn a_capped_peeks_hint_picks_out_the_hidden_count_and_its_key() {
+    let hint = crate::ui::tool::more_hint_line(42);
+    assert_eq!(plain(&hint), "     … +42 lines (ctrl+o to expand)");
+    assert_eq!(emphasized_texts(&hint.spans), ["+42", "ctrl+o"]);
+    assert_eq!(
+        hint.spans[0].style.fg,
+        Some(tool_dim_color()),
+        "the rest of the hint stays dim"
+    );
+}
+
+#[test]
+fn a_running_commands_clock_row_picks_out_its_numbers() {
+    // Every shape of the running cell's clock: the `+N lines (…)` row under
+    // a window that hides rows, and the `Running… (…)` corner of a command
+    // that has printed nothing yet.
+    let out = (1..=9)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let busy = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
+    let lines = running_command_lines(
+        &busy,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let clock = lines.last().unwrap();
+    assert_eq!(plain(clock).trim(), "+5 lines (9s · wait 2m)");
+    assert_eq!(emphasized_texts(&clock.spans), ["+5", "9s", "2m"]);
+    let silent = tool("Bash", "sleep 100", ToolStatus::Running, "");
+    let lines = running_command_lines(
+        &silent,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(10),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let corner = lines.last().unwrap();
+    assert_eq!(plain(corner), "  ⎿  Running… (10s · wait 2m)");
+    assert_eq!(emphasized_texts(&corner.spans), ["10s", "2m"]);
+    // A `!` shell run's row, which carries its clock the same way.
+    let shell = crate::ui::tool::shell_running_line(Duration::from_secs(75));
+    assert_eq!(emphasized_texts(&shell.spans), ["1m", "15s"]);
+}
+
+#[test]
+fn a_backgrounded_cell_picks_out_the_key_that_manages_it() {
+    let lines = tool_lines(
+        &tool(
+            "Bash",
+            "ping x.com",
+            ToolStatus::Backgrounded,
+            "launch text",
+        ),
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let row = lines
+        .iter()
+        .find(|line| plain(line).contains("Running in the background"))
+        .expect("the backgrounded row");
+    assert_eq!(emphasized_texts(&row.spans), ["↓"]);
+}
+
+#[test]
+fn a_resolved_mcp_line_picks_out_its_count_and_its_key() {
+    let line = crate::ui::tool::mcp_called_line(&["deepwiki", "deepwiki"]);
+    assert_eq!(plain(&line), "Called Deepwiki 2 times (ctrl+o to expand)");
+    assert_eq!(emphasized_texts(&line.spans), ["2", "ctrl+o"]);
+}
+
+#[test]
+fn placeholders_and_notes_name_no_fact_and_stay_one_dim_span() {
+    // `Running…`, `Waiting…`, `(no output)` and the classifier's note carry
+    // nothing to pick out: their rows are exactly what they were.
+    for status in [ToolStatus::Running, ToolStatus::Waiting] {
+        let lines = tool_lines(
+            &tool("Bash", "sleep 1", status, ""),
+            80,
+            &PathDisplay::VERBATIM,
+        );
+        for line in &lines[1..] {
+            assert!(emphasized_texts(&line.spans).is_empty(), "{line:?}");
+        }
+    }
+}

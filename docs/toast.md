@@ -13,7 +13,7 @@ there" and fades it after a few seconds.
 
 (  ●•· ) Working… (1s · ↑ 1 tokens · esc to interrupt)
 
-  Copied last message to clipboard          ← the toast (dim), auto-clears ~4s
+  Copied last message to clipboard          ← the toast, auto-clears ~4s
 ───────────────────────────────────────────────────────────────
 ❯
 ───────────────────────────────────────────────────────────────
@@ -144,13 +144,17 @@ box, showing/clearing it grows/shrinks the region from the top exactly as the
 streaming strip and the queue already do (`ui::repin` re-anchors, no box jump).
 
 Styling is centralized in `ui/theme.rs`: `TOAST_INDENT` (the two-space inset shared
-with the footer/queue), `toast_color()` (dim, `tool_dim_color()`) for info, and
-`toast_error_color()` for failures — see below.
+with the footer/queue), `toast_color()` (the theme's emphasis,
+`emphasis_color()`) for info, and `toast_error_color()` for failures — see
+below.
 
 ## Info or error
 
-A toast is quiet chrome: the info kind wears the footer's dim, and the error
-kind stays nearly as quiet while still saying *failure* at a glance.
+A toast is quiet chrome: the info kind wears the theme's emphasis, the soft
+accent the facts in dim meta text wear (`docs/emphasis.md`), since it answers
+something the user just did and a dim line above the box was easy to miss;
+the error kind stays nearly as quiet while still saying *failure* at a
+glance.
 
 - **Info**: confirmations, and the soft rejections where nothing failed — a
   command that is disabled mid-turn or unavailable in this session, or one

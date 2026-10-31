@@ -6,8 +6,9 @@ use crate::ui::footer::queued_builds;
 use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
 use crate::ui::theme::{
-    FOOTER_INDENT, SEARCH_PROMPT, error_color, footer_color, footer_focus_bg, footer_focus_fg,
-    search_query_color, shell_mode_color, toast_color, toast_error_color,
+    FOOTER_INDENT, SEARCH_PROMPT, emphasis_color, error_color, footer_color, footer_focus_bg,
+    footer_focus_fg, footer_master_mode_color, search_query_color, shell_mode_color, toast_color,
+    toast_error_color,
 };
 use crate::ui::wrap::cols;
 
@@ -85,21 +86,37 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     );
     assert!(text.ends_with("manual"), "{text}");
     assert_eq!(cols(&text), 120, "flush at the right edge: {text:?}");
-    // Dim like every other segment (codex's no-theme-colours status line).
+    // A fact about the session, so it wears the theme's emphasis while the
+    // row around it stays dim (docs/emphasis.md).
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
-    assert_eq!(mode_span.style.fg, Some(footer_color()));
+    assert_eq!(mode_span.style.fg, Some(emphasis_color()));
     // Every mode of the Shift+Tab cycle renders its label there — auto and
-    // master included (docs/permissions.md).
-    for (mode, label) in [
-        (crate::permission::PermissionMode::Edit, "edit"),
-        (crate::permission::PermissionMode::Auto, "auto"),
-        (crate::permission::PermissionMode::Master, "master"),
+    // master included (docs/permissions.md) — and master, which runs
+    // everything unasked, in the caution amber instead.
+    for (mode, label, ink) in [
+        (
+            crate::permission::PermissionMode::Edit,
+            "edit",
+            emphasis_color(),
+        ),
+        (
+            crate::permission::PermissionMode::Auto,
+            "auto",
+            emphasis_color(),
+        ),
+        (
+            crate::permission::PermissionMode::Master,
+            "master",
+            footer_master_mode_color(),
+        ),
     ] {
         app.set_permission_mode(Some(mode));
-        let text = plain(&footer_line(&app, 120));
+        let line = footer_line(&app, 120);
+        let text = plain(&line);
         assert!(text.ends_with(label), "{text}");
         assert_eq!(cols(&text), 120);
+        assert_eq!(line.spans.last().unwrap().style.fg, Some(ink), "{label}");
     }
 }
 
@@ -135,8 +152,12 @@ fn the_footer_shows_the_context_gauge_when_the_window_is_known() {
         cache_write: 0,
         ..crate::stream::TokenUsage::default()
     });
-    let text = plain(&footer_line(&app, 120));
+    let line = footer_line(&app, 120);
+    let text = plain(&line);
     assert!(text.contains("18k/300k (6.0%)"), "{text}");
+    // The share of the window used is the gauge's fact; the counts beside
+    // it stay dim (docs/emphasis.md).
+    assert_eq!(emphasized_texts(&line.spans), ["some-model", "6.0%"]);
 }
 
 #[test]
@@ -571,13 +592,15 @@ fn footer_rows_yields_to_an_open_band() {
 }
 
 #[test]
-fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
+fn footer_line_emphasizes_the_model_and_keeps_the_cwd_dim() {
     let line = footer_line(&with_session(), 60);
     assert_eq!(plain(&line), "  dummy_model_name · ~/alter-zero");
-    // spans = [indent, model, separator, cwd] — every segment dim (codex's
-    // no-theme-colours status line), the indent unstyled.
+    // spans = [indent, model, separator, cwd]: the model is the session's
+    // one fact here and wears the theme's emphasis; the separator and the
+    // cwd stay dim (docs/emphasis.md), the indent unstyled.
     assert_eq!(line.spans[0].style.fg, None);
-    for span in &line.spans[1..] {
+    assert_eq!(emphasized_texts(&line.spans), ["dummy_model_name"]);
+    for span in &line.spans[2..] {
         assert_eq!(
             span.style.fg,
             Some(footer_color()),
@@ -613,14 +636,11 @@ fn footer_line_shows_the_thinking_mode_beside_the_model() {
     )));
     let line = footer_line(&app, 60);
     assert_eq!(plain(&line), "  dummy_model_name medium · ~/alter-zero");
-    for span in &line.spans[1..] {
-        assert_eq!(
-            span.style.fg,
-            Some(footer_color()),
-            "dim: {:?}",
-            span.content
-        );
-    }
+    // The mode is part of what answers, so it shares the model's emphasis.
+    assert_eq!(
+        emphasized_texts(&line.spans),
+        ["dummy_model_name", " medium"]
+    );
     // Off is a mode too — the user must see thinking is disabled.
     app.thinking.as_mut().unwrap().mode = ThinkingMode::Off;
     assert_eq!(
@@ -679,10 +699,14 @@ fn toast_rows_is_zero_without_a_toast_and_one_with_it() {
 }
 
 #[test]
-fn toast_line_colors_info_dim_and_error_red() {
+fn toast_line_colors_info_in_the_emphasis_and_error_red() {
+    // An info toast answers something the user just did, so it wears the
+    // theme's emphasis rather than the dim it would be missed in
+    // (docs/emphasis.md); a failure keeps its softened red.
     let mut app = App::new();
     app.show_toast("ok", ToastKind::Info);
     assert_eq!(toast_line(&app, 40).spans[1].style.fg, Some(toast_color()));
+    assert_eq!(toast_color(), emphasis_color());
     app.show_toast("bad", ToastKind::Error);
     assert_eq!(
         toast_line(&app, 40).spans[1].style.fg,
@@ -927,6 +951,11 @@ fn the_focused_footer_shell_count_lights_up_on_cyan() {
     let idle = shell_span(&footer_line(&app, 80));
     assert_eq!(idle.style.bg, None, "unfocused it stays dim like the rest");
     assert_eq!(idle.style.fg, Some(footer_color()));
+    // …but for its count, a fact in the theme's emphasis (docs/emphasis.md).
+    assert_eq!(
+        emphasized_texts(&footer_line(&app, 80).spans),
+        ["kimi-k2", "1"]
+    );
     // ↓ focuses the indicator: only that segment lights up — the model,
     // cwd and gauge segments keep their text and their dim styling.
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1054,14 +1083,10 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         plain(&line),
         "  dummy_model_name medium fast · ~/alter-zero"
     );
-    for span in &line.spans[1..] {
-        assert_eq!(
-            span.style.fg,
-            Some(footer_color()),
-            "dim: {:?}",
-            span.content
-        );
-    }
+    assert_eq!(
+        emphasized_texts(&line.spans),
+        ["dummy_model_name", " medium", " fast"]
+    );
     // Without a thinking mode the tier still follows the model name.
     app.set_thinking(None);
     assert_eq!(

@@ -120,7 +120,9 @@ real backend's own latency plays the same role.
   on the first chunk, and back to `↑` after each tool; the count keeps growing
   either way.
 - **retrying {a}/{max}** — shown in **amber** (`status_retry_color()`, the only
-  non-dim clause) *only while a failed request is being retried*: the
+  clause not dim; the other clauses' facts, the clocks, the tally and the `esc`
+  key, wear the theme's emphasis, `docs/emphasis.md`) *only while a failed
+  request is being retried*: the
   connection/send failed (or a transient `429`/`5xx` came back) before any
   content streamed, or the connection was lost mid-reply and the round is
   starting over, its partial withdrawn — so the real backend is reconnecting
@@ -234,7 +236,8 @@ transcript (stamp-free there — only user messages display a timestamp):
   an interrupted turn, whose total then reads `≈` (`docs/interrupt.md`).
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
   (the seconds humanized by `format_elapsed` — `Worked for 20s`,
-  `Generated for 1m 30s`).
+  `Generated for 1m 30s`), its facts (the time, the token counts) in the
+  theme's emphasis (`docs/emphasis.md`).
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same

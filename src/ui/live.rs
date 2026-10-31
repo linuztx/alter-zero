@@ -8,6 +8,7 @@
 //! `docs/tool-streaming.md`.
 
 use super::agent::{agent_view_preview_lines, agent_view_rule_label};
+use super::emphasis::meta_row;
 use super::file_cell::draft_cell_lines;
 use super::layout::{
     fit_preview_rows, input_box, key_onboarding_rows, live_layout, model_picker_rows,
@@ -16,8 +17,7 @@ use super::layout::{
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
-    ctrl_b_hint, is_command_tool, live_tool_lines, result_row, running_command_lines,
-    shell_running_line,
+    ctrl_b_hint, is_command_tool, live_tool_lines, running_command_lines, shell_running_line,
 };
 use super::*;
 
@@ -326,7 +326,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
-            lines.push(result_row(1, hint.to_string()));
+            lines.push(meta_row(1, hint.to_string()));
         }
     }
     // Each queued previewed call owns the next adopted draft, in queue order
@@ -371,7 +371,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .background_hint_elapsed()
                 .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
         {
-            lines.push(result_row(1, hint.to_string()));
+            lines.push(meta_row(1, hint.to_string()));
         }
     }
     lines

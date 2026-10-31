@@ -43,7 +43,9 @@ All of it to the live block, none to the settled line:
 
 The settled line is dim on both surfaces so a thought looks like the same thing
 wherever you meet it, and so it never competes with the assistant reply it sits
-directly above.
+directly above. Only its facts, the time, the token count and the `ctrl+o`
+that expands it, take the theme's emphasis (`docs/emphasis.md`), as they do in
+the `Done for Ns` summary beside it.
 
 The full text is never lost — it expands in the **Ctrl+O transcript** like a
 tool call's output, records into the rollout, and comes back on `/resume`.

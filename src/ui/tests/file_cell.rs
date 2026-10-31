@@ -462,3 +462,23 @@ fn the_head_of_a_huge_finished_line_stays_inside_the_frame_budget() {
          wrapping the whole line again"
     );
 }
+
+#[test]
+fn the_streaming_corner_and_the_countless_hint_pick_out_their_facts() {
+    // docs/emphasis.md: `Writing 17 lines…` counts what has arrived, and a
+    // cut line's `… (ctrl+o to expand)` names the key that shows the rest.
+    let content = format!("{}\n", numbered_text(17));
+    let drafts = drafts_with("a.py", &content, false);
+    let lines = streaming_cell(draft(&drafts));
+    assert_eq!(plain(&lines[1]), "  ⎿  Writing 17 lines…");
+    assert_eq!(emphasized_texts(&lines[1].spans), ["17"]);
+    let content = "x".repeat(2_000);
+    let committed = tool_lines(
+        &committed_call("a.min.js", &content),
+        WIDTH,
+        &PathDisplay::VERBATIM,
+    );
+    let hint = committed.last().unwrap();
+    assert_eq!(plain(hint).trim(), "… (ctrl+o to expand)");
+    assert_eq!(emphasized_texts(&hint.spans), ["ctrl+o"]);
+}

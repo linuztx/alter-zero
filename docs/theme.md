@@ -41,7 +41,7 @@ every other styling decision (`src/ui/palette.rs`), and the syntect half in
 `highlight::CodeTheme`, one variant per catalog entry, paired by position
 (`every_theme_pairs_its_chrome_with_its_own_code_theme` pins the pairing).
 
-## The palette: twenty-one roles
+## The palette: twenty-two roles
 
 A theme is a `Palette` — a table of colours by **role**. Every colour the
 chrome paints is one of these or derived from one:
@@ -65,6 +65,7 @@ chrome paints is one of these or derived from one:
 | `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`); a changed run's ink is held to 3:1 against them, lifted toward `text` where the code theme's colour won't read |
 | `shimmer_base` | the status verb's resting grey, under the sweep to `text` |
 | `pulse_dim` | the bottom of the `pulse` spinner style's breath |
+| `emphasis` | the **facts** inside dim meta text — a key a hint names (`ctrl+o`, `esc`), the numbers a summary or a clock reports, the footer's model, permission mode and window share, an info toast: the accent softened toward `dim` (`docs/emphasis.md`) |
 | `code` | the `highlight::CodeTheme` the code blocks and file cells are coloured with |
 
 The **derivations** are the accessor functions in `ui/theme.rs`
@@ -74,15 +75,20 @@ is `agent_view_label_bg()`, the agent session view's composer chip, whose
 `header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
 `shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`,
 `toast_error_color()` is `error` mixed a third of the way to `dim`
-(`docs/toast.md`), and so
+(`docs/toast.md`), `toast_color()` is `emphasis`, and so
 on): the roles are what `theme.rs` has always named, the palette is what
-each theme paints them with, so a new theme is one table of twenty-one
+each theme paints them with, so a new theme is one table of twenty-two
 values and nothing else. The Catppuccin flavours take the flavour's own
 roles (`text`/`subtext1` inks, `overlay1`/`overlay2` for the dim and the
 rules, `surface0`/`surface1` grounds, `sky` for the accent, `blue` for the
 link, `mauve` for the purple) and Catppuccin's own DiffAdd/DiffDelete rule
 for the tints — the hue mixed 18% into `base` for a row, 42% for a mark
-(Solarized's `base03` is so dark a blue that it mixes 25%/50%). `onedark`
+(Solarized's `base03` is so dark a blue that it mixes 25%/50%). The
+`emphasis` is each theme's accent mixed part of the way toward its dim — 40%
+in Mocha, as little as 25% where the accent already sits near the dim
+(Nord), as much as 45% where it is vivid (Dracula, Monokai) — and Latte's,
+whose accent is lighter than its dim, is the accent darkened 35% toward its
+text instead (`docs/emphasis.md` has the table). `onedark`
 is the chrome the TUI shipped with, every RGB it used to hard-code, with
 only the code changed — Atom's One Dark instead of the Catppuccin Mocha the
 blocks wore under it — so whoever liked the old look keeps it

@@ -724,6 +724,16 @@ which Ctrl+V reads the clipboard from.
   walk's cursor moves only when a tip is actually seen and persists per user
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
+- **Emphasis in dim meta text** (`docs/emphasis.md`): the dim lines about the
+  work (the status metrics, the turn summary, a thought's line, a peek's
+  `… +N lines (ctrl+o to expand)`, a running command's clock, the agent
+  receipts, the tip, the footer) stay dim, while their **facts** wear the
+  theme's `emphasis` palette role, the accent softened toward the dim: every
+  key a hint names, every number a line reports, the footer's model,
+  window share, shell count and permission mode (`master` in the caution
+  amber), an info toast whole, and the key or command a tip teaches (marked
+  in the tip catalog with backticks). `ui::emphasis` finds the facts word by
+  word, and only ever in text the app wrote itself.
 - **Waiting for a lost connection** (`docs/offline.md`): a request no
   connection can be made for — the name won't resolve, the connect is refused
   or times out, the proxy is gone — is re-sent every few seconds for as long

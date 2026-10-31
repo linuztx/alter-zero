@@ -520,3 +520,14 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
         });
     }
 }
+
+#[test]
+fn the_startup_notice_picks_out_its_counts() {
+    // docs/emphasis.md: the notice stays the banner's dim, its numbers do not.
+    let line = &startup_notice_lines("Snapshotting 326 files (7.9 MB) for checkpoints…", 80)[0];
+    assert_eq!(
+        plain(line),
+        "  Snapshotting 326 files (7.9 MB) for checkpoints…"
+    );
+    assert_eq!(emphasized_texts(&line.spans), ["326", "7.9"]);
+}

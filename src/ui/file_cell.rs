@@ -3,10 +3,11 @@
 //! added/removed rows on background tints. See `docs/tools.md`.
 
 use super::assistant::{code_content_head_rows, code_content_rows, code_content_tail_rows};
+use super::emphasis::{meta_row, meta_spans};
 use super::inline::wrap_inline_hanging;
 use super::inline_diff::{RefineRow, refine_rows};
 use super::theme::*;
-use super::tool::{more_hint_line, result_row, tool_header_lines, tool_output_lines};
+use super::tool::{more_hint_line, tool_header_lines, tool_output_lines};
 use super::wrap::{cols, legible_on, truncate_cols};
 use super::*;
 
@@ -14,7 +15,7 @@ use super::*;
 /// **first** row (index 0) opens with the [`TOOL_RESULT_PREFIX`] corner,
 /// continuation rows indent by its display width so the text aligns under it
 /// (Claude-Code's exec-cell output style). The shared basis for the dim
-/// [`result_row`] and the diff-coloured rows.
+/// [`result_row`](super::tool::result_row) and the diff-coloured rows.
 pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Line<'static> {
     let dim = Style::new().fg(tool_dim_color());
     gutter_row_styled(index, text, color.map_or(dim, |c| Style::new().fg(c)))
@@ -25,15 +26,21 @@ pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Li
 /// chain-of-thought (`docs/thinking-stream.md`). The corner/indent stays dim
 /// either way; this is the one place that geometry lives.
 pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Line<'static> {
+    gutter_row_spans(index, vec![Span::styled(text, style)])
+}
+
+/// [`gutter_row_styled`] over content that is already spans — a meta row
+/// whose facts wear the emphasis (`docs/emphasis.md`). Row 0 opens with the
+/// dim `⎿` corner, every other row with its width of indent.
+pub(super) fn gutter_row_spans(index: usize, content: Vec<Span<'static>>) -> Line<'static> {
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
     } else {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
-    Line::from(vec![
-        Span::styled(prefix, Style::new().fg(tool_dim_color())),
-        Span::styled(text, style),
-    ])
+    let mut spans = vec![Span::styled(prefix, Style::new().fg(tool_dim_color()))];
+    spans.extend(content);
+    Line::from(spans)
 }
 
 /// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`
@@ -522,10 +529,9 @@ fn peek_hint_line(hidden: usize, cut: bool) -> Option<Line<'static>> {
     }
     cut.then(|| {
         let dim = Style::new().fg(tool_dim_color());
-        Line::from(vec![
-            Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
-            Span::styled(EXPAND_HINT.trim_start().to_string(), dim),
-        ])
+        let mut spans = vec![Span::styled(TOOL_MORE_PREFIX.to_string(), dim)];
+        spans.extend(meta_spans(EXPAND_HINT.trim_start(), dim));
+        Line::from(spans)
     })
 }
 
@@ -801,7 +807,9 @@ pub(super) fn draft_cell_lines(
         (None, 1) => format!("{TOOL_WRITING_PREFIX}1 line{TOOL_WRITING_SUFFIX}"),
         (None, n) => format!("{TOOL_WRITING_PREFIX}{n} lines{TOOL_WRITING_SUFFIX}"),
     };
-    lines.push(result_row(0, corner));
+    // Meta, so dim, the count of lines arrived so far in the theme's emphasis
+    // (`docs/emphasis.md`).
+    lines.push(meta_row(0, corner));
     let digits = total.to_string().len();
     // One source line's display rows, through `numbered_row_lines`' window —
     // the complete lines from the cache, the one still arriving from its peek

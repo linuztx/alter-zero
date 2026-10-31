@@ -2,7 +2,7 @@
 
 `/diff` opens a full-screen, read-only review of the current Git worktree.
 It works from the repository root or any directory within it, including a
-linked worktree. Outside a Git worktree it shows the neutral info toast **Not
+linked worktree. Outside a Git worktree it shows the info toast **Not
 a Git repository.** and keeps the conversation open without entering the
 full-screen viewer. It never initializes a repository.
 
@@ -79,6 +79,7 @@ terminal with staged, unstaged, and untracked fixtures. It covers filtering,
 filename search, pane and hunk navigation, refresh, resizing, closing, a clean
 repository, rejection outside Git, and a turn finishing while the review is
 open. A raw terminal recording verifies that a rejected non-Git command never
-enters the alternate screen, and a styled capture checks its neutral info toast.
+enters the alternate screen, and a styled capture checks its info toast's
+colour (the theme's emphasis, `docs/emphasis.md`).
 Repository snapshots before and after
 review verify that navigation leaves the index and working files unchanged.

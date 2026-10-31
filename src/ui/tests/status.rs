@@ -6,7 +6,7 @@ use crate::app::{OfflineInfo, Spinner};
 use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::theme::{
-    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
+    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, emphasis_color, header_gradient_end,
     header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
     spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
     status_offline_color, status_retry_color, tool_diff_add_color, tool_diff_del_color,
@@ -640,6 +640,61 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
 }
 
 #[test]
+fn the_turn_summary_picks_out_its_time_and_its_counts() {
+    // docs/emphasis.md: the receipt stays dim; what it reports does not.
+    let summary = TurnSummary {
+        verb: "Worked",
+        secs: 12,
+        timestamp: String::new(),
+        shells: 1,
+        tokens: 6_100,
+        estimated: 0,
+        cached: 2_800,
+        cache_write: 1_200,
+    };
+    let lines = summary_lines(&summary, 200);
+    assert_eq!(
+        plain(&lines[0]),
+        "Worked for 12s · 6.1k tokens (2.8k cached · 1.2k written) · 1 shell still running"
+    );
+    assert_eq!(
+        emphasized_texts(&lines[0].spans),
+        ["12s", "6.1k", "2.8k", "1.2k", "1"]
+    );
+    assert_eq!(
+        lines[0].spans[0].style.fg,
+        Some(status_done_color()),
+        "the words around them stay dim"
+    );
+}
+
+#[test]
+fn the_status_line_picks_out_its_clocks_its_tally_and_the_interrupt_key() {
+    // docs/emphasis.md: the parenthesised metrics stay dim, the facts in
+    // them do not. The tally's arrow is a direction, not a key: it stays dim.
+    let line = status_line(&status(1_234, TokenArrow::Down, 75, Some(5)), 200);
+    assert!(
+        plain(&line).ends_with("(1m 15s · ↓ 1.2k tokens · Thinking for 5s · esc to interrupt)"),
+        "{}",
+        plain(&line)
+    );
+    assert_eq!(
+        emphasized_texts(&line.spans),
+        ["1m", "15s", "1.2k", "5s", "esc"]
+    );
+    let arrow = line
+        .spans
+        .iter()
+        .find(|span| span.content.contains('↓'))
+        .expect("the arrow's span");
+    assert_eq!(
+        arrow.style.fg,
+        Some(status_detail_color()),
+        "the arrow stays dim"
+    );
+}
+
+#[test]
 fn conversation_lines_renders_a_committed_turn_summary() {
     let history = [
         msg(Role::Assistant, "all done"),
@@ -900,8 +955,9 @@ fn the_turn_summary_wraps_to_the_width() {
         assert!(
             line.spans
                 .iter()
-                .all(|s| s.style.fg == Some(status_done_color())),
-            "every row keeps the summary's dim dress: {line:?}"
+                .all(|s| s.style.fg == Some(status_done_color())
+                    || s.style.fg == Some(emphasis_color())),
+            "every row keeps the summary's dress, dim with its facts emphasized: {line:?}"
         );
     }
     let all = lines

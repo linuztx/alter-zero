@@ -459,7 +459,7 @@ pieces (`model_view::first_page_that_fits`, `compact_page`,
 before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
-**active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
+**active theme's** `Palette` (`ui/palette.rs`, twenty-two roles per theme),
 the active theme a **thread-local** the boundary sets — at bootstrap before
 the banner is built, and on a switch (`tui::theme::Session::select_theme`:
 save `theme.json`, `ui::activate_theme`, toast, purge rebuild, which is
@@ -3556,11 +3556,17 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 - **All styling is centralized** in `ui/theme.rs` — the glyphs and geometry
   as `const`s, and every **colour** as an accessor function of the same name
   (`tool_ok_color()`, `menu_selected_color()`, …) that reads the **active
-  theme's** palette (`ui/palette.rs`, one `Palette` table of twenty-one
+  theme's** palette (`ui/palette.rs`, one `Palette` table of twenty-two
   roles per `/theme` entry; `docs/theme.md`). A new colour is a new role on
   `Palette` filled in every table plus its accessor; a new theme is one
   table; and a colour is never written as a literal `Color::Rgb` outside
-  `palette.rs`, since a literal is a colour that ignores the theme. The
+  `palette.rs`, since a literal is a colour that ignores the theme. Dim meta
+  text stays dim, but its **facts** (a key a hint names, a number a line
+  reports, the footer's model and mode) wear `emphasis_color()`, the accent
+  softened toward the dim: a new dim meta line built from text the app writes
+  goes through `ui::emphasis::meta_spans`/`meta_row`, and never over a
+  command, a path or model output, since every number in what it scans
+  becomes a fact (`docs/emphasis.md`). The
   accessors name — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status

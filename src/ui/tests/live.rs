@@ -1304,3 +1304,18 @@ fn a_queued_write_previews_its_head_under_waiting() {
         "{texts:#?}"
     );
 }
+
+#[test]
+fn the_ctrl_b_hint_picks_out_its_key() {
+    // docs/emphasis.md: the hint stays dim, the key it teaches does not.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sleep 100", None);
+    app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY));
+    let preview = preview_tool_lines(&app, 80);
+    let hint = preview
+        .iter()
+        .find(|line| plain(line).contains("ctrl+b"))
+        .expect("the Ctrl+B hint");
+    assert_eq!(emphasized_texts(&hint.spans), ["ctrl+b"]);
+}

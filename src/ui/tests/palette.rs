@@ -163,6 +163,7 @@ fn the_ansi_theme_names_no_rgb_colour_anywhere() {
         p.diff_del_mark_bg,
         p.shimmer_base,
         p.pulse_dim,
+        p.emphasis,
     ];
     for color in every {
         assert!(
@@ -292,7 +293,7 @@ fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
             // A red channel that still leads is not enough: over a bluish dim
             // a mostly-grey mix keeps it. The colour must sit nearer the red.
             assert!(
-                dist2(soft, error_color()) < dist2(soft, toast_color()),
+                dist2(soft, error_color()) < dist2(soft, tool_dim_color()),
                 "{theme:?}: nearer the red than the dim: {soft:?}"
             );
         });
@@ -302,6 +303,50 @@ fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
     // A named colour has nothing to mix: the terminal theme keeps the
     // terminal's own red.
     with_theme(Theme::Ansi, || assert_eq!(toast_error_color(), Color::Red));
+}
+
+#[test]
+fn the_emphasis_is_each_themes_accent_softened_toward_its_dim() {
+    // The facts inside dim meta text (a key to press, a count, the
+    // footer's model) wear the theme's own accent, softened: louder than
+    // the dim they sit in, quieter than the accent the pickers select with
+    // (docs/emphasis.md).
+    let dist2 = |a: Color, b: Color| {
+        let ((r0, g0, b0), (r1, g1, b1)) = (rgb_of(a), rgb_of(b));
+        [(r0, r1), (g0, g1), (b0, b1)]
+            .into_iter()
+            .map(|(x, y)| u32::from(x.abs_diff(y)).pow(2))
+            .sum::<u32>()
+    };
+    for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Ansi) {
+        with_theme(theme, || {
+            let p = palette();
+            let soft = emphasis_color();
+            assert_eq!(soft, p.emphasis, "{theme:?}: the accessor reads the role");
+            for other in [p.dim, p.accent, p.text] {
+                assert_ne!(soft, other, "{theme:?}: a colour of its own");
+            }
+            // Between the dim and the ink in brightness, on a dark theme and
+            // a light one alike: a fact reads above the dim around it and
+            // below the reply text.
+            let (dim, ink) = (luma(p.dim), luma(p.text));
+            assert!(
+                dim.min(ink) < luma(soft) && luma(soft) < dim.max(ink),
+                "{theme:?}: between the dim and the ink: {soft:?}"
+            );
+            // Still the accent's hue: nearer the accent than the dim.
+            assert!(
+                dist2(soft, p.accent) < dist2(soft, p.dim),
+                "{theme:?}: nearer the accent than the dim: {soft:?}"
+            );
+        });
+    }
+    // The default theme, value for value: Mocha's sky, 40% of the way to
+    // its overlay.
+    assert_eq!(emphasis_color(), Color::Rgb(0x85, 0xB9, 0xCB));
+    // A named colour has nothing to soften: the terminal theme keeps the
+    // terminal's own cyan.
+    with_theme(Theme::Ansi, || assert_eq!(emphasis_color(), Color::Cyan));
 }
 
 #[test]

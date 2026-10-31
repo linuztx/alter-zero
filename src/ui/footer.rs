@@ -3,6 +3,7 @@
 //! plus the toast above the box and the queued-message rows.
 //! See `docs/footer.md`, `docs/toast.md`, `docs/queue.md`.
 
+use super::emphasis::{emphasized, meta_spans};
 use super::theme::*;
 use super::wrap::{cols, truncate_cols};
 use super::*;
@@ -266,18 +267,24 @@ pub fn backtrack_hint_line() -> Line<'static> {
 }
 
 /// The footer's single line: the `FOOTER_INDENT`, then `{model} · {cwd}` —
-/// every segment dim (codex's no-theme-colours status line, the separator dim
-/// like its ` · `) — cut with a trailing `…` when it overflows `width`
-/// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
-/// model carries its thinking mode right beside the name (`{model} {mode}`,
-/// Ctrl+T cycles it — `docs/reasoning.md`). Empty when no session info has
-/// been injected.
+/// dim (codex's no-theme-colours status line, the separator dim like its
+/// ` · `) but for its facts, which wear the theme's emphasis: the model, the
+/// share of the window used, the running shells' count and the permission
+/// mode, `master` in the caution amber (`docs/emphasis.md`) — cut with a
+/// trailing `…` when it overflows `width` (codex's
+/// `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable model
+/// carries its thinking mode right beside the name (`{model} {mode}`, Ctrl+T
+/// cycles it — `docs/reasoning.md`). Empty when no session info has been
+/// injected.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
         return Line::default();
     };
     let dim = Style::new().fg(footer_color());
+    // What answers — the model, its thinking mode and speed tier — is the
+    // row's first fact (`docs/emphasis.md`).
+    let model_style = emphasized(dim);
     // The permission mode is pinned flush at the row's RIGHT edge — its own
     // zone, like the transcript separator's right-aligned percentage, not
     // another ` · ` segment — so however long the model/cwd/gauge chain
@@ -286,24 +293,27 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // columns (plus a gap) come off the chain's budget up front. Absent
     // while permissions are disabled: nothing asks, and a mode would be a
     // lie.
-    let mode = app.permission_mode().map(|mode| mode.label());
-    let reserved = mode.map_or(0, |label| cols(label) + FOOTER_MODE_GAP);
+    let mode = app.permission_mode();
+    let reserved = mode.map_or(0, |mode| cols(mode.label()) + FOOTER_MODE_GAP);
     // The model segment names the conversation on screen: inside a subagent's
     // session view, a type pinned to another model shows that model — and no
     // thinking mode, which the launch dropped along with the session's model
     // (`docs/subagents.md`) — while an inheriting type keeps the session's
     // pair (`docs/agent-context-gauge.md`).
     let mut segments = match app.viewed_agent_model() {
-        Some(pinned) => vec![Span::styled(pinned.to_string(), dim)],
+        Some(pinned) => vec![Span::styled(pinned.to_string(), model_style)],
         None => {
-            let mut model = vec![Span::styled(session.model.clone(), dim)];
+            let mut model = vec![Span::styled(session.model.clone(), model_style)];
             if let Some(thinking) = &app.thinking {
-                model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
+                model.push(Span::styled(
+                    format!(" {}", thinking.mode.label()),
+                    model_style,
+                ));
             }
             // The selected speed tier follows the thinking mode — `fast` —
             // and standard shows nothing (docs/fast-mode.md).
             if let Some(tier) = app.speed.as_ref().and_then(|speed| speed.selected()) {
-                model.push(Span::styled(format!(" {}", tier.label()), dim));
+                model.push(Span::styled(format!(" {}", tier.label()), model_style));
             }
             model
         }
@@ -324,8 +334,10 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         #[allow(clippy::cast_precision_loss)] // display only — one decimal
         let pct = used as f64 * 100.0 / window as f64;
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
-        segments.push(Span::styled(
-            format!(
+        // The share of the window used is the gauge's fact; the two counts
+        // beside it stay dim (`docs/emphasis.md`).
+        segments.extend(meta_spans(
+            &format!(
                 "{}/{} ({pct:.1}%)",
                 format_token_count(usize::try_from(used).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(window).unwrap_or(usize::MAX))
@@ -341,13 +353,17 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let shells = app.background().len();
     if shells > 0 {
         let plural = if shells == 1 { "" } else { "s" };
-        let style = if app.background_focused() {
-            Style::new().fg(footer_focus_fg()).bg(footer_focus_bg())
-        } else {
-            dim
-        };
+        let count = format!("{shells} shell{plural}");
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
-        segments.push(Span::styled(format!("{shells} shell{plural}"), style));
+        if app.background_focused() {
+            segments.push(Span::styled(
+                count,
+                Style::new().fg(footer_focus_fg()).bg(footer_focus_bg()),
+            ));
+        } else {
+            // Unfocused it is dim like the rest, its count a fact.
+            segments.extend(meta_spans(&count, dim));
+        }
     }
     let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT) + reserved);
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
@@ -373,15 +389,22 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     }
     // Seat the mode flush against the right edge: pad the gap the reservation
-    // held back (at least [`FOOTER_MODE_GAP`]), then the label, dim like the
-    // rest of the row.
-    if let Some(label) = mode {
+    // held back (at least [`FOOTER_MODE_GAP`]), then the label — a fact about
+    // the session in the theme's emphasis, and `master`, which runs every
+    // call unasked, in the caution amber (`docs/emphasis.md`).
+    if let Some(mode) = mode {
+        let label = mode.label();
         let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
         let pad = (width as usize).saturating_sub(used + cols(label));
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
-        spans.push(Span::styled(label.to_string(), dim));
+        let ink = if mode == crate::permission::PermissionMode::Master {
+            footer_master_mode_color()
+        } else {
+            emphasis_color()
+        };
+        spans.push(Span::styled(label.to_string(), Style::new().fg(ink)));
     }
     Line::from(spans)
 }
@@ -396,9 +419,10 @@ pub fn toast_rows(app: &App) -> u16 {
 }
 
 /// The transient toast's single line: the `TOAST_INDENT` then the message,
-/// dim for an info toast (`toast_color()`) or a softened red for a failure
-/// (`toast_error_color()`), cut with a trailing `…` when it overflows `width`
-/// (like the footer). Empty when no toast is live. See `docs/toast.md`.
+/// in the theme's emphasis for an info toast (`toast_color()`) or a softened
+/// red for a failure (`toast_error_color()`), cut with a trailing `…` when it
+/// overflows `width` (like the footer). Empty when no toast is live. See
+/// `docs/toast.md`.
 #[must_use]
 pub fn toast_line(app: &App, width: u16) -> Line<'static> {
     let Some(toast) = app.toast() else {

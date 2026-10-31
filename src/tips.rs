@@ -32,45 +32,48 @@ pub const TIP_ROTATION: Duration = Duration::from_secs(3 * 60);
 /// command or a command-line form the app really has — keys in the `?`
 /// band's spelling (`ctrl+o`, `shift+tab`, `alt+↑`). The order interleaves
 /// the kinds so neighbours differ, and opens on `?`, the tip that leads to
-/// every other key. The tests hold it to one row at 80 columns and to
-/// naming only `/commands` the palette lists.
+/// every other key. What a tip teaches is **marked in backticks**, which the
+/// row draws in the theme's emphasis and never shows ([`parts`],
+/// `docs/emphasis.md`). The tests hold it to one row at 80 columns, to
+/// naming only `/commands` the palette lists and to marking every key,
+/// command and command line it names.
 pub const TIPS: &[&str] = &[
-    "Press ? on an empty prompt to see the keyboard shortcuts",
-    "Press ctrl+o to see the whole transcript and every tool's output",
+    "Press `?` on an empty prompt to see the keyboard shortcuts",
+    "Press `ctrl+o` to see the whole transcript and every tool's output",
     "Send a message while the model works to steer it in real time",
-    "Run /resume to reopen a past conversation",
-    "Type @ to insert a file path from this directory",
-    "Press shift+tab to switch between manual, edit, auto and master",
-    "Run /compact to summarize the conversation and free up context",
-    "Start a message with ! to run a shell command yourself",
-    "Press tab while the model works to queue a follow-up turn",
-    "Run alter-zero --continue to resume the last session here",
-    "Press ctrl+t to change how hard a reasoning model thinks",
+    "Run `/resume` to reopen a past conversation",
+    "Type `@` to insert a file path from this directory",
+    "Press `shift+tab` to switch between manual, edit, auto and master",
+    "Run `/compact` to summarize the conversation and free up context",
+    "Start a message with `!` to run a shell command yourself",
+    "Press `tab` while the model works to queue a follow-up turn",
+    "Run `alter-zero --continue` to resume the last session here",
+    "Press `ctrl+t` to change how hard a reasoning model thinks",
     "Ask for a task list on bigger jobs to track progress right here",
-    "Press ctrl+v to paste an image from the clipboard",
-    "Run /init to write an AGENTS.md guide for this project",
-    "Press ctrl+b to move a running command to the background",
-    "Type $ to mention a skill and have the model load it",
-    "Double-tap esc on an empty prompt to rewind and edit a message",
-    "Run /diff to review this repository's Git changes",
-    "Press shift+enter or ctrl+j to start a new line",
-    "Turn on Checkpoints in /settings so a rewind restores files too",
-    "Press ctrl+r to search the messages you have sent before",
+    "Press `ctrl+v` to paste an image from the clipboard",
+    "Run `/init` to write an AGENTS.md guide for this project",
+    "Press `ctrl+b` to move a running command to the background",
+    "Type `$` to mention a skill and have the model load it",
+    "Double-tap `esc` on an empty prompt to rewind and edit a message",
+    "Run `/diff` to review this repository's Git changes",
+    "Press `shift+enter` or `ctrl+j` to start a new line",
+    "Turn on Checkpoints in `/settings` so a rewind restores files too",
+    "Press `ctrl+r` to search the messages you have sent before",
     "Ask the model to write a skill for a workflow you repeat",
-    "Press ctrl+d to see the exact context the model receives",
-    "Run /copy to copy the last reply, or /export for the whole chat",
-    "Press alt+↑ to pull your last queued message back to edit it",
-    "Run /model to switch models, or /login to add a provider",
-    "Start a session with a prompt: alter-zero \"fix the failing test\"",
-    "Run /theme to change the colour theme",
-    "Press ↑ on an empty prompt to recall a message you sent before",
-    "Define your own subagent types in .alter-zero/agents/<name>.md",
-    "Run /spinner to restyle the spinner above this tip",
-    "Run /skills to turn individual skills on or off",
-    "Run /mcp to manage MCP servers, or alter-zero mcp add to add one",
-    "Run alter-zero update to install the latest release",
-    "Run /mascot to change the banner mascot",
-    "Run /settings to change retries, temperature, tools and more",
+    "Press `ctrl+d` to see the exact context the model receives",
+    "Run `/copy` to copy the last reply, or `/export` for the whole chat",
+    "Press `alt+↑` to pull your last queued message back to edit it",
+    "Run `/model` to switch models, or `/login` to add a provider",
+    "Start a session with a prompt: `alter-zero \"fix the failing test\"`",
+    "Run `/theme` to change the colour theme",
+    "Press `↑` on an empty prompt to recall a message you sent before",
+    "Define your own subagent types in `.alter-zero/agents/<name>.md`",
+    "Run `/spinner` to restyle the spinner above this tip",
+    "Run `/skills` to turn individual skills on or off",
+    "Run `/mcp` to manage MCP servers, or `alter-zero mcp add` to add one",
+    "Run `alter-zero update` to install the latest release",
+    "Run `/mascot` to change the banner mascot",
+    "Run `/settings` to change retries, temperature, tools and more",
 ];
 
 /// The file's name under the config home: `{config_home}/tips.json` — its
@@ -93,6 +96,25 @@ pub fn tip_slot(elapsed: Duration) -> Option<u64> {
     let shown = elapsed.checked_sub(TIP_DELAY)?;
     let slot = shown.as_millis() / TIP_ROTATION.as_millis();
     Some(u64::try_from(slot).unwrap_or(u64::MAX))
+}
+
+/// A catalog entry split at its backtick marks: each piece of text with
+/// whether it is marked — the key, command or command line the tip teaches,
+/// which the row draws in the theme's emphasis (`docs/emphasis.md`). The
+/// marks themselves are dropped; empty pieces are skipped.
+#[must_use]
+pub fn parts(tip: &str) -> Vec<(&str, bool)> {
+    tip.split('`')
+        .enumerate()
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(i, text)| (text, i % 2 == 1))
+        .collect()
+}
+
+/// A catalog entry as the row shows it: its text without the marks.
+#[must_use]
+pub fn plain_text(tip: &str) -> String {
+    tip.replace('`', "")
 }
 
 /// The catalog entry at `index`, **wrapping** — so a cursor written against
@@ -185,7 +207,7 @@ mod tests {
     fn the_walk_opens_on_the_tip_that_leads_to_the_others() {
         // `?` lists every key — the one tip worth showing a first-run user
         // before any other (docs/tips.md *The catalog*).
-        assert!(TIPS[0].contains("?"), "{}", TIPS[0]);
+        assert!(plain_text(TIPS[0]).contains("?"), "{}", TIPS[0]);
     }
 
     #[test]
@@ -194,7 +216,10 @@ mod tests {
         for (i, tip) in TIPS.iter().enumerate() {
             assert_eq!(tip.trim(), *tip, "#{i} carries stray whitespace");
             assert!(!tip.is_empty(), "#{i} is empty");
-            assert!(!tip.ends_with('.'), "#{i} ends in a full stop: {tip}");
+            assert!(
+                !plain_text(tip).ends_with('.'),
+                "#{i} ends in a full stop: {tip}"
+            );
             assert!(
                 !TIPS[..i].contains(tip),
                 "#{i} repeats an earlier tip: {tip}"
@@ -203,13 +228,63 @@ mod tests {
     }
 
     #[test]
+    fn a_tip_marks_what_it_teaches_in_backticks() {
+        // The key, command or command line a tip teaches is marked so the
+        // row can draw it in the theme's emphasis (docs/emphasis.md); the
+        // marks themselves are never shown.
+        let tip = "Press `ctrl+o` to see `/resume`";
+        assert_eq!(
+            parts(tip),
+            [
+                ("Press ", false),
+                ("ctrl+o", true),
+                (" to see ", false),
+                ("/resume", true)
+            ]
+        );
+        assert_eq!(plain_text(tip), "Press ctrl+o to see /resume");
+        assert_eq!(parts("no marks"), [("no marks", false)]);
+    }
+
+    #[test]
+    fn every_tip_closes_its_marks_and_marks_something() {
+        for tip in TIPS {
+            assert_eq!(tip.matches('`').count() % 2, 0, "an unclosed mark: {tip}");
+            assert!(
+                parts(tip)
+                    .iter()
+                    .all(|(text, marked)| !marked || !text.trim().is_empty()),
+                "an empty mark: {tip}"
+            );
+        }
+        // Every tip that names a key, a command or a command line marks it.
+        for tip in TIPS {
+            let shown = plain_text(tip);
+            let names_one = shown.split_whitespace().any(|word| {
+                word.starts_with('/')
+                    || word.starts_with("ctrl+")
+                    || word.starts_with("alt+")
+                    || word.starts_with("shift+")
+                    || word == "alter-zero"
+            });
+            if names_one {
+                assert!(
+                    parts(tip).iter().any(|(_, marked)| *marked),
+                    "names something but marks nothing: {tip}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_command_a_tip_names_is_in_the_palette() {
         // A renamed or retired command must not leave a tip pointing at
         // nothing: every whitespace-delimited `/word` a tip names is a
         // `COMMANDS` row (a path like `.alter-zero/agents` never starts a
-        // token with `/`, so it is not mistaken for one).
+        // token with `/`, so it is not mistaken for one). Read with its
+        // marks taken off, so a marked `/command` is checked too.
         for tip in TIPS {
-            for token in tip.split_whitespace() {
+            for token in plain_text(tip).split_whitespace() {
                 let Some(name) = token.strip_prefix('/') else {
                     continue;
                 };

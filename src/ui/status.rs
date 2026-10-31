@@ -3,6 +3,7 @@
 //! the dim `Done for Ns` summary it commits.
 //! See `docs/status-indicator.md`.
 
+use super::emphasis::meta_spans;
 use super::theme::*;
 use super::wrap::{blend_color, breath, clamp_spans, hop, lerp_color, ping_pong};
 use super::*;
@@ -417,11 +418,12 @@ pub fn styled_status_line(
         status.elapsed,
         base,
     ));
-    // The parenthesised metrics are dim, except the retry clause, which carries
-    // its own warning colour — so it is built as its own span between the
-    // (dim) token and hint clauses.
-    spans.push(Span::styled(
-        format!(" ({}", format_elapsed(status.elapsed.as_secs())),
+    // The parenthesised metrics are dim, their facts (the clocks, the tally,
+    // the `esc` key) in the theme's emphasis (`docs/emphasis.md`), except the
+    // retry clause, which carries its own warning colour — so it is built as
+    // its own span between the token and hint clauses.
+    spans.extend(meta_spans(
+        &format!(" ({}", format_elapsed(status.elapsed.as_secs())),
         dim,
     ));
     if status.tokens > 0 {
@@ -429,8 +431,8 @@ pub fn styled_status_line(
             TokenArrow::Down => STATUS_ARROW_DOWN,
             TokenArrow::Up => STATUS_ARROW_UP,
         };
-        spans.push(Span::styled(
-            format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
+        spans.extend(meta_spans(
+            &format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
             dim,
         ));
     }
@@ -452,12 +454,12 @@ pub fn styled_status_line(
         ));
     }
     if let Some(thinking) = status.thinking {
-        spans.push(Span::styled(
-            format!(" · Thinking for {}", format_elapsed(thinking.as_secs())),
+        spans.extend(meta_spans(
+            &format!(" · Thinking for {}", format_elapsed(thinking.as_secs())),
             dim,
         ));
     }
-    spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));
+    spans.extend(meta_spans(&format!(" · {STATUS_INTERRUPT_HINT})"), dim));
     clamp_spans(spans, width as usize)
 }
 
@@ -513,9 +515,12 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
             summary.shells
         ));
     }
+    // Dim throughout but for its facts — the time, the counts — which take
+    // the theme's emphasis row by row once the wrap has placed them
+    // (`docs/emphasis.md`).
     wrap_text(&text, width)
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(status_done_color()))))
+        .map(|row| Line::from(meta_spans(&row, Style::new().fg(status_done_color()))))
         .collect()
 }
 

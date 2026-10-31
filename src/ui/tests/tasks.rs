@@ -424,3 +424,20 @@ fn the_status_verb_prefers_the_active_form_and_reverts_when_done() {
         "the turn verb stands again: {text:?}"
     );
 }
+
+#[test]
+fn the_idle_count_lines_numbers_are_bold_in_the_emphasis() {
+    // Claude Code's look bolds the counts; the theme's emphasis colours them
+    // too, while the words around them stay dim (docs/emphasis.md).
+    let mut store = store_of(&["a", "b", "c"]);
+    store
+        .run_update(r#"{"taskId":"2","status":"in_progress"}"#)
+        .unwrap();
+    let line = &idle_task_lines(&store, 60)[0];
+    assert_eq!(emphasized_texts(&line.spans), ["3", "0", "1", "2"]);
+    for span in &line.spans {
+        if span.style.fg == Some(crate::ui::theme::emphasis_color()) {
+            assert!(span.style.add_modifier.contains(Modifier::BOLD), "{span:?}");
+        }
+    }
+}

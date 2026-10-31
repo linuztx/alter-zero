@@ -236,10 +236,10 @@ tmux pipe-pane -t "$S120N"
 dump "outside a Git worktree" "$diff_nonrepo"
 expect_has "$diff_nonrepo" -E '^  Not a Git repository\.$' "a non-Git directory did not show only the concise Git info toast"
 expect_lacks "$diff_nonrepo" -F "fatal:" "the non-Git toast exposed Git's raw fatal diagnostic"
-# Mocha is the fixture's default theme. Info toasts use its dim foreground
-# (#7f849c), the same neutral color as the footer; errors use red instead.
-if ! printf '%s\n' "$diff_nonrepo_styled" | grep -F 'Not a Git repository.' | grep -qF '38;2;127;132;156'; then
-	fail "the non-Git notice is not styled as a neutral info toast"
+# Mocha is the fixture's default theme. Info toasts use its emphasis
+# (#85b9cb, the soft accent of docs/emphasis.md); errors use red instead.
+if ! printf '%s\n' "$diff_nonrepo_styled" | grep -F 'Not a Git repository.' | grep -qF '38;2;133;185;203'; then
+	fail "the non-Git notice is not styled as an info toast"
 fi
 if grep -aqF $'\033[?1049h' "$DIFF_NONREPO_RAW"; then
 	fail "a non-Git /diff entered the alternate screen before rejecting the directory"

@@ -26,7 +26,7 @@ use crate::highlight::CodeTheme;
 /// of these or derived from one (the accessor functions in [`super::theme`]
 /// hold the derivations — a link's blue is also the list marker's and the
 /// banner gradient's far end; the running bullet blinks in `dim`), so a
-/// new theme is one table of twenty-one values and nothing
+/// new theme is one table of twenty-two values and nothing
 /// else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Palette {
@@ -85,6 +85,15 @@ pub(super) struct Palette {
     /// text colour; the running tool bullet itself blinks in `dim`,
     /// `docs/tool-pulse.md`).
     pub pulse_dim: Color,
+    /// The facts inside dim meta text: a key a hint names (`ctrl+o`,
+    /// `esc`), the numbers a summary reports (`12s`, `6.1k`), the footer's
+    /// model and permission mode, an info toast (`docs/emphasis.md`). The
+    /// theme's own `accent`, softened: mixed part of the way toward `dim`,
+    /// further where the accent is vivid (Dracula, Monokai) and less where
+    /// it already sits near the dim (Nord), so it reads as one quiet step
+    /// above the dim in every theme. Latte's accent is lighter than its dim,
+    /// so its emphasis is the accent darkened toward `text` instead.
+    pub emphasis: Color,
     /// The syntax theme the code blocks and file cells are coloured with —
     /// the same family as the chrome, so a reply's code and the frame around
     /// it come from one design system.
@@ -118,6 +127,7 @@ const MOCHA: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x77, 0x4C, 0x61),
     shimmer_base: Color::Rgb(0x7F, 0x84, 0x9C),
     pulse_dim: Color::Rgb(0x58, 0x5B, 0x70),
+    emphasis: Color::Rgb(0x85, 0xB9, 0xCB),
     code: CodeTheme::CatppuccinMocha,
 };
 
@@ -143,6 +153,7 @@ const MACCHIATO: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x78, 0x4F, 0x61),
     shimmer_base: Color::Rgb(0x80, 0x87, 0xA2),
     pulse_dim: Color::Rgb(0x5B, 0x60, 0x78),
+    emphasis: Color::Rgb(0x8B, 0xBB, 0xCC),
     code: CodeTheme::CatppuccinMacchiato,
 };
 
@@ -168,6 +179,7 @@ const FRAPPE: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x7D, 0x55, 0x60),
     shimmer_base: Color::Rgb(0x83, 0x8B, 0xA7),
     pulse_dim: Color::Rgb(0x62, 0x68, 0x80),
+    emphasis: Color::Rgb(0x92, 0xBC, 0xCB),
     code: CodeTheme::CatppuccinFrappe,
 };
 
@@ -196,6 +208,7 @@ const LATTE: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0xE3, 0x92, 0xA6),
     shimmer_base: Color::Rgb(0x8C, 0x8F, 0xA1),
     pulse_dim: Color::Rgb(0xAC, 0xB0, 0xBE),
+    emphasis: Color::Rgb(0x1D, 0x87, 0xBA),
     code: CodeTheme::CatppuccinLatte,
 };
 
@@ -226,6 +239,7 @@ const ONE_DARK: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x8B, 0x2F, 0x27),
     shimmer_base: Color::Rgb(0x88, 0x88, 0x88),
     pulse_dim: Color::Rgb(0x4A, 0x4A, 0x4A),
+    emphasis: Color::Rgb(0x68, 0xA7, 0xAE),
     code: CodeTheme::OneDark,
 };
 
@@ -252,6 +266,7 @@ const DRACULA: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x82, 0x3C, 0x43),
     shimmer_base: Color::Rgb(0x62, 0x72, 0xA4),
     pulse_dim: Color::Rgb(0x44, 0x47, 0x5A),
+    emphasis: Color::Rgb(0x79, 0xB3, 0xD5),
     code: CodeTheme::Dracula,
 };
 
@@ -278,6 +293,7 @@ const NORD: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x6B, 0x47, 0x52),
     shimmer_base: Color::Rgb(0x7B, 0x88, 0xA1),
     pulse_dim: Color::Rgb(0x4C, 0x56, 0x6A),
+    emphasis: Color::Rgb(0x85, 0xB2, 0xC4),
     code: CodeTheme::Nord,
 };
 
@@ -304,6 +320,7 @@ const GRUVBOX: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x81, 0x36, 0x2D),
     shimmer_base: Color::Rgb(0x92, 0x83, 0x74),
     pulse_dim: Color::Rgb(0x66, 0x5C, 0x54),
+    emphasis: Color::Rgb(0x90, 0xA8, 0x79),
     code: CodeTheme::GruvboxDark,
 };
 
@@ -332,6 +349,7 @@ const SOLARIZED: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x6E, 0x2E, 0x32),
     shimmer_base: Color::Rgb(0x58, 0x6E, 0x75),
     pulse_dim: Color::Rgb(0x3F, 0x5A, 0x60),
+    emphasis: Color::Rgb(0x3A, 0x8F, 0x8C),
     code: CodeTheme::SolarizedDark,
 };
 
@@ -359,6 +377,7 @@ const MONOKAI: Palette = Palette {
     diff_del_mark_bg: Color::Rgb(0x7F, 0x27, 0x44),
     shimmer_base: Color::Rgb(0x75, 0x71, 0x5E),
     pulse_dim: Color::Rgb(0x49, 0x48, 0x3E),
+    emphasis: Color::Rgb(0x6D, 0xAA, 0xAE),
     code: CodeTheme::Monokai,
 };
 
@@ -394,6 +413,7 @@ const ANSI: Palette = Palette {
     diff_del_mark_bg: Color::DarkGray,
     shimmer_base: Color::DarkGray,
     pulse_dim: Color::DarkGray,
+    emphasis: Color::Cyan,
     code: CodeTheme::Ansi,
 };
 

@@ -155,10 +155,12 @@ enough for Ctrl+B keeps that hint too, hung off the group's cell.
 Read 1 file, listed 1 directory (ctrl+o to expand)
 ```
 
-Bullet-less, flush at the margin and dim throughout — the settled thought's
-dress (`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
+Bullet-less, flush at the margin and dim — the settled thought's dress
+(`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
 expand)`), since what is left is a fact about the turn rather than something
-happening. The counts stay bold.
+happening. The counts stay bold and, with the hint's `ctrl+o`, wear the
+theme's emphasis (`docs/emphasis.md`); a scratchpad edit's `+55 -2` stays
+dim. The live line is a header, so its counts keep their bold white.
 
 ## Which calls join a group
 
