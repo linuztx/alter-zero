@@ -367,7 +367,11 @@ somewhere for every hook verdict to land, under another name. **No new
   round-trips through the rollout, and already shows correctly in Ctrl+D. A
   hook block is spelled `⎿ Blocked by hook: {reason}` and the model reads
   which event's hook refused, the hook's command and one line on what to do
-  (*What the model reads*, below).
+  (*What the model reads*, below). A hook that blocks and also speaks is
+  heard on both counts (`llm::agent`'s `refuse_by_hook`, an `agent` launch
+  included): its `additionalContext` follows the refusal the model reads, and
+  its note — a sibling handler's warning, a `systemMessage` — sits under the
+  red cell. Both used to be dropped with the call.
 - **A `PreToolUse` allow** is `Approval::AllowNoted { note }` — the auto-mode
   classifier's existing "this ran without you" provenance row.
 - **`additionalContext`** rides `StreamEvent::ToolNote` for the dim `⎿` row
@@ -424,7 +428,7 @@ is built by one function in `llm::hooks`, which the offline demo calls too.
 
 | the hook…                                        | the model reads                                                                 |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| refuses a call (`PreToolUse`)                    | `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Do not retry the same call; address the reason or ask the user.` — as the call's result |
+| refuses a call (`PreToolUse`)                    | `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Do not retry the same call; address the reason or ask the user.` — as the call's result, any context it also added after it |
 | denies it (`PermissionRequest`)                  | the same, as `Blocked by PermissionRequest hook: …`                              |
 | blocks a result (`PostToolUse`, `PostToolUseFailure`) | `{event} hook feedback: {reason}` · `Hook: {command}` — after the call's own output |
 | adds context to a call                           | `{event} hook additional context: {text}` — after the call's own output          |
