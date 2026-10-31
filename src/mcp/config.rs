@@ -677,6 +677,29 @@ pub fn expand_env_vars(
     Err(missing)
 }
 
+/// The named remote server's entry as the user file declares it **now**,
+/// its variables expanded as at startup — what a sign-in re-reads before it
+/// starts, so a client added to the file after launch counts without a
+/// restart. `None` when the entry is gone, the file no longer parses, or
+/// the entry now names another URL (a server that moved is a reconnect's
+/// business, not a sign-in's); `Some(Err)` names the variables it
+/// references that have no value.
+pub fn current_remote_entry(
+    contents: &str,
+    name: &str,
+    url: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<Result<McpServerConfig, Vec<String>>> {
+    let (_, config) = parse_mcp_file(contents)
+        .servers
+        .into_iter()
+        .find(|(entry, _)| entry == name)?;
+    match expand_env_vars(&config, lookup) {
+        Ok(config) => (config.url() == Some(url)).then_some(Ok(config)),
+        Err(missing) => Some(Err(missing)),
+    }
+}
+
 /// The `oauth` object's client fields, expanded.
 fn expand_oauth(oauth: &McpOAuthConfig, expand: &mut dyn FnMut(&str) -> String) -> McpOAuthConfig {
     McpOAuthConfig {
@@ -1437,6 +1460,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(expand_env_vars(&config, &env), Ok(config));
+    }
+
+    #[test]
+    fn a_sign_in_reads_the_entry_the_user_file_holds_now() {
+        let file = r#"{"mcpServers": {
+            "cal": {"url": "https://${HOST}/mcp",
+                    "oauth": {"clientId": "cid", "clientSecret": "${SECRET}"}},
+            "moved": {"url": "https://elsewhere.test/mcp"},
+            "broken": {"url": "https://x/mcp", "headers": {"A": "${UNSET}"}}
+        }}"#;
+        // Expanded as at startup, so a `${VAR}` secret is the value, not the
+        // reference.
+        let current = current_remote_entry(file, "cal", "https://mcp.test/mcp", &env)
+            .expect("still declared")
+            .expect("expands");
+        let oauth = current.oauth().expect("the block");
+        assert_eq!(oauth.client_id.as_deref(), Some("cid"));
+        assert_eq!(oauth.client_secret.as_deref(), Some("GOCSPX-x"));
+        // A server whose URL moved is a reconnect's business, not a sign-in's.
+        assert_eq!(
+            current_remote_entry(file, "moved", "https://mcp.test/mcp", &env),
+            None
+        );
+        // Gone, or a file that no longer parses: nothing to re-read.
+        assert_eq!(
+            current_remote_entry(file, "gone", "https://x/mcp", &env),
+            None
+        );
+        assert_eq!(
+            current_remote_entry("{not json", "cal", "https://x/mcp", &env),
+            None
+        );
+        // A variable with no value is said, never sent as written.
+        assert_eq!(
+            current_remote_entry(file, "broken", "https://x/mcp", &env),
+            Some(Err(vec!["UNSET".to_string()]))
+        );
     }
 
     #[test]

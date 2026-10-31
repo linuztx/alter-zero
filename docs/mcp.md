@@ -96,6 +96,16 @@ authorization server's metadata there instead of discovering it; `https`
 only, loopback excepted). The object's presence alone tells the app the
 server expects a sign-in. A stdio entry carrying one is a config error.
 
+**Every sign-in re-reads its entry** from the user file
+(`mcp::current_remote_entry`, expanded exactly as at startup), so a client
+added — or a rejected one corrected, which is what `invalid_client`'s
+advice asks — while the app runs counts the next time Authenticate is
+chosen, no restart. Only a **user-file** entry is re-read: a project
+file's edits are the `/trust` gate's to approve, and a project server can
+shadow a same-named user entry. An entry that now names another URL is
+left to a reconnect, and one referencing a variable with no value fails
+the sign-in saying so, never sending the reference as written.
+
 ## Protocol versions — the dual-era client
 
 This client speaks the **modern `2026-07-28` revision** (stateless: no

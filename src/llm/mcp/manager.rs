@@ -594,7 +594,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path, settings, launch) = {
+        let (url, challenge, auth_path, mut settings, launch, user_file) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -617,8 +617,55 @@ impl McpManager {
                 inner.auth_path.clone(),
                 settings,
                 inner.open_browser,
+                // Only a user-file entry is re-read: a project file's edits
+                // are the `/trust` gate's to approve, and a project server
+                // can shadow a same-named user entry.
+                (server.entry.scope == crate::mcp::McpScope::User)
+                    .then(|| inner.user_file.clone())
+                    .flatten(),
             )
         };
+        // The entry as the user file declares it now, expanded as at
+        // startup: a client added to the file after launch (one way past the
+        // no-client answer, and the advice for a rejected configured client)
+        // counts without a restart.
+        if let Some(path) = user_file
+            && let Ok(contents) = std::fs::read_to_string(&path)
+        {
+            match crate::mcp::current_remote_entry(&contents, name, &url, &|key| {
+                std::env::var(key).ok()
+            }) {
+                Some(Ok(config)) => {
+                    settings.oauth = config.oauth().cloned();
+                    if let Some(server) = self
+                        .lock()
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.entry.name == name)
+                    {
+                        server.entry.config = config;
+                    }
+                }
+                Some(Err(missing)) => {
+                    let noun = if missing.len() == 1 {
+                        "variable"
+                    } else {
+                        "variables"
+                    };
+                    self.notify(McpEvent::AuthDone {
+                        server: name.to_string(),
+                        ok: false,
+                        detail: format!(
+                            "its entry in {} names environment {noun} {} with no value",
+                            path.display(),
+                            missing.join(", ")
+                        ),
+                    });
+                    return;
+                }
+                None => {}
+            }
+        }
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
         let flow = {
@@ -2481,6 +2528,108 @@ done
             Some(crate::mcp::McpAuthState::NotRequired)
         );
         manager.shutdown();
+    }
+
+    /// A manager over one server named `cal` at the fixture's URL, declared
+    /// in `scope` with no `oauth` block, the user file at `user_file`.
+    fn rereading_manager(
+        fixture: &oauth::fixtures::AuthFixture,
+        store: &std::path::Path,
+        user_file: &std::path::Path,
+        scope: McpScope,
+    ) -> (McpManager, tokio::sync::mpsc::UnboundedReceiver<McpEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "cal".to_string(),
+                    config: McpServerConfig::Http {
+                        url: fixture.server_url.clone(),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth: None,
+                    },
+                    scope,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                user_file: Some(user_file.to_path_buf()),
+                auth_path: Some(store.to_path_buf()),
+                open_browser: Some(|_| {}),
+                ..Default::default()
+            },
+        );
+        (manager, rx)
+    }
+
+    /// The user file declaring `cal` with a pre-registered client.
+    fn write_user_client(user_file: &std::path::Path, url: &str) {
+        std::fs::write(
+            user_file,
+            serde_json::json!({"mcpServers": {"cal": {"url": url,
+                "oauth": {"clientId": "cid", "clientSecret": "shh"}}}})
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_client_added_to_the_user_file_counts_without_a_restart() {
+        // Editing the entry is one way past the no-client answer (and a
+        // rejected configured client's advice is to fix it): trying again
+        // must see the edit, not the entry as it was at launch.
+        let dir = tempfile::tempdir().unwrap();
+        let (store, user_file) = (
+            dir.path().join("mcp-auth.json"),
+            dir.path().join("mcp.json"),
+        );
+        let fixture = oauth::fixtures::spawn_auth_fixture(&["client_secret_post"], "shh");
+        let (manager, mut rx) = rereading_manager(&fixture, &store, &user_file, McpScope::User);
+        write_user_client(&user_file, &fixture.server_url);
+        manager.authenticate("cal");
+        let McpEvent::AuthUrl { url, .. } = next_event(&mut rx, |e| {
+            assert!(
+                !matches!(e, McpEvent::AuthNeedsClient { .. }),
+                "the client added to the file was not read"
+            );
+            matches!(e, McpEvent::AuthUrl { .. })
+        }) else {
+            unreachable!()
+        };
+        assert!(url.contains("client_id=cid"), "{url}");
+        paste_consent(&manager, &url, &fixture.base);
+        let McpEvent::AuthDone { ok, detail, .. } =
+            next_event(&mut rx, |e| matches!(e, McpEvent::AuthDone { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(ok, "{detail}");
+        // The page now shows the client the file names.
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot[0]
+                .config
+                .oauth()
+                .and_then(|o| o.client_id.as_deref()),
+            Some("cid")
+        );
+    }
+
+    #[test]
+    fn a_project_server_is_never_re_read_from_the_user_file() {
+        // A project entry's edits are the `/trust` gate's to approve, and a
+        // project server can shadow a same-named user entry.
+        let dir = tempfile::tempdir().unwrap();
+        let (store, user_file) = (
+            dir.path().join("mcp-auth.json"),
+            dir.path().join("mcp.json"),
+        );
+        let fixture = oauth::fixtures::spawn_auth_fixture(&["client_secret_post"], "shh");
+        let (manager, mut rx) = rereading_manager(&fixture, &store, &user_file, McpScope::Project);
+        write_user_client(&user_file, &fixture.server_url);
+        manager.authenticate("cal");
+        next_event(&mut rx, |e| matches!(e, McpEvent::AuthNeedsClient { .. }));
     }
 
     #[test]
