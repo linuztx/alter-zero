@@ -196,8 +196,9 @@ pub fn is_group_member(tool: &ToolCall, paths: &PathDisplay) -> bool {
 
 /// Whether `item` lets a group run on through it: a task call and a hook
 /// note have no cell inline at all, and a thought the model has while the
-/// group is open is shown after the group's line rather than ending it (the
-/// reference defers it there).
+/// group is open is part of the run its line stands for rather than ending
+/// it — shown only in the Ctrl+O transcript (`docs/tool-groups.md`
+/// *Thoughts*).
 fn passes_through(item: &HistoryItem) -> bool {
     matches!(
         item,

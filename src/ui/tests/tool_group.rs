@@ -84,10 +84,10 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
 }
 
 #[test]
-fn every_thought_in_a_group_follows_its_line_in_order() {
-    // The reference defers a thought that lands during a group to after the
-    // group's line: the line stays where the group's first call was, and no
-    // thought leaves the conversation.
+fn the_thoughts_a_group_held_leave_only_its_line() {
+    // A thought that settled while the group was open shows nowhere inline:
+    // the group's line is all the conversation shows of the run, and Ctrl+O
+    // has every thought (docs/tool-groups.md *Thoughts*).
     let items = [
         ok("Read", "a.py"),
         thought(2),
@@ -97,14 +97,37 @@ fn every_thought_in_a_group_follows_its_line_in_order() {
     let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
-        [
-            "Read 1 file, listed 1 directory (ctrl+o to expand)",
-            "",
-            "Thought for 2s (ctrl+o to expand)",
-            "",
-            "Thought for 1s (ctrl+o to expand)",
-        ]
+        ["Read 1 file, listed 1 directory (ctrl+o to expand)"]
     );
+}
+
+#[test]
+fn only_a_thought_outside_the_group_keeps_its_line() {
+    // The thought before the first read is no part of the group; the ones
+    // between and after its calls are, and stay out of the conversation —
+    // until Verbose output gives every call and every thought a cell again.
+    let history = vec![
+        msg(Role::User, "look around"),
+        thought(3),
+        ok("Bash", "ls -la"),
+        thought(2),
+        ok("Read", "a.py"),
+        thought(1),
+        msg(Role::Assistant, "Done."),
+    ];
+    let thoughts = |verbose: bool| -> Vec<String> {
+        texts(&conversation_lines(
+            &history,
+            80,
+            &PathDisplay::VERBATIM,
+            verbose,
+        ))
+        .into_iter()
+        .filter(|row| row.starts_with("Thought for"))
+        .collect()
+    };
+    assert_eq!(thoughts(false), ["Thought for 3s (ctrl+o to expand)"]);
+    assert_eq!(thoughts(true).len(), 3, "{:#?}", thoughts(true));
 }
 
 #[test]
@@ -279,10 +302,11 @@ fn a_command_running_two_seconds_shows_its_clock_on_the_hint_row() {
     app.push_tool_output("b.rs:2: todo\n");
     app.set_command_elapsed(Some(Duration::from_secs(65)));
     assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (1m 5s · 2 lines)");
-    // A narrow row gives up the end of the command before the clock.
+    // A row too narrow for both keeps the whole command and moves the clock,
+    // whole, under it.
     assert_eq!(
-        texts(&live_group_lines(&app, 34, None, true))[1],
-        "  ⎿  $ grep -rn… (1m 5s · 2 lines)"
+        texts(&live_group_lines(&app, 34, None, true))[1..],
+        ["  ⎿  $ grep -rn todo .", "       (1m 5s · 2 lines)"]
     );
 }
 
@@ -312,7 +336,9 @@ fn between_calls_the_open_group_keeps_its_last_read_as_the_hint() {
 }
 
 #[test]
-fn a_search_hint_is_the_command_on_one_row() {
+fn a_command_hint_shows_every_line_of_the_command() {
+    // Nothing on the row is hidden: each line of the command on a row of its
+    // own, its spacing as typed, hanging under the text after the `$ `.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool(
@@ -325,7 +351,26 @@ fn a_search_hint_is_the_command_on_one_row() {
         texts(&lines),
         [
             "● Searching for 1 pattern… (ctrl+o to expand)",
-            "  ⎿  $ grep -rn \"def add\" src …",
+            "  ⎿  $ grep -rn  \"def add\"   src",
+            "       grep -rn \"def sub\" src",
+        ]
+    );
+}
+
+#[test]
+fn a_long_command_wraps_under_the_hint_instead_of_being_cut() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        "Bash",
+        "grep -rn \"fn render\" src/ui src/app src/tui",
+        None,
+    );
+    assert_eq!(
+        texts(&live_group_lines(&app, 34, None, true))[1..],
+        [
+            "  ⎿  $ grep -rn \"fn render\" src/ui",
+            "       src/app src/tui",
         ]
     );
 }
@@ -540,12 +585,22 @@ fn an_open_scratchpad_edit_is_making_over_its_whole_path() {
         .expect("a +55 span");
     assert_eq!(added.style.fg, Some(tool_dim_color()));
     // Too wide for the row, the path wraps under the corner instead of
-    // losing its file name to a cut.
+    // losing its file name to a cut…
     assert_eq!(
         texts(&live_group_lines(&app, 40, None, true))[1..],
         [
             "  ⎿  /tmp/alter-zero-0/s1/scratchpad/gue",
             "     ss_the_number.py",
+        ]
+    );
+    // …over as many rows as it takes.
+    assert_eq!(
+        texts(&live_group_lines(&app, 20, None, true))[1..],
+        [
+            "  ⎿  /tmp/alter-zero",
+            "     -0/s1/scratchpa",
+            "     d/guess_the_num",
+            "     ber.py",
         ]
     );
 }

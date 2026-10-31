@@ -19,22 +19,24 @@ release heading when a version is cut.
   `ls`, every `grep`, every file it read, each with its output under it.
   A run of them is now one cell that says what the run is doing,
   `● Searching for 1 pattern, reading 2 files, listing 1 directory…`, over
-  the command or file it is on. When the agent runs several at once, that
+  the command or file it is on, wrapped onto more rows when it is too long
+  for one rather than cut short. When the agent runs several at once, that
   row names each one in turn, in the order they ran, for 0.7 seconds
   each, instead of jumping to the last; a command still running after two
   seconds shows how long it has run and how many lines it has printed. Its
   bullet keeps blinking between calls, since the next one is often another
   read, and once something else happens (another kind of call, a reply, an
   error, the end of the turn) it settles into one dim line: `Searched for 1
-  pattern, read 2 files, listed 1 directory (ctrl+o to expand)`, with any
-  `Thought for …` lines from the run under it. While the agent thinks
-  between calls, no thinking block opens under the cell, and only the
-  status line says it is thinking. Ctrl+O still shows the thought and every
-  call with its full output. A read that was refused, interrupted or moved
-  to the background keeps its own cell, and so does a read of an image, so
-  its picture still draws. The new **Verbose output** row in `/settings`
-  brings back a cell per call, and `ALTER_ZERO_VERBOSE=1` sets it for one
-  run (`docs/tool-groups.md`).
+  pattern, read 2 files, listed 1 directory (ctrl+o to expand)`. What the
+  agent thinks between those calls stays out of the conversation: no
+  thinking block opens under the cell while it thinks (the status line says
+  it is thinking), and no `Thought for …` line is added once it is done.
+  Ctrl+O still shows every thought and every call with its full output. A
+  read that was refused, interrupted or moved to the background keeps its
+  own cell, and so does a read of an image, so its picture still draws. The
+  new **Verbose output** row in `/settings` brings back a cell per call and
+  a line per thought, and `ALTER_ZERO_VERBOSE=1` sets it for one run
+  (`docs/tool-groups.md`).
 - **Scratchpad files fold into that line too.** The agent keeps its
   throwaway work, a script to try something or a note, in its session
   scratchpad, and every file it wrote or changed there used to get a full

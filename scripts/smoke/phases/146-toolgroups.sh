@@ -20,8 +20,8 @@ smoke_begin
 #     README — each held long enough to read, never jumping to the last;
 #   - once the script runs, ONE settled line above the script's own cell —
 #     `Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to
-#     expand)` — no cell for any read, and both thoughts under the group's
-#     line in the order they happened (the reference defers them there);
+#     expand)` — no cell for any read, and no `Thought for` line for either
+#     thought the group held;
 #   - Ctrl+O still shows every call whole, and both thoughts' text;
 #   - a resize's rebuild paints the same one line (it is derived from history);
 #   - /settings → Verbose output → true rebuilds the conversation with a cell
@@ -77,18 +77,16 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_lacks "$settled" -F "$cell" "a read inside the group kept a cell of its own: $cell"
 done
 expect_lacks "$settled" -F "Listing 1 directory" "the open group's live cell was left behind in scrollback"
-# Neither thought is lost: both follow the group's line, the one between the
-# rounds first, and the call that closed the group comes after them.
-expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$settled")" "2" \
-	"a thought the model had while the group was open is missing from the conversation"
+# Neither thought shows in the conversation — the group held both, and its
+# line is all the conversation shows of the run (Ctrl+O has them, below) —
+# and the call that closed the group comes after that line.
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$settled")" "0" \
+	"a thought the model had while the group was open shows in the conversation"
 expect_has "$settled" -F "Bash(python3 about.py)" "the script run lost its own cell"
 group_line="$(grep -nF "$GROUP146" <<<"$settled" | head -1 | cut -d: -f1)"
-first_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | head -1 | cut -d: -f1)"
-last_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$settled" | tail -1 | cut -d: -f1)"
 run_line="$(grep -nF "Bash(python3 about.py)" <<<"$settled" | head -1 | cut -d: -f1)"
-if [ -z "$group_line" ] || [ -z "$first_thought" ] || [ -z "$run_line" ] ||
-	[ "$group_line" -ge "$first_thought" ] || [ "$last_thought" -ge "$run_line" ]; then
-	fail "the group's line, the thoughts after it and the call that closed it are out of order (rows ${group_line:-none}, ${first_thought:-none}…${last_thought:-none}, ${run_line:-none})"
+if [ -z "$group_line" ] || [ -z "$run_line" ] || [ "$group_line" -ge "$run_line" ]; then
+	fail "the group's line and the call that closed it are out of order (rows ${group_line:-none}, ${run_line:-none})"
 fi
 # The settled line wears no bullet: what is left is a fact about the turn.
 expect_lacks "$settled" -F "● $GROUP146" "the settled group line kept a bullet"
@@ -108,7 +106,7 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_has "$top
 $bottom" -F "$cell" "Ctrl+O does not expand $cell"
 done
-# …and both thoughts' text, which the strip left out while the group was open.
+# …and both thoughts' text, which the conversation leaves out.
 for text in "One script and a README." "card() builds the line, and the README says to run it."; do
 	expect_has "$top
 $bottom" -F "$text" "Ctrl+O does not show the thought: $text"

@@ -21,7 +21,6 @@
 //! Every call stays whole in the Ctrl+O transcript; this is only what the
 //! conversation shows of them.
 
-use super::reasoning::reasoning_lines;
 use super::theme::*;
 use super::tool::{bullet_span, command_display_lines, result_row};
 use super::wrap::{cols, truncate_cols, wrap_output};
@@ -155,10 +154,10 @@ fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'sta
 /// A closed group as **committed** lines — what the commit path writes when
 /// the group closes and what every rebuild paints in its place
 /// ([`conversation_lines`]): the one settled line over the members of
-/// `items` (a [`crate::app::group_run`]), then every thought the turn
-/// settled while the group was open, in order, each under a blank spacer as
-/// its own cell — the reference defers them past the group's line, which
-/// stays where the group's first call was.
+/// `items` (a [`crate::app::group_run`]), and nothing else. The thoughts the
+/// turn settled while the group was open are part of the run but show only
+/// in the Ctrl+O transcript, the line's `(ctrl+o to expand)` saying where
+/// (`docs/tool-groups.md` *Thoughts*).
 #[must_use]
 pub fn tool_group_lines(
     items: &[HistoryItem],
@@ -171,18 +170,11 @@ pub fn tool_group_lines(
     });
     let counts = group_counts(members, paths);
     let style = Style::new().fg(reasoning_label_color());
-    let mut lines = vec![Line::from(fit(
+    vec![Line::from(fit(
         summary_spans(counts, false, style, style),
         style,
         usize::from(width),
-    ))];
-    for item in items {
-        if let HistoryItem::Reasoning(reasoning) = item {
-            lines.push(Line::default());
-            lines.extend(reasoning_lines(reasoning, width));
-        }
-    }
-    lines
+    ))]
 }
 
 /// What the group's `⎿` row says a value is about.
@@ -190,8 +182,8 @@ enum HintText {
     /// A file — read, or edited in the scratchpad — as the session shows
     /// paths (`docs/tools.md` *Path display*).
     Path(String),
-    /// A command, as `$ {command}`: its first line, its whitespace runs
-    /// closed up, a `…` when more lines follow.
+    /// A command as it was typed: every line that has any text, its spacing
+    /// kept.
     Command(String),
 }
 
@@ -200,32 +192,49 @@ fn hint_text(item: GroupHintItem<'_>, paths: &PathDisplay) -> HintText {
         GroupHintItem::Call(tool) if tool.name == "Bash" => tool,
         other => return HintText::Path(paths.display(other.target())),
     };
-    let mut lines = tool.args.lines().filter(|line| !line.trim().is_empty());
-    let first = lines
-        .next()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-        .unwrap_or_default();
-    let more = if lines.next().is_some() { " …" } else { "" };
-    HintText::Command(format!("{TOOL_GROUP_COMMAND_PROMPT}{first}{more}"))
+    let lines: Vec<&str> = tool
+        .args
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    HintText::Command(lines.join("\n"))
 }
 
 /// A path on the `⎿` row, **wrapped** under the corner rather than cut —
-/// its file name is at its end, which a cut would take — over at most
-/// [`TOOL_GROUP_HINT_MAX_ROWS`] rows, the last cut with a `…` when even those
-/// are not enough.
+/// its file name is at its end, which a cut would take — over as many rows
+/// as it takes.
 fn path_hint_rows(path: &str, room: usize) -> Vec<Line<'static>> {
     let width = u16::try_from(room.max(1)).unwrap_or(u16::MAX);
-    let mut rows = wrap_output(path, width);
-    if rows.len() > TOOL_GROUP_HINT_MAX_ROWS {
-        rows.truncate(TOOL_GROUP_HINT_MAX_ROWS);
-        if let Some(last) = rows.last_mut() {
-            let cut = truncate_cols(last, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
-            *last = format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end());
+    wrap_output(path, width)
+        .into_iter()
+        .enumerate()
+        .map(|(at, row)| result_row(usize::from(at > 0), row))
+        .collect()
+}
+
+/// A command on the `⎿` row — `$ ` and then every line of it, **wrapped**
+/// rather than cut, each row after the first hanging under the text after
+/// the `$ ` — with its `clock` whole at the end: on the last row when it
+/// fits there, else on a row of its own.
+fn command_hint_rows(command: &str, clock: Option<&str>, room: usize) -> Vec<Line<'static>> {
+    let hang = " ".repeat(cols(TOOL_GROUP_COMMAND_PROMPT));
+    let text_room = room.saturating_sub(cols(TOOL_GROUP_COMMAND_PROMPT)).max(1);
+    let mut rows = wrap_output(command, u16::try_from(text_room).unwrap_or(u16::MAX));
+    if let Some(clock) = clock {
+        match rows.last_mut() {
+            Some(last) if cols(last.trim_end()) + cols(clock) <= text_room => {
+                last.truncate(last.trim_end().len());
+                last.push_str(clock);
+            }
+            _ => rows.push(clock.trim_start().to_string()),
         }
     }
     rows.into_iter()
         .enumerate()
-        .map(|(at, row)| result_row(usize::from(at > 0), row))
+        .map(|(at, row)| match at {
+            0 => result_row(0, format!("{TOOL_GROUP_COMMAND_PROMPT}{row}")),
+            _ => result_row(1, format!("{hang}{row}")),
+        })
         .collect()
 }
 
@@ -308,18 +317,9 @@ pub(super) fn live_group_lines(
         let room = usize::from(width).saturating_sub(cols(TOOL_RESULT_PREFIX));
         match hint_text(item, paths) {
             HintText::Path(path) => lines.extend(path_hint_rows(&path, room)),
-            HintText::Command(hint) => {
-                // The clock outranks the end of the command on a narrow row.
-                let clock = group_clock(app, item, with_queue).filter(|clock| cols(clock) < room);
-                let room = room - clock.as_deref().map_or(0, cols);
-                let mut shown = if cols(&hint) > room {
-                    let cut = truncate_cols(&hint, room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
-                    format!("{}{TOOL_HEADER_ELLIPSIS}", cut.trim_end())
-                } else {
-                    hint
-                };
-                shown.push_str(clock.as_deref().unwrap_or_default());
-                lines.push(result_row(0, shown));
+            HintText::Command(command) => {
+                let clock = group_clock(app, item, with_queue);
+                lines.extend(command_hint_rows(&command, clock.as_deref(), room));
             }
         }
     }

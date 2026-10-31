@@ -684,8 +684,9 @@ impl Session<'_> {
             return;
         };
         // A thought settled inside an open read/search group is held with it:
-        // part of the work its line stands for when more reads follow, shown
-        // under that line when the group closes on it (docs/tool-groups.md).
+        // part of the work its line stands for, which commits alone when the
+        // group closes — the thought shows only in Ctrl+O
+        // (docs/tool-groups.md *Thoughts*).
         if self.app.tool_group_range().is_some() {
             return;
         }
