@@ -21,11 +21,12 @@ pub use self::oauth::{
     ClientCredentials, ClientPlan, ClientRequest, ClientSource, DEFAULT_CALLBACK_PORT,
     RefreshFailure, Registration, StoredClient, StoredTokens, advertises_protection, b64url,
     basic_credentials, build_authorize_url, challenge_resource_metadata, choose_client_auth,
-    connect_bearer, discover, form_encode, issuers_match, load_client, load_tokens, parse_callback,
-    parse_client_store, parse_redirect, parse_token_store, pkce_and_state, plan_client,
-    probe_protected, provider_authorize_params, record_client, record_tokens, redirect_param,
-    refresh_failure_kind, refresh_grant, refresh_if_stale, refresh_params, register_client,
-    run_auth_flow, save_client, save_tokens, store_client, tokens_fresh, url_decode, url_encode,
+    connect_bearer, discover, form_encode, is_insufficient_scope, issuers_match, load_client,
+    load_tokens, metadata_candidates, parse_callback, parse_client_store, parse_redirect,
+    parse_token_store, pkce_and_state, plan_client, probe_protected, provider_authorize_params,
+    record_client, record_tokens, redirect_param, refresh_failure_kind, refresh_grant,
+    refresh_if_stale, refresh_params, register_client, resource_allowed, run_auth_flow,
+    save_client, save_tokens, store_client, tokens_fresh, union_scopes, url_decode, url_encode,
     validate_issuer, with_offline_access,
 };
 pub use self::transport::{
