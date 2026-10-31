@@ -49,6 +49,19 @@ loads here unchanged:
 }
 ```
 
+**Variable references** expand as Claude Code expands them —
+`${VAR}`, and `${VAR:-default}` (the default for an unset *or empty*
+variable, a shell's `:-`) — in the command, args and env values, the URL
+and header values, and the `oauth` client fields (Google's own config
+examples fill `clientSecret` from one): `mcp::expand_env_vars`, pure over an
+injected lookup, applied by the boundary to every merged entry against the
+session's environment at load. A server naming a variable with neither a
+value nor a default is **not launched** with the reference as its value: it
+is left out and named by the startup toast (`missing environment variable
+GITHUB_TOKEN`). Text that isn't a reference (`$HOME`, an unclosed `${`)
+is kept. The CLI's `get`/`list` print the file as written, references and
+all — expansion is a property of the session, not of the file.
+
 `type` is optional: an entry with `command` defaults to `stdio`; an entry
 with only `url` defaults to `http` **with automatic fallback** — a
 streamable-HTTP handshake that fails with a client error retries the same

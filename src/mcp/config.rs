@@ -619,6 +619,117 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
     }
 }
 
+/// Expand Claude Code's variable references in one server's config —
+/// `${VAR}`, and `${VAR:-default}` (the default for an unset or empty
+/// variable, as a shell's `:-`) — wherever Claude Code expands them (the
+/// command, args and env values; the URL and header values) plus the
+/// `oauth` client fields, which Google's own config examples fill from a
+/// variable. `lookup` is the environment, injected. `Err` names the
+/// variables with neither a value nor a default; text that isn't a
+/// reference (`$HOME`, an unclosed `${`, a name that isn't one) is kept.
+pub fn expand_env_vars(
+    config: &McpServerConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<McpServerConfig, Vec<String>> {
+    let mut missing = Vec::new();
+    let mut expand = |text: &str| expand_references(text, lookup, &mut missing);
+    let expanded = match config {
+        McpServerConfig::Stdio { command, args, env } => McpServerConfig::Stdio {
+            command: expand(command),
+            args: args.iter().map(|arg| expand(arg)).collect(),
+            env: env
+                .iter()
+                .map(|(key, value)| (key.clone(), expand(value)))
+                .collect(),
+        },
+        McpServerConfig::Http {
+            url,
+            headers,
+            sse_fallback,
+            oauth,
+        } => McpServerConfig::Http {
+            url: expand(url),
+            headers: headers
+                .iter()
+                .map(|(key, value)| (key.clone(), expand(value)))
+                .collect(),
+            sse_fallback: *sse_fallback,
+            oauth: oauth.as_ref().map(|oauth| expand_oauth(oauth, &mut expand)),
+        },
+        McpServerConfig::Sse {
+            url,
+            headers,
+            oauth,
+        } => McpServerConfig::Sse {
+            url: expand(url),
+            headers: headers
+                .iter()
+                .map(|(key, value)| (key.clone(), expand(value)))
+                .collect(),
+            oauth: oauth.as_ref().map(|oauth| expand_oauth(oauth, &mut expand)),
+        },
+    };
+    if missing.is_empty() {
+        return Ok(expanded);
+    }
+    missing.sort();
+    missing.dedup();
+    Err(missing)
+}
+
+/// The `oauth` object's client fields, expanded.
+fn expand_oauth(oauth: &McpOAuthConfig, expand: &mut dyn FnMut(&str) -> String) -> McpOAuthConfig {
+    McpOAuthConfig {
+        client_id: oauth.client_id.as_deref().map(&mut *expand),
+        client_secret: oauth.client_secret.as_deref().map(&mut *expand),
+        ..oauth.clone()
+    }
+}
+
+/// One string's `${VAR}` / `${VAR:-default}` references replaced; a
+/// variable with neither value nor default is pushed onto `missing` and its
+/// reference left as written.
+fn expand_references(
+    text: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    missing: &mut Vec<String>,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let reference = &rest[start..start + 2 + end + 1];
+        let inner = &after[..end];
+        let (name, default) = match inner.split_once(":-") {
+            Some((name, default)) => (name, Some(default)),
+            None => (inner, None),
+        };
+        let is_name = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !is_name {
+            out.push_str(reference);
+        } else {
+            match (lookup(name), default) {
+                (Some(value), Some(default)) if value.is_empty() => out.push_str(default),
+                (Some(value), _) => out.push_str(&value),
+                (None, Some(default)) => out.push_str(default),
+                (None, None) => {
+                    missing.push(name.to_string());
+                    out.push_str(reference);
+                }
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Merge the scopes into the declared server list, first occurrence of a
 /// name winning (the Claude Code precedence, minus the scopes we don't
 /// model): the project's `.alter-zero/mcp.json`, then the compat
@@ -1248,6 +1359,84 @@ mod tests {
         ));
         // An empty (or missing) file is a fresh one.
         assert!(record_disabled("", "/p", &disabled).is_ok());
+    }
+
+    fn env(name: &str) -> Option<String> {
+        match name {
+            "TOKEN" => Some("t0k".to_string()),
+            "HOST" => Some("mcp.test".to_string()),
+            "EMPTY" => Some(String::new()),
+            "SECRET" => Some("GOCSPX-x".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn claude_code_variable_references_expand_where_it_expands_them() {
+        // Claude Code's `.mcp.json` grammar: `${VAR}` and `${VAR:-default}`
+        // in the command, args, env, url and headers — plus the oauth client
+        // fields, which Google's own config examples fill from a variable.
+        let file = parse_mcp_file(
+            r#"{"mcpServers": {
+                "remote": {"url": "https://${HOST}/mcp",
+                           "headers": {"Authorization": "Bearer ${TOKEN}"},
+                           "oauth": {"clientId": "${CID:-cid.apps}", "clientSecret": "${SECRET}"}},
+                "local": {"command": "${BIN:-npx}", "args": ["-y", "${PKG:-srv}"],
+                          "env": {"KEY": "${TOKEN}", "MODE": "${EMPTY:-fallback}"}}
+            }}"#,
+        );
+        let get = |name: &str| {
+            file.servers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, c)| c.clone())
+                .unwrap()
+        };
+        let remote = expand_env_vars(&get("remote"), &env).expect("all set");
+        assert_eq!(remote.url(), Some("https://mcp.test/mcp"));
+        let McpServerConfig::Http { headers, oauth, .. } = &remote else {
+            panic!("http")
+        };
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer t0k")
+        );
+        let oauth = oauth.as_ref().unwrap();
+        assert_eq!(oauth.client_id.as_deref(), Some("cid.apps"));
+        assert_eq!(oauth.client_secret.as_deref(), Some("GOCSPX-x"));
+        let local = expand_env_vars(&get("local"), &env).expect("defaults");
+        assert_eq!(
+            local,
+            McpServerConfig::Stdio {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "srv".to_string()],
+                // `:-` takes the default for an empty value too, as a shell does.
+                env: [
+                    ("KEY".to_string(), "t0k".to_string()),
+                    ("MODE".to_string(), "fallback".to_string())
+                ]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_reference_with_no_value_and_no_default_names_itself() {
+        let config =
+            parse_server_entry(r#"{"url": "https://x/${A}", "headers": {"X": "${B}${A}"}}"#)
+                .unwrap();
+        assert_eq!(
+            expand_env_vars(&config, &env),
+            Err(vec!["A".to_string(), "B".to_string()])
+        );
+        // Text that is not a reference is left alone: `$HOME`, an unclosed
+        // `${`, a name that is not one.
+        let config = parse_server_entry(
+            r#"{"url": "https://x/$HOME/${not closed", "headers": {"X": "${1A}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(expand_env_vars(&config, &env), Ok(config));
     }
 
     #[test]

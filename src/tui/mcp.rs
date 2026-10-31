@@ -80,6 +80,35 @@ pub(crate) fn load_mcp_sources(
             .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
         user_file.as_ref().map(|file| (file, user_display.as_str())),
     );
+    // Claude Code's `${VAR}` references, resolved against this session's
+    // environment: a server naming a variable with no value is reported by
+    // the startup toast, never launched with the reference as its value.
+    let env = |name: &str| std::env::var(name).ok();
+    let entries = entries
+        .into_iter()
+        .filter_map(
+            |mut entry| match mcp::expand_env_vars(&entry.config, &env) {
+                Ok(config) => {
+                    entry.config = config;
+                    Some(entry)
+                }
+                Err(missing) => {
+                    let noun = if missing.len() == 1 {
+                        "variable"
+                    } else {
+                        "variables"
+                    };
+                    errors.push(format!(
+                        "{}: {}: missing environment {noun} {}",
+                        entry.config_path,
+                        entry.name,
+                        missing.join(", ")
+                    ));
+                    None
+                }
+            },
+        )
+        .collect();
     // The era cache is retired — a connect re-derives the verdict every
     // time now, so the file only ever misleads (`docs/mcp.md`).
     config::remove_retired_mcp_era_cache();

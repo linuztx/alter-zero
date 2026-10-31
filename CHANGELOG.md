@@ -30,6 +30,13 @@ release heading when a version is cut.
   for a refresh token so the login renews itself instead of lapsing within
   the hour. A client you enter for one provider is never sent to another
   (`docs/mcp.md`).
+- **`${VAR}` references in `mcp.json` now expand, as in Claude Code.** A
+  `.mcp.json` written for Claude Code often reads a token from the
+  environment, such as `"Authorization": "Bearer ${GITHUB_TOKEN}"`, and
+  those were sent as written. `${VAR}` and `${VAR:-default}` now expand in a
+  server's command, arguments, environment, URL, headers and OAuth client
+  fields. A server naming a variable that isn't set is reported at startup
+  instead of being started with the reference as its value (`docs/mcp.md`).
 - **`alter-zero mcp add` takes Claude Code's `--client-id`, `--client-secret`
   and `--callback-port`.** The secret is never a command-line argument: it
   comes from `MCP_CLIENT_SECRET`, a prompt that doesn't echo, or a pipe, and
