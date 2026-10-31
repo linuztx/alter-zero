@@ -553,7 +553,8 @@ Phase 138b's: the real backend, against a stub provider, streams a `write` of
 a 467-character paragraph line and reads the file back, and neither the
 streaming cell nor the committed `Write` and `Read` cells may cut a file row
 with a `…`. §8 is Phase 138c's: the same stub streams the reported
-stylesheet, and no sample of the streaming cell may pass ten body rows, the
-committed `Write` cell must show exactly ten — the tenth ending in `…` —
-over `… +6 lines (ctrl+o to expand)` with the minified line's last word
-nowhere inline, and Ctrl+O must show that word.
+stylesheet and reads it back, and no sample of the streaming cell may pass
+ten body rows, the committed `Write` cell and the `Read` cell after it must
+each show exactly ten — the tenth ending in `…` — over `… +6 lines (ctrl+o
+to expand)` with the minified line's last word nowhere inline, and Ctrl+O
+must show that word.

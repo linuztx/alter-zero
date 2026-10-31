@@ -14,12 +14,13 @@ smoke_begin
 # The REAL backend, against a stub provider whose model writes the reported
 # shape — lines 1–3 short enough to show whole, line 4 some twelve thousand
 # columns ending in the word END138C, lines 5–10 short — streamed in pieces,
-# then answers. Proved:
+# then reads the file back and answers. Proved:
 #   - neither the streaming cell nor its head once the content has arrived
 #     ever shows more than ten body rows;
-#   - the committed `Write` cell shows exactly ten body rows, the tenth ending
-#     in `…`, over `… +6 lines (ctrl+o to expand)`, and line 4's last word is
-#     nowhere inline;
+#   - the committed `Write` cell and the `Read` cell after it each show
+#     exactly ten body rows, the tenth ending in `…`, over
+#     `… +6 lines (ctrl+o to expand)`, and line 4's last word is nowhere
+#     inline;
 #   - Ctrl+O still shows line 4 to its end.
 
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -43,6 +44,7 @@ lines = [
     "@media(max-width:600px){.site-header{padding:0 18px}}",
 ]
 write_args = json.dumps({"path": "src/styles.css", "content": "\n".join(lines) + "\n"})
+read_args = json.dumps({"path": "src/styles.css"})
 
 def frame(payload):
     return ("data: %s\n\n" % json.dumps(payload)).encode()
@@ -79,6 +81,9 @@ class Stub(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 time.sleep(0.02)
             self.wfile.write(frame({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}))
+        elif results == 1:
+            self.wfile.write(frame({"choices": [{"delta": {"tool_calls": [call(0, "call_138c_r", "read", read_args)]}}]}))
+            self.wfile.write(frame({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}))
         else:
             self.wfile.write(frame({"choices": [{"delta": {"content": "Done."}}]}))
             self.wfile.write(frame({"choices": [{"delta": {}, "finish_reason": "stop"}]}))
@@ -96,11 +101,11 @@ PROVIDERS="$SMOKE_TMP/providers138c.toml"
 printf '[providers.stub]\nname = "Stub"\n\n[providers.stub.kwargs]\napi_base = "http://127.0.0.1:%s/v1"\n' "$PORT" >"$PROVIDERS"
 WORK="$(work_dir minified)"
 mkdir -p "$WORK/src"
-# No permission gate: the write runs unasked.
+# No permission gate: the write and the read run unasked.
 MW_APP="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST ALTER_ZERO_PERMISSIONS=0 ALTER_ZERO_PROVIDERS_FILE=$PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in $BIN_ABS"
 S138C="${S}_writeminified"
 launch -c "$WORK" "$S138C" 100 40 "$MW_APP"
-submit "$S138C" "smoke138c write the stylesheet"
+submit "$S138C" "smoke138c write the stylesheet and read it back"
 
 # Sample the newest Write cell until the turn settles: its corner row and how
 # many body rows sit under it before the blank row that ends the cell.
@@ -131,13 +136,18 @@ PY
 settled="$(wait_settled 30 "$S138C" -S -80 -- -F "Done.")" || fail "the turn never settled"
 dump "the settled turn" "$settled"
 expect_has "$settled" -F "Wrote 10 lines to src/styles.css" "the streamed write ran and committed"
+expect_has "$settled" -F "Read 10 lines" "the read ran and committed"
 
-# The committed cell: the rows between its corner row and its hint.
-mw_body="$(awk '/Wrote 10 lines to src\/styles.css/ { on = 1; next } on && /ctrl\+o to expand/ { exit } on' <<<"$settled")"
-dump "the committed cell's body" "$mw_body"
-expect_eq "$(grep -c '' <<<"$mw_body")" "10" "the committed peek is not ten rows"
-expect_has "$(tail -n 1 <<<"$mw_body")" -E '…$' "the tenth row does not close the cut line with a …"
-expect_has "$settled" -F "… +6 lines (ctrl+o to expand)" "the hint does not count lines 5–10"
+# Each committed cell: the rows between its corner row and its hint.
+mw_body() { awk -v head="$1" 'index($0, head) { on = 1; next } on && /ctrl\+o to expand/ { exit } on' <<<"$settled"; }
+for corner in "Wrote 10 lines to src/styles.css" "Read 10 lines"; do
+	body="$(mw_body "$corner")"
+	dump "the body under '$corner'" "$body"
+	expect_eq "$(grep -c '' <<<"$body")" "10" "the cell under '$corner' is not ten rows"
+	expect_has "$(tail -n 1 <<<"$body")" -E '…$' "the cell under '$corner' does not close its tenth row with a …"
+done
+expect_eq "$(grep -c -F '… +6 lines (ctrl+o to expand)' <<<"$settled")" "2" \
+	"each cell's hint should count lines 5–10"
 expect_lacks "$settled" -F "END138C" "line 4 was painted inline to its last word"
 expect_lacks "$settled" -F "@keyframes" "a line after the cut one was started"
 

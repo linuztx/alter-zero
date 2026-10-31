@@ -270,9 +270,9 @@ paragraph line the same way and reads the file back: the streaming cell must
 show more than three rows of it with no row ending in `…`, and the committed
 `Write` and `Read` cells must both show its last word (`docs/long-lines.md`
 §7). Phase 138c streams a stylesheet whose fourth line is thousands of
-columns long: no sample of the cell may pass ten body rows, and the committed
-cell must cut that line on its tenth row with a `…` over `… +6 lines`
-(`docs/long-lines.md` §8).
+columns long and reads it back: no sample of the cell may pass ten body rows,
+and the committed `Write` cell and the `Read` cell must each cut that line on
+their tenth row with a `…` over `… +6 lines` (`docs/long-lines.md` §8).
 
 ## What it does not do
 
