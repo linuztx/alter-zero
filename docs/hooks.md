@@ -659,8 +659,6 @@ defaulted methods, each with one call site.
 - **Output spilling.** codex writes an oversized `additionalContext` to disk
   with a preview. We cap and truncate (`HOOK_OUTPUT_MAX_BYTES`) instead until
   someone needs more.
-- **A hooks browser UI.** codex has one. The `/settings` on/off row is the
-  whole surface.
 
 ## Offline coverage
 
