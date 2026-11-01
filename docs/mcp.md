@@ -57,6 +57,30 @@ with only `url` defaults to `http` **with automatic fallback** — a
 streamable-HTTP handshake that fails with a client error retries the same
 URL as a legacy SSE server (the MCP spec's backwards-compatibility recipe),
 so a bare `{"url": …}` works against any generation of server.
+`streamable-http` and `streamableHttp` — other clients' spellings — read as
+`http`; a `"type": "stdio"` entry without its `command` says that (it used
+to read as an unsupported transport); and an empty, `touch`ed file is an
+empty config rather than a red "not valid JSON" at every launch.
+
+**`${VAR}` references are expanded** (`mcp::expand_config`) the way Claude
+Code defined them for `.mcp.json`, so a project's file means the same to
+both: `${NAME}` and `${NAME:-default}` in every value a launch reads — a
+stdio server's `command`, `args` and `env` values, a remote server's `url`
+and `headers` values — never in a name or key. A set variable is its value,
+an empty one too (unlike POSIX `:-`, which treats empty as unset); an unset
+one takes its default, taken as written; a bare `$NAME` is literal, and
+there is no escape. A variable neither set nor defaulted keeps its server
+from starting, `Failed` with the variable and where it is used named — a
+literal `${GITHUB_TOKEN}` sent as a credential, or run as a command, is
+never what was meant. The expansion is the manager's, once, from the
+session's environment (`ServerState::resolved`), and it is what every
+connect, restart and token-store lookup uses; the declared config — what
+`/mcp`, `mcp get` and the startup review show, and what the review's
+fingerprints are taken over — stays as written, so a secret kept in the
+environment stays off the screen and a changed variable is not a changed
+server. The review shows the reference itself, `${AWS_SECRET_ACCESS_KEY}`
+in a URL included, which is the one place a project's file can ask for a
+variable it shouldn't have.
 
 ## Protocol versions — the dual-era client
 
@@ -78,9 +102,20 @@ project file, which may be shared with a team:
   "projects": { "/abs/cwd": { "disabled": ["github"] } } }
 ```
 
-— the `skills.json` pattern exactly: read-modify-write, best-effort, an
-empty set drops the entry, a name not installed here is kept (the same file
-serves a checkout elsewhere).
+— the `skills.json` pattern: an empty set drops the entry, a name not
+installed here is kept (the same file serves a checkout elsewhere). A
+toggle is a read-modify-write of **one name** over the file as it is now
+(`record_disabled`, `McpManager::set_disabled`): the old writer stored the
+session's whole set, erasing a toggle another session had made in the same
+project, and fell back to `{}` over a file that didn't parse — one typo,
+and every declared server was gone. A file that doesn't parse is now left
+as it is, the toggle holding for the session under a red toast that says
+so; a write that fails says so too. Every write of the file — this one and
+the CLI's — goes through `llm::mcp::write_config_file`: a temp file beside
+the target, synced and renamed into place (a crash mid-write used to leave
+an empty file), the file's own permissions kept (owner-only for a new one,
+since its headers and `env` can hold tokens), and a symlink followed to the
+file it names, so a dotfiles manager's link stays a link.
 
 The **user** file can be edited from the command line — `alter-zero mcp add
 {name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before

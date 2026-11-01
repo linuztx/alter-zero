@@ -133,14 +133,11 @@ fn read_user_file(path: &PathBuf) -> Result<String, String> {
     }
 }
 
-/// Write the updated document, creating the config dir on first use.
+/// Write the updated document — atomically, keeping the file's permissions
+/// (owner-only for a new one) and any symlink to it, creating the config
+/// dir on first use (`docs/mcp-cli.md`).
 fn write_user_file(path: &Path, contents: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
-    {
-        return Err(format!("Failed to create {}: {err}", parent.display()));
-    }
-    std::fs::write(path, contents)
+    alter_zero::llm::mcp::write_config_file(path, contents)
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))
 }
 

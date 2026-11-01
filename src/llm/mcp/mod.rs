@@ -8,11 +8,13 @@
 //! `std::net::TcpListener` HTTP fixtures — no network.
 
 mod client;
+mod files;
 mod manager;
 mod oauth;
 mod transport;
 
 pub use self::client::{ConnectError, Connection, connect, connect_with_helper};
+pub use self::files::write_config_file;
 pub use self::manager::{
     DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpHold, McpManager, McpSources,
 };

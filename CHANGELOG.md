@@ -243,6 +243,26 @@ release heading when a version is cut.
   permission is asked for it alongside what it already had, and the
   permission it named is read correctly: a parsing slip used to lose it
   (`docs/mcp.md`).
+- **Turning an MCP server off in `/mcp` no longer can wipe `mcp.json`.**
+  With one typo in the file, the toggle replaced the whole file, every
+  server in it included, with a few lines of its own; it now leaves such a
+  file alone, keeps the server off for the session and says why. A toggle
+  also no longer undoes one made in another session in the same project.
+  Every write of the file, from `/mcp` and from `alter-zero mcp add` and
+  `remove`, now replaces it in one step, so a full disk or a crash can't
+  leave it empty, keeps its permissions (a new file is readable by you
+  alone, since it can hold tokens) and writes through a symlink instead of
+  replacing it.
+- **`${VAR}` in an MCP config is filled in from your environment.** A
+  project's `.mcp.json` that says `"Authorization": "Bearer ${GITHUB_TOKEN}"`
+  used to send exactly that text. `${NAME}` and `${NAME:-default}` are now
+  filled in wherever a server's command, arguments, environment, URL or
+  headers use them, as in Claude Code. A server naming a variable that
+  isn't set and has no default doesn't start, and `/mcp` names the
+  variable; `/mcp` and `alter-zero mcp get` still show the reference, never
+  the value. An empty config file is no longer an error at every start,
+  `"type": "streamable-http"` is understood, and a stdio entry missing its
+  command says so (`docs/mcp.md`).
 - **An MCP login is no longer lost to a renewal race.** A login server may
   hand out a one-time renewal token and revoke the whole login when it sees
   one used twice. Two sessions in different terminals renewing the same

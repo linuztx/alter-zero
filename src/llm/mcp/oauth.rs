@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use super::files::{FileLock, LockMiss, write_private};
 use crate::stream::CancelToken;
 
 /// The whole interactive flow's budget — Claude Code's 5 minutes.
@@ -79,9 +80,6 @@ const STORE_LOCK_WAIT: Duration = Duration::from_secs(5);
 /// its grant in the store rather than with a replay.
 const REFRESH_LOCK_WAIT: Duration = Duration::from_secs(25);
 
-/// The file-lock retry cadence.
-const LOCK_POLL: Duration = Duration::from_millis(20);
-
 // ---------------------------------------------------------------------------
 // the token store (pure format + file I/O)
 
@@ -115,63 +113,6 @@ pub struct StoredTokens {
     /// The client's registered `token_endpoint_auth_method` (`None`: a
     /// secret, if any, rides the form body).
     pub token_auth_method: Option<String>,
-}
-
-/// An exclusive advisory lock (`flock`) on a file beside the store. The
-/// mutexes above serialize this process's threads; this serializes
-/// **processes** — two sessions in different terminals share one store, and
-/// the refresh-token replay the per-server lock exists to prevent is just as
-/// fatal when the second presenter is another process. Released on drop, and
-/// by the kernel when the process dies, so a crash never strands it.
-struct FileLock {
-    _file: std::fs::File,
-}
-
-/// Why no file lock was taken.
-#[derive(Debug, PartialEq, Eq)]
-enum LockMiss {
-    /// Another holder kept it past the deadline.
-    TimedOut,
-    /// The file couldn't be opened, or the filesystem has no locks: the
-    /// caller goes on with only the in-process mutex, as before this lock.
-    Unavailable,
-}
-
-impl FileLock {
-    fn acquire(path: &Path, deadline: Instant) -> Result<FileLock, LockMiss> {
-        #[cfg(unix)]
-        {
-            use rustix::fs::{FlockOperation, flock};
-            use std::os::unix::fs::OpenOptionsExt;
-            if let Some(parent) = path.parent() {
-                create_private_dir(parent).map_err(|_| LockMiss::Unavailable)?;
-            }
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .mode(0o600)
-                .open(path)
-                .map_err(|_| LockMiss::Unavailable)?;
-            loop {
-                match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                    Ok(()) => return Ok(FileLock { _file: file }),
-                    Err(rustix::io::Errno::WOULDBLOCK | rustix::io::Errno::INTR) => {
-                        if Instant::now() >= deadline {
-                            return Err(LockMiss::TimedOut);
-                        }
-                        std::thread::sleep(LOCK_POLL);
-                    }
-                    Err(_) => return Err(LockMiss::Unavailable),
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (path, deadline);
-            Err(LockMiss::Unavailable)
-        }
-    }
 }
 
 /// The store's own lock: `mcp-auth.lock` beside `mcp-auth.json`, held for a
@@ -331,71 +272,6 @@ fn rewrite_store(path: &Path, rewrite: impl FnOnce(&str) -> Option<String>) -> R
         return Ok(());
     };
     write_private(path, &updated).map_err(|e| format!("couldn't write {}: {e}", path.display()))
-}
-
-/// Write `contents` to `path` through a fresh temp file beside it — created
-/// owner-only rather than written first and narrowed after (the window
-/// between would leave refresh tokens readable), synced, and renamed into
-/// place, so a crash mid-write can't leave a truncated store: a half-written
-/// file parses as *no* servers, silently unauthenticating every one at once.
-/// The temp name is unique per write, so two processes saving at once never
-/// write into each other's file.
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    let (temp, mut file) = create_temp_beside(path)?;
-    let written = file
-        .write_all(contents.as_bytes())
-        .and_then(|()| file.sync_all())
-        .and_then(|()| std::fs::rename(&temp, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written
-}
-
-/// A new owner-only temp file beside `path`: `.{name}.{pid}.{n}.tmp`.
-fn create_temp_beside(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let name = path
-        .file_name()
-        .map_or_else(|| "store".into(), |n| n.to_string_lossy());
-    let mut collision = None;
-    for _ in 0..16 {
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&temp) {
-            Ok(file) => return Ok((temp, file)),
-            // A crashed process's leftover under a reused pid.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => collision = Some(e),
-            Err(e) => return Err(e),
-        }
-    }
-    Err(collision.unwrap_or_else(|| std::io::Error::other("no free temp name")))
-}
-
-/// Create `dir` (and any missing parents) owner-only. One that already
-/// exists is left as it is — it holds other files the user owns.
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    if dir.as_os_str().is_empty() || dir.is_dir() {
-        return Ok(());
-    }
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(dir)
 }
 
 /// Is this grant still fresh (with the refresh skew)? `now` is Unix seconds.
@@ -2991,24 +2867,6 @@ mod tests {
         let unreadable = dir.path().join("store-dir");
         std::fs::create_dir(&unreadable).unwrap();
         assert!(save_tokens(Some(&unreadable), "https://s.test/mcp", Some(&tokens)).is_err());
-    }
-
-    /// The lock excludes another *open* of the file — the shape another
-    /// process takes — not only another thread: two sessions in different
-    /// terminals share one store.
-    #[cfg(unix)]
-    #[test]
-    fn the_file_lock_excludes_another_open_of_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("locks").join("x.lock");
-        let soon = || Instant::now() + Duration::from_millis(150);
-        let held = FileLock::acquire(&path, soon()).expect("the first open takes it");
-        assert_eq!(
-            FileLock::acquire(&path, soon()).err(),
-            Some(LockMiss::TimedOut)
-        );
-        drop(held);
-        assert!(FileLock::acquire(&path, soon()).is_ok());
     }
 
     /// A one-route token endpoint answering each request through `answer`

@@ -138,12 +138,15 @@ pub struct McpFile {
     pub errors: Vec<String>,
 }
 
-/// Parse one `mcp.json`/`.mcp.json` document. A missing/empty `mcpServers`
-/// map is an empty file, not an error; a malformed document is one error
-/// naming the problem.
+/// Parse one `mcp.json`/`.mcp.json` document. An empty file (a `touch`ed
+/// one) or a missing/empty `mcpServers` map is an empty config, not an
+/// error; a malformed document is one error naming the problem.
 #[must_use]
 pub fn parse_mcp_file(contents: &str) -> McpFile {
     let mut out = McpFile::default();
+    if contents.trim().is_empty() {
+        return out;
+    }
     let value: Value = match serde_json::from_str(contents.trim()) {
         Ok(value) => value,
         Err(e) => {
@@ -192,41 +195,57 @@ pub fn parse_disabled(contents: &str, project: &str) -> std::collections::BTreeS
         .unwrap_or_default()
 }
 
-/// Re-render the user file with `project`'s disabled set replaced — the
-/// read-modify-write core (the boundary reads the file, calls this, writes
-/// the result). An empty set **drops** the project entry (the file stays a
-/// diff from everything-on), and every other key — the `mcpServers` map,
-/// other projects — passes through untouched.
-#[must_use]
+/// Re-render the user file with one server disabled (or enabled again) for
+/// `project` — the read-modify-write core: the boundary reads the file as
+/// it is **now**, calls this, writes the result. One name changes, never a
+/// whole set: a set held in memory and written back erased a toggle another
+/// session made in the same project meanwhile. An emptied set **drops** the
+/// project entry (the file stays a diff from everything-on), and every other
+/// key — the `mcpServers` map, other projects, unknown keys — passes through
+/// untouched, in order. A file that doesn't parse is refused
+/// ([`McpWriteError::InvalidJson`]) rather than replaced: falling back to
+/// `{}` turned one typo into a file with no servers in it.
 pub fn record_disabled(
     contents: &str,
     project: &str,
-    disabled: &std::collections::BTreeSet<String>,
-) -> String {
-    let mut value: Value = serde_json::from_str(contents.trim())
-        .ok()
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let root = value.as_object_mut().expect("object ensured above");
+    name: &str,
+    disabled: bool,
+) -> Result<String, McpWriteError> {
+    let mut root = parse_document(contents)?;
     let projects = root
         .entry("projects")
         .or_insert_with(|| Value::Object(Default::default()));
-    if let Some(projects) = projects.as_object_mut() {
-        if disabled.is_empty() {
-            projects.remove(project);
-        } else {
-            projects.insert(
-                project.to_string(),
-                serde_json::json!({
-                    "disabled": disabled.iter().collect::<Vec<_>>()
-                }),
-            );
-        }
-        if projects.is_empty() {
-            root.remove("projects");
-        }
+    let Some(projects) = projects.as_object_mut() else {
+        return Err(McpWriteError::InvalidJson(
+            "\"projects\" must be an object".to_string(),
+        ));
+    };
+    let mut set: Vec<String> = projects
+        .get(project)
+        .and_then(|entry| entry.get("disabled"))
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    set.retain(|other| other != name);
+    if disabled {
+        set.push(name.to_string());
+        set.sort();
     }
-    serde_json::to_string_pretty(&value).unwrap_or_else(|_| contents.to_string())
+    if set.is_empty() {
+        projects.shift_remove(project);
+    } else {
+        projects.insert(project.to_string(), serde_json::json!({ "disabled": set }));
+    }
+    if projects.is_empty() {
+        root.shift_remove("projects");
+    }
+    Ok(pretty(root))
 }
 
 /// Why a CLI write ([`record_server`]/[`remove_server`]) was refused — the
@@ -414,6 +433,9 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
             .ok_or_else(|| "missing \"url\"".to_string())
     };
     match kind {
+        Some("stdio") if !obj.contains_key("command") => {
+            Err("a stdio server needs a \"command\"".to_string())
+        }
         Some("stdio") | None if obj.contains_key("command") => {
             let command = obj
                 .get("command")
@@ -440,7 +462,8 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
                 env: string_map("env")?,
             })
         }
-        Some("http") => Ok(McpServerConfig::Http {
+        // Other clients' spellings of the same transport.
+        Some("http" | "streamable-http" | "streamableHttp") => Ok(McpServerConfig::Http {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: false,
@@ -457,6 +480,141 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
         Some(other) => Err(format!("unsupported transport type \"{other}\"")),
         None => Err("entry needs a \"command\" (stdio) or a \"url\" (http/sse)".to_string()),
     }
+}
+
+/// Is `name` an environment variable's name — `[A-Za-z_][A-Za-z0-9_]*`?
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Expand `${NAME}` and `${NAME:-default}` in `text` through `lookup` — the
+/// `.mcp.json` grammar Claude Code defined, so a project's file means the
+/// same thing to both: a set variable is its value, an **empty one too**
+/// (unlike POSIX `:-`, which treats empty as unset); an unset one takes its
+/// default, taken as written; one with neither is left as written and its
+/// name pushed onto `missing`. Only braces expand — a bare `$NAME` is
+/// literal, as is anything in braces that isn't a name — and there is no
+/// escape.
+pub fn expand_vars(
+    text: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    missing: &mut Vec<String>,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(close) = after.find('}') else {
+            // Never closed: the rest is literal.
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let inner = &after[..close];
+        let (name, default) = match inner.split_once(":-") {
+            Some((name, default)) => (name, Some(default)),
+            None => (inner, None),
+        };
+        if !is_variable_name(name) {
+            // Not a reference: keep the `${` and read on after it.
+            out.push_str("${");
+            rest = after;
+            continue;
+        }
+        match (lookup(name), default) {
+            (Some(value), _) => out.push_str(&value),
+            (None, Some(default)) => out.push_str(default),
+            (None, None) => {
+                if !missing.iter().any(|m| m == name) {
+                    missing.push(name.to_string());
+                }
+                out.push_str(&rest[start..start + 2 + close + 1]);
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The config a connect actually uses: every value a launch reads — a
+/// stdio server's command, args and env values; a remote server's URL and
+/// header values — expanded ([`expand_vars`]) through `lookup`, the
+/// session's environment. Names and keys never are, and the declared
+/// config — what `/mcp`, `mcp get` and the startup review show — stays as
+/// written, so a secret kept in the environment stays off the screen.
+///
+/// # Errors
+/// Each variable that is neither set nor defaulted, with where it is used:
+/// such a server doesn't start, since a literal `${GITHUB_TOKEN}` sent as a
+/// credential, or run as a command, is never what was meant.
+pub fn expand_config(
+    config: &McpServerConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<McpServerConfig, String> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut used_in: Vec<String> = Vec::new();
+    let mut expand = |text: &str, field: String| {
+        let mut here = Vec::new();
+        let expanded = expand_vars(text, lookup, &mut here);
+        if !here.is_empty() {
+            used_in.push(field);
+            for name in here {
+                if !missing.contains(&name) {
+                    missing.push(name);
+                }
+            }
+        }
+        expanded
+    };
+    let map = |map: &BTreeMap<String, String>,
+               key: &str,
+               expand: &mut dyn FnMut(&str, String) -> String| {
+        map.iter()
+            .map(|(name, value)| (name.clone(), expand(value, format!("{key}.{name}"))))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let expanded = match config {
+        McpServerConfig::Stdio { command, args, env } => McpServerConfig::Stdio {
+            command: expand(command, "command".to_string()),
+            args: args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| expand(arg, format!("args[{i}]")))
+                .collect(),
+            env: map(env, "env", &mut expand),
+        },
+        McpServerConfig::Http {
+            url,
+            headers,
+            sse_fallback,
+        } => McpServerConfig::Http {
+            url: expand(url, "url".to_string()),
+            headers: map(headers, "headers", &mut expand),
+            sse_fallback: *sse_fallback,
+        },
+        McpServerConfig::Sse { url, headers } => McpServerConfig::Sse {
+            url: expand(url, "url".to_string()),
+            headers: map(headers, "headers", &mut expand),
+        },
+    };
+    if missing.is_empty() {
+        return Ok(expanded);
+    }
+    let (noun, verb) = if missing.len() == 1 {
+        ("variable", "is")
+    } else {
+        ("variables", "are")
+    };
+    Err(format!(
+        "the environment {noun} {} {verb} not set (used in {})",
+        missing.join(", "),
+        used_in.join(", ")
+    ))
 }
 
 /// Merge the scopes into the declared server list, first occurrence of a
@@ -638,7 +796,7 @@ mod tests {
         assert_eq!(file.errors.len(), 1);
         assert!(file.errors[0].contains("not valid JSON"));
         // An empty or serverless document is fine.
-        assert!(parse_mcp_file("").errors.len() == 1); // "" is not JSON either
+        assert!(parse_mcp_file("").errors.is_empty());
         assert!(parse_mcp_file("{}").errors.is_empty());
         assert!(parse_mcp_file(r#"{"mcpServers": {}}"#).errors.is_empty());
     }
@@ -930,21 +1088,177 @@ mod tests {
 
     #[test]
     fn disabled_sets_round_trip_per_project() {
-        let mut disabled = std::collections::BTreeSet::new();
-        disabled.insert("github".to_string());
         let base = r#"{"mcpServers": {"github": {"url": "https://g"}}}"#;
-        let written = record_disabled(base, "/home/me/proj", &disabled);
-        assert_eq!(parse_disabled(&written, "/home/me/proj"), disabled);
+        let written = record_disabled(base, "/home/me/proj", "github", true).unwrap();
+        let only_github: std::collections::BTreeSet<String> =
+            ["github".to_string()].into_iter().collect();
+        assert_eq!(parse_disabled(&written, "/home/me/proj"), only_github);
         assert!(parse_disabled(&written, "/other").is_empty());
         // The servers map survived the RMW.
         assert_eq!(parse_mcp_file(&written).servers.len(), 1);
         // Emptying the set drops the project entry entirely.
-        let cleared = record_disabled(&written, "/home/me/proj", &Default::default());
+        let cleared = record_disabled(&written, "/home/me/proj", "github", false).unwrap();
         assert!(!cleared.contains("projects"));
         // A name not installed here is kept for the checkout that has it —
-        // record only replaces the one project's own set.
-        let other = record_disabled(&written, "/other", &["x".to_string()].into_iter().collect());
-        assert_eq!(parse_disabled(&other, "/home/me/proj"), disabled);
+        // record only touches the one project's own set.
+        let other = record_disabled(&written, "/other", "x", true).unwrap();
+        assert_eq!(parse_disabled(&other, "/home/me/proj"), only_github);
+    }
+
+    /// A toggle changes one name, over the file as it is now: another
+    /// session's toggle in the same project, written meanwhile, survives —
+    /// the old writer stored this session's whole set and erased it.
+    #[test]
+    fn a_toggle_changes_only_its_own_name() {
+        let theirs = record_disabled("{}", "/p", "a", true).unwrap();
+        let ours = record_disabled(&theirs, "/p", "b", true).unwrap();
+        let both: std::collections::BTreeSet<String> =
+            ["a".to_string(), "b".to_string()].into_iter().collect();
+        assert_eq!(parse_disabled(&ours, "/p"), both);
+        let one = record_disabled(&ours, "/p", "a", false).unwrap();
+        let only_b: std::collections::BTreeSet<String> = ["b".to_string()].into_iter().collect();
+        assert_eq!(parse_disabled(&one, "/p"), only_b);
+    }
+
+    /// A file that doesn't parse is refused, never rewritten: the old
+    /// writer fell back to `{}` and replaced a file with one typo in it by a
+    /// file with no servers at all.
+    #[test]
+    fn a_toggle_never_rewrites_a_file_that_does_not_parse() {
+        let broken = r#"{"mcpServers": {"github": {"url": "https://g"},}}"#;
+        assert!(matches!(
+            record_disabled(broken, "/p", "github", true),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            record_disabled(r#"{"projects": []}"#, "/p", "github", true),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        // An empty or missing file is a fresh one.
+        let fresh = record_disabled("", "/p", "github", true).unwrap();
+        assert_eq!(parse_disabled(&fresh, "/p").len(), 1);
+    }
+
+    /// An empty (`touch`ed) file is an empty config, not a red "not valid
+    /// JSON" at every startup.
+    #[test]
+    fn an_empty_file_is_an_empty_config() {
+        for contents in ["", "  \n"] {
+            assert_eq!(parse_mcp_file(contents), McpFile::default());
+        }
+    }
+
+    #[test]
+    fn a_stdio_entry_without_a_command_says_so() {
+        let file = parse_mcp_file(r#"{"mcpServers": {"x": {"type": "stdio", "args": ["a"]}}}"#);
+        assert_eq!(file.errors.len(), 1, "{:?}", file.errors);
+        assert!(file.errors[0].contains("command"), "{:?}", file.errors);
+        assert!(!file.errors[0].contains("unsupported"), "{:?}", file.errors);
+    }
+
+    /// `streamable-http` and `streamableHttp` — how other clients' configs
+    /// spell the same transport — are `http`.
+    #[test]
+    fn other_spellings_of_streamable_http_are_http() {
+        for kind in ["streamable-http", "streamableHttp"] {
+            let config =
+                parse_server_entry(&format!(r#"{{"type": "{kind}", "url": "https://x/mcp"}}"#))
+                    .unwrap();
+            assert_eq!(
+                config,
+                McpServerConfig::Http {
+                    url: "https://x/mcp".to_string(),
+                    headers: BTreeMap::new(),
+                    sse_fallback: false,
+                }
+            );
+        }
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| map.get(name).cloned()
+    }
+
+    /// `${NAME}` and `${NAME:-default}`, the `.mcp.json` grammar: a set
+    /// variable is its value — an empty one too — an unset one takes its
+    /// default, and one with neither is left as written and reported. A
+    /// bare `$NAME`, or anything in braces that isn't a name, is literal.
+    #[test]
+    fn variables_expand_by_the_mcp_json_grammar() {
+        let env = env_of(&[("A", "1"), ("EMPTY", "")]);
+        let mut missing = Vec::new();
+        assert_eq!(
+            expand_vars("${A}/x ${B:-def} ${EMPTY:-def}|${C}", &env, &mut missing),
+            "1/x def |${C}"
+        );
+        assert_eq!(missing, ["C"]);
+        let mut missing = Vec::new();
+        assert_eq!(
+            expand_vars("$A ${} ${1X} ${A-x} ${A:x} ${A", &env, &mut missing),
+            "$A ${} ${1X} ${A-x} ${A:x} ${A"
+        );
+        assert!(missing.is_empty(), "{missing:?}");
+        // A default is taken as written, never expanded itself.
+        let mut missing = Vec::new();
+        assert_eq!(expand_vars("${B:-${A}}", &env, &mut missing), "${A}");
+        assert!(missing.is_empty());
+    }
+
+    /// Every value a launch reads is expanded — a stdio server's command,
+    /// args and env values; a remote one's URL and header values — and no
+    /// name or key is.
+    #[test]
+    fn a_config_expands_every_value_a_launch_reads() {
+        let env = env_of(&[("BIN", "node"), ("TOKEN", "t0k"), ("HOST", "h.test")]);
+        let stdio = McpServerConfig::Stdio {
+            command: "${BIN}".to_string(),
+            args: vec!["--token=${TOKEN}".to_string()],
+            env: [("${TOKEN}".to_string(), "${TOKEN}".to_string())].into(),
+        };
+        assert_eq!(
+            expand_config(&stdio, &env),
+            Ok(McpServerConfig::Stdio {
+                command: "node".to_string(),
+                args: vec!["--token=t0k".to_string()],
+                env: [("${TOKEN}".to_string(), "t0k".to_string())].into(),
+            })
+        );
+        let http = McpServerConfig::Http {
+            url: "https://${HOST}/mcp".to_string(),
+            headers: [("Authorization".to_string(), "Bearer ${TOKEN}".to_string())].into(),
+            sse_fallback: true,
+        };
+        assert_eq!(
+            expand_config(&http, &env),
+            Ok(McpServerConfig::Http {
+                url: "https://h.test/mcp".to_string(),
+                headers: [("Authorization".to_string(), "Bearer t0k".to_string())].into(),
+                sse_fallback: true,
+            })
+        );
+    }
+
+    /// A variable that is neither set nor defaulted keeps the server from
+    /// starting, with the variable and where it is used named — a literal
+    /// `${GITHUB_TOKEN}` sent as a credential is never what was meant.
+    #[test]
+    fn an_unset_variable_is_named_with_where_it_is_used() {
+        let sse = McpServerConfig::Sse {
+            url: "https://${TENANT}.test/sse".to_string(),
+            headers: [(
+                "Authorization".to_string(),
+                "Bearer ${GITHUB_TOKEN}".to_string(),
+            )]
+            .into(),
+        };
+        let error = expand_config(&sse, &env_of(&[])).unwrap_err();
+        for expected in ["GITHUB_TOKEN", "TENANT", "headers.Authorization", "url"] {
+            assert!(error.contains(expected), "{expected} missing from {error}");
+        }
     }
 
     #[test]

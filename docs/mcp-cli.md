@@ -118,11 +118,11 @@ alter-zero mcp list
 string-in/string-out read-modify-write over the whole document — with two
 deliberate differences:
 
-- **A file that doesn't parse is refused, never clobbered.**
-  `record_disabled`'s silent `{}` fallback is the in-TUI never-kill-the-TUI
-  posture; for a CLI edit it would discard every declared server. Both
-  writers return `Err(McpWriteError::InvalidJson(reason))` instead (the
-  boundary exits 1: `{path} is not valid JSON … refusing to rewrite it`).
+- **A file that doesn't parse is refused, never clobbered** — for a CLI
+  edit, a fallback to `{}` would discard every declared server (the `/mcp`
+  toggle's `record_disabled` refuses the same way now). Both writers
+  return `Err(McpWriteError::InvalidJson(reason))` instead (the boundary
+  exits 1: `{path} is not valid JSON … refusing to rewrite it`).
   Empty/whitespace-only contents are a fresh `{}` (a `touch`ed file, or
   the boundary's missing-file read), not an error.
 - **`remove_server` uses `Map::shift_remove`.** serde_json is built with
@@ -149,8 +149,11 @@ no terminal, before `InlineViewport::init` (`docs/cli.md`'s ordering).
 The file is `config::mcp_user_file_path()` (`ALTER_ZERO_MCP_FILE`, else
 `{config_home}/mcp.json`); `None` — no `HOME`, no override — is a hard
 exit 1, unlike the TUI's best-effort writers, because there is nowhere to
-persist. A missing file reads as `{}`; the write `create_dir_all`s the
-parent and surfaces its error. `ALTER_ZERO_MCP=0` does not gate the CLI —
+persist. A missing file reads as `{}`; the write is
+`llm::mcp::write_config_file` — the parent created (owner-only) on first
+use, a temp file synced and renamed into place so a failed write leaves the
+old file whole, the file's permissions kept (owner-only for a new one) and
+a symlink followed to the file it names — and its error is surfaced. `ALTER_ZERO_MCP=0` does not gate the CLI —
 it edits a file, launches nothing; the feature switch keeps governing the
 TUI.
 

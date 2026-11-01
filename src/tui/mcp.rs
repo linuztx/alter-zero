@@ -152,13 +152,19 @@ impl Session<'_> {
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
+                let state = if disabled { "disabled" } else { "enabled" };
                 // A project server's on/off is the review's decision, kept in
                 // trust.json (`docs/config-review.md`); a user server's is the
                 // user file's per-directory set.
-                if !self.set_project_server(&server, !disabled) {
-                    manager.set_disabled(&server, disabled);
+                if !self.set_project_server(&server, !disabled)
+                    && let Err(error) = manager.set_disabled(&server, disabled)
+                {
+                    self.toast(
+                        format!("{server} {state} for this session only — {error}"),
+                        ToastKind::Error,
+                    );
+                    return;
                 }
-                let state = if disabled { "disabled" } else { "enabled" };
                 self.toast(format!("{server} {state}"), ToastKind::Info);
             }
             McpOp::Authenticate { server } => manager.authenticate(&server),

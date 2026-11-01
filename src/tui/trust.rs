@@ -644,10 +644,12 @@ impl Session<'_> {
         // A project server turned off in `/mcp` before the review existed
         // sits in the user file's disabled set; enabling it here clears that
         // too, or it would stay off.
-        if enabled && manager.is_user_disabled(name) {
-            manager.set_disabled(name, false);
-        }
-        if let Err(error) = result {
+        let cleared = if enabled && manager.is_user_disabled(name) {
+            manager.set_disabled(name, false)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result.and(cleared) {
             self.toast(error, ToastKind::Error);
         }
         true

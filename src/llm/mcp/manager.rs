@@ -14,8 +14,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
-    McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity,
-    call_params_retrying, parse_call_result,
+    McpServerConfig, McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo,
+    ServerIdentity, call_params_retrying, parse_call_result,
 };
 use crate::stream::CancelToken;
 
@@ -219,6 +219,12 @@ fn off_thread<T: Send + 'static>(
 
 struct ServerState {
     entry: McpServerEntry,
+    /// The config a launch uses — the declared one with its `${VAR}`
+    /// references expanded from the session's environment
+    /// ([`crate::mcp::expand_config`]) — or why there is none: a variable
+    /// neither set nor defaulted, and the server stays `Failed` with it.
+    /// `entry.config` stays as written, for the `/mcp` page.
+    resolved: Result<McpServerConfig, String>,
     status: McpServerStatus,
     identity: Option<ServerIdentity>,
     tools: Vec<McpToolInfo>,
@@ -247,6 +253,21 @@ struct ServerState {
 }
 
 impl ServerState {
+    /// The resolved config's URL — a remote server's address, which its
+    /// tokens are kept under; `None` for a stdio server, or one that
+    /// couldn't be resolved.
+    fn url(&self) -> Option<&str> {
+        self.resolved.as_ref().ok()?.url()
+    }
+
+    /// Why this server can't be connected at all, whoever asks: a name it
+    /// can't be offered under, or a config that couldn't be resolved.
+    fn blocked(&self) -> Option<String> {
+        self.name_problem
+            .clone()
+            .or_else(|| self.resolved.as_ref().err().cloned())
+    }
+
     /// Every tool this server offers the model, under the wire name it is
     /// offered by — the one derivation the specs, the fingerprint, the
     /// descriptions and the call routing all read ([`crate::mcp::wire_names`]),
@@ -334,22 +355,31 @@ impl McpManager {
             .map(|(entry, name_problem)| {
                 let disabled = sources.disabled.contains(&entry.name);
                 let held = sources.held.get(&entry.name).copied();
-                let has_tokens = entry
-                    .config
-                    .url()
+                // The environment is the session's own, fixed at launch, so
+                // one expansion holds for every connect.
+                let resolved =
+                    crate::mcp::expand_config(&entry.config, &|name| std::env::var(name).ok());
+                let has_tokens = resolved
+                    .as_ref()
+                    .ok()
+                    .and_then(McpServerConfig::url)
                     .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
+                let blocked = name_problem
+                    .clone()
+                    .or_else(|| resolved.as_ref().err().cloned());
                 ServerState {
                     // The review outranks the user's own toggle: a held
                     // server may not run either way, and only an answer in
-                    // the review (or Enable in `/mcp`) releases it. A name
-                    // that can't be offered is refused next, whatever else.
-                    status: match (held, &name_problem) {
+                    // the review (or Enable in `/mcp`) releases it. A server
+                    // that can't be connected at all is refused next.
+                    status: match (held, blocked) {
                         (Some(McpHold::Review), _) => McpServerStatus::AwaitingReview,
                         (Some(McpHold::Declined), _) => McpServerStatus::Disabled,
                         (None, _) if disabled => McpServerStatus::Disabled,
-                        (None, Some(problem)) => McpServerStatus::Failed(problem.clone()),
+                        (None, Some(problem)) => McpServerStatus::Failed(problem),
                         (None, None) => McpServerStatus::Pending,
                     },
+                    resolved,
                     identity: None,
                     tools: Vec::new(),
                     excluded: Vec::new(),
@@ -445,8 +475,8 @@ impl McpManager {
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
             };
-            if let Some(problem) = &server.name_problem {
-                server.status = McpServerStatus::Failed(problem.clone());
+            if let Some(problem) = server.blocked() {
+                server.status = McpServerStatus::Failed(problem);
                 return;
             }
             // Drop the old transport now (kills a stdio child) — the new
@@ -458,17 +488,12 @@ impl McpManager {
             server.status = McpServerStatus::Pending;
             let generation = server.generation;
             server.has_tokens = server
-                .entry
-                .config
                 .url()
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
-            (
-                server.entry.config.clone(),
-                auth_path,
-                cwd,
-                timeout,
-                generation,
-            )
+            let Ok(config) = server.resolved.clone() else {
+                return; // `blocked` said so above
+            };
+            (config, auth_path, cwd, timeout, generation)
         };
         self.notify(McpEvent::Changed);
         let manager = self.clone();
@@ -573,28 +598,18 @@ impl McpManager {
         self.spawn_connect(name);
     }
 
-    /// Enable/disable one server for this project, persisting the choice in
-    /// the user file (read-modify-write) and reporting the change.
-    pub fn set_disabled(&self, name: &str, disabled: bool) {
-        {
+    /// Enable/disable one server for this project — at once for the session,
+    /// and persisted in the user file over the file as it is now (one name,
+    /// read-modify-write, written atomically). An error says the change could
+    /// not be saved: the file doesn't parse (it is left alone rather than
+    /// replaced) or couldn't be written, so it lasts this session only.
+    pub fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
+        let (user_file, project) = {
             let mut inner = self.lock();
             if disabled {
                 inner.disabled.insert(name.to_string());
             } else {
                 inner.disabled.remove(name);
-            }
-            let (user_file, project, set) = (
-                inner.user_file.clone(),
-                inner.project.clone(),
-                inner.disabled.clone(),
-            );
-            if let Some(path) = user_file {
-                let existing = std::fs::read_to_string(&path).unwrap_or_default();
-                let updated = crate::mcp::record_disabled(&existing, &project, &set);
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, updated);
             }
             if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
                 server.generation += 1;
@@ -603,10 +618,15 @@ impl McpManager {
                     server.status = McpServerStatus::Disabled;
                 }
             }
-        }
+            (inner.user_file.clone(), inner.project.clone())
+        };
         self.notify(McpEvent::Changed);
         if !disabled && !self.lock().held.contains_key(name) {
             self.spawn_connect(name);
+        }
+        match user_file {
+            Some(path) => persist_disabled(&path, &project, name, disabled),
+            None => Ok(()),
         }
     }
 
@@ -691,10 +711,7 @@ impl McpManager {
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return Ok(());
             };
-            (
-                server.entry.config.url().map(str::to_string),
-                inner.auth_path.clone(),
-            )
+            (server.url().map(str::to_string), inner.auth_path.clone())
         };
         // The store's I/O runs outside the manager's lock: its file lock may
         // wait on another session's write.
@@ -733,7 +750,15 @@ impl McpManager {
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
             };
-            let Some(url) = server.entry.config.url().map(str::to_string) else {
+            if let Err(problem) = &server.resolved {
+                self.notify(McpEvent::AuthDone {
+                    server: name.to_string(),
+                    ok: false,
+                    detail: problem.clone(),
+                });
+                return;
+            }
+            let Some(url) = server.url().map(str::to_string) else {
                 self.notify(McpEvent::AuthDone {
                     server: name.to_string(),
                     ok: false,
@@ -981,7 +1006,7 @@ impl McpManager {
                     server.entry.name.clone(),
                     raw_tool,
                     server.transport.clone()?,
-                    server.entry.config.url().map(str::to_string),
+                    server.url().map(str::to_string),
                     inner.auth_path.clone(),
                     inner.tool_timeout,
                     server.generation,
@@ -1150,7 +1175,7 @@ impl McpManager {
                         server.drop_connection();
                         server.status = McpServerStatus::NeedsAuth;
                         // The refresh dance above may have cleared the grant.
-                        server.has_tokens = server.entry.config.url().is_some_and(|url| {
+                        server.has_tokens = server.url().is_some_and(|url| {
                             oauth::load_tokens(auth_path.as_deref(), url).is_some()
                         });
                     }
@@ -1253,6 +1278,30 @@ impl McpManager {
             }
         }
     }
+}
+
+/// Record one server's on/off for `project` in the user file — outside the
+/// manager's lock, over the file as it is now.
+fn persist_disabled(
+    path: &std::path::Path,
+    project: &str,
+    name: &str,
+    disabled: bool,
+) -> Result<(), String> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
+    };
+    let updated =
+        crate::mcp::record_disabled(&existing, project, name, disabled).map_err(|e| match e {
+            crate::mcp::McpWriteError::InvalidJson(reason) => {
+                format!("{} ({reason}) was left as it is", path.display())
+            }
+            other => format!("{}: {other:?}", path.display()),
+        })?;
+    super::files::write_config_file(path, &updated)
+        .map_err(|e| format!("couldn't write {}: {e}", path.display()))
 }
 
 /// Open the system browser on the authorize URL — best-effort (`open` on
@@ -2342,7 +2391,9 @@ done
         assert!(!manager.has_tools());
         // The user file's toggle cannot run it while the review's decline
         // holds it…
-        manager.set_disabled("fix", false);
+        manager
+            .set_disabled("fix", false)
+            .expect("the toggle saved");
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(manager.snapshot()[0].status, McpServerStatus::Disabled);
         // …the approval does, and the decision lives in trust.json, never
@@ -2398,13 +2449,15 @@ done
                 ..Default::default()
             },
         );
-        manager.set_disabled("fix", true);
+        manager.set_disabled("fix", true).expect("the toggle saved");
         let snapshot = manager.snapshot();
         assert_eq!(snapshot[0].status, McpServerStatus::Disabled);
         let written = std::fs::read_to_string(&user_file).unwrap();
         assert!(crate::mcp::parse_disabled(&written, "/proj").contains("fix"));
         // Enable clears the persisted set and reconnects.
-        manager.set_disabled("fix", false);
+        manager
+            .set_disabled("fix", false)
+            .expect("the toggle saved");
         let written = std::fs::read_to_string(&user_file).unwrap();
         assert!(crate::mcp::parse_disabled(&written, "/proj").is_empty());
         wait_connected(&manager, "fix");
@@ -2844,6 +2897,80 @@ done
             snapshot[0].auth,
             Some(crate::mcp::McpAuthState::Authenticated)
         );
+        manager.shutdown();
+    }
+
+    /// `${VAR}` references are expanded before a launch — here a default
+    /// standing in for an unset variable is the command that runs — while a
+    /// server naming a variable that is neither set nor defaulted doesn't
+    /// start, the variable named, and `/mcp` keeps showing the config as
+    /// written.
+    #[test]
+    fn variables_expand_before_a_launch() {
+        let mut entry = stdio_entry("fix");
+        if let McpServerConfig::Stdio { command, .. } = &mut entry.config {
+            *command = "${ALTER_ZERO_TEST_NEVER_SET_SHELL:-sh}".to_string();
+        }
+        let unset = McpServerEntry {
+            name: "remote".to_string(),
+            config: McpServerConfig::Http {
+                url: "https://${ALTER_ZERO_TEST_NEVER_SET_TENANT}.test/mcp".to_string(),
+                headers: Default::default(),
+                sse_fallback: false,
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![entry, unset],
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        let snapshot = manager.snapshot();
+        let remote = snapshot.iter().find(|s| s.name == "remote").unwrap();
+        assert!(
+            matches!(&remote.status, McpServerStatus::Failed(why) if why.contains("ALTER_ZERO_TEST_NEVER_SET_TENANT")),
+            "{:?}",
+            remote.status
+        );
+        assert_eq!(
+            remote.config.url(),
+            Some("https://${ALTER_ZERO_TEST_NEVER_SET_TENANT}.test/mcp")
+        );
+        manager.shutdown();
+    }
+
+    /// A toggle over a user file that doesn't parse turns the server off for
+    /// the session and says the file was left alone — it used to replace
+    /// the file, and every server in it, with `{}`.
+    #[test]
+    fn a_toggle_never_rewrites_a_broken_user_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_file = dir.path().join("mcp.json");
+        let broken = r#"{"mcpServers": {"fix": {"command": "sh"},}}"#;
+        std::fs::write(&user_file, broken).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                project: "/proj".to_string(),
+                user_file: Some(user_file.clone()),
+                ..Default::default()
+            },
+        );
+        let error = manager
+            .set_disabled("fix", true)
+            .expect_err("the file doesn't parse");
+        assert!(error.contains("left as it is"), "{error}");
+        assert_eq!(std::fs::read_to_string(&user_file).unwrap(), broken);
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::Disabled);
         manager.shutdown();
     }
 
