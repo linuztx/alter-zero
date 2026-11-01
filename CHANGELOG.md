@@ -154,6 +154,20 @@ release heading when a version is cut.
   has a parameter name the APIs refuse, is left out instead, and the
   server's page in `/mcp` lists it under *Not offered to the model* with
   the reason (`docs/mcp.md`).
+- **An MCP tool's images, audio and files no longer fill its result with
+  base64.** Only the first image was turned into a picture the model can
+  see; a second image, a sound clip or an attached file reached the model
+  as raw base64 text, using up the output allowance on noise. Each is now
+  one line saying what it was and how big, a resource link says where it
+  points, and an attached text file is its text. The client also follows
+  the newest MCP rules (2026-07-28) on results it used to misread: a result
+  of an unknown kind is reported as an error instead of an empty success,
+  a server that answers "ask me again" is asked again, a tool listing
+  whose next page is named by an empty string is read to the end, and a
+  listing that loops back on itself stops instead of repeating tools.
+  Servers that send `"error": null`, echo request numbers as text, or
+  report an error without a request number are understood instead of
+  timing out (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

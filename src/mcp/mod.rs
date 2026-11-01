@@ -36,12 +36,13 @@ pub use self::names::{
     wire_names,
 };
 pub use self::protocol::{
-    CallOutcome, ExcludedTool, FOLDED_SCHEMA_NOTE, Incoming, LEGACY_PROTOCOL_VERSION,
-    MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError, SUPPORTED_VERSIONS,
-    ServerIdentity, call_params, choose_version, discover_params, header_value, initialize_params,
-    initialize_params_for, input_schema_problem, is_modern_error, model_input_schema, notification,
-    parse_call_result, parse_discover, parse_incoming, parse_initialize, parse_tools_page, request,
-    request_meta, tools_list_params, unsupported_versions, with_meta,
+    CallOutcome, ExcludedTool, FOLDED_SCHEMA_NOTE, Incoming, InputRequired,
+    LEGACY_PROTOCOL_VERSION, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError,
+    SUPPORTED_VERSIONS, ServerIdentity, call_params, call_params_retrying, choose_version,
+    discover_params, header_value, initialize_params, initialize_params_for, input_required,
+    input_schema_problem, is_modern_error, model_input_schema, notification, parse_call_result,
+    parse_discover, parse_incoming, parse_initialize, parse_tools_page, request, request_meta,
+    result_type_problem, tools_list_params, unsupported_versions, with_meta,
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{

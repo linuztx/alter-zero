@@ -15,6 +15,7 @@
 //! merely timed out — a proxy blip, a server still booting — wrote that
 //! verdict just as permanently.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -22,8 +23,8 @@ use serde_json::Value;
 use crate::mcp::{
     ExcludedTool, LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION,
     ServerIdentity, choose_version, discover_params, initialize_params_for, input_schema_problem,
-    is_modern_error, parse_discover, parse_initialize, parse_tools_page, tools_list_params,
-    unsupported_versions,
+    is_modern_error, parse_discover, parse_initialize, parse_tools_page, result_type_problem,
+    tools_list_params, unsupported_versions,
 };
 use crate::stream::CancelToken;
 
@@ -35,6 +36,10 @@ use super::transport::{
 /// `MAX_MCP_CATALOG_ITEMS` posture — a runaway cursor must terminate).
 const MAX_TOOL_PAGES: usize = 100;
 const MAX_TOOLS: usize = 2048;
+
+/// The largest pagination cursor sent back — an opaque token has no reason
+/// to be bigger, and a server growing it page by page is not paging.
+const MAX_CURSOR_BYTES: usize = 64 * 1024;
 
 /// The modern probe's deadline slice. A modern server answers
 /// `server/discover` at once and a legacy one errors it at once, so the
@@ -174,6 +179,10 @@ fn handshake(
         cancel,
     );
     let legacy_version = match probe {
+        Ok(result) if result_type_problem(&result).is_some() => {
+            let problem = result_type_problem(&result).unwrap_or_default();
+            return Err(ConnectError::Failed(format!("server/discover: {problem}")));
+        }
         Ok(result) => {
             // A modern server. Its identity rides the discover result
             // (`serverInfo` in the `_meta`) — and so does the list of
@@ -269,8 +278,13 @@ fn finish(
     deadline: Duration,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
-    let mut tools = Vec::new();
+    let mut tools: Vec<McpToolInfo> = Vec::new();
+    let mut listed: HashSet<String> = HashSet::new();
     let mut cursor: Option<String> = None;
+    // Every cursor sent so far: a server that hands back one it already
+    // gave — not only the one just used — has started a cycle, and would
+    // otherwise be paged through until `MAX_TOOL_PAGES`.
+    let mut sent: HashSet<String> = HashSet::new();
     for _ in 0..MAX_TOOL_PAGES {
         let page = transport
             .request(
@@ -280,17 +294,28 @@ fn finish(
                 cancel,
             )
             .map_err(ConnectError::from_transport)?;
-        let (mut page_tools, next) = parse_tools_page(&page);
-        tools.append(&mut page_tools);
+        if let Some(problem) = result_type_problem(&page) {
+            return Err(ConnectError::Failed(format!("tools/list: {problem}")));
+        }
+        let (page_tools, next) = parse_tools_page(&page);
+        // A tool a later page lists again is the same tool.
+        tools.extend(
+            page_tools
+                .into_iter()
+                .filter(|tool| listed.insert(tool.name.clone())),
+        );
         if tools.len() > MAX_TOOLS {
             tools.truncate(MAX_TOOLS);
             break;
         }
-        // A server that repeats its cursor would loop forever.
-        if next.is_none() || next == cursor {
-            break;
+        match next {
+            Some(next) if next.len() <= MAX_CURSOR_BYTES && sent.insert(next.clone()) => {
+                cursor = Some(next);
+            }
+            // The end — or a cursor too large to be honest, or one already
+            // sent.
+            _ => break,
         }
-        cursor = next;
     }
     let (tools, excluded) = set_aside_unusable(tools);
     Ok(Connection {
@@ -1047,6 +1072,45 @@ mod tests {
             Some("be modern")
         );
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    /// Paging follows the 2026-07-28 rules — an empty cursor continues the
+    /// listing — and stops at any cursor it has already sent, not only an
+    /// immediate repeat (an A → B → A cycle used to fetch the same pages
+    /// until the page cap), with a tool repeated across pages listed once.
+    #[test]
+    fn paging_continues_on_an_empty_cursor_and_stops_on_any_repeat() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"cursor":"B"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"three","inputSchema":{"type":"object"}},{"name":"one","inputSchema":{"type":"object"}}],"nextCursor":"","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"cursor":""'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"two","inputSchema":{"type":"object"}}],"nextCursor":"B","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"one","inputSchema":{"type":"object"}}],"nextCursor":"B","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+  esac
+done
+"#;
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        // first page (B) → B's page (empty cursor) → "" page (B again: stop).
+        assert_eq!(names, ["one", "three", "two"]);
     }
 
     /// A tool whose input can never be an object is set aside at connect,

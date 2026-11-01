@@ -14,8 +14,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
-    McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity, call_params,
-    parse_call_result,
+    McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity,
+    call_params_retrying, parse_call_result,
 };
 use crate::stream::CancelToken;
 
@@ -87,6 +87,26 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The cancel-poll cadence every blocking wait shares with the transports.
 const POLL: Duration = Duration::from_millis(20);
+
+/// How many times a call answered with a `requestState`-only
+/// `input_required` is repeated before its result is reported.
+const MAX_STATE_RETRIES: u32 = 3;
+
+/// The pause before the second and later of those repeats, growing by this
+/// much each time — the first is immediate, as the spec allows.
+const STATE_RETRY_PAUSE: Duration = Duration::from_millis(250);
+
+/// Sleep `pause`, polling `cancel` — `false` when the turn was cancelled.
+fn sleep_unless_cancelled(pause: Duration, cancel: &CancelToken) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < pause {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        std::thread::sleep(POLL.min(pause.saturating_sub(started.elapsed())));
+    }
+    !cancel.is_cancelled()
+}
 
 /// Run blocking work on a worker thread while polling `cancel` on the 20 ms
 /// cadence — the transport's own contract (`docs/mcp.md`), which anything
@@ -813,12 +833,37 @@ impl McpManager {
             if let Some(bearer) = refreshed_bearer {
                 transport.set_bearer(Some(bearer));
             }
-            transport.request(
-                "tools/call",
-                call_params(&raw_tool, &arguments),
-                timeout,
-                cancel,
-            )
+            // A `requestState`-only `input_required` is the server asking
+            // for the same call again (load shedding, 2026-07-28's MRTR):
+            // answered by repeating it with the state echoed — a few times,
+            // a little further apart each time, inside the call's budget.
+            let started = std::time::Instant::now();
+            let mut state: Option<String> = None;
+            let mut retries: u32 = 0;
+            loop {
+                let budget = timeout.saturating_sub(started.elapsed());
+                let result = transport.request(
+                    "tools/call",
+                    call_params_retrying(&raw_tool, &arguments, state.as_deref()),
+                    budget,
+                    cancel,
+                )?;
+                match crate::mcp::input_required(&result) {
+                    Some(crate::mcp::InputRequired::Retry { request_state })
+                        if retries < MAX_STATE_RETRIES =>
+                    {
+                        let pause = STATE_RETRY_PAUSE * retries;
+                        retries += 1;
+                        if pause >= timeout.saturating_sub(started.elapsed())
+                            || !sleep_unless_cancelled(pause, cancel)
+                        {
+                            return Ok(result);
+                        }
+                        state = Some(request_state);
+                    }
+                    _ => return Ok(result),
+                }
+            }
         };
         // Proactive: a grant inside its expiry skew refreshes *before* the
         // call, so the token never goes over the wire dead — the 401 arm
@@ -1088,6 +1133,50 @@ mod tests {
                 spec["function"]["description"].as_str()
             );
         }
+    }
+
+    /// A modern server shedding load answers `input_required` with only a
+    /// `requestState`: the same call again, the state echoed, is the whole
+    /// answer — a client declaring no capabilities can give it.
+    #[test]
+    fn a_request_state_only_answer_is_retried_with_the_state_echoed() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"echo","inputSchema":{"type":"object"}}],"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"requestState":"busy-1"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","content":[{"type":"text","text":"done after retry"}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"input_required","requestState":"busy-1"}}\n' "$id" ;;
+  esac
+done
+"#;
+        let entry = McpServerEntry {
+            name: "mrtr".to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script.to_string()],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
+        manager.start_connections();
+        wait_connected(&manager, "mrtr");
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__mrtr__echo".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "done after retry");
+        manager.shutdown();
     }
 
     /// The spec the model is offered carries the repaired schema — the

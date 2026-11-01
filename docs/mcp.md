@@ -177,13 +177,33 @@ in **`src/llm/mcp/`**.
   as an `ExcludedTool` the `/mcp` server page lists under *Not offered to
   the model*; the
   `tools/call` params builder, and the result mapping: `CallToolResult` →
-  the cell/model text (a lone `text` content item is its text verbatim;
-  anything else renders as compact JSON so nothing is dropped), `is_error` →
-  the red cell, a modern `resultType: "input_required"` (a multi-round-trip
-  request this capability-less client can't answer) → a recoverable red
-  outcome, and a first `image` content item → a `data:` URL riding
-  `ToolOutcome::image` (the `read` tool's channel, so a vision model *sees*
-  an MCP image).
+  the cell/model text — text items are their text, in order (a lone one
+  verbatim), and binary content is **described, never dumped**: the first
+  `image` item becomes a `data:` URL riding `ToolOutcome::image` (the
+  `read` tool's channel, so a vision model *sees* an MCP image) under an
+  `[image: …]` line, while a second image, `audio` and a blob `resource`
+  each leave a one-line placeholder naming the type and size (base64 in the
+  text spent the 64 KiB output cap on noise), a `resource_link` says what it
+  links to, an embedded text resource is its text, and an unknown item is
+  JSON with any long string cut to its length; `structuredContent` stands
+  in when nothing else came, and `is_error` → the red cell.
+  `parse_incoming` reads what real servers send rather than what JSON-RPC
+  says: an id echoed as `"5"` or `5.0`, an `"error": null` beside a result,
+  and an error with `id: null` (`Incoming::OrphanError` — the answer to the
+  one request in flight; dropped, it left that request waiting out its
+  deadline), with a server's own request kept as `Incoming::Request` for
+  the transport to answer. **2026-07-28's result rules**:
+  `result_type_problem` passes an absent `resultType` (an earlier server)
+  and `complete` and calls everything else invalid — a `task` handle reads
+  as a red outcome, never as an empty success — and `input_required`
+  splits in two: a `requestState`-only answer is a load-shedding server's
+  "ask again" (`InputRequired::Retry`), which `call_tool` answers by
+  repeating the call with the state echoed (`call_params_retrying`, up to
+  three times, the first at once and then 250 ms further apart, inside the
+  call's budget), while `inputRequests` ask for elicitation, sampling or
+  roots this client never declared (`InputRequired::Unsupported`) and
+  resolve as a red outcome that names them. A `-32021`'s
+  `requiredCapabilities` ride the error text the model reads.
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,
   multi-line data, comment lines) shared by both HTTP transports; pure over
   `&str` pushes, tested without a socket.
@@ -292,7 +312,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   message. **Anything else** — a legacy error code, an HTTP refusal, a dead
   probe — is a legacy server: `set_legacy()` → `initialize` (proposing
   `2025-11-25`, the newest handshake revision) → `notifications/initialized`
-  → `tools/list` (cursors drained), the settled revision echoed on later
+  → `tools/list` (cursors drained — an empty-string cursor continues the
+  listing, as 2026-07-28 requires, and the drain stops at **any** cursor
+  it has already sent, not only an immediate repeat, or at one over
+  64 KiB; a name repeated across pages is listed once), the settled
+  revision echoed on later
   requests. **The settled revision is always the server's own answer**:
   `initialize`'s `protocolVersion` on the legacy side (our proposal only
   stands in when a pre-`protocolVersion` server names none), and on the
@@ -782,10 +806,11 @@ pending row shows `… connecting` until its thread reports.
 
 Resources, prompts, sampling, elicitation, and roots are not modeled — the
 tools surface is the feature — and neither is their modern replacement, the
-2026-07-28 multi-round-trip request: this client declares an empty
-`clientCapabilities` on every request, so a compliant server never sends
-`input_required`, and one that does anyway gets the recoverable red outcome
-rather than a stalled turn. `subscriptions/listen`, response caching
+2026-07-28 multi-round-trip request's `inputRequests`: this client declares
+an empty `clientCapabilities` on every request, so a compliant server only
+ever sends it a `requestState`-only `input_required` (retried, above), and
+one asking for input anyway gets the recoverable red outcome naming what it
+asked for rather than a stalled turn. `subscriptions/listen`, response caching
 (`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
 registration (we are not a hosted client with an `https` client id — DCR,
 deprecated but retained, is our registration path) stay out with it. Server

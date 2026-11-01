@@ -331,7 +331,10 @@ impl StdioTransport {
                 Some(Incoming::Response { id: got, result }) => {
                     self.parked.insert(got, result);
                 }
-                Some(Incoming::Other) | None => {}
+                // An error the server could not tie to an id: with one
+                // request in flight, it is this one's answer.
+                Some(Incoming::OrphanError(error)) => return Err(TransportError::Rpc(error)),
+                Some(Incoming::Request { .. } | Incoming::Other) | None => {}
             }
         }
     }
@@ -704,8 +707,11 @@ fn post_blocking(
         // JSON-RPC error *body* (`-32022` naming its supported versions) —
         // surface that as the RPC error it is, so era detection can read the
         // code instead of a flattened refusal string.
+        // An `id: null` body counts too: the SDKs send their transport-level
+        // errors that way, and this POST's error is this request's.
         if status.is_client_error()
-            && let Some(Incoming::Response { result: Err(e), .. }) = parse_incoming(&body)
+            && let Some(Incoming::Response { result: Err(e), .. } | Incoming::OrphanError(e)) =
+                parse_incoming(&body)
         {
             return PostOutcome::Err(TransportError::Rpc(e));
         }
@@ -735,11 +741,17 @@ fn post_blocking(
         let reader = BufReader::new(response);
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            if let Some(event) = parser.push_line(&line)
-                && let Some(Incoming::Response { id, result }) = parse_incoming(&event.data)
-                && id == want
-            {
-                return wrap(PostOutcome::Response(result));
+            let Some(event) = parser.push_line(&line) else {
+                continue;
+            };
+            match parse_incoming(&event.data) {
+                Some(Incoming::Response { id, result }) if id == want => {
+                    return wrap(PostOutcome::Response(result));
+                }
+                Some(Incoming::OrphanError(error)) => {
+                    return wrap(PostOutcome::Response(Err(error)));
+                }
+                _ => {}
             }
         }
         return PostOutcome::Err(TransportError::Failed(
@@ -756,6 +768,9 @@ fn post_blocking(
     match parse_incoming(&text) {
         Some(Incoming::Response { id, result }) if want_id == Some(id) => {
             wrap(PostOutcome::Response(result))
+        }
+        Some(Incoming::OrphanError(error)) if want_id.is_some() => {
+            wrap(PostOutcome::Response(Err(error)))
         }
         Some(_) | None => PostOutcome::Err(TransportError::Failed(format!(
             "unexpected response body: {}",
@@ -929,7 +944,8 @@ impl SseTransport {
                 Some(Incoming::Response { id: got, result }) => {
                     self.parked.insert(got, result);
                 }
-                Some(Incoming::Other) | None => {}
+                Some(Incoming::OrphanError(error)) => return Err(TransportError::Rpc(error)),
+                Some(Incoming::Request { .. } | Incoming::Other) | None => {}
             }
         }
     }
