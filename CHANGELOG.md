@@ -217,6 +217,20 @@ release heading when a version is cut.
   failed connection's message now includes what the server printed, and a
   server that offers only resources or prompts connects with no tools
   instead of failing (`docs/mcp.md`).
+- **An MCP server that crashes comes back by itself.** A local server that
+  died stayed listed as connected and every later call failed until you
+  reconnected it in `/mcp`. It is now restarted the moment a call finds it
+  gone, and the agent is told to try again; one that dies again within 30
+  seconds is left for you to look at.
+- **Esc stops an MCP call that is waiting its turn.** Two calls to one
+  server take turns, and the second one used to ignore Esc while it waited
+  and then run anyway, even a call that changes something.
+- **`/mcp` no longer disables a server on a double Enter.** Pressing Enter
+  twice on **Reconnect** or **Enable** turned the server off, because the
+  second press landed on **Disable** once the server started connecting.
+  **Clear authentication** now also stops the connection using the cleared
+  login, and changing a tool's description or inputs in a server you are
+  developing reaches the agent after a reconnect.
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

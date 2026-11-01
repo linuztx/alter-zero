@@ -581,14 +581,34 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   authenticating.
 
   A connect attempt **starts from nothing**: alongside dropping the old
-  transport (which kills a stdio child), it clears the identity, the tools
-  and the wire map. Those are the *live* connection's facts — the protocol
-  revision, the capabilities, the tool list the detail page shows — so a
-  reconnect that never initializes must not leave the previous one's
-  behind, under a red `✘ failed` that says the opposite. The model never
-  saw them either way (`tool_specs`/`fingerprint`/`has_tools` all filter on
-  `Connected`), so what this changes is only whether the page tells the
-  truth while a server is down.
+  transport (which stops a stdio child), it clears the identity, the tools
+  and the set-aside tools (`ServerState::drop_connection`, the one teardown
+  a disable, a needs-auth refusal and a fresh connect share). Those are the
+  *live* connection's facts — the protocol revision, the capabilities, the
+  tool list the detail page shows — so a reconnect that never initializes
+  must not leave the previous one's behind, under a red `✘ failed` that
+  says the opposite. The model never saw them either way
+  (`tool_specs`/`fingerprint`/`has_tools` all read `ServerState::offered`,
+  which is empty unless `Connected`), so what this changes is only whether
+  the page tells the truth while a server is down.
+
+  `call_tool` guards the connection it runs on. Two calls to one server
+  share it, so the second **waits for the first polling the turn's
+  cancel** (`lock_unless_cancelled`) — it used to take the lock blind, and
+  a call the user had pressed Esc on still went out once the lock was
+  free. A `401` tears down only **the connection the call went out on**
+  (its generation): a reconnect that landed meanwhile is a newer one. And a
+  call that finds its connection **dead** — a stdio server that exited, a
+  legacy stream that ended (`Transport::is_alive`) — marks the server
+  failed with the reason and **restarts it** at once (the stdio spec's
+  "SHOULD restart"), telling the model to try again; it used to sit
+  `✔ connected` over a dead pipe, every later call failing until the user
+  reconnected by hand. At most once per 30 s (`RESTART_COOLDOWN`): a server
+  that dies again that soon stays failed for a manual Reconnect, never a
+  crash loop. **Clear authentication** reconnects a connected (or failed)
+  server once the grant is gone, since the live connection still carried
+  the old bearer and the server kept working on a login the page said was
+  cleared.
 
 ## The tool integration
 
@@ -603,9 +623,11 @@ The backend follows the skills pattern:
   fallthrough (the `is_task_tool`/`is_skill_tool` slot).
 - The offered set can change mid-session (a server connects late, a
   reconnect, a `/mcp` disable): the boundary re-checks a fingerprint of the
-  offered wire names at every MCP event and turn start
+  offered tools — each wire name beside a digest of its description and
+  schema, so a reconnect that changed only a schema (a stdio server's own
+  dev loop) counts too — at every MCP event and turn start
   (`Session::refresh_mcp`, the `skills_attached` pattern) and rebuilds the
-  backend only when the set actually flipped.
+  backend only when it actually moved.
 - **Display**: `llm::tools::display_name` maps a wire name to the
   `{server} - {tool} (MCP)` header; `summarize_call` returns the **raw
   arguments JSON** for an MCP call. That choice is what makes the record
@@ -785,7 +807,12 @@ mid-turn (the strip stays above it). Pages:
    `Re-authenticate` (when OAuth tokens exist) / `Clear authentication` /
    `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
-   `Reconnect` / `Disable`; disabled → `Enable`.
+   `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
+   `Enable`. When a fresh snapshot changes the list under the user the
+   **selection follows its action**, not its index — a Reconnect turned the
+   server `connecting…`, whose list was `[Disable]` alone, so a second Enter
+   disabled the server and saved that — and a connecting server's first
+   action is the harmless one.
 3. **Tools list** — `Tools for {server}` over numbered tool names.
 4. **Tool detail** — the tool name + server, `Tool name:` / `Full name:`
    (the wire `mcp__{server}__{tool}` the model actually calls),

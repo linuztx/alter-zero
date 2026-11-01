@@ -107,7 +107,9 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
             out.push(A::Disable);
             out
         }
-        McpServerStatus::Pending => vec![A::Disable],
+        // Reconnect first: the page a Reconnect or an Enable lands on, so
+        // a second Enter on it restarts the attempt rather than disabling.
+        McpServerStatus::Pending => vec![A::Reconnect, A::Disable],
         // A project server waiting for the startup review has no actions
         // here: the review on screen is where it is answered
         // (`docs/config-review.md`).
@@ -183,6 +185,17 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return;
         };
+        // On a server's page the selection is an *action*: a state change
+        // reorders the list under it (a Reconnect turns the server
+        // `connecting…`, whose list is shorter), and following the index
+        // landed a second Enter on Disable. It stays on the same action, or
+        // the first when that one is gone.
+        let chosen = (menu.page == McpPage::Server)
+            .then(|| {
+                menu.current_server()
+                    .and_then(|s| server_actions(s).get(menu.selected).copied())
+            })
+            .flatten();
         menu.servers = servers;
         let server_count = menu.servers.len();
         if server_count == 0 {
@@ -198,8 +211,13 @@ impl App {
         match menu.page {
             McpPage::List => menu.selected = clamp(menu.selected, server_count),
             McpPage::Server => {
-                let len = menu.current_server().map_or(0, |s| server_actions(s).len());
-                menu.selected = clamp(menu.selected, len);
+                let actions = menu
+                    .current_server()
+                    .map(server_actions)
+                    .unwrap_or_default();
+                menu.selected = chosen
+                    .and_then(|chosen| actions.iter().position(|action| *action == chosen))
+                    .unwrap_or(0);
             }
             McpPage::Tools => {
                 let len = menu.current_server().map_or(0, |s| s.tools.len());

@@ -97,6 +97,10 @@ const POLL: Duration = Duration::from_millis(20);
 /// shorter than a mid-session stop's, since the user is waiting on it.
 const QUIT_GRACE: Duration = Duration::from_millis(300);
 
+/// The least time between two automatic restarts of one server that died
+/// under a call ([`McpManager`]'s `restart_dead`).
+const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
+
 /// How many times a call answered with a `requestState`-only
 /// `input_required` is repeated before its result is reported.
 const MAX_STATE_RETRIES: u32 = 3;
@@ -104,6 +108,25 @@ const MAX_STATE_RETRIES: u32 = 3;
 /// The pause before the second and later of those repeats, growing by this
 /// much each time — the first is immediate, as the spec allows.
 const STATE_RETRY_PAUSE: Duration = Duration::from_millis(250);
+
+/// Lock a server's connection, waiting for a call that holds it while
+/// polling `cancel` on the transports' cadence — `None` once the turn is
+/// cancelled, the call then never sent.
+fn lock_unless_cancelled<'a>(
+    transport: &'a Mutex<Transport>,
+    cancel: &CancelToken,
+) -> Option<std::sync::MutexGuard<'a, Transport>> {
+    loop {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        match transport.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(POLL),
+        }
+    }
+}
 
 /// One `tools/call` over a held transport. A `requestState`-only
 /// `input_required` is the server asking for the same call again (load
@@ -196,6 +219,9 @@ struct ServerState {
     /// The listed tools the model is not offered, and why — the live
     /// connection's facts, like `tools`.
     excluded: Vec<crate::mcp::ExcludedTool>,
+    /// When a call last restarted this server after it died under it — the
+    /// crash-loop guard.
+    last_restart: Option<std::time::Instant>,
     /// Why this server can never be offered under its name
     /// ([`crate::mcp::server_name_problems`]) — it stays `Failed` with this
     /// reason, whoever asks it to connect.
@@ -309,6 +335,7 @@ impl McpManager {
                     tools: Vec::new(),
                     excluded: Vec::new(),
                     transport: None,
+                    last_restart: None,
                     name_problem,
                     has_tokens,
                     challenge: None,
@@ -632,18 +659,31 @@ impl McpManager {
 
     /// Delete a server's stored OAuth tokens (the `/mcp` "Clear
     /// authentication" action).
+    ///
+    /// The live connection goes with the grant: it still carries the old
+    /// bearer, so a connected (or failed) server reconnects at once — and
+    /// what the server sees matches what the page says. One that now needs a
+    /// login says so.
     pub fn clear_auth(&self, name: &str) {
-        {
+        let reconnect = {
             let mut inner = self.lock();
             let auth_path = inner.auth_path.clone();
-            if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
-                if let Some(url) = server.entry.config.url() {
-                    oauth::save_tokens(auth_path.as_deref(), url, None);
-                }
-                server.has_tokens = false;
+            let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
+                return;
+            };
+            if let Some(url) = server.entry.config.url() {
+                oauth::save_tokens(auth_path.as_deref(), url, None);
             }
-        }
+            server.has_tokens = false;
+            matches!(
+                server.status,
+                McpServerStatus::Connected | McpServerStatus::Failed(_)
+            )
+        };
         self.notify(McpEvent::Changed);
+        if reconnect {
+            self.spawn_connect(name);
+        }
     }
 
     /// Start the interactive OAuth flow for one server on a worker thread.
@@ -838,10 +878,21 @@ impl McpManager {
     #[must_use]
     pub fn fingerprint(&self) -> Vec<String> {
         let inner = self.lock();
+        // Each offered tool's name **and** a digest of its description and
+        // schema: a reconnect that changed only a schema — a stdio server's
+        // own dev loop — must rebuild the backend too.
         let mut names: Vec<String> = inner
             .servers
             .iter()
-            .flat_map(|s| s.offered().into_iter().map(|(wire, _)| wire))
+            .flat_map(|s| {
+                s.offered().into_iter().map(|(wire, tool)| {
+                    use sha2::{Digest, Sha256};
+                    let shape = serde_json::json!([tool.description, tool.input_schema]);
+                    let digest = Sha256::digest(shape.to_string().as_bytes());
+                    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+                    format!("{wire} {hex}")
+                })
+            })
             .collect();
         names.sort();
         names
@@ -887,15 +938,21 @@ impl McpManager {
         // What a `-32020 HeaderMismatch` made us list again, for the server
         // state once the call is over.
         let mut relisted: Option<(Vec<McpToolInfo>, Vec<crate::mcp::ExcludedTool>)> = None;
+        // Set when the connection turned out dead under the call — a stdio
+        // server that exited, a legacy stream that ended.
+        let mut died = false;
         let mut request = |refreshed_bearer: Option<String>| {
-            let mut transport = transport
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Another call to this server holds its connection: wait for it
+            // polling the turn's cancel, never blind — and a call cancelled
+            // while it waited is never sent.
+            let Some(mut transport) = lock_unless_cancelled(&transport, cancel) else {
+                return Err(TransportError::Cancelled);
+            };
             if let Some(bearer) = refreshed_bearer {
                 transport.set_bearer(Some(bearer));
             }
             let started = std::time::Instant::now();
-            match call_once(&mut transport, &raw_tool, &arguments, timeout, cancel) {
+            let outcome = match call_once(&mut transport, &raw_tool, &arguments, timeout, cancel) {
                 // The server wants headers the listing we hold didn't mark —
                 // its schemas changed. The spec's answer: list again, then
                 // retry the call once with what the fresh listing says.
@@ -914,7 +971,11 @@ impl McpManager {
                     }
                 }
                 other => other,
+            };
+            if matches!(outcome, Err(TransportError::Failed(_))) && !transport.is_alive() {
+                died = true;
             }
+            outcome
         };
         // Proactive: a grant inside its expiry skew refreshes *before* the
         // call, so the token never goes over the wire dead — the 401 arm
@@ -970,6 +1031,9 @@ impl McpManager {
                 Err(_) => {} // no grant / a cleared dead one: fall through to needs-auth
             }
         }
+        if died && let Err(TransportError::Failed(detail)) = &result {
+            return self.restart_dead(&server_name, generation, detail);
+        }
         if let Some((tools, excluded)) = relisted {
             {
                 let mut inner = self.lock();
@@ -1005,16 +1069,24 @@ impl McpManager {
             Err(TransportError::NeedsAuth(challenge)) => {
                 {
                     let mut inner = self.lock();
+                    let auth_path = inner.auth_path.clone();
+                    // Only the connection the call went out on: a reconnect
+                    // that landed meanwhile is a newer one, and a 401 from
+                    // the old must not tear it down.
                     if let Some(server) = inner
                         .servers
                         .iter_mut()
-                        .find(|s| s.entry.name == server_name)
+                        .find(|s| s.entry.name == server_name && s.generation == generation)
                     {
                         if challenge.is_some() {
                             server.challenge = challenge;
                         }
                         server.drop_connection();
                         server.status = McpServerStatus::NeedsAuth;
+                        // The refresh dance above may have cleared the grant.
+                        server.has_tokens = server.entry.config.url().is_some_and(|url| {
+                            oauth::load_tokens(auth_path.as_deref(), url).is_some()
+                        });
                     }
                 }
                 self.notify(McpEvent::Changed);
@@ -1027,6 +1099,51 @@ impl McpManager {
             Err(other) => {
                 ToolOutcome::error(format!("MCP tool call failed ({server_name}): {other}"))
             }
+        }
+    }
+
+    /// A call found its server's connection dead — a stdio server that
+    /// exited, a legacy stream that ended. "The client SHOULD restart it":
+    /// the server is marked failed with the reason and reconnected at once,
+    /// so it doesn't sit `✔ connected` over a dead pipe failing every call
+    /// until the user notices. At most once per [`RESTART_COOLDOWN`] — a
+    /// server that dies again that soon stays failed for a manual Reconnect,
+    /// never a crash loop. The model is told to try again.
+    fn restart_dead(&self, server_name: &str, generation: u64, detail: &str) -> ToolOutcome {
+        let restart = {
+            let mut inner = self.lock();
+            let Some(server) = inner
+                .servers
+                .iter_mut()
+                .find(|s| s.entry.name == server_name && s.generation == generation)
+            else {
+                return ToolOutcome::error(format!(
+                    "MCP tool call failed ({server_name}): {detail}"
+                ));
+            };
+            let now = std::time::Instant::now();
+            let restart = server
+                .last_restart
+                .is_none_or(|at| now.duration_since(at) >= RESTART_COOLDOWN);
+            server.drop_connection();
+            server.status = McpServerStatus::Failed(detail.to_string());
+            if restart {
+                server.last_restart = Some(now);
+            }
+            restart
+        };
+        self.notify(McpEvent::Changed);
+        if restart {
+            self.spawn_connect(server_name);
+            ToolOutcome::error(format!(
+                "the {server_name} MCP server stopped ({detail}); it is being restarted — \
+                 try the call again in a moment"
+            ))
+        } else {
+            ToolOutcome::error(format!(
+                "the {server_name} MCP server stopped again ({detail}) — \
+                 ask the user to check it in /mcp"
+            ))
         }
     }
 
@@ -1166,7 +1283,12 @@ mod tests {
             specs[0]["function"]["parameters"]["required"],
             serde_json::json!(["text"])
         );
-        assert_eq!(manager.fingerprint(), ["mcp__fix__echo"]);
+        let names: Vec<String> = manager
+            .fingerprint()
+            .iter()
+            .filter_map(|entry| entry.split(' ').next().map(str::to_string))
+            .collect();
+        assert_eq!(names, ["mcp__fix__echo"]);
         assert!(manager.has_tools());
         // A call routes to the raw tool and maps the result.
         let call = ToolCallRequest {
@@ -1219,7 +1341,12 @@ mod tests {
         );
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(manager.fingerprint(), sorted);
+        let fingerprinted: Vec<String> = manager
+            .fingerprint()
+            .iter()
+            .filter_map(|entry| entry.split(' ').next().map(str::to_string))
+            .collect();
+        assert_eq!(fingerprinted, sorted);
         for spec in &specs {
             let wire = spec["function"]["name"].as_str().unwrap();
             assert_eq!(
@@ -1227,6 +1354,317 @@ mod tests {
                 spec["function"]["description"].as_str()
             );
         }
+    }
+
+    /// A stdio server scripted per method: `slow` answers after `delay`,
+    /// anything else at once, and every call's tool name is appended to
+    /// `calls` — so a test can see which calls the server ever received.
+    fn recording_entry(name: &str, calls: &std::path::Path, on_call: &str) -> McpServerEntry {
+        let script = format!(
+            r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}},"ttlMs":0,"cacheScope":"public"}}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"resultType":"complete","tools":[{{"name":"slow","inputSchema":{{"type":"object"}}}},{{"name":"fast","inputSchema":{{"type":"object"}}}}],"ttlMs":0,"cacheScope":"public"}}}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      tool=$(printf '%s' "$line" | sed -n 's/.*"name":"\([a-z]*\)".*/\1/p')
+      echo "$tool" >> '{calls}'
+      {on_call} ;;
+  esac
+done"#,
+            calls = calls.display()
+        );
+        McpServerEntry {
+            name: name.to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }
+    }
+
+    fn call(name: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: "c".to_string(),
+            name: name.to_string(),
+            arguments: "{}".to_string(),
+        }
+    }
+
+    /// Two calls to one server share its connection, so the second waits for
+    /// the first — and that wait honours Esc. It didn't: the lock was taken
+    /// blind, and once it was free the cancelled call still went out, a
+    /// side-effecting tool running after the user had stopped it.
+    #[test]
+    fn a_call_cancelled_while_waiting_for_the_server_is_never_sent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let calls = dir.path().join("calls");
+        let answer = r#"if [ "$tool" = slow ]; then sleep 1.5; fi; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}\n' "$id""#;
+        let (manager, _rx) = manager_with(vec![recording_entry("rec", &calls, answer)]);
+        manager.start_connections();
+        wait_connected(&manager, "rec");
+        let slow = {
+            let manager = manager.clone();
+            std::thread::spawn(move || {
+                manager.call_tool(&call("mcp__rec__slow"), &CancelToken::new())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let cancel = CancelToken::new();
+        let canceller = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            canceller.cancel();
+        });
+        let started = std::time::Instant::now();
+        let outcome = manager.call_tool(&call("mcp__rec__fast"), &cancel);
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("cancelled"), "{}", outcome.output);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(slow.join().unwrap().ok);
+        std::thread::sleep(Duration::from_millis(200));
+        let seen = std::fs::read_to_string(&calls).unwrap_or_default();
+        assert_eq!(seen.lines().collect::<Vec<_>>(), ["slow"], "{seen}");
+        manager.shutdown();
+    }
+
+    /// A stdio server that dies is restarted ("the client SHOULD restart
+    /// it") instead of staying `✔ connected` over a dead pipe, every later
+    /// call failing until the user reconnected by hand.
+    #[test]
+    fn a_server_that_dies_is_restarted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let calls = dir.path().join("calls");
+        let (manager, mut rx) = manager_with(vec![recording_entry("crashy", &calls, "exit 3")]);
+        manager.start_connections();
+        wait_connected(&manager, "crashy");
+        while rx.try_recv().is_ok() {}
+        let outcome = manager.call_tool(&call("mcp__crashy__fast"), &CancelToken::new());
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("restart"), "{}", outcome.output);
+        // The restart reconnects it.
+        wait_connected(&manager, "crashy");
+        manager.shutdown();
+    }
+
+    /// A 401 is about the connection the call went out on. A reconnect that
+    /// landed while the call ran is a newer connection, and the old call's
+    /// refusal used to tear it down to `needs authentication`.
+    #[test]
+    fn a_401_on_a_replaced_connection_leaves_the_new_one_alone() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let counted = Arc::clone(&calls);
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let counted = Arc::clone(&counted);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line);
+                    let mut length = 0usize;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                            break;
+                        }
+                        if let Some(rest) =
+                            header.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = rest.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    let _ = reader.read_exact(&mut body);
+                    let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                    let result = match parsed["method"].as_str().unwrap_or_default() {
+                        "tools/call" => {
+                            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(800));
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            );
+                            return;
+                        }
+                        "server/discover" => serde_json::json!({"resultType": "complete",
+                            "supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}},
+                            "ttlMs": 0, "cacheScope": "public"}),
+                        _ => serde_json::json!({"resultType": "complete", "ttlMs": 0,
+                            "cacheScope": "public",
+                            "tools": [{"name": "t", "inputSchema": {"type": "object"}}]}),
+                    };
+                    let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+                        .to_string();
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                            reply.len()
+                        )
+                        .as_bytes(),
+                    );
+                });
+            }
+        });
+        let entry = McpServerEntry {
+            name: "remote".to_string(),
+            config: McpServerConfig::Http {
+                url: format!("http://127.0.0.1:{port}/mcp"),
+                headers: Default::default(),
+                sse_fallback: false,
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
+        manager.start_connections();
+        wait_connected(&manager, "remote");
+        let in_flight = {
+            let manager = manager.clone();
+            std::thread::spawn(move || {
+                manager.call_tool(&call("mcp__remote__t"), &CancelToken::new())
+            })
+        };
+        while calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        manager.reconnect("remote");
+        wait_connected(&manager, "remote");
+        assert!(!in_flight.join().unwrap().ok);
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::Connected);
+    }
+
+    /// "Clear authentication" deletes the stored grant — and the live
+    /// connection with it, which still sent the old bearer: the server kept
+    /// working on a login the page said was gone.
+    #[test]
+    fn clearing_authentication_stops_sending_the_old_token() {
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let record = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let (mut length, mut auth) = (0usize, None);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("authorization:") {
+                        auth = header.split_once(':').map(|(_, v)| v.trim().to_string());
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                record.lock().unwrap().push(auth);
+                let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                let result = match parsed["method"].as_str().unwrap_or_default() {
+                    "server/discover" => serde_json::json!({"resultType": "complete",
+                        "supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}},
+                        "ttlMs": 0, "cacheScope": "public"}),
+                    _ => serde_json::json!({"resultType": "complete", "tools": [],
+                        "ttlMs": 0, "cacheScope": "public"}),
+                };
+                let reply =
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = dir.path().join("mcp-auth.json");
+        oauth::save_tokens(
+            Some(&store),
+            &url,
+            Some(&oauth::StoredTokens {
+                access_token: "old-token".to_string(),
+                ..Default::default()
+            }),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "remote".to_string(),
+                    config: McpServerConfig::Http {
+                        url: url.clone(),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(store),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "remote");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|a| a.as_deref() == Some("Bearer old-token"))
+        );
+        let before = seen.lock().unwrap().len();
+        manager.clear_auth("remote");
+        wait_connected(&manager, "remote");
+        let after = seen.lock().unwrap();
+        assert!(after.len() > before, "never reconnected");
+        assert!(after[before..].iter().all(Option::is_none), "{after:?}");
+    }
+
+    /// The fingerprint is what decides whether the backend is rebuilt, so a
+    /// reconnect that changed a tool's schema or description — the stdio
+    /// server's own dev loop — must change it, not only a new name.
+    #[test]
+    fn the_fingerprint_moves_when_a_schema_changes() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("srv")]);
+        let set_schema = |schema: Value| {
+            let mut inner = manager.lock();
+            let server = &mut inner.servers[0];
+            server.status = McpServerStatus::Connected;
+            server.tools = vec![McpToolInfo {
+                name: "t".into(),
+                description: "T.".into(),
+                input_schema: schema,
+            }];
+        };
+        set_schema(serde_json::json!({"type": "object"}));
+        let before = manager.fingerprint();
+        set_schema(serde_json::json!({"type": "object", "properties": {"x": {}}}));
+        assert_ne!(manager.fingerprint(), before);
     }
 
     /// Quitting stops every stdio server the spec's way — stdin closed first,

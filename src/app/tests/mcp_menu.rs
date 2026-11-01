@@ -324,3 +324,48 @@ fn arrows_wrap_at_the_ends_on_every_page() {
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.mcp_menu.as_ref().unwrap().selected, 0);
 }
+
+/// Reconnect (or Enable) turns the server `connecting…`, and the snapshot
+/// that says so lands under the user's finger: the selection followed its
+/// *index* onto a connecting server's only action, Disable, so a second
+/// Enter disabled the server and saved that. It follows the action now, and
+/// a connecting server's first action is the harmless one.
+#[test]
+fn a_second_enter_after_reconnect_never_lands_on_disable() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // deepwiki detail
+    app.on_key(key(KeyCode::Down)); // Reconnect
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Reconnect {
+            server: "deepwiki".to_string()
+        })
+    );
+    app.update_mcp_snapshot(vec![
+        snapshot("deepwiki", McpServerStatus::Pending, 0),
+        snapshot("linear", McpServerStatus::NeedsAuth, 0),
+        snapshot("github", McpServerStatus::Disabled, 0),
+    ]);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Reconnect {
+            server: "deepwiki".to_string()
+        })
+    );
+    // Enable from a disabled server: the connecting page's first action is
+    // Reconnect, never Disable.
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter)); // github detail
+    app.on_key(key(KeyCode::Enter)); // Enable
+    app.update_mcp_snapshot(vec![
+        snapshot("deepwiki", McpServerStatus::Connected, 3),
+        snapshot("linear", McpServerStatus::NeedsAuth, 0),
+        snapshot("github", McpServerStatus::Pending, 0),
+    ]);
+    assert!(!matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SetDisabled { .. })
+    ));
+}

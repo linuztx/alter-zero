@@ -169,6 +169,23 @@ impl Transport {
         }
     }
 
+    /// Can this connection still carry a request? A stdio server that has
+    /// exited (or whose pipe broke) can't, nor can a legacy SSE session
+    /// whose stream ended — its endpoint died with it. Streamable HTTP holds
+    /// nothing open between requests, so it always can.
+    pub fn is_alive(&mut self) -> bool {
+        match self {
+            Self::Stdio(t) => {
+                t.writer.is_some()
+                    && t.child
+                        .as_mut()
+                        .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+            }
+            Self::Http(_) => true,
+            Self::Sse(t) => t.alive.load(Ordering::Relaxed),
+        }
+    }
+
     /// Stop the connection now: a stdio server the spec's way
     /// ([`StdioTransport::shutdown`]), a legacy SSE stream closed. A
     /// streamable-HTTP connection holds nothing open between requests.
@@ -1278,7 +1295,19 @@ pub struct SseTransport {
     /// next line (a keep-alive comment included) instead of holding the
     /// connection — and itself — for good.
     closed: Arc<AtomicBool>,
+    /// Cleared when the stream thread ends, however it ends: the session's
+    /// endpoint is gone with its stream.
+    alive: Arc<AtomicBool>,
     next_id: u64,
+}
+
+/// Clears its flag when dropped — the stream thread's every way out.
+struct ClearOnDrop(Arc<AtomicBool>);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 impl Drop for SseTransport {
@@ -1300,9 +1329,12 @@ impl SseTransport {
         let (message_tx, messages) = mpsc::channel::<String>();
         let closed = Arc::new(AtomicBool::new(false));
         let stream_closed = Arc::clone(&closed);
+        let alive = Arc::new(AtomicBool::new(true));
+        let stream_alive = ClearOnDrop(Arc::clone(&alive));
         let stream_url = url.to_string();
         let stream_remote = remote.clone();
         std::thread::spawn(move || {
+            let _alive = stream_alive;
             let client = match crate::llm::mcp_http_client(SSE_STREAM_TIMEOUT) {
                 Ok(client) => client,
                 Err(e) => {
@@ -1383,6 +1415,7 @@ impl SseTransport {
             messages,
             parked: HashMap::new(),
             closed,
+            alive,
             next_id: 1,
         })
     }
