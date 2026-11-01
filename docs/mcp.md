@@ -946,12 +946,29 @@ mid-turn (the strip stays above it). Pages:
    the description, and the `Parameters:` listing derived from the
    `input_schema` (`● {name} (required): {type} - {description}`).
 5. **Authenticate** — `Authenticating with {server}…`: the flow opens the
-   browser (`xdg-open`/`open`, detached), shows the authorize URL (`c`
-   copies it via the `/copy` clipboard seam), and offers the `URL >`
-   paste-the-redirect fallback (a single-line field; paste routed to it
-   while the page is up); the loopback callback resolves it from either
-   side. Esc backs out; the result lands as a toast + the server list
+   browser (`open` on macOS, `xdg-open` elsewhere — never `open` on Linux,
+   which is `openvt` — the launcher reaped on a thread of its own), shows
+   the authorize URL (`c` copies it via the `/copy` clipboard seam), and
+   offers the `URL >` paste-the-redirect fallback (a single-line field;
+   paste routed to it while the page is up); the loopback callback
+   resolves it from either side. A paste the flow turns away — not a
+   redirect, or another attempt's — comes back as
+   `McpEvent::AuthPasteRejected`, its reason red under the field, which
+   takes another paste (`App::reject_mcp_auth_paste`; editing clears it).
+   Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
+
+   **One sign-in at a time, and each knows whether it still is the one.**
+   The manager keeps the running flow as an `AuthFlow` with an id; a second
+   Authenticate cancels the first and installs its own. The old flow, when
+   it ends, clears only its own entry: it used to clear whatever was
+   installed — the *new* flow's paste channel and cancel token, so the new
+   page's paste went nowhere and its Esc stopped nothing — and reported
+   `cancelled` as a red failure that closed the new page. A flow that ends
+   cancelled (Esc) or superseded reports nothing but a snapshot refresh,
+   and `App::finish_mcp_auth` closes only the page of the server whose flow
+   finished. `McpSources::open_browser` injects the launcher, so a test
+   signs in without one.
 
 ### Where the colour goes
 

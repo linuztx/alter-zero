@@ -33,12 +33,18 @@ pub enum McpEvent {
     /// An auth flow produced its authorize URL — the auth page shows it.
     AuthUrl { server: String, url: String },
     /// An auth flow finished (either way) — the auth page closes to the
-    /// list, a toast reports the outcome.
+    /// list, a toast reports the outcome. Never sent for a flow the user
+    /// cancelled or a newer one superseded: neither has anything to report
+    /// on a page that is no longer its own.
     AuthDone {
         server: String,
         ok: bool,
         detail: String,
     },
+    /// A pasted redirect URL was turned away — not a redirect, or not this
+    /// sign-in's — and the flow keeps waiting: the auth page shows why and
+    /// takes another paste.
+    AuthPasteRejected { server: String, reason: String },
 }
 
 /// Why the session is holding a project server back
@@ -80,6 +86,9 @@ pub struct McpSources {
     pub detach_helper: Option<PathBuf>,
     pub startup_timeout: Duration,
     pub tool_timeout: Duration,
+    /// What opens the authorize URL in a browser — `None` is the system
+    /// launcher; a test passes one that opens nothing.
+    pub open_browser: Option<fn(&str)>,
 }
 
 /// The default per-server connect budget (both references use 30 s;
@@ -284,9 +293,19 @@ struct Inner {
     detach_helper: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
-    /// The active auth flow's paste channel + cancel, while one runs.
-    auth_paste: Option<mpsc::Sender<String>>,
-    auth_cancel: Option<CancelToken>,
+    /// The sign-in running now, while one does.
+    auth_flow: Option<AuthFlow>,
+    /// The id the next sign-in gets.
+    next_auth_flow: u64,
+    open_browser: fn(&str),
+}
+
+/// The sign-in a manager is running: its id (so a superseded flow ending
+/// can tell it is no longer the one), its paste channel and its cancel.
+struct AuthFlow {
+    id: u64,
+    paste: mpsc::Sender<String>,
+    cancel: CancelToken,
 }
 
 /// The shared handle. Clones are cheap and all see the same state.
@@ -365,8 +384,9 @@ impl McpManager {
                 } else {
                     sources.tool_timeout
                 },
-                auth_paste: None,
-                auth_cancel: None,
+                auth_flow: None,
+                next_auth_flow: 0,
+                open_browser: sources.open_browser.unwrap_or(open_browser),
             })),
             events,
         }
@@ -701,11 +721,14 @@ impl McpManager {
 
     /// Start the interactive OAuth flow for one server on a worker thread.
     /// The authorize URL and the outcome report on the event channel; a
-    /// pasted redirect URL arrives via [`submit_auth_paste`].
+    /// pasted redirect URL arrives via [`submit_auth_paste`]. A new flow
+    /// supersedes one still running: the old one is cancelled, and when it
+    /// ends it touches nothing of the new one's — its paste channel, its
+    /// cancel, its page.
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path) = {
+        let (url, challenge, auth_path, open_browser) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -718,19 +741,29 @@ impl McpManager {
                 });
                 return;
             };
-            (url, server.challenge.clone(), inner.auth_path.clone())
+            (
+                url,
+                server.challenge.clone(),
+                inner.auth_path.clone(),
+                inner.open_browser,
+            )
         };
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
-        {
+        let id = {
             let mut inner = self.lock();
-            // A new flow supersedes a stuck one.
-            if let Some(old) = inner.auth_cancel.take() {
-                old.cancel();
+            if let Some(old) = inner.auth_flow.take() {
+                old.cancel.cancel();
             }
-            inner.auth_paste = Some(paste_tx);
-            inner.auth_cancel = Some(cancel.clone());
-        }
+            let id = inner.next_auth_flow;
+            inner.next_auth_flow += 1;
+            inner.auth_flow = Some(AuthFlow {
+                id,
+                paste: paste_tx,
+                cancel: cancel.clone(),
+            });
+            id
+        };
         let manager = self.clone();
         let name = name.to_string();
         std::thread::spawn(move || {
@@ -743,6 +776,12 @@ impl McpManager {
                     self.manager.notify(McpEvent::AuthUrl {
                         server: self.server.clone(),
                         url: url.to_string(),
+                    });
+                }
+                fn on_paste_rejected(&self, reason: &str) {
+                    self.manager.notify(McpEvent::AuthPasteRejected {
+                        server: self.server.clone(),
+                        reason: reason.to_string(),
                     });
                 }
             }
@@ -759,34 +798,48 @@ impl McpManager {
                 &open_browser,
                 &cancel,
             );
-            {
+            let current = {
                 let mut inner = manager.lock();
-                inner.auth_paste = None;
-                inner.auth_cancel = None;
+                let current = inner.auth_flow.as_ref().is_some_and(|flow| flow.id == id);
+                if current {
+                    inner.auth_flow = None;
+                }
+                // A grant is a grant, whoever was waiting for it.
                 if result.is_ok()
                     && let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name)
                 {
                     server.has_tokens = true;
                 }
-            }
-            let (ok, detail) = match result {
-                Ok(()) => (true, format!("Authenticated with {name}")),
-                Err(detail) => (false, detail),
+                current
             };
-            manager.notify(McpEvent::AuthDone {
-                server: name.clone(),
-                ok,
-                detail,
-            });
-            if ok {
-                manager.spawn_connect(&name);
+            match result {
+                Ok(()) => {
+                    manager.notify(McpEvent::AuthDone {
+                        server: name.clone(),
+                        ok: true,
+                        detail: format!("Authenticated with {name}"),
+                    });
+                    manager.spawn_connect(&name);
+                }
+                // The user's own Esc, or a newer flow's page: nothing to say.
+                Err(_) if !current || cancel.is_cancelled() => manager.notify(McpEvent::Changed),
+                Err(detail) => manager.notify(McpEvent::AuthDone {
+                    server: name.clone(),
+                    ok: false,
+                    detail,
+                }),
             }
         });
     }
 
-    /// Hand the auth flow a pasted redirect URL (the `URL >` fallback).
+    /// Hand the running auth flow a pasted redirect URL (the `URL >`
+    /// fallback).
     pub fn submit_auth_paste(&self, text: &str) {
-        let sender = self.lock().auth_paste.clone();
+        let sender = self
+            .lock()
+            .auth_flow
+            .as_ref()
+            .map(|flow| flow.paste.clone());
         if let Some(sender) = sender {
             let _ = sender.send(text.to_string());
         }
@@ -794,9 +847,9 @@ impl McpManager {
 
     /// Abandon the running auth flow (Esc on the auth page).
     pub fn cancel_auth(&self) {
-        let cancel = self.lock().auth_cancel.take();
-        if let Some(cancel) = cancel {
-            cancel.cancel();
+        let flow = self.lock().auth_flow.take();
+        if let Some(flow) = flow {
+            flow.cancel.cancel();
         }
     }
 
@@ -1169,8 +1222,8 @@ impl McpManager {
     pub fn shutdown(&self) {
         let transports: Vec<Arc<Mutex<Transport>>> = {
             let mut inner = self.lock();
-            if let Some(cancel) = inner.auth_cancel.take() {
-                cancel.cancel();
+            if let Some(flow) = inner.auth_flow.take() {
+                flow.cancel.cancel();
             }
             inner
                 .servers
@@ -1202,19 +1255,26 @@ impl McpManager {
     }
 }
 
-/// Open the system browser on the authorize URL — best-effort, detached
-/// (`xdg-open` on Linux, `open` on macOS); the URL is on screen either way.
+/// Open the system browser on the authorize URL — best-effort (`open` on
+/// macOS, `xdg-open` elsewhere; never `open` on Linux, where it is
+/// `openvt`); the URL is on screen either way. The launcher is waited for on
+/// a thread of its own, so it never lingers as a zombie for the session.
 fn open_browser(url: &str) {
-    for launcher in ["xdg-open", "open"] {
-        let spawned = std::process::Command::new(launcher)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if spawned.is_ok() {
-            return;
-        }
+    let launcher = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let spawned = std::process::Command::new(launcher)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = spawned {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 }
 
@@ -2783,6 +2843,188 @@ done
         assert_eq!(
             snapshot[0].auth,
             Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.shutdown();
+    }
+
+    /// A fake authorization server for the manager's sign-in: resource and
+    /// AS metadata for `{base}/mcp`, registration, and a token endpoint.
+    /// Everything else 404s — the reconnect after a sign-in fails, which no
+    /// test here reads.
+    fn spawn_signin_server() -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let served = base.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let path = line.split_whitespace().nth(1).unwrap_or_default();
+                let reply = match path {
+                    "/.well-known/oauth-protected-resource/mcp" => format!(
+                        r#"{{"resource":"{served}/mcp","authorization_servers":["{served}"]}}"#
+                    ),
+                    "/.well-known/oauth-authorization-server" => format!(
+                        r#"{{"issuer":"{served}","authorization_endpoint":"{served}/authorize","token_endpoint":"{served}/token","registration_endpoint":"{served}/register","code_challenge_methods_supported":["S256"]}}"#
+                    ),
+                    "/register" => r#"{"client_id":"cid"}"#.to_string(),
+                    "/token" => r#"{"access_token":"tok","refresh_token":"rt","expires_in":3600}"#
+                        .to_string(),
+                    _ => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        continue;
+                    }
+                };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        base
+    }
+
+    fn signin_manager(
+        base: &str,
+        auth_path: &std::path::Path,
+    ) -> (McpManager, tokio::sync::mpsc::UnboundedReceiver<McpEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "srv".to_string(),
+                    config: McpServerConfig::Http {
+                        url: format!("{base}/mcp"),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(auth_path.to_path_buf()),
+                // Never a real browser from a test.
+                open_browser: Some(|_| {}),
+                ..Default::default()
+            },
+        );
+        (manager, rx)
+    }
+
+    /// The next event `pick` accepts within `within`, skipping the rest.
+    fn next_event<T>(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<McpEvent>,
+        within: Duration,
+        mut pick: impl FnMut(&McpEvent) -> Option<T>,
+    ) -> Option<T> {
+        let until = std::time::Instant::now() + within;
+        while std::time::Instant::now() < until {
+            match rx.try_recv() {
+                Ok(event) => {
+                    if let Some(found) = pick(&event) {
+                        return Some(found);
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        None
+    }
+
+    fn auth_url(event: &McpEvent) -> Option<String> {
+        match event {
+            McpEvent::AuthUrl { url, .. } => Some(url.clone()),
+            _ => None,
+        }
+    }
+
+    fn auth_done(event: &McpEvent) -> Option<(bool, String)> {
+        match event {
+            McpEvent::AuthDone { ok, detail, .. } => Some((*ok, detail.clone())),
+            _ => None,
+        }
+    }
+
+    /// A second Authenticate supersedes the first sign-in — and the first,
+    /// ending, must neither take the new one's paste channel and cancel
+    /// with it nor close the new one's page with a "cancelled" failure. A
+    /// pasted URL from the old attempt is turned away with a reason; the new
+    /// attempt's completes.
+    #[test]
+    fn a_superseded_sign_in_never_disturbs_the_new_one() {
+        let base = spawn_signin_server();
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, mut rx) = signin_manager(&base, &dir.path().join("mcp-auth.json"));
+        manager.authenticate("srv");
+        let first = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("first URL");
+        manager.authenticate("srv");
+        let second = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("second URL");
+        // The first flow has had time to notice it was superseded and end.
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(400), auth_done),
+            None,
+            "the superseded sign-in reported on the new one's page"
+        );
+        let state = |url: &str| crate::llm::mcp::redirect_param(url, "state").unwrap();
+        let callback = |url: &str| {
+            format!(
+                "http://localhost:1/callback?code=c&state={}",
+                crate::llm::mcp::url_encode(&state(url))
+            )
+        };
+        manager.submit_auth_paste(&callback(&first));
+        let reason = next_event(&mut rx, Duration::from_secs(3), |event| match event {
+            McpEvent::AuthPasteRejected { server, reason } if server == "srv" => {
+                Some(reason.clone())
+            }
+            _ => None,
+        })
+        .expect("the old attempt's URL is turned away with a reason");
+        assert!(reason.contains("another sign-in"), "{reason}");
+        manager.submit_auth_paste(&callback(&second));
+        let (ok, detail) =
+            next_event(&mut rx, Duration::from_secs(5), auth_done).expect("the new one finishes");
+        assert!(ok, "{detail}");
+        manager.shutdown();
+    }
+
+    /// Esc on the auth page is the user's own decision: the flow ends
+    /// without a red "cancelled" toast.
+    #[test]
+    fn a_cancelled_sign_in_ends_quietly() {
+        let base = spawn_signin_server();
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, mut rx) = signin_manager(&base, &dir.path().join("mcp-auth.json"));
+        manager.authenticate("srv");
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        manager.cancel_auth();
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(500), auth_done),
+            None
         );
         manager.shutdown();
     }

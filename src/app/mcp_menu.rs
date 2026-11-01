@@ -127,6 +127,9 @@ pub struct McpAuthView {
     /// Set once the pasted URL was submitted — the field greys out while the
     /// exchange runs.
     pub submitted: bool,
+    /// Why the flow turned the last paste away — shown under the field until
+    /// the URL is edited.
+    pub error: Option<String>,
 }
 
 /// The open `/mcp` menu.
@@ -244,15 +247,29 @@ impl App {
         }
     }
 
-    /// The auth flow finished — the auth page closes back to the server's
-    /// detail (the boundary raises the outcome toast beside this).
-    pub fn finish_mcp_auth(&mut self) {
+    /// `server`'s auth flow finished — its auth page closes back to the
+    /// server's detail (the boundary raises the outcome toast beside this).
+    /// Another server's page is left alone.
+    pub fn finish_mcp_auth(&mut self, server: &str) {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
+            && menu.current_server().is_some_and(|s| s.name == server)
         {
             menu.page = McpPage::Server;
             menu.selected = 0;
             menu.auth = McpAuthView::default();
+        }
+    }
+
+    /// `server`'s flow turned the pasted URL away: the field takes another
+    /// paste, with the reason under it.
+    pub fn reject_mcp_auth_paste(&mut self, server: &str, reason: &str) {
+        if let Some(menu) = &mut self.mcp_menu
+            && menu.page == McpPage::Auth
+            && menu.current_server().is_some_and(|s| s.name == server)
+        {
+            menu.auth.submitted = false;
+            menu.auth.error = Some(reason.to_string());
         }
     }
 
@@ -445,10 +462,12 @@ impl App {
             KeyCode::Backspace => {
                 menu.auth.input.pop();
                 menu.auth.submitted = false;
+                menu.auth.error = None;
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 menu.auth.input.push(c);
                 menu.auth.submitted = false;
+                menu.auth.error = None;
             }
             _ => {}
         }
@@ -465,6 +484,7 @@ impl App {
                 .input
                 .push_str(text.replace(['\n', '\r'], "").trim());
             menu.auth.submitted = false;
+            menu.auth.error = None;
             return true;
         }
         false

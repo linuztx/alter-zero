@@ -266,7 +266,11 @@ release heading when a version is cut.
   sends `localhost` to the IPv6 address. An answer that doesn't carry this
   sign-in's own check value, from an earlier attempt or anywhere else, is
   turned away and the sign-in keeps waiting for the right one, and a
-  wrong pasted URL no longer ends the sign-in. A login server
+  wrong pasted URL no longer ends the sign-in: the page says why and takes
+  another. Pressing **Authenticate** again no longer leaves the new
+  sign-in deaf to its pasted URL and **Esc**, or closes it with a
+  "cancelled" error from the first, and **Esc** no longer shows an error
+  of its own. A login server
   that hands out a client secret is answered the way it asked, a refused
   registration says why, and a sign-in reuses its client on the same port
   or registers again rather than being refused by a login server that

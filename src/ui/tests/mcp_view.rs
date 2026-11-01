@@ -782,3 +782,31 @@ fn the_empty_list_paths_wrap_instead_of_clipping() {
         "the add-one-at paths keep their filenames: {rows:#?}"
     );
 }
+
+/// A rejected paste's reason sits under the field; the page still hugs its
+/// rules.
+#[test]
+fn a_rejected_paste_shows_its_reason_under_the_field() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app.reject_mcp_auth_paste("linear", "the response belongs to another sign-in attempt");
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        let field = text
+            .iter()
+            .position(|line| line.contains("URL >"))
+            .expect("the URL field");
+        let below = text[field + 1..]
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            below.contains("the response belongs to another sign-in attempt"),
+            "{text:?}"
+        );
+        assert_frame_hugs_content(&format!("a rejected paste at width {width}"), &lines);
+    }
+}

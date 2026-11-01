@@ -123,6 +123,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         detach_helper: std::env::current_exe().ok(),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
+        open_browser: None,
     }
 }
 
@@ -198,8 +199,11 @@ impl Session<'_> {
             McpEvent::AuthUrl { server, url } => {
                 self.app.set_mcp_auth_url(&server, &url);
             }
+            McpEvent::AuthPasteRejected { server, reason } => {
+                self.app.reject_mcp_auth_paste(&server, &reason);
+            }
             McpEvent::AuthDone { server, ok, detail } => {
-                self.app.finish_mcp_auth();
+                self.app.finish_mcp_auth(&server);
                 let kind = if ok {
                     ToastKind::Info
                 } else {

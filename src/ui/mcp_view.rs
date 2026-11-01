@@ -675,6 +675,12 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     if menu.auth.submitted {
         lines.push(dim_line(MCP_AUTH_SUBMITTED, width));
     }
+    if let Some(error) = &menu.auth.error {
+        let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+        for row in wrap_output(error, room) {
+            lines.push(mcp_line(&row, Style::new().fg(error_color()), width));
+        }
+    }
     lines.push(Line::default());
     // Wrapped: "Press Esc to go back" is the note's actionable tail.
     lines.extend(dim_wrapped(MCP_AUTH_RETURN_NOTE, width));
