@@ -64,9 +64,56 @@ release heading when a version is cut.
   as `find -delete` or `sort -o`, or `git` in a folder that looks like a
   bare repository. Manual and edit modes still ask about every command
   (`docs/permissions.md`).
+- **Hooks run by default.** The `/settings` **Hooks** row used to be off in
+  every folder until you turned it on there, so a `~/.alter-zero/hooks.json`
+  did nothing in a folder you had not set it up in. It is now on: your own
+  hooks file runs everywhere, as in Claude Code. A project's
+  `.alter-zero/hooks.json` still runs only after you approve it with
+  `/trust`. Turning the row off in a folder is remembered for that folder,
+  and `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/settings.md`).
+- **What a hook tells the agent is short and says which hook spoke.** When
+  a hook refused a tool call, the agent used to read a five-line paragraph
+  that never said which hook had refused it. It now reads one line in
+  codex's shape, `Blocked by PreToolUse hook: no destructive deletes`, then
+  the hook's command (`Hook: ~/.alter-zero/hooks/guard.sh`) and the
+  `hooks.json` it is configured in (`Config: /home/you/.alter-zero/hooks.json`,
+  or a trusted project's own), so it can read the rule or tell you exactly
+  where to change it, then one line telling it not to retry the same call. A `Stop` hook's feedback, a `PostToolUse` hook's
+  complaint and a `PermissionRequest` hook's denial name their hook the same
+  way. Context a hook adds to a call is labelled (`PostToolUse hook
+  additional context: …`), so it no longer reads as the call's own output,
+  and context a `SubagentStart` hook gives a new agent is wrapped like the
+  session's instead of arriving as if the lead had said it. A prompt a hook
+  refuses shows one line, `Prompt blocked by UserPromptSubmit hook: …`, and
+  a hook that refuses without a reason now reads `no reason given` instead
+  of saying "blocked" twice (`docs/hooks.md`).
 
 ### Fixed
 
+- **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
+  started in.** A hook written as
+  `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now
+  finds the project's script when the app is started in a subdirectory of
+  the repository. It used to point at that subdirectory, so the script was
+  not found and the hook silently did nothing. `$CLAUDE_PROJECT_DIR` gets the
+  same value; hooks still run in the folder you started in (`docs/hooks.md`).
+- **A `PermissionRequest` hook that exits `2` denies the call.** Its stderr
+  is the reason, as in Claude Code and codex and as the `/hooks` page says;
+  the call used to go on to the auto-mode classifier and the permission
+  prompt as if the hook had said nothing (`docs/hooks.md`).
+- **A hook that refuses a call keeps the rest of what it said.** Context a
+  `PreToolUse` hook added was dropped when the same hooks blocked the call,
+  and so was its note (a warning from a broken sibling hook, a
+  `systemMessage`). The agent now reads the context after the refusal, and
+  the note sits under the red cell (`docs/hooks.md`).
+- **A hook's context stays with a command sent to the background.** The
+  agent read it when the command was launched, but the conversation kept
+  only the launch text, so the next turn no longer had it (`docs/hooks.md`).
+- **A tool call's dim note row keeps every note.** A call allowed by the
+  auto-mode classifier that a hook also commented on showed only the hook's
+  note, and a hook that ran before a call lost its note to one that ran
+  after it. The row now lists each note in the order it came, separated by
+  `·`, in the main conversation and in an agent's own view.
 - **A turn no longer ends on a reply that says nothing.** A model sometimes
   ends its turn with no reply and no tool call — most often right after a
   tool round, sometimes after a long thought that used up its whole output

@@ -2218,8 +2218,17 @@ and quit (after the turn and agents are cancelled), naming the conversation
 that ends and **only for one whose start fired**
 (`ModelSession::end_conversation` — a still-queued source means it never
 started, so no end, the source dropped). A block
-*is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
-`ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
+*is* `Approval::Reject`'s two-text split (red cell, model-facing text,
+`ToolCall::context_output`, `/resume`-safe) — and every text a hook gives the
+model is codex's terse shape (`docs/hooks.md` *What the model reads*:
+`Blocked by PreToolUse hook: {reason}`, `{event} hook feedback: …`, `Stop
+hook feedback: …`), each decision naming its handler on `Hook: {command}`
+and `Config: {hooks.json}` lines (`ParsedHook::blocked_by`, a `HookOrigin`
+carried beside the reason it gave, so the hook named is the one whose words
+the model reads; each group's file stamped at load by
+`HooksFile::with_source`, so a merged user + project config still knows
+which file a handler came from) and only a refusal adding one line on what
+to do — a `PreToolUse` allow *is*
 `Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
 **and** the auto-mode classifier — ask means a human), and
 `additionalContext` rides `ToolNote` for the dim `⎿` row plus the
@@ -2241,8 +2250,9 @@ beside Claude Code's `scratchpad_dir`. User-level config only — a
 project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
-when no file resolved and **off until a directory turns it on**
-(`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
+when no file resolved and **on until a directory turns it off**
+(`docs/per-directory-state.md` — the user's own file runs with no opt-in, a
+project's waits for `/trust`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
 Phase 133 the session events through a refusing stub provider, and Phase
@@ -2731,9 +2741,10 @@ written as a **read-modify-write** over the file itself (the directory's
 entry re-read, `SessionSettings::copy_value` moving across only the cycled
 key, `SettingsFile::record_value`) so an `ALTER_ZERO_*` override merged in at
 startup can never *stick*: the environment wins for the run, per setting,
-and only the row the user actually cycled is saved. **Hooks** and
-**Checkpoints** default to `false` — each runs code on the user's behalf, so a
-directory opts in. The `/model` selection is per directory the same way
+and only the row the user actually cycled is saved. **Checkpoints** default
+to `false` — a whole-cwd snapshot before the first frame, so a directory opts
+in — while **Hooks** default to `true`: the user's own `hooks.json` runs with
+no opt-in, a project's still waits for `/trust`, and a directory opts out. The `/model` selection is per directory the same way
 (`llm::settings::Settings`'s `projects` map over the top-level **last**
 selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`

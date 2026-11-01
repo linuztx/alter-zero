@@ -12,7 +12,7 @@ smoke_begin
 # right then. (b) A knob cycled in that directory is the directory's alone —
 # settings.json keys the entry by the directory's path under `projects`, its
 # top level (the seed) untouched — and a second directory starts at the
-# defaults, hooks and checkpoints OFF among them, while adopting the same
+# defaults, checkpoints OFF and hooks ON among them, while adopting the same
 # last model. (c) A later change to the last selection moves a third, new
 # directory and never the pinned first one, whose knob also survived.
 S109="${S}_perdir"
@@ -39,6 +39,11 @@ PROVIDERS
 cat >"$PD_CFG/config.json" <<'CONFIG'
 { "provider": "deadend", "model": "pinned-model-a" }
 CONFIG
+# A hooks.json with one harmless handler, so the Hooks row shows its default
+# rather than `false (unavailable)`. PostCompact never fires here: no turn runs.
+cat >"$PD_CFG/hooks.json" <<'HOOKS'
+{ "hooks": { "PostCompact": [ { "hooks": [ { "type": "command", "command": "true" } ] } ] } }
+HOOKS
 # No ALTER_ZERO_CHECKPOINTS here, deliberately: the default is under test, and
 # the cwds are throwaway temp dirs a snapshot could not hurt.
 APP_PD="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$PD_CFG ALTER_ZERO_SESSIONS_DIR=$PD_CFG/sessions ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROVIDERS_FILE=$PD_CFG/providers.toml ALTER_ZERO_API_KEY=not-a-real-key ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
@@ -128,7 +133,7 @@ printf '%s\n' "$pd_b_ck" | grep -E "Checkpoints" || true
 printf '%s\n' "$pd_b_hooks" | grep -E "Hooks" || true
 expect_has "$pd_b_retry" -E "Error retry +3" "the first directory's Error retry leaked into the second (expected the default 3)"
 expect_has "$pd_b_ck" -E "Checkpoints +false" "Checkpoints should default to false"
-expect_has "$pd_b_hooks" -E "Hooks +false" "Hooks should default to false"
+expect_has "$pd_b_hooks" -E "Hooks +true" "Hooks should default to true"
 tmux send-keys -t "$S109B" Escape
 sleep 0.4
 tmux send-keys -t "$S109B" -l "/quit"

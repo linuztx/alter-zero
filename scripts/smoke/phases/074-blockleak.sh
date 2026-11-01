@@ -24,7 +24,7 @@ sleep 0.5
 submit "$S74" "$USER_MSG"
 wait_for 20.1 "$S74" -S -40 -- -E "$SUMMARY_RE"
 submit "$S74" "hook demo: block my prompt"
-wait_for 10 "$S74" -S -200 -- -F "blocked the prompt"
+wait_for 10 "$S74" -S -200 -- -F "Prompt blocked by"
 # The block restored the draft to the composer: Ctrl+C once clears it, again quits.
 tmux send-keys -t "$S74" C-c
 sleep 0.3
@@ -39,18 +39,18 @@ else
 	if grep -qF "hook demo: block my prompt" "$bl_rollout"; then
 		fail "the censored prompt is still in the rollout on disk"
 	fi
-	if ! grep -qF "blocked the prompt" "$bl_rollout"; then
+	if ! grep -qF "Prompt blocked by" "$bl_rollout"; then
 		fail "the block notice never reached the rollout"
 	fi
 fi
 tmux kill-session -t "$S74" 2>/dev/null || true
 # --continue: the resumed transcript must carry the notice, never the prompt.
 tmux new-session -d -s "$S74" -x 100 -y 30 "$BLAPP --continue; echo CLI_APP_EXITED; sleep 60"
-bl_resumed="$(wait_pane 4 "$S74" -S -120 -- -F "blocked the prompt")"
+bl_resumed="$(wait_pane 4 "$S74" -S -120 -- -F "Prompt blocked by")"
 echo "==== Phase 74: --continue after a blocked prompt (no leak) ===="
 printf '%s\n' "$bl_resumed"
 expect_lacks "$bl_resumed" -F "hook demo: block my prompt" "the censored prompt came back in the resumed transcript"
-expect_has "$bl_resumed" -F "blocked the prompt" "the resumed transcript lost the block notice"
+expect_has "$bl_resumed" -F "Prompt blocked by" "the resumed transcript lost the block notice"
 tmux send-keys -t "$S74" C-c
 sleep 0.3
 tmux kill-session -t "$S74" 2>/dev/null || true

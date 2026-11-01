@@ -2501,8 +2501,7 @@ fn block_prompt_rolls_the_submission_back_and_keeps_hook_notes() {
         kinds,
         vec![
             "hook:SessionStart hook".to_string(),
-            "Error:UserPromptSubmit hook blocked the prompt\nReason: no secrets in prompts"
-                .to_string(),
+            "Error:Prompt blocked by UserPromptSubmit hook: no secrets in prompts".to_string(),
         ],
         "the prompt is gone, the note and the reason-only notice remain"
     );

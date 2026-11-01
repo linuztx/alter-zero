@@ -50,7 +50,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Checkpoints** | **`false`** / `true` | Per-turn working-directory snapshots (`docs/checkpoint.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
-| **Hooks** | **`false`** / `true` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
+| **Hooks** | **`true`** / `false` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **On until a directory turns it off** (`docs/per-directory-state.md`); a project's own `hooks.json` still waits for `/trust`; seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
@@ -357,16 +357,16 @@ directory would have started with tools off.
 
 ### Hooks and checkpoints default to off
 
-The two knobs that run *code* on the user's behalf — a `hooks.json` handler
-around every tool call, a whole-cwd `git add -A` before the first frame — are
-**off** until a directory turns them on. A hooks file written for one project
-used to fire in every project, and a checkpoint store for a tree you opened
-once to read a file cost seconds at startup and a copy of the tree under
-`~/.alter-zero`. With settings per directory the opt-in is one cycle in the
-directory that wants it, recorded there as `"hooks": true` /
-`"checkpoints": true`. `ALTER_ZERO_HOOKS=1` / `ALTER_ZERO_CHECKPOINTS=1` turn
-either on for a run without saving anything — which is how `smoke.sh`'s hooks
-and checkpoint phases get them.
+**Checkpoints** run a whole-cwd `git add -A` before the first frame, so they
+are **off** until a directory turns them on: a checkpoint store for a tree
+you opened once to read a file cost seconds at startup and a copy of the
+tree under `~/.alter-zero`. The opt-in is one cycle in the directory that
+wants it, recorded there as `"checkpoints": true`. **Hooks** are **on**: the
+user's own `hooks.json` runs with no opt-in, as in Claude Code, and a
+project's file still waits for `/trust`; a directory opts out with one cycle,
+recorded as `"hooks": false`. `ALTER_ZERO_HOOKS` / `ALTER_ZERO_CHECKPOINTS`
+seed either for a run without saving anything — which is how `smoke.sh`'s
+hooks and checkpoint phases get them.
 
 ## Testing
 

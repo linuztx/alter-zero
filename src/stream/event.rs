@@ -260,8 +260,8 @@ pub enum StreamEvent {
     /// (a `run_in_background` bash call, or Ctrl+B on a running command) —
     /// sent **in place of** [`StreamEvent::ToolEnd`]. `id` is the registry
     /// task id (internal only); `output` is the model-facing launch text
-    /// (the interim-output path + completion promise) that becomes the tool
-    /// result — the cell instead
+    /// (the interim-output path + completion promise, then any context a
+    /// `PreToolUse` hook added) that becomes the tool result — the cell instead
     /// renders the fixed `⎿ Running in the background (↓ to manage)` row
     /// ([`crate::app::ToolStatus::Backgrounded`]). The process itself reports
     /// through the separate background channel. See `docs/background.md`.
@@ -362,9 +362,9 @@ pub enum StreamEvent {
     /// the turn is over before the first request. The loop rolls the
     /// just-recorded user message back out of history (the recorder's
     /// shrink-rewrite erases it from the rollout — Claude Code's "erased
-    /// from context"), purge-repaints, and commits a red notice carrying
-    /// `reason` and the original prompt so the user sees exactly what was
-    /// refused and why. Sent **instead of** [`StreamEvent::StreamDone`] —
+    /// from context"), returns the text to the composer, purge-repaints, and
+    /// commits the red one-line `Prompt blocked by UserPromptSubmit hook:
+    /// {reason}` notice. Sent **instead of** [`StreamEvent::StreamDone`] —
     /// nothing else follows it.
     PromptBlocked { reason: String },
     /// The model launched a **group of subagents** this round (its `agent`

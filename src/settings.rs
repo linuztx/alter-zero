@@ -314,10 +314,12 @@ pub struct SessionSettings {
     /// Load `AGENTS.md` into the context (default `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub project_docs: bool,
-    /// Run the user's lifecycle hooks (default `false` — a directory opts in
-    /// to running the commands in `hooks.json`; a session with no such file
-    /// reports the row unavailable either way).
-    #[serde(skip_serializing_if = "is_false")]
+    /// Run the lifecycle hooks (default `true` — the user's own `hooks.json`
+    /// runs with no opt-in, as in Claude Code (codex asks to trust each new or
+    /// changed hook first), while a project's file still waits behind
+    /// `/trust`; a directory turning them off is what its entry records, and
+    /// a session with no such file reports the row unavailable either way).
+    #[serde(skip_serializing_if = "is_true")]
     pub hooks: bool,
     /// Offer the `skill` tool and the listing (default `true` — a session
     /// that found no skills has nothing to offer anyway, and the row reports
@@ -374,7 +376,7 @@ impl Default for SessionSettings {
             checkpoints: false,
             auto_compact: true,
             project_docs: true,
-            hooks: false,
+            hooks: true,
             skills: true,
             temperature: None,
             max_tool_calls: 0,

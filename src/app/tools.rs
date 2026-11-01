@@ -260,14 +260,15 @@ impl App {
     /// Record how the **running** tool came to run without the user — the
     /// auto mode classifier's `Allowed by auto mode classifier` — so the
     /// resolved cell appends it as a dim `⎿` row (the boundary's handler for
-    /// [`crate::stream::StreamEvent::ToolNote`]; see `docs/permissions.md`).
-    /// A no-op unless the front call is [`ToolStatus::Running`] — the note
+    /// [`crate::stream::StreamEvent::ToolNote`]; see `docs/permissions.md`),
+    /// after any note the call already carries ([`ToolCall::add_note`]). A
+    /// no-op unless the front call is [`ToolStatus::Running`] — the note
     /// always follows its call's `ToolStart`.
     pub fn set_tool_note(&mut self, note: &str) {
         if let Some(tool) = self.tool_queue.front_mut()
             && tool.status == ToolStatus::Running
         {
-            tool.approval_note = Some(note.to_string());
+            tool.add_note(note);
         }
     }
 
@@ -698,6 +699,20 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    /// Add a provenance note after any this call already carries: one call
+    /// can collect several — its approval, a `PreToolUse` hook's, a
+    /// `PostToolUse` hook's — and its cell's one dim row shows them all, in
+    /// the order they came, rather than the last alone.
+    pub fn add_note(&mut self, note: &str) {
+        match &mut self.approval_note {
+            Some(notes) => {
+                notes.push_str(" · ");
+                notes.push_str(note);
+            }
+            None => self.approval_note = Some(note.to_string()),
+        }
+    }
+
     /// What the **model** read as this call's result — [`context_output`]
     /// when the display diverged from it, else the displayed `output`. The
     /// one seam [`crate::context::context_messages`] and the token tally read,

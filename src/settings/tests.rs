@@ -57,22 +57,35 @@ fn the_defaults_match_the_pre_feature_behaviour() {
 }
 
 #[test]
-fn hooks_and_checkpoints_are_off_until_a_directory_turns_them_on() {
-    // Both run *code* on the user's behalf — a hooks.json handler, a whole-cwd
-    // `git add -A` before the first frame — so a directory opts in to each
-    // rather than out (docs/per-directory-state.md). Turning one on is then
-    // exactly what its entry records, and the defaults stay off the wire.
+fn hooks_are_on_until_a_directory_turns_them_off() {
+    // The user's own hooks.json runs by default — both references run it with
+    // no opt-in — while a project's file still waits behind /trust
+    // (docs/project-config.md). Turning them off is exactly what the
+    // directory's entry records, and the default stays off the wire.
     let s = SessionSettings::default();
-    assert!(!s.hooks, "hooks are off until turned on");
-    assert!(!s.checkpoints, "checkpoints too");
-    assert!(!s.hooks_active() && !s.checkpoints_active());
+    assert!(s.hooks, "hooks are on by default");
+    assert!(s.hooks_active());
     assert_eq!(s.to_json().trim(), "{}");
+    let mut off = s;
+    assert!(off.cycle(SettingKey::Hooks));
+    assert!(!off.hooks_active());
+    let json = off.to_json();
+    assert!(json.contains("\"hooks\": false"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), off);
+}
+
+#[test]
+fn checkpoints_are_off_until_a_directory_turns_them_on() {
+    // A whole-cwd `git add -A` before the first frame, so a directory opts
+    // in rather than out (docs/per-directory-state.md). Turning them on is
+    // exactly what its entry records, and the default stays off the wire.
+    let s = SessionSettings::default();
+    assert!(!s.checkpoints, "checkpoints are off until turned on");
+    assert!(!s.checkpoints_active());
     let mut on = s;
-    assert!(on.cycle(SettingKey::Hooks));
     assert!(on.cycle(SettingKey::Checkpoints));
-    assert!(on.hooks_active() && on.checkpoints_active());
+    assert!(on.checkpoints_active());
     let json = on.to_json();
-    assert!(json.contains("\"hooks\": true"), "{json}");
     assert!(json.contains("\"checkpoints\": true"), "{json}");
     assert_eq!(SessionSettings::parse(&json), on);
 }

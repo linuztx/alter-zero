@@ -29,9 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::frontmatter::truncate_chars;
 use crate::hooks::{
-    CommandHook, HOOK_OUTPUT_MAX_BYTES, HookContext, HookEvent, HookOutcome, HookPermission,
-    HookRun, HooksFile, ParsedHook, merge, parse_run, truncate_output,
+    CommandHook, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookContext, HookEvent, HookOrigin, HookOutcome,
+    HookPermission, HookRun, HooksFile, NO_REASON, ParsedHook, merge, parse_run, truncate_output,
 };
 use crate::stream::CancelToken;
 use crate::subprocess;
@@ -63,9 +64,10 @@ const PROJECT_DIR_VARS: &[&str] = &["ALTER_ZERO_PROJECT_DIR", "CLAUDE_PROJECT_DI
 /// What the agent loop does about a `PreToolUse` verdict.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreToolVerdict {
-    /// Refuse the call. The cell shows the short form, the model reads the
-    /// long one — the [`crate::permission::Approval::Reject`] split.
-    pub blocked: Option<String>,
+    /// Refuse the call, naming the hook that did. [`block_texts`] words it
+    /// twice — a short form for the cell, a fuller one for the model — the
+    /// [`crate::permission::Approval::Reject`] split.
+    pub blocked: Option<HookBlock>,
     /// Skip the permission gate for this call (`permissionDecision: "allow"`).
     pub pre_approved: bool,
     /// Put it to the user even if a standing rule would have allowed it
@@ -227,18 +229,18 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// agent id). Fired by `run_agent` at the point the turn would complete
     /// — never on a cancel, an error, a compact turn or a `!` shell.
     ///
-    /// `Some(feedback)` is a **block**: the agent keeps going, the feedback
-    /// its next user message. `stop_hook_active` is true on the second and
-    /// later firings within one turn — the loop guard's flag, which the hook
-    /// itself checks to avoid looping forever (the engine never refuses a
-    /// re-block; that is Claude Code's exact posture, and Esc stays the stop
-    /// button).
+    /// `Some(feedback)` is a **block**: the agent keeps going, its next user
+    /// message the feedback as [`stop_feedback_texts`] words it.
+    /// `stop_hook_active` is true on the second and later firings within one
+    /// turn — the loop guard's flag, which the hook itself checks to avoid
+    /// looping forever (the engine never refuses a re-block; that is Claude
+    /// Code's exact posture, and Esc stays the stop button).
     fn stop(
         &self,
         _stop_hook_active: bool,
         _last_message: &str,
         _cancel: &CancelToken,
-    ) -> Option<String> {
+    ) -> Option<HookBlock> {
         None
     }
 
@@ -341,7 +343,7 @@ impl HookSink for CompactHooks {
         _stop_hook_active: bool,
         last_message: &str,
         cancel: &CancelToken,
-    ) -> Option<String> {
+    ) -> Option<HookBlock> {
         self.inner.post_compact(self.trigger, last_message, cancel);
         None
     }
@@ -596,8 +598,11 @@ pub struct CommandHooks {
     context: HookContext,
     /// The detach-helper path threaded from `main` — see [`subprocess`].
     detach_helper: Option<PathBuf>,
-    /// Where handlers run, and what `*_PROJECT_DIR` is set to.
+    /// Where handlers run.
     cwd: PathBuf,
+    /// What `*_PROJECT_DIR` is set to: the project root, which is the `cwd`
+    /// unless [`with_project_dir`](Self::with_project_dir) says otherwise.
+    project_dir: PathBuf,
     /// The live handles — gate, conversation, pending session sources —
     /// resolved at **dispatch** time, so a payload reports the session as it
     /// is when the hook fires.
@@ -622,9 +627,21 @@ impl CommandHooks {
             file,
             context,
             detach_helper,
+            project_dir: cwd.clone(),
             cwd,
             handles,
         })
+    }
+
+    /// Export `dir` as `$ALTER_ZERO_PROJECT_DIR` (and `$CLAUDE_PROJECT_DIR`)
+    /// while handlers keep running in the `cwd` — the boundary passes the
+    /// project root ([`crate::trust::hooks_project_dir`]), so a command
+    /// written as `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…` finds the
+    /// project's scripts from any subdirectory.
+    #[must_use]
+    pub fn with_project_dir(mut self, dir: PathBuf) -> Self {
+        self.project_dir = dir;
+        self
     }
 
     /// The context as of **now**: the stored session facts with the
@@ -686,16 +703,18 @@ impl CommandHooks {
     fn run_handler(&self, handler: &CommandHook, payload: &str, cancel: &CancelToken) -> HookRun {
         let mut run = HookRun {
             command: handler.command.clone(),
+            file: handler.source.clone(),
             ..HookRun::default()
         };
         let cwd = self.cwd.clone();
+        let project_dir = self.project_dir.clone();
         let spawned = subprocess::spawn_shell_with(
             self.detach_helper.as_deref(),
             &handler.command,
             move |cmd| {
                 cmd.stdin(std::process::Stdio::piped()).current_dir(&cwd);
                 for var in PROJECT_DIR_VARS {
-                    cmd.env(var, &cwd);
+                    cmd.env(var, &project_dir);
                 }
             },
         );
@@ -988,38 +1007,84 @@ impl PipeCapture {
 
 /// What a `PostToolUse` / `PostToolUseFailure` hook said, folded for the
 /// loop. The call already ran, so a `block` here is not a refusal — it is
-/// feedback the model must read, folded in beside any context.
-fn post_verdict(hooked: HookOutcome) -> PostToolVerdict {
+/// feedback the model must read, appended after the call's own output with
+/// any context (`docs/hooks.md` *What the model reads*).
+fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
     if hooked.is_quiet() {
         return PostToolVerdict::default();
     }
-    let mut context: Vec<String> = Vec::new();
-    if let Some(reason) = &hooked.block_reason {
-        context.push(format!("A lifecycle hook flagged this result: {reason}"));
-    }
-    context.extend(hooked.additional_context.iter().cloned());
-    let context = (!context.is_empty()).then(|| context.join("\n\n"));
+    let added = context_line(event.name(), &hooked.additional_context);
+    let feedback = hooked.block().map(|block| {
+        format!(
+            "{} hook feedback: {}{}",
+            event.name(),
+            block.reason,
+            hook_lines(block.hook.as_ref())
+        )
+    });
+    let context: Vec<String> = feedback.into_iter().chain(added.clone()).collect();
     let mut warnings = hooked.warnings.clone();
-    if let Some(reason) = hooked.block_reason {
+    if let Some(reason) = &hooked.block_reason {
         warnings.insert(0, format!("Flagged by hook: {reason}"));
     }
     PostToolVerdict {
-        note: note_line(&warnings, context.as_ref(), &hooked.system_messages),
-        context,
+        note: note_line(&warnings, added.as_ref(), &hooked.system_messages),
+        context: (!context.is_empty()).then(|| context.join("\n\n")),
     }
 }
 
+/// How much of a hook's command names it to the model: room for a script's
+/// path and its flags, not for an inline program.
+const HOOK_LABEL_MAX_CHARS: usize = 80;
+
+/// The lines a decision names its handler on, each newline first: `Hook:
+/// {command}` — the command's first line, cut to [`HOOK_LABEL_MAX_CHARS`]
+/// with `…` marking what was dropped — then `Config: {path}`, the
+/// `hooks.json` it is configured in; empty when no handler is known. The
+/// command is what the user wrote, so it is the name they know the hook by
+/// and the path the agent can read it at; the file is where to look to see
+/// or change the rule (codex's `hook_run_id` names it on a Stop prompt).
+fn hook_lines(origin: Option<&HookOrigin>) -> String {
+    let Some(origin) = origin else {
+        return String::new();
+    };
+    let mut lines = String::new();
+    let command = origin.command.trim();
+    if !command.is_empty() {
+        let label = match command.split_once('\n') {
+            Some((first, _)) => {
+                truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS)
+            }
+            None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
+        };
+        lines.push_str("\nHook: ");
+        lines.push_str(&label);
+    }
+    if let Some(file) = &origin.file {
+        lines.push_str("\nConfig: ");
+        lines.push_str(&file.display().to_string());
+    }
+    lines
+}
+
+/// The one instruction a refused call carries: not the same call again, and
+/// the two ways forward.
+const BLOCKED_NEXT_STEP: &str = "Do not retry the same call; address the reason or ask the user.";
+
 /// The cell/model text pair for a hook refusal — the same two-text shape the
 /// permission gate's rejections use, so the whole recording, transcript and
-/// `/resume` path is the one that already exists.
+/// `/resume` path is the one that already exists. The model's is codex's
+/// `… blocked by PreToolUse hook: {reason}` with the hook named under it and
+/// one line on what to do (`docs/hooks.md` *What the model reads*); `event`
+/// is the event whose hook refused, `PreToolUse` or `PermissionRequest`.
 #[must_use]
-pub fn block_texts(reason: &str) -> (String, String) {
+pub fn block_texts(event: &str, block: &HookBlock) -> (String, String) {
+    let reason = &block.reason;
     (
         format!("Blocked by hook: {reason}"),
         format!(
-            "A configured lifecycle hook blocked this tool call.\n\nReason: {reason}\n\n\
-             Do not retry the same call. Address the reason, or explain to the user why the \
-             call is needed and wait for their instruction."
+            "Blocked by {event} hook: {reason}{}\n{BLOCKED_NEXT_STEP}",
+            hook_lines(block.hook.as_ref())
         ),
     )
 }
@@ -1056,34 +1121,56 @@ pub fn turn_start(hooks: &dyn HookSink, prompt: &str, cancel: &CancelToken) -> T
     }
 }
 
+/// The message a launched agent opens on when its `SubagentStart` hooks
+/// added context — wrapped and labelled like the session's own
+/// ([`context_note_texts`]), since a bare user message would read as words
+/// from the agent that launched it. Pure over the sink, [`turn_start`]'s
+/// pattern; `None` when the hooks added nothing.
+#[must_use]
+pub fn subagent_start_note(
+    hooks: &dyn HookSink,
+    agent_id: &str,
+    agent_type: &str,
+    cancel: &CancelToken,
+) -> Option<String> {
+    let contexts = hooks.subagent_start(agent_id, agent_type, cancel);
+    context_note_texts(HookEvent::SubagentStart.name(), &contexts).map(|(_, text)| text)
+}
+
+/// `additionalContext` as the model reads it — Claude Code's `{hookName}
+/// hook additional context:` label, since it always lands beside other text
+/// (the call's own output, the user's prompt) it must not be mistaken for.
+fn context_line(event: &str, contexts: &[String]) -> Option<String> {
+    (!contexts.is_empty())
+        .then(|| format!("{event} hook additional context: {}", contexts.join("\n")))
+}
+
 /// A hook's `additionalContext` as the transcript label + the user-role wire
-/// text the model reads — Claude Code's exact `{hookName} hook additional
-/// context:` wording inside its system-reminder wrapper, so a script's
-/// injected facts land in the shape models already know.
+/// text the model reads — the labelled line inside a system-reminder
+/// wrapper, so a script's injected facts never read as the user's own words.
 #[must_use]
 pub fn context_note_texts(event: &str, contexts: &[String]) -> Option<(String, String)> {
-    if contexts.is_empty() {
-        return None;
-    }
+    let line = context_line(event, contexts)?;
     Some((
         format!("{event} hook"),
-        format!(
-            "<system-reminder>\n{event} hook additional context: {}\n</system-reminder>",
-            contexts.join("\n")
-        ),
+        format!("<system-reminder>\n{line}\n</system-reminder>"),
     ))
 }
 
 /// A `Stop`/`SubagentStop` block's continuation feedback, as the transcript
 /// label + the verbatim user-role message the model reads — Claude Code's
-/// exact `Stop hook feedback:` wording, so a hook written against it drives
-/// the same conversation here. The dummy scenario calls this too, keeping the
-/// offline cell byte-for-byte the live one.
+/// `Stop hook feedback:` lead over the hook's reason, then the hook itself,
+/// codex's `hook_prompt` naming its source the same way. The dummy scenario
+/// calls this too, keeping the offline cell byte-for-byte the live one.
 #[must_use]
-pub fn stop_feedback_texts(reason: &str) -> (String, String) {
+pub fn stop_feedback_texts(block: &HookBlock) -> (String, String) {
     (
         "Stop hook".to_string(),
-        format!("Stop hook feedback:\n{reason}"),
+        format!(
+            "Stop hook feedback: {}{}",
+            block.reason,
+            hook_lines(block.hook.as_ref())
+        ),
     )
 }
 
@@ -1111,9 +1198,9 @@ impl HookSink for CommandHooks {
         if outcome.is_quiet() {
             return PreToolVerdict::default();
         }
-        let context = outcome.context_note();
+        let context = context_line(HookEvent::PreToolUse.name(), &outcome.additional_context);
         PreToolVerdict {
-            blocked: outcome.block_reason,
+            blocked: outcome.block(),
             pre_approved: outcome.permission == Some(HookPermission::Allow),
             force_ask: outcome.permission == Some(HookPermission::Ask),
             updated_input: outcome.updated_input,
@@ -1140,7 +1227,10 @@ impl HookSink for CommandHooks {
             outcome.ok,
             &call.id,
         );
-        post_verdict(self.dispatch(HookEvent::PostToolUse, Some(&call.name), &payload, cancel))
+        post_verdict(
+            HookEvent::PostToolUse,
+            self.dispatch(HookEvent::PostToolUse, Some(&call.name), &payload, cancel),
+        )
     }
 
     fn post_tool_use_failure(
@@ -1156,12 +1246,15 @@ impl HookSink for CommandHooks {
             &outcome.output,
             &call.id,
         );
-        post_verdict(self.dispatch(
+        post_verdict(
             HookEvent::PostToolUseFailure,
-            Some(&call.name),
-            &payload,
-            cancel,
-        ))
+            self.dispatch(
+                HookEvent::PostToolUseFailure,
+                Some(&call.name),
+                &payload,
+                cancel,
+            ),
+        )
     }
 
     fn permission_prompt(
@@ -1228,11 +1321,15 @@ impl HookSink for CommandHooks {
                 .join(" · "),
             }),
             HookPermission::Deny => {
-                let reason = outcome
-                    .block_reason
-                    .or(outcome.permission_reason)
-                    .unwrap_or_else(|| "denied by a hook".to_string());
-                let (display, result) = block_texts(&reason);
+                // A deny always carries its reason as the block's, so the
+                // fallbacks only guard the shape.
+                let block = outcome.block().unwrap_or_else(|| HookBlock {
+                    reason: outcome
+                        .permission_reason
+                        .unwrap_or_else(|| NO_REASON.to_string()),
+                    hook: None,
+                });
+                let (display, result) = block_texts(HookEvent::PermissionRequest.name(), &block);
                 Some(HookPermissionVerdict::Deny { display, result })
             }
             // An explicit `ask` is the default path stated out loud.
@@ -1259,7 +1356,7 @@ impl HookSink for CommandHooks {
         stop_hook_active: bool,
         last_message: &str,
         cancel: &CancelToken,
-    ) -> Option<String> {
+    ) -> Option<HookBlock> {
         // The sink's tag picks the event — Claude Code's own rule (`Stop`
         // for the lead, `SubagentStop` when an agent id is present); the
         // subagent event matches on its agent type, the lead's on nothing.
@@ -1288,7 +1385,7 @@ impl HookSink for CommandHooks {
         if outcome.stopped {
             return None;
         }
-        outcome.block_reason
+        outcome.block()
     }
 
     fn stop_failure(&self, error: &str, details: &str, cancel: &CancelToken) {
@@ -1335,7 +1432,7 @@ impl HookSink for CommandHooks {
                 outcome
                     .stop_reason
                     .clone()
-                    .unwrap_or_else(|| "stopped by a hook".to_string())
+                    .unwrap_or_else(|| NO_REASON.to_string())
             })
         });
         PromptVerdict {
@@ -1426,6 +1523,87 @@ mod tests {
     }
 
     #[test]
+    fn a_block_names_its_event_and_hook_and_says_what_to_do_in_one_line() {
+        let (display, result) = block_texts(
+            "PreToolUse",
+            &HookBlock {
+                reason: "no destructive deletes".into(),
+                hook: Some(HookOrigin {
+                    command: "~/.alter-zero/hooks/guard.sh".into(),
+                    file: Some("/home/u/.alter-zero/hooks.json".into()),
+                }),
+            },
+        );
+        // The cell keeps its short line; the model reads the hook, the file
+        // it is configured in, and what to do.
+        assert_eq!(display, "Blocked by hook: no destructive deletes");
+        assert_eq!(
+            result,
+            "Blocked by PreToolUse hook: no destructive deletes\n\
+             Hook: ~/.alter-zero/hooks/guard.sh\n\
+             Config: /home/u/.alter-zero/hooks.json\n\
+             Do not retry the same call; address the reason or ask the user."
+        );
+        // No handler known (a fake sink, the demo): no `Hook:` line to guess.
+        let (_, unnamed) = block_texts("PermissionRequest", &HookBlock::from("never in prod"));
+        assert_eq!(
+            unnamed,
+            "Blocked by PermissionRequest hook: never in prod\n\
+             Do not retry the same call; address the reason or ask the user."
+        );
+    }
+
+    #[test]
+    fn a_hook_is_named_by_its_commands_first_line_within_a_budget() {
+        let named = |command: &str| {
+            let (_, result) = block_texts(
+                "PreToolUse",
+                &HookBlock {
+                    reason: "no".into(),
+                    hook: Some(command.into()),
+                },
+            );
+            result.lines().nth(1).expect("a Hook line").to_string()
+        };
+        // A script path reads as written.
+        assert_eq!(
+            named("  ./guard.sh --strict  "),
+            "Hook: ./guard.sh --strict"
+        );
+        // An inline program is cut, and `…` says so.
+        let long = named(&format!("python3 -c '{}'", "x".repeat(200)));
+        let label = long.strip_prefix("Hook: ").expect("labelled");
+        assert_eq!(label.chars().count(), HOOK_LABEL_MAX_CHARS, "{label}");
+        assert!(label.ends_with('…'), "{label}");
+        // Only a multi-line command's first line names it.
+        assert_eq!(named("set -e\n./check.sh"), "Hook: set -e…");
+    }
+
+    #[test]
+    fn stop_feedback_is_the_reason_and_the_hook_that_gave_it() {
+        assert_eq!(
+            stop_feedback_texts(&HookBlock {
+                reason: "tests are red".into(),
+                hook: Some(HookOrigin {
+                    command: "./stop.sh".into(),
+                    file: Some("/repo/.alter-zero/hooks.json".into()),
+                }),
+            }),
+            (
+                "Stop hook".to_string(),
+                "Stop hook feedback: tests are red\n\
+                 Hook: ./stop.sh\n\
+                 Config: /repo/.alter-zero/hooks.json"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            stop_feedback_texts(&HookBlock::from("keep going")).1,
+            "Stop hook feedback: keep going"
+        );
+    }
+
+    #[test]
     fn a_file_with_nothing_runnable_declines_to_build_a_sink() {
         let file = HooksFile::parse(r#"{"hooks":{"PreToolUse":[]}}"#).unwrap();
         assert!(
@@ -1453,21 +1631,50 @@ mod tests {
     fn a_hook_reads_the_payload_on_stdin_and_can_block_on_what_it_finds() {
         // The end-to-end contract in one command: read stdin, inspect
         // `tool_input.command`, refuse with exit 2 + a stderr reason.
-        let hooks = hooks_for(&pre_hook(
-            r#"read -r line; case "$line" in *"rm -rf"*) echo "no destructive deletes" >&2; exit 2;; esac"#,
-        ));
+        let guard = r#"read -r line; case "$line" in *"rm -rf"*) echo "no destructive deletes" >&2; exit 2;; esac"#;
+        let hooks = hooks_for(&pre_hook(guard));
         let verdict = hooks.pre_tool_use(
             &call("bash", r#"{"command":"rm -rf build/"}"#),
             &CancelToken::new(),
         );
         assert_eq!(
-            verdict.blocked.as_deref(),
-            Some("no destructive deletes"),
-            "the hook's stderr is the reason"
+            verdict.blocked,
+            Some(HookBlock {
+                reason: "no destructive deletes".into(),
+                hook: Some(guard.into()),
+            }),
+            "the hook's stderr is the reason, and the hook is named"
         );
 
         let allowed = hooks.pre_tool_use(&call("bash", r#"{"command":"ls"}"#), &CancelToken::new());
         assert_eq!(allowed, PreToolVerdict::default(), "a silent hook allows");
+    }
+
+    #[test]
+    fn a_verdict_names_the_hooks_json_its_hook_was_read_from() {
+        let path = PathBuf::from("/home/u/.alter-zero/hooks.json");
+        let file = HooksFile::parse(&pre_hook("echo no >&2; exit 2"))
+            .expect("fixture parses")
+            .with_source(&path);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable");
+        let block = hooks
+            .pre_tool_use(&call("bash", "{}"), &CancelToken::new())
+            .blocked
+            .expect("the hook blocks");
+        assert_eq!(
+            block.hook,
+            Some(HookOrigin {
+                command: "echo no >&2; exit 2".into(),
+                file: Some(path),
+            })
+        );
     }
 
     #[test]
@@ -1486,7 +1693,11 @@ mod tests {
         let verdict = hooks.pre_tool_use(&call("bash", r#"{"command":"ls"}"#), &CancelToken::new());
         assert!(verdict.pre_approved);
         assert_eq!(verdict.blocked, None);
-        assert_eq!(verdict.context.as_deref(), Some("ran under review"));
+        // Appended to the tool's own output, so it says where it came from.
+        assert_eq!(
+            verdict.context.as_deref(),
+            Some("PreToolUse hook additional context: ran under review")
+        );
         let updated = verdict.updated_input.expect("a rewrite");
         assert!(updated.contains("ls -la"), "{updated}");
         assert!(verdict.note.is_some(), "the user sees that a hook spoke");
@@ -1638,7 +1849,13 @@ mod tests {
             {"hooks":[{"type":"command","command":"echo second >&2; exit 2"}]}]}}"#;
         let hooks = hooks_for(json);
         let verdict = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
-        assert_eq!(verdict.blocked.as_deref(), Some("first"));
+        assert_eq!(
+            verdict.blocked,
+            Some(HookBlock {
+                reason: "first".into(),
+                hook: Some("echo first >&2; exit 2".into()),
+            })
+        );
     }
 
     #[test]
@@ -1653,8 +1870,15 @@ mod tests {
         };
         let verdict = hooks.post_tool_use(&call("bash", "{}"), &outcome, &CancelToken::new());
         let context = verdict.context.expect("the model is told");
-        assert!(context.contains("tests are red"), "{context}");
-        assert!(verdict.note.is_some_and(|n| n.contains("tests are red")));
+        assert!(
+            context.starts_with("PostToolUse hook feedback: tests are red\nHook: grep -q 'FAILED'"),
+            "{context}"
+        );
+        // Nothing was added but the feedback, so the row says only that.
+        assert_eq!(
+            verdict.note.as_deref(),
+            Some("Flagged by hook: tests are red")
+        );
     }
 
     #[test]
@@ -1679,9 +1903,9 @@ mod tests {
             &CancelToken::new(),
         );
         let context = verdict.context.expect("the model reads the hook's context");
-        assert!(
-            context.contains("the build is known to be flaky"),
-            "{context}"
+        assert_eq!(
+            context,
+            "PostToolUseFailure hook additional context: the build is known to be flaky"
         );
         let written = std::fs::read_to_string(&probe).expect("the failure hook ran");
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
@@ -2046,8 +2270,13 @@ mod tests {
         );
         match deny.permission_request(&call("bash", "{}"), &CancelToken::new()) {
             Some(HookPermissionVerdict::Deny { display, result }) => {
-                assert!(display.contains("never in prod"), "{display}");
-                assert!(result.contains("never in prod"), "{result}");
+                assert_eq!(display, "Blocked by hook: never in prod");
+                assert!(
+                    result.starts_with(
+                        "Blocked by PermissionRequest hook: never in prod\nHook: printf '%s'"
+                    ),
+                    "{result}"
+                );
             }
             other => panic!("expected a deny, got {other:?}"),
         }
@@ -2060,6 +2289,24 @@ mod tests {
             allow.permission_request(&call("bash", "{}"), &CancelToken::new()),
             Some(HookPermissionVerdict::Allow { .. })
         ));
+    }
+
+    #[test]
+    fn a_permission_request_hook_that_exits_two_denies_the_call() {
+        let hooks = hooks_for(
+            r#"{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command",
+              "command":"echo 'never in prod' >&2; exit 2"}]}]}}"#,
+        );
+        match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Deny { display, result }) => {
+                assert_eq!(display, "Blocked by hook: never in prod");
+                assert!(
+                    result.starts_with("Blocked by PermissionRequest hook: never in prod\n"),
+                    "{result}"
+                );
+            }
+            other => panic!("exit 2 must deny, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2117,8 +2364,17 @@ mod tests {
         ));
         // First firing: the flag is false, the hook blocks — the reason is
         // the continuation feedback.
-        let feedback = hooks.stop(false, "the answer", &CancelToken::new());
-        assert_eq!(feedback.as_deref(), Some("tests are red"));
+        let feedback = hooks
+            .stop(false, "the answer", &CancelToken::new())
+            .expect("the hook blocked");
+        assert_eq!(feedback.reason, "tests are red");
+        assert!(
+            feedback
+                .hook
+                .as_ref()
+                .is_some_and(|h| h.command.starts_with("tee ")),
+            "the hook is named: {feedback:?}"
+        );
         let written = std::fs::read_to_string(&probe).expect("the stop hook ran");
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
         assert_eq!(value["hook_event_name"], serde_json::json!("Stop"));
@@ -2467,6 +2723,21 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_stopped_without_a_reason_reads_as_no_reason_given() {
+        let hooks = hooks_for(
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command",
+              "command":"printf '%s' '{\"continue\":false}'"}]}]}}"#,
+        );
+        assert_eq!(
+            hooks
+                .user_prompt_submit("hello", &CancelToken::new())
+                .blocked
+                .as_deref(),
+            Some(NO_REASON)
+        );
+    }
+
+    #[test]
     fn turn_start_folds_the_opening_hooks_into_notes_and_a_verdict() {
         // The spawn-top glue in one call: SessionStart's context first, then
         // UserPromptSubmit's, each already formatted as the wire text the
@@ -2502,6 +2773,38 @@ mod tests {
         let blocked = turn_start(&Fake, "my secret", &CancelToken::new());
         assert_eq!(blocked.blocked.as_deref(), Some("no secrets"));
         assert_eq!(blocked.notes.len(), 2, "context injects even on a block");
+    }
+
+    #[test]
+    fn a_subagent_start_context_opens_the_agent_wrapped_like_the_sessions() {
+        // A bare user message would read as the lead talking; the wrapper and
+        // label say the harness's hook put it there.
+        #[derive(Debug)]
+        struct Briefing;
+        impl HookSink for Briefing {
+            fn subagent_start(&self, _id: &str, kind: &str, _cancel: &CancelToken) -> Vec<String> {
+                if kind == "explore" {
+                    vec![
+                        "the repo root is /srv/app".into(),
+                        "tests: cargo test".into(),
+                    ]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+        assert_eq!(
+            subagent_start_note(&Briefing, "a1", "explore", &CancelToken::new()).as_deref(),
+            Some(
+                "<system-reminder>\nSubagentStart hook additional context: \
+                 the repo root is /srv/app\ntests: cargo test\n</system-reminder>"
+            )
+        );
+        assert_eq!(
+            subagent_start_note(&Briefing, "a2", "reviewer", &CancelToken::new()),
+            None,
+            "no context, no message"
+        );
     }
 
     #[test]
@@ -2588,6 +2891,48 @@ mod tests {
             serde_json::json!("the handoff summary")
         );
         let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_hook_found_through_the_project_dir_runs_from_a_subdirectory() {
+        // The documented way to reach a project's own hook scripts:
+        // "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…" — which must resolve
+        // to the project root even when the session runs in a subdirectory,
+        // where the hook itself still runs.
+        let project = std::env::temp_dir().join("alter-zero-hook-project-dir");
+        let _ = std::fs::remove_dir_all(&project);
+        let scripts = project.join(".alter-zero").join("hooks");
+        let subdir = project.join("src");
+        std::fs::create_dir_all(&scripts).expect("scripts dir");
+        std::fs::create_dir_all(&subdir).expect("subdir");
+        let guard = scripts.join("guard.sh");
+        std::fs::write(
+            &guard,
+            "#!/bin/sh\necho \"guarded from $(pwd)\" >&2\nexit 2\n",
+        )
+        .expect("script");
+        let mut perms = std::fs::metadata(&guard).expect("script").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&guard, perms).expect("chmod");
+        let file = HooksFile::parse(&pre_hook(
+            "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh",
+        ))
+        .expect("fixture parses");
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            subdir.clone(),
+            HookHandles::default(),
+        )
+        .expect("runnable")
+        .with_project_dir(project.clone());
+        let block = hooks
+            .pre_tool_use(&call("bash", "{}"), &CancelToken::new())
+            .blocked
+            .expect("the project's guard ran and blocked");
+        assert_eq!(block.reason, format!("guarded from {}", subdir.display()));
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]

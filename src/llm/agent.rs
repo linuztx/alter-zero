@@ -21,6 +21,7 @@ use super::tools::{
     summarize_call_naming,
 };
 use super::{ChatMessage, ContentPart, LlmError};
+use crate::hooks::HookEvent;
 use crate::permission::Approval;
 use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
 
@@ -405,9 +406,9 @@ pub fn run_agent(
                 // (the runner polls the token; an interrupt never fires
                 // Stop, so it always breaks the chain).
                 if !cancel.is_cancelled()
-                    && let Some(reason) = hooks.stop(stop_hook_active, &text, cancel)
+                    && let Some(block) = hooks.stop(stop_hook_active, &text, cancel)
                 {
-                    let (label, feedback) = super::hooks::stop_feedback_texts(&reason);
+                    let (label, feedback) = super::hooks::stop_feedback_texts(&block);
                     let _ = tx.send(StreamEvent::HookNote {
                         label,
                         text: feedback.clone(),
@@ -528,19 +529,13 @@ pub fn run_agent(
                     // the launch as an ordinary red cell; `updatedInput`
                     // rewrites it. The gate-side verdicts (`pre_approved`,
                     // `force_ask`) have nothing to act on — a launch never
-                    // asks permission — and a context lands nowhere: the
-                    // launcher owns the call's result.
+                    // asks permission — and a launched agent's context lands
+                    // nowhere: the launcher owns the call's result.
                     let mut launchable: Vec<ToolCallRequest> = Vec::new();
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
-                        if let Some(reason) = &hook.blocked {
-                            let (display, result) = hook_block_texts(reason);
-                            let _ = tx.send(tool_start_event(call, session_command));
-                            let _ = tx.send(StreamEvent::ToolRejected {
-                                display,
-                                result: result.clone(),
-                                truncated: false,
-                            });
+                        if let Some(block) = &hook.blocked {
+                            let result = refuse_by_hook(tx, call, session_command, block, &hook);
                             results.push((call.id.clone(), result));
                             continue;
                         }
@@ -629,18 +624,8 @@ pub fn run_agent(
                     // own command decides. A hook may refuse the call, rewrite
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
-                    if let Some(reason) = &hook.blocked {
-                        let (display, result) = hook_block_texts(reason);
-                        let _ = tx.send(tool_start_event(call, session_command));
-                        // The permission gate's own rejection event, reused
-                        // whole: red cell, model-facing text on
-                        // `context_output`, and a `/resume` that replays both.
-                        let _ = tx.send(StreamEvent::ToolRejected {
-                            display,
-                            result: result.clone(),
-                            // A refusal: nothing ran, so no capped output.
-                            truncated: false,
-                        });
+                    if let Some(block) = &hook.blocked {
+                        let result = refuse_by_hook(tx, call, session_command, block, &hook);
                         results.push((call.id.clone(), result));
                         continue;
                     }
@@ -780,7 +765,10 @@ pub fn run_agent(
                         (Some(id), _) => {
                             let _ = tx.send(StreamEvent::ToolBackgrounded {
                                 id: id.clone(),
-                                output: outcome.output.clone(),
+                                // What the model read — a hook's context
+                                // included — since the record keeps this and
+                                // the cell shows its fixed row either way.
+                                output: outcome.context_text().to_string(),
                             });
                         }
                         (None, Some(context)) if outcome.ok => {
@@ -880,6 +868,37 @@ pub fn run_agent(
 /// **verbatim arguments**, which is what lets the recorded call replay
 /// losslessly next turn instead of being rebuilt from the summary
 /// (`docs/context.md`).
+/// Refuse `call` on its `PreToolUse` hook's block, and hand back what the
+/// model reads. The permission gate's own rejection event, reused whole —
+/// red cell, model-facing text on `context_output`, and a `/resume` that
+/// replays both — with whatever else the hook said kept rather than dropped:
+/// its note (a sibling handler's warning, a `systemMessage`) on the cell's
+/// dim row, and its context after the refusal.
+fn refuse_by_hook(
+    tx: &UnboundedSender<StreamEvent>,
+    call: &ToolCallRequest,
+    session_command: &dyn Fn(&str) -> Option<String>,
+    block: &crate::hooks::HookBlock,
+    hook: &super::hooks::PreToolVerdict,
+) -> String {
+    let (display, mut result) = hook_block_texts(HookEvent::PreToolUse.name(), block);
+    if let Some(context) = &hook.context {
+        result.push_str("\n\n");
+        result.push_str(context);
+    }
+    let _ = tx.send(tool_start_event(call, session_command));
+    if let Some(note) = &hook.note {
+        let _ = tx.send(StreamEvent::ToolNote(note.clone()));
+    }
+    let _ = tx.send(StreamEvent::ToolRejected {
+        display,
+        result: result.clone(),
+        // A refusal: nothing ran, so no capped output.
+        truncated: false,
+    });
+    result
+}
+
 fn tool_start_event(
     call: &ToolCallRequest,
     session_command: &dyn Fn(&str) -> Option<String>,
@@ -1421,7 +1440,7 @@ mod tests {
         /// can prove the event fires only for calls that succeeded.
         posts: std::sync::Mutex<Vec<(String, bool)>>,
         /// Scripted `stop` answers, popped front-first; empty = never block.
-        stops: std::sync::Mutex<Vec<Option<String>>>,
+        stops: std::sync::Mutex<Vec<Option<crate::hooks::HookBlock>>>,
         /// Every `stop` dispatch: the loop-guard flag and the last message it
         /// was shown.
         stop_seen: std::sync::Mutex<Vec<(bool, String)>>,
@@ -1502,7 +1521,7 @@ mod tests {
             stop_hook_active: bool,
             last_message: &str,
             _cancel: &CancelToken,
-        ) -> Option<String> {
+        ) -> Option<crate::hooks::HookBlock> {
             self.stop_seen
                 .lock()
                 .expect("not poisoned")
@@ -1623,7 +1642,9 @@ mod tests {
         )];
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no subagents today".to_string()),
+                blocked: Some("no subagents today".into()),
+                context: Some("PreToolUse hook additional context: try tomorrow".into()),
+                note: Some("Context added by hook".into()),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()
@@ -1670,7 +1691,20 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
-        assert!(result.contains("no subagents today"), "{result}");
+        assert!(
+            result.starts_with("Blocked by PreToolUse hook: no subagents today\n"),
+            "{result}"
+        );
+        assert!(
+            result.ends_with("\n\nPreToolUse hook additional context: try tomorrow"),
+            "a refused launch keeps its hook's context too: {result}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolNote(n) if n == "Context added by hook")),
+            "and its note: {events:?}"
+        );
     }
 
     #[test]
@@ -1683,7 +1717,13 @@ mod tests {
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
         let hooks = FakeHooks {
-            stops: std::sync::Mutex::new(vec![Some("tests are red".to_string()), None]),
+            stops: std::sync::Mutex::new(vec![
+                Some(crate::hooks::HookBlock {
+                    reason: "tests are red".into(),
+                    hook: Some("./stop.sh".into()),
+                }),
+                None,
+            ]),
             ..FakeHooks::default()
         };
         let mut messages = vec![ChatMessage::user("fix it")];
@@ -1727,7 +1767,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(notes, vec!["Stop hook feedback:\ntests are red"]);
+        assert_eq!(
+            notes,
+            vec!["Stop hook feedback: tests are red\nHook: ./stop.sh"]
+        );
         assert_eq!(
             events
                 .iter()
@@ -1757,7 +1800,7 @@ mod tests {
                 ("assistant".to_string(), "answer 1".to_string()),
                 (
                     "user".to_string(),
-                    "Stop hook feedback:\ntests are red".to_string()
+                    "Stop hook feedback: tests are red\nHook: ./stop.sh".to_string()
                 ),
             ]
         );
@@ -1775,7 +1818,7 @@ mod tests {
             let (tx, _rx) = unbounded_channel();
             let cancel = CancelToken::new();
             let hooks = FakeHooks {
-                stops: std::sync::Mutex::new(vec![Some("never".to_string())]),
+                stops: std::sync::Mutex::new(vec![Some("never".into())]),
                 ..FakeHooks::default()
             };
             let outcome = RefCell::new(Some(outcome));
@@ -2012,14 +2055,15 @@ mod tests {
             result.contains("launched in the background") && result.contains("reviewed by policy"),
             "the model reads the launch text and the hook's context: {result}"
         );
-        // The cell still shows the fixed backgrounded row — the launch text
-        // rides the event untouched.
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, StreamEvent::ToolBackgrounded { .. })),
-            "{events:?}"
-        );
+        // The cell shows its fixed backgrounded row whatever the text, so
+        // the event carries what the model read: that is what the record
+        // keeps and every later turn replays — the launch text alone used
+        // to, and the hook's context vanished after this round.
+        let recorded = events.iter().find_map(|e| match e {
+            StreamEvent::ToolBackgrounded { output, .. } => Some(output.as_str()),
+            _ => None,
+        });
+        assert_eq!(recorded, Some(result.as_str()), "{events:?}");
         // And PostToolUse stays silent: the call has not finished.
         assert_eq!(hooks.posts(), Vec::<(String, bool)>::new());
     }
@@ -2028,7 +2072,10 @@ mod tests {
     fn a_pre_tool_use_block_refuses_the_call_through_the_rejection_path() {
         let hooks = FakeHooks {
             pre: PreToolVerdict {
-                blocked: Some("no destructive deletes".to_string()),
+                blocked: Some(crate::hooks::HookBlock {
+                    reason: "no destructive deletes".into(),
+                    hook: Some("./guard.sh".into()),
+                }),
                 ..PreToolVerdict::default()
             },
             ..FakeHooks::default()
@@ -2055,9 +2102,55 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
             "a blocked call never runs: {events:?}"
         );
+        assert_eq!(
+            result,
+            "Blocked by PreToolUse hook: no destructive deletes\n\
+             Hook: ./guard.sh\n\
+             Do not retry the same call; address the reason or ask the user.",
+            "the model is told why, by which hook, and what to do"
+        );
+    }
+
+    #[test]
+    fn a_blocking_hook_that_also_spoke_is_heard_on_both_counts() {
+        // A hook can refuse a call AND add context or a note — a sibling
+        // handler's warning, its systemMessage. The refusal used to drop
+        // both: the model now reads the context after the refusal, and the
+        // red cell carries the note on its dim row.
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some(crate::hooks::HookBlock {
+                    reason: "no destructive deletes".into(),
+                    hook: Some("./guard.sh".into()),
+                }),
+                context: Some("PreToolUse hook additional context: use trash-cli".into()),
+                note: Some("Context added by hook · hook ./lint.sh failed (exit 1)".into()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with_hooks(&hooks);
         assert!(
-            result.contains("no destructive deletes"),
-            "the model is told why: {result}"
+            result.starts_with("Blocked by PreToolUse hook: no destructive deletes\n"),
+            "{result}"
+        );
+        assert!(
+            result.ends_with("\n\nPreToolUse hook additional context: use trash-cli"),
+            "the context follows the refusal: {result}"
+        );
+        let kinds: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolStart { .. } => Some("start"),
+                StreamEvent::ToolNote(n) if n.contains("./lint.sh") => Some("note"),
+                StreamEvent::ToolRejected { .. } => Some("rejected"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["start", "note", "rejected"],
+            "the note lands on the cell before it resolves: {events:?}"
         );
     }
 

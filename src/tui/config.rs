@@ -519,7 +519,8 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
     };
     match std::fs::read_to_string(path) {
         Ok(text) => match alter_zero::hooks::HooksFile::parse(&text) {
-            Ok(file) => (file, None),
+            // Every handler remembers this file, so a verdict can name it.
+            Ok(file) => (file.with_source(path), None),
             Err(err) => (
                 empty(),
                 Some(format!("hooks.json: {err} — hooks are off this session")),
