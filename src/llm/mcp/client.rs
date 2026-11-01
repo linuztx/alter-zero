@@ -115,6 +115,9 @@ pub struct Connection {
 /// Connect one server end to end. `bearer` is the stored OAuth access token
 /// when one exists; `deadline` bounds the whole sequence — the probe, the
 /// handshake, every page of the listing and an SSE fallback all draw on it.
+/// A stdio server launches detached through the `setsid` binary, or attached
+/// where there is none; [`connect_with_helper`] names this binary for the
+/// tier that re-execs it.
 pub fn connect(
     config: &McpServerConfig,
     bearer: Option<String>,
@@ -122,16 +125,36 @@ pub fn connect(
     deadline: Duration,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
+    connect_with_helper(config, bearer, cwd, None, deadline, cancel)
+}
+
+/// [`connect`] with `detach_helper` — this binary, resolved at the boundary
+/// (`std::env::current_exe`) — for the launch tier that re-execs it, which is
+/// what keeps a stdio server off the TUI's terminal where no `setsid` binary
+/// exists (macOS, minimal images; `docs/tty-detach.md`).
+pub fn connect_with_helper(
+    config: &McpServerConfig,
+    bearer: Option<String>,
+    cwd: Option<&std::path::Path>,
+    detach_helper: Option<&std::path::Path>,
+    deadline: Duration,
+    cancel: &CancelToken,
+) -> Result<Connection, ConnectError> {
     let until = Instant::now() + deadline;
     match config {
         McpServerConfig::Stdio { command, args, env } => {
-            let transport = StdioTransport::spawn(command, args, env, cwd)
+            let transport = StdioTransport::spawn(command, args, env, cwd, detach_helper)
                 .map_err(ConnectError::from_transport)?;
             // Fold the child's stderr into a handshake failure so a crashing
-            // server explains itself (`npx` printing a download error, say).
-            let stderr = transport.stderr_tail();
+            // server explains itself (`npx` printing a download error, say) —
+            // read once the handshake has failed, when there is something in
+            // it (read at spawn, it was empty every time).
+            let stderr = transport.stderr_handle();
             handshake(Transport::Stdio(transport), until, cancel).map_err(|e| match e.settle() {
                 ConnectError::Failed(detail) => {
+                    // A beat for the reader to catch the server's last words.
+                    std::thread::sleep(Duration::from_millis(50));
+                    let stderr = stderr.lock().map(|s| s.clone()).unwrap_or_default();
                     let tail = stderr.trim();
                     if tail.is_empty() || detail.contains(tail) {
                         ConnectError::Failed(detail)
@@ -331,14 +354,22 @@ fn legacy_handshake(
     Ok(finish(transport, identity, until, cancel)?)
 }
 
-/// The `tools/list` drain over a settled transport — both eras end here.
+/// The `tools/list` drain over a settled transport — both eras end here. A
+/// server whose capabilities name no `tools` (one serving only resources or
+/// prompts) has nothing to list, so it isn't asked: it connects with none.
 fn finish(
     mut transport: Transport,
     identity: ServerIdentity,
     until: Instant,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
-    let (tools, excluded) = list_tools(&mut transport, until, cancel)?;
+    let lists_tools =
+        identity.capabilities.is_empty() || identity.capabilities.iter().any(|c| c == "tools");
+    let (tools, excluded) = if lists_tools {
+        list_tools(&mut transport, until, cancel)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Ok(Connection {
         transport,
         identity,
@@ -364,15 +395,21 @@ pub(super) fn list_tools(
     // gave — not only the one just used — has started a cycle, and would
     // otherwise be paged through until `MAX_TOOL_PAGES`.
     let mut sent: HashSet<String> = HashSet::new();
-    for _ in 0..MAX_TOOL_PAGES {
-        let page = transport
-            .request(
-                "tools/list",
-                tools_list_params(cursor.as_deref()),
-                left(until),
-                cancel,
-            )
-            .map_err(ConnectError::from_transport)?;
+    for page_number in 0..MAX_TOOL_PAGES {
+        let page = match transport.request(
+            "tools/list",
+            tools_list_params(cursor.as_deref()),
+            left(until),
+            cancel,
+        ) {
+            Ok(page) => page,
+            // A server that doesn't do tools at all says so with
+            // method-not-found: no tools, not a failed server.
+            Err(TransportError::Rpc(error)) if error.code == -32601 && page_number == 0 => {
+                break;
+            }
+            Err(e) => return Err(ConnectError::from_transport(e)),
+        };
         if let Some(problem) = result_type_problem(&page) {
             return Err(ConnectError::Failed(format!("tools/list: {problem}")));
         }
@@ -1173,6 +1210,63 @@ mod tests {
             Some("be modern")
         );
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    /// A server that fails the handshake explains itself with what it wrote
+    /// to stderr — read once the failure is known. Read at spawn, the tail
+    /// was empty every time, and a stuck `npx` said only "timed out".
+    #[test]
+    fn a_failed_handshake_carries_what_the_server_said_on_stderr() {
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo 'npm warn: still downloading' >&2; cat > /dev/null".to_string(),
+            ],
+            env: Default::default(),
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_millis(800),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                assert!(detail.contains("still downloading"), "{detail}");
+            }
+            Err(other) => panic!("unexpected: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+    }
+
+    /// A server offering only resources or prompts has no tools to list:
+    /// asking anyway got `-32601` and a `✘ failed` server. It connects with
+    /// no tools instead — and a server that lists `tools` but answers the
+    /// listing `-32601` reads the same.
+    #[test]
+    fn a_server_without_tools_connects_with_none() {
+        let discover = r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"resources":{}},"ttlMs":0,"cacheScope":"public"}}"#;
+        let refused =
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"no tools here"}}"#;
+        let script = format!(
+            "cat > /dev/null & printf '%s\\n' '{discover}'; printf '%s\\n' '{refused}'; sleep 5"
+        );
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        )
+        .expect("connects");
+        assert!(connection.tools.is_empty());
+        assert_eq!(connection.identity.capabilities, ["resources"]);
     }
 
     /// The connect budget bounds the **whole** sequence. Every request used

@@ -12,7 +12,7 @@ mod manager;
 mod oauth;
 mod transport;
 
-pub use self::client::{ConnectError, Connection, connect};
+pub use self::client::{ConnectError, Connection, connect, connect_with_helper};
 pub use self::manager::{
     DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpHold, McpManager, McpSources,
 };

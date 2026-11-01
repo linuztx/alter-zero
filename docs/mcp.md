@@ -281,13 +281,42 @@ needs-auth), and a header or a public server affords neither.
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
 
 - `transport` — the three transports behind one `request`/`notify` surface:
-  - **stdio**: the configured command spawned with piped stdio (env merged
+  - **stdio**: the configured command launched **detached from the TUI's
+    terminal** — `exec {command line}`, each word quoted for the shell,
+    through `subprocess`'s tier walk (`setsid`, then this binary's helper
+    re-exec, `docs/tty-detach.md`), so the server leads a session and
+    process group of its own with no controlling terminal: one that runs
+    `sudo`, an SSH passphrase prompt or git's credential prompt fails fast
+    on `/dev/tty` instead of reading the keystrokes meant for the TUI. A
+    command that isn't there is refused by name before the launch (the
+    shell would otherwise turn it into an exit after the fact). Env merged
     over the session's, minus the herdr pane id — a server can be an agent
-    whose herdr hook would take the TUI's pane over, `docs/herdr.md`), a
-    reader thread turning stdout lines into messages,
-    stderr drained to a capped buffer (surfaced in a connect error), the
-    child killed on drop. Requests are newline-delimited JSON, answers
-    matched by id.
+    whose herdr hook would take the TUI's pane over (`docs/herdr.md`).
+    Writes go through a **writer thread** — a server that stops reading
+    its stdin (busy in a synchronous tool) costs a call its deadline, where
+    a request bigger than the pipe used to block the turn's thread in
+    `write_all` for good — and a reader thread turns stdout lines into
+    messages, decoded lossily (one line in Latin-1 used to end the
+    session) and bounded at 16 MiB. stderr is drained in chunks, never
+    lines — a progress bar redrawn with `\r` never ends one, and a reader
+    that stopped would leave the server to die of `EPIPE` — into a 4 KiB
+    tail that a failed connect folds into its message, read *after* the
+    failure (it was read at spawn, and always empty). Requests are
+    newline-delimited JSON, answers matched by id; a late answer to a
+    request already given up on is dropped, as the spec says, instead of
+    kept for good. A request given up on — Esc, its deadline — is
+    **cancelled on the server** with `notifications/cancelled` naming it
+    (a MUST on stdio, where there is no stream to close; never for
+    `initialize`), and a turn already cancelled sends nothing at all. A
+    legacy server's own request (`ping`) is answered on stdin; a modern
+    client MUST NOT write responses, and doesn't. Stopping a server follows
+    the spec: stdin closed, time to exit on its own, `SIGTERM` to its
+    process group, then `SIGKILL` — anything it left running in its group
+    (`npx`'s real server, a `sleep &`) going with it. A transport dropped
+    mid-session (a reconnect, a disable) is stopped off the dropping thread
+    with 2 s per step; a quit stops every server at once, 300 ms per step
+    and one bound for all (`McpManager::shutdown`), so a quit waits for a
+    well-behaved server's exit and never for a stuck one.
   - **streamable HTTP**: POST per message (`Accept: application/json,
     text/event-stream`), the response either a JSON body or an SSE stream
     drained until the request's id answers. **Legacy mode** captures the

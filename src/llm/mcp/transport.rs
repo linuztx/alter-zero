@@ -11,13 +11,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::mcp::{
     Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, header_value,
@@ -169,6 +169,17 @@ impl Transport {
         }
     }
 
+    /// Stop the connection now: a stdio server the spec's way
+    /// ([`StdioTransport::shutdown`]), a legacy SSE stream closed. A
+    /// streamable-HTTP connection holds nothing open between requests.
+    pub fn shutdown(&mut self, grace: Duration) {
+        match self {
+            Self::Stdio(t) => t.shutdown(grace),
+            Self::Http(_) => {}
+            Self::Sse(t) => t.closed.store(true, Ordering::Relaxed),
+        }
+    }
+
     /// Record each tool's `x-mcp-header` declarations (by raw tool name) for
     /// the `tools/call` requests to mirror — a no-op off modern HTTP.
     pub fn set_param_headers(&mut self, declarations: HashMap<String, Vec<ParamHeader>>) {
@@ -208,13 +219,25 @@ fn wait_channel<T>(
 // ---------------------------------------------------------------------------
 // stdio
 
-/// A local child process speaking newline-delimited JSON-RPC on its stdio.
+/// A local child process speaking newline-delimited JSON-RPC on its stdio,
+/// launched **detached from the TUI's terminal** — a session and process
+/// group of its own ([`crate::subprocess`]'s tier walk, the one every shell
+/// child takes), so a server running `sudo` or an SSH prompt fails fast on
+/// `/dev/tty` instead of reading the user's keystrokes, and stopping it
+/// takes everything it started.
 pub struct StdioTransport {
-    child: Child,
-    stdin: ChildStdin,
-    lines: mpsc::Receiver<String>,
-    /// Responses that arrived while we were waiting for a different id
-    /// (a server may answer out of order).
+    /// The server process; `None` once it has been shut down.
+    child: Option<Child>,
+    /// The write side: each message one line, written in order by a thread
+    /// of its own, so a server that stops reading (a full pipe) costs a call
+    /// its deadline rather than the turn's thread for good. Dropping it
+    /// closes the server's stdin — the spec's graceful-shutdown signal.
+    writer: Option<mpsc::Sender<Vec<u8>>>,
+    /// The read side: each stdout line, or why one couldn't be read.
+    lines: mpsc::Receiver<Result<String, String>>,
+    /// Responses that arrived before the request they answer was waited on
+    /// (a fixture printing ahead). A late answer to a request already given
+    /// up on is dropped instead, as the spec says, rather than kept for good.
     parked: HashMap<u64, Result<Value, RpcError>>,
     /// The retained stderr tail — what a connect error shows.
     stderr: Arc<Mutex<String>>,
@@ -225,19 +248,39 @@ pub struct StdioTransport {
     next_id: u64,
 }
 
+/// How long a stopping server gets at each step — to exit once its stdin
+/// closes, then once it is sent `SIGTERM` — before the next.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
 impl StdioTransport {
-    /// Spawn the configured command with piped stdio. The child inherits the
-    /// session environment with the config's `env` overlaid, runs in `cwd`,
-    /// and is killed on drop.
+    /// Launch the configured command with piped stdio. The child inherits
+    /// the session environment with the config's `env` overlaid and runs in
+    /// `cwd`, in a session of its own (`detach_helper` is this binary, for
+    /// the tier that re-execs it where no `setsid` binary exists); dropping
+    /// the transport stops it in the background, [`Self::shutdown`] in the
+    /// foreground.
     pub fn spawn(
         command: &str,
         args: &[String],
         env: &BTreeMap<String, String>,
         cwd: Option<&std::path::Path>,
+        detach_helper: Option<&std::path::Path>,
     ) -> Result<Self, TransportError> {
-        let mut child = stdio_command(command, args, env, cwd)
-            .spawn()
-            .map_err(|e| TransportError::Failed(format!("could not start `{command}`: {e}")))?;
+        // The launch goes through a shell (`exec …`, so the shell *becomes*
+        // the server), which turns a missing program into an exit after the
+        // fact; say so up front, by name, instead.
+        if !command_exists(command, env, cwd) {
+            return Err(TransportError::Failed(format!(
+                "could not start `{command}`: not found (is it installed and on PATH?)"
+            )));
+        }
+        let configure = stdio_configure(env, cwd);
+        let mut child = crate::subprocess::spawn_shell_with(
+            detach_helper,
+            &exec_line(command, args),
+            configure,
+        )
+        .map_err(|e| TransportError::Failed(format!("could not start `{command}`: {e}")))?;
         let stdin = child
             .stdin
             .take()
@@ -247,41 +290,76 @@ impl StdioTransport {
             .take()
             .ok_or_else(|| TransportError::Failed("no stdout pipe".to_string()))?;
         let stderr = child.stderr.take();
+        let (writer, queue) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut stdin = stdin;
+            for message in queue {
+                if stdin
+                    .write_all(&message)
+                    .and_then(|()| stdin.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // Dropping `stdin` here closes the pipe: the server reads EOF.
+        });
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let line = match read_line_capped(&mut reader, MAX_MESSAGE_BYTES) {
+                    Ok(Some(line)) => Ok(line),
+                    Ok(None) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                        // The rest of the oversized line is noise — skip it,
+                        // so it can't fail the requests after this one too.
+                        if reader.skip_until(b'\n').is_err() {
+                            break;
+                        }
+                        Err(e.to_string())
+                    }
+                    Err(_) => break,
+                };
                 if tx.send(line).is_err() {
                     break;
                 }
             }
         });
         let stderr_tail = Arc::new(Mutex::new(String::new()));
-        if let Some(stderr) = stderr {
+        if let Some(mut stderr) = stderr {
             let tail = Arc::clone(&stderr_tail);
+            // Read in chunks, not lines: a progress bar redrawn with `\r`
+            // never ends one, and the pipe must be drained whatever the
+            // server writes — a reader that stopped would leave it to die of
+            // `EPIPE` on its next log line.
             std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    if let Ok(mut tail) = tail.lock() {
-                        tail.push_str(&line);
-                        tail.push('\n');
-                        if tail.len() > STDERR_TAIL_BYTES {
-                            let cut = tail.len() - STDERR_TAIL_BYTES;
-                            // Trim from the front on a char boundary.
-                            let cut = (cut..tail.len())
-                                .find(|i| tail.is_char_boundary(*i))
-                                .unwrap_or(0);
-                            tail.drain(..cut);
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stderr.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if let Ok(mut tail) = tail.lock() {
+                                tail.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                                if tail.len() > STDERR_TAIL_BYTES {
+                                    let cut = tail.len() - STDERR_TAIL_BYTES;
+                                    // Trim from the front on a char boundary.
+                                    let cut = (cut..tail.len())
+                                        .find(|i| tail.is_char_boundary(*i))
+                                        .unwrap_or(0);
+                                    tail.drain(..cut);
+                                }
+                            }
                         }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
                     }
                 }
             });
         }
         Ok(Self {
-            child,
-            stdin,
+            child: Some(child),
+            writer: Some(writer),
             lines,
             parked: HashMap::new(),
             stderr: stderr_tail,
@@ -297,13 +375,34 @@ impl StdioTransport {
         self.stderr.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
+    /// A handle on the stderr tail that outlives the transport — what a
+    /// connect reads *after* the handshake failed, when there is something
+    /// in it.
+    #[must_use]
+    pub fn stderr_handle(&self) -> Arc<Mutex<String>> {
+        Arc::clone(&self.stderr)
+    }
+
+    /// Stop the server now, in the spec's order — close its stdin, give it
+    /// `grace` to exit, `SIGTERM` its process group, `grace` again, then
+    /// `SIGKILL` — and reap it, anything it left running in its group going
+    /// with it.
+    pub fn shutdown(&mut self, grace: Duration) {
+        drop(self.writer.take());
+        if let Some(child) = self.child.take() {
+            stop_server(child, grace);
+        }
+    }
+
     fn send(&mut self, message: &Value) -> Result<(), TransportError> {
         let mut line = message.to_string();
         line.push('\n');
-        self.stdin
-            .write_all(line.as_bytes())
-            .and_then(|()| self.stdin.flush())
-            .map_err(|e| TransportError::Failed(format!("could not write to the server: {e}")))
+        match &self.writer {
+            Some(writer) if writer.send(line.into_bytes()).is_ok() => Ok(()),
+            // The writer thread is gone: the pipe broke, so the child died —
+            // explain with its stderr rather than a bare broken pipe.
+            _ => Err(self.exit_error()),
+        }
     }
 
     /// A dead child's story: wait briefly for it to be reaped (so the stderr
@@ -311,11 +410,13 @@ impl StdioTransport {
     /// itself instead of reading as a bare broken pipe.
     fn exit_error(&mut self) -> TransportError {
         let waited = Instant::now();
-        while waited.elapsed() < Duration::from_millis(500) {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => std::thread::sleep(POLL),
-                Err(_) => break,
+        if let Some(child) = self.child.as_mut() {
+            while waited.elapsed() < Duration::from_millis(500) {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => std::thread::sleep(POLL),
+                    Err(_) => break,
+                }
             }
         }
         // One more beat for the stderr thread to flush its last read.
@@ -329,6 +430,24 @@ impl StdioTransport {
         }
     }
 
+    /// Tell the server a request was given up on — on stdio there is no
+    /// stream to close, so this is the only way it learns (a MUST in
+    /// 2026-07-28, the 2025-11-25 cancellation in a legacy session). Never
+    /// for `initialize`, which a legacy client may not cancel.
+    fn cancel_request(&mut self, id: u64, method: &str, why: &TransportError) {
+        if method == "initialize" {
+            return;
+        }
+        let reason = match why {
+            TransportError::Timeout => "the request timed out",
+            _ => "the user cancelled the request",
+        };
+        let _ = self.send(&notification(
+            "notifications/cancelled",
+            json!({"requestId": id, "reason": reason}),
+        ));
+    }
+
     fn request(
         &mut self,
         method: &str,
@@ -336,41 +455,56 @@ impl StdioTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        // A turn already cancelled sends nothing: a side-effecting call the
+        // user pressed Esc on must not run anyway.
+        if cancel.is_cancelled() {
+            return Err(TransportError::Cancelled);
+        }
         let id = self.next_id;
         self.next_id += 1;
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        if self.send(&request(id, method, params)).is_err() {
-            // A write to a closed pipe: the child died — explain with its
-            // stderr rather than a bare broken-pipe message.
-            return Err(self.exit_error());
-        }
+        self.send(&request(id, method, params))?;
         if let Some(result) = self.parked.remove(&id) {
             return result.map_err(TransportError::Rpc);
         }
         let started = Instant::now();
         loop {
-            let line = wait_channel(&self.lines, started, deadline, cancel).map_err(|e| {
-                match e {
-                    // A closed pipe usually means the child died — say so
-                    // with its stderr.
-                    TransportError::Failed(_) => self.exit_error(),
-                    other => other,
+            let line = match wait_channel(&self.lines, started, deadline, cancel) {
+                Ok(Ok(line)) => line,
+                Ok(Err(unreadable)) => return Err(TransportError::Failed(unreadable)),
+                // A closed pipe usually means the child died — say so with
+                // its stderr.
+                Err(TransportError::Failed(_)) => return Err(self.exit_error()),
+                Err(given_up) => {
+                    self.cancel_request(id, method, &given_up);
+                    return Err(given_up);
                 }
-            })?;
+            };
             match parse_incoming(&line) {
                 Some(Incoming::Response { id: got, result }) if got == id => {
                     return result.map_err(TransportError::Rpc);
                 }
-                Some(Incoming::Response { id: got, result }) => {
+                // An answer to a request not waited on yet — kept for it.
+                Some(Incoming::Response { id: got, result }) if got > id => {
                     self.parked.insert(got, result);
                 }
                 // An error the server could not tie to an id: with one
                 // request in flight, it is this one's answer.
                 Some(Incoming::OrphanError(error)) => return Err(TransportError::Rpc(error)),
-                Some(Incoming::Request { .. } | Incoming::Other) | None => {}
+                // A legacy server's own request — `ping`, most likely — is
+                // owed an answer; a modern client MUST NOT send responses.
+                Some(Incoming::Request {
+                    id: asked,
+                    method: asked_for,
+                }) if self.modern.is_none() => {
+                    let _ = self.send(&server_request_answer(&asked, &asked_for));
+                }
+                // A late answer to a request already given up on, a
+                // notification, noise: ignored.
+                _ => {}
             }
         }
     }
@@ -382,8 +516,141 @@ impl StdioTransport {
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Off the dropping thread — a reconnect or a disable from the UI
+        // must not wait out a server's grace period.
+        let writer = self.writer.take();
+        if let Some(child) = self.child.take() {
+            std::thread::spawn(move || {
+                drop(writer);
+                stop_server(child, SHUTDOWN_GRACE);
+            });
+        }
+    }
+}
+
+/// The spec's shutdown sequence for a server whose stdin is already closed:
+/// `grace` to exit on its own, `SIGTERM` to its process group and `grace`
+/// again, then `SIGKILL`. A server that exits cleanly still has its group
+/// cleared — an `npx` wrapper's real server, a `sleep &` it forgot.
+fn stop_server(mut child: Child, grace: Duration) {
+    if wait_exit(&mut child, grace) {
+        #[cfg(unix)]
+        if crate::subprocess::group_outlives(&child) {
+            signal_group(&child, rustix::process::Signal::TERM);
+            std::thread::sleep(POLL * 5);
+            crate::subprocess::kill_process_group(&mut child);
+        }
+        return;
+    }
+    #[cfg(unix)]
+    {
+        signal_group(&child, rustix::process::Signal::TERM);
+        if wait_exit(&mut child, grace) {
+            if crate::subprocess::group_outlives(&child) {
+                crate::subprocess::kill_process_group(&mut child);
+            }
+            return;
+        }
+    }
+    crate::subprocess::kill_process_group(&mut child);
+}
+
+/// Wait up to `grace` for `child` to exit (reaping it) — `true` if it did.
+fn wait_exit(child: &mut Child, grace: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if started.elapsed() < grace => std::thread::sleep(POLL),
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
+/// Send `signal` to `child`'s process group — the server leads its own
+/// (`setsid`, or `process_group(0)` on the attached tier), so its pid is the
+/// group's. Best-effort, like every other kill here.
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: rustix::process::Signal) {
+    if let Some(pgid) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(pgid, signal);
+    }
+}
+
+/// The shell line a stdio server is launched with: `exec` and the command
+/// line, each word quoted for a POSIX shell — the shell *becomes* the
+/// server, so the pid the tier walk returns is the server's own.
+fn exec_line(command: &str, args: &[String]) -> String {
+    let mut line = String::from("exec");
+    for word in std::iter::once(command).chain(args.iter().map(String::as_str)) {
+        line.push(' ');
+        line.push_str(&shell_word(word));
+    }
+    line
+}
+
+/// One word quoted for a POSIX shell: bare when it holds only characters no
+/// shell treats specially, else single-quoted with `'` written `'\''`.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./=:,@%+-".contains(&b));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// Is `command` something the launch can run — a path to an executable
+/// file (relative ones against `cwd`), or a program on the `PATH` the
+/// server will get (the config's own, else the session's)?
+fn command_exists(
+    command: &str,
+    env: &BTreeMap<String, String>,
+    cwd: Option<&std::path::Path>,
+) -> bool {
+    use crate::subprocess::{find_on_path, is_executable_file};
+    if command.contains('/') {
+        let path = std::path::Path::new(command);
+        return match cwd {
+            Some(cwd) if path.is_relative() => is_executable_file(&cwd.join(path)),
+            _ => is_executable_file(path),
+        };
+    }
+    let path = env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+    find_on_path(command, path.as_deref(), is_executable_file).is_some()
+}
+
+/// What every tier's `Command` gets before a stdio server's launch: stdin
+/// piped (the shared detach default is `/dev/null`), the config's `env`
+/// over the session's — the herdr pane id already dropped by the tier
+/// (`docs/herdr.md`; a server can be an agent whose herdr hook would take
+/// the TUI's pane over), so only a config that sets it on purpose passes
+/// one — and `cwd`.
+fn stdio_configure(
+    env: &BTreeMap<String, String>,
+    cwd: Option<&std::path::Path>,
+) -> impl Fn(&mut Command) + use<> {
+    let env = env.clone();
+    let cwd = cwd.map(std::path::Path::to_path_buf);
+    move |cmd: &mut Command| {
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in &env {
+            cmd.env(key, value);
+        }
+        if let Some(cwd) = &cwd {
+            cmd.current_dir(cwd);
+        }
     }
 }
 
@@ -1249,32 +1516,6 @@ fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError
     Ok(resolved.to_string())
 }
 
-/// The command a stdio server runs as: piped stdio, the session
-/// environment with the config's `env` overlaid, in `cwd` — minus the herdr
-/// pane, which is the TUI's own: a server that is an agent of its own
-/// (`codex mcp-server`) would take it over with its herdr hook
-/// (`docs/herdr.md`). What the config itself sets still wins.
-fn stdio_command(
-    command: &str,
-    args: &[String],
-    env: &BTreeMap<String, String>,
-    cwd: Option<&std::path::Path>,
-) -> Command {
-    let mut cmd = Command::new(command);
-    cmd.args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    cmd.env_remove(crate::herdr::PANE_ID_ENV);
-    for (key, value) in env {
-        cmd.env(key, value);
-    }
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
-    cmd
-}
-
 /// Flatten a body to one bounded line for an error message.
 fn one_line(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1291,12 +1532,22 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The command a tier launches, configured the way a stdio server's is.
+    fn configured(env: &BTreeMap<String, String>) -> Command {
+        let mut cmd = crate::subprocess::command_for(
+            &crate::subprocess::DetachTier::SetsidBinary,
+            &exec_line("codex", &["mcp-server".to_string()]),
+        );
+        stdio_configure(env, None)(&mut cmd);
+        cmd
+    }
+
     #[test]
     fn a_stdio_server_never_inherits_the_herdr_pane() {
         // A server can be an agent of its own (`codex mcp-server`), whose
         // herdr hook would take the TUI's pane over (`docs/herdr.md`).
         let pane = std::ffi::OsStr::new(crate::herdr::PANE_ID_ENV);
-        let command = stdio_command("codex", &["mcp-server".to_string()], &BTreeMap::new(), None);
+        let command = configured(&BTreeMap::new());
         assert!(
             command
                 .get_envs()
@@ -1306,11 +1557,23 @@ mod tests {
         );
         // What the server's own config sets is still what it gets.
         let env = BTreeMap::from([(crate::herdr::PANE_ID_ENV.to_string(), "w1:p9".to_string())]);
-        let command = stdio_command("codex", &[], &env, None);
+        let command = configured(&env);
         assert!(
             command
                 .get_envs()
                 .any(|(name, value)| name == pane && value == Some(std::ffi::OsStr::new("w1:p9")))
+        );
+    }
+
+    #[test]
+    fn the_launch_line_execs_the_command_quoted_for_the_shell() {
+        assert_eq!(
+            exec_line("npx", &["-y".into(), "@scope/pkg@1.2".into()]),
+            "exec npx -y @scope/pkg@1.2"
+        );
+        assert_eq!(
+            exec_line("my server", &["it's".into(), String::new(), "$HOME".into()]),
+            r"exec 'my server' 'it'\''s' '' '$HOME'"
         );
     }
 
@@ -1328,6 +1591,7 @@ mod tests {
                 format!("cat > /dev/null & {prints}sleep 5"),
             ],
             &BTreeMap::new(),
+            None,
             None,
         )
         .expect("spawn sh")
@@ -1376,6 +1640,7 @@ mod tests {
             &["-c".to_string(), "echo boom >&2; exit 1".to_string()],
             &BTreeMap::new(),
             None,
+            None,
         )
         .expect("spawn");
         std::thread::sleep(Duration::from_millis(200));
@@ -1406,12 +1671,211 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    /// A `sh` server running `script`, its stdin piped to it — for the
+    /// fixtures that read what the client wrote.
+    fn stdio_script(script: &str) -> StdioTransport {
+        StdioTransport::spawn(
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            &BTreeMap::new(),
+            None,
+            None,
+        )
+        .expect("spawn sh")
+    }
+
+    /// A file in a fresh temp dir, for a fixture to write what it saw.
+    fn fixture_file(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(name);
+        (dir, path)
+    }
+
+    fn wait_for_file(path: &std::path::Path, needle: &str) -> String {
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && text.contains(needle)
+            {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// On stdio there is no stream to close: a request given up on — Esc or
+    /// its deadline — "MUST" be cancelled with `notifications/cancelled`
+    /// naming it, or the server keeps working on a call nobody awaits.
+    #[test]
+    fn a_request_given_up_on_is_cancelled_on_the_server() {
+        let (_dir, seen) = fixture_file("seen");
+        let mut t = stdio_script(&format!("cat > '{}'", seen.display()));
+        let outcome = t.request(
+            "tools/call",
+            json!({"name": "slow"}),
+            Duration::from_millis(200),
+            &CancelToken::new(),
+        );
+        assert_eq!(outcome, Err(TransportError::Timeout));
+        let text = wait_for_file(&seen, "notifications/cancelled");
+        let cancelled = text
+            .lines()
+            .find(|line| line.contains("notifications/cancelled"))
+            .unwrap_or_else(|| panic!("never cancelled: {text}"));
+        let cancelled: Value = serde_json::from_str(cancelled).unwrap();
+        assert_eq!(cancelled["params"]["requestId"], json!(1));
+        // And a turn already cancelled sends nothing at all.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert_eq!(
+            t.request("tools/call", json!({}), Duration::from_secs(1), &cancel),
+            Err(TransportError::Cancelled)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let text = std::fs::read_to_string(&seen).unwrap_or_default();
+        assert_eq!(text.matches("tools/call").count(), 1, "{text}");
+    }
+
+    /// A server that stops reading its stdin (busy in a synchronous tool)
+    /// fills the pipe; a request bigger than the pipe used to block the
+    /// turn's thread in `write_all` for good, Esc and deadline alike.
+    #[test]
+    fn a_server_that_stops_reading_cannot_wedge_a_call() {
+        let mut t = stdio_script("sleep 30");
+        let big = "x".repeat(512 * 1024);
+        let started = Instant::now();
+        let outcome = t.request(
+            "tools/call",
+            json!({"name": "t", "arguments": {"blob": big}}),
+            Duration::from_millis(500),
+            &CancelToken::new(),
+        );
+        assert_eq!(outcome, Err(TransportError::Timeout));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// One line of bytes that aren't UTF-8 (a log line in Latin-1) used to
+    /// end the reader thread, and with it the session.
+    #[test]
+    fn invalid_utf8_on_stdout_does_not_end_the_session() {
+        let mut t = stdio_script(
+            r#"cat > /dev/null & printf '\377\376 not utf-8\n'; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'; sleep 5"#,
+        );
+        let answer = t
+            .request(
+                "x",
+                Value::Null,
+                Duration::from_secs(5),
+                &CancelToken::new(),
+            )
+            .expect("still talking");
+        assert_eq!(answer, json!({"ok": true}));
+    }
+
+    /// A legacy server may `ping` before it answers, waiting for the reply
+    /// — JSON-RPC's "MUST reply". Unanswered, the request sat out its whole
+    /// deadline.
+    #[test]
+    fn a_legacy_ping_on_stdio_is_answered() {
+        let mut t = stdio_script(
+            r#"read -r request
+printf '%s\n' '{"jsonrpc":"2.0","id":"p1","method":"ping"}'
+read -r pong
+case "$pong" in
+  *'"id":"p1"'*'"result":{}'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"ponged":true}}' ;;
+esac
+sleep 5"#,
+        );
+        let answer = t
+            .request(
+                "tools/call",
+                json!({}),
+                Duration::from_secs(5),
+                &CancelToken::new(),
+            )
+            .expect("answered after the pong");
+        assert_eq!(answer, json!({"ponged": true}));
+    }
+
+    /// A stdio server is a process of its own session, with no controlling
+    /// terminal — the bug class `docs/tty-detach.md` fixed for shells: a
+    /// server running `sudo` or an SSH prompt opened `/dev/tty` and read the
+    /// keystrokes meant for the TUI.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stdio_server_leads_its_own_session() {
+        let mut t = stdio_script(
+            r#"read -r request
+sid=$(cut -d' ' -f6 /proc/$$/stat)
+printf '{"jsonrpc":"2.0","id":1,"result":{"pid":%s,"sid":%s}}\n' "$$" "$sid"
+sleep 5"#,
+        );
+        let answer = t
+            .request(
+                "x",
+                Value::Null,
+                Duration::from_secs(5),
+                &CancelToken::new(),
+            )
+            .expect("answer");
+        assert_eq!(answer["pid"], answer["sid"], "{answer}");
+    }
+
+    /// Shutdown is the spec's order — close stdin, let the server exit on
+    /// its own, then SIGTERM, then SIGKILL — and takes the whole process
+    /// group: `npx`/`uvx` wrappers run the real server as a grandchild.
+    #[test]
+    fn shutdown_closes_input_first_and_takes_the_whole_group() {
+        let (_dir, seen) = fixture_file("events");
+        // On EOF the server takes a moment to wind down, then exits on its
+        // own — which only a stop that waits before it signals lets it do.
+        let script = format!(
+            r#"sleep 30 &
+echo "child $!" > '{seen}'
+while IFS= read -r line; do :; done
+sleep 0.2
+echo clean >> '{seen}'"#,
+            seen = seen.display()
+        );
+        let mut t = stdio_script(&script);
+        let text = wait_for_file(&seen, "child");
+        let grandchild: i32 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|pid| pid.parse().ok())
+            .expect("the background child's pid");
+        t.shutdown(Duration::from_secs(2));
+        let events = std::fs::read_to_string(&seen).unwrap();
+        assert!(
+            events.contains("clean"),
+            "never exited on its own: {events}"
+        );
+        #[cfg(unix)]
+        {
+            let pid = rustix::process::Pid::from_raw(grandchild).unwrap();
+            let mut gone = false;
+            for _ in 0..100 {
+                if rustix::process::test_kill_process(pid).is_err() {
+                    gone = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(gone, "the server's background child outlived it");
+        }
+    }
+
     #[test]
     fn a_spawn_failure_names_the_command() {
         match StdioTransport::spawn(
             "definitely-not-a-real-binary-xyz",
             &[],
             &BTreeMap::new(),
+            None,
             None,
         ) {
             Err(TransportError::Failed(detail)) => {

@@ -118,6 +118,9 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
         cwd: Some(cwd.to_path_buf()),
+        // This binary, for the tier that detaches a stdio server where no
+        // `setsid` binary exists (`docs/tty-detach.md`) — the shells' helper.
+        detach_helper: std::env::current_exe().ok(),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
     }

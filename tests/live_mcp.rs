@@ -71,6 +71,7 @@ fn connected_server(name: &str, url: &str) -> McpManager {
             user_file: None,
             auth_path: None,
             cwd: None,
+            detach_helper: None,
             startup_timeout: Duration::from_secs(30),
             tool_timeout: Duration::from_secs(120),
         },

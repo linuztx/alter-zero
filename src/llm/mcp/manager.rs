@@ -19,7 +19,7 @@ use crate::mcp::{
 };
 use crate::stream::CancelToken;
 
-use super::client::{ConnectError, connect};
+use super::client::{ConnectError, connect_with_helper};
 use super::oauth::{self, AuthProgress};
 use super::transport::{Transport, TransportError};
 use crate::llm::tools::{ToolCallRequest, ToolOutcome};
@@ -74,6 +74,10 @@ pub struct McpSources {
     pub auth_path: Option<PathBuf>,
     /// The session cwd stdio children run in.
     pub cwd: Option<PathBuf>,
+    /// This binary, for the launch tier that re-execs it to detach a stdio
+    /// server from the terminal where no `setsid` binary exists — resolved at
+    /// the boundary, never in a test binary (`docs/tty-detach.md`).
+    pub detach_helper: Option<PathBuf>,
     pub startup_timeout: Duration,
     pub tool_timeout: Duration,
 }
@@ -87,6 +91,11 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The cancel-poll cadence every blocking wait shares with the transports.
 const POLL: Duration = Duration::from_millis(20);
+
+/// How long a stdio server gets at each shutdown step when the session
+/// quits — to exit once its stdin closes, then once it is sent `SIGTERM` —
+/// shorter than a mid-session stop's, since the user is waiting on it.
+const QUIT_GRACE: Duration = Duration::from_millis(300);
 
 /// How many times a call answered with a `requestState`-only
 /// `input_required` is repeated before its result is reported.
@@ -246,6 +255,7 @@ struct Inner {
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
     cwd: Option<PathBuf>,
+    detach_helper: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
     /// The active auth flow's paste channel + cancel, while one runs.
@@ -317,6 +327,7 @@ impl McpManager {
                 user_file: sources.user_file,
                 auth_path,
                 cwd: sources.cwd,
+                detach_helper: sources.detach_helper,
                 startup_timeout: if sources.startup_timeout.is_zero() {
                     DEFAULT_STARTUP_TIMEOUT
                 } else {
@@ -381,7 +392,7 @@ impl McpManager {
             }
             let (auth_path, cwd, timeout) = (
                 inner.auth_path.clone(),
-                inner.cwd.clone(),
+                (inner.cwd.clone(), inner.detach_helper.clone()),
                 inner.startup_timeout,
             );
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
@@ -426,7 +437,18 @@ impl McpManager {
             let bearer = config
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
-            let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
+            let (cwd, helper) = cwd;
+            let launch = |bearer: Option<String>| {
+                connect_with_helper(
+                    &config,
+                    bearer,
+                    cwd.as_deref(),
+                    helper.as_deref(),
+                    timeout,
+                    &cancel,
+                )
+            };
+            let mut result = launch(bearer);
             // A 401 with a stored grant gets one forced refresh and one
             // retry before anyone is asked to re-authenticate — an access
             // token expiring between sessions is ordinary, not an auth
@@ -444,13 +466,7 @@ impl McpManager {
                     oauth::load_tokens(auth_path.as_deref(), url).map(|t| t.access_token);
                 match oauth::refresh_grant(auth_path.as_deref(), url, presented.as_deref()) {
                     Ok(tokens) => {
-                        result = connect(
-                            &config,
-                            Some(tokens.access_token),
-                            cwd.as_deref(),
-                            timeout,
-                            &cancel,
-                        );
+                        result = launch(Some(tokens.access_token));
                     }
                     Err(oauth::RefreshFailure::Transient(detail)) => {
                         transient_refresh = Some(detail);
@@ -1014,15 +1030,44 @@ impl McpManager {
         }
     }
 
-    /// Tear every connection down (session shutdown — kills stdio children).
+    /// Tear every connection down (session shutdown). Every stdio server is
+    /// stopped the spec's way — its stdin closed so it can exit on its own
+    /// (a server saving state on EOF gets to), then `SIGTERM`, then
+    /// `SIGKILL`, its whole process group with it — all of them at once and
+    /// inside one bound (`QUIT_GRACE` per step), so a quit waits for a well-behaved
+    /// server and never for a stuck one.
     pub fn shutdown(&self) {
-        let mut inner = self.lock();
-        if let Some(cancel) = inner.auth_cancel.take() {
-            cancel.cancel();
+        let transports: Vec<Arc<Mutex<Transport>>> = {
+            let mut inner = self.lock();
+            if let Some(cancel) = inner.auth_cancel.take() {
+                cancel.cancel();
+            }
+            inner
+                .servers
+                .iter_mut()
+                .filter_map(|server| {
+                    server.generation += 1;
+                    server.transport.take()
+                })
+                .collect()
+        };
+        let (done, finished) = mpsc::channel();
+        let count = transports.len();
+        for transport in transports {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                if let Ok(mut transport) = transport.lock() {
+                    transport.shutdown(QUIT_GRACE);
+                }
+                let _ = done.send(());
+            });
         }
-        for server in &mut inner.servers {
-            server.generation += 1;
-            server.transport = None;
+        let until = std::time::Instant::now() + QUIT_GRACE * 2 + Duration::from_millis(300);
+        for _ in 0..count {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if finished.recv_timeout(left).is_err() {
+                break;
+            }
         }
     }
 }
@@ -1182,6 +1227,54 @@ mod tests {
                 spec["function"]["description"].as_str()
             );
         }
+    }
+
+    /// Quitting stops every stdio server the spec's way — stdin closed first,
+    /// so a server that saves its state on EOF gets to — and has finished by
+    /// the time `shutdown` returns, all of them at once inside one bound.
+    #[test]
+    fn shutdown_lets_a_server_exit_on_its_own_before_returning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marks = dir.path().join("marks");
+        let entry = |name: &str| {
+            let script = format!(
+                r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}},"ttlMs":0,"cacheScope":"public"}}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"public"}}}}\n' "$id" ;;
+  esac
+done
+sleep 0.1
+echo {name} >> '{marks}'"#,
+                marks = marks.display()
+            );
+            McpServerEntry {
+                name: name.to_string(),
+                config: McpServerConfig::Stdio {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), script],
+                    env: Default::default(),
+                },
+                scope: McpScope::User,
+                config_path: "~/.alter-zero/mcp.json".to_string(),
+            }
+        };
+        let (manager, _rx) = manager_with(vec![entry("one"), entry("two")]);
+        manager.start_connections();
+        wait_connected(&manager, "one");
+        wait_connected(&manager, "two");
+        let started = std::time::Instant::now();
+        manager.shutdown();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let marks = std::fs::read_to_string(&marks).unwrap_or_default();
+        assert!(marks.contains("one") && marks.contains("two"), "{marks:?}");
     }
 
     /// A server that started requiring an `x-mcp-header` after we listed its

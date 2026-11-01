@@ -200,6 +200,23 @@ release heading when a version is cut.
   old-style SSE server that names a message endpoint on another address,
   or switches from `https` to `http`, is refused. Each message from a
   server is capped at 16 MB (`docs/mcp.md`).
+- **A local MCP server can no longer take over the terminal.** A server
+  started from your config shared the app's terminal, so one that ran
+  `sudo`, asked for an SSH passphrase or a git credential would print its
+  prompt over the screen and read the keys you typed. Servers now run in a
+  session of their own, the way shell commands and hooks already did, and
+  such a prompt fails at once instead (`docs/tty-detach.md`).
+- **Local MCP servers are stopped gently and completely.** Pressing Esc on
+  a call, or a call timing out, now tells the server to stop working on it.
+  A server that stops reading its input can no longer freeze a call, a log
+  line that isn't valid UTF-8 no longer ends the connection, and an older
+  server that sends a `ping` gets its answer. When a server is stopped it
+  first gets the chance to exit on its own, as the MCP spec asks, then a
+  polite signal, and only then a forced one, and whatever it started goes
+  with it: an `npx` server's real process used to be left running. A
+  failed connection's message now includes what the server printed, and a
+  server that offers only resources or prompts connects with no tools
+  instead of failing (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now
