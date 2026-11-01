@@ -260,7 +260,9 @@ release heading when a version is cut.
   headers use them, as in Claude Code. A server naming a variable that
   isn't set and has no default doesn't start, and `/mcp` names the
   variable; `/mcp` and `alter-zero mcp get` still show the reference, never
-  the value. An empty config file is no longer an error at every start,
+  the value. A project's file can't have the API keys of the providers you
+  use sent to a remote server this way; a server asking for them doesn't
+  start. An empty config file is no longer an error at every start,
   `"type": "streamable-http"` is understood, and a stdio entry missing its
   command says so (`docs/mcp.md`).
 - **An MCP login is no longer lost to a renewal race.** A login server may

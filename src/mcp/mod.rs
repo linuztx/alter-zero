@@ -29,7 +29,7 @@ mod status;
 pub use self::config::{
     McpFile, McpScope, McpServerConfig, McpServerEntry, McpWriteError, expand_config, expand_vars,
     merge_project_scopes, merge_scopes, parse_disabled, parse_mcp_file, parse_server_entry,
-    record_disabled, record_server, remove_server, render_server,
+    record_disabled, record_server, remove_server, render_server, resolve_config,
 };
 pub use self::headers::{
     MCP_PARAM_HEADER_PREFIX, ParamHeader, X_MCP_HEADER_KEY, header_value, param_header_values,

@@ -89,6 +89,10 @@ pub struct McpSources {
     /// What opens the authorize URL in a browser — `None` is the system
     /// launcher; a test passes one that opens nothing.
     pub open_browser: Option<fn(&str)>,
+    /// The session's own credentials' variable names (its providers' API
+    /// keys): a project's remote server may not have them expanded into its
+    /// URL or headers ([`crate::mcp::resolve_config`]).
+    pub protected_env: std::collections::BTreeSet<String>,
 }
 
 /// The default per-server connect budget (both references use 30 s;
@@ -221,8 +225,9 @@ struct ServerState {
     entry: McpServerEntry,
     /// The config a launch uses — the declared one with its `${VAR}`
     /// references expanded from the session's environment
-    /// ([`crate::mcp::expand_config`]) — or why there is none: a variable
-    /// neither set nor defaulted, and the server stays `Failed` with it.
+    /// ([`crate::mcp::resolve_config`]) — or why there is none: a variable
+    /// neither set nor defaulted, or a project's remote server asking for the
+    /// session's own credentials; the server stays `Failed` with it.
     /// `entry.config` stays as written, for the `/mcp` page.
     resolved: Result<McpServerConfig, String>,
     status: McpServerStatus,
@@ -357,8 +362,12 @@ impl McpManager {
                 let held = sources.held.get(&entry.name).copied();
                 // The environment is the session's own, fixed at launch, so
                 // one expansion holds for every connect.
-                let resolved =
-                    crate::mcp::expand_config(&entry.config, &|name| std::env::var(name).ok());
+                let resolved = crate::mcp::resolve_config(
+                    &entry.config,
+                    entry.scope,
+                    &|name| std::env::var(name).ok(),
+                    &|name| sources.protected_env.contains(name),
+                );
                 let has_tokens = resolved
                     .as_ref()
                     .ok()

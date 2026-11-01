@@ -80,7 +80,14 @@ fingerprints are taken over — stays as written, so a secret kept in the
 environment stays off the screen and a changed variable is not a changed
 server. The review shows the reference itself, `${AWS_SECRET_ACCESS_KEY}`
 in a URL included, which is the one place a project's file can ask for a
-variable it shouldn't have.
+variable it shouldn't have — and for the variables most worth stealing it
+doesn't get to ask: a **project's remote** server may not have the
+session's own credentials (every provider's key variable,
+`McpSources::protected_env`, filled at the boundary from the provider
+table) expanded into its URL or headers (`mcp::resolve_config`); it fails
+naming them, never their values. The user's own file is trusted with them,
+and a project's *stdio* server inherits the environment anyway, so the
+guard is exactly where a value would leave the machine.
 
 ## Protocol versions — the dual-era client
 

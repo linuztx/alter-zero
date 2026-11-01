@@ -109,6 +109,14 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
     // The era cache is retired — a connect re-derives the verdict every
     // time now, so the file only ever misleads (`docs/mcp.md`).
     config::remove_retired_mcp_era_cache();
+    // Every provider's key variable — what a project's remote server may not
+    // have expanded into its URL or headers.
+    let (providers, _) = config::startup_providers(home.as_deref());
+    let protected_env = providers
+        .providers
+        .keys()
+        .map(|id| config::key_env_name(&providers, id))
+        .collect();
     McpSources {
         entries,
         errors,
@@ -124,6 +132,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
         open_browser: None,
+        protected_env,
     }
 }
 

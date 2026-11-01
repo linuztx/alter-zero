@@ -75,6 +75,7 @@ fn connected_server(name: &str, url: &str) -> McpManager {
             startup_timeout: Duration::from_secs(30),
             tool_timeout: Duration::from_secs(120),
             open_browser: None,
+            protected_env: Default::default(),
         },
     );
     manager.start_connections();
