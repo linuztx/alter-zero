@@ -13,11 +13,14 @@
 //!   (`{server} - {tool} (MCP)`), and the batch label the live strip shows.
 //! - `protocol` — JSON-RPC framing, `initialize`, `tools/list`,
 //!   `tools/call` shapes and result mapping.
+//! - `headers`  — the streamable-HTTP header value encoding and the
+//!   `x-mcp-header` parameter mirror.
 //! - `sse`      — the Server-Sent-Events parser.
 //! - `status`   — the per-server snapshot the UI consumes, glyphs/labels,
 //!   parameter listings, and the render-time argument pretty-printers.
 
 mod config;
+mod headers;
 mod names;
 mod protocol;
 mod sse;
@@ -27,6 +30,10 @@ pub use self::config::{
     McpFile, McpScope, McpServerConfig, McpServerEntry, McpWriteError, merge_project_scopes,
     merge_scopes, parse_disabled, parse_mcp_file, parse_server_entry, record_disabled,
     record_server, remove_server, render_server,
+};
+pub use self::headers::{
+    MCP_PARAM_HEADER_PREFIX, ParamHeader, X_MCP_HEADER_KEY, header_value, param_header_values,
+    param_headers, strip_header_annotations,
 };
 pub use self::names::{
     MAX_WIRE_NAME_LEN, MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, capitalize_display,
@@ -39,7 +46,7 @@ pub use self::protocol::{
     CallOutcome, ExcludedTool, FOLDED_SCHEMA_NOTE, Incoming, InputRequired,
     LEGACY_PROTOCOL_VERSION, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError,
     SUPPORTED_VERSIONS, ServerIdentity, call_params, call_params_retrying, choose_version,
-    discover_params, header_value, initialize_params, initialize_params_for, input_required,
+    discover_params, initialize_params, initialize_params_for, input_required,
     input_schema_problem, is_modern_error, model_input_schema, notification, parse_call_result,
     parse_discover, parse_incoming, parse_initialize, parse_tools_page, request, request_meta,
     result_type_problem, tools_list_params, unsupported_versions, with_meta,

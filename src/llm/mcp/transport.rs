@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::mcp::{
-    Incoming, LEGACY_PROTOCOL_VERSION, RpcError, SseParser, header_value, initialize_params_for,
-    notification, parse_incoming, request, with_meta,
+    Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, header_value,
+    initialize_params_for, notification, param_header_values, parse_incoming, request, with_meta,
 };
 use crate::stream::CancelToken;
 
@@ -138,6 +138,26 @@ impl Transport {
             Self::Stdio(t) => t.modern = None,
             Self::Http(t) => t.set_legacy(),
             Self::Sse(_) => {}
+        }
+    }
+
+    /// Does this transport mirror `x-mcp-header` parameters into
+    /// `Mcp-Param-{Name}` headers — modern streamable HTTP, the one place
+    /// the spec makes it a MUST (other transports MAY ignore the
+    /// annotation, and a legacy revision never defined it)?
+    #[must_use]
+    pub const fn mirrors_param_headers(&self) -> bool {
+        match self {
+            Self::Http(t) => t.modern.is_some(),
+            Self::Stdio(_) | Self::Sse(_) => false,
+        }
+    }
+
+    /// Record each tool's `x-mcp-header` declarations (by raw tool name) for
+    /// the `tools/call` requests to mirror — a no-op off modern HTTP.
+    pub fn set_param_headers(&mut self, declarations: HashMap<String, Vec<ParamHeader>>) {
+        if let Self::Http(t) = self {
+            t.param_headers = declarations;
         }
     }
 }
@@ -401,6 +421,9 @@ pub struct HttpTransport {
     /// Set while the transport speaks the modern era: the version whose
     /// `_meta` rides every request.
     modern: Option<String>,
+    /// Each tool's `x-mcp-header` declarations, by its raw name — what a
+    /// modern `tools/call` mirrors into `Mcp-Param-{Name}` headers.
+    param_headers: HashMap<String, Vec<ParamHeader>>,
     next_id: u64,
 }
 
@@ -411,6 +434,9 @@ struct ModernHeaders {
     /// `Mcp-Name` — `params.name`/`params.uri` for the three methods that
     /// have one (`tools/call`, `resources/read`, `prompts/get`).
     name: Option<String>,
+    /// The `Mcp-Param-{Name}` headers a `tools/call` mirrors from its
+    /// arguments, already encoded.
+    params: Vec<(String, String)>,
 }
 
 /// What one POST resolved to, off the worker thread.
@@ -438,6 +464,7 @@ impl HttpTransport {
             session: None,
             protocol_version: None,
             modern: None,
+            param_headers: HashMap::new(),
             next_id: 1,
         }
     }
@@ -512,9 +539,18 @@ impl HttpTransport {
                     .map(str::to_string)
             })
             .flatten();
+        let params = match (method, &name) {
+            ("tools/call", Some(tool)) => {
+                self.param_headers.get(tool).map_or_else(Vec::new, |decls| {
+                    param_header_values(decls, params.get("arguments").unwrap_or(&Value::Null))
+                })
+            }
+            _ => Vec::new(),
+        };
         Some(ModernHeaders {
             method: method.to_string(),
             name,
+            params,
         })
     }
 
@@ -670,6 +706,9 @@ fn post_blocking(
         req = req.header("Mcp-Method", header_value(&headers.method));
         if let Some(name) = &headers.name {
             req = req.header("Mcp-Name", header_value(name));
+        }
+        for (header, value) in &headers.params {
+            req = req.header(header.as_str(), value.as_str());
         }
     }
     let response = match req.body(body.to_string()).send() {

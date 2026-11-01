@@ -96,6 +96,46 @@ const MAX_STATE_RETRIES: u32 = 3;
 /// much each time — the first is immediate, as the spec allows.
 const STATE_RETRY_PAUSE: Duration = Duration::from_millis(250);
 
+/// One `tools/call` over a held transport. A `requestState`-only
+/// `input_required` is the server asking for the same call again (load
+/// shedding, 2026-07-28's MRTR): answered by repeating it with the state
+/// echoed — a few times, a little further apart each time, inside `timeout`.
+fn call_once(
+    transport: &mut Transport,
+    tool: &str,
+    arguments: &Value,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> Result<Value, TransportError> {
+    let started = std::time::Instant::now();
+    let mut state: Option<String> = None;
+    let mut retries: u32 = 0;
+    loop {
+        let budget = timeout.saturating_sub(started.elapsed());
+        let result = transport.request(
+            "tools/call",
+            call_params_retrying(tool, arguments, state.as_deref()),
+            budget,
+            cancel,
+        )?;
+        match crate::mcp::input_required(&result) {
+            Some(crate::mcp::InputRequired::Retry { request_state })
+                if retries < MAX_STATE_RETRIES =>
+            {
+                let pause = STATE_RETRY_PAUSE * retries;
+                retries += 1;
+                if pause >= timeout.saturating_sub(started.elapsed())
+                    || !sleep_unless_cancelled(pause, cancel)
+                {
+                    return Ok(result);
+                }
+                state = Some(request_state);
+            }
+            _ => return Ok(result),
+        }
+    }
+}
+
 /// Sleep `pause`, polling `cancel` — `false` when the turn was cancelled.
 fn sleep_unless_cancelled(pause: Duration, cancel: &CancelToken) -> bool {
     let started = std::time::Instant::now();
@@ -811,10 +851,12 @@ impl McpManager {
                     server.entry.config.url().map(str::to_string),
                     inner.auth_path.clone(),
                     inner.tool_timeout,
+                    server.generation,
                 ))
             })
         };
-        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout)) = lookup
+        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout, generation)) =
+            lookup
         else {
             return ToolOutcome::error(format!(
                 "unknown MCP tool: {} (run /mcp to see the connected servers)",
@@ -826,43 +868,35 @@ impl McpManager {
             Err(_) if call.arguments.trim().is_empty() => Value::Object(Default::default()),
             Err(e) => return ToolOutcome::error(format!("invalid tool arguments: {e}")),
         };
-        let request = |refreshed_bearer: Option<String>| {
+        // What a `-32020 HeaderMismatch` made us list again, for the server
+        // state once the call is over.
+        let mut relisted: Option<(Vec<McpToolInfo>, Vec<crate::mcp::ExcludedTool>)> = None;
+        let mut request = |refreshed_bearer: Option<String>| {
             let mut transport = transport
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(bearer) = refreshed_bearer {
                 transport.set_bearer(Some(bearer));
             }
-            // A `requestState`-only `input_required` is the server asking
-            // for the same call again (load shedding, 2026-07-28's MRTR):
-            // answered by repeating it with the state echoed — a few times,
-            // a little further apart each time, inside the call's budget.
             let started = std::time::Instant::now();
-            let mut state: Option<String> = None;
-            let mut retries: u32 = 0;
-            loop {
-                let budget = timeout.saturating_sub(started.elapsed());
-                let result = transport.request(
-                    "tools/call",
-                    call_params_retrying(&raw_tool, &arguments, state.as_deref()),
-                    budget,
-                    cancel,
-                )?;
-                match crate::mcp::input_required(&result) {
-                    Some(crate::mcp::InputRequired::Retry { request_state })
-                        if retries < MAX_STATE_RETRIES =>
-                    {
-                        let pause = STATE_RETRY_PAUSE * retries;
-                        retries += 1;
-                        if pause >= timeout.saturating_sub(started.elapsed())
-                            || !sleep_unless_cancelled(pause, cancel)
-                        {
-                            return Ok(result);
+            match call_once(&mut transport, &raw_tool, &arguments, timeout, cancel) {
+                // The server wants headers the listing we hold didn't mark —
+                // its schemas changed. The spec's answer: list again, then
+                // retry the call once with what the fresh listing says.
+                Err(TransportError::Rpc(error))
+                    if error.code == -32020 && transport.mirrors_param_headers() =>
+                {
+                    let budget = timeout.saturating_sub(started.elapsed());
+                    match super::client::list_tools(&mut transport, budget, cancel) {
+                        Ok(listing) => {
+                            relisted = Some(listing);
+                            let budget = timeout.saturating_sub(started.elapsed());
+                            call_once(&mut transport, &raw_tool, &arguments, budget, cancel)
                         }
-                        state = Some(request_state);
+                        Err(_) => Err(TransportError::Rpc(error)),
                     }
-                    _ => return Ok(result),
                 }
+                other => other,
             }
         };
         // Proactive: a grant inside its expiry skew refreshes *before* the
@@ -918,6 +952,20 @@ impl McpManager {
                 }
                 Err(_) => {} // no grant / a cleared dead one: fall through to needs-auth
             }
+        }
+        if let Some((tools, excluded)) = relisted {
+            {
+                let mut inner = self.lock();
+                if let Some(server) = inner
+                    .servers
+                    .iter_mut()
+                    .find(|s| s.entry.name == server_name && s.generation == generation)
+                {
+                    server.tools = tools;
+                    server.excluded = excluded;
+                }
+            }
+            self.notify(McpEvent::Changed);
         }
         match result {
             Ok(result) => {
@@ -1133,6 +1181,118 @@ mod tests {
                 spec["function"]["description"].as_str()
             );
         }
+    }
+
+    /// A server that started requiring an `x-mcp-header` after we listed its
+    /// tools answers the call `400 HeaderMismatch`. The client re-lists
+    /// ("SHOULD call `tools/list` to check for changes"), records what it
+    /// learned, and retries the call once with the header.
+    #[test]
+    fn a_header_mismatch_relists_the_tools_and_retries_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let mut lists = 0;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let (mut length, mut region) = (0usize, None::<String>);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("mcp-param-region:") {
+                        region = header.split_once(':').map(|(_, v)| v.trim().to_string());
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                let (status, reply) = match parsed["method"].as_str().unwrap_or_default() {
+                    "server/discover" => (
+                        "200 OK",
+                        serde_json::json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"resultType": "complete", "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}}, "ttlMs": 0, "cacheScope": "public"}}),
+                    ),
+                    "tools/list" => {
+                        lists += 1;
+                        let region_schema = if lists == 1 {
+                            serde_json::json!({"type": "string"})
+                        } else {
+                            serde_json::json!({"type": "string", "x-mcp-header": "Region"})
+                        };
+                        (
+                            "200 OK",
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                            "resultType": "complete", "ttlMs": 0, "cacheScope": "public",
+                            "tools": [{"name": "query", "inputSchema": {"type": "object",
+                                "properties": {"region": region_schema}}}]}}),
+                        )
+                    }
+                    "tools/call"
+                        if region.as_deref()
+                            == parsed["params"]["arguments"]["region"].as_str() =>
+                    {
+                        (
+                            "200 OK",
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                            "resultType": "complete",
+                            "content": [{"type": "text", "text": "routed"}]}}),
+                        )
+                    }
+                    _ => (
+                        "400 Bad Request",
+                        serde_json::json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32020, "message": "Mcp-Param-Region missing"}}),
+                    ),
+                };
+                let reply = reply.to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let entry = McpServerEntry {
+            name: "gw".to_string(),
+            config: McpServerConfig::Http {
+                url: format!("http://127.0.0.1:{port}/mcp"),
+                headers: Default::default(),
+                sse_fallback: false,
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
+        manager.start_connections();
+        wait_connected(&manager, "gw");
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__gw__query".to_string(),
+            arguments: r#"{"region":"eu-west1"}"#.to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "routed");
+        // The fresh listing replaced the stale one on the snapshot.
+        let schema = &manager.snapshot()[0].tools[0].input_schema;
+        assert_eq!(schema["properties"]["region"]["x-mcp-header"], "Region");
+        manager.shutdown();
     }
 
     /// A modern server shedding load answers `input_required` with only a

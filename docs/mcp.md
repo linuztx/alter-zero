@@ -155,9 +155,8 @@ in **`src/llm/mcp/`**.
   `discover_params`/`parse_discover` (`server/discover`, whose `serverInfo`
   rides the result's `_meta`, never a top-level field), `is_modern_error`
   (the `-32020`/`-32021`/`-32022` allowlist era detection keys on),
-  `unsupported_versions` + `choose_version` (the `-32022` negotiation),
-  `header_value` (the `Mcp-Method`/`Mcp-Name` header encoding with the
-  `=?base64?…?=` sentinel for non-header-safe names) — and the legacy side:
+  `unsupported_versions` + `choose_version` (the `-32022` negotiation) —
+  and the legacy side:
   the `initialize` params (`initialize_params_for`, proposing
   `LEGACY_PROTOCOL_VERSION` `2025-11-25` by default) and result parse
   (`ServerIdentity`: the settled `protocol_version`, name, version,
@@ -204,6 +203,25 @@ in **`src/llm/mcp/`**.
   roots this client never declared (`InputRequired::Unsupported`) and
   resolve as a red outcome that names them. A `-32021`'s
   `requiredCapabilities` ride the error text the model reads.
+- `mcp::headers` — the streamable-HTTP request-metadata headers:
+  `header_value` (the `Mcp-Name`/`Mcp-Param-{Name}` value encoding, the
+  `=?base64?…?=` sentinel around a value that isn't plain printable ASCII,
+  has whitespace at an end, matches that sentinel shape, or is empty — an
+  intermediary may drop an empty header, every server decodes the
+  sentinel) and **`x-mcp-header`** (2026-07-28, SEP-2243: a tool marking
+  parameters whose values must also ride the request as headers, for a
+  gateway that routes without reading bodies — a MUST for a client on
+  streamable HTTP). `param_headers` reads a tool's declarations or refuses
+  the tool, the reference TypeScript SDK's rules exactly: an RFC 9110
+  token for a name, case-insensitively unique, on a property typed
+  `string`, `integer` or `boolean` (no `number`, no type union) that a
+  chain of `properties` keys reaches — an annotation under `items`, a
+  combinator, a conditional or `$defs` makes the tool invalid.
+  `param_header_values` reads each value at its exact path (absent or
+  `null` → no header; a non-primitive or an integer past 2^53 − 1 → none
+  rather than a malformed one), and `strip_header_annotations` takes them
+  out of the model's copy of the schema, schema-aware (a *property named*
+  `x-mcp-header` stays).
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,
   multi-line data, comment lines) shared by both HTTP transports; pure over
   `&str` pushes, tested without a socket.
@@ -277,9 +295,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     thereafter, with the `MCP-Protocol-Version` header once settled;
     **modern mode** is stateless — the `_meta` block in every request, the
     version header from the first probe (it MUST match the `_meta`), plus
-    `Mcp-Method` on every request and `Mcp-Name` on `tools/call` (the
-    `header_value` sentinel encoding for non-header-safe names), and no
-    sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
+    `Mcp-Method` on every request, `Mcp-Name` on `tools/call` (the
+    `header_value` sentinel encoding for non-header-safe names) and the
+    tool's `Mcp-Param-{Name}` mirrors, and no sessions. The connect's
+    tools listing (`client::list_tools`, shared by both eras) refuses a tool
+    whose `x-mcp-header` annotations break the rules — an `ExcludedTool`
+    like any other, so it costs only itself — and arms the transport with
+    the rest's declarations; a call the server still refuses `400
+    HeaderMismatch` (`-32020`) lists the tools again, records the fresh
+    listing, and is retried once, the spec's SHOULD (a changed schema is
+    the usual cause). A 4xx whose body parses as a JSON-RPC error surfaces as that
     error (a modern server answers version/header problems as `400` + a
     modern error body), else as the refusal the SSE fallback keys on;
     notifications POST and ignore the body. A **404 to a request that

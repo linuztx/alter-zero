@@ -15,16 +15,16 @@
 //! merely timed out — a proxy blip, a server still booting — wrote that
 //! verdict just as permanently.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::mcp::{
     ExcludedTool, LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION,
-    ServerIdentity, choose_version, discover_params, initialize_params_for, input_schema_problem,
-    is_modern_error, parse_discover, parse_initialize, parse_tools_page, result_type_problem,
-    tools_list_params, unsupported_versions,
+    ParamHeader, ServerIdentity, choose_version, discover_params, initialize_params_for,
+    input_schema_problem, is_modern_error, param_headers, parse_discover, parse_initialize,
+    parse_tools_page, result_type_problem, tools_list_params, unsupported_versions,
 };
 use crate::stream::CancelToken;
 
@@ -278,6 +278,25 @@ fn finish(
     deadline: Duration,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
+    let (tools, excluded) = list_tools(&mut transport, deadline, cancel)?;
+    Ok(Connection {
+        transport,
+        identity,
+        tools,
+        excluded,
+    })
+}
+
+/// List a settled transport's tools — every page — set aside the ones the
+/// model can't be offered, and arm the transport's `x-mcp-header` mirror
+/// with the rest's declarations. What a connect ends on, and what a call
+/// refused with `-32020 HeaderMismatch` runs again before its one retry
+/// (the spec's "SHOULD call `tools/list` to check for changes").
+pub(super) fn list_tools(
+    transport: &mut Transport,
+    deadline: Duration,
+    cancel: &CancelToken,
+) -> Result<(Vec<McpToolInfo>, Vec<ExcludedTool>), ConnectError> {
     let mut tools: Vec<McpToolInfo> = Vec::new();
     let mut listed: HashSet<String> = HashSet::new();
     let mut cursor: Option<String> = None;
@@ -317,30 +336,52 @@ fn finish(
             _ => break,
         }
     }
-    let (tools, excluded) = set_aside_unusable(tools);
-    Ok(Connection {
-        transport,
-        identity,
-        tools,
-        excluded,
-    })
+    let (tools, excluded, declarations) =
+        set_aside_unusable(tools, transport.mirrors_param_headers());
+    transport.set_param_headers(declarations);
+    Ok((tools, excluded))
 }
 
 /// Split a listing into the tools the model can be offered and the ones no
-/// repair makes usable ([`input_schema_problem`]).
-fn set_aside_unusable(tools: Vec<McpToolInfo>) -> (Vec<McpToolInfo>, Vec<ExcludedTool>) {
+/// repair makes usable ([`input_schema_problem`]) — and, when the transport
+/// mirrors `x-mcp-header` parameters (`mirror`), each usable tool's
+/// declarations, a tool whose annotations break the rules being one the
+/// client MUST refuse ([`param_headers`]).
+fn set_aside_unusable(
+    tools: Vec<McpToolInfo>,
+    mirror: bool,
+) -> (
+    Vec<McpToolInfo>,
+    Vec<ExcludedTool>,
+    HashMap<String, Vec<ParamHeader>>,
+) {
     let mut usable = Vec::with_capacity(tools.len());
     let mut excluded = Vec::new();
+    let mut declarations = HashMap::new();
     for tool in tools {
-        match input_schema_problem(&tool.input_schema) {
-            None => usable.push(tool),
-            Some(reason) => excluded.push(ExcludedTool {
+        let problem = input_schema_problem(&tool.input_schema)
+            .map(Err)
+            .unwrap_or_else(|| {
+                if mirror {
+                    param_headers(&tool.input_schema)
+                } else {
+                    Ok(Vec::new())
+                }
+            });
+        match problem {
+            Ok(headers) => {
+                if !headers.is_empty() {
+                    declarations.insert(tool.name.clone(), headers);
+                }
+                usable.push(tool);
+            }
+            Err(reason) => excluded.push(ExcludedTool {
                 name: tool.name,
                 reason,
             }),
         }
     }
-    (usable, excluded)
+    (usable, excluded, declarations)
 }
 
 #[cfg(test)]
@@ -1111,6 +1152,143 @@ done
         let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
         // first page (B) → B's page (empty cursor) → "" page (B again: stop).
         assert_eq!(names, ["one", "three", "two"]);
+    }
+
+    /// A modern streamable-HTTP server marking `region` with
+    /// `x-mcp-header: Region` rejects any call whose `Mcp-Param-Region`
+    /// header doesn't carry the body's value (`400` + `-32020`), and lists a
+    /// second tool whose annotation sits on a `number` — which the client
+    /// MUST refuse rather than offer.
+    fn spawn_param_header_fixture() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                let mut region_header: Option<String> = None;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("mcp-param-region:") {
+                        region_header = header.split_once(':').map(|(_, v)| v.trim().to_string());
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                let respond = |stream: &mut std::net::TcpStream, status: &str, body: Value| {
+                    let body = body.to_string();
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                let complete = |result: Value| {
+                    let mut result = result;
+                    result["resultType"] = "complete".into();
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+                };
+                match parsed["method"].as_str().unwrap_or_default() {
+                    "server/discover" => respond(
+                        &mut stream,
+                        "200 OK",
+                        complete(serde_json::json!({
+                            "supportedVersions": ["2026-07-28"],
+                            "capabilities": {"tools": {}},
+                            "ttlMs": 0, "cacheScope": "public"
+                        })),
+                    ),
+                    "tools/list" => respond(
+                        &mut stream,
+                        "200 OK",
+                        complete(serde_json::json!({"tools": [
+                            {"name": "execute_sql", "inputSchema": {"type": "object", "properties": {
+                                "region": {"type": "string", "x-mcp-header": "Region"},
+                                "query": {"type": "string"}}}},
+                            {"name": "broken", "inputSchema": {"type": "object", "properties": {
+                                "ratio": {"type": "number", "x-mcp-header": "Ratio"}}}}
+                        ], "ttlMs": 0, "cacheScope": "public"})),
+                    ),
+                    "tools/call" => {
+                        let want = parsed["params"]["arguments"]["region"].as_str();
+                        if region_header.as_deref() == want {
+                            respond(
+                                &mut stream,
+                                "200 OK",
+                                complete(serde_json::json!({"content": [
+                                    {"type": "text", "text": format!("region {}", want.unwrap_or("-"))}
+                                ]})),
+                            );
+                        } else {
+                            respond(
+                                &mut stream,
+                                "400 Bad Request",
+                                serde_json::json!({"jsonrpc": "2.0", "id": id,
+                                    "error": {"code": -32020, "message": "Mcp-Param-Region mismatch"}}),
+                            );
+                        }
+                    }
+                    _ => respond(
+                        &mut stream,
+                        "404 Not Found",
+                        serde_json::json!({"jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "unknown"}}),
+                    ),
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    #[test]
+    fn annotated_parameters_ride_as_headers_and_a_broken_annotation_is_refused() {
+        let config = McpServerConfig::Http {
+            url: spawn_param_header_fixture(),
+            headers: Default::default(),
+            sse_fallback: false,
+        };
+        let cancel = CancelToken::new();
+        let mut connection =
+            connect(&config, None, None, Duration::from_secs(10), &cancel).expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["execute_sql"]);
+        assert_eq!(connection.excluded.len(), 1);
+        assert_eq!(connection.excluded[0].name, "broken");
+        assert!(
+            connection.excluded[0].reason.contains("number"),
+            "{:?}",
+            connection.excluded
+        );
+        let result = connection
+            .transport
+            .request(
+                "tools/call",
+                crate::mcp::call_params(
+                    "execute_sql",
+                    &serde_json::json!({"region": "us-west1", "query": "SELECT 1"}),
+                ),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect("the header rode along");
+        assert_eq!(
+            crate::mcp::parse_call_result(&result).text,
+            "region us-west1"
+        );
     }
 
     /// A tool whose input can never be an object is set aside at connect,

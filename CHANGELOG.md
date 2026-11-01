@@ -168,6 +168,15 @@ release heading when a version is cut.
   Servers that send `"error": null`, echo request numbers as text, or
   report an error without a request number are understood instead of
   timing out (`docs/mcp.md`).
+- **A remote MCP server that routes on tool arguments can be called.** The
+  2026-07-28 MCP revision lets a server mark tool parameters, a region or
+  a tenant say, that must also be sent as request headers so a gateway can
+  route the call without reading it, and every call to such a tool used to
+  be refused with a header mismatch. Those values now ride along as
+  `Mcp-Param-…` headers. A tool whose marking breaks the rules is left out
+  and listed in `/mcp` with the reason, and a call the server still
+  refuses makes the client fetch the tool list again and retry once
+  (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

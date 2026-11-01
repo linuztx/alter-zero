@@ -384,50 +384,6 @@ pub fn choose_version(supported: &[String]) -> Option<&'static str> {
         .copied()
 }
 
-/// A value for the streamable-HTTP `Mcp-Method`/`Mcp-Name` request-metadata
-/// headers: verbatim when it is printable ASCII with no leading/trailing
-/// whitespace and doesn't itself look like the sentinel; else the spec's
-/// `=?base64?{value}?=` sentinel form. Tool names are only SHOULD-constrained
-/// to header-safe characters, so the encoding path is real, not theoretical.
-#[must_use]
-pub fn header_value(text: &str) -> String {
-    let ascii_printable = text.bytes().all(|b| (0x20..=0x7e).contains(&b));
-    let whitespace_framed = text.starts_with(' ') || text.ends_with(' ');
-    let looks_like_sentinel = text.starts_with("=?") && text.ends_with("?=");
-    if !text.is_empty() && ascii_printable && !whitespace_framed && !looks_like_sentinel {
-        return text.to_string();
-    }
-    format!("=?base64?{}?=", b64_standard(text.as_bytes()))
-}
-
-/// Standard base64 (RFC 4648 §4, with padding) — the sentinel encoding's
-/// alphabet.
-fn b64_standard(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// The `initialize` request params — the legacy handshake, proposing
 /// `version`. What this client is and can do; we advertise **no** client
 /// capabilities, the tools surface needing none.
@@ -570,8 +526,9 @@ pub const FOLDED_SCHEMA_NOTE: &str =
 /// - the root is always `{"type": "object", "properties": {…}}` — both API
 ///   families insist on the pair, and MCP requires the type anyway;
 /// - `$schema` goes (a dialect tag no function-calling API reads, which
-///   some refuse as an unknown keyword), as does a `required` that is not
-///   a list of names;
+///   some refuse as an unknown keyword), as do a `required` that is not a
+///   list of names and every `x-mcp-header` annotation (transport metadata,
+///   [`strip_header_annotations`](crate::mcp::strip_header_annotations));
 /// - a root `oneOf`/`anyOf`/`allOf` — refused at the top of a schema by
 ///   Anthropic — folds into the one object: every branch's properties, and
 ///   required what `allOf` requires or what *every* alternative requires.
@@ -582,8 +539,8 @@ pub const FOLDED_SCHEMA_NOTE: &str =
 /// listing always yields the same bytes (the prompt-cache prefix).
 #[must_use]
 pub fn model_input_schema(schema: &Value) -> (Value, Option<&'static str>) {
-    let mut source = match schema {
-        Value::Object(map) => map.clone(),
+    let mut source = match super::headers::strip_header_annotations(schema) {
+        Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
     source.shift_remove("$schema");
@@ -1154,20 +1111,6 @@ mod tests {
         );
         assert_eq!(choose_version(&["2099-01-01".to_string()]), None);
         assert_eq!(choose_version(&[]), None);
-    }
-
-    #[test]
-    fn header_values_encode_only_when_unsafe() {
-        assert_eq!(header_value("get_weather"), "get_weather");
-        assert_eq!(header_value("tools/call"), "tools/call");
-        // Non-ASCII, whitespace-framed, and sentinel-looking values take the
-        // spec's base64 sentinel form.
-        assert_eq!(header_value("héllo"), "=?base64?aMOpbGxv?=");
-        assert!(header_value(" padded").starts_with("=?base64?"));
-        // A value that *looks* like the sentinel is re-encoded so a decoder
-        // can never mistake it for one.
-        assert_eq!(header_value("=?base64?x?="), "=?base64?PT9iYXNlNjQ/eD89?=");
-        assert!(header_value("").starts_with("=?base64?"));
     }
 
     /// "A `resultType` of any value unrecognized by the client MUST be
