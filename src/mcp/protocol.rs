@@ -376,10 +376,20 @@ pub struct McpToolInfo {
     /// The server's own (raw) tool name — what `tools/call` sends back.
     pub name: String,
     pub description: String,
-    /// The tool's JSON-Schema input, passed through as the Chat Completions
-    /// `parameters` — normalized to an object schema when absent/malformed
-    /// (a validating provider rejects anything else).
+    /// The tool's JSON-Schema input **as the server sent it** (a missing or
+    /// non-object one replaced by the empty object schema) — what the
+    /// `/mcp` page and the `x-mcp-header` mirror read. The model is offered
+    /// the repaired copy [`model_input_schema`] makes, never this.
     pub input_schema: Value,
+}
+
+/// A tool the server listed that the model is **not** offered, and why — set
+/// aside at connect, named on the `/mcp` server page, so one broken
+/// definition costs only itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludedTool {
+    pub name: String,
+    pub reason: String,
 }
 
 /// Parse one `tools/list` page: the tools plus the `nextCursor` when the
@@ -420,6 +430,155 @@ pub fn parse_tools_page(result: &Value) -> (Vec<McpToolInfo>, Option<String>) {
         .filter(|c| !c.is_empty())
         .map(str::to_string);
     (tools, cursor)
+}
+
+/// What a folded root combinator adds to the front of the tool's description
+/// ([`model_input_schema`]) — the one fact the flat object loses.
+pub const FOLDED_SCHEMA_NOTE: &str =
+    "Arguments come in one of several shapes; pass the parameters one of them needs.";
+
+/// A tool's input schema **as the model is offered it** — every request
+/// carries it as the function's `parameters`, so a shape a provider refuses
+/// fails every turn, not just this tool's calls. The server's own schema
+/// stays on [`McpToolInfo`] (the `/mcp` page and the `x-mcp-header` mirror
+/// read it); this is the repaired copy:
+///
+/// - the root is always `{"type": "object", "properties": {…}}` — both API
+///   families insist on the pair, and MCP requires the type anyway;
+/// - `$schema` goes (a dialect tag no function-calling API reads, which
+///   some refuse as an unknown keyword), as does a `required` that is not
+///   a list of names;
+/// - a root `oneOf`/`anyOf`/`allOf` — refused at the top of a schema by
+///   Anthropic — folds into the one object: every branch's properties, and
+///   required what `allOf` requires or what *every* alternative requires.
+///   For alternatives the returned note says so, for the caller to put at
+///   the front of the description.
+///
+/// Everything else passes through in the server's order, so the same
+/// listing always yields the same bytes (the prompt-cache prefix).
+#[must_use]
+pub fn model_input_schema(schema: &Value) -> (Value, Option<&'static str>) {
+    let mut source = match schema {
+        Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    source.shift_remove("$schema");
+    source.shift_remove("type");
+    let mut properties = match source.shift_remove("properties") {
+        Some(Value::Object(properties)) => properties,
+        _ => serde_json::Map::new(),
+    };
+    let mut required = string_list(source.shift_remove("required"));
+    let mut note = None;
+    for key in ["allOf", "anyOf", "oneOf"] {
+        let Some(branches) = source.shift_remove(key) else {
+            continue;
+        };
+        let branches = match branches {
+            Value::Array(branches) => branches,
+            _ => Vec::new(),
+        };
+        let mut shared: Option<Vec<String>> = None;
+        for branch in &branches {
+            let branch_required = string_list(branch.get("required").cloned());
+            if let Some(Value::Object(more)) = branch.get("properties") {
+                for (name, property) in more {
+                    properties
+                        .entry(name.clone())
+                        .or_insert_with(|| property.clone());
+                }
+            }
+            if key == "allOf" {
+                extend_unique(&mut required, branch_required);
+            } else {
+                shared = Some(match shared {
+                    None => branch_required,
+                    Some(so_far) => so_far
+                        .into_iter()
+                        .filter(|name| branch_required.contains(name))
+                        .collect(),
+                });
+            }
+        }
+        if key != "allOf" {
+            extend_unique(&mut required, shared.unwrap_or_default());
+            if !branches.is_empty() {
+                note = Some(FOLDED_SCHEMA_NOTE);
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("type".to_string(), Value::String("object".to_string()));
+    out.insert("properties".to_string(), Value::Object(properties));
+    if !required.is_empty() {
+        out.insert(
+            "required".to_string(),
+            Value::Array(required.into_iter().map(Value::String).collect()),
+        );
+    }
+    out.extend(source);
+    (Value::Object(out), note)
+}
+
+/// The names in a `required` value — anything that is not a string dropped.
+fn string_list(value: Option<Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::String(name) => Some(name),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Append `more` to `list`, skipping names already in it.
+fn extend_unique(list: &mut Vec<String>, more: Vec<String>) {
+    for name in more {
+        if !list.contains(&name) {
+            list.push(name);
+        }
+    }
+}
+
+/// Why a tool can't be offered at all — `None` when its schema is usable
+/// once [`model_input_schema`] has repaired it. Two things no repair fixes:
+/// a root that declares a type other than `object` (the arguments the model
+/// would send could never be what the tool takes), and a parameter whose
+/// name Anthropic refuses (`^[a-zA-Z0-9_.-]{1,64}$`, the stricter of the two
+/// API families) — such a tool is left out by name rather than failing
+/// every request it rides in.
+#[must_use]
+pub fn input_schema_problem(schema: &Value) -> Option<String> {
+    match schema.get("type") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(kind)) if kind == "object" => {}
+        Some(Value::Array(kinds)) if kinds.iter().any(|kind| kind == "object") => {}
+        Some(other) => {
+            return Some(format!("its input schema has type {other}, not \"object\""));
+        }
+    }
+    let (schema, _) = model_input_schema(schema);
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    properties
+        .keys()
+        .find(|name| !is_model_parameter_name(name))
+        .map(|name| {
+            format!(
+                "its parameter \"{name}\" has a name model APIs refuse \
+                 (letters, digits, '_', '.', '-'; at most 64)"
+            )
+        })
+}
+
+/// `^[a-zA-Z0-9_.-]{1,64}$` — the parameter names every model API accepts.
+fn is_model_parameter_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// The `tools/list` params for a page.
@@ -787,6 +946,118 @@ mod tests {
             json!({"cursor": "page2"})
         );
         assert_eq!(tools_list_params(None), Value::Null);
+    }
+
+    /// The schema rides **every** request as the function's `parameters`,
+    /// so a shape a provider refuses fails every turn, not just the call:
+    /// the root must say `type: "object"` and carry `properties` (both
+    /// OpenAI- and Anthropic-shaped APIs insist), whatever the server left out.
+    #[test]
+    fn the_model_schema_always_has_an_object_root_with_properties() {
+        let cases = [
+            (json!({}), json!({"type": "object", "properties": {}})),
+            (json!(null), json!({"type": "object", "properties": {}})),
+            (json!(true), json!({"type": "object", "properties": {}})),
+            (
+                json!({"properties": {"q": {"type": "string"}}}),
+                json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            ),
+            (
+                json!({"type": "object"}),
+                json!({"type": "object", "properties": {}}),
+            ),
+            (
+                json!({"type": ["object", "null"], "properties": null}),
+                json!({"type": "object", "properties": {}}),
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(model_input_schema(&input).0, want, "{input}");
+        }
+    }
+
+    #[test]
+    fn the_model_schema_drops_what_providers_refuse_and_keeps_the_rest() {
+        let (schema, note) = model_input_schema(&json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"q": {"type": "string", "format": "uri"}},
+            "required": ["q", 7],
+            "additionalProperties": false
+        }));
+        assert_eq!(note, None);
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object",
+                "properties": {"q": {"type": "string", "format": "uri"}},
+                "required": ["q"],
+                "additionalProperties": false
+            })
+        );
+        let (schema, _) = model_input_schema(&json!({"type": "object", "required": "q"}));
+        assert_eq!(schema, json!({"type": "object", "properties": {}}));
+    }
+
+    /// Anthropic refuses `oneOf`/`anyOf`/`allOf` at the top of a tool's
+    /// schema, so the branches fold into one object — every branch's
+    /// properties, required only where every alternative requires it — and
+    /// the description says the shapes are alternatives.
+    #[test]
+    fn root_combinators_fold_into_one_object() {
+        let (schema, note) = model_input_schema(&json!({
+            "type": "object",
+            "oneOf": [
+                {"properties": {"id": {"type": "string"}, "kind": {"type": "string"}},
+                 "required": ["id", "kind"]},
+                {"properties": {"url": {"type": "string"}, "kind": {"type": "string"}},
+                 "required": ["url", "kind"]}
+            ]
+        }));
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "url": {"type": "string"}
+                },
+                "required": ["kind"]
+            })
+        );
+        assert!(note.is_some_and(|note| note.contains("one of")));
+        // allOf: every branch applies, so everything any branch requires is
+        // required.
+        let (schema, _) = model_input_schema(&json!({
+            "allOf": [
+                {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"properties": {"b": {"type": "integer"}}, "required": ["b"]}
+            ]
+        }));
+        assert_eq!(schema["required"], json!(["a", "b"]));
+        assert_eq!(schema["type"], "object");
+    }
+
+    /// What can't be repaired is refused, by tool and with the reason, so
+    /// one broken tool never takes the rest of the session down with it.
+    #[test]
+    fn a_tool_whose_input_can_never_be_an_object_is_refused() {
+        assert!(input_schema_problem(&json!({"type": "object"})).is_none());
+        assert!(input_schema_problem(&json!({})).is_none());
+        let refused = input_schema_problem(&json!({"type": "string"})).expect("refused");
+        assert!(refused.contains("string"), "{refused}");
+        // A parameter name Anthropic refuses (`^[a-zA-Z0-9_.-]{1,64}$`).
+        let refused = input_schema_problem(&json!({
+            "type": "object",
+            "properties": {"file path": {"type": "string"}}
+        }))
+        .expect("refused");
+        assert!(refused.contains("file path"), "{refused}");
+        let long = "p".repeat(65);
+        assert!(
+            input_schema_problem(&json!({"type": "object", "properties": {long: {}}})).is_some()
+        );
     }
 
     #[test]

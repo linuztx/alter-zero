@@ -124,6 +124,9 @@ struct ServerState {
     /// The live transport — its own lock, so a running tool call never
     /// blocks a snapshot.
     transport: Option<Arc<Mutex<Transport>>>,
+    /// The listed tools the model is not offered, and why — the live
+    /// connection's facts, like `tools`.
+    excluded: Vec<crate::mcp::ExcludedTool>,
     /// Why this server can never be offered under its name
     /// ([`crate::mcp::server_name_problems`]) — it stays `Failed` with this
     /// reason, whoever asks it to connect.
@@ -170,6 +173,7 @@ impl ServerState {
         self.transport = None;
         self.identity = None;
         self.tools.clear();
+        self.excluded.clear();
     }
 }
 
@@ -233,6 +237,7 @@ impl McpManager {
                     },
                     identity: None,
                     tools: Vec::new(),
+                    excluded: Vec::new(),
                     transport: None,
                     name_problem,
                     has_tokens,
@@ -404,6 +409,7 @@ impl McpManager {
                 Ok(connection) => {
                     server.identity = Some(connection.identity);
                     server.tools = connection.tools;
+                    server.excluded = connection.excluded;
                     server.transport = Some(Arc::new(Mutex::new(connection.transport)));
                     server.status = McpServerStatus::Connected;
                 }
@@ -687,6 +693,7 @@ impl McpManager {
                 ),
                 identity: server.identity.clone(),
                 tools: server.tools.clone(),
+                excluded: server.excluded.clone(),
             })
             .collect()
     }
@@ -699,10 +706,18 @@ impl McpManager {
         let mut out = Vec::new();
         for server in &inner.servers {
             for (wire, tool) in server.offered() {
+                // The repaired copy — the root shape providers insist on —
+                // never the server's own, which can fail every request.
+                let (parameters, note) = crate::mcp::model_input_schema(&tool.input_schema);
+                let description = match note {
+                    Some(note) if tool.description.trim().is_empty() => note.to_string(),
+                    Some(note) => format!("{note} {}", tool.description),
+                    None => tool.description.clone(),
+                };
                 out.push(crate::llm::tools::function_spec(
                     &wire,
-                    &tool.description,
-                    tool.input_schema.clone(),
+                    &description,
+                    parameters,
                 ));
             }
         }
@@ -1073,6 +1088,58 @@ mod tests {
                 spec["function"]["description"].as_str()
             );
         }
+    }
+
+    /// The spec the model is offered carries the repaired schema — the
+    /// object root providers insist on — and a folded root combinator's note
+    /// at the front of the description, while the server's own schema stays
+    /// on the snapshot for the `/mcp` page.
+    #[test]
+    fn the_offered_spec_carries_the_repaired_schema() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("srv")]);
+        {
+            let mut inner = manager.lock();
+            let server = &mut inner.servers[0];
+            server.status = McpServerStatus::Connected;
+            server.tools = vec![
+                McpToolInfo {
+                    name: "bare".into(),
+                    description: "Bare.".into(),
+                    input_schema: serde_json::json!({}),
+                },
+                McpToolInfo {
+                    name: "either".into(),
+                    description: "Either.".into(),
+                    input_schema: serde_json::json!({
+                        "anyOf": [{"properties": {"a": {}}}, {"properties": {"b": {}}}]
+                    }),
+                },
+            ];
+        }
+        let specs = manager.tool_specs();
+        let spec = |name: &str| {
+            specs
+                .iter()
+                .find(|s| s["function"]["name"] == name)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(
+            spec("mcp__srv__bare")["function"]["parameters"],
+            serde_json::json!({"type": "object", "properties": {}})
+        );
+        let either = spec("mcp__srv__either");
+        assert!(either["function"]["parameters"].get("anyOf").is_none());
+        let description = either["function"]["description"].as_str().unwrap();
+        assert!(
+            description.starts_with(crate::mcp::FOLDED_SCHEMA_NOTE),
+            "{description}"
+        );
+        assert!(description.ends_with("Either."), "{description}");
+        assert_eq!(
+            manager.snapshot()[0].tools[0].input_schema,
+            serde_json::json!({})
+        );
     }
 
     /// Two servers whose names normalize alike would hand the model one set

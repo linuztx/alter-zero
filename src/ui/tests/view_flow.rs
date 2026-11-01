@@ -26,6 +26,7 @@ fn tall_mcp_app() -> App {
         status: McpServerStatus::Connected,
         auth: None,
         identity: None,
+        excluded: Vec::new(),
         tools: vec![McpToolInfo {
             name: "ask_question".to_string(),
             description: "describe ".repeat(300),
@@ -55,6 +56,7 @@ fn tall_mcp_server_app(first_arg: &str) -> App {
         status: McpServerStatus::Connected,
         auth: None,
         identity: None,
+        excluded: Vec::new(),
         tools: Vec::new(),
     }]);
     app.mcp_menu.as_mut().unwrap().page = McpPage::Server;

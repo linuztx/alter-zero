@@ -163,6 +163,19 @@ in **`src/llm/mcp/`**.
   (`ServerIdentity`: the settled `protocol_version`, name, version,
   capabilities, instructions); plus the era-neutral `tools/list` page parse
   (`McpToolInfo { name, description, input_schema }`, cursor-chained), the
+  **model's copy of a schema** — every request carries it as the
+  function's `parameters`, so one a provider refuses fails every turn:
+  `model_input_schema` always roots it at `{"type": "object", "properties":
+  {…}}` (both API families insist on the pair), drops `$schema` and a
+  `required` that isn't a list of names, and folds a root
+  `oneOf`/`anyOf`/`allOf` (refused at the top by Anthropic) into the one
+  object — every branch's properties, required where `allOf` requires or
+  every alternative does, `FOLDED_SCHEMA_NOTE` at the front of the
+  description for alternatives — while `input_schema_problem` names what
+  no repair fixes (a root type other than `object`, a parameter name
+  outside `^[a-zA-Z0-9_.-]{1,64}$`), and the connect sets such a tool aside
+  as an `ExcludedTool` the `/mcp` server page lists under *Not offered to
+  the model*; the
   `tools/call` params builder, and the result mapping: `CallToolResult` →
   the cell/model text (a lone `text` content item is its text verbatim;
   anything else renders as compact JSON so nothing is dropped), `is_error` →
@@ -426,7 +439,8 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   config + live state, connects them **concurrently on worker threads at
   startup** (never blocking the first frame), exposes `tool_specs()` (the
   Chat Completions defs for every connected, enabled server's tools — the
-  `input_schema` passed through as the `parameters`), executes
+  `parameters` being `mcp::model_input_schema`'s repaired copy of the
+  server's `inputSchema`, below), executes
   `call_tool` (wire name → server + tool via the connect-time map), and
   reports every state change on the loop's **MCP event channel** (a
   `tokio` unbounded sender — the file-search/clipboard worker pattern), so

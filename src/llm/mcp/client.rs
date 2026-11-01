@@ -20,9 +20,10 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::mcp::{
-    LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION, ServerIdentity,
-    choose_version, discover_params, initialize_params_for, is_modern_error, parse_discover,
-    parse_initialize, parse_tools_page, tools_list_params, unsupported_versions,
+    ExcludedTool, LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION,
+    ServerIdentity, choose_version, discover_params, initialize_params_for, input_schema_problem,
+    is_modern_error, parse_discover, parse_initialize, parse_tools_page, tools_list_params,
+    unsupported_versions,
 };
 use crate::stream::CancelToken;
 
@@ -68,6 +69,10 @@ pub struct Connection {
     pub transport: Transport,
     pub identity: ServerIdentity,
     pub tools: Vec<McpToolInfo>,
+    /// The tools the server listed that can't be offered to the model
+    /// ([`crate::mcp::input_schema_problem`]) — set aside here, by name and
+    /// with the reason, so one broken definition never rides every request.
+    pub excluded: Vec<ExcludedTool>,
 }
 
 /// Connect one server end to end. `bearer` is the stored OAuth access token
@@ -287,11 +292,30 @@ fn finish(
         }
         cursor = next;
     }
+    let (tools, excluded) = set_aside_unusable(tools);
     Ok(Connection {
         transport,
         identity,
         tools,
+        excluded,
     })
+}
+
+/// Split a listing into the tools the model can be offered and the ones no
+/// repair makes usable ([`input_schema_problem`]).
+fn set_aside_unusable(tools: Vec<McpToolInfo>) -> (Vec<McpToolInfo>, Vec<ExcludedTool>) {
+    let mut usable = Vec::with_capacity(tools.len());
+    let mut excluded = Vec::new();
+    for tool in tools {
+        match input_schema_problem(&tool.input_schema) {
+            None => usable.push(tool),
+            Some(reason) => excluded.push(ExcludedTool {
+                name: tool.name,
+                reason,
+            }),
+        }
+    }
+    (usable, excluded)
 }
 
 #[cfg(test)]
@@ -1023,6 +1047,36 @@ mod tests {
             Some("be modern")
         );
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    /// A tool whose input can never be an object is set aside at connect,
+    /// by name and with the reason — one broken tool must not ride every
+    /// request and fail them all — while its siblings connect as usual.
+    #[test]
+    fn a_tool_no_model_could_call_is_set_aside_with_the_reason() {
+        let discover = r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"m","version":"1"}}}}"#;
+        let tools = r#"{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"good","inputSchema":{"type":"object"}},{"name":"bad","inputSchema":{"type":"string"}}],"ttlMs":0,"cacheScope":"public"}}"#;
+        let script = format!(
+            "cat > /dev/null & printf '%s\\n' '{discover}'; printf '%s\\n' '{tools}'; sleep 5"
+        );
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["good"]);
+        assert_eq!(connection.excluded.len(), 1);
+        assert_eq!(connection.excluded[0].name, "bad");
+        assert!(connection.excluded[0].reason.contains("string"));
     }
 
     /// `server/discover` exists to let a client **pick a version up front**

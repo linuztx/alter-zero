@@ -42,6 +42,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             capabilities: vec!["tools".to_string()],
             instructions: None,
         }),
+        excluded: Vec::new(),
         tools: vec![McpToolInfo {
             name: "ask_question".to_string(),
             description: "Ask any question about a GitHub repository.".to_string(),
@@ -229,6 +230,23 @@ fn the_full_name_is_the_one_the_model_is_offered() {
     let all = texts(&app).join("\n");
     assert!(all.contains(&offered[1].0), "{all}");
     assert!(!all.contains("mcp__srv__files_read\n"), "{all}");
+}
+
+/// A tool set aside at connect is named on the server page with the
+/// reason, so "why can't the model see `bad`?" has an answer on screen.
+#[test]
+fn the_server_page_names_the_tools_not_offered() {
+    let mut server = snapshot("srv", McpScope::User, McpServerStatus::Connected);
+    server.excluded = vec![crate::mcp::ExcludedTool {
+        name: "bad".to_string(),
+        reason: "its input schema has type \"string\", not \"object\"".to_string(),
+    }];
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Not offered to the model:"), "{all}");
+    assert!(all.contains("bad — its input schema has type"), "{all}");
 }
 
 /// Walk `app` to the `ask_question` detail page (list → deepwiki → tools →

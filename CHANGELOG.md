@@ -143,6 +143,17 @@ release heading when a version is cut.
   model calls. Two servers whose names come out the same can't be told
   apart that way, so the second one doesn't connect and `/mcp` says why
   (`docs/mcp.md`).
+- **One MCP tool with an unusual input schema no longer fails every
+  turn.** A tool's schema rides every request, and a schema with no
+  `"type": "object"` at the top, no `properties`, or a `oneOf`/`anyOf` at
+  its root was refused by the provider along with the whole request. The
+  model is now offered a repaired copy: an object at the top with its
+  properties, alternatives folded into one object with a note in the
+  description saying so, and a dialect tag no model API reads dropped. A
+  tool no repair can save, one whose input is declared as a string, say, or
+  has a parameter name the APIs refuse, is left out instead, and the
+  server's page in `/mcp` lists it under *Not offered to the model* with
+  the reason (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

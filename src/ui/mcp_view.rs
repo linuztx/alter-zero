@@ -445,6 +445,18 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         lines.push(Line::default());
         lines.extend(dim_wrapped(&format!("Error: {reason}"), width));
     }
+    // The tools set aside at connect, by name and with the reason — the one
+    // place "why can't the model see this tool?" is answered.
+    if !server.excluded.is_empty() {
+        lines.push(Line::default());
+        lines.extend(dim_wrapped("Not offered to the model:", width));
+        for tool in &server.excluded {
+            lines.extend(dim_wrapped(
+                &format!("{} — {}", tool.name, tool.reason),
+                width,
+            ));
+        }
+    }
     lines.push(Line::default());
     let labels: Vec<&'static str> = server_actions(server)
         .into_iter()
