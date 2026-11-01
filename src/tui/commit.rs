@@ -47,7 +47,7 @@ impl Session<'_> {
     /// scrollback) right now (invariant 4 — see the module doc). Under an
     /// alternate-screen overlay the queued lines merely wait for the return's
     /// flush; an open agent session view defers to a history rebuild, and so
-    /// does an active **view flow** — a screen-tall `/mcp`/`/hooks`/`/trust`
+    /// does an active **view flow** — a screen-tall `/mcp`/`/hooks`
     /// page whose top sits in scrollback directly above the region: a commit
     /// flushed now would land *between* the flowed page and its painted tail,
     /// tearing it, so it waits in history for the flow-exit rebuild

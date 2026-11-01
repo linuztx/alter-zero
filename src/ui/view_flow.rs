@@ -1,7 +1,7 @@
 //! Long inline-view content presented as text — the bottom anchor and the
 //! scrollback flow. See `docs/view-flow.md`.
 //!
-//! The content-driven framed views (`/mcp`, `/hooks`, `/trust`, the ↓
+//! The content-driven framed views (`/mcp`, `/hooks`, the startup review, the ↓
 //! background manager) build their whole page as lines; a page taller than
 //! the rows the region gives it used to clip at the **bottom** — losing the
 //! hint and the closing rule, with no sign there was more. Two rules fix it:
@@ -147,6 +147,15 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.config_review.is_some() {
+        // The startup review sheds rows before it could flow (its ladder
+        // ends on a nine-row page, `docs/config-review.md`), and changes only
+        // on a keystroke — so it signs its rows, should it ever flow.
+        return Some(FlowPage::framed(
+            super::config_review_view::config_review_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if let Some(picker) = &app.model_picker {
         return Some(FlowPage::framed(
             super::model_view::model_view_lines(picker, width, term_height),
@@ -251,12 +260,6 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // like its siblings (`docs/usage.md`).
         return Some(FlowPage::framed(
             super::usage_view::usage_view_lines(app, width, term_height),
-            term_height,
-        ));
-    }
-    if app.trust_menu.is_some() {
-        return Some(FlowPage::framed(
-            super::trust_view::trust_view_lines(app, width),
             term_height,
         ));
     }

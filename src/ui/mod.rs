@@ -42,6 +42,7 @@ mod assistant;
 mod background_view;
 mod cached_lines;
 mod classifier_view;
+mod config_review_view;
 mod context_usage_view;
 mod context_view;
 mod conversation;
@@ -82,7 +83,6 @@ mod tips;
 mod tool;
 mod tool_group;
 mod transcript;
-mod trust_view;
 mod usage_view;
 mod view_flow;
 mod wrap;
@@ -94,6 +94,9 @@ pub use self::agent::{
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
 pub use self::classifier_view::classifier_lines;
+pub use self::config_review_view::{
+    config_review_height, config_review_lines, render_config_review,
+};
 pub use self::context_usage_view::{
     context_usage_height, context_usage_lines, render_context_usage,
 };
@@ -157,7 +160,6 @@ pub use self::transcript::{
     render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,
     transcript_lines, transcript_selection,
 };
-pub use self::trust_view::{render_trust_menu, trust_menu_height, trust_view_lines};
 pub use self::usage_view::{render_usage_page, usage_page_height, usage_view_lines};
 pub use self::view_flow::{ViewFlow, view_body_skip, view_flow, view_flow_signature};
 pub use self::wrap::wrap_text;

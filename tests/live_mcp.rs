@@ -66,7 +66,7 @@ fn connected_server(name: &str, url: &str) -> McpManager {
             }],
             errors: Vec::new(),
             disabled: BTreeSet::new(),
-            untrusted: BTreeSet::new(),
+            held: Default::default(),
             project: ".".to_string(),
             user_file: None,
             auth_path: None,

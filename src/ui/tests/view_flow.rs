@@ -5,8 +5,7 @@ use super::*;
 use crate::app::McpPage;
 use crate::mcp::{McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo};
 use crate::permission::{PermissionKind, PermissionRequest};
-use crate::trust::{TrustFileReview, TrustReview};
-use crate::ui::{mcp_view_lines, trust_view_lines, view_flow, view_flow_signature};
+use crate::ui::{mcp_view_lines, view_flow, view_flow_signature};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const NO_CAP: usize = usize::MAX;
@@ -37,25 +36,28 @@ fn tall_mcp_app() -> App {
     app
 }
 
-/// A `/trust` review with enough files to overflow a short terminal by a
-/// wide margin, so the file listings sit well inside the flowed top.
-fn tall_trust_app() -> App {
+/// An `/mcp` server page whose `Command:` wraps far past a short terminal,
+/// so the command's first rows sit well inside the flowed top while the
+/// action rows — what ↑/↓ restyle — sit in the painted tail.
+fn tall_mcp_server_app(first_arg: &str) -> App {
     let mut app = App::new();
-    app.open_trust_menu(TrustReview {
-        root: "~/repo".into(),
-        trusted: false,
-        files: (0..5)
-            .map(|f| TrustFileReview {
-                label: format!("Hooks {f}"),
-                path: format!("~/repo/.alter-zero/hooks-{f}.json"),
-                items: (0..8)
-                    .map(|i| format!("PreToolUse (bash): ./guard-{f}-{i}.sh"))
-                    .collect(),
-                error: None,
-                pending: true,
-            })
-            .collect(),
-    });
+    let mut args: Vec<String> = (0..60).map(|i| format!("--flag-{i}")).collect();
+    args[0] = first_arg.to_string();
+    app.open_mcp_menu(vec![McpServerSnapshot {
+        name: "fixture".to_string(),
+        scope: crate::mcp::McpScope::User,
+        config_path: "~/.alter-zero/mcp.json".to_string(),
+        config: McpServerConfig::Stdio {
+            command: "npx".to_string(),
+            args,
+            env: Default::default(),
+        },
+        status: McpServerStatus::Connected,
+        auth: None,
+        identity: None,
+        tools: Vec::new(),
+    }]);
+    app.mcp_menu.as_mut().unwrap().page = McpPage::Server;
     app
 }
 
@@ -126,19 +128,17 @@ fn the_signature_tracks_the_flowed_rows_only() {
     // painted tail, not the flowed top — so the signature holds and the
     // boundary never purge-rebuilds for a ↑/↓ (the in-place diff repaint
     // handles it). Changing the content that actually flowed re-signs.
-    let mut app = tall_trust_app();
+    let mut app = tall_mcp_server_app("--flag-0");
     let (width, height) = (60u16, 20u16);
-    assert!(trust_view_lines(&app, width).len() > usize::from(height));
+    assert!(mcp_view_lines(&app, width).len() > usize::from(height));
     let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let after = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
     assert_eq!(before, after, "a selection step keeps the flowed top");
 
-    // A different page top — the first file's first verbatim item, a row
-    // that flowed — is a different flow.
-    let mut other = tall_trust_app();
-    other.trust_menu.as_mut().unwrap().review.files[0].items[0] =
-        "PostToolUse (bash): ./fmt.sh".to_string();
+    // A different page top — the command's first argument, a row that
+    // flowed — is a different flow.
+    let other = tall_mcp_server_app("--other-0");
     let changed = view_flow_signature(&other, width, height, NO_CAP).expect("overflows");
     assert_ne!(before, changed, "changed flowed content re-signs");
 

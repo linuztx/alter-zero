@@ -31,10 +31,6 @@ cat >"$REPO/.alter-zero/hooks.json" <<'JSON'
 {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
   {"type": "command", "command": "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh"}]}]}}
 JSON
-# Trusted ahead of time, exactly as /trust records it (docs/project-config.md).
-PH_FP="sha256:$(sha256sum "$REPO/.alter-zero/hooks.json" | cut -d' ' -f1)"
-printf '{"projects":{"%s":{"files":{"%s":"%s"}}}}\n' \
-	"$REPO" "$REPO/.alter-zero/hooks.json" "$PH_FP" >"$SMOKE_CFG/trust.json"
 
 PH_BODIES="$SMOKE_TMP/tool-results134b.jsonl"
 PH_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -88,7 +84,10 @@ printf '[providers.stub]\nname = "Stub"\n\n[providers.stub.kwargs]\napi_base = "
 # hooks file, and `master` so the command would run unasked if the hook let it.
 PH_APP="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_HOOKS=1 ALTER_ZERO_HOOKS_FILE=$SMOKE_TMP/no-user-hooks.json ALTER_ZERO_PROVIDERS_FILE=$PH_PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in ALTER_ZERO_PERMISSION_MODE=master $BIN_ABS"
 
-launch -c "$REPO/src" "$S134B" 120 40 "$PH_APP"
+# The project's hook is trusted at the startup review first
+# (docs/config-review.md), launched in the subdirectory.
+launch -n -c "$REPO/src" "$S134B" 120 40 "$PH_APP"
+trust_hooks "$S134B"
 submit "$S134B" "clean the build"
 ph_pane="$(wait_settled 30 "$S134B" -S -200 -- -F "Done.")" || fail "the turn never settled"
 dump "the turn, launched in $REPO/src" "$ph_pane"

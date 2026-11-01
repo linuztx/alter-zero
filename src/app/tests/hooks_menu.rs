@@ -322,3 +322,56 @@ fn navigation_walks_the_matcher_and_hook_rows_too() {
         "the matcher selection survives the round trip"
     );
 }
+
+#[test]
+fn enter_on_a_hooks_detail_page_toggles_its_trust() {
+    // `/hooks` is where a hook's trust changes after startup
+    // (`docs/config-review.md`): Enter on a runnable hook's detail page
+    // trusts it, and again stops trusting it — the overview updated at once,
+    // the action telling the loop what to record.
+    let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+    let overview = HooksOverview::from_file(
+        &HooksFile::parse(SAMPLE)
+            .expect("fixture parses")
+            .with_source(source),
+    );
+    let mut app = App::new();
+    app.open_hooks_menu(overview, Some("~/.alter-zero/hooks.json".into()), true);
+    // PreToolUse → bash → ./guard.sh → its detail page.
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Enter));
+    }
+    assert!(matches!(level(&app), HooksLevel::Detail { .. }));
+    let Action::SetHookTrust {
+        source: path,
+        identity,
+        trusted,
+    } = app.on_key(key(KeyCode::Enter))
+    else {
+        panic!("Enter on the detail page toggles the hook's trust");
+    };
+    assert_eq!(path, "/home/u/.alter-zero/hooks.json");
+    assert_eq!(identity.command, "./guard.sh");
+    assert!(trusted);
+    let menu = app.hooks_menu.as_ref().expect("the menu stays open");
+    assert!(menu.overview.events[0].matchers[0].hooks[0].trusted);
+    assert!(
+        matches!(level(&app), HooksLevel::Detail { .. }),
+        "it stays on the page"
+    );
+    let Action::SetHookTrust { trusted, .. } = app.on_key(key(KeyCode::Enter)) else {
+        panic!("Enter again stops trusting it");
+    };
+    assert!(!trusted);
+    assert!(!app.hooks_menu.as_ref().unwrap().overview.events[0].matchers[0].hooks[0].trusted);
+}
+
+#[test]
+fn a_hook_read_from_no_file_has_no_trust_to_toggle() {
+    let mut app = hooks_app();
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Enter));
+    }
+    assert!(matches!(level(&app), HooksLevel::Detail { .. }));
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+}

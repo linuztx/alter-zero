@@ -338,15 +338,16 @@ pub(crate) struct Session<'t> {
     /// connection state, the tool specs the backend folds in, and the OAuth
     /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.
     mcp: Option<alter_zero::llm::mcp::McpManager>,
-    /// The project's `.alter-zero` config layer as loaded at bootstrap — the
-    /// snapshot `/trust` reviews and its approval records/activates. `None`
-    /// when `ALTER_ZERO_PROJECT_CONFIG` turned the layer off
-    /// (`docs/project-config.md`).
-    project_layer: Option<trust::ProjectLayer>,
-    /// The **user** layer of the parsed hooks config, kept apart from the
-    /// merge riding `HookSetup` so a `/trust` approval or revoke can rebuild
-    /// the merge live (`docs/project-config.md`).
-    user_hooks_file: alter_zero::hooks::HooksFile,
+    /// What the startup review decides over (`docs/config-review.md`):
+    /// `trust.json`, the user's hooks file and the project's `.alter-zero`
+    /// layer, read once at bootstrap — every review answer and `/hooks` or
+    /// `/mcp` toggle records through it, and the hooks the session runs are
+    /// its trusted share.
+    trust: trust::TrustState,
+    /// A `[PROMPT]` from the command line, held while the startup review
+    /// asks what may run, so the first turn starts with its answers
+    /// (`docs/config-review.md`).
+    held_prompt: Option<String>,
     /// The `SKILL.md` files whose parse failure has already been raised as a
     /// toast, so the rescan doesn't repeat itself every turn. Re-seeded from
     /// each walk's errors, so a file that is fixed and broken again reports
@@ -394,7 +395,7 @@ pub(crate) struct Session<'t> {
     /// (invariant 3).
     overlay_resized: bool,
     /// The signature of the framed-view rows currently **flowed** into
-    /// scrollback — a screen-tall `/mcp`/`/hooks`/`/trust` page's top,
+    /// scrollback — a screen-tall `/mcp`/`/hooks` page's top,
     /// committed above the live region so the terminal's own scrolling reads
     /// the whole page (`ui::view_flow`, `docs/view-flow.md`). `None` when
     /// nothing is flowed. The draw tick compares it against the current

@@ -80,9 +80,9 @@ fn count_noun(n: usize, noun: &str) -> String {
 fn status_color(status: &McpServerStatus) -> Color {
     match status {
         McpServerStatus::Connected => tool_ok_color(),
-        // The ask review page's amber — the needs-attention colour, which an
-        // untrusted project server also is (`/trust` is the way in).
-        McpServerStatus::NeedsAuth | McpServerStatus::Untrusted => ask_warning_color(),
+        // The ask review page's amber — the needs-attention colour, which a
+        // project server waiting for the startup review also is.
+        McpServerStatus::NeedsAuth | McpServerStatus::AwaitingReview => ask_warning_color(),
         McpServerStatus::Failed(_) => tool_fail_color(),
         McpServerStatus::Pending | McpServerStatus::Disabled => model_meta_color(),
     }
@@ -409,7 +409,7 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     } else {
         "Command:"
     };
-    // The two values the user opens the page to read whole — the `/trust`
+    // The two values the user opens the page to read whole — the startup
     // review's verbatim rule: they wrap under their labels, never clip.
     lines.extend(field_lines(
         target_label,

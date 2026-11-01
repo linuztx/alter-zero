@@ -1,4 +1,4 @@
-//! The read-only `/hooks` menu's rendering (`docs/hooks-menu.md`).
+//! The `/hooks` menu's rendering (`docs/hooks-menu.md`).
 
 use super::*;
 use crate::hooks::{HooksFile, HooksOverview};
@@ -97,8 +97,8 @@ fn the_events_level_is_framed_with_title_count_info_and_hint() {
     assert_eq!(texts[1], "  Hooks");
     assert_eq!(texts[2], "  4 hooks configured");
     assert!(
-        texts[4].starts_with("  ℹ This menu is read-only."),
-        "the read-only banner: {:?}",
+        texts[4].starts_with("  ℹ Open a hook to trust it"),
+        "the info banner: {:?}",
         texts[4]
     );
     let hint = find(&texts, HOOKS_HINT);
@@ -588,4 +588,75 @@ fn render_paints_the_lines_and_the_cursor_hides_seated_on_the_selection() {
         (2, marker_row),
         "the seat is the highlighted row's marker"
     );
+}
+
+/// The sample read from the user's file, the hooks in `trusted` trusted —
+/// what the loop opens the menu over (`docs/config-review.md`).
+fn sourced_app(trusted: &'static [&'static str]) -> App {
+    let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+    let overview = HooksOverview::from_file(
+        &HooksFile::parse(SAMPLE)
+            .expect("fixture parses")
+            .with_source(source),
+    )
+    .with_trust(&|_, hook| trusted.contains(&hook.command.as_str()));
+    let mut app = App::new();
+    app.open_hooks_menu(overview, Some("~/.alter-zero/hooks.json".into()), true);
+    app
+}
+
+#[test]
+fn the_events_page_says_how_many_hooks_are_not_trusted() {
+    let page = texts(&sourced_app(&["./guard.sh"]), 80);
+    let note = find(&page, "3 hooks are not trusted and do not run");
+    assert!(note < find(&page, "PreToolUse"), "the note heads the page");
+    // One hook reads in the singular.
+    let page = texts(
+        &sourced_app(&["./guard.sh", "./lint.sh", "./always.sh"]),
+        80,
+    );
+    find(
+        &page,
+        "1 hook is not trusted and does not run — open it and press Enter",
+    );
+    let all = &["./guard.sh", "./lint.sh", "./always.sh", "./done.sh"];
+    assert!(
+        !texts(&sourced_app(all), 80)
+            .iter()
+            .any(|l| l.contains("not trusted")),
+        "nothing to say when every hook is trusted"
+    );
+}
+
+#[test]
+fn an_untrusted_hook_is_marked_and_its_page_offers_to_trust_it() {
+    let mut app = sourced_app(&["./guard.sh"]);
+    press(&mut app, KeyCode::Enter); // PreToolUse
+    press(&mut app, KeyCode::Enter); // bash
+    let list = texts(&app, 80);
+    assert!(
+        !list[find(&list, "checking…")].contains("not trusted"),
+        "the trusted hook wears no badge"
+    );
+    assert!(list[find(&list, "./lint.sh")].contains("⚠ not trusted"));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter); // ./lint.sh's page
+    let page = texts(&app, 80);
+    assert!(page[find(&page, "Trust:")].contains("⚠ not trusted"));
+    find(&page, "Enter to trust · Esc to go back");
+    press(&mut app, KeyCode::Enter); // trust it
+    let page = texts(&app, 80);
+    assert!(page[find(&page, "Trust:")].contains("✔ trusted"));
+    find(&page, "Enter to stop trusting · Esc to go back");
+}
+
+#[test]
+fn a_hook_with_no_file_shows_no_trust_row() {
+    let mut app = hooks_app();
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Enter);
+    }
+    let page = texts(&app, 80);
+    assert!(!page.iter().any(|l| l.contains("Trust:")), "{page:#?}");
+    find(&page, HOOKS_DETAIL_HINT);
 }

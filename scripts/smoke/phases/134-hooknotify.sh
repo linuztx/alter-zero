@@ -103,7 +103,8 @@ for line in open(sys.argv[1], encoding="utf-8"):
 PY
 }
 
-launch -c "$WORK" "$S134" 120 40 "$HN_APP"
+launch -n -c "$WORK" "$S134" 120 40 "$HN_APP"
+trust_hooks "$S134"
 submit "$S134" "smoke134 notify"
 hn_prompt="$(wait_pane 20 "$S134" -F "Bash command")" || fail "the permission prompt never opened"
 dump "the permission prompt" "$hn_prompt"

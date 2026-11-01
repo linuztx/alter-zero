@@ -73,11 +73,20 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
     }
 }
 
-/// The matcher text when it actually constrains anything — `None` for the
-/// three spellings of "match everything" (absent, empty, `*`), so both
-/// entry points agree on what a wildcard is.
-fn wildcard_free(matcher: Option<&str>) -> Option<&str> {
+/// The pattern a matcher actually constrains with — `None` for the three
+/// spellings of "match everything" (absent, empty, `*`), the pattern itself,
+/// **untrimmed**, otherwise. The one definition [`matches`](fn@matches)
+/// selects by, and what a hook's trust identity records
+/// (`docs/config-review.md`): ` Bash` matches no tool where `Bash` fires on
+/// every bash call, so the two must never read as one hook.
+#[must_use]
+pub fn constraint(matcher: Option<&str>) -> Option<&str> {
     matcher.filter(|pattern| !pattern.is_empty() && *pattern != "*")
+}
+
+/// [`constraint`] under the name the selection code reads it by.
+fn wildcard_free(matcher: Option<&str>) -> Option<&str> {
+    constraint(matcher)
 }
 
 /// The non-regex fast path's character class, verbatim from both references
@@ -99,6 +108,20 @@ mod tests {
             assert!(matches(matcher, "bash"), "{matcher:?} should match bash");
             assert!(matches(matcher, "anything"), "{matcher:?} matches all");
         }
+    }
+
+    #[test]
+    fn a_constraint_is_the_pattern_untrimmed_or_none_for_every() {
+        // What a hook's trust identity records: the three spellings of
+        // "match everything" are no constraint, and any real pattern is
+        // kept exactly — a space makes it a regex that selects other tools.
+        for matcher in [None, Some(""), Some("*")] {
+            assert_eq!(constraint(matcher), None, "{matcher:?}");
+        }
+        assert_eq!(constraint(Some("Bash")), Some("Bash"));
+        assert_eq!(constraint(Some(" Bash")), Some(" Bash"));
+        assert_eq!(constraint(Some(" ")), Some(" "));
+        assert!(!matches(Some(" Bash"), "Bash"));
     }
 
     #[test]

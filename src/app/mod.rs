@@ -32,6 +32,7 @@ mod backtrack;
 mod commands;
 mod compact;
 mod composer;
+mod config_review;
 mod context_usage;
 mod diff;
 mod donate;
@@ -61,7 +62,6 @@ mod theme;
 mod tips;
 mod tool_group;
 mod tools;
-mod trust_menu;
 mod turn;
 mod types;
 mod usage;
@@ -104,6 +104,10 @@ pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
+pub use self::config_review::{
+    ConfigReview, ItemChange, ReviewAnswer, ReviewChoice, ReviewItem, ReviewKey, ReviewKind,
+    ReviewPage, ReviewSection,
+};
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::secrets::{SecretField, SecretForm, SecretsPage};
@@ -125,7 +129,6 @@ pub use self::tools::{
     ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
     ToolStatus, apply_tool_screen,
 };
-pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
     CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,
     StatusVerb, StreamError, VERB_ROTATION, Withdrawn, format_elapsed, format_timeout,
@@ -523,11 +526,11 @@ pub struct App {
     /// (page walk, no search) over the boundary-injected server snapshot.
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
-    /// The open `/trust` review menu; `None` when closed. The seventh
-    /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s
-    /// sibling (no text entry) over the boundary-injected project-config
-    /// review. See `docs/project-config.md`.
-    pub trust_menu: Option<TrustMenu>,
+    /// The open startup review; `None` when closed. The composer-replacing
+    /// page that asks about hooks and project MCP servers before they run,
+    /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over
+    /// pages the boundary builds. See `docs/config-review.md`.
+    pub config_review: Option<ConfigReview>,
     /// The open inline `/mascot` picker; `None` when closed. The eighth
     /// composer-replacing picker, the [`settings_picker`](Self::settings_picker)'s
     /// twin — same frame, same grammar — over the mascot catalog, previewing

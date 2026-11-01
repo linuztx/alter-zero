@@ -207,6 +207,11 @@ pub(crate) struct ModelSession {
     /// must not leave a stale name on the wire — `session_backend` builds the
     /// sink from the config it is handed.
     hooks: Option<HookSetup>,
+    /// Whether the startup review is holding `SessionStart` back
+    /// (`docs/config-review.md`): its sources stay queued until
+    /// [`Self::release_session_start`], so a hook trusted on the review's
+    /// first page still hears the `startup` it was configured for.
+    session_start_held: bool,
     /// The `/model` picker's in-flight fetch, so closing the picker cancels it.
     fetch_cancel: Option<CancelToken>,
     /// Whether the startup capability probe is still outstanding — the gate on
@@ -542,6 +547,7 @@ impl ModelSession {
             hooks,
             fetch_cancel: None,
             probe_pending: probe.is_some(),
+            session_start_held: false,
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
             probe,
         }
@@ -880,48 +886,24 @@ impl ModelSession {
         self.rebuild_current();
     }
 
-    /// Whether the hooks config resolved with anything runnable in it — the
-    /// `/settings` **Hooks** row's availability (`docs/hooks.md`). The setup
-    /// itself now exists even over an empty file (so a `/trust` approval can
-    /// swap a project merge in mid-session, `docs/project-config.md`); an
-    /// empty merge still reports unavailable, exactly as no setup used to.
-    pub(crate) fn hooks_available(&self) -> bool {
-        self.hooks
-            .as_ref()
-            .is_some_and(|setup| !setup.file.is_empty())
+    /// Whether the session runs its hooks at all — the `/settings` **Hooks**
+    /// row (`docs/hooks.md`). What it runs is the trusted share of the
+    /// configured hooks (`docs/config-review.md`).
+    pub(crate) fn hooks_enabled(&self) -> bool {
+        self.hooks.as_ref().is_some_and(|setup| setup.enabled)
     }
 
-    /// Swap the parsed hooks config the session runs — the `/trust` seam
-    /// (`docs/project-config.md`): an approval rebinds the user+project
-    /// merge, a revoke rebinds the user layer alone. The rebuild carries it
-    /// into the next backend build; the live handles (gate, transcript,
-    /// SessionStart sources) ride along untouched.
+    /// Swap the parsed hooks config the session runs — the trust seam
+    /// (`docs/config-review.md`): every review answer and `/hooks` toggle
+    /// rebinds the trusted share of the user's and the project's hooks. The
+    /// setup exists even over an empty file so this can swap one in. The
+    /// rebuild carries it into the next backend build; the live handles
+    /// (gate, transcript, SessionStart sources) ride along untouched.
     pub(crate) fn set_hooks_file(&mut self, file: alter_zero::hooks::HooksFile) {
         if let Some(setup) = self.hooks.as_mut() {
             setup.file = std::sync::Arc::new(file);
         }
         self.rebuild_current();
-    }
-
-    /// The parsed hooks file digested for the read-only `/hooks` browser,
-    /// plus whether the session actually runs it (`docs/hooks-menu.md`). The
-    /// digest comes from the same `Arc<HooksFile>` every backend rebuild
-    /// re-attaches, so the browser and the dispatcher can never disagree; a
-    /// session with no runnable hooks browses as empty (the `/settings`
-    /// row's own posture).
-    pub(crate) fn hooks_browse(&self) -> (alter_zero::hooks::HooksOverview, bool) {
-        match &self.hooks {
-            Some(setup) => (
-                alter_zero::hooks::HooksOverview::from_file(&setup.file),
-                setup.enabled,
-            ),
-            None => (
-                alter_zero::hooks::HooksOverview::from_file(
-                    &alter_zero::hooks::HooksFile::default(),
-                ),
-                false,
-            ),
-        }
     }
 
     /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) — fired
@@ -954,9 +936,24 @@ impl ModelSession {
     /// Without hooks or a real backend the sources stay queued for the first
     /// turn that has both.
     pub(crate) fn fire_session_start(&self) {
+        if self.session_start_held {
+            return;
+        }
         if let Some(hooks) = self.boundary_hooks() {
             hooks.fire_session_start();
         }
+    }
+
+    /// Hold `SessionStart` while the startup review asks what may run
+    /// (`docs/config-review.md`): every fire leaves its sources queued.
+    pub(crate) fn hold_session_start(&mut self) {
+        self.session_start_held = true;
+    }
+
+    /// The review answered: fire what was held, with the hooks it trusted.
+    pub(crate) fn release_session_start(&mut self) {
+        self.session_start_held = false;
+        self.fire_session_start();
     }
 
     /// The conversation is ending — `reason` `clear` (a `/clear`), `resume`

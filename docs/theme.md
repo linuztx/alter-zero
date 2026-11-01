@@ -494,7 +494,7 @@ the saved theme.
   come from the palette), and `/mascot` and `/spinner` remain the pickers
   for the glyphs.
 - **Why do the page titles wear the banner's gradient?** Every titled
-  composer-replacing page — `/hooks`, `/mcp`, `/skills`, `/trust`,
+  composer-replacing page — `/hooks`, `/mcp`, `/skills`, the startup review,
   `/export`, the ↓ manager, `/login`'s titled pages, `/donate`, `/secrets`
   — headlines in one dress, bold and washed accent → link across the
   title's own width (`ui::header::page_title_line`, over

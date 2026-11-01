@@ -452,7 +452,7 @@ hook's path, which the agent can read when it needs the rule, and it is the
 name the user knows the hook by. Only its first line shows, cut to 80
 characters with `…` marking the cut, since an inline program is not a name.
 `Config:` is the absolute path of the `hooks.json` it is configured in —
-the user's own or a trusted project's, which matters once the two layers
+the user's own or a project's, which matters once the two layers
 merge — so the agent can read the file, or tell the user exactly where to
 change the rule. Each group learns its file when it is loaded
 (`HooksFile::with_source`, a field the JSON never carries), the selection
@@ -536,7 +536,7 @@ printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalCon
 
 ## Configuration and trust
 
-**Two layers: the user's file, plus the project's behind a trust gate.**
+**Two layers, and nothing runs until it is trusted.**
 `~/.alter-zero/hooks.json` (`ALTER_ZERO_HOOKS_FILE` overrides that user
 path; `ALTER_ZERO_HOOKS` gates the feature off entirely, the
 `ALTER_ZERO_PERMISSIONS` pattern) — and, since `docs/project-config.md`, the
@@ -544,16 +544,17 @@ project's own `{root}/.alter-zero/hooks.json`, discovered at the
 nearest-`.git` root and **union-merged** after the user file
 (`HooksFile::merged` — one more entry from the loader, no precedence rules to
 invent: `select`'s existing dedup-by-command keeps the user's copy of a
-duplicate, any block wins, contexts concatenate). The reason it was
-user-level-only for so long is the reason the project layer is
-**default-deny**: a project-local hooks file without a trust gate means
-cloning a repository earns arbitrary code execution on the first tool call.
-The gate is codex's content-hash answer with the interaction design solved
-by `/trust` — the project file is read and fingerprinted at bootstrap but
-contributes **nothing** to the merge until the user approves it in the
-`/trust` review menu, and an edited file is untrusted again. See
-`docs/project-config.md` for the whole gate (the `trust.json` store, the
-review menu, live activation, `ALTER_ZERO_PROJECT_CONFIG`).
+duplicate, any block wins, contexts concatenate). A hook runs a shell command
+on its own whenever its event fires, outside the permission prompt, so
+**every hook in either file runs only once the user has trusted it** —
+codex's answer, which asks about each new or changed hook at startup. The
+**startup review** (`docs/config-review.md`) lists them verbatim on the first
+frame, `trust.json` records each trusted hook by its event, matcher and
+command, an edited hook is asked about again with its old command beside the
+new one, and `/hooks` trusts or stops trusting one later. A project-local
+hooks file that ran on clone would earn a repository arbitrary code execution
+on the first tool call; a user file anything else can write to (the agent
+included) is the same hole one directory over.
 
 A malformed `hooks.json` is **not** silently treated as "no hooks" — that is
 how a user comes to believe a guard is running when it is not. The parse
@@ -583,12 +584,12 @@ never did. Like every shell child, a hook runs without the herdr pane id
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it
 reports `false (unavailable)` when no config file resolved. It is **on by
-default** and **per working directory** (`docs/per-directory-state.md`): the
-user's own `hooks.json` runs with no opt-in, as in Claude Code (codex asks
-the user to trust each new or changed hook at startup instead), while a
-project's file still contributes nothing until `/trust` approves it — the
-gate the old opt-in stood in for. A directory that should not run them opts
-out: one cycle records `"hooks": false` in its `settings.json` entry.
+default** and **per working directory** (`docs/per-directory-state.md`) —
+the startup review being the gate the old opt-in stood in for — so a
+directory that should not run them opts out: one cycle records
+`"hooks": false` in its `settings.json` entry. With the row off the review
+asks nothing about hooks (none would run), and turning it back on over hooks
+waiting for trust opens the review's hooks page.
 `ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value off — the
 `ALTER_ZERO_TOOLS` pattern) and is never saved.
 
@@ -707,7 +708,9 @@ neither end. **Phase 134** raises a real permission prompt (the stub asks
 for one `bash` call) under a `Notification` hook that sleeps 4 s: answered
 at once, the command runs at once, and the hooks still record
 `PreToolUse`, `Notification`, `PostToolUse` in that order — on the
-previous build the notifier landed last. **Phase 134b** trusts a project's
+previous build the notifier landed last. Each of these phases answers the
+startup review's hooks page first, trusting its fixture's hooks
+(`docs/config-review.md`). **Phase 134b** trusts a project's
 own `hooks.json` whose guard is `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh`
 and launches in the repository's `src/`: the guard runs (in the cwd), the
 stub's `rm -rf build/` never does, and the model reads the hook and the
@@ -783,7 +786,8 @@ Verified against both sources, and chosen — not accidental:
 - **A PermissionRequest hook that abstains loses its warnings** — the
   fail-open posture has no channel to the user from that position; a
   deciding verdict carries them on its note.
-- **The project layer is read once, at bootstrap** — like the user file. A
-  `.alter-zero/hooks.json` that appears (or changes) mid-session is a
-  restart away; `/trust`'s approval activates exactly the reviewed startup
-  snapshot (`docs/project-config.md`).
+- **The hooks files are read once, at bootstrap.** A `.alter-zero/hooks.json`
+  that appears (or changes) mid-session is a restart away, and the startup
+  review asks about it then (`docs/config-review.md`).
+- **Trust pins the command, not what it reads.** `./fmt.sh` stays trusted when
+  `fmt.sh` changes — both references draw the same line.

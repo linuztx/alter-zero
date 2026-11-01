@@ -314,11 +314,11 @@ pub struct SessionSettings {
     /// Load `AGENTS.md` into the context (default `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub project_docs: bool,
-    /// Run the lifecycle hooks (default `true` — the user's own `hooks.json`
-    /// runs with no opt-in, as in Claude Code (codex asks to trust each new or
-    /// changed hook first), while a project's file still waits behind
-    /// `/trust`; a directory turning them off is what its entry records, and
-    /// a session with no such file reports the row unavailable either way).
+    /// Run the lifecycle hooks (default `true` — every hook still runs only
+    /// once the user has trusted it in the startup review, codex's answer
+    /// (`docs/config-review.md`); a directory turning them off is what its
+    /// entry records, and a session with no such file reports the row
+    /// unavailable either way).
     #[serde(skip_serializing_if = "is_true")]
     pub hooks: bool,
     /// Offer the `skill` tool and the listing (default `true` — a session

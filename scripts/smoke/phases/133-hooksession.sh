@@ -8,8 +8,10 @@ smoke_begin
 # against a stub provider that refuses every request with a 400 — the turn
 # fails, never retried. Every hooked event appends its payload (one JSON line)
 # to a log. What it proves, in Claude Code's terms:
-#   - SessionStart fires as the session opens, before any prompt, in the
-#     background: a handler that sleeps does not hold up the first frame,
+#   - SessionStart is held while the startup review asks about the hooks
+#     (docs/config-review.md), then fires as the session opens, before any
+#     prompt, in the background: a handler that sleeps does not hold up the
+#     first frame,
 #     and a turn sent while it runs waits for it — its UserPromptSubmit
 #     lands after it, and its context reaches the request the provider got;
 #   - session_id is the conversation's own id, the one `--resume` takes: the
@@ -103,14 +105,23 @@ hs_at_least() { [ "$(hs_events | grep -c "^$1")" -ge "$2" ]; }
 
 S133="${S}_hooksession"
 hs_launch_started="$(date +%s%N)"
-launch "$S133" 100 30 "$HS_REAL"
+# The first frame is the startup review asking about these hooks
+# (docs/config-review.md).
+launch -w "Esc to continue without trusting" "$S133" 100 30 "$HS_REAL"
 hs_first_frame_ms=$((($(date +%s%N) - hs_launch_started) / 1000000))
 note "first frame after ${hs_first_frame_ms} ms (SessionStart sleeps 2 s)"
 if [ "$hs_first_frame_ms" -ge 1900 ]; then
 	fail "the first frame waited on the SessionStart hook (${hs_first_frame_ms} ms)"
 fi
+# Nothing runs while the review asks: SessionStart is held — longer than its
+# handler's own 2 s sleep — and fires once the hooks are trusted.
+sleep 2.5
+if hs_has "SessionStart"; then
+	fail "SessionStart fired while the startup review was still asking"
+fi
+trust_hooks "$S133"
 # SessionStart fires as the session opens — no prompt sent yet.
-poll 8 hs_has "SessionStart:startup" || fail "SessionStart never fired at launch (no prompt was sent)"
+poll 8 hs_has "SessionStart:startup" || fail "SessionStart never fired once the hooks were trusted (no prompt was sent)"
 hs_startup="$(hs_events | sed -n 1p)"
 hs_first_id="${hs_startup##*:}"
 expect_ne "$(hs_field 1 scratchpad_dir)" "null" "the payload carries no scratchpad_dir"

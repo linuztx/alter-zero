@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::AgentRun;
-use crate::app::{App, PathDisplay};
+use crate::app::{App, PathDisplay, ReviewKey, ReviewKind, ReviewPage};
 use crate::ask::AskQuestion;
 use crate::permission::{self, PermissionKind, PermissionRequest};
 
@@ -189,8 +189,10 @@ pub fn activity(app: &App) -> Activity {
     }
 }
 
-/// What the open modal asks, in one line: a permission prompt's
-/// [`permission_message`], a question modal's [`question_message`].
+/// What the session waits on, in one line: a permission prompt's
+/// [`permission_message`], a question modal's [`question_message`], else
+/// the startup review's page ([`review_message`]) — nothing it asks about
+/// runs until it is answered.
 fn waiting_message(app: &App) -> Option<String> {
     if let Some(prompt) = app.permission() {
         return Some(one_line(&permission_message(
@@ -198,8 +200,28 @@ fn waiting_message(app: &App) -> Option<String> {
             app.path_display(),
         )));
     }
-    let prompt = app.ask()?;
-    Some(one_line(&question_message(&prompt.request.questions)))
+    if let Some(prompt) = app.ask() {
+        return Some(one_line(&question_message(&prompt.request.questions)));
+    }
+    let page = app.config_review.as_ref()?.pages.first()?;
+    Some(one_line(&review_message(page)))
+}
+
+/// A review page in a line: what it asks to trust or to enable — each hook
+/// by its event and matcher, each server by its name.
+fn review_message(page: &ReviewPage) -> String {
+    let names: Vec<&str> = page
+        .items()
+        .map(|item| match &item.key {
+            ReviewKey::Server { name, .. } => name.as_str(),
+            ReviewKey::Hook { .. } => item.title.as_str(),
+        })
+        .collect();
+    let ask = match page.kind {
+        ReviewKind::Hooks => "Trust hooks",
+        ReviewKind::McpServers => "Enable MCP servers",
+    };
+    format!("{ask}: {}", names.join(", "))
 }
 
 /// Is this subagent still at work? Announced or running — or settled with
@@ -1143,6 +1165,71 @@ mod tests {
         let mut app = App::new();
         app.open_ask(ask(&["First?", "Second?", "Third?"]));
         assert_eq!(waiting(&app).as_deref(), Some("Question: First? (+2 more)"));
+    }
+
+    #[test]
+    fn the_startup_review_is_what_the_session_waits_on() {
+        // Nothing it asks about runs until the user answers
+        // (`docs/config-review.md`), so the pane is blocked — naming what it
+        // asks to trust, then what to enable.
+        use crate::app::{ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection};
+        use crate::trust::HookIdentity;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let hook = |event: &str, matcher: &str| {
+            let identity = HookIdentity {
+                event: event.to_string(),
+                matcher: matcher.to_string(),
+                command: "./x.sh".to_string(),
+            };
+            ReviewItem {
+                title: identity.label(),
+                detail: vec!["./x.sh".to_string()],
+                change: None,
+                checked: true,
+                key: ReviewKey::Hook {
+                    source: "/h/hooks.json".to_string(),
+                    identity,
+                },
+            }
+        };
+        let server = |name: &str| ReviewItem {
+            title: format!("{name} · stdio"),
+            detail: vec!["npx srv".to_string()],
+            change: None,
+            checked: true,
+            key: ReviewKey::Server {
+                source: "/r/.mcp.json".to_string(),
+                name: name.to_string(),
+            },
+        };
+        let section = |items| ReviewSection {
+            scope: None,
+            path: "~/x".to_string(),
+            items,
+        };
+        let mut app = App::new();
+        app.open_config_review(vec![
+            ReviewPage::new(
+                ReviewKind::Hooks,
+                vec![section(vec![hook("Stop", ""), hook("PreToolUse", "bash")])],
+            ),
+            ReviewPage::new(
+                ReviewKind::McpServers,
+                vec![section(vec![server("brave-devtools"), server("github")])],
+            ),
+        ]);
+        assert_eq!(
+            waiting(&app).as_deref(),
+            Some("Trust hooks: Stop, PreToolUse · bash")
+        );
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.on_key(enter);
+        assert_eq!(
+            waiting(&app).as_deref(),
+            Some("Enable MCP servers: brave-devtools, github")
+        );
+        app.on_key(enter);
+        assert_eq!(waiting(&app), None);
     }
 
     #[test]

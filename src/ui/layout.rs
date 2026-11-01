@@ -885,12 +885,13 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(prompt) = app.permission() {
         return prompt.amend;
     }
-    // The no-text-entry pickers (`/hooks`, `/trust`, `/mcp`) and the ↓
-    // manager band are menus too — same rule (`docs/project-config.md`,
-    // `docs/mcp.md`). The `/mcp` Auth page's `URL >` field *is* typed into,
-    // so its caret stays, the amend-field exception again.
+    // The no-text-entry pickers (`/hooks`, the startup review, `/mcp`) and
+    // the ↓ manager band are menus too — same rule
+    // (`docs/config-review.md`, `docs/mcp.md`). The `/mcp` Auth page's
+    // `URL >` field *is* typed into, so its caret stays, the amend-field
+    // exception again.
     if app.hooks_menu.is_some()
-        || app.trust_menu.is_some()
+        || app.config_review.is_some()
         || app.donate_picker.is_some()
         || app.export_picker.is_some()
         || app.context_usage.is_some()
@@ -1105,6 +1106,13 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                 .min(usize::from(area.width.saturating_sub(1))) as u16);
         return (x, y);
     }
+    // The startup review, next in the render order: a menu, so the hidden
+    // cursor seats on its highlighted `❯` the `/hooks` way
+    // (`docs/config-review.md`).
+    if app.config_review.is_some() {
+        let lines = super::config_review_view::config_review_lines(app, area.width, area.height);
+        return menu_marker_seat(&lines, area);
+    }
     // The search-line pickers park the cursor at the end of their `❯` search
     // line — inside the picker's own frame, which the streaming strip above
     // it has pushed down ([`view_split`], the same split the paint uses).
@@ -1161,8 +1169,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the *seat* tracks the highlighted `❯` row, so the cursor's return
     // when the menu closes starts somewhere sensible. A marker-less page
     // (the hook detail, a hookless list) seats after its closing hint, the
-    // overlays' rule. The `/trust` review menu is its sibling and seats the
-    // same way.
+    // overlays' rule.
     if app.hooks_menu.is_some() {
         let lines = super::hooks_view::hooks_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
@@ -1204,10 +1211,6 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let x = area.x + col.min(area.width.saturating_sub(1));
         let row = anchored_view_row(rows, body, u16::try_from(row).unwrap_or(u16::MAX));
         return (x, view_cursor_y(area, body, row));
-    }
-    if app.trust_menu.is_some() {
-        let lines = super::trust_view::trust_view_lines(app, area.width);
-        return menu_marker_seat(&lines, area);
     }
     // The `/mcp` manager seats on its `❯` too — except its auth page,
     // whose `URL >` paste field seats the caret at the typed text's end, on

@@ -58,9 +58,8 @@ fn the_defaults_match_the_pre_feature_behaviour() {
 
 #[test]
 fn hooks_are_on_until_a_directory_turns_them_off() {
-    // The user's own hooks.json runs by default — both references run it with
-    // no opt-in — while a project's file still waits behind /trust
-    // (docs/project-config.md). Turning them off is exactly what the
+    // Hooks run by default — each one once the user trusts it in the startup
+    // review (docs/config-review.md). Turning them off is exactly what the
     // directory's entry records, and the default stays off the wire.
     let s = SessionSettings::default();
     assert!(s.hooks, "hooks are on by default");

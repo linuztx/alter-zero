@@ -205,9 +205,8 @@ with the defaults, so the file still records only what changed).
 their own configuration — Claude Code runs it with no opt-in (codex asks
 the user to trust each new or changed hook at startup instead), and a hooks
 file that does nothing until a hidden switch is flipped reads as broken — while the danger the opt-in guarded against, a cloned project's
-`hooks.json` running on its first tool call, is the `/trust` gate's job:
-a project's file contributes nothing until the user approves it
-(`docs/project-config.md`). A directory that should not run them opts
+`hooks.json` running on its first tool call, is the startup review's job:
+no hook runs until the user trusts it (`docs/config-review.md`). A directory that should not run them opts
 **out**, recorded as `"hooks": false`; the hooks field's diff predicate
 flipped back with its default (`is_true`), or an opt-out would never reach
 the file and the next launch would turn the hooks on again.
@@ -251,9 +250,9 @@ Two consequences at the boundary:
   session starts — with `SessionSettings::tips` `#[serde(skip)]` beside the
   other two.
 - The **project-level `.alter-zero/`** layer (`docs/project-config.md`) is
-  a different axis: files *inside* the project, behind `/trust`. Both files
-  here live in the user's config home, keyed by directory, and need no trust
-  gate — nothing in them executes.
+  a different axis: files *inside* the project, behind the startup review
+  (`docs/config-review.md`). Both files here live in the user's config home,
+  keyed by directory, and need no review — nothing in them executes.
 
 ## Testing
 

@@ -60,6 +60,14 @@ pub struct HookOverview {
     /// `statusMessage`, when set — stands in for the command in list rows
     /// (Claude Code's `getHookDisplayText`).
     pub status_message: Option<String>,
+    /// For a hook that can run, read from a file: that `hooks.json`'s path
+    /// and the hook itself — what trusting it records
+    /// (`docs/config-review.md`). `None` for a handler that never runs, or
+    /// one read from no file.
+    pub trust_key: Option<(String, crate::trust::HookIdentity)>,
+    /// Whether the user trusts it ([`HooksOverview::with_trust`]); always
+    /// `false` without a [`trust_key`](Self::trust_key).
+    pub trusted: bool,
 }
 
 impl HooksOverview {
@@ -85,7 +93,13 @@ impl HooksOverview {
                         }
                     };
                     row.hooks.extend(group.hooks.iter().map(|handler| {
+                        let trust_key = group.source.as_ref().and_then(|source| {
+                            crate::trust::hook_identity(event.name(), group, handler)
+                                .map(|identity| (source.display().to_string(), identity))
+                        });
                         HookOverview {
+                            trust_key,
+                            trusted: false,
                             kind: match &handler.kind {
                                 HandlerKind::Command => "command".to_string(),
                                 HandlerKind::Other(name) => name.clone(),
@@ -107,6 +121,39 @@ impl HooksOverview {
             })
             .collect();
         Self { events }
+    }
+
+    /// This overview with each runnable hook's trust answered by `trusted`
+    /// — given the hook's file and the hook (`docs/config-review.md`).
+    #[must_use]
+    pub fn with_trust(
+        mut self,
+        trusted: &dyn Fn(&str, &crate::trust::HookIdentity) -> bool,
+    ) -> Self {
+        for hook in self
+            .events
+            .iter_mut()
+            .flat_map(|event| event.matchers.iter_mut())
+            .flat_map(|matcher| matcher.hooks.iter_mut())
+        {
+            hook.trusted = hook
+                .trust_key
+                .as_ref()
+                .is_some_and(|(source, identity)| trusted(source, identity));
+        }
+        self
+    }
+
+    /// How many hooks that can run are not trusted — and so do not run: the
+    /// `/hooks` header's note.
+    #[must_use]
+    pub fn untrusted(&self) -> usize {
+        self.events
+            .iter()
+            .flat_map(|event| event.matchers.iter())
+            .flat_map(|matcher| matcher.hooks.iter())
+            .filter(|hook| hook.trust_key.is_some() && !hook.trusted)
+            .count()
     }
 
     /// Every configured handler across the modelled events — the `{N} hooks
@@ -411,6 +458,45 @@ mod tests {
         );
         assert_eq!(pre.matchers[0].hooks[2].display(), "./second.sh");
         assert_eq!(pre.matchers[0].hooks[1].display(), HOOK_NO_CONTENT_LABEL);
+    }
+
+    #[test]
+    fn a_runnable_hook_carries_its_file_identity_and_trust() {
+        // What `/hooks` shows and toggles (`docs/config-review.md`): each
+        // hook that can run names its file and itself, and whether the user
+        // trusts it; a handler that never runs carries neither.
+        let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+        let file = HooksFile::parse(SAMPLE)
+            .expect("fixture parses")
+            .with_source(source);
+        let overview = HooksOverview::from_file(&file).with_trust(&|path, hook| {
+            path == source.display().to_string() && hook.command == "./guard.sh"
+        });
+        let pre = event(&overview, HookEvent::PreToolUse);
+        let guard = &pre.matchers[0].hooks[0];
+        let (path, identity) = guard.trust_key.as_ref().expect("a runnable hook");
+        assert_eq!(path, "/home/u/.alter-zero/hooks.json");
+        assert_eq!(identity.label(), "PreToolUse · bash");
+        assert_eq!(identity.command, "./guard.sh");
+        assert!(guard.trusted);
+        let second = &pre.matchers[0].hooks[2];
+        assert!(second.trust_key.is_some());
+        assert!(!second.trusted, "not every hook is trusted");
+        let prompt = &pre.matchers[0].hooks[1];
+        assert!(prompt.trust_key.is_none(), "a prompt hook never runs");
+        assert!(!prompt.trusted);
+        // A file read from nowhere names no file, so nothing can be recorded.
+        let bare = HooksOverview::from_file(&HooksFile::parse(SAMPLE).expect("parses"));
+        assert!(
+            event(&bare, HookEvent::Stop).matchers[0].hooks[0]
+                .trust_key
+                .is_none()
+        );
+        assert_eq!(
+            overview.untrusted(),
+            3,
+            "./always.sh, ./second.sh, ./done.sh"
+        );
     }
 
     #[test]
