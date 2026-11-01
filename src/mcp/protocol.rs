@@ -34,9 +34,11 @@ pub const SUPPORTED_VERSIONS: [&str; 5] = [
 ];
 
 /// How many characters of a server's tool description ride the tool spec —
-/// Claude Code's `MAX_MCP_DESCRIPTION_LENGTH`: a wiki-length description
-/// would spend the context budget the schemas share.
-pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 2048;
+/// Claude Code's `MAX_MCP_DESCRIPTION_LENGTH`, 4,096 since it doubled the
+/// old 2,048 (2.1.296): enough for the usage notes a server puts there, while
+/// a wiki-length description would spend the context budget the schemas
+/// share.
+pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
 
 /// A JSON-RPC 2.0 **request** — `id` pairs the eventual response.
 #[must_use]
@@ -1382,6 +1384,9 @@ mod tests {
 
     #[test]
     fn a_huge_description_is_capped() {
+        // Claude Code's cap since 2.1.296 — a description long enough to
+        // carry real usage notes, short of a wiki page.
+        assert_eq!(MAX_TOOL_DESCRIPTION_CHARS, 4096);
         let long = "x".repeat(MAX_TOOL_DESCRIPTION_CHARS + 100);
         let (tools, _) = parse_tools_page(&json!({"tools": [{"name": "t", "description": long}]}));
         assert_eq!(

@@ -243,6 +243,9 @@ release heading when a version is cut.
   permission is asked for it alongside what it already had, and the
   permission it named is read correctly: a parsing slip used to lose it
   (`docs/mcp.md`).
+- **An MCP tool's description keeps its usage notes.** Descriptions were
+  cut at 2,048 characters, which lost the end of the longer ones servers
+  write to explain their tools; the limit is now 4,096, Claude Code's.
 - **Turning an MCP server off in `/mcp` no longer can wipe `mcp.json`.**
   With one typo in the file, the toggle replaced the whole file, every
   server in it included, with a few lines of its own; it now leaves such a

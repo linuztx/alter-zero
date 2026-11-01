@@ -1137,8 +1137,10 @@ asked for rather than a stalled turn. `subscriptions/listen`, response caching
 registration (we are not a hosted client with an `https` client id — DCR,
 deprecated but retained, is our registration path) stay out with it. Server
 `instructions` are shown in the detail page but not injected into the system
-prompt. WebSocket transport isn't offered (neither reference ships it for
-user servers). The dummy backend scripts no MCP scenario — the manager is
+prompt. WebSocket transport isn't offered: the MCP spec defines stdio and
+Streamable HTTP (and the legacy HTTP+SSE this client also speaks), and
+Claude Code's `"type": "ws"` is its own extension, which an entry here
+reports as an unsupported transport rather than dropping silently. The dummy backend scripts no MCP scenario — the manager is
 real I/O end to end; the smoke suite drives `/mcp` against a scripted
 (modern) stdio fixture instead.
 
