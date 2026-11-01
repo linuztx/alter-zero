@@ -188,7 +188,7 @@ jobs:
           path: dist
           merge-multiple: true
       # The npm that publishes, rehearsing.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: scripts/release.sh npm "$VERSION" dist --dry-run
@@ -224,7 +224,7 @@ jobs:
           path: dist
           merge-multiple: true
       # Node 24 bundles npm 11, which trusted publishing needs (11.5.1+).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
