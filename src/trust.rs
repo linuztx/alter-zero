@@ -9,9 +9,9 @@
 //! or changed at startup, and this module is the pure half of that — the
 //! `trust.json` store, what identifies a hook and a server entry, the
 //! classification of each as trusted, new or changed, and the
-//! read-modify-write cores the answers are recorded through. The file I/O
-//! lives in the binary boundary (`tui::trust`), like every other config
-//! store.
+//! read-modify-write core every answer is recorded through
+//! ([`update_store`]). The file I/O lives in the binary boundary
+//! (`tui::trust`), like every other config store.
 //!
 //! `trust.json` is keyed by the absolute path of the file each hook or
 //! server was read from, and lives in the config home — never in the
@@ -22,13 +22,21 @@
 //! { "hooks": { "/home/me/.alter-zero/hooks.json": [
 //!       { "event": "PreToolUse", "matcher": "bash", "command": "./guard.sh" } ] },
 //!   "mcp": { "/home/me/repo/.mcp.json": {
-//!       "github": { "enabled": true, "fingerprint": "sha256:…", "target": "…" } } } }
+//!       "github": { "enabled": true, "fingerprint": "sha256:…",
+//!                   "parts": { "transport": "http", "target": "sha256:…" } } } } }
 //! ```
+//!
+//! A server decision keeps fingerprints and the names of the entry's
+//! variables, never a value — not the URL, not the command line: a token can
+//! sit in any of them, and `trust.json` is a file people sync with their
+//! dotfiles ([`ServerParts`]).
 //!
 //! Unlike `permissions.json`'s best-effort parse, a malformed `trust.json` is
 //! an **error** (the boundary fails closed — nothing trusted — and says so):
 //! a guard file that silently reads as something other than what the user
-//! decided must not stay quiet about it.
+//! decided must not stay quiet about it. Nor is it ever written over
+//! ([`update_store`]): what the user decided before is still in it, waiting
+//! for the typo to be fixed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -104,7 +112,8 @@ pub fn project_mcp_files(root: &Path) -> [PathBuf; 2] {
 /// that selects it, and the command it runs. That is what decides what runs
 /// and when — a `timeout` or a `statusMessage` changes neither, so editing
 /// one asks nothing. The matcher is normalised ([`normalize_matcher`]), so
-/// the three spellings of match-everything are one hook.
+/// the three spellings of match-everything are one hook — and nothing else
+/// is folded together, a padded matcher included.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookIdentity {
@@ -122,20 +131,25 @@ impl HookIdentity {
     pub fn label(&self) -> String {
         if self.matcher.is_empty() {
             self.event.clone()
+        } else if self.matcher.trim() != self.matcher {
+            // Padded with spaces — a different hook from the bare name, so
+            // the spaces must show.
+            format!("{} · \"{}\"", self.event, self.matcher)
         } else {
             format!("{} · {}", self.event, self.matcher)
         }
     }
 }
 
-/// A group's matcher as a hook's identity carries it: trimmed, and the
-/// match-everything spellings — absent, empty, `*` — all the empty string.
+/// A group's matcher as a hook's identity carries it: exactly as the runner
+/// reads it ([`crate::hooks::constraint`] — never trimmed, since ` Bash` and
+/// `Bash` select different tools), the match-everything spellings — absent,
+/// empty, `*` — all the empty string.
 #[must_use]
 pub fn normalize_matcher(raw: Option<&str>) -> String {
-    match raw.map(str::trim) {
-        None | Some("" | "*") => String::new(),
-        Some(matcher) => matcher.to_string(),
-    }
+    crate::hooks::constraint(raw)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The hook identity of `handler` under `event`'s `group`, when it is a hook
@@ -231,11 +245,139 @@ pub fn server_fingerprint(config: &McpServerConfig) -> String {
 pub struct ServerRecord {
     pub enabled: bool,
     pub fingerprint: String,
-    /// The entry's command line or URL when it was decided — kept only for
-    /// a changed entry's `was:` line; the entry's values themselves (an
-    /// `env` value, a header token) are never copied into the store.
-    #[serde(default)]
+    /// What the entry was made of when decided, without its values — what a
+    /// changed entry is compared against to say what changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<ServerParts>,
+}
+
+/// A server entry's shape without its values: its transport, a
+/// fingerprint of its command line or URL, and the names of its `env`
+/// variables or headers, each beside a fingerprint of its value. Enough to
+/// say **what** changed in an entry ([`ServerParts::changes`]) — nothing a
+/// token could be read back from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerParts {
+    /// `stdio`, `http` or `sse`.
+    pub transport: String,
+    /// The fingerprint of the command and its args, or of the URL.
     pub target: String,
+    /// `env` variable (a local server) or header (a remote one) name → the
+    /// fingerprint of its value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, String>,
+}
+
+impl ServerParts {
+    /// The parts of `config`.
+    #[must_use]
+    pub fn of(config: &McpServerConfig) -> Self {
+        let (target, values) = match config {
+            McpServerConfig::Stdio { command, args, env } => {
+                // Structured, so `["a b"]` and `["a", "b"]` stay apart.
+                let line = serde_json::to_string(&(command, args)).unwrap_or_default();
+                (fingerprint(line.as_bytes()), env)
+            }
+            McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers } => {
+                (fingerprint(url.as_bytes()), headers)
+            }
+        };
+        Self {
+            transport: config.transport_label().to_string(),
+            target,
+            values: values
+                .iter()
+                .map(|(name, value)| {
+                    let pair = format!("{name}={value}");
+                    (name.clone(), fingerprint(pair.as_bytes()))
+                })
+                .collect(),
+        }
+    }
+
+    /// What changed from `self` (what was decided on) to `now`, in the
+    /// review's order: the transport alone when it changed — the rest is
+    /// then a different server's, nothing to compare — else the command
+    /// line or URL, then each variable or header added, removed or given
+    /// another value. Empty when every part is the same and only something
+    /// the parts do not name changed (an `http` entry's `type` dropped).
+    #[must_use]
+    pub fn changes(&self, now: &Self) -> Vec<ServerChange> {
+        if self.transport != now.transport {
+            return vec![ServerChange::Transport {
+                was: self.transport.clone(),
+            }];
+        }
+        let mut out = Vec::new();
+        if self.target != now.target {
+            out.push(if now.transport == "stdio" {
+                ServerChange::CommandLine
+            } else {
+                ServerChange::Url
+            });
+        }
+        let kind = if now.transport == "stdio" {
+            "env"
+        } else {
+            "header"
+        };
+        for (name, value) in &now.values {
+            match self.values.get(name) {
+                None => out.push(ServerChange::Added {
+                    kind,
+                    name: name.clone(),
+                }),
+                Some(was) if was != value => out.push(ServerChange::Value {
+                    kind,
+                    name: name.clone(),
+                }),
+                Some(_) => {}
+            }
+        }
+        for name in self.values.keys() {
+            if !now.values.contains_key(name) {
+                out.push(ServerChange::Removed {
+                    kind,
+                    name: name.clone(),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// One way a server entry changed since it was decided on — a part of the
+/// review's `changed:` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerChange {
+    /// Another transport; it was `was`.
+    Transport { was: String },
+    /// A local server's command or args.
+    CommandLine,
+    /// A remote server's URL.
+    Url,
+    /// An `env` variable or a header (`kind`) that was not there.
+    Added { kind: &'static str, name: String },
+    /// One that is gone.
+    Removed { kind: &'static str, name: String },
+    /// One that is there still, with another value.
+    Value { kind: &'static str, name: String },
+}
+
+impl ServerChange {
+    /// The change in words — `env NODE_OPTIONS added`, `the command line`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Transport { was } => format!("the transport (was {was})"),
+            Self::CommandLine => "the command line".to_string(),
+            Self::Url => "the URL".to_string(),
+            Self::Added { kind, name } => format!("{kind} {name} added"),
+            Self::Removed { kind, name } => format!("{kind} {name} removed"),
+            Self::Value { kind, name } => format!("{kind} {name}'s value"),
+        }
+    }
 }
 
 /// Where a project server stands with the user.
@@ -247,9 +389,9 @@ pub enum ServerTrust {
     Disabled,
     /// Never decided on: it waits for the review.
     New,
-    /// Decided on, but the entry changed since. `previous` is what it ran
-    /// then, the review's `was:` line.
-    Changed { previous: String },
+    /// Decided on, but the entry changed since — `changes` says what, the
+    /// review's `changed:` line.
+    Changed { changes: Vec<ServerChange> },
 }
 
 impl ServerTrust {
@@ -286,12 +428,21 @@ pub struct TrustFile {
     /// MCP file → server name → the decision.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     mcp: BTreeMap<String, BTreeMap<String, ServerRecord>>,
-    /// The per-file hashes stores written before the review kept (the old
-    /// `/trust` menu's): read so an old store still loads
-    /// (as nothing recorded — such a project is asked about once more),
-    /// never written back.
-    #[serde(default, skip_serializing)]
-    projects: Option<serde_json::Value>,
+    /// The `/trust` era's approvals not carried over yet: project root →
+    /// file → the fingerprint of the bytes it approved. Kept through every
+    /// write for the projects not opened since, and dropped file by file as
+    /// each is carried over ([`TrustFile::migrate_legacy`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    projects: BTreeMap<String, LegacyProject>,
+}
+
+/// One project's `/trust`-era approval: file → the fingerprint of the bytes
+/// it approved.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyProject {
+    #[serde(default)]
+    files: BTreeMap<String, String>,
 }
 
 impl TrustFile {
@@ -371,11 +522,159 @@ impl TrustFile {
                 }
             }
             Some(record) => ServerTrust::Changed {
-                previous: record.target.clone(),
+                changes: record
+                    .parts
+                    .as_ref()
+                    .map(|parts| parts.changes(&ServerParts::of(config)))
+                    .unwrap_or_default(),
             },
             None => ServerTrust::New,
         }
     }
+
+    /// Record a hooks decision for `source`, whose current parse is `file`:
+    /// `trust` become trusted, `distrust` stop being trusted, and the file's
+    /// record is rewritten to its current trusted hooks — so a hook removed
+    /// from the file is dropped, and the same command added back later is
+    /// asked about again. The old version of an edited hook that is still
+    /// untrusted is kept, so the next review can still say what it was.
+    /// Every other file's record, and every server decision, is left alone.
+    pub fn record_hooks(
+        &mut self,
+        source: &str,
+        file: &HooksFile,
+        trust: &[HookIdentity],
+        distrust: &[HookIdentity],
+    ) {
+        let reviews = self.review_hooks(source, file);
+        let mut list: Vec<HookIdentity> = Vec::new();
+        for review in &reviews {
+            let identity = &review.identity;
+            let trusted = (review.trust == HookTrust::Trusted || trust.contains(identity))
+                && !distrust.contains(identity);
+            if trusted && !list.contains(identity) {
+                list.push(identity.clone());
+            }
+        }
+        for review in &reviews {
+            if let HookTrust::Changed { previous } = &review.trust
+                && !list.contains(&review.identity)
+            {
+                let old = HookIdentity {
+                    command: previous.clone(),
+                    ..review.identity.clone()
+                };
+                if !list.contains(&old) {
+                    list.push(old);
+                }
+            }
+        }
+        if list.is_empty() {
+            self.hooks.remove(source);
+        } else {
+            self.hooks.insert(source.to_string(), list);
+        }
+    }
+
+    /// Record server decisions for `source`, whose current parse is `file`:
+    /// each `(name, enabled)` in `decisions` is recorded pinned to the
+    /// server's current entry. A server of the file not decided on now keeps
+    /// whatever was recorded for it (a changed entry's old record is what
+    /// its `changed:` line compares against); a server no longer in the file
+    /// is dropped. Every other file's record, and every hook, is left alone.
+    pub fn record_servers(&mut self, source: &str, file: &McpFile, decisions: &[(String, bool)]) {
+        let old = self.mcp.remove(source).unwrap_or_default();
+        let mut servers = BTreeMap::new();
+        for (name, config) in &file.servers {
+            if let Some((_, enabled)) = decisions.iter().find(|(decided, _)| decided == name) {
+                servers.insert(
+                    name.clone(),
+                    ServerRecord {
+                        enabled: *enabled,
+                        fingerprint: server_fingerprint(config),
+                        parts: Some(ServerParts::of(config)),
+                    },
+                );
+            } else if let Some(record) = old.get(name) {
+                servers.insert(name.clone(), record.clone());
+            }
+        }
+        if !servers.is_empty() {
+            self.mcp.insert(source.to_string(), servers);
+        }
+    }
+
+    /// Carry the `/trust` era's approvals over for the project at `root`
+    /// (`docs/config-review.md`). `/trust` approved a project's files whole,
+    /// pinned to their bytes; a file it approved at exactly its current
+    /// bytes keeps that approval here — its hooks recorded trusted, its
+    /// servers enabled unless one was decided on since — and its old record
+    /// goes. A file edited since keeps its old record unread, since what
+    /// `/trust` approved is not what is there now. `hooks` and `mcp` are the
+    /// project's parsed files as `(absolute path, fingerprint of its bytes,
+    /// parse)`. Whether anything was carried over — the caller writes the
+    /// store back then.
+    pub fn migrate_legacy(
+        &mut self,
+        root: &str,
+        hooks: Option<(&str, &str, &HooksFile)>,
+        mcp: &[(&str, &str, &McpFile)],
+    ) -> bool {
+        let approved = |store: &Self, path: &str, fingerprint: &str| {
+            store
+                .projects
+                .get(root)
+                .and_then(|project| project.files.get(path))
+                .is_some_and(|recorded| recorded == fingerprint)
+        };
+        let mut carried = Vec::new();
+        if let Some((path, fingerprint, file)) = hooks
+            && approved(self, path, fingerprint)
+        {
+            self.record_hooks(path, file, &runnable_hooks(file), &[]);
+            carried.push(path);
+        }
+        for &(path, fingerprint, file) in mcp {
+            if !approved(self, path, fingerprint) {
+                continue;
+            }
+            let decided = self.mcp.get(path);
+            let enable: Vec<(String, bool)> = file
+                .servers
+                .iter()
+                .filter(|(name, _)| decided.is_none_or(|servers| !servers.contains_key(name)))
+                .map(|(name, _)| (name.clone(), true))
+                .collect();
+            self.record_servers(path, file, &enable);
+            carried.push(path);
+        }
+        if let Some(project) = self.projects.get_mut(root) {
+            for path in &carried {
+                project.files.remove(*path);
+            }
+            if project.files.is_empty() {
+                self.projects.remove(root);
+            }
+        }
+        !carried.is_empty()
+    }
+}
+
+/// Apply `change` to the store `existing` holds and return the text to
+/// write — the read-modify-write every decision goes through, over the file
+/// as it is **when the decision is made**, so two sessions answering at once
+/// never erase each other's answers. An empty `existing` (no file yet) is an
+/// empty store.
+///
+/// # Errors
+/// The parse error when `existing` is not a store this module understands:
+/// a malformed file is never written over — whatever the user decided before
+/// is still in it, waiting for the typo to be fixed — so the caller keeps the
+/// decision for the session only, and says so.
+pub fn update_store(existing: &str, change: impl FnOnce(&mut TrustFile)) -> Result<String, String> {
+    let mut store = TrustFile::parse(existing)?;
+    change(&mut store);
+    Ok(store.serialize())
 }
 
 /// Every project server across `files` (`(absolute path, parse)`, in
@@ -401,92 +700,6 @@ pub fn review_servers(store: &TrustFile, files: &[(&str, &McpFile)]) -> Vec<Serv
     out
 }
 
-/// Record a hooks decision for `source`, whose current parse is `file`:
-/// `trust` become trusted, `distrust` stop being trusted, and the file's
-/// record is rewritten to its current trusted hooks — so a hook removed from
-/// the file is dropped, and the same command added back later is asked about
-/// again. The old version of an edited hook that is still untrusted is kept,
-/// so the next review can still say what it was. Every other file's record,
-/// and every server decision, passes through untouched. A malformed
-/// `existing` starts fresh: the load already reported it, and there is
-/// nothing recoverable to keep.
-#[must_use]
-pub fn record_hooks(
-    existing: &str,
-    source: &str,
-    file: &HooksFile,
-    trust: &[HookIdentity],
-    distrust: &[HookIdentity],
-) -> String {
-    let mut store = TrustFile::parse(existing).unwrap_or_default();
-    let reviews = store.review_hooks(source, file);
-    let mut list: Vec<HookIdentity> = Vec::new();
-    for review in &reviews {
-        let identity = &review.identity;
-        let trusted = (review.trust == HookTrust::Trusted || trust.contains(identity))
-            && !distrust.contains(identity);
-        if trusted && !list.contains(identity) {
-            list.push(identity.clone());
-        }
-    }
-    for review in &reviews {
-        if let HookTrust::Changed { previous } = &review.trust
-            && !list.contains(&review.identity)
-        {
-            let old = HookIdentity {
-                command: previous.clone(),
-                ..review.identity.clone()
-            };
-            if !list.contains(&old) {
-                list.push(old);
-            }
-        }
-    }
-    if list.is_empty() {
-        store.hooks.remove(source);
-    } else {
-        store.hooks.insert(source.to_string(), list);
-    }
-    store.serialize()
-}
-
-/// Record server decisions for `source`, whose current parse is `file`:
-/// each `(name, enabled)` in `decisions` is recorded pinned to the server's
-/// current entry. A server of the file not decided on now keeps whatever
-/// was recorded for it (a changed entry's old record is its `was:` line); a
-/// server no longer in the file is dropped. Every other file's record, and
-/// every hook, passes through untouched; a malformed `existing` starts
-/// fresh, like [`record_hooks`].
-#[must_use]
-pub fn record_servers(
-    existing: &str,
-    source: &str,
-    file: &McpFile,
-    decisions: &[(String, bool)],
-) -> String {
-    let mut store = TrustFile::parse(existing).unwrap_or_default();
-    let old = store.mcp.remove(source).unwrap_or_default();
-    let mut servers = BTreeMap::new();
-    for (name, config) in &file.servers {
-        if let Some((_, enabled)) = decisions.iter().find(|(decided, _)| decided == name) {
-            servers.insert(
-                name.clone(),
-                ServerRecord {
-                    enabled: *enabled,
-                    fingerprint: server_fingerprint(config),
-                    target: config.target(),
-                },
-            );
-        } else if let Some(record) = old.get(name) {
-            servers.insert(name.clone(), record.clone());
-        }
-    }
-    if !servers.is_empty() {
-        store.mcp.insert(source.to_string(), servers);
-    }
-    store.serialize()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +722,33 @@ mod tests {
 
     fn servers(text: &str) -> McpFile {
         crate::mcp::parse_mcp_file(text)
+    }
+
+    /// A hooks decision recorded over the store `existing` holds.
+    fn recorded_hooks(
+        existing: &str,
+        source: &str,
+        file: &HooksFile,
+        trust: &[HookIdentity],
+        distrust: &[HookIdentity],
+    ) -> String {
+        update_store(existing, |store| {
+            store.record_hooks(source, file, trust, distrust);
+        })
+        .expect("the store parses")
+    }
+
+    /// Server decisions recorded over the store `existing` holds.
+    fn recorded_servers(
+        existing: &str,
+        source: &str,
+        file: &McpFile,
+        decisions: &[(String, bool)],
+    ) -> String {
+        update_store(existing, |store| {
+            store.record_servers(source, file, decisions)
+        })
+        .expect("the store parses")
     }
 
     fn trust_of(reviews: &[HookReview]) -> Vec<(String, HookTrust)> {
@@ -607,8 +847,9 @@ mod tests {
         assert_eq!(
             runnable_hooks(&file),
             vec![
-                // The registry's order, not the file map's alphabetical one.
-                hook("PreToolUse", "bash|write", "./guard.sh"),
+                // The registry's order, not the file map's alphabetical one —
+                // and the matcher as the runner reads it, untrimmed.
+                hook("PreToolUse", " bash|write ", "./guard.sh"),
                 // `*`, empty and absent are one match-everything matcher, so
                 // the same command under both groups is one hook.
                 hook("UserPromptSubmit", "", "./a.sh"),
@@ -621,6 +862,36 @@ mod tests {
     fn a_hook_identity_labels_its_event_and_matcher() {
         assert_eq!(hook("PreToolUse", "bash", "x").label(), "PreToolUse · bash");
         assert_eq!(hook("Stop", "", "x").label(), "Stop");
+        // A matcher padded with spaces is quoted, or ` Bash` and `Bash` —
+        // two different hooks — would read the same.
+        assert_eq!(
+            hook("PreToolUse", " Bash", "x").label(),
+            r#"PreToolUse · " Bash""#
+        );
+    }
+
+    #[test]
+    fn a_matcher_is_kept_exactly_as_the_runner_reads_it() {
+        // The runner never trims a matcher (`hooks::constraint`): ` Bash` is
+        // a regex no tool name matches, `Bash` fires on every bash call. So
+        // trusting the first must not trust the second.
+        let quiet = hooks(
+            r#"{"hooks":{"PreToolUse":[{"matcher":" Bash","hooks":[{"type":"command","command":"./guard.sh"}]}]}}"#,
+        );
+        let loud = hooks(
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"./guard.sh"}]}]}}"#,
+        );
+        let text = recorded_hooks("", PROJECT, &quiet, &runnable_hooks(&quiet), &[]);
+        let store = TrustFile::parse(&text).expect("recorded store parses");
+        assert_eq!(
+            trust_of(&store.review_hooks(PROJECT, &loud)),
+            vec![("./guard.sh".to_string(), HookTrust::New)]
+        );
+        // …and a lone space is a pattern, not the match-everything matcher.
+        let space = hooks(
+            r#"{"hooks":{"Stop":[{"matcher":" ","hooks":[{"type":"command","command":"./x.sh"}]}]}}"#,
+        );
+        assert_eq!(runnable_hooks(&space), vec![hook("Stop", " ", "./x.sh")]);
     }
 
     #[test]
@@ -642,7 +913,7 @@ mod tests {
                 {"type":"command","command":"./two.sh"}
             ]}]}}"#,
         );
-        let text = record_hooks("", USER, &file, &[hook("Stop", "", "./two.sh")], &[]);
+        let text = recorded_hooks("", USER, &file, &[hook("Stop", "", "./two.sh")], &[]);
         let moved = hooks(
             r#"{"hooks":{"Stop":[{"hooks":[
                 {"type":"command","command":"./two.sh","timeout":5},
@@ -661,7 +932,7 @@ mod tests {
 
     #[test]
     fn an_edited_hook_is_changed_and_says_what_it_was() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &hooks(STOP_FMT),
@@ -685,7 +956,7 @@ mod tests {
 
     #[test]
     fn a_hook_under_another_event_or_matcher_is_new_not_changed() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &hooks(STOP_FMT),
@@ -707,7 +978,7 @@ mod tests {
     #[test]
     fn hooks_are_trusted_per_file() {
         // `./fmt.sh` is a different script in a different project.
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             PROJECT,
             &hooks(STOP_FMT),
@@ -731,7 +1002,7 @@ mod tests {
                 {"type":"command","command":"./two.sh"}
             ]}]}}"#,
         );
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &both,
@@ -745,7 +1016,7 @@ mod tests {
                 {"type":"command","command":"./two.sh"}
             ]}],"SessionStart":[{"hooks":[{"type":"command","command":"./start.sh"}]}]}}"#,
         );
-        let text = record_hooks(
+        let text = recorded_hooks(
             &text,
             USER,
             &later,
@@ -761,7 +1032,7 @@ mod tests {
 
     #[test]
     fn an_edited_hook_keeps_saying_what_it_was_until_the_new_one_is_trusted() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &hooks(STOP_FMT),
@@ -774,7 +1045,7 @@ mod tests {
         );
         // Another decision for the file that leaves the edit untrusted keeps
         // the old version, so the next review still says what changed…
-        let text = record_hooks(&text, USER, &edited, &[], &[]);
+        let text = recorded_hooks(&text, USER, &edited, &[], &[]);
         let store = TrustFile::parse(&text).expect("recorded store parses");
         assert_eq!(
             store.review_hooks(USER, &edited)[0].trust,
@@ -783,7 +1054,7 @@ mod tests {
             }
         );
         // …and trusting the edit lets the old version go.
-        let text = record_hooks(
+        let text = recorded_hooks(
             &text,
             USER,
             &edited,
@@ -800,14 +1071,14 @@ mod tests {
 
     #[test]
     fn a_hook_can_stop_being_trusted() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &hooks(STOP_FMT),
             &[hook("Stop", "", "cargo fmt")],
             &[],
         );
-        let text = record_hooks(
+        let text = recorded_hooks(
             &text,
             USER,
             &hooks(STOP_FMT),
@@ -823,20 +1094,20 @@ mod tests {
 
     #[test]
     fn recording_one_file_leaves_every_other_record_alone() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             PROJECT,
             &hooks(STOP_FMT),
             &[hook("Stop", "", "cargo fmt")],
             &[],
         );
-        let text = record_servers(
+        let text = recorded_servers(
             &text,
             MCP,
             &servers(r#"{"mcpServers":{"docs":{"command":"npx","args":["docs"]}}}"#),
             &[("docs".to_string(), true)],
         );
-        let text = record_hooks(
+        let text = recorded_hooks(
             &text,
             USER,
             &hooks(STOP_FMT),
@@ -927,7 +1198,7 @@ mod tests {
                 "edited":{"command":"edited","args":["--new"]}
             }}"#,
         );
-        let mut text = record_servers(
+        let mut text = recorded_servers(
             "",
             MCP,
             &servers(
@@ -962,7 +1233,7 @@ mod tests {
                     "edited",
                     MCP,
                     ServerTrust::Changed {
-                        previous: "edited --old".to_string()
+                        changes: vec![ServerChange::CommandLine]
                     }
                 ),
             ]
@@ -973,7 +1244,7 @@ mod tests {
         assert!(ServerTrust::New.needs_review());
         assert!(
             ServerTrust::Changed {
-                previous: String::new()
+                changes: Vec::new()
             }
             .needs_review()
         );
@@ -983,7 +1254,7 @@ mod tests {
     #[test]
     fn a_server_decision_is_per_file() {
         let file = servers(r#"{"mcpServers":{"s":{"command":"x"}}}"#);
-        let text = record_servers("", MCP, &file, &[("s".to_string(), true)]);
+        let text = recorded_servers("", MCP, &file, &[("s".to_string(), true)]);
         let store = TrustFile::parse(&text).expect("recorded store parses");
         assert_eq!(
             store.server_trust(MCP, "s", &file.servers[0].1),
@@ -1000,7 +1271,7 @@ mod tests {
         let first = servers(
             r#"{"mcpServers":{"a":{"command":"a"},"b":{"command":"b"},"c":{"command":"c"}}}"#,
         );
-        let text = record_servers(
+        let text = recorded_servers(
             "",
             MCP,
             &first,
@@ -1011,14 +1282,15 @@ mod tests {
             ],
         );
         // `c` is gone from the file and `a` changed; deciding `b` again keeps
-        // `a`'s old record (its `was:` line) and drops `c`.
+        // `a`'s old record (what its `changed:` line compares against) and
+        // drops `c`.
         let second = servers(r#"{"mcpServers":{"a":{"command":"a2"},"b":{"command":"b"}}}"#);
-        let text = record_servers(&text, MCP, &second, &[("b".to_string(), true)]);
+        let text = recorded_servers(&text, MCP, &second, &[("b".to_string(), true)]);
         let store = TrustFile::parse(&text).expect("recorded store parses");
         assert_eq!(
             store.server_trust(MCP, "a", &second.servers[0].1),
             ServerTrust::Changed {
-                previous: "a".to_string()
+                changes: vec![ServerChange::CommandLine]
             }
         );
         assert_eq!(
@@ -1032,14 +1304,148 @@ mod tests {
     }
 
     #[test]
-    fn the_store_keeps_no_secret_values_from_a_server_entry() {
+    fn the_store_keeps_no_value_of_a_server_entry() {
+        // `trust.json` is a file people sync with their dotfiles, and a
+        // project's entry can carry a token anywhere — a header, an `env`
+        // value, an argument, the URL's query. None of it is copied: a
+        // decision keeps fingerprints and the names of the entry's
+        // variables, never their values.
         let file = servers(
-            r#"{"mcpServers":{"s":{"type":"http","url":"https://x/mcp",
-                "headers":{"Authorization":"Bearer sk-secret"}}}}"#,
+            r#"{"mcpServers":{
+                "remote":{"type":"http","url":"https://x/mcp?api_key=sk-in-the-url",
+                    "headers":{"Authorization":"Bearer sk-in-a-header"}},
+                "local":{"command":"npx","args":["srv","--api-key","sk-in-an-arg"],
+                    "env":{"TOKEN":"sk-in-the-env"}}
+            }}"#,
         );
-        let text = record_servers("", MCP, &file, &[("s".to_string(), true)]);
-        assert!(!text.contains("sk-secret"), "{text}");
-        assert!(text.contains("https://x/mcp"), "{text}");
+        let text = recorded_servers(
+            "",
+            MCP,
+            &file,
+            &[("remote".to_string(), true), ("local".to_string(), true)],
+        );
+        for secret in [
+            "sk-in-the-url",
+            "sk-in-a-header",
+            "sk-in-an-arg",
+            "sk-in-the-env",
+        ] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        assert!(!text.contains("https://x/mcp"), "{text}");
+        assert!(text.contains("\"Authorization\""), "{text}");
+        assert!(text.contains("\"TOKEN\""), "{text}");
+    }
+
+    #[test]
+    fn a_changed_server_says_what_changed_part_by_part() {
+        let parts = |text: &str| ServerParts::of(&servers(text).servers[0].1);
+        let before = parts(
+            r#"{"mcpServers":{"s":{"command":"npx","args":["-y","srv"],"env":{"A":"1","B":"2"}}}}"#,
+        );
+        let cases: [(&str, Vec<ServerChange>); 4] = [
+            // What a payload hides in: a variable the program starts with.
+            (
+                r#"{"mcpServers":{"s":{"command":"npx","args":["-y","srv"],
+                    "env":{"A":"1","B":"2","NODE_OPTIONS":"--require ./p.js"}}}}"#,
+                vec![ServerChange::Added {
+                    kind: "env",
+                    name: "NODE_OPTIONS".to_string(),
+                }],
+            ),
+            (
+                r#"{"mcpServers":{"s":{"command":"npx","args":["-y","srv2"],"env":{"A":"1"}}}}"#,
+                vec![
+                    ServerChange::CommandLine,
+                    ServerChange::Removed {
+                        kind: "env",
+                        name: "B".to_string(),
+                    },
+                ],
+            ),
+            (
+                r#"{"mcpServers":{"s":{"command":"npx","args":["-y","srv"],"env":{"A":"9","B":"2"}}}}"#,
+                vec![ServerChange::Value {
+                    kind: "env",
+                    name: "A".to_string(),
+                }],
+            ),
+            // Another transport is a different server: nothing else compares.
+            (
+                r#"{"mcpServers":{"s":{"type":"http","url":"https://x/mcp"}}}"#,
+                vec![ServerChange::Transport {
+                    was: "stdio".to_string(),
+                }],
+            ),
+        ];
+        for (now, expected) in cases {
+            assert_eq!(before.changes(&parts(now)), expected, "{now}");
+        }
+        // A remote server's URL and headers the same way.
+        let remote = parts(r#"{"mcpServers":{"s":{"type":"http","url":"https://x/mcp"}}}"#);
+        assert_eq!(
+            remote.changes(&parts(
+                r#"{"mcpServers":{"s":{"type":"http","url":"https://y/mcp","headers":{"Authorization":"t"}}}}"#,
+            )),
+            vec![
+                ServerChange::Url,
+                ServerChange::Added {
+                    kind: "header",
+                    name: "Authorization".to_string(),
+                },
+            ]
+        );
+        // The words the review's `changed:` line joins.
+        let words: Vec<String> = [
+            ServerChange::Transport {
+                was: "stdio".to_string(),
+            },
+            ServerChange::CommandLine,
+            ServerChange::Url,
+            ServerChange::Added {
+                kind: "env",
+                name: "NODE_OPTIONS".to_string(),
+            },
+            ServerChange::Removed {
+                kind: "header",
+                name: "X".to_string(),
+            },
+            ServerChange::Value {
+                kind: "env",
+                name: "A".to_string(),
+            },
+        ]
+        .iter()
+        .map(ServerChange::describe)
+        .collect();
+        assert_eq!(
+            words,
+            [
+                "the transport (was stdio)",
+                "the command line",
+                "the URL",
+                "env NODE_OPTIONS added",
+                "header X removed",
+                "env A's value",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_the_parts_cannot_name_still_reads_as_changed() {
+        // The `type` key dropped from an http entry is a change of what runs
+        // (it may now fall back to SSE), so the decision is asked again —
+        // with nothing more specific to say than that it changed.
+        let file = servers(r#"{"mcpServers":{"s":{"type":"http","url":"https://x/mcp"}}}"#);
+        let text = recorded_servers("", MCP, &file, &[("s".to_string(), true)]);
+        let store = TrustFile::parse(&text).expect("recorded store parses");
+        let now = servers(r#"{"mcpServers":{"s":{"url":"https://x/mcp"}}}"#);
+        assert_eq!(
+            store.server_trust(MCP, "s", &now.servers[0].1),
+            ServerTrust::Changed {
+                changes: Vec::new()
+            }
+        );
     }
 
     #[test]
@@ -1056,15 +1462,163 @@ mod tests {
                 "{text:?}"
             );
         }
-        // …and the first write drops the legacy key.
-        let text = record_hooks(
-            r#"{"projects":{"/repo":{"files":{}}}}"#,
+        // …and a write keeps the `/trust` era's records it has not carried
+        // over yet, for the projects not opened since.
+        let text = recorded_hooks(
+            r#"{"projects":{"/repo":{"files":{"/repo/.mcp.json":"sha256:aa"}}}}"#,
             USER,
             &hooks(STOP_FMT),
             &[hook("Stop", "", "cargo fmt")],
             &[],
         );
-        assert!(!text.contains("projects"), "{text}");
+        assert!(text.contains(r#""/repo/.mcp.json": "sha256:aa""#), "{text}");
+        let store = TrustFile::parse(&text).expect("parses");
+        assert_eq!(
+            TrustFile::parse(&store.serialize()).expect("round-trips"),
+            store
+        );
+    }
+
+    /// A `/trust`-era store approving `/repo`'s files at `hooks_fp` and
+    /// `mcp_fp`, and `/other`'s.
+    fn legacy_store(hooks_fp: &str, mcp_fp: &str) -> TrustFile {
+        TrustFile::parse(&format!(
+            r#"{{"projects":{{
+                "/repo":{{"files":{{"{PROJECT}":"{hooks_fp}","{MCP}":"{mcp_fp}"}}}},
+                "/other":{{"files":{{"/other/.mcp.json":"sha256:bb"}}}}
+            }}}}"#
+        ))
+        .expect("legacy store parses")
+    }
+
+    #[test]
+    fn a_trust_era_approval_carries_over_at_the_same_content() {
+        let hooks_text = STOP_FMT;
+        let mcp_text = r#"{"mcpServers":{"a":{"command":"a"},"b":{"command":"b"}}}"#;
+        let (hooks_fp, mcp_fp) = (
+            fingerprint(hooks_text.as_bytes()),
+            fingerprint(mcp_text.as_bytes()),
+        );
+        let mut store = legacy_store(&hooks_fp, &mcp_fp);
+        let (parsed_hooks, parsed_mcp) = (hooks(hooks_text), servers(mcp_text));
+        assert!(store.migrate_legacy(
+            "/repo",
+            Some((PROJECT, hooks_fp.as_str(), &parsed_hooks)),
+            &[(MCP, mcp_fp.as_str(), &parsed_mcp)],
+        ));
+        // What `/trust` approved still runs: its hooks trusted, its servers
+        // enabled.
+        assert!(store.is_hook_trusted(PROJECT, &hook("Stop", "", "cargo fmt")));
+        for (name, config) in &parsed_mcp.servers {
+            assert_eq!(
+                store.server_trust(MCP, name, config),
+                ServerTrust::Enabled,
+                "{name}"
+            );
+        }
+        // The project's old records go; another project's stay for when it
+        // is opened.
+        let text = store.serialize();
+        assert!(!text.contains(&hooks_fp), "{text}");
+        assert!(!text.contains(&mcp_fp), "{text}");
+        assert!(text.contains("/other/.mcp.json"), "{text}");
+        // Done once: nothing is left to carry over.
+        assert!(!store.migrate_legacy(
+            "/repo",
+            Some((PROJECT, hooks_fp.as_str(), &parsed_hooks)),
+            &[(MCP, mcp_fp.as_str(), &parsed_mcp)],
+        ));
+    }
+
+    #[test]
+    fn a_file_edited_since_trust_approved_it_carries_nothing_over() {
+        // `/trust` approved other bytes than these: what it saw is not what
+        // is there now, so the review asks.
+        let mut store = legacy_store("sha256:old-hooks", "sha256:old-mcp");
+        let (parsed_hooks, parsed_mcp) = (
+            hooks(STOP_FMT),
+            servers(r#"{"mcpServers":{"a":{"command":"a"}}}"#),
+        );
+        assert!(!store.migrate_legacy(
+            "/repo",
+            Some((PROJECT, "sha256:new-hooks", &parsed_hooks)),
+            &[(MCP, "sha256:new-mcp", &parsed_mcp)],
+        ));
+        assert!(!store.is_hook_trusted(PROJECT, &hook("Stop", "", "cargo fmt")));
+        assert_eq!(
+            store.server_trust(MCP, "a", &parsed_mcp.servers[0].1),
+            ServerTrust::New
+        );
+    }
+
+    #[test]
+    fn a_server_decided_since_keeps_its_decision_over_the_trust_era_one() {
+        let mcp_text = r#"{"mcpServers":{"a":{"command":"a"},"b":{"command":"b"}}}"#;
+        let mcp_fp = fingerprint(mcp_text.as_bytes());
+        let parsed = servers(mcp_text);
+        let mut store = legacy_store("sha256:x", &mcp_fp);
+        store.record_servers(MCP, &parsed, &[("a".to_string(), false)]);
+        assert!(store.migrate_legacy("/repo", None, &[(MCP, mcp_fp.as_str(), &parsed)]));
+        assert_eq!(
+            store.server_trust(MCP, "a", &parsed.servers[0].1),
+            ServerTrust::Disabled
+        );
+        assert_eq!(
+            store.server_trust(MCP, "b", &parsed.servers[1].1),
+            ServerTrust::Enabled
+        );
+    }
+
+    #[test]
+    fn a_decision_is_never_written_over_a_malformed_store() {
+        // Whatever the user decided before is still in a file with a typo,
+        // waiting for it to be fixed: the write is refused, never a fresh
+        // store that drops every other project's decisions.
+        let err = update_store(r#"{"hooks": {},}"#, |store| {
+            store.record_hooks(
+                USER,
+                &hooks(STOP_FMT),
+                &[hook("Stop", "", "cargo fmt")],
+                &[],
+            );
+        })
+        .expect_err("a malformed store is not written over");
+        assert!(err.contains("trailing comma"), "{err}");
+        // An empty file is an empty store, recorded into.
+        let text = recorded_hooks(
+            "",
+            USER,
+            &hooks(STOP_FMT),
+            &[hook("Stop", "", "cargo fmt")],
+            &[],
+        );
+        let store = TrustFile::parse(&text).expect("fresh store parses");
+        assert!(store.is_hook_trusted(USER, &hook("Stop", "", "cargo fmt")));
+    }
+
+    #[test]
+    fn a_decision_is_recorded_over_the_file_as_it_is_now() {
+        // Two sessions answer at once, each having read the store before
+        // the other wrote. Each records over the file as it is when it
+        // answers, so the second keeps the first's answer.
+        let other = "/other/.alter-zero/hooks.json";
+        let first = recorded_hooks(
+            "",
+            PROJECT,
+            &hooks(STOP_FMT),
+            &[hook("Stop", "", "cargo fmt")],
+            &[],
+        );
+        let second = recorded_hooks(
+            &first,
+            other,
+            &hooks(STOP_FMT),
+            &[hook("Stop", "", "cargo fmt")],
+            &[],
+        );
+        let store = TrustFile::parse(&second).expect("parses");
+        assert!(store.is_hook_trusted(PROJECT, &hook("Stop", "", "cargo fmt")));
+        assert!(store.is_hook_trusted(other, &hook("Stop", "", "cargo fmt")));
     }
 
     #[test]
@@ -1080,24 +1634,12 @@ mod tests {
             TrustFile::parse(r#"{"mcp":{"/f":{"s":{"enabled":"yes","fingerprint":"x"}}}}"#)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn recording_over_a_malformed_store_starts_fresh() {
-        let text = record_hooks(
-            "not json",
-            USER,
-            &hooks(STOP_FMT),
-            &[hook("Stop", "", "cargo fmt")],
-            &[],
-        );
-        let store = TrustFile::parse(&text).expect("fresh store parses");
-        assert!(store.is_hook_trusted(USER, &hook("Stop", "", "cargo fmt")));
+        assert!(TrustFile::parse(r#"{"projects":{"/r":{"files":{},"x":1}}}"#).is_err());
     }
 
     #[test]
     fn the_store_reads_back_as_written() {
-        let text = record_hooks(
+        let text = recorded_hooks(
             "",
             USER,
             &hooks(

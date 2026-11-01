@@ -16,7 +16,7 @@ fn hook_item(command: &str) -> ReviewItem {
         },
         title: "Stop".to_string(),
         detail: vec![command.to_string()],
-        previous: None,
+        change: None,
         checked: true,
     }
 }
@@ -29,7 +29,7 @@ fn server_item(name: &str) -> ReviewItem {
         },
         title: format!("{name} · stdio"),
         detail: vec![format!("npx -y {name}")],
-        previous: None,
+        change: None,
         checked: true,
     }
 }
@@ -209,6 +209,24 @@ fn ctrl_c_quits_without_answering_anything() {
 }
 
 #[test]
+fn ctrl_c_closes_a_review_the_user_opened_like_a_picker() {
+    // Opened on purpose — **Hooks** turned on in `/settings` — the review is
+    // a picker the user asked for, and its Ctrl+C closes it the pickers'
+    // way: nothing answered, nothing recorded, the session goes on.
+    let mut app = App::new();
+    app.open_requested_review(vec![hooks_page(&["./a.sh"])]);
+    assert!(app.config_review.as_ref().is_some_and(|r| r.requested));
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Action::None
+    );
+    assert!(app.config_review.is_none());
+    // The startup review is not one the user asked for.
+    app.open_config_review(vec![hooks_page(&["./a.sh"])]);
+    assert!(app.config_review.as_ref().is_some_and(|r| !r.requested));
+}
+
+#[test]
 fn answering_a_page_moves_on_to_the_next() {
     let mut app = App::new();
     app.open_config_review(vec![hooks_page(&["./a.sh"]), servers_page(&["gh", "docs"])]);
@@ -268,7 +286,7 @@ fn a_page_opened_over_an_open_review_queues_behind_it_once() {
 #[test]
 fn a_page_counts_its_new_and_changed_items() {
     let mut changed = hook_item("./b.sh");
-    changed.previous = Some("./old.sh".to_string());
+    changed.change = Some(ItemChange::Was("./old.sh".to_string()));
     let page = ReviewPage::new(
         ReviewKind::Hooks,
         vec![ReviewSection {

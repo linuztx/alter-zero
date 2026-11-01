@@ -29,15 +29,24 @@ release heading when a version is cut.
   you leave unselected, or skip with **Esc** ("Continue without trusting"),
   stay off and are asked about at the next launch. Servers you enable
   connect at once; the rest are disabled and remembered, and **Esc**
-  disables them all. While the review is open, `SessionStart` hooks wait,
-  and a prompt given on the command line is sent once you have answered.
-  Your choices are kept in `~/.alter-zero/trust.json`, never in the project
-  (`docs/config-review.md`).
+  disables them all. A server whose entry changes is asked about again,
+  with what changed named: an added `env` variable, another command line, a
+  new header. **Ctrl+C** quits without deciding anything. While the review
+  is open, `SessionStart` hooks wait, a prompt given on the command line is
+  sent once you have answered, and a [herdr](https://herdr.dev) pane shows
+  the session as blocked. Your choices are kept in
+  `~/.alter-zero/trust.json`, never in the project. It holds no command
+  line, URL or token of a server, only fingerprints and names. Two sessions
+  answering at the same time keep each other's answers, and a `trust.json`
+  that no longer parses is left as it is: your choices then last for the
+  session, and a message says so (`docs/config-review.md`).
 - **`/hooks` trusts a hook, or stops trusting it.** The browser marks a hook
   that is not trusted with `⚠ not trusted` and says how many do not run;
-  **Enter** on a hook's page trusts it or stops trusting it, at once. In
-  `/mcp`, Enable and Disable on a project's server change the same decision
-  the review recorded (`docs/hooks-menu.md`).
+  **Enter** on a hook's page trusts it or stops trusting it, at once.
+  Turning **Hooks** on in `/settings` over hooks waiting for trust opens the
+  review's hooks page, which **Ctrl+C** closes like any picker. In `/mcp`,
+  Enable and Disable on a project's server change the same decision the
+  review recorded (`docs/hooks-menu.md`).
 - **Reads, searches and listings fold into one line.** An agent finding its
   way around a project used to fill the screen with a cell per call: every
   `ls`, every `grep`, every file it read, each with its output under it.
@@ -116,8 +125,9 @@ release heading when a version is cut.
 - **`/trust`.** It approved a project's `.alter-zero/hooks.json` and MCP
   files whole, and only if you thought to open it; the review at startup
   replaces it, covers your own `hooks.json` too, and asks about each hook
-  and server separately. A project you trusted with `/trust` is asked about
-  once more (`docs/config-review.md`).
+  and server separately. A project you trusted with `/trust` keeps that
+  approval as long as its files have not changed since; an edited one is
+  asked about (`docs/config-review.md`).
 
 ### Fixed
 

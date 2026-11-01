@@ -2329,12 +2329,30 @@ bootstrap — the root being the nearest-`.git` ancestor-or-self, else the cwd,
 the user's own config home; a per-file identity guard catches the same
 collision under a moved `ALTER_ZERO_CONFIG_DIR`) — and **no hook, the user's
 or a project's, and no project MCP server runs until the user has seen it**:
-`{config_home}/trust.json` keeps, per file, the trusted hooks themselves
-(event, normalised matcher, command — `trust::HookIdentity`, so an untrusted
-hook whose event and matcher match a listed one the file no longer has is
-**changed**, its old command the review's `was:` line) and a decision per
-project server pinned to its whole entry (`trust::server_fingerprint`, the
-`target` kept for `was:`, never an env value or a header token). When
+`{config_home}/trust.json` keeps, per file (its **absolute** path —
+`config::user_hooks_path` absolutizes a relative `ALTER_ZERO_HOOKS_FILE`),
+the trusted hooks themselves (event, matcher, command —
+`trust::HookIdentity`, the matcher **exactly as the runner reads it**,
+`hooks::constraint`, untrimmed, since ` Bash` matches no tool where `Bash`
+fires on every bash call; an untrusted hook whose event and matcher match a
+listed one the file no longer has is **changed**, its old command the
+review's `was:` line) and a decision per project server pinned to its whole
+entry (`trust::server_fingerprint`) beside its `trust::ServerParts` — the
+transport, a fingerprint of the command line or URL, the names of its env
+variables or headers each over a fingerprint of its value, and **never a
+value**, since a token can sit in any of them and `trust.json` is a file
+people sync with their dotfiles; what the review's `changed: env
+NODE_OPTIONS added, the command line` line is read off
+(`ServerParts::changes`). Every decision is applied to the session's copy,
+then recorded over `trust.json` **as it is on disk at that moment**
+(`trust::update_store`, the boundary's `persist`) — never over the copy read
+at startup, which let a second session erase the first's answers — and
+**never over a file that will not parse**: the toast says the choice lasts
+this session only, and the decisions in the file wait for the typo to be
+fixed. The `/trust` era's records (`projects` → root → file → the bytes'
+fingerprint) are carried over at startup (`TrustFile::migrate_legacy`): a
+file approved at exactly its current bytes keeps its approval, its record
+dropped, every other project's kept through each write. When
 anything is new or changed the **startup review** opens on the first frame
 (`App::config_review` — `app/config_review.rs`, `ui/config_review_view.rs`:
 a composer-replacing page in the `/hooks` family, no text entry, the hidden
@@ -2342,7 +2360,8 @@ cursor seated on its `❯`, routed right after the two modals in the keys, the
 render, the height and the seat; up to two pages, hooks then servers, each a
 checkbox list grouped by file showing **verbatim** what runs, everything
 selected by default; Space toggles, Enter confirms, Esc declines, Ctrl+C
-quits without answering anything): a
+quits without answering anything — or, on a review the user asked for from
+`/settings`, closes it the pickers' way, `ConfigReview::requested`): a
 confirmed hooks page records the selected hooks trusted while the rest stay
 off, unrecorded, asked again at the next launch — as is a declined page,
 `Continue without trusting` — and a confirmed servers page records each
@@ -2368,7 +2387,9 @@ pure store is `src/trust.rs`, the boundary load/apply `src/tui/trust.rs`;
 turns it **off** for hermeticity (the skills Phase 36 lesson: the suite's cwd
 is a real checkout), and the phases that load a `hooks.json` answer the
 hooks page first — while Phase 83 drives both pages, the persistence, a
-changed hook and the `/hooks` and `/mcp` toggles in a temp project); and the **`Skill`
+changed hook and server, the `/hooks` and `/mcp` toggles, the `/settings`
+review's Ctrl+C, two sessions answering at once, a malformed store left
+alone and a `/trust` approval carried over in temp projects); and the **`Skill`
 tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
@@ -2791,7 +2812,9 @@ first message's report names the file it created, and after the turn end
 dispatched what follows, so chained turns never report a false idle —
 herdr's "finished" toast) feeds `herdr::Tracker`, which ranks it — `blocked`
 while `App::modal_open` (the prompt in one line, file paths by the path
-display rule, control characters folded, 80 characters), `working` while a
+display rule, control characters folded, 80 characters) or the startup
+review waits (`Trust hooks: Stop, PreToolUse · bash`, `Enable MCP servers:
+github`), `working` while a
 turn is in flight, `blocked` on a **failed turn** (`Turn failed: {error}`,
 held via `Tracker::fail` from `tui::stream`'s `Error` arm until a turn starts
 or the history generation moves — idle there would be herdr's "finished" for

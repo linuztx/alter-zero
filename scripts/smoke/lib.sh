@@ -594,6 +594,15 @@ expect_file_has() {
 	set -- "${@:1:$#-1}"
 	grep -q "$@" "$file" 2>/dev/null || fail "$msg"
 }
+# expect_file_lacks FILE [grep opts] PATTERN MESSAGE — a missing file lacks
+# everything.
+expect_file_lacks() {
+	local file="$1" msg="${*: -1}"
+	shift
+	set -- "${@:1:$#-1}"
+	grep -q "$@" "$file" 2>/dev/null && fail "$msg"
+	return 0
+}
 
 # Exactly one input box on a captured screen: one bare prompt row (the
 # composer's `❯` — trailing blanks are trimmed by capture-pane; echoed messages

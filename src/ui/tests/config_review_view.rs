@@ -1,7 +1,7 @@
 //! The startup review's page (`docs/config-review.md`).
 
 use super::*;
-use crate::app::{ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection};
+use crate::app::{ItemChange, ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection};
 use crate::trust::HookIdentity;
 use crate::ui::theme::{
     REVIEW_DISABLE_LABEL, REVIEW_ENABLE_LABEL, REVIEW_SKIP_LABEL, REVIEW_TRUST_LABEL,
@@ -20,7 +20,7 @@ fn hook(event: &str, matcher: &str, command: &str, previous: Option<&str>) -> Re
     ReviewItem {
         title: identity.label(),
         detail: vec![command.to_string()],
-        previous: previous.map(str::to_string),
+        change: previous.map(|command| ItemChange::Was(command.to_string())),
         checked: true,
         key: ReviewKey::Hook {
             source: "/home/u/.alter-zero/hooks.json".to_string(),
@@ -37,7 +37,7 @@ fn server(name: &str, transport: &str, detail: &[&str]) -> ReviewItem {
         },
         title: format!("{name} · {transport}"),
         detail: detail.iter().map(|d| (*d).to_string()).collect(),
-        previous: None,
+        change: None,
         checked: true,
     }
 }
@@ -224,10 +224,37 @@ fn the_titles_count_what_is_new_and_what_changed() {
     );
     let mut one = servers_page();
     one.sections[0].items.truncate(1);
-    one.sections[0].items[0].previous = Some("npx old".to_string());
+    one.sections[0].items[0].change = Some(ItemChange::Parts(vec!["the command line".to_string()]));
     find(
         &texts(&review_app(vec![one]), 80, TALL),
         "1 MCP server changed in this project",
+    );
+}
+
+#[test]
+fn a_changed_server_says_what_changed_under_what_it_runs() {
+    // A server's entry is not kept in `trust.json`, only its shape: the
+    // review names the parts that changed — the variable a payload hides
+    // in, the command line — under the entry as it is now.
+    let mut page = servers_page();
+    page.sections[0].items[0].change = Some(ItemChange::Parts(vec![
+        "env NODE_OPTIONS added".to_string(),
+        "the command line".to_string(),
+    ]));
+    let texts = texts(&review_app(vec![page]), 80, TALL);
+    let brave = find(&texts, "[✔] brave-devtools · stdio");
+    assert!(texts[brave].ends_with("changed"), "{:?}", texts[brave]);
+    let env = find(&texts, "env  BRAVE_API_KEY=${BRAVE_API_KEY}");
+    let changed = find(&texts, "changed: env NODE_OPTIONS added, the command line");
+    assert_eq!(changed, env + 1, "{texts:#?}");
+    // Nothing to name — only the badge says so.
+    let mut bare = servers_page();
+    bare.sections[0].items[0].change = Some(ItemChange::Parts(Vec::new()));
+    let texts = self::texts(&review_app(vec![bare]), 80, TALL);
+    assert!(texts[find(&texts, "[✔] brave-devtools · stdio")].ends_with("changed"));
+    assert!(
+        !texts.iter().any(|row| row.contains("changed:")),
+        "{texts:#?}"
     );
 }
 

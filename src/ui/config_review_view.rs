@@ -20,7 +20,7 @@ use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
-use crate::app::{ReviewChoice, ReviewItem, ReviewKind, ReviewPage, ReviewSection};
+use crate::app::{ItemChange, ReviewChoice, ReviewItem, ReviewKind, ReviewPage, ReviewSection};
 
 /// What one rung of the ladder keeps.
 #[derive(Debug, Clone, Copy)]
@@ -258,7 +258,7 @@ fn item_head(item: &ReviewItem, highlighted: bool, folded: bool, width: u16) -> 
         (ASK_UNCHECKED, Style::new().fg(model_meta_color()))
     };
     let mut tail = vec![Span::styled(item.title.clone(), title_style)];
-    if item.previous.is_some() {
+    if item.change.is_some() {
         tail.push(Span::styled(
             format!("{REVIEW_BADGE_GAP}{REVIEW_CHANGED_BADGE}"),
             Style::new().fg(ask_warning_color()),
@@ -281,7 +281,8 @@ fn item_head(item: &ReviewItem, highlighted: bool, folded: bool, width: u16) -> 
 
 /// An item's detail rows — every line of what it runs, word-wrapped whole
 /// with its spaces kept (the tail of a command is the part worth reading),
-/// then a changed item's `was:` line — each under the title's column.
+/// then a changed item's `was:` or `changed:` line — each under the title's
+/// column.
 fn detail_rows(item: &ReviewItem, width: u16) -> Vec<Line<'static>> {
     let inset = " ".repeat(detail_inset());
     let room = usize::from(width).saturating_sub(detail_inset()).max(1) as u16;
@@ -304,12 +305,15 @@ fn detail_rows(item: &ReviewItem, width: u16) -> Vec<Line<'static>> {
         };
         push(line, style, &mut out);
     }
-    if let Some(previous) = &item.previous {
-        push(
-            &format!("{REVIEW_WAS_PREFIX}{previous}"),
-            Style::new().fg(model_meta_color()),
-            &mut out,
-        );
+    let change = match &item.change {
+        Some(ItemChange::Was(previous)) => Some(format!("{REVIEW_WAS_PREFIX}{previous}")),
+        Some(ItemChange::Parts(parts)) if !parts.is_empty() => {
+            Some(format!("{REVIEW_CHANGED_PREFIX}{}", parts.join(", ")))
+        }
+        _ => None,
+    };
+    if let Some(change) = change {
+        push(&change, Style::new().fg(model_meta_color()), &mut out);
     }
     out
 }

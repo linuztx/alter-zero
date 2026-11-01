@@ -46,11 +46,22 @@ pub struct ReviewItem {
     /// What runs, verbatim, one entry per line: a hook's command; a
     /// server's command line or URL, then its `env`.
     pub detail: Vec<String>,
-    /// What a **changed** item ran before — its `was:` line. `None` for a
-    /// new one.
-    pub previous: Option<String>,
+    /// How a **changed** item changed. `None` for a new one.
+    pub change: Option<ItemChange>,
     /// Whether it is selected.
     pub checked: bool,
+}
+
+/// How a changed item says what it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemChange {
+    /// A hook's edit: the command it ran before — its `was:` line.
+    Was(String),
+    /// A server entry's edit: what changed, each part in words
+    /// ([`crate::trust::ServerChange::describe`]) — its `changed:` line, or
+    /// only the badge when nothing can be named. The entry itself is never
+    /// kept, so this is all there is to say.
+    Parts(Vec<String>),
 }
 
 /// The items one file contributes, under its heading.
@@ -129,7 +140,7 @@ impl ReviewPage {
     /// How many items are new and how many changed — the page's title.
     #[must_use]
     pub fn counts(&self) -> (usize, usize) {
-        let changed = self.items().filter(|item| item.previous.is_some()).count();
+        let changed = self.items().filter(|item| item.change.is_some()).count();
         (self.item_count() - changed, changed)
     }
 
@@ -160,6 +171,11 @@ pub struct ConfigReview {
     pub pages: Vec<ReviewPage>,
     /// How many pages the review has had — the `1/2` beside a title.
     pub total: usize,
+    /// Whether the user asked for it — **Hooks** turned on in `/settings`
+    /// over hooks waiting for trust — rather than the session opening it at
+    /// startup. Its Ctrl+C then closes it the pickers' way instead of
+    /// quitting.
+    pub requested: bool,
 }
 
 impl ConfigReview {
@@ -182,11 +198,22 @@ pub struct ReviewAnswer {
 }
 
 impl App {
-    /// Open the review over `pages`, abandoning the bands that share the
-    /// composer like every picker. A page with nothing on it is dropped, and
-    /// a review with nothing left opens nothing. Over a review already open
-    /// the new pages queue behind the one on screen — each kind once.
+    /// Open the review over `pages` — the startup review, which the session
+    /// opens by itself — abandoning the bands that share the composer like
+    /// every picker. A page with nothing on it is dropped, and a review with
+    /// nothing left opens nothing. Over a review already open the new pages
+    /// queue behind the one on screen — each kind once.
     pub fn open_config_review(&mut self, pages: Vec<ReviewPage>) {
+        self.open_review(pages, false);
+    }
+
+    /// [`open_config_review`](Self::open_config_review) for a review the
+    /// user asked for ([`ConfigReview::requested`]).
+    pub fn open_requested_review(&mut self, pages: Vec<ReviewPage>) {
+        self.open_review(pages, true);
+    }
+
+    fn open_review(&mut self, pages: Vec<ReviewPage>, requested: bool) {
         let mut pages: Vec<ReviewPage> = pages
             .into_iter()
             .filter(|page| page.item_count() > 0)
@@ -208,6 +235,7 @@ impl App {
         self.config_review = Some(ConfigReview {
             total: pages.len(),
             pages,
+            requested,
         });
     }
 
@@ -232,14 +260,20 @@ impl App {
     /// top of [`on_key`]): ↑/↓ move over the items and the two action rows,
     /// wrapping at the ends, Home/End jump, Space toggles the highlighted
     /// item, Enter confirms the selection from an item or the first action
-    /// row and declines from the second, Esc declines. Ctrl+C quits without
-    /// answering anything — the way out of a review the user did not mean to
-    /// face, where a decline would record every server disabled: nothing it
-    /// asked about runs, and the next launch asks again.
+    /// row and declines from the second, Esc declines. Ctrl+C on the startup
+    /// review quits without answering anything — the way out of a review the
+    /// user did not mean to face, where a decline would record every server
+    /// disabled: nothing it asked about runs, and the next launch asks again.
+    /// On a review the user asked for it closes the review unanswered, the
+    /// pickers' Ctrl+C.
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_config_review(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            if self.config_review.as_ref().is_some_and(|r| r.requested) {
+                self.config_review = None;
+                return Action::None;
+            }
             return Action::Quit;
         }
         let Some(page) = self

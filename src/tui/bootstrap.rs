@@ -283,7 +283,7 @@ impl<'t> Session<'t> {
         // what the user trusts. A malformed hooks.json is deliberately loud —
         // the startup toast below rather than a silent "no hooks", which is
         // how a user comes to trust a guard that isn't there.
-        let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
+        let hooks_path = config::user_hooks_path();
         let (user_hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
         let (trust, trust_error) = super::trust::TrustState::load(
             hooks_path.map(|path| (path, user_hooks_file)),

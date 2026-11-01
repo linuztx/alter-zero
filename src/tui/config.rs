@@ -551,33 +551,43 @@ pub(crate) fn trust_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("trust.json"))
 }
 
-/// Load `trust.json`, with the text the next decision is recorded over —
-/// the [`load_hooks`] posture, for the same reason: a guard file that
-/// silently reads as something other than what the user decided must say
-/// so. Missing is the normal case; malformed/unreadable **fails closed**
-/// (nothing trusted, a fresh text) with the message to raise.
+/// The user's `hooks.json` (`ALTER_ZERO_HOOKS_FILE`, else
+/// `{config_home}/hooks.json`) as an **absolute** path — the file's key in
+/// `trust.json` (`docs/config-review.md`). A relative override kept as
+/// written would be one key for a different file in every directory, so a
+/// hook trusted in one would be trusted wherever the same relative path
+/// named another file.
+pub(crate) fn user_hooks_path() -> Option<PathBuf> {
+    alter_zero::llm::hooks::hooks_file_path(config_home().as_deref())
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+}
+
+/// Load `trust.json` — the [`load_hooks`] posture, for the same reason: a
+/// guard file that silently reads as something other than what the user
+/// decided must say so. Missing is the normal case; malformed/unreadable
+/// **fails closed** (nothing trusted) with the message to raise — and is
+/// never written over (`tui::trust`'s `persist`).
 pub(crate) fn load_trust_file(
     path: Option<&Path>,
-) -> (alter_zero::trust::TrustFile, String, Option<String>) {
+) -> (alter_zero::trust::TrustFile, Option<String>) {
     let closed = |err: String| {
         (
             alter_zero::trust::TrustFile::default(),
-            String::new(),
             Some(format!(
                 "trust.json: {err} — nothing in it is trusted this session"
             )),
         )
     };
     let Some(path) = path else {
-        return (alter_zero::trust::TrustFile::default(), String::new(), None);
+        return (alter_zero::trust::TrustFile::default(), None);
     };
     match std::fs::read_to_string(path) {
         Ok(text) => match alter_zero::trust::TrustFile::parse(&text) {
-            Ok(file) => (file, text, None),
+            Ok(file) => (file, None),
             Err(err) => closed(err),
         },
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            (alter_zero::trust::TrustFile::default(), String::new(), None)
+            (alter_zero::trust::TrustFile::default(), None)
         }
         Err(err) => closed(err.to_string()),
     }

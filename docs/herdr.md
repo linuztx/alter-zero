@@ -29,7 +29,7 @@ into what herdr is told — first match wins:
 
 | herdr state | while |
 |---|---|
-| `blocked` | A permission prompt or an `AskUserQuestion` modal is open (`App::modal_open`) — whoever raised it, a background subagent included. |
+| `blocked` | A permission prompt or an `AskUserQuestion` modal is open (`App::modal_open`) — whoever raised it, a background subagent included — or the startup review of hooks and project MCP servers waits for an answer ([config-review.md](config-review.md)): nothing it asks about runs until then. |
 | `working` | A turn is in flight — a reply, a `!` command, a `/compact` or `/init`. |
 | `blocked` | The last turn failed on a backend error — until a turn starts again, or the conversation is replaced or rewound (`/clear`, `/resume`, a backtrack). |
 | `working` | A subagent is at work — running, or settled with a message or a Tab follow-up queued for it. |
@@ -77,7 +77,8 @@ rule:
 A blocked report carries what it waits on in one line — `Bash command: cargo
 test`, `Create file: src/hello.py` (the path as the prompt's own target row
 shows it), `Tool use: Deepwiki - ask_question`, `Question: Which database?
-(+2 more)`, `Turn failed: …` — every run of whitespace and control characters
+(+2 more)`, `Trust hooks: Stop, PreToolUse · bash`, `Enable MCP servers:
+github`, `Turn failed: …` — every run of whitespace and control characters
 one space, so a terminal escape in a command line never reaches herdr, cut at
 80 characters. herdr 0.9.3 stores the message but shows it nowhere yet; it is
 sent because the docs ask for it, and costs a few bytes.

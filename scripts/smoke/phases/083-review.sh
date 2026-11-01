@@ -17,9 +17,13 @@ smoke_begin
 # and trusts it from its page. A relaunch asks nothing. An edited user hook
 # is asked about again, "changed", with what it was; declined, it stays off
 # and is asked again at the next launch. An edited server entry is asked
-# about again too, and /mcp's Enable turns it back on. Launched in the home
-# directory, the user's own hooks are reviewed as the user's — never as a
-# project's.
+# about again too — saying what changed, since trust.json keeps no command
+# line — and /mcp's Enable turns it back on. Turning Hooks on in /settings
+# over a hook waiting for trust opens the hooks page, which Ctrl+C closes
+# without quitting. Two sessions answering at once keep both answers; a
+# trust.json with a typo is never written over; what /trust approved at the
+# files' current bytes carries over unasked. Launched in the home directory,
+# the user's own hooks are reviewed as the user's — never as a project's.
 S83="${S}_review"
 RV_CFG="$(mktemp -d)"
 RV_WORK="$(mktemp -d)"
@@ -188,7 +192,7 @@ launch -c "$RV_WORK" -w "Esc to disable all" "$S83" 100 40 "$RV_APP"
 rv_server_changed="$(tmux capture-pane -t "$S83" -p)"
 dump "the changed server" "$rv_server_changed"
 for expect in "1 MCP server changed in this project" "projfix · stdio  changed" \
-	"sh $RV_WORK/server.sh --verbose" "was: sh $RV_WORK/server.sh"; do
+	"sh $RV_WORK/server.sh --verbose" "changed: the command line"; do
 	expect_has "$rv_server_changed" -F "$expect" "the changed server's page is missing '$expect'"
 done
 expect_lacks "$rv_server_changed" -F "docs · http" "a decided, unchanged server was asked about again"
@@ -211,6 +215,103 @@ PY
 	fail "/mcp's Enable was not recorded in trust.json"
 fi
 expect_lacks "$(cat "$RV_CFG/mcp.json" 2>/dev/null)" -F "projfix" "a project server's decision was written to the user's mcp.json"
+# trust.json is a file people sync with their dotfiles: no command line is
+# copied into it, only fingerprints and names.
+expect_file_lacks "$RV_CFG/trust.json" -F "server.sh" "trust.json copied a server's command line"
+
+# --- A review the user asks for: Hooks turned on in /settings over a hook
+# waiting for trust opens the hooks page, and its Ctrl+C closes it the
+# pickers' way — the session goes on, nothing recorded.
+cat >"$RV_WORK/.alter-zero/hooks.json" <<'RVHOOKS2'
+{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./fmt.sh --check"}]}]}}
+RVHOOKS2
+launch -c "$RV_WORK" "$S83" 100 40 "${RV_APP/ALTER_ZERO_HOOKS=1/ALTER_ZERO_HOOKS=0}"
+expect_lacks "$(tmux capture-pane -t "$S83" -p)" -F "Space to select" "the review asked about hooks with Hooks off"
+rv_open "/settings"
+tmux send-keys -t "$S83" -l "hooks"
+sleep 0.4
+keys "$S83" Enter
+wait_for 5 "$S83" -F "Esc to continue without trusting" || fail "turning Hooks on did not open the hooks page"
+expect_has "$(tmux capture-pane -t "$S83" -p)" -F "./fmt.sh --check" "the hooks page did not show the hook waiting for trust"
+keys "$S83" C-c
+sleep 0.6
+rv_requested="$(tmux capture-pane -t "$S83" -p)"
+dump "after Ctrl+C on the requested review" "$rv_requested"
+expect_lacks "$rv_requested" -F "Esc to continue without trusting" "Ctrl+C did not close the requested review"
+keys "$S83" Escape
+sleep 0.3
+keys "$S83" Escape
+wait_for 5 "$S83" -E '^❯' || fail "Ctrl+C on a review the user asked for quit the app"
+tmux kill-session -t "$S83" 2>/dev/null
+expect_file_lacks "$RV_CFG/trust.json" -F "./fmt.sh --check" "Ctrl+C on the requested review recorded the hook"
+
+# A project with one Stop hook, and the session command over config home $2.
+rv_project() {
+	mkdir -p "$1/.alter-zero"
+	printf '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "%s"}]}]}}\n' "$2" >"$1/.alter-zero/hooks.json"
+}
+rv_app_in() {
+	printf '%s' "${RV_APP/ALTER_ZERO_CONFIG_DIR=$RV_CFG/ALTER_ZERO_CONFIG_DIR=$1}"
+}
+
+# --- Two sessions answering at once: each records over trust.json as it is
+# when it answers, never over what it read at startup, so the second keeps
+# the first's answer.
+RV_CFG2="$(mktemp -d)"
+RV_ONE="$(mktemp -d)"
+RV_TWO="$(mktemp -d)"
+rv_project "$RV_ONE" "./one.sh"
+rv_project "$RV_TWO" "./two.sh"
+launch -c "$RV_ONE" -w "Esc to continue without trusting" "${S83}_a" 100 40 "$(rv_app_in "$RV_CFG2")"
+launch -c "$RV_TWO" -w "Esc to continue without trusting" "${S83}_b" 100 40 "$(rv_app_in "$RV_CFG2")"
+keys "${S83}_a" Enter
+wait_for 10 "${S83}_a" -E '^❯' || fail "the first session did not answer"
+keys "${S83}_b" Enter
+wait_for 10 "${S83}_b" -E '^❯' || fail "the second session did not answer"
+tmux kill-session -t "${S83}_a" 2>/dev/null
+tmux kill-session -t "${S83}_b" 2>/dev/null
+for expect in '"./one.sh"' '"./two.sh"'; do
+	expect_file_has "$RV_CFG2/trust.json" -F "$expect" "a session answering second erased $expect"
+done
+launch -c "$RV_ONE" "$S83" 100 40 "$(rv_app_in "$RV_CFG2")"
+expect_lacks "$(tmux capture-pane -t "$S83" -p)" -F "Space to select" "the first session's answer was lost"
+tmux kill-session -t "$S83" 2>/dev/null
+
+# --- A trust.json with a typo fails closed and is never written over: the
+# decisions in it wait for the fix.
+RV_CFG3="$(mktemp -d)"
+printf '%s\n' '{"hooks": {"/elsewhere/.alter-zero/hooks.json": [{"event": "Stop", "command": "./other.sh"}]},}' >"$RV_CFG3/trust.json"
+rv_typo="$(cksum <"$RV_CFG3/trust.json")"
+launch -c "$RV_ONE" -w "Esc to continue without trusting" "$S83" 100 40 "$(rv_app_in "$RV_CFG3")"
+keys "$S83" Enter
+wait_pane 5 "$S83" -F "not saved, so this choice lasts this session only" >/dev/null ||
+	fail "answering over a malformed trust.json did not say the choice was not saved"
+tmux kill-session -t "$S83" 2>/dev/null
+[ "$(cksum <"$RV_CFG3/trust.json")" = "$rv_typo" ] || {
+	cat "$RV_CFG3/trust.json"
+	fail "a malformed trust.json was written over"
+}
+
+# --- What /trust approved at exactly the files' current bytes carries over:
+# no review, the hook recorded trusted, the old record gone — another
+# project's kept for when it is opened.
+RV_CFG4="$(mktemp -d)"
+RV_OLD="$(mktemp -d)"
+rv_project "$RV_OLD" "./old.sh"
+rv_fp="sha256:$(sha256sum <"$RV_OLD/.alter-zero/hooks.json" | cut -d' ' -f1)"
+cat >"$RV_CFG4/trust.json" <<RVLEGACY
+{"projects": {
+  "$RV_OLD": {"files": {"$RV_OLD/.alter-zero/hooks.json": "$rv_fp"}},
+  "/other": {"files": {"/other/.mcp.json": "sha256:bb"}}
+}}
+RVLEGACY
+launch -c "$RV_OLD" "$S83" 100 40 "$(rv_app_in "$RV_CFG4")"
+expect_lacks "$(tmux capture-pane -t "$S83" -p)" -F "Space to select" "a hook /trust approved was asked about again"
+tmux kill-session -t "$S83" 2>/dev/null
+expect_file_has "$RV_CFG4/trust.json" -F '"./old.sh"' "the /trust approval was not carried over"
+expect_file_lacks "$RV_CFG4/trust.json" -F "$rv_fp" "the carried-over /trust record was kept"
+expect_file_has "$RV_CFG4/trust.json" -F "/other/.mcp.json" "another project's /trust record was dropped"
+rm -rf "$RV_CFG2" "$RV_CFG3" "$RV_CFG4" "$RV_ONE" "$RV_TWO" "$RV_OLD"
 
 # --- The home directory is never a project (docs/project-config.md):
 # launched in ~, the user's own hooks are reviewed as the user's, once.

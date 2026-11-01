@@ -2032,9 +2032,11 @@ pub(super) const REVIEW_HOOKS_HINT: &str =
     "Space to select · Enter to confirm · Esc to continue without trusting";
 pub(super) const REVIEW_MCP_HINT: &str = "Space to select · Enter to confirm · Esc to disable all";
 
-/// A changed item's amber badge, and the line saying what it was.
+/// A changed item's amber badge, and the line saying what it was: a hook's
+/// old command, or what changed in a server's entry.
 pub(super) const REVIEW_CHANGED_BADGE: &str = "changed";
 pub(super) const REVIEW_WAS_PREFIX: &str = "was: ";
+pub(super) const REVIEW_CHANGED_PREFIX: &str = "changed: ";
 
 /// The gap before a badge (and a folded item's first detail row), and
 /// before the title's `1/2` page counter.

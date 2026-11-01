@@ -2,33 +2,62 @@
 //! it decides on — the user's hooks, the project's hooks and MCP servers —
 //! and `trust.json`; building its pages; applying each answer live; and the
 //! `/hooks` and `/mcp` toggles that change a decision later. Every decision
-//! goes through the pure read-modify-write cores in [`alter_zero::trust`],
-//! applied to the session's own copy of the store first, so a session with
-//! nowhere to write still remembers what it was told.
+//! is applied to the session's own copy of the store first, so a session
+//! with nowhere to write still remembers what it was told, then recorded
+//! over `trust.json` **as it is on disk at that moment**
+//! (`trust::update_store`) — never over the copy read at startup, which
+//! would erase whatever another session recorded since — and never over a
+//! file that will not parse.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use alter_zero::app::{
-    ReviewAnswer, ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection, ToastKind,
+    ItemChange, ReviewAnswer, ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection,
+    ToastKind,
 };
-use alter_zero::trust::{self, HookIdentity, HookTrust, ServerReview, ServerTrust, TrustFile};
+use alter_zero::trust::{
+    self, HookIdentity, HookTrust, ServerChange, ServerReview, ServerTrust, TrustFile,
+};
 use alter_zero::{hooks, mcp};
 
 use super::Session;
 use super::config;
 
-/// A project config file as read at bootstrap: where, and its parse.
+/// One MCP file's share of a set of server decisions: its absolute path,
+/// its parse, and `(name, enabled)` for each server decided.
+type FileDecisions = (String, mcp::McpFile, Vec<(String, bool)>);
+
+/// A project config file as read at bootstrap: where, the fingerprint of
+/// its bytes, and its parse.
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectFile<T> {
     pub(crate) path: PathBuf,
+    /// What the `/trust` era pinned an approval to (`trust::fingerprint` of
+    /// the bytes) — what carrying one over compares against.
+    pub(crate) fingerprint: String,
     pub(crate) parsed: Result<T, String>,
+}
+
+impl<T: Clone> ProjectFile<T> {
+    /// `(path, fingerprint, parse)` — the file as the `/trust` era's
+    /// approvals are carried over against — when it parsed.
+    fn pinned(&self) -> Option<(String, String, T)> {
+        let parsed = self.parsed.as_ref().ok()?.clone();
+        Some((
+            self.path.display().to_string(),
+            self.fingerprint.clone(),
+            parsed,
+        ))
+    }
 }
 
 /// The project's `.alter-zero` layer, read once at bootstrap
 /// (`docs/project-config.md`).
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectLayer {
+    /// The project root — the `/trust` era's key for its approvals.
+    pub(crate) root: PathBuf,
     /// `{root}/.alter-zero/hooks.json`, when present.
     pub(crate) hooks: Option<ProjectFile<hooks::HooksFile>>,
     /// `{root}/.alter-zero/mcp.json`, when present.
@@ -56,12 +85,10 @@ impl ProjectLayer {
 /// What the review decides over: `trust.json` and the files it is about.
 #[derive(Debug, Default)]
 pub(crate) struct TrustState {
-    /// `trust.json` as the session knows it — empty (nothing trusted) when
-    /// the file would not parse: the guard fails closed.
+    /// `trust.json` as the session knows it: what it read at startup — empty
+    /// (nothing trusted) when the file would not parse, the guard failing
+    /// closed — plus every decision made since.
     store: TrustFile,
-    /// The text every record builds on: the file's, or what the session
-    /// last recorded.
-    store_text: String,
     /// Where the store lives; `None` without a config home, when decisions
     /// hold for the session only.
     store_path: Option<PathBuf>,
@@ -75,24 +102,55 @@ pub(crate) struct TrustState {
 
 impl TrustState {
     /// Read `trust.json` and hold the user's hooks file and the project
-    /// layer beside it. The second return is the store's error to toast, if
-    /// any — a malformed store is loud.
+    /// layer beside it, carrying the project's `/trust`-era approvals over
+    /// first. The second return is the error to toast, if any — a
+    /// malformed store is loud.
     pub(crate) fn load(
         user_hooks: Option<(PathBuf, hooks::HooksFile)>,
         project: Option<ProjectLayer>,
     ) -> (Self, Option<String>) {
         let store_path = config::trust_json_path();
-        let (store, store_text, error) = config::load_trust_file(store_path.as_deref());
-        (
-            Self {
-                store,
-                store_text,
-                store_path,
-                user_hooks,
-                project,
-            },
-            error,
-        )
+        let (store, error) = config::load_trust_file(store_path.as_deref());
+        let mut state = Self {
+            store,
+            store_path,
+            user_hooks,
+            project,
+        };
+        let migrated = state.migrate_legacy().err();
+        (state, error.or(migrated))
+    }
+
+    /// Carry over what `/trust` approved in this project at exactly the
+    /// files' current bytes (`TrustFile::migrate_legacy`), so an upgrade
+    /// does not ask about it again; written back only when something was.
+    fn migrate_legacy(&mut self) -> Result<(), String> {
+        let Some(project) = &self.project else {
+            return Ok(());
+        };
+        let root = project.root.display().to_string();
+        let hooks = project.hooks.as_ref().and_then(ProjectFile::pinned);
+        let mcp: Vec<(String, String, mcp::McpFile)> = [&project.mcp_alter, &project.mcp_compat]
+            .into_iter()
+            .flatten()
+            .filter_map(ProjectFile::pinned)
+            .collect();
+        let migrate = |store: &mut TrustFile| {
+            let hooks = hooks
+                .as_ref()
+                .map(|(path, fingerprint, file)| (path.as_str(), fingerprint.as_str(), file));
+            let mcp: Vec<(&str, &str, &mcp::McpFile)> = mcp
+                .iter()
+                .map(|(path, fingerprint, file)| (path.as_str(), fingerprint.as_str(), file))
+                .collect();
+            store.migrate_legacy(&root, hooks, &mcp)
+        };
+        if !migrate(&mut self.store) {
+            return Ok(());
+        }
+        self.persist(|store| {
+            migrate(store);
+        })
     }
 
     /// Every hooks file that parsed, with its absolute path and scope word —
@@ -149,15 +207,15 @@ impl TrustState {
                 .review_hooks(&source, file)
                 .into_iter()
                 .filter_map(|review| {
-                    let previous = match review.trust {
+                    let change = match review.trust {
                         HookTrust::Trusted => return None,
                         HookTrust::New => None,
-                        HookTrust::Changed { previous } => Some(previous),
+                        HookTrust::Changed { previous } => Some(ItemChange::Was(previous)),
                     };
                     Some(ReviewItem {
                         title: review.identity.label(),
                         detail: vec![review.identity.command.clone()],
-                        previous,
+                        change,
                         checked: true,
                         key: ReviewKey::Hook {
                             source: source.clone(),
@@ -202,14 +260,16 @@ impl TrustState {
             if !awaiting.contains(&review.name) {
                 continue;
             }
-            let previous = match &review.trust {
-                ServerTrust::Changed { previous } => Some(previous.clone()),
+            let change = match &review.trust {
+                ServerTrust::Changed { changes } => Some(ItemChange::Parts(
+                    changes.iter().map(ServerChange::describe).collect(),
+                )),
                 _ => None,
             };
             let item = ReviewItem {
                 title: format!("{} · {}", review.name, review.config.transport_label()),
                 detail: server_detail(&review.config),
-                previous,
+                change,
                 checked: true,
                 key: ReviewKey::Server {
                     source: review.source.clone(),
@@ -229,9 +289,8 @@ impl TrustState {
         (!sections.is_empty()).then(|| ReviewPage::new(ReviewKind::McpServers, sections))
     }
 
-    /// Record a hooks decision for the file `source` — the session's copy
-    /// first, then `trust.json`. `Err` names a failed write: the decision
-    /// still holds for the session.
+    /// Record a hooks decision for the file `source`. `Err` names a write
+    /// that did not happen: the decision still holds for the session.
     fn record_hooks(
         &mut self,
         source: &str,
@@ -246,15 +305,13 @@ impl TrustState {
         else {
             return Ok(());
         };
-        let text = trust::record_hooks(&self.store_text, source, &file, trusted, distrusted);
-        self.commit(text)
+        self.record(|store| store.record_hooks(source, &file, trusted, distrusted))
     }
 
-    /// Record server decisions — `(file, name, enabled)` — the session's
-    /// copy first, then `trust.json`.
+    /// Record server decisions — `(file, name, enabled)`.
     fn record_servers(&mut self, decisions: &[(String, String, bool)]) -> Result<(), String> {
         let sources: BTreeSet<&String> = decisions.iter().map(|(source, _, _)| source).collect();
-        let mut text = self.store_text.clone();
+        let mut files: Vec<FileDecisions> = Vec::new();
         for source in sources {
             let Some(file) = self.project.as_ref().and_then(|project| {
                 project
@@ -270,24 +327,45 @@ impl TrustState {
                 .filter(|(from, _, _)| from == source)
                 .map(|(_, name, enabled)| (name.clone(), *enabled))
                 .collect();
-            text = trust::record_servers(&text, source, &file, &named);
+            files.push((source.clone(), file, named));
         }
-        self.commit(text)
+        self.record(|store| {
+            for (source, file, named) in &files {
+                store.record_servers(source, file, named);
+            }
+        })
     }
 
-    /// Take `text` as the store: the session's copy, and the file when there
-    /// is one to write.
-    fn commit(&mut self, text: String) -> Result<(), String> {
-        self.store = TrustFile::parse(&text).unwrap_or_default();
-        self.store_text = text;
+    /// Apply `change` to the session's copy, then record it in `trust.json`.
+    fn record(&mut self, change: impl Fn(&mut TrustFile)) -> Result<(), String> {
+        change(&mut self.store);
+        self.persist(change)
+    }
+
+    /// Record `change` over `trust.json` as it is on disk **now** — read
+    /// afresh, so what another session recorded since startup survives — and
+    /// never over a file that will not parse (`trust::update_store`): a typo
+    /// costs this session's choices their persistence, not every earlier
+    /// decision. `Ok` with nowhere to write (no config home).
+    fn persist(&self, change: impl FnOnce(&mut TrustFile)) -> Result<(), String> {
         let Some(path) = &self.store_path else {
             return Ok(());
         };
+        let not_saved = |err: &dyn std::fmt::Display| {
+            format!("trust.json: {err} — not saved, so this choice lasts this session only")
+        };
+        let existing = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(not_saved(&err)),
+        };
+        let text = trust::update_store(&existing, change).map_err(|err| not_saved(&err))?;
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(path, &self.store_text)
-            .map_err(|err| format!("Could not save trust.json: {err} — decided for this session"))
+        std::fs::write(path, text).map_err(|err| {
+            format!("Could not save trust.json: {err} — this choice lasts this session only")
+        })
     }
 }
 
@@ -329,16 +407,16 @@ pub(crate) fn load_project_layer(cwd: &Path) -> Option<ProjectLayer> {
     // `ALTER_ZERO_CONFIG_DIR` pointed inside the project) is already loaded
     // as the user's — never read twice.
     let user_files = [
-        alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref()),
-        config::mcp_user_file_path(),
+        config::user_hooks_path(),
+        config::mcp_user_file_path().map(|path| std::path::absolute(&path).unwrap_or(path)),
     ];
     let own = |path: &PathBuf| user_files.iter().flatten().any(|user| user == path);
     let guard = |path: PathBuf| (!own(&path)).then_some(path);
-    let read = |path: PathBuf| -> Option<(PathBuf, Result<String, String>)> {
+    let read = |path: PathBuf| -> Option<(PathBuf, String, Result<String, String>)> {
         match std::fs::read_to_string(&path) {
-            Ok(text) => Some((path, Ok(text))),
+            Ok(text) => Some((path, trust::fingerprint(text.as_bytes()), Ok(text))),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => Some((path, Err(err.to_string()))),
+            Err(err) => Some((path, String::new(), Err(err.to_string()))),
         }
     };
     let parse_mcp = |text: &str| -> Result<mcp::McpFile, String> {
@@ -352,24 +430,28 @@ pub(crate) fn load_project_layer(cwd: &Path) -> Option<ProjectLayer> {
         }
     };
     let mcp_file = |path: Option<PathBuf>| {
-        let (path, text) = read(path?)?;
+        let (path, fingerprint, text) = read(path?)?;
         Some(ProjectFile {
             parsed: text.and_then(|text| parse_mcp(&text)),
+            fingerprint,
             path,
         })
     };
     let [mcp_alter, mcp_compat] = trust::project_mcp_files(&root).map(guard);
-    let hooks = guard(trust::project_hooks_file(&root))
-        .and_then(read)
-        .map(|(path, text)| ProjectFile {
-            // Every handler remembers the project's file, so a verdict can
-            // name it beside the user's own.
-            parsed: text.and_then(|text| {
-                hooks::HooksFile::parse(&text).map(|file| file.with_source(&path))
-            }),
-            path,
-        });
+    let hooks =
+        guard(trust::project_hooks_file(&root))
+            .and_then(read)
+            .map(|(path, fingerprint, text)| ProjectFile {
+                // Every handler remembers the project's file, so a verdict can
+                // name it beside the user's own.
+                parsed: text.and_then(|text| {
+                    hooks::HooksFile::parse(&text).map(|file| file.with_source(&path))
+                }),
+                fingerprint,
+                path,
+            });
     Some(ProjectLayer {
+        root,
         hooks,
         mcp_alter: mcp_file(mcp_alter),
         mcp_compat: mcp_file(mcp_compat),
@@ -444,7 +526,7 @@ impl Session<'_> {
     /// over hooks that wait for trust.
     pub(crate) fn open_hooks_review(&mut self) {
         let pages = self.review_pages(true, false);
-        self.app.open_config_review(pages);
+        self.app.open_requested_review(pages);
     }
 
     /// Apply one page's answer (`docs/config-review.md`), then — once the

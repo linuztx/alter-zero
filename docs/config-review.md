@@ -38,7 +38,10 @@ either), skills and subagent definitions (markdown that runs nothing on load,
 
 `{config_home}/trust.json` keeps what the user decided, keyed by the absolute
 path of the file each thing was read from — never inside the project, since a
-checkout that could carry its own approvals would approve itself.
+checkout that could carry its own approvals would approve itself. The user's
+own file is keyed absolute too: a relative `ALTER_ZERO_HOOKS_FILE` kept as
+written would be one key for a different file in every directory
+(`config::user_hooks_path`).
 
 ```json
 {
@@ -52,7 +55,11 @@ checkout that could carry its own approvals would approve itself.
       "github": {
         "enabled": true,
         "fingerprint": "sha256:…",
-        "target": "https://api.githubcopilot.com/mcp/"
+        "parts": {
+          "transport": "http",
+          "target": "sha256:…",
+          "values": { "Authorization": "sha256:…" }
+        }
       }
     }
   }
@@ -61,7 +68,12 @@ checkout that could carry its own approvals would approve itself.
 
 **A hook is trusted while exactly that hook is listed** for its file: the
 event, the matcher (absent, empty and `*` all being the same match-everything
-matcher) and the command. That is what decides what runs and when; a
+matcher) and the command. The matcher is kept **exactly as the runner reads
+it** (`hooks::constraint`, the one definition both use) — never trimmed:
+` Bash` is a regex no tool name matches, `Bash` fires on every bash call, and
+a trimmed record would let the first's trust carry over to the second. The
+dialog quotes a padded matcher (`PreToolUse · " Bash"`) so the two never read
+the same. That is what decides what runs and when; a
 `timeout` or a `statusMessage` changes neither, so editing one asks nothing.
 Recording the hook itself rather than a hash of it is what lets the dialog
 show what a **changed** hook used to be: an untrusted hook whose event and
@@ -73,18 +85,45 @@ matter: moving a trusted hook within its file asks nothing.
 **A server's decision is pinned to its whole entry** — command, args and env,
 or url and headers (`trust::server_fingerprint` over the entry as
 `mcp::render_server` writes it) — so a changed entry is asked about again,
-whatever its name. `target` is kept only for the `was:` line; the entry's
-values themselves (an `env` value, a header token) are not copied into the
-store.
+whatever its name. **No value of the entry is kept** — not the URL, not the
+command line, not an `env` value or a header: a token can sit in any of them
+(`?api_key=` in a URL, `--api-key` in the args), and `trust.json` is a file
+people sync with their dotfiles. What is kept beside the fingerprint is the
+entry's shape, `trust::ServerParts`: the transport, a fingerprint of the
+command line or URL, and the names of its `env` variables or headers, each
+over a fingerprint of its value. That is enough for a changed entry to say
+**what** changed (`ServerParts::changes`) — `changed: env NODE_OPTIONS added,
+the command line` — under the entry as it is now, which is the line that
+makes an injected variable stand out; a change the parts cannot name (an
+`http` entry's `type` dropped, which may now fall back to SSE) shows only
+the `changed` badge.
 
 Every write is a read-modify-write that replaces one file's record and leaves
-every other file's alone. A hook record is rewritten to the file's current
+every other file's alone — over `trust.json` **as it is on disk when the
+decision is made** (`trust::update_store`, the boundary's `persist`), never
+over the copy the session read at startup: two sessions open at once each
+keep the other's answers. A hook record is rewritten to the file's current
 hooks: a hook removed from the file is dropped, so the same command added back
-later is asked about again. A malformed `trust.json` **fails closed** —
-nothing trusted, nothing enabled, a red toast naming the file — and the next
-decision rewrites it. The `/trust` era's shape (a `projects` key of per-file
-hashes) reads as nothing recorded: a project trusted that way is asked about
-once more, under the new dialog.
+later is asked about again.
+
+A malformed `trust.json` **fails closed** — nothing trusted, nothing enabled,
+a red toast naming the file — and is **never written over**: what the user
+decided before is still in it, waiting for the typo to be fixed, so a
+decision made meanwhile holds for the session only, and a red toast says so
+(`trust.json: … — not saved, so this choice lasts this session only`).
+
+### Carrying `/trust` approvals over
+
+The `/trust` era kept a `projects` key: project root → file → the
+fingerprint of the bytes it approved. Those records are read, and carried
+over at startup for the project being opened (`TrustFile::migrate_legacy`):
+a file `/trust` approved at **exactly its current bytes** keeps its approval
+— its hooks recorded trusted, its servers enabled unless one was decided on
+here since — and its old record goes. A file edited since keeps its record
+unread (what `/trust` approved is not what is there now), so the dialog asks
+about it. The projects not opened since keep their records through every
+write, for when they are. The user's own hooks were never under `/trust`, so
+they are reviewed once.
 
 ## The review dialog
 
@@ -152,7 +191,10 @@ selection from an item or the first action row and declines from the second,
 pickers, whose Ctrl+C only closes them: this page opens by itself, a user
 who did not mean to face it wants out, and a decline on the servers page
 would record every server disabled. Nothing it asked about runs, and the
-next launch asks again.
+next launch asks again. The one review the user opens on purpose — **Hooks**
+turned on in `/settings` (*After startup*) — is a picker they asked for, so
+its Ctrl+C closes it the pickers' way: nothing answered, nothing recorded,
+the session goes on (`ConfigReview::requested`).
 
 What the answers mean:
 
@@ -169,8 +211,11 @@ silent, and most hooks are the user's own, so a declined one is not
 remembered; the next launch asks again, and the way to stop being asked is to
 trust it, remove it, or turn **Hooks** off for the directory in `/settings`.
 
-While the review is open nothing waits on it unannounced: the `SessionStart`
-hooks are held (`ModelSession::hold_session_start`) and fire when the review
+While the review is open nothing waits on it unannounced. In a
+[herdr](herdr.md) pane the session reports `blocked`, naming what the page
+asks (`Trust hooks: Stop, PreToolUse · bash`, `Enable MCP servers: github`).
+The `SessionStart` hooks are held (`ModelSession::hold_session_start`) and
+fire when the review
 closes, so a hook trusted on the first page still hears the `startup` it was
 configured for, and a `[PROMPT]` from the command line is submitted then too,
 so the first turn starts with the servers just enabled. A pending server is
@@ -234,21 +279,28 @@ The two action rows and the hint stay on every rung.
 
 Pure, unit-tested:
 
-- `src/trust.rs` — the store (`TrustFile`), the hook identity
-  (`HookIdentity`), `review_hooks` / `trusted_only` / `record_hooks` /
-  `set_hook_trust`, `server_fingerprint`, `review_servers` /
-  `record_servers`, plus the project-root helpers it always had.
+- `src/trust.rs` — the store (`TrustFile`: `review_hooks`, `server_trust`,
+  `record_hooks`, `record_servers`, `migrate_legacy`), the read-modify-write
+  every answer goes through (`update_store`, refusing a malformed store),
+  the hook identity (`HookIdentity`, its matcher by `hooks::constraint`),
+  `trusted_only`, `server_fingerprint` and the entry's value-free shape
+  (`ServerParts`, `ServerChange`), `review_servers`, plus the project-root
+  helpers it always had.
 - `src/app/config_review.rs` — the dialog's state and keys;
   `src/ui/config_review_view.rs` — its page and the shedding ladder.
 - `mcp::merge_project_scopes` — approved project servers shadow the user's,
   held ones never do; `mcp::McpServerStatus::AwaitingReview`.
 - `hooks::HooksOverview` — every hook with its trust, for `/hooks`.
+- `herdr::activity` — the review's page as herdr's `blocked` message.
 
 Boundary, smoke-verified:
 
-- `src/tui/trust.rs` — reading the layers, building the pages, applying each
-  answer (the `trust.json` write, the hooks rebind, the MCP release or hold),
-  and finishing the review (`SessionStart`, the `[PROMPT]`).
+- `src/tui/trust.rs` — reading the layers, carrying `/trust` approvals over,
+  building the pages, applying each answer (the session's copy, then
+  `persist` over the file as it is on disk; the hooks rebind; the MCP release
+  or hold), and finishing the review (`SessionStart`, the `[PROMPT]`).
 - `src/llm/mcp/manager.rs` — the held set (`McpHold::{Review, Declined}`) and
   `set_approved`.
-- Smoke Phase 83 drives both pages, the persistence and a changed hook.
+- Smoke Phase 83 drives both pages, the persistence, a changed hook and a
+  changed server, the `/settings` review's Ctrl+C, two sessions answering at
+  once, a malformed store left alone and a `/trust` approval carried over.
