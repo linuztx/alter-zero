@@ -12,7 +12,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -63,8 +63,24 @@ fn refresh_lock_for(server_url: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
 
 /// Refresh a token this long before it actually expires — five minutes, the
 /// production default the reference clients converged on (60 s is the floor;
-/// clock skew plus in-flight latency eat a short window).
+/// clock skew plus in-flight latency eat a short window). A token living
+/// less than twice this is renewed at half its life instead
+/// ([`tokens_fresh`]).
 const EXPIRY_SKEW_SECS: u64 = 300;
+
+/// How long a store write waits for another process's read-modify-write
+/// before going ahead without the lock: a write takes milliseconds, so a
+/// lock held this long is a stuck process — and a rotated refresh token must
+/// never be dropped on the floor for one.
+const STORE_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a renewal waits for another session renewing the **same**
+/// grant: past that session's whole token request, so the wait ends with
+/// its grant in the store rather than with a replay.
+const REFRESH_LOCK_WAIT: Duration = Duration::from_secs(25);
+
+/// The file-lock retry cadence.
+const LOCK_POLL: Duration = Duration::from_millis(20);
 
 // ---------------------------------------------------------------------------
 // the token store (pure format + file I/O)
@@ -84,6 +100,83 @@ pub struct StoredTokens {
     /// refreshes send too, so the token's audience never drifts. `None` in a
     /// grant stored before it was recorded: the server URL stands in.
     pub resource: Option<String>,
+    /// Unix seconds the access token was minted — with `expires_at`, the
+    /// token's lifetime, which sizes its renewal window. `None` in a grant
+    /// stored before it was recorded: the full skew applies.
+    pub issued_at: Option<u64>,
+}
+
+/// An exclusive advisory lock (`flock`) on a file beside the store. The
+/// mutexes above serialize this process's threads; this serializes
+/// **processes** — two sessions in different terminals share one store, and
+/// the refresh-token replay the per-server lock exists to prevent is just as
+/// fatal when the second presenter is another process. Released on drop, and
+/// by the kernel when the process dies, so a crash never strands it.
+struct FileLock {
+    _file: std::fs::File,
+}
+
+/// Why no file lock was taken.
+#[derive(Debug, PartialEq, Eq)]
+enum LockMiss {
+    /// Another holder kept it past the deadline.
+    TimedOut,
+    /// The file couldn't be opened, or the filesystem has no locks: the
+    /// caller goes on with only the in-process mutex, as before this lock.
+    Unavailable,
+}
+
+impl FileLock {
+    fn acquire(path: &Path, deadline: Instant) -> Result<FileLock, LockMiss> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{FlockOperation, flock};
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Some(parent) = path.parent() {
+                create_private_dir(parent).map_err(|_| LockMiss::Unavailable)?;
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|_| LockMiss::Unavailable)?;
+            loop {
+                match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                    Ok(()) => return Ok(FileLock { _file: file }),
+                    Err(rustix::io::Errno::WOULDBLOCK | rustix::io::Errno::INTR) => {
+                        if Instant::now() >= deadline {
+                            return Err(LockMiss::TimedOut);
+                        }
+                        std::thread::sleep(LOCK_POLL);
+                    }
+                    Err(_) => return Err(LockMiss::Unavailable),
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, deadline);
+            Err(LockMiss::Unavailable)
+        }
+    }
+}
+
+/// The store's own lock: `mcp-auth.lock` beside `mcp-auth.json`, held for a
+/// read-modify-write.
+fn store_lock_path(store: &Path) -> PathBuf {
+    store.with_extension("lock")
+}
+
+/// One server's renewal lock, `mcp-auth.locks/{digest}.lock`, held across
+/// the whole token request — per server, so a slow authorization server
+/// never holds up another server's renewal in another session either.
+fn refresh_lock_path(store: &Path, server_url: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(server_url.as_bytes());
+    let name: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    store.with_extension("locks").join(format!("{name}.lock"))
 }
 
 /// Parse the store document into `server_url → tokens`.
@@ -110,6 +203,7 @@ pub fn parse_token_store(contents: &str) -> std::collections::BTreeMap<String, S
                     token_endpoint: text("token_endpoint").unwrap_or_default(),
                     scope: text("scope"),
                     resource: text("resource"),
+                    issued_at: entry.get("issued_at").and_then(Value::as_u64),
                 },
             ))
         })
@@ -153,10 +247,13 @@ pub fn record_tokens(contents: &str, server_url: &str, tokens: Option<&StoredTok
                 if let Some(resource) = &tokens.resource {
                     entry.insert("resource".into(), resource.clone().into());
                 }
+                if let Some(issued) = tokens.issued_at {
+                    entry.insert("issued_at".into(), issued.into());
+                }
                 servers.insert(server_url.to_string(), Value::Object(entry));
             }
             None => {
-                servers.remove(server_url);
+                servers.shift_remove(server_url);
             }
         }
     }
@@ -170,52 +267,127 @@ pub fn load_tokens(path: Option<&Path>, server_url: &str) -> Option<StoredTokens
     parse_token_store(&contents).remove(server_url)
 }
 
-/// Persist (or delete) one server's tokens — read-modify-write, owner-only,
-/// best-effort like every other config write.
-pub fn save_tokens(path: Option<&Path>, server_url: &str, tokens: Option<&StoredTokens>) {
-    let Some(path) = path else { return };
+/// Persist (or delete) one server's tokens — a read-modify-write under the
+/// store's lock, in-process and across processes. An error when there is
+/// nowhere to keep a grant, or the store can't be read or written: a sign-in
+/// that "succeeded" into nothing leaves the next connect without a token.
+pub fn save_tokens(
+    path: Option<&Path>,
+    server_url: &str,
+    tokens: Option<&StoredTokens>,
+) -> Result<(), String> {
+    let Some(path) = path else {
+        return match tokens {
+            Some(_) => Err("there is no config directory to keep the grant in".to_string()),
+            None => Ok(()),
+        };
+    };
+    rewrite_store(path, |contents| {
+        Some(record_tokens(contents, server_url, tokens))
+    })
+}
+
+/// Read-modify-write the store under its locks: `rewrite` gets the current
+/// contents (empty when there is no file yet) and returns the new ones, or
+/// `None` to leave the file alone. A store that exists but can't be read is
+/// an error, never "empty" — rewriting it would drop every other server's
+/// grant.
+fn rewrite_store(path: &Path, rewrite: impl FnOnce(&str) -> Option<String>) -> Result<(), String> {
     let _guard = STORE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let updated = record_tokens(&existing, server_url, tokens);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Write-then-rename, so a crash mid-write can't leave a truncated store:
-    // a half-written file parses as *no* servers, silently unauthenticating
-    // every one of them at once.
-    let temp = path.with_extension("json.tmp");
-    if std::fs::write(&temp, &updated).is_ok() {
-        set_owner_only(&temp);
-        if std::fs::rename(&temp, path).is_ok() {
-            return;
-        }
-        let _ = std::fs::remove_file(&temp);
-    }
-    let _ = std::fs::write(path, updated);
-    set_owner_only(path);
+    // Another process's write: wait for it, but never past a stuck one — a
+    // dropped rotation costs more than a raced one.
+    let _lock = FileLock::acquire(&store_lock_path(path), Instant::now() + STORE_LOCK_WAIT);
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
+    };
+    let Some(updated) = rewrite(&existing) else {
+        return Ok(());
+    };
+    write_private(path, &updated).map_err(|e| format!("couldn't write {}: {e}", path.display()))
 }
 
-/// `0600` — the store holds refresh tokens, which the spec requires be kept
-/// confidential in storage.
-fn set_owner_only(path: &Path) {
+/// Write `contents` to `path` through a fresh temp file beside it — created
+/// owner-only rather than written first and narrowed after (the window
+/// between would leave refresh tokens readable), synced, and renamed into
+/// place, so a crash mid-write can't leave a truncated store: a half-written
+/// file parses as *no* servers, silently unauthenticating every one at once.
+/// The temp name is unique per write, so two processes saving at once never
+/// write into each other's file.
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        create_private_dir(parent)?;
+    }
+    let (temp, mut file) = create_temp_beside(path)?;
+    let written = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// A new owner-only temp file beside `path`: `.{name}.{pid}.{n}.tmp`.
+fn create_temp_beside(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map_or_else(|| "store".into(), |n| n.to_string_lossy());
+    let mut collision = None;
+    for _ in 0..16 {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            // A crashed process's leftover under a reused pid.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => collision = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(collision.unwrap_or_else(|| std::io::Error::other("no free temp name")))
+}
+
+/// Create `dir` (and any missing parents) owner-only. One that already
+/// exists is left as it is — it holds other files the user owns.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.as_os_str().is_empty() || dir.is_dir() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
     }
-    #[cfg(not(unix))]
-    let _ = path;
+    builder.create(dir)
 }
 
 /// Is this grant still fresh (with the refresh skew)? `now` is Unix seconds.
+/// A token living less than twice the skew would be stale the moment it was
+/// minted — every request a renewal, every renewal a rotation — so its
+/// window is half its life instead.
 #[must_use]
 pub fn tokens_fresh(tokens: &StoredTokens, now: u64) -> bool {
-    match tokens.expires_at {
-        Some(expires) => now + EXPIRY_SKEW_SECS < expires,
-        None => true,
-    }
+    let Some(expires) = tokens.expires_at else {
+        return true;
+    };
+    let skew = tokens.issued_at.map_or(EXPIRY_SKEW_SECS, |issued| {
+        EXPIRY_SKEW_SECS.min(expires.saturating_sub(issued) / 2)
+    });
+    now.saturating_add(skew) < expires
 }
 
 /// Why a refresh failed — the split that decides what happens to the stored
@@ -237,11 +409,26 @@ pub enum RefreshFailure {
     Transient(String),
 }
 
+/// The RFC 6749 §5.2 errors that are a verdict on the **grant itself** —
+/// the refresh token is dead, the client is gone, or the grant may not be
+/// renewed — so clearing it is the only way out of the loop. Every other
+/// error (`invalid_request`, an AS's own `temporarily_unavailable`,
+/// anything new) says nothing about the grant, and must not cost the user
+/// one that may be perfectly good.
+const PERMANENT_REFRESH_ERRORS: &[&str] = &[
+    "invalid_grant",
+    "invalid_client",
+    "unauthorized_client",
+    "unsupported_grant_type",
+    "invalid_scope",
+];
+
 /// Classify a failed token-endpoint answer. `status` is `None` when the
 /// request never got one (a network failure — transient by definition).
 /// Only the AS's own structured verdict on a 400/401 — the RFC 6749 §5.2
-/// `{"error": …}` shape — is permanent; an unparseable body at those
-/// statuses is a proxy or gateway speaking, not the AS.
+/// `{"error": …}` shape, naming one of `PERMANENT_REFRESH_ERRORS` — is
+/// permanent; an unparseable body at those statuses is a proxy or gateway
+/// speaking, not the AS.
 #[must_use]
 pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
     let flat = || {
@@ -264,7 +451,11 @@ pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
                 .and_then(Value::as_str)
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
-            return RefreshFailure::Permanent(format!("{error}{description}"));
+            let detail = format!("{error}{description}");
+            if PERMANENT_REFRESH_ERRORS.contains(&error) {
+                return RefreshFailure::Permanent(detail);
+            }
+            return RefreshFailure::Transient(format!("HTTP {status}: {detail}"));
         }
     }
     RefreshFailure::Transient(format!("HTTP {status}: {}", flat()))
@@ -301,31 +492,49 @@ pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, S
 
 /// Refresh the stored grant for `server_url` through its token endpoint —
 /// forced, regardless of freshness (the reactive 401 path needs exactly
-/// that). The store is re-read first, so another process's newer grant is
-/// used instead of burning a rotated refresh token. On success the rotated
-/// grant is persisted (`tokens_from_response` keeps the old refresh token
-/// when the AS returns none — never overwrite with nothing) and returned; a
-/// [`RefreshFailure::Permanent`] rejection clears the store entry, because a
-/// dead grant kept around loops the failure into every later request.
+/// that). Single-flight per server, across threads **and** processes; the
+/// store is re-read once the lock is held, so a grant another thread or
+/// session already rotated is used instead of burning a spent refresh token.
+/// The outcome is written back only over the grant this renewal presented
+/// (`settle_refresh`): a rotation is persisted (`tokens_from_response`
+/// keeps the old refresh token when the AS returns none — never overwrite
+/// with nothing), and a [`RefreshFailure::Permanent`] rejection clears the
+/// entry, because a dead grant kept around loops the failure into every
+/// later request.
 pub fn refresh_grant(
     path: Option<&Path>,
     server_url: &str,
     presented: Option<&str>,
 ) -> Result<StoredTokens, RefreshFailure> {
     // Single-flight, per server: only one thread may present this grant's
-    // refresh token to the network at a time.
+    // refresh token to the network at a time…
     let lock = refresh_lock_for(server_url);
     let _guard = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // …and only one session: another one renewing this grant holds the same
+    // file's lock across its whole token request.
+    let _session_lock = match path.map(|path| {
+        FileLock::acquire(
+            &refresh_lock_path(path, server_url),
+            Instant::now() + REFRESH_LOCK_WAIT,
+        )
+    }) {
+        Some(Err(LockMiss::TimedOut)) => {
+            return Err(RefreshFailure::Transient(
+                "another session is still renewing this grant".to_string(),
+            ));
+        }
+        held => held,
+    };
     let Some(tokens) = load_tokens(path, server_url) else {
         return Err(RefreshFailure::NoGrant);
     };
     // Re-read under the lock decides it: if the store no longer holds the
-    // access token we found unusable, another thread already rotated the
-    // grant while we waited. Take its result — presenting our now-spent copy
-    // of the refresh token would be a replay, and a compliant server answers
-    // that by revoking the whole family.
+    // access token we found unusable, another thread or session already
+    // rotated the grant while we waited. Take its result — presenting our
+    // now-spent copy of the refresh token would be a replay, and a compliant
+    // server answers that by revoking the whole family.
     if let Some(presented) = presented
         && tokens.access_token != presented
     {
@@ -335,29 +544,59 @@ pub fn refresh_grant(
         return Err(RefreshFailure::NoGrant);
     }
     let params = refresh_params(&tokens, server_url);
-    let (status, body) = match post_form_raw(&tokens.token_endpoint, &params) {
-        Ok(answer) => answer,
-        Err(detail) => return Err(RefreshFailure::Transient(detail)),
-    };
-    if !(200..300).contains(&status) {
-        let failure = refresh_failure_kind(Some(status), &body);
-        if matches!(failure, RefreshFailure::Permanent(_)) {
-            save_tokens(path, server_url, None);
+    let outcome = match post_form_raw(&tokens.token_endpoint, &params) {
+        Err(detail) => Err(RefreshFailure::Transient(detail)),
+        Ok((status, body)) if !(200..300).contains(&status) => {
+            Err(refresh_failure_kind(Some(status), &body))
         }
-        return Err(failure);
-    }
-    let Ok(response) = serde_json::from_str::<Value>(&body) else {
-        return Err(RefreshFailure::Transient(
-            "the token endpoint answered non-JSON".to_string(),
-        ));
+        Ok((_, body)) => match serde_json::from_str::<Value>(&body) {
+            Err(_) => Err(RefreshFailure::Transient(
+                "the token endpoint answered non-JSON".to_string(),
+            )),
+            Ok(response) => tokens_from_response(&response, &tokens).ok_or_else(|| {
+                RefreshFailure::Transient("the token response carried no access_token".to_string())
+            }),
+        },
     };
-    let Some(refreshed) = tokens_from_response(&response, &tokens) else {
-        return Err(RefreshFailure::Transient(
-            "the token response carried no access_token".to_string(),
-        ));
+    settle_refresh(path, server_url, &tokens, outcome)
+}
+
+/// Record a renewal's outcome — but only over the grant it presented. The
+/// store may have moved on while the request was out: "Clear
+/// authentication" deleted the entry (the clear wins — a renewal never
+/// brings a grant back, and the caller gets [`RefreshFailure::NoGrant`]), or
+/// a sign-in stored a newer grant (it stays, and is what the caller gets).
+/// A permanent rejection clears the entry on the same condition, so it can
+/// never take a grant it didn't reject.
+fn settle_refresh(
+    path: Option<&Path>,
+    server_url: &str,
+    presented: &StoredTokens,
+    outcome: Result<StoredTokens, RefreshFailure>,
+) -> Result<StoredTokens, RefreshFailure> {
+    let Some(path) = path else {
+        return outcome;
     };
-    save_tokens(path, server_url, Some(&refreshed));
-    Ok(refreshed)
+    let mut moved_on = None;
+    let written = rewrite_store(path, |contents| {
+        let current = parse_token_store(contents).remove(server_url);
+        let ours = current
+            .as_ref()
+            .is_some_and(|current| current.refresh_token == presented.refresh_token);
+        if !ours {
+            moved_on = Some(current.ok_or(RefreshFailure::NoGrant));
+            return None;
+        }
+        match &outcome {
+            Ok(refreshed) => Some(record_tokens(contents, server_url, Some(refreshed))),
+            Err(RefreshFailure::Permanent(_)) => Some(record_tokens(contents, server_url, None)),
+            Err(_) => None,
+        }
+    });
+    // A rotation that couldn't be written still gave this session a working
+    // bearer; the next session finds the spent grant and signs in again.
+    let _ = written;
+    moved_on.unwrap_or(outcome)
 }
 
 /// The bearer a connect should send: the stored access token, refreshed
@@ -376,7 +615,10 @@ pub fn connect_bearer(path: Option<&Path>, server_url: &str) -> Option<String> {
     }
     match refresh_grant(path, server_url, Some(&tokens.access_token)) {
         Ok(refreshed) => Some(refreshed.access_token),
-        Err(RefreshFailure::Permanent(_)) => None,
+        // The dead grant is cleared — unless a newer one replaced it.
+        Err(RefreshFailure::Permanent(_)) => {
+            load_tokens(path, server_url).map(|tokens| tokens.access_token)
+        }
         Err(RefreshFailure::NoGrant | RefreshFailure::Transient(_)) => Some(tokens.access_token),
     }
 }
@@ -428,6 +670,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .map(|f| f as u64),
         _ => None,
     });
+    let now = unix_now();
     Some(StoredTokens {
         access_token: access.to_string(),
         refresh_token: response
@@ -435,7 +678,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| prior.refresh_token.clone()),
-        expires_at: expires_in.map(|secs| unix_now() + secs),
+        expires_at: expires_in.map(|secs| now.saturating_add(secs)),
         client_id: prior.client_id.clone(),
         client_secret: prior.client_secret.clone(),
         token_endpoint: prior.token_endpoint.clone(),
@@ -445,6 +688,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .map(str::to_string)
             .or_else(|| prior.scope.clone()),
         resource: prior.resource.clone(),
+        issued_at: expires_in.map(|_| now),
     })
 }
 
@@ -1297,7 +1541,7 @@ pub fn run_auth_flow(
     };
     let tokens = tokens_from_response(&response, &prior)
         .ok_or_else(|| "token response carried no access_token".to_string())?;
-    save_tokens(store_path, server_url, Some(&tokens));
+    save_tokens(store_path, server_url, Some(&tokens))?;
     Ok(())
 }
 
@@ -1780,6 +2024,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read write".to_string()),
             resource: None,
+            issued_at: None,
         };
         let params = refresh_params(&tokens, "https://mcp.test/mcp");
         let get = |key: &str| {
@@ -1840,8 +2085,8 @@ mod tests {
         for error in [
             "invalid_grant",
             "invalid_client",
-            "invalid_request",
             "unauthorized_client",
+            "unsupported_grant_type",
             "invalid_scope",
         ] {
             let body = format!(r#"{{"error":"{error}","error_description":"no"}}"#);
@@ -1872,6 +2117,21 @@ mod tests {
             refresh_failure_kind(None, "connect timeout"),
             F::Transient(_)
         ));
+        // An error that says nothing about the grant itself — a malformed
+        // request, an AS having a bad moment — must not cost the user a
+        // grant that may be perfectly good: kept, and retried later.
+        for error in [
+            "invalid_request",
+            "temporarily_unavailable",
+            "server_error",
+            "something_new",
+        ] {
+            let body = format!(r#"{{"error":"{error}"}}"#);
+            match refresh_failure_kind(Some(400), &body) {
+                F::Transient(detail) => assert!(detail.contains(error), "{detail}"),
+                other => panic!("{error} classified {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -2040,8 +2300,10 @@ mod tests {
                 token_endpoint: token_url,
                 scope: None,
                 resource: None,
+                issued_at: None,
             }),
-        );
+        )
+        .expect("the store write");
         // Spawn every thread *before* joining any — a lazy `.map().map()`
         // chain would spawn-and-join one at a time and race nothing.
         let handles: Vec<_> = (0..8)
@@ -2094,12 +2356,14 @@ mod tests {
                         token_endpoint: "https://as/token".to_string(),
                         scope: None,
                         resource: None,
+                        issued_at: None,
                     };
                     save_tokens(
                         Some(&path),
                         &format!("https://s{i}.test/mcp"),
                         Some(&tokens),
-                    );
+                    )
+                    .expect("the store write");
                 })
             })
             .collect();
@@ -2125,6 +2389,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read".to_string()),
             resource: None,
+            issued_at: None,
         };
         let written = record_tokens("", "https://mcp.test/mcp", Some(&tokens));
         let parsed = parse_token_store(&written);
@@ -2148,5 +2413,272 @@ mod tests {
         assert!(!tokens_fresh(&tokens, 1000 - EXPIRY_SKEW_SECS));
         let no_expiry = StoredTokens::default();
         assert!(tokens_fresh(&no_expiry, u64::MAX - EXPIRY_SKEW_SECS - 1));
+    }
+
+    /// A token living less than twice the skew would be stale the moment it
+    /// was minted — every request a renewal, every renewal a rotation. Its
+    /// window is half its life instead; a long-lived token keeps the full
+    /// five minutes.
+    #[test]
+    fn a_short_lived_token_is_renewed_at_half_life() {
+        let short = StoredTokens {
+            issued_at: Some(1000),
+            expires_at: Some(1120),
+            ..Default::default()
+        };
+        assert!(tokens_fresh(&short, 1059));
+        assert!(!tokens_fresh(&short, 1060));
+        let long = StoredTokens {
+            issued_at: Some(1000),
+            expires_at: Some(1000 + 3600),
+            ..Default::default()
+        };
+        assert!(tokens_fresh(&long, 1000 + 3600 - EXPIRY_SKEW_SECS - 1));
+        assert!(!tokens_fresh(&long, 1000 + 3600 - EXPIRY_SKEW_SECS));
+        // A mint records when it was issued, and the store keeps it.
+        let minted = tokens_from_response(
+            &serde_json::json!({"access_token": "a", "expires_in": 120}),
+            &StoredTokens::default(),
+        )
+        .unwrap();
+        assert_eq!(minted.expires_at.unwrap() - minted.issued_at.unwrap(), 120);
+        let store = record_tokens("", "https://s.test/mcp", Some(&minted));
+        assert_eq!(
+            parse_token_store(&store)["https://s.test/mcp"].issued_at,
+            minted.issued_at
+        );
+    }
+
+    /// The store holds refresh tokens, which the spec requires be kept
+    /// confidential: the file is the owner's from the moment it exists, a
+    /// directory the save creates is too, and no temp file is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn the_store_is_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let path = home.join("mcp-auth.json");
+        let tokens = StoredTokens {
+            access_token: "at".to_string(),
+            ..Default::default()
+        };
+        save_tokens(Some(&path), "https://s.test/mcp", Some(&tokens)).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&home), 0o700);
+        let leftovers: Vec<String> = std::fs::read_dir(&home)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A grant that can't be kept is an error the sign-in reports — never a
+    /// silent success that leaves the next connect without a token — and a
+    /// store that can't be read is never rewritten over (that would drop
+    /// every other server's grant).
+    #[test]
+    fn a_grant_that_cannot_be_kept_is_an_error() {
+        let tokens = StoredTokens {
+            access_token: "at".to_string(),
+            ..Default::default()
+        };
+        assert!(save_tokens(None, "https://s.test/mcp", Some(&tokens)).is_err());
+        assert!(save_tokens(None, "https://s.test/mcp", None).is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("file");
+        std::fs::write(&blocker, "x").unwrap();
+        let inside = blocker.join("mcp-auth.json");
+        assert!(save_tokens(Some(&inside), "https://s.test/mcp", Some(&tokens)).is_err());
+        // A store that is a directory reads as an error, not as empty.
+        let unreadable = dir.path().join("store-dir");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(save_tokens(Some(&unreadable), "https://s.test/mcp", Some(&tokens)).is_err());
+    }
+
+    /// The lock excludes another *open* of the file — the shape another
+    /// process takes — not only another thread: two sessions in different
+    /// terminals share one store.
+    #[cfg(unix)]
+    #[test]
+    fn the_file_lock_excludes_another_open_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("locks").join("x.lock");
+        let soon = || Instant::now() + Duration::from_millis(150);
+        let held = FileLock::acquire(&path, soon()).expect("the first open takes it");
+        assert_eq!(
+            FileLock::acquire(&path, soon()).err(),
+            Some(LockMiss::TimedOut)
+        );
+        drop(held);
+        assert!(FileLock::acquire(&path, soon()).is_ok());
+    }
+
+    /// A one-route token endpoint answering each request through `answer`
+    /// (given the form body) with `(status, JSON body)`; its URL returned.
+    fn spawn_token_endpoint(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> String {
+        use std::io::{BufRead, BufReader};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let (status, reply) = answer(&String::from_utf8_lossy(&body));
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/token")
+    }
+
+    fn grant(access: &str, refresh: &str, token_endpoint: &str) -> StoredTokens {
+        StoredTokens {
+            access_token: access.to_string(),
+            refresh_token: Some(refresh.to_string()),
+            expires_at: Some(1),
+            client_id: "cid".to_string(),
+            token_endpoint: token_endpoint.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Another session renewing the same grant holds its lock across the
+    /// whole token request; this one waits, then takes the grant that
+    /// session minted instead of presenting the spent refresh token again —
+    /// which a reuse-detecting server answers by revoking the family.
+    #[cfg(unix)]
+    #[test]
+    fn a_refresh_waits_for_another_session_and_takes_its_grant() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let token_url = {
+            let requests = std::sync::Arc::clone(&requests);
+            spawn_token_endpoint(move |_| {
+                requests.fetch_add(1, Ordering::SeqCst);
+                (
+                    200,
+                    r#"{"access_token":"at-2","refresh_token":"rt-2"}"#.to_string(),
+                )
+            })
+        };
+        save_tokens(
+            Some(&path),
+            server,
+            Some(&grant("at-1", "rt-1", &token_url)),
+        )
+        .unwrap();
+        // The other session takes the server's renewal lock…
+        let other = FileLock::acquire(
+            &refresh_lock_path(&path, server),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("the other session's lock");
+        let ours = {
+            let path = path.clone();
+            std::thread::spawn(move || refresh_grant(Some(&path), server, Some("at-1")))
+        };
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            0,
+            "the refresh token went out while another session was renewing it"
+        );
+        // …rotates the grant, and lets go.
+        let rotated = StoredTokens {
+            expires_at: Some(u64::MAX / 4),
+            ..grant("at-9", "rt-9", &token_url)
+        };
+        save_tokens(Some(&path), server, Some(&rotated)).unwrap();
+        drop(other);
+        let got = ours.join().unwrap();
+        assert_eq!(got, Ok(rotated));
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+    }
+
+    /// A permanent rejection clears only the grant it rejected: a sign-in
+    /// that landed while the renewal was out keeps its newer grant, and the
+    /// caller gets that one.
+    #[test]
+    fn a_permanent_failure_never_clears_a_newer_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        let newer = StoredTokens {
+            expires_at: Some(u64::MAX / 4),
+            ..grant("at-new", "rt-new", "https://as.test/token")
+        };
+        let token_url = {
+            let (path, newer) = (path.clone(), newer.clone());
+            spawn_token_endpoint(move |_| {
+                save_tokens(Some(&path), server, Some(&newer)).unwrap();
+                (400, r#"{"error":"invalid_grant"}"#.to_string())
+            })
+        };
+        save_tokens(
+            Some(&path),
+            server,
+            Some(&grant("at-1", "rt-1", &token_url)),
+        )
+        .unwrap();
+        let result = refresh_grant(Some(&path), server, Some("at-1"));
+        assert_eq!(result, Ok(newer.clone()));
+        assert_eq!(load_tokens(Some(&path), server), Some(newer));
+    }
+
+    /// And a renewal never brings back a grant "Clear authentication"
+    /// deleted while the request was out — the clear wins.
+    #[test]
+    fn a_refresh_never_resurrects_a_cleared_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        let token_url = {
+            let path = path.clone();
+            spawn_token_endpoint(move |_| {
+                save_tokens(Some(&path), server, None).unwrap();
+                (
+                    200,
+                    r#"{"access_token":"at-2","refresh_token":"rt-2"}"#.to_string(),
+                )
+            })
+        };
+        save_tokens(
+            Some(&path),
+            server,
+            Some(&grant("at-1", "rt-1", &token_url)),
+        )
+        .unwrap();
+        let result = refresh_grant(Some(&path), server, Some("at-1"));
+        assert_eq!(result, Err(RefreshFailure::NoGrant));
+        assert_eq!(load_tokens(Some(&path), server), None);
     }
 }

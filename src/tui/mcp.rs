@@ -161,13 +161,16 @@ impl Session<'_> {
                 self.toast(format!("{server} {state}"), ToastKind::Info);
             }
             McpOp::Authenticate { server } => manager.authenticate(&server),
-            McpOp::ClearAuth { server } => {
-                manager.clear_auth(&server);
-                self.toast(
+            McpOp::ClearAuth { server } => match manager.clear_auth(&server) {
+                Ok(()) => self.toast(
                     format!("Cleared authentication for {server}"),
                     ToastKind::Info,
-                );
-            }
+                ),
+                Err(error) => self.toast(
+                    format!("Couldn't clear authentication for {server}: {error}"),
+                    ToastKind::Error,
+                ),
+            },
             McpOp::CancelAuth => manager.cancel_auth(),
             McpOp::CopyAuthUrl { url } => {
                 // The `/copy` seam: arboard with the OSC 52 fallback

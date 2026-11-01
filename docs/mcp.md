@@ -487,8 +487,15 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   against the discovered issuer (byte-for-byte, absence rejected when the
   metadata advertised the parameter) before the code is redeemed → the
   token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
-  server URL (0600, best-effort), and ride every HTTP request as
-  `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+  server URL — the file created owner-only (0600) through a temp file of
+  its own, never written first and narrowed after, in a 0700 directory
+  when the save creates one — and ride every HTTP request as
+  `Authorization: Bearer …`. A grant that can't be stored fails the
+  sign-in instead of "succeeding" into nothing (no config home, a store
+  that can't be written), and a store that exists but can't be read is an
+  error, never "empty" — rewriting it would drop every other server's
+  grant. "Clear authentication" deletes the entry, and says so only when
+  the delete was written.
 
   **Every discovered document is checked before it is trusted** — the
   2026-07-28 authorization spec's MUSTs, and the reference TypeScript SDK's
@@ -546,8 +553,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   **Token refresh — why a session never asks twice** (`refresh_grant` and
   friends; the reference client's own bug class, fixed here the way its
   v2.1.206/211 fixed it):
-  - **Proactive**: a stored grant inside the 300-second expiry skew
-    refreshes *before* it goes over the wire — at connect
+  - **Proactive**: a stored grant inside the 300-second expiry skew — or,
+    for a token living less than ten minutes, inside the second half of
+    its life (`issued_at` is kept beside `expires_at`; a five-minute token
+    was otherwise stale the moment it was minted, every request a renewal
+    and every renewal a rotation) — refreshes *before* it goes over the
+    wire — at connect
     (`connect_bearer`) and before every tool call (`refresh_if_stale` →
     `Transport::set_bearer`, the mid-session re-arm seam) — so the server
     never sees a dead token in the ordinary course.
@@ -556,10 +567,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     and per call — before anyone is asked to re-authenticate.
   - **Classification is the contract** (`RefreshFailure`,
     `refresh_failure_kind`): only the AS's own structured verdict on a
-    400/401 (`invalid_grant` and friends) is **permanent** — the dead grant
-    is *cleared* (kept, it would loop the failure into every request) and
-    the server truthfully reads `needs authentication`. Network failures,
-    5xx, 429, or an unreadable body are **transient**: the grant is kept
+    400/401 naming the **grant itself** — `invalid_grant`,
+    `invalid_client`, `unauthorized_client`, `unsupported_grant_type`,
+    `invalid_scope` — is **permanent**: the dead grant is *cleared* (kept,
+    it would loop the failure into every request) and the server
+    truthfully reads `needs authentication`. Everything else is
+    **transient** — network failures, 5xx, 429, an unreadable body, and
+    the errors that say nothing about the grant (`invalid_request`, an
+    AS's own `temporarily_unavailable`, an error code nobody has heard of),
+    which used to clear a grant that may have been perfectly good: the
+    grant is kept
     untouched, the server reads `✘ failed (token refresh failed: …)` whose
     `Reconnect` retries — never needs-auth, which would walk the user into
     discarding a working refresh token over a blip.
@@ -571,7 +588,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     `resource` — and **no scope** (it could only narrow the grant) and no
     PKCE (authorization-code only). The store is re-read before every
     refresh, so another process's newer grant is used instead of burning a
-    rotated token.
+    rotated token — and the outcome is written back **only over the grant
+    the refresh presented** (`settle_refresh`, a compare-and-swap on the
+    refresh token): a grant "Clear authentication" deleted while the
+    request was out stays deleted (the clear wins), and a newer grant a
+    sign-in stored meanwhile stays and is what the caller gets, so a
+    permanent rejection can never clear a grant it didn't reject.
   - **Single-flight, per server.** Serializing the store's *write* does not
     stop two threads presenting the same refresh token to the **network**,
     and that is the more expensive race: OAuth 2.1 §4.3.1 requires a
@@ -584,9 +606,22 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     if the access token it found unusable is no longer the stored one,
     another thread already rotated the grant and its result is returned
     instead of a replay. Per server rather than global, so a slow
-    authorization server can't hold up an unrelated one.
+    authorization server can't hold up an unrelated one. And **per session
+    too**: two sessions in different terminals share one store, and the
+    replay is as fatal when the second presenter is another process, so the
+    renewal also holds an exclusive `flock` on
+    `mcp-auth.locks/{digest}.lock` across its whole token request (released
+    on drop, and by the kernel if the process dies, so a crash never
+    strands it). A second session waits for it — up to `REFRESH_LOCK_WAIT`,
+    past the first one's token request — then re-reads and takes the grant
+    that session minted.
   - **The store is one file for every server**, so its read-modify-write is
-    serialized behind a process-wide lock and committed **write-then-rename**.
+    serialized behind a process-wide lock **and** a `flock` on
+    `mcp-auth.lock` (another session's write is waited for, never past a
+    stuck one — a dropped rotation costs more than a raced one) and
+    committed **write-then-rename**, through a temp name unique to the
+    write so two processes saving at once never write into each other's
+    file.
     Without the lock, two servers renewing at once (two subagents, or a tool
     call while the loop reconnects another) interleave read/read/write/write
     and drop one of the two rotated refresh tokens; the loser then presents

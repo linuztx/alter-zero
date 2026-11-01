@@ -663,17 +663,29 @@ impl McpManager {
     /// The live connection goes with the grant: it still carries the old
     /// bearer, so a connected (or failed) server reconnects at once — and
     /// what the server sees matches what the page says. One that now needs a
-    /// login says so.
-    pub fn clear_auth(&self, name: &str) {
+    /// login says so. An error when the store couldn't be rewritten — the
+    /// grant is still there, and saying "cleared" would be a lie.
+    pub fn clear_auth(&self, name: &str) -> Result<(), String> {
+        let (url, auth_path) = {
+            let inner = self.lock();
+            let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
+                return Ok(());
+            };
+            (
+                server.entry.config.url().map(str::to_string),
+                inner.auth_path.clone(),
+            )
+        };
+        // The store's I/O runs outside the manager's lock: its file lock may
+        // wait on another session's write.
+        if let Some(url) = &url {
+            oauth::save_tokens(auth_path.as_deref(), url, None)?;
+        }
         let reconnect = {
             let mut inner = self.lock();
-            let auth_path = inner.auth_path.clone();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
-                return;
+                return Ok(());
             };
-            if let Some(url) = server.entry.config.url() {
-                oauth::save_tokens(auth_path.as_deref(), url, None);
-            }
             server.has_tokens = false;
             matches!(
                 server.status,
@@ -684,6 +696,7 @@ impl McpManager {
         if reconnect {
             self.spawn_connect(name);
         }
+        Ok(())
     }
 
     /// Start the interactive OAuth flow for one server on a worker thread.
@@ -1609,7 +1622,8 @@ done"#,
                 access_token: "old-token".to_string(),
                 ..Default::default()
             }),
-        );
+        )
+        .expect("the store write");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let manager = McpManager::new(
             tx,
@@ -1638,7 +1652,7 @@ done"#,
                 .all(|a| a.as_deref() == Some("Bearer old-token"))
         );
         let before = seen.lock().unwrap().len();
-        manager.clear_auth("remote");
+        manager.clear_auth("remote").expect("the grant cleared");
         wait_connected(&manager, "remote");
         let after = seen.lock().unwrap();
         assert!(after.len() > before, "never reconnected");
@@ -2537,8 +2551,10 @@ done
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
                 resource: None,
+                issued_at: None,
             }),
-        );
+        )
+        .expect("the store write");
     }
 
     fn oauth_manager(fixture: &OauthFixture, auth_path: &std::path::Path) -> McpManager {

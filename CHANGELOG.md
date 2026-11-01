@@ -243,6 +243,20 @@ release heading when a version is cut.
   permission is asked for it alongside what it already had, and the
   permission it named is read correctly: a parsing slip used to lose it
   (`docs/mcp.md`).
+- **An MCP login is no longer lost to a renewal race.** A login server may
+  hand out a one-time renewal token and revoke the whole login when it sees
+  one used twice. Two sessions in different terminals renewing the same
+  server's login at once could both send it, and both then needed the
+  browser again; the second session now waits for the first and uses what
+  it got. A renewal also no longer deletes a login it didn't reject: one
+  you cleared while it was in flight stays cleared, and one you signed in
+  to again meanwhile is kept. An answer that says nothing about the login
+  itself, such as `invalid_request`, no longer deletes it either, and a
+  token that lasts only a few minutes is renewed halfway through its life
+  instead of on every call. The token file is private from the moment it
+  is created, a sign-in whose tokens couldn't be saved says so instead of
+  appearing to work, and **Clear authentication** says when it couldn't
+  clear (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now
