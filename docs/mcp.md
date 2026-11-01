@@ -490,6 +490,42 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   server URL (0600, best-effort), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
 
+  **Every discovered document is checked before it is trusted** — the
+  2026-07-28 authorization spec's MUSTs, and the reference TypeScript SDK's
+  reading of them:
+  - The **resource metadata** must be *this* server's (RFC 9728 §3.3,
+    `resource_allowed`: same origin, the server's path under the
+    document's `resource`); one for another resource is skipped, since it
+    would point the flow at someone else's authorization server. Its
+    `resource` is the RFC 8707 indicator the flow sends — authorize, token
+    exchange **and** every refresh (kept on the grant as
+    `StoredTokens::resource`, so a refreshed token's audience never drifts);
+    without resource metadata, the canonical server URL (`canonical_resource`:
+    lowercase scheme and host, no fragment, no lone `/`).
+  - The **authorization-server metadata** is looked for exactly where the
+    spec says (`authorization_server_candidates`): for an issuer with a
+    path, RFC 8414 path insertion, OIDC path insertion, then OIDC path
+    **appending** — where Keycloak realms and Entra tenants publish, and
+    which was never tried — and never the root, which for a path issuer is
+    some other issuer's document; and that document's `issuer` must be the
+    issuer its URL was built from (RFC 8414 §3.3, `issuer_matches`, with the
+    SDK's one trailing-slash tolerance) or it is skipped. That validated
+    issuer is the one RFC 9207's `iss` is then held to.
+  - Its endpoints must be **HTTPS** (`endpoint_is_secure`; loopback exempt
+    for a server under development), and it must support **PKCE with
+    S256**: metadata listing `code_challenge_methods_supported` without it
+    is refused, while metadata listing none is let through as the SDK does —
+    the spec's "MUST refuse" would turn away servers that support PKCE and
+    merely don't say so (`pkce_problem`).
+  - A `WWW-Authenticate` challenge is parsed as RFC 9110 auth-params, the
+    parameter matched **by name** (`challenge_param`): the old substring
+    search found `scope` inside `insufficient_scope`, so the step-up
+    challenge the spec itself shows carried no scope.
+  - A re-authorization asks for the **union** of the scopes granted before
+    and the ones the server now wants (`scope_union`, the step-up rule) —
+    a `403 insufficient_scope` arrives as `NeedsAuth` with its challenge,
+    and Authenticate on `/mcp` then asks for exactly that.
+
   Two things the flow must get right or the grant is born unrenewable:
   **`offline_access`** is what actually buys a refresh token, and SEP-2207
   deliberately keeps it out of the *protected resource's* metadata

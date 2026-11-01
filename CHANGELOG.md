@@ -231,6 +231,18 @@ release heading when a version is cut.
   **Clear authentication** now also stops the connection using the cleared
   login, and changing a tool's description or inputs in a server you are
   developing reaches the agent after a reconnect.
+- **Signing in to an MCP server checks what it is told, and finds more
+  login servers.** Login servers whose address has a path, like Keycloak
+  realms and Microsoft Entra tenants, publish their details where the
+  client never looked, so signing in failed with "could not discover the
+  authorization server". The client now looks where the MCP spec says,
+  never at a neighbouring login server's details, and uses a document only
+  when it is for the server you are signing in to and names the login
+  server it was fetched from. Login servers must use HTTPS (except on your
+  own machine) and support the secure PKCE method. A server asking for more
+  permission is asked for it alongside what it already had, and the
+  permission it named is read correctly: a parsing slip used to lose it
+  (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

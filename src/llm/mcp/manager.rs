@@ -2536,6 +2536,7 @@ done
                 client_secret: None,
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
+                resource: None,
             }),
         );
     }

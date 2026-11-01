@@ -80,6 +80,10 @@ pub struct StoredTokens {
     pub client_secret: Option<String>,
     pub token_endpoint: String,
     pub scope: Option<String>,
+    /// The RFC 8707 resource indicator the grant was minted for — what its
+    /// refreshes send too, so the token's audience never drifts. `None` in a
+    /// grant stored before it was recorded: the server URL stands in.
+    pub resource: Option<String>,
 }
 
 /// Parse the store document into `server_url → tokens`.
@@ -105,6 +109,7 @@ pub fn parse_token_store(contents: &str) -> std::collections::BTreeMap<String, S
                     client_secret: text("client_secret"),
                     token_endpoint: text("token_endpoint").unwrap_or_default(),
                     scope: text("scope"),
+                    resource: text("resource"),
                 },
             ))
         })
@@ -144,6 +149,9 @@ pub fn record_tokens(contents: &str, server_url: &str, tokens: Option<&StoredTok
                 );
                 if let Some(scope) = &tokens.scope {
                     entry.insert("scope".into(), scope.clone().into());
+                }
+                if let Some(resource) = &tokens.resource {
+                    entry.insert("resource".into(), resource.clone().into());
                 }
                 servers.insert(server_url.to_string(), Value::Object(entry));
             }
@@ -281,7 +289,13 @@ pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, S
     if let Some(secret) = &tokens.client_secret {
         params.push(("client_secret".to_string(), secret.clone()));
     }
-    params.push(("resource".to_string(), server_url.to_string()));
+    params.push((
+        "resource".to_string(),
+        tokens
+            .resource
+            .clone()
+            .unwrap_or_else(|| server_url.to_string()),
+    ));
     params
 }
 
@@ -430,6 +444,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| prior.scope.clone()),
+        resource: prior.resource.clone(),
     })
 }
 
@@ -487,22 +502,67 @@ pub fn form_encode(pairs: &[(String, String)]) -> String {
         .join("&")
 }
 
-/// One `key="value"` parameter out of a 401's `WWW-Authenticate` challenge.
+/// One parameter out of a `WWW-Authenticate` challenge, read as RFC 9110
+/// auth-params — `name=token` or `name="quoted, string"` pairs, the name
+/// matched case-insensitively and **whole**. It used to take the first
+/// *substring* match, so `scope` was found inside `insufficient_scope` (and
+/// inside an `error_description` mentioning scope), and the step-up
+/// challenge the spec itself shows yielded no scope at all.
 #[must_use]
 pub fn challenge_param(challenge: &str, key: &str) -> Option<String> {
-    let lower = challenge.to_ascii_lowercase();
-    let at = lower.find(&key.to_ascii_lowercase())?;
-    let rest = &challenge[at + key.len()..];
-    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
-    // A quoted value may contain spaces (a scope list is exactly that), so
-    // only an unquoted one ends at whitespace.
-    let (rest, terminators): (&str, &[char]) = match rest.strip_prefix('"') {
-        Some(rest) => (rest, &['"']),
-        None => (rest, &['"', ',', ' ']),
-    };
-    let end = rest.find(terminators).unwrap_or(rest.len());
-    let value = rest[..end].trim();
-    (!value.is_empty()).then(|| value.to_string())
+    let chars: Vec<char> = challenge.chars().collect();
+    let n = chars.len();
+    let tchar = |c: char| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c);
+    let mut i = 0;
+    while i < n {
+        while i < n && (chars[i].is_whitespace() || chars[i] == ',') {
+            i += 1;
+        }
+        let start = i;
+        while i < n && tchar(chars[i]) {
+            i += 1;
+        }
+        if i == start {
+            i += 1; // a character no parameter starts with
+            continue;
+        }
+        let name: String = chars[start..i].iter().collect();
+        let mut j = i;
+        while j < n && chars[j] == ' ' {
+            j += 1;
+        }
+        if j >= n || chars[j] != '=' {
+            i = j; // an auth scheme (`Bearer`) or a token68, not a parameter
+            continue;
+        }
+        j += 1;
+        while j < n && chars[j] == ' ' {
+            j += 1;
+        }
+        let mut value = String::new();
+        if j < n && chars[j] == '"' {
+            j += 1;
+            while j < n && chars[j] != '"' {
+                if chars[j] == '\\' && j + 1 < n {
+                    j += 1;
+                }
+                value.push(chars[j]);
+                j += 1;
+            }
+            j += 1; // the closing quote
+        } else {
+            while j < n && chars[j] != ',' && !chars[j].is_whitespace() {
+                value.push(chars[j]);
+                j += 1;
+            }
+        }
+        if name.eq_ignore_ascii_case(key) {
+            let value = value.trim();
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+        i = j;
+    }
+    None
 }
 
 /// The `resource_metadata` URL a 401's `WWW-Authenticate` challenge names
@@ -546,6 +606,144 @@ pub fn well_known_candidates(base: &str, suffix: &str) -> Vec<String> {
     }
     out.push(format!("{origin}/.well-known/{suffix}"));
     out
+}
+
+/// Where an authorization server's metadata is looked for — the spec's
+/// list, in its order. For an issuer with a path, RFC 8414 path insertion,
+/// OIDC path insertion, then OIDC path **appending** (where Keycloak's realms
+/// and Entra's tenants publish); without one, the two root documents. Never
+/// the root for a path issuer: that is some other issuer's metadata.
+#[must_use]
+pub fn authorization_server_candidates(issuer: &str) -> Vec<String> {
+    let Ok(parsed) = url::Url::parse(issuer) else {
+        return Vec::new();
+    };
+    let origin = parsed.origin().ascii_serialization();
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() {
+        return vec![
+            format!("{origin}/.well-known/oauth-authorization-server"),
+            format!("{origin}/.well-known/openid-configuration"),
+        ];
+    }
+    vec![
+        format!("{origin}/.well-known/oauth-authorization-server{path}"),
+        format!("{origin}/.well-known/openid-configuration{path}"),
+        format!("{origin}{path}/.well-known/openid-configuration"),
+    ]
+}
+
+/// RFC 8414 §3.3: does a metadata document's `issuer` name the issuer its
+/// URL was built from? It MUST, or the document MUST NOT be used — one that
+/// names another issuer could be anyone's. Identical strings, with the
+/// reference SDK's one tolerance: a trailing `/` on the issuer asked for (or
+/// on a bare origin either way). A document naming none is refused.
+#[must_use]
+pub fn issuer_matches(expected: &str, issuer: Option<&str>) -> bool {
+    let Some(issuer) = issuer else {
+        return false;
+    };
+    let bare_origin = || {
+        url::Url::parse(expected)
+            .is_ok_and(|u| u.path() == "/" && u.query().is_none() && u.fragment().is_none())
+    };
+    issuer == expected
+        || expected.strip_suffix('/') == Some(issuer)
+        || (issuer.strip_suffix('/') == Some(expected) && bare_origin())
+}
+
+/// RFC 9728 §3.3: is a protected-resource document's `resource` this
+/// server's? Same origin, and the server's path under the resource's — the
+/// reference SDK's `checkResourceAllowed`. A document for another resource
+/// MUST NOT be used: it would point the flow at someone else's
+/// authorization server and audience.
+#[must_use]
+pub fn resource_allowed(server_url: &str, resource: &str) -> bool {
+    let (Ok(server), Ok(resource)) = (url::Url::parse(server_url), url::Url::parse(resource))
+    else {
+        return false;
+    };
+    if server.origin() != resource.origin() || server.path().len() < resource.path().len() {
+        return false;
+    }
+    let with_slash = |path: &str| {
+        if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        }
+    };
+    with_slash(server.path()).starts_with(&with_slash(resource.path()))
+}
+
+/// The server URL as an RFC 8707 resource indicator: lowercase scheme and
+/// host, no fragment ("MUST NOT include a fragment"), and no lone `/` for a
+/// URL without a path (the spec's "SHOULD consistently use the form without
+/// the trailing slash"). What is sent when the server publishes no
+/// resource metadata to take the value from.
+#[must_use]
+pub fn canonical_resource(server_url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(server_url.trim()) else {
+        return server_url.trim().to_string();
+    };
+    parsed.set_fragment(None);
+    let text = parsed.to_string();
+    if parsed.path() == "/" && parsed.query().is_none() {
+        return text.trim_end_matches('/').to_string();
+    }
+    text
+}
+
+/// "All authorization server endpoints MUST be served over HTTPS" — with
+/// loopback exempt, as the reference SDK does, for a server under
+/// development on this machine.
+#[must_use]
+pub fn endpoint_is_secure(endpoint: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => match parsed.host() {
+            Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Why an authorization server can't be used for a PKCE flow — `None` when
+/// it can. One that lists its `code_challenge_methods_supported` without
+/// `S256` is refused: the code it hands out would be bound to nothing. One
+/// that lists none at all is let through, as the reference SDK does (the
+/// spec's "MUST refuse" would turn away servers that support PKCE and merely
+/// don't say so); `state` is required either way.
+#[must_use]
+pub fn pkce_problem(metadata: &Value) -> Option<String> {
+    let methods = metadata
+        .get("code_challenge_methods_supported")?
+        .as_array()?;
+    (!methods.iter().any(|m| m.as_str() == Some("S256"))).then(|| {
+        "the authorization server doesn't support PKCE with S256, which this client requires"
+            .to_string()
+    })
+}
+
+/// The union of scope strings — each scope once, first-seen order — or
+/// `None` when nothing is left. What a re-authorization asks for: the
+/// scopes granted before and the ones the server now wants (the step-up
+/// rule, "include these scopes alongside any previously granted scopes").
+#[must_use]
+pub fn scope_union(scopes: &[Option<&str>]) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for scope in scopes.iter().flatten().flat_map(|s| s.split_whitespace()) {
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    (!out.is_empty()).then(|| out.join(" "))
 }
 
 /// Build the authorization URL.
@@ -748,6 +946,11 @@ pub struct AuthServerMeta {
     /// advertises it must send `iss` on every authorization response, so a
     /// response without one is rejected rather than excused.
     pub iss_required: bool,
+    /// The RFC 8707 resource indicator the flow sends (authorize, token,
+    /// refresh): the server's own resource metadata's `resource` when it
+    /// publishes one — validated as this server's — else the canonical
+    /// server URL.
+    pub resource: String,
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -792,10 +995,18 @@ fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
 }
 
 /// Resolve the authorization server for `server_url`, seeded by the 401's
-/// challenge when one was captured.
+/// challenge when one was captured — every document checked before it is
+/// trusted (`docs/mcp.md`):
+///
+/// 1. **Protected-resource metadata** (RFC 9728): the challenge's named URL
+///    first, then the well-known candidates on the server itself; a
+///    document whose `resource` isn't this server's is skipped (§3.3).
+/// 2. **Authorization-server metadata** (RFC 8414 / OIDC Discovery) at the
+///    spec's candidates for the issuer the resource names — or, without
+///    resource metadata, the server's origin (2025-03-26 servers); a
+///    document naming another `issuer` is skipped (§3.3), and the one used
+///    must serve its endpoints over HTTPS and support PKCE with S256.
 pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerMeta, String> {
-    // 1. Protected-resource metadata: the challenge's named URL first, then
-    //    the well-known candidates on the server itself.
     let mut resource_meta: Option<Value> = None;
     let mut candidates: Vec<String> = Vec::new();
     if let Some(named) = challenge.and_then(challenge_resource_metadata) {
@@ -806,7 +1017,14 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
         "oauth-protected-resource",
     ));
     for candidate in candidates {
-        if let Ok(value) = get_json(&candidate) {
+        let Ok(value) = get_json(&candidate) else {
+            continue;
+        };
+        let ours = value
+            .get("resource")
+            .and_then(Value::as_str)
+            .is_some_and(|resource| resource_allowed(server_url, resource));
+        if ours {
             resource_meta = Some(value);
             break;
         }
@@ -815,7 +1033,8 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
     // makes it authoritative for the operation that was refused, so a server
     // wanting more than it advertises gets what it actually asked for.
     let challenged_scopes = challenge.and_then(challenge_scope);
-    let (auth_server, resource_scopes) = match &resource_meta {
+    let field = |meta: &Value, key: &str| meta.get(key).and_then(Value::as_str).map(str::to_string);
+    let (auth_server, resource_scopes, resource) = match &resource_meta {
         Some(meta) => (
             meta.get("authorization_servers")
                 .and_then(Value::as_array)
@@ -832,59 +1051,91 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                         .join(" ")
                 })
                 .filter(|s| !s.is_empty()),
+            field(meta, "resource").unwrap_or_else(|| canonical_resource(server_url)),
         ),
-        None => (None, None),
+        None => (None, None, canonical_resource(server_url)),
     };
-    // 2. AS metadata: the named server, else the MCP server's own origin.
+    // The named authorization server, else the MCP server's own origin.
     let auth_base = auth_server.unwrap_or_else(|| origin_of(server_url));
-    let mut as_candidates = well_known_candidates(&auth_base, "oauth-authorization-server");
-    as_candidates.extend(well_known_candidates(&auth_base, "openid-configuration"));
+    if !endpoint_is_secure(&auth_base) {
+        return Err(format!(
+            "the authorization server {auth_base} isn't served over HTTPS"
+        ));
+    }
     let mut last_err = String::from("no authorization-server metadata found");
-    for candidate in as_candidates {
-        match get_json(&candidate) {
-            Ok(meta) => {
-                let field = |key: &str| meta.get(key).and_then(Value::as_str).map(str::to_string);
-                let (Some(authorization_endpoint), Some(token_endpoint)) =
-                    (field("authorization_endpoint"), field("token_endpoint"))
-                else {
-                    last_err = format!("{candidate}: missing endpoints");
-                    continue;
-                };
-                let as_scopes: Vec<String> = meta
-                    .get("scopes_supported")
-                    .and_then(Value::as_array)
-                    .map(|scopes| {
-                        scopes
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                // SEP-2207: the *resource's* scopes, plus `offline_access`
-                // when this authorization server advertises it — the only
-                // way a refresh token is ever issued, and the reason an
-                // authenticated server stops needing the browser every hour.
-                // Deliberately never the AS's whole catalogue as a fallback:
-                // asking for scopes the resource never wanted is what strict
-                // providers answer with `invalid_scope`, failing the flow
-                // outright.
-                let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
-                let scopes = with_offline_access(base, &as_scopes);
-                return Ok(AuthServerMeta {
-                    authorization_endpoint,
-                    token_endpoint,
-                    registration_endpoint: field("registration_endpoint"),
-                    scopes,
-                    issuer: field("issuer"),
-                    iss_required: meta
-                        .get("authorization_response_iss_parameter_supported")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                });
+    for candidate in authorization_server_candidates(&auth_base) {
+        let meta = match get_json(&candidate) {
+            Ok(meta) => meta,
+            Err(e) => {
+                last_err = format!("{candidate}: {e}");
+                continue;
             }
-            Err(e) => last_err = format!("{candidate}: {e}"),
+        };
+        let issuer = field(&meta, "issuer");
+        if !issuer_matches(&auth_base, issuer.as_deref()) {
+            last_err = format!(
+                "{candidate} names issuer {}, not {auth_base}",
+                issuer.as_deref().unwrap_or("none")
+            );
+            continue;
         }
+        let (Some(authorization_endpoint), Some(token_endpoint)) = (
+            field(&meta, "authorization_endpoint"),
+            field(&meta, "token_endpoint"),
+        ) else {
+            last_err = format!("{candidate}: missing endpoints");
+            continue;
+        };
+        let registration_endpoint = field(&meta, "registration_endpoint");
+        for endpoint in [
+            Some(&authorization_endpoint),
+            Some(&token_endpoint),
+            registration_endpoint.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !endpoint_is_secure(endpoint) {
+                return Err(format!(
+                    "the authorization server's endpoint {endpoint} isn't served over HTTPS"
+                ));
+            }
+        }
+        if let Some(problem) = pkce_problem(&meta) {
+            return Err(problem);
+        }
+        let as_scopes: Vec<String> = meta
+            .get("scopes_supported")
+            .and_then(Value::as_array)
+            .map(|scopes| {
+                scopes
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // SEP-2207: the *resource's* scopes, plus `offline_access` when this
+        // authorization server advertises it — the only way a refresh token
+        // is ever issued, and the reason an authenticated server stops
+        // needing the browser every hour. Deliberately never the AS's whole
+        // catalogue as a fallback: asking for scopes the resource never
+        // wanted is what strict providers answer with `invalid_scope`,
+        // failing the flow outright.
+        let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
+        let scopes = with_offline_access(base, &as_scopes);
+        return Ok(AuthServerMeta {
+            authorization_endpoint,
+            token_endpoint,
+            registration_endpoint,
+            scopes,
+            issuer,
+            iss_required: meta
+                .get("authorization_response_iss_parameter_supported")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            resource,
+        });
     }
     Err(format!(
         "could not discover the authorization server ({last_err})"
@@ -1004,14 +1255,21 @@ pub fn run_auth_flow(
         },
     };
     let (verifier, code_challenge, state) = pkce_and_state();
+    // Re-authorizing asks for what was granted before *and* what the server
+    // now wants — the step-up rule ("include these scopes alongside any
+    // previously granted scopes"), so a scope upgrade never drops the rest.
+    let scopes = scope_union(&[
+        meta.scopes.as_deref(),
+        stored.as_ref().and_then(|t| t.scope.as_deref()),
+    ]);
     let authorize_url = build_authorize_url(
         &meta.authorization_endpoint,
         &client_id,
         &redirect_uri,
         &code_challenge,
         &state,
-        meta.scopes.as_deref(),
-        server_url,
+        scopes.as_deref(),
+        &meta.resource,
     );
     progress.on_url(&authorize_url);
     open_browser(&authorize_url);
@@ -1022,7 +1280,7 @@ pub fn run_auth_flow(
         ("redirect_uri".to_string(), redirect_uri),
         ("client_id".to_string(), client_id.clone()),
         ("code_verifier".to_string(), verifier),
-        ("resource".to_string(), server_url.to_string()),
+        ("resource".to_string(), meta.resource.clone()),
     ];
     if let Some(secret) = &client_secret {
         params.push(("client_secret".to_string(), secret.clone()));
@@ -1033,7 +1291,8 @@ pub fn run_auth_flow(
         client_id,
         client_secret,
         token_endpoint: meta.token_endpoint.clone(),
-        scope: meta.scopes.clone(),
+        scope: scopes,
+        resource: Some(meta.resource.clone()),
         ..Default::default()
     };
     let tokens = tokens_from_response(&response, &prior)
@@ -1173,6 +1432,251 @@ mod tests {
         assert_eq!(challenge_resource_metadata("Bearer realm=\"x\""), None);
     }
 
+    /// A challenge is parsed by parameter, never by substring: `scope`
+    /// used to be found inside `insufficient_scope` (and inside an
+    /// `error_description` mentioning scope), so the step-up challenge the
+    /// spec itself shows yielded no scope at all.
+    #[test]
+    fn challenge_parameters_are_read_by_name() {
+        let step_up = r#"Bearer error="insufficient_scope", scope="files:write files:read", resource_metadata="https://x.test/.well-known/oauth-protected-resource""#;
+        assert_eq!(
+            challenge_scope(step_up).as_deref(),
+            Some("files:write files:read")
+        );
+        assert_eq!(
+            challenge_param(step_up, "error").as_deref(),
+            Some("insufficient_scope")
+        );
+        let described = r#"Bearer error_description="the scope was wrong, try again", scope="a b""#;
+        assert_eq!(challenge_scope(described).as_deref(), Some("a b"));
+        // Names are case-insensitive; a quoted value keeps commas, and an
+        // escaped quote is a quote.
+        let odd = r#"Bearer Realm="x, y", SCOPE=read, note="say \"hi\"""#;
+        assert_eq!(challenge_param(odd, "realm").as_deref(), Some("x, y"));
+        assert_eq!(challenge_scope(odd).as_deref(), Some("read"));
+        assert_eq!(challenge_param(odd, "note").as_deref(), Some(r#"say "hi""#));
+        assert_eq!(challenge_scope("Bearer realm=\"x\""), None);
+    }
+
+    /// The spec's discovery list, exactly: an issuer with a path tries RFC
+    /// 8414 path insertion, OIDC path insertion, then OIDC path *appending*
+    /// (Keycloak's realms, Entra's tenants) — and never the root, which is
+    /// another issuer's metadata.
+    #[test]
+    fn authorization_server_metadata_is_looked_for_where_the_spec_says() {
+        assert_eq!(
+            authorization_server_candidates("https://auth.test/realms/acme"),
+            [
+                "https://auth.test/.well-known/oauth-authorization-server/realms/acme",
+                "https://auth.test/.well-known/openid-configuration/realms/acme",
+                "https://auth.test/realms/acme/.well-known/openid-configuration",
+            ]
+        );
+        assert_eq!(
+            authorization_server_candidates("https://auth.test"),
+            [
+                "https://auth.test/.well-known/oauth-authorization-server",
+                "https://auth.test/.well-known/openid-configuration",
+            ]
+        );
+        assert_eq!(
+            authorization_server_candidates("https://auth.test/"),
+            authorization_server_candidates("https://auth.test")
+        );
+    }
+
+    /// RFC 8414 §3.3: the metadata's `issuer` MUST be the issuer its URL was
+    /// built from, or the document MUST NOT be used — the one trailing-slash
+    /// difference on a bare origin aside (the reference SDK's tolerance).
+    #[test]
+    fn metadata_names_the_issuer_it_was_fetched_for() {
+        assert!(issuer_matches(
+            "https://auth.test/realms/acme",
+            Some("https://auth.test/realms/acme")
+        ));
+        assert!(issuer_matches(
+            "https://auth.test",
+            Some("https://auth.test/")
+        ));
+        assert!(issuer_matches(
+            "https://auth.test/",
+            Some("https://auth.test")
+        ));
+        assert!(!issuer_matches(
+            "https://auth.test/realms/acme",
+            Some("https://auth.test/realms/other")
+        ));
+        assert!(!issuer_matches(
+            "https://auth.test/realms/acme",
+            Some("https://auth.test")
+        ));
+        assert!(!issuer_matches("https://auth.test", None));
+    }
+
+    /// RFC 9728 §3.3: the protected-resource metadata must be *for* this
+    /// server — same origin, a path the server's sits under — or a server
+    /// could hand out another's. The resource indicator sent is then that
+    /// metadata's own `resource`; without metadata, the server URL in its
+    /// canonical form (lowercase scheme and host, no fragment, no lone `/`).
+    #[test]
+    fn the_resource_metadata_must_be_this_servers() {
+        let server = "https://mcp.test/mcp";
+        assert!(resource_allowed(server, "https://mcp.test/mcp"));
+        assert!(resource_allowed(server, "https://mcp.test/"));
+        assert!(resource_allowed(server, "https://mcp.test"));
+        assert!(!resource_allowed(server, "https://other.test/mcp"));
+        assert!(!resource_allowed(server, "http://mcp.test/mcp"));
+        assert!(!resource_allowed(server, "https://mcp.test/mcp-two"));
+        assert!(!resource_allowed(
+            "https://mcp.test/api",
+            "https://mcp.test/api/v2"
+        ));
+        assert_eq!(
+            canonical_resource("HTTPS://MCP.Test/mcp#frag"),
+            "https://mcp.test/mcp"
+        );
+        assert_eq!(canonical_resource("https://mcp.test/"), "https://mcp.test");
+        assert_eq!(
+            canonical_resource("https://mcp.test/a?b=1"),
+            "https://mcp.test/a?b=1"
+        );
+    }
+
+    /// "All authorization server endpoints MUST be served over HTTPS" —
+    /// loopback aside, for a server under development.
+    #[test]
+    fn authorization_endpoints_must_be_https_or_loopback() {
+        assert!(endpoint_is_secure("https://auth.test/token"));
+        assert!(endpoint_is_secure("http://127.0.0.1:8080/token"));
+        assert!(endpoint_is_secure("http://localhost/token"));
+        assert!(endpoint_is_secure("http://[::1]:9/token"));
+        assert!(!endpoint_is_secure("http://auth.test/token"));
+        assert!(!endpoint_is_secure("ftp://auth.test/token"));
+        assert!(!endpoint_is_secure("not a url"));
+    }
+
+    /// Re-authorizing asks for what was granted before *and* what the server
+    /// now wants (the step-up rule), each scope once, in a stable order.
+    #[test]
+    fn a_step_up_asks_for_the_union_of_old_and_new_scopes() {
+        assert_eq!(
+            scope_union(&[Some("a b"), Some("b c"), None]).as_deref(),
+            Some("a b c")
+        );
+        assert_eq!(scope_union(&[None, Some("  ")]), None);
+    }
+
+    /// A loopback HTTP server answering GETs from a path → JSON map (404
+    /// for anything else), its base URL returned. `{base}` in a body is
+    /// replaced by that URL.
+    fn discovery_fixture(routes: Vec<(&'static str, &'static str)>) -> String {
+        use std::io::{BufRead, BufReader};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let routes: Vec<(String, String)> = routes
+            .into_iter()
+            .map(|(path, body)| (path.to_string(), body.replace("{base}", &base)))
+            .collect();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or_default();
+                let reply = match routes.iter().find(|(route, _)| route == path) {
+                    Some((_, body)) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ),
+                    None => {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    }
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        base
+    }
+
+    /// A Keycloak-shaped issuer publishes only the OIDC path-appended
+    /// document; a document at the root names another issuer and is never
+    /// used. The resource metadata is the server's own, and its `resource`
+    /// is what the flow will send.
+    #[test]
+    fn discovery_finds_a_path_issuer_and_trusts_only_its_own_documents() {
+        let base = discovery_fixture(vec![
+            (
+                "/.well-known/oauth-protected-resource/mcp",
+                r#"{"resource":"{base}/","authorization_servers":["{base}/realms/acme"],"scopes_supported":["mcp:tools"]}"#,
+            ),
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}/","authorization_endpoint":"{base}/root/auth","token_endpoint":"{base}/root/token"}"#,
+            ),
+            (
+                "/realms/acme/.well-known/openid-configuration",
+                r#"{"issuer":"{base}/realms/acme","authorization_endpoint":"{base}/realms/acme/auth","token_endpoint":"{base}/realms/acme/token","code_challenge_methods_supported":["S256"]}"#,
+            ),
+        ]);
+        let meta = discover(&format!("{base}/mcp"), None).expect("discovered");
+        assert_eq!(
+            meta.authorization_endpoint,
+            format!("{base}/realms/acme/auth")
+        );
+        assert_eq!(
+            meta.issuer.as_deref(),
+            Some(format!("{base}/realms/acme").as_str())
+        );
+        assert_eq!(meta.resource, format!("{base}/"));
+        assert_eq!(meta.scopes.as_deref(), Some("mcp:tools"));
+    }
+
+    /// Resource metadata for another server is skipped; with none of its
+    /// own, the flow falls back to the server's origin as the issuer and
+    /// sends the canonical server URL as the resource.
+    #[test]
+    fn foreign_resource_metadata_is_never_used() {
+        let base = discovery_fixture(vec![
+            (
+                "/.well-known/oauth-protected-resource/mcp",
+                r#"{"resource":"https://elsewhere.test/mcp","authorization_servers":["https://evil.test"]}"#,
+            ),
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}","authorization_endpoint":"{base}/auth","token_endpoint":"{base}/token"}"#,
+            ),
+        ]);
+        let meta = discover(&format!("{base}/mcp"), None).expect("discovered");
+        assert_eq!(meta.authorization_endpoint, format!("{base}/auth"));
+        assert_eq!(meta.resource, format!("{base}/mcp"));
+    }
+
+    /// An authorization server that lists its PKCE methods without S256 is
+    /// refused, and so is one whose endpoints aren't HTTPS (or loopback).
+    #[test]
+    fn discovery_refuses_no_s256_and_plain_http_endpoints() {
+        let base = discovery_fixture(vec![(
+            "/.well-known/oauth-authorization-server",
+            r#"{"issuer":"{base}","authorization_endpoint":"{base}/auth","token_endpoint":"{base}/token","code_challenge_methods_supported":["plain"]}"#,
+        )]);
+        let refused = discover(&format!("{base}/mcp"), None).expect_err("no S256");
+        assert!(refused.contains("S256"), "{refused}");
+        let base = discovery_fixture(vec![(
+            "/.well-known/oauth-authorization-server",
+            r#"{"issuer":"{base}","authorization_endpoint":"http://auth.test/auth","token_endpoint":"{base}/token"}"#,
+        )]);
+        let refused = discover(&format!("{base}/mcp"), None).expect_err("plain http");
+        assert!(refused.contains("HTTPS"), "{refused}");
+    }
+
     #[test]
     fn well_known_candidates_are_path_aware() {
         assert_eq!(
@@ -1275,6 +1779,7 @@ mod tests {
             client_secret: None,
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read write".to_string()),
+            resource: None,
         };
         let params = refresh_params(&tokens, "https://mcp.test/mcp");
         let get = |key: &str| {
@@ -1304,6 +1809,26 @@ mod tests {
             params
                 .iter()
                 .any(|(k, v)| k == "client_secret" && v == "shh")
+        );
+        // A grant minted for the resource the server's metadata named is
+        // refreshed for that same resource — never a different audience.
+        let named = StoredTokens {
+            resource: Some("https://mcp.test".to_string()),
+            ..confidential
+        };
+        let params = refresh_params(&named, "https://mcp.test/mcp");
+        assert!(
+            params
+                .iter()
+                .any(|(k, v)| k == "resource" && v == "https://mcp.test")
+        );
+        // And the store keeps it.
+        let store = record_tokens("", "https://mcp.test/mcp", Some(&named));
+        assert_eq!(
+            parse_token_store(&store)["https://mcp.test/mcp"]
+                .resource
+                .as_deref(),
+            Some("https://mcp.test")
         );
     }
 
@@ -1514,6 +2039,7 @@ mod tests {
                 client_secret: None,
                 token_endpoint: token_url,
                 scope: None,
+                resource: None,
             }),
         );
         // Spawn every thread *before* joining any — a lazy `.map().map()`
@@ -1567,6 +2093,7 @@ mod tests {
                         client_secret: None,
                         token_endpoint: "https://as/token".to_string(),
                         scope: None,
+                        resource: None,
                     };
                     save_tokens(
                         Some(&path),
@@ -1597,6 +2124,7 @@ mod tests {
             client_secret: None,
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read".to_string()),
+            resource: None,
         };
         let written = record_tokens("", "https://mcp.test/mcp", Some(&tokens));
         let parsed = parse_token_store(&written);
