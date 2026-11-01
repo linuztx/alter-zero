@@ -482,11 +482,67 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   (S256 challenge, `state`, RFC 8707 `resource`, and `offline_access`
   folded into the scopes **only when the AS metadata offers it** —
   SEP-2207's refresh-capable grant, never added blind) → a loopback
-  `TcpListener` callback server *and* the paste-the-redirect-URL fallback —
-  both accepted, whichever lands first, each validating the RFC 9207 `iss`
-  against the discovered issuer (byte-for-byte, absence rejected when the
-  metadata advertised the parameter) before the code is redeemed → the
-  token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
+  callback server *and* the paste-the-redirect-URL fallback — both
+  accepted, whichever lands first → the token exchange.
+
+  **The response is checked before anything is redeemed**
+  (`check_auth_response`, the same rules for the callback and a paste):
+  the `state` is **required** and must be this flow's — a response without
+  one can't be told from a forged one (RFC 6749 §10.12), where it used to
+  be accepted — then the RFC 9207 `iss` must name the discovered issuer
+  (byte-for-byte, absence rejected when the metadata advertised the
+  parameter), and only then does the content count. A response that fails
+  either check is **turned away and the wait goes on**: a stray request, a
+  previous attempt's redirect or a forged one can't end the sign-in (the
+  browser gets a 400 page saying so; a paste gets a reason on the auth page
+  through `AuthProgress::on_paste_rejected`). One that passes and carries
+  `error=` — the user declining on the consent screen — **ends the
+  sign-in with the authorization server's own reason**, where it used to
+  leave the flow waiting five minutes for a code that would never come.
+
+  **The callback server** (`CallbackServer`, `bind_callback`) listens on
+  `127.0.0.1` **and** `[::1]` on the same port, since the redirect names
+  `localhost` and a browser may resolve it to either (IPv4 alone where the
+  machine has no IPv6 loopback). Each connection is served on a thread of
+  its own (`serve_callback_connection`, at most
+  `CALLBACK_MAX_CONNECTIONS` at once) with a read timeout, reading the
+  whole request head before it answers: the old loop read each connection
+  inline with no timeout, so a browser **preconnect** — a socket opened and
+  never written — blocked the wait, Esc and the paste field with it, until
+  the browser gave up on the socket; and on macOS an accepted socket
+  inherits the listener's non-blocking mode, so a request still on its way
+  read as empty and its code was lost. Anything but `GET /callback` is a
+  404 (the favicon), and the page the browser lands on says what actually
+  happened — received, refused (with the reason, HTML-escaped), or not this
+  sign-in's.
+
+  **The client** follows SEP-2352: client credentials are kept with the
+  issuer that registered them (`StoredTokens::issuer`; a grant stored before
+  that is matched by its token endpoint) and are **never presented to
+  another authorization server** — a server whose metadata now names a new
+  one registers afresh (`reusable_client`). A reused client signs in on the
+  port it registered (`StoredTokens::redirect_uri`) when that port is free,
+  since an authorization server may match the registered redirect exactly —
+  RFC 8252's loopback port leniency is a SHOULD — and **registers again**
+  when it isn't, where the old flow sent a redirect the server had never
+  seen and left the user on the server's error page. Registration asks for
+  `token_endpoint_auth_method: "none"` unless the metadata lists methods
+  without it, then for the secret method it offers (`client_secret_basic`
+  first, RFC 6749's default); a client registered with
+  `client_secret_basic` authenticates with HTTP Basic, neither half in the
+  body (`client_authentication`, the exchange and every refresh alike).
+  A refused registration or exchange carries the server's own `error` and
+  `error_description` (`oauth_error_detail`) rather than a bare status, and
+  a server offering no registration says the sign-in needs a pre-registered
+  client.
+
+  **The flow stops where it should.** The cancel token is checked between
+  discovery, registration and the browser, so Esc during discovery never
+  opens a browser afterwards; with no config home to keep the grant in, the
+  flow says so before the browser opens; and the PKCE verifier and `state`
+  come from the system's random source or the flow fails
+  (`pkce_and_state`) — the old code fell back to zeroed bytes, a guessable
+  state and a decorative PKCE. Tokens persist in `{config_home}/mcp-auth.json` keyed by
   server URL — the file created owner-only (0600) through a temp file of
   its own, never written first and narrowed after, in a 0700 directory
   when the save creates one — and ride every HTTP request as

@@ -566,10 +566,10 @@ impl Signin {
 /// hosted page is a fallback rather than a failure.
 ///
 /// # Errors
-/// Infallible today; the signature matches the other flows' so a future
-/// binding requirement needs no call-site change.
+/// The system's random source failing — the PKCE verifier and the state are
+/// never made from anything weaker.
 pub fn begin_signin() -> Result<Signin> {
-    let (verifier, challenge, state) = pkce_and_state();
+    let (verifier, challenge, state) = pkce_and_state().map_err(LlmError::Http)?;
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok();
     let port = listener
         .as_ref()

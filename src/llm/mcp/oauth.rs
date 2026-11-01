@@ -104,6 +104,17 @@ pub struct StoredTokens {
     /// token's lifetime, which sizes its renewal window. `None` in a grant
     /// stored before it was recorded: the full skew applies.
     pub issued_at: Option<u64>,
+    /// The issuer of the authorization server the client was registered
+    /// with — SEP-2352 binds the client credentials to it, so they are never
+    /// presented to another. `None` in a grant stored before it was
+    /// recorded: the token endpoint stands in.
+    pub issuer: Option<String>,
+    /// The redirect URI the client registered — the port a re-sign-in tries
+    /// first, since an authorization server may match it exactly.
+    pub redirect_uri: Option<String>,
+    /// The client's registered `token_endpoint_auth_method` (`None`: a
+    /// secret, if any, rides the form body).
+    pub token_auth_method: Option<String>,
 }
 
 /// An exclusive advisory lock (`flock`) on a file beside the store. The
@@ -204,6 +215,9 @@ pub fn parse_token_store(contents: &str) -> std::collections::BTreeMap<String, S
                     scope: text("scope"),
                     resource: text("resource"),
                     issued_at: entry.get("issued_at").and_then(Value::as_u64),
+                    issuer: text("issuer"),
+                    redirect_uri: text("redirect_uri"),
+                    token_auth_method: text("token_auth_method"),
                 },
             ))
         })
@@ -249,6 +263,15 @@ pub fn record_tokens(contents: &str, server_url: &str, tokens: Option<&StoredTok
                 }
                 if let Some(issued) = tokens.issued_at {
                     entry.insert("issued_at".into(), issued.into());
+                }
+                for (key, value) in [
+                    ("issuer", &tokens.issuer),
+                    ("redirect_uri", &tokens.redirect_uri),
+                    ("token_auth_method", &tokens.token_auth_method),
+                ] {
+                    if let Some(value) = value {
+                        entry.insert(key.into(), value.clone().into());
+                    }
                 }
                 servers.insert(server_url.to_string(), Value::Object(entry));
             }
@@ -475,11 +498,8 @@ pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, S
             "refresh_token".to_string(),
             tokens.refresh_token.clone().unwrap_or_default(),
         ),
-        ("client_id".to_string(), tokens.client_id.clone()),
     ];
-    if let Some(secret) = &tokens.client_secret {
-        params.push(("client_secret".to_string(), secret.clone()));
-    }
+    params.extend(client_authentication_of(tokens).0);
     params.push((
         "resource".to_string(),
         tokens
@@ -544,7 +564,8 @@ pub fn refresh_grant(
         return Err(RefreshFailure::NoGrant);
     }
     let params = refresh_params(&tokens, server_url);
-    let outcome = match post_form_raw(&tokens.token_endpoint, &params) {
+    let (_, basic) = client_authentication_of(&tokens);
+    let outcome = match post_form_raw(&tokens.token_endpoint, &params, basic.as_deref()) {
         Err(detail) => Err(RefreshFailure::Transient(detail)),
         Ok((status, body)) if !(200..300).contains(&status) => {
             Err(refresh_failure_kind(Some(status), &body))
@@ -689,6 +710,9 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .or_else(|| prior.scope.clone()),
         resource: prior.resource.clone(),
         issued_at: expires_in.map(|_| now),
+        issuer: prior.issuer.clone(),
+        redirect_uri: prior.redirect_uri.clone(),
+        token_auth_method: prior.token_auth_method.clone(),
     })
 }
 
@@ -1132,14 +1156,16 @@ pub fn parse_redirect(text: &str) -> Option<(String, Option<String>)> {
 
 /// The PKCE pair (verifier, S256 challenge) and a `state`, from fresh
 /// entropy. The encodes are pure ([`b64url`]); only the byte source is I/O.
-#[must_use]
-pub fn pkce_and_state() -> (String, String, String) {
+///
+/// # Errors
+/// The system's random source failing. There is no fallback: a guessable
+/// `state` is a CSRF hole and a guessable verifier makes PKCE decorative.
+pub fn pkce_and_state() -> Result<(String, String, String), String> {
     let mut verifier_bytes = [0u8; 48];
     let mut state_bytes = [0u8; 24];
-    // Entropy failure is unrecoverable for a security parameter; getrandom
-    // only fails on broken platforms.
-    let _ = getrandom::fill(&mut verifier_bytes);
-    let _ = getrandom::fill(&mut state_bytes);
+    getrandom::fill(&mut verifier_bytes)
+        .and_then(|()| getrandom::fill(&mut state_bytes))
+        .map_err(|e| format!("no secure random source: {e}"))?;
     let verifier = b64url(&verifier_bytes);
     let challenge = {
         use sha2::{Digest, Sha256};
@@ -1147,7 +1173,7 @@ pub fn pkce_and_state() -> (String, String, String) {
         hasher.update(verifier.as_bytes());
         b64url(&hasher.finalize())
     };
-    (verifier, challenge, b64url(&state_bytes))
+    Ok((verifier, challenge, b64url(&state_bytes)))
 }
 
 /// Base64url (RFC 4648 §5, no padding) — the PKCE alphabet.
@@ -1195,6 +1221,9 @@ pub struct AuthServerMeta {
     /// publishes one — validated as this server's — else the canonical
     /// server URL.
     pub resource: String,
+    /// `token_endpoint_auth_methods_supported` — what a registration may ask
+    /// to authenticate with (empty when the metadata doesn't say).
+    pub token_auth_methods: Vec<String>,
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -1215,12 +1244,22 @@ fn get_json(url: &str) -> Result<Value, String> {
 
 /// POST a form and hand back `(status, body)` raw — the refresh path
 /// classifies the failure itself (`Err` only when no answer arrived at all).
-fn post_form_raw(url: &str, params: &[(String, String)]) -> Result<(u16, String), String> {
+/// `basic` is a client's HTTP Basic `Authorization` value
+/// ([`client_authentication`]).
+fn post_form_raw(
+    url: &str,
+    params: &[(String, String)],
+    basic: Option<&str>,
+) -> Result<(u16, String), String> {
     let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
-    let response = client
+    let mut request = client
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Accept", "application/json")
+        .header("Accept", "application/json");
+    if let Some(basic) = basic {
+        request = request.header("Authorization", basic);
+    }
+    let response = request
         .body(form_encode(params))
         .send()
         .map_err(|e| format!("request failed: {e}"))?;
@@ -1228,14 +1267,29 @@ fn post_form_raw(url: &str, params: &[(String, String)]) -> Result<(u16, String)
     Ok((status, response.text().unwrap_or_default()))
 }
 
-fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
-    let (status, body) = post_form_raw(url, params)?;
+fn post_form(url: &str, params: &[(String, String)], basic: Option<&str>) -> Result<Value, String> {
+    let (status, body) = post_form_raw(url, params, basic)?;
     if !(200..300).contains(&status) {
-        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        let flat: String = flat.chars().take(200).collect();
-        return Err(format!("HTTP {status}: {flat}"));
+        return Err(oauth_error_detail(status, &body));
     }
     serde_json::from_str(&body).map_err(|e| format!("bad JSON: {e}"))
+}
+
+/// An OAuth error answer in words: the `error` and `error_description` of
+/// RFC 6749 §5.2 / RFC 7591 §3.2.2 when the body has them — the server's own
+/// reason — else the status and the start of the body.
+fn oauth_error_detail(status: u16, body: &str) -> String {
+    let parsed = serde_json::from_str::<Value>(body.trim()).ok();
+    let field = |key: &str| parsed.as_ref()?.get(key)?.as_str().map(str::to_string);
+    match (field("error"), field("error_description")) {
+        (Some(error), Some(description)) => format!("HTTP {status}: {error}: {description}"),
+        (Some(error), None) => format!("HTTP {status}: {error}"),
+        _ => {
+            let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            let flat: String = flat.chars().take(200).collect();
+            format!("HTTP {status}: {flat}")
+        }
+    }
 }
 
 /// Resolve the authorization server for `server_url`, seeded by the 401's
@@ -1348,17 +1402,7 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
         if let Some(problem) = pkce_problem(&meta) {
             return Err(problem);
         }
-        let as_scopes: Vec<String> = meta
-            .get("scopes_supported")
-            .and_then(Value::as_array)
-            .map(|scopes| {
-                scopes
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let as_scopes = string_list(&meta, "scopes_supported");
         // SEP-2207: the *resource's* scopes, plus `offline_access` when this
         // authorization server advertises it — the only way a refresh token
         // is ever issued, and the reason an authenticated server stops
@@ -1379,11 +1423,26 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             resource,
+            token_auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
         });
     }
     Err(format!(
         "could not discover the authorization server ({last_err})"
     ))
+}
+
+/// A metadata field's list of strings (empty when absent or malformed).
+fn string_list(meta: &Value, key: &str) -> Vec<String> {
+    meta.get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn origin_of(url_text: &str) -> String {
@@ -1399,19 +1458,114 @@ fn origin_of(url_text: &str) -> String {
         .unwrap_or_else(|| url_text.to_string())
 }
 
-/// Dynamically register a client (RFC 7591). Returns `(client_id,
-/// client_secret)`.
+/// A registered OAuth client: what the flow authenticates to the token
+/// endpoint with, and the redirect it registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientIdentity {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// The redirect URI the registration named (`None` for a grant stored
+    /// before it was recorded).
+    pub redirect_uri: Option<String>,
+    /// The registered `token_endpoint_auth_method` (`None`: a secret, if
+    /// any, rides the form body).
+    pub auth_method: Option<String>,
+}
+
+/// Was the stored grant's client registered with `meta`'s authorization
+/// server? SEP-2352 keys client credentials by the issuer that registered
+/// them; a grant stored before the issuer was recorded is matched by its
+/// token endpoint.
+fn same_authorization_server(stored: &StoredTokens, meta: &AuthServerMeta) -> bool {
+    match (&stored.issuer, &meta.issuer) {
+        (Some(registered), Some(issuer)) => registered == issuer,
+        (Some(_), None) => false,
+        (None, _) => {
+            !stored.token_endpoint.is_empty() && stored.token_endpoint == meta.token_endpoint
+        }
+    }
+}
+
+/// The stored client, when it may be presented to `meta`'s authorization
+/// server — never to another one (SEP-2352).
+fn reusable_client(stored: Option<&StoredTokens>, meta: &AuthServerMeta) -> Option<ClientIdentity> {
+    let stored = stored.filter(|t| !t.client_id.is_empty())?;
+    same_authorization_server(stored, meta).then(|| ClientIdentity {
+        client_id: stored.client_id.clone(),
+        client_secret: stored.client_secret.clone(),
+        redirect_uri: stored.redirect_uri.clone(),
+        auth_method: stored.token_auth_method.clone(),
+    })
+}
+
+/// The `token_endpoint_auth_method` a registration asks for: a public client
+/// (`none` — a CLI can't keep a secret, so a native app is public) unless the
+/// authorization server lists methods without it; then the secret method it
+/// offers, HTTP Basic (RFC 6749's default) first.
+fn registration_auth_method(supported: &[String]) -> &'static str {
+    let offers = |method: &str| supported.iter().any(|s| s == method);
+    if supported.is_empty() || offers("none") {
+        "none"
+    } else if offers("client_secret_basic") {
+        "client_secret_basic"
+    } else if offers("client_secret_post") {
+        "client_secret_post"
+    } else {
+        "none"
+    }
+}
+
+/// How a client authenticates at the token endpoint: the form parameters it
+/// adds and the `Authorization` value it sends, if any. A public client
+/// names itself; `client_secret_basic` is HTTP Basic over the form-encoded
+/// id and secret (RFC 6749 §2.3.1), neither in the body; any other secret
+/// rides the body (`client_secret_post`).
+fn client_authentication(
+    client_id: &str,
+    secret: Option<&str>,
+    method: Option<&str>,
+) -> (Vec<(String, String)>, Option<String>) {
+    let public = vec![("client_id".to_string(), client_id.to_string())];
+    match (secret, method) {
+        (None, _) | (Some(_), Some("none")) => (public, None),
+        (Some(secret), Some("client_secret_basic")) => {
+            let pair = format!("{}:{}", url_encode(client_id), url_encode(secret));
+            let encoded = crate::clipboard::base64_encode(pair.as_bytes());
+            (Vec::new(), Some(format!("Basic {encoded}")))
+        }
+        (Some(secret), _) => {
+            let mut params = public;
+            params.push(("client_secret".to_string(), secret.to_string()));
+            (params, None)
+        }
+    }
+}
+
+/// [`client_authentication`] for a stored grant's client.
+fn client_authentication_of(tokens: &StoredTokens) -> (Vec<(String, String)>, Option<String>) {
+    client_authentication(
+        &tokens.client_id,
+        tokens.client_secret.as_deref(),
+        tokens.token_auth_method.as_deref(),
+    )
+}
+
+/// Dynamically register a client (RFC 7591) for `redirect_uri`, asking for
+/// an authentication method the authorization server offers. A refusal
+/// carries the server's own reason (RFC 7591 §3.2.2).
 pub fn register_client(
     registration_endpoint: &str,
     redirect_uri: &str,
-) -> Result<(String, Option<String>), String> {
+    supported_methods: &[String],
+) -> Result<ClientIdentity, String> {
     let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let method = registration_auth_method(supported_methods);
     let body = serde_json::json!({
         "client_name": "alter-zero",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": method,
         // 2026-07-28 (SEP-837): a registration MUST name its application
         // type — a CLI with a loopback redirect is a native app, and the
         // OIDC default of "web" rejects exactly that redirect.
@@ -1424,25 +1578,422 @@ pub fn register_client(
         .body(body.to_string())
         .send()
         .map_err(|e| format!("registration failed: {e}"))?;
-    let status = response.status();
-    let body = response.text().unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!("registration failed: HTTP {}", status.as_u16()));
+    let status = response.status().as_u16();
+    let text = response.text().unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "registration failed: {}",
+            oauth_error_detail(status, &text)
+        ));
     }
     let value: Value =
-        serde_json::from_str(&body).map_err(|e| format!("registration: bad JSON: {e}"))?;
-    let client_id = value
-        .get("client_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "registration returned no client_id".to_string())?
-        .to_string();
-    Ok((
+        serde_json::from_str(&text).map_err(|e| format!("registration: bad JSON: {e}"))?;
+    let field = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    let client_id = field("client_id")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "registration returned no client_id".to_string())?;
+    let client_secret = field("client_secret");
+    // The method the server registered, else the one asked for — unless it
+    // asked for none and handed back a secret anyway, which then rides the
+    // body.
+    let auth_method = field("token_endpoint_auth_method")
+        .or_else(|| (client_secret.is_some() && method != "none").then(|| method.to_string()));
+    Ok(ClientIdentity {
         client_id,
-        value
-            .get("client_secret")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    ))
+        client_secret,
+        redirect_uri: Some(redirect_uri.to_string()),
+        auth_method,
+    })
+}
+
+/// A redirect URI's port.
+fn redirect_port(redirect_uri: &str) -> Option<u16> {
+    url::Url::parse(redirect_uri).ok()?.port()
+}
+
+// ---------------------------------------------------------------------------
+// the authorization response (pure)
+
+/// What an authorization response carried (RFC 6749 §4.1.2 and §4.1.2.1,
+/// plus RFC 9207's `iss`) — the loopback callback's query, or a pasted
+/// redirect URL's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AuthResponse {
+    code: Option<String>,
+    state: Option<String>,
+    iss: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// Parse an authorization response out of a redirect URL, a request path or
+/// a bare query: `None` unless it carries a code or an error.
+fn parse_auth_response(text: &str) -> Option<AuthResponse> {
+    let response = AuthResponse {
+        code: redirect_param(text, "code"),
+        state: redirect_param(text, "state"),
+        iss: redirect_param(text, "iss"),
+        error: redirect_param(text, "error"),
+        error_description: redirect_param(text, "error_description"),
+    };
+    (response.code.is_some() || response.error.is_some()).then_some(response)
+}
+
+/// Why an authorization response was not taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Rejected {
+    /// Not this flow's answer — no `state`, another attempt's, or another
+    /// authorization server's: turned away, and the flow keeps waiting for
+    /// its own.
+    Foreign(String),
+    /// This flow's answer, and it is a refusal: the flow ends with the
+    /// authorization server's reason.
+    Refused(String),
+}
+
+/// Text cut to `max` characters — an authorization server's words shown to
+/// the user are its to choose, their length is not.
+fn clip(text: &str, max: usize) -> String {
+    let mut clipped: String = text.chars().take(max).collect();
+    if clipped.len() < text.len() {
+        clipped.push('…');
+    }
+    clipped
+}
+
+/// What an authorization response means for the flow that sent `state` to
+/// `meta`'s authorization server: its code, its refusal, or not its answer.
+/// The state comes first and is **required** — a response without one can't
+/// be told from a forged one (RFC 6749 §10.12) — then the issuer (RFC 9207),
+/// and only then does the content count, so a forged refusal can't end a
+/// sign-in any more than a forged code can complete one.
+fn check_auth_response(
+    response: &AuthResponse,
+    state: &str,
+    meta: &AuthServerMeta,
+) -> Result<String, Rejected> {
+    match response.state.as_deref() {
+        None => {
+            return Err(Rejected::Foreign(
+                "the response carries no state, so it can't be this sign-in's".to_string(),
+            ));
+        }
+        Some(got) if got != state => {
+            return Err(Rejected::Foreign(
+                "the response belongs to another sign-in attempt".to_string(),
+            ));
+        }
+        Some(_) => {}
+    }
+    validate_issuer(
+        response.iss.as_deref(),
+        meta.issuer.as_deref(),
+        meta.iss_required,
+    )
+    .map_err(Rejected::Foreign)?;
+    if let Some(error) = &response.error {
+        let description = response
+            .error_description
+            .as_deref()
+            .map(|d| format!(" ({})", clip(d, 300)))
+            .unwrap_or_default();
+        return Err(Rejected::Refused(format!(
+            "the authorization server refused the sign-in: {}{description}",
+            clip(error, 100)
+        )));
+    }
+    response
+        .code
+        .clone()
+        .ok_or_else(|| Rejected::Foreign("the response carries no code".to_string()))
+}
+
+/// The page the browser lands on — whether the sign-in got what it needed,
+/// as a whole HTTP response.
+fn callback_page(verdict: &Result<String, Rejected>) -> String {
+    match verdict {
+        Ok(_) => html_response(
+            "200 OK",
+            "Authorization received",
+            "You can close this tab and return to the terminal.",
+        ),
+        Err(Rejected::Refused(why)) => html_response(
+            "200 OK",
+            "Sign-in refused",
+            &format!("{why}. Return to the terminal to try again."),
+        ),
+        Err(Rejected::Foreign(why)) => html_response(
+            "400 Bad Request",
+            "Not this sign-in's response",
+            &format!("{why}. To sign in, start again from /mcp in the terminal."),
+        ),
+    }
+}
+
+/// A small HTML page as a whole HTTP response, `detail` escaped.
+fn html_response(status: &str, title: &str, detail: &str) -> String {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
+         <body><h3>{title}</h3><p>{}</p></body></html>",
+        html_escape(detail)
+    );
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// the loopback callback (I/O)
+
+/// How long a browser connection may take to send its request: a
+/// preconnect that never does costs its own thread this long, nothing else.
+const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most of a request head the callback reads — the request line is all
+/// it needs, and a browser's whole head fits many times over.
+const CALLBACK_HEAD_MAX: usize = 16 * 1024;
+
+/// Browser connections served at once; more are closed unread.
+const CALLBACK_MAX_CONNECTIONS: usize = 16;
+
+/// The loopback callback (RFC 8252 §7.3): `127.0.0.1` and, where this
+/// machine has IPv6 loopback, `[::1]` on the **same** port — the redirect
+/// names `localhost`, which a browser may resolve to either.
+struct CallbackServer {
+    listeners: Vec<TcpListener>,
+    port: u16,
+}
+
+/// Bind the callback — on `preferred` when given and free (a reused
+/// client's registered port), else an ephemeral one.
+fn bind_callback(preferred: Option<u16>) -> Result<CallbackServer, String> {
+    let mut v4_only = None;
+    let mut last_error = None;
+    for port in preferred.into_iter().chain(std::iter::repeat_n(0, 8)) {
+        let v4 = match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => listener,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+        let port = match v4.local_addr() {
+            Ok(address) => address.port(),
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+        match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => {
+                return Ok(CallbackServer {
+                    listeners: vec![v4, v6],
+                    port,
+                });
+            }
+            // Taken on IPv6 alone: try another pair, keeping this as a
+            // fallback.
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                v4_only.get_or_insert(CallbackServer {
+                    listeners: vec![v4],
+                    port,
+                });
+            }
+            // No IPv6 loopback here, so `localhost` can only mean 127.0.0.1.
+            Err(_) => {
+                return Ok(CallbackServer {
+                    listeners: vec![v4],
+                    port,
+                });
+            }
+        }
+    }
+    v4_only.ok_or_else(|| {
+        format!(
+            "could not open the callback port: {}",
+            last_error.map_or_else(|| "no port was free".to_string(), |e| e.to_string())
+        )
+    })
+}
+
+/// A callback request for the flow to judge, and where its page goes.
+struct CallbackHit {
+    response: AuthResponse,
+    page: mpsc::Sender<String>,
+}
+
+/// Serve one browser connection on its own thread: read the request head,
+/// hand an authorization response to the flow and write the page it decides,
+/// answer anything else itself. A connection that never sends — a browser
+/// preconnect — costs this thread its read timeout; it used to block the
+/// whole wait, and with it Esc, the paste field and the real callback.
+fn serve_callback_connection(mut stream: std::net::TcpStream, hits: &mpsc::Sender<CallbackHit>) {
+    // An accepted socket inherits the listener's non-blocking mode on BSD
+    // and macOS (never on Linux), and a non-blocking read of a request still
+    // on its way reads nothing.
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(CALLBACK_READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(CALLBACK_READ_TIMEOUT));
+    let head = read_request_head(&mut stream);
+    let not_ours = || {
+        html_response(
+            "404 Not Found",
+            "Not found",
+            "This address only receives sign-in responses.",
+        )
+    };
+    let target = head
+        .lines()
+        .next()
+        .and_then(|line| {
+            let mut words = line.split_whitespace();
+            (words.next() == Some("GET")).then(|| words.next())?
+        })
+        .filter(|target| target.split(['?', '#']).next() == Some("/callback"));
+    let reply = match target.map(parse_auth_response) {
+        None => not_ours(),
+        Some(None) => html_response(
+            "400 Bad Request",
+            "Not a sign-in response",
+            "This address only receives sign-in responses.",
+        ),
+        Some(Some(response)) => {
+            let (page_tx, page_rx) = mpsc::channel();
+            let sent = hits.send(CallbackHit {
+                response,
+                page: page_tx,
+            });
+            sent.ok()
+                .and_then(|()| page_rx.recv_timeout(CALLBACK_READ_TIMEOUT).ok())
+                .unwrap_or_else(|| {
+                    html_response(
+                        "410 Gone",
+                        "Sign-in over",
+                        "This sign-in is no longer waiting. To sign in, start again from /mcp in the terminal.",
+                    )
+                })
+        }
+    };
+    let _ = stream.write_all(reply.as_bytes());
+    let _ = stream.flush();
+}
+
+/// Read a request head — to its blank line, the cap, or the timeout. The
+/// whole head, not just the request line: closing a socket with unread
+/// bytes resets it, and a reset can discard the page before the browser
+/// reads it.
+fn read_request_head(stream: &mut impl Read) -> String {
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 2048];
+    while head.len() < CALLBACK_HEAD_MAX && !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => head.extend_from_slice(&chunk[..n]),
+        }
+    }
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// Wait for the authorization code from **either** side: the loopback
+/// callback, or a pasted redirect URL. Each response is checked
+/// ([`check_auth_response`]) before its code is ever redeemed: one that isn't
+/// this sign-in's is turned away and the wait goes on — a stray request, or
+/// a forged one, can't end it — while this sign-in's refusal ends it with
+/// the authorization server's reason.
+fn wait_for_code(
+    server: &CallbackServer,
+    state: &str,
+    meta: &AuthServerMeta,
+    paste_rx: &mpsc::Receiver<String>,
+    progress: &dyn AuthProgress,
+    cancel: &CancelToken,
+) -> Result<String, String> {
+    for listener in &server.listeners {
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("callback port: {e}"))?;
+    }
+    let (hits_tx, hits_rx) = mpsc::channel::<CallbackHit>();
+    let serving = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Instant::now();
+    loop {
+        if cancel.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        if started.elapsed() > AUTH_FLOW_TIMEOUT {
+            return Err("timed out waiting for the browser callback".to_string());
+        }
+        // The pasted redirect URL — the headless/remote path.
+        while let Ok(text) = paste_rx.try_recv() {
+            let Some(response) = parse_auth_response(&text) else {
+                progress.on_paste_rejected(
+                    "that isn't the address the browser landed on — paste the whole URL, with its code and state",
+                );
+                continue;
+            };
+            match check_auth_response(&response, state, meta) {
+                Ok(code) => return Ok(code),
+                Err(Rejected::Refused(why)) => return Err(why),
+                Err(Rejected::Foreign(why)) => progress.on_paste_rejected(&why),
+            }
+        }
+        // New browser connections, each served on a thread of its own.
+        for listener in &server.listeners {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        use std::sync::atomic::Ordering;
+                        if serving.load(Ordering::SeqCst) >= CALLBACK_MAX_CONNECTIONS {
+                            continue; // closed unread
+                        }
+                        serving.fetch_add(1, Ordering::SeqCst);
+                        let (hits, serving) = (hits_tx.clone(), std::sync::Arc::clone(&serving));
+                        std::thread::spawn(move || {
+                            serve_callback_connection(stream, &hits);
+                            serving.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => return Err(format!("callback port: {e}")),
+                }
+            }
+        }
+        // The requests those threads read, judged here.
+        while let Ok(hit) = hits_rx.try_recv() {
+            let verdict = check_auth_response(&hit.response, state, meta);
+            let _ = hit.page.send(callback_page(&verdict));
+            match verdict {
+                Ok(code) => return Ok(code),
+                Err(Rejected::Refused(why)) => return Err(why),
+                Err(Rejected::Foreign(_)) => {}
+            }
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,12 +2004,17 @@ pub fn register_client(
 pub trait AuthProgress: Send {
     /// The authorize URL is ready (shown + copied from the auth page).
     fn on_url(&self, url: &str);
+    /// A pasted URL was turned away — not a redirect, or not this
+    /// sign-in's — and the flow keeps waiting; `reason` is for the page.
+    fn on_paste_rejected(&self, _reason: &str) {}
 }
 
 /// Run the whole interactive flow for `server_url`, blocking this (worker)
-/// thread: discovery → registration → browser/paste → exchange → persist.
-/// `paste_rx` delivers the user's pasted redirect URL; `open_browser` is the
-/// boundary's launcher (injected so tests need no display).
+/// thread: discovery → a client (reused or registered) → browser/paste →
+/// exchange → persist. `paste_rx` delivers the user's pasted redirect URL;
+/// `open_browser` is the boundary's launcher (injected so tests need no
+/// display). `cancel` is checked between the steps, so an Esc during
+/// discovery never opens the browser.
 pub fn run_auth_flow(
     server_url: &str,
     challenge: Option<&str>,
@@ -1468,47 +2024,63 @@ pub fn run_auth_flow(
     open_browser: &dyn Fn(&str),
     cancel: &CancelToken,
 ) -> Result<(), String> {
-    let meta = discover(server_url, challenge)?;
-    // The loopback listener binds first (port 0 = ephemeral) so registration
-    // can name the exact redirect URI.
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("could not open the callback port: {e}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("callback port: {e}"))?
-        .port();
-    let redirect_uri = format!("http://localhost:{port}/callback");
-    // A client identity: reuse the stored one (its registration named an
-    // older port-specific redirect, but ASes match the URI from the request,
-    // and loopback URIs are exempt from exact matching per RFC 8252 —
-    // re-register when the server insists).
-    let stored = load_tokens(store_path, server_url);
-    let (client_id, client_secret) = match stored
-        .as_ref()
-        .filter(|t| !t.client_id.is_empty())
-        .map(|t| (t.client_id.clone(), t.client_secret.clone()))
-    {
-        Some(identity) => identity,
-        None => match &meta.registration_endpoint {
-            Some(endpoint) => register_client(endpoint, &redirect_uri)?,
-            None => {
-                return Err(
-                    "the server offers no client registration; add a pre-registered client".into(),
-                );
-            }
-        },
+    let still_wanted = || {
+        if cancel.is_cancelled() {
+            Err("cancelled".to_string())
+        } else {
+            Ok(())
+        }
     };
-    let (verifier, code_challenge, state) = pkce_and_state();
+    // A grant with nowhere to go is a dead end — said before the browser
+    // opens, not after the user has signed in.
+    if store_path.is_none() {
+        return Err("there is no config directory to keep the grant in".to_string());
+    }
+    let meta = discover(server_url, challenge)?;
+    still_wanted()?;
+    let stored = load_tokens(store_path, server_url);
+    let reused = reusable_client(stored.as_ref(), &meta);
+    // The callback binds before any registration so the redirect is exact —
+    // on a reused client's own port when it is free, since an authorization
+    // server may match the registered redirect exactly (RFC 8252's loopback
+    // port leniency is a SHOULD, and plenty don't).
+    let preferred = reused
+        .as_ref()
+        .and_then(|client| client.redirect_uri.as_deref())
+        .and_then(redirect_port);
+    let callback = bind_callback(preferred)?;
+    let redirect_uri = format!("http://localhost:{}/callback", callback.port);
+    let client = match (reused, &meta.registration_endpoint) {
+        (Some(client), _) if client.redirect_uri.as_deref() == Some(redirect_uri.as_str()) => {
+            client
+        }
+        (_, Some(endpoint)) => register_client(endpoint, &redirect_uri, &meta.token_auth_methods)?,
+        // Nothing to register with: the old client on a new port is the
+        // one chance (an authorization server honouring RFC 8252 §7.3
+        // accepts it).
+        (Some(client), None) => client,
+        (None, None) => {
+            return Err(format!(
+                "{} offers no client registration, so signing in needs a pre-registered \
+                 OAuth client, which isn't supported yet",
+                meta.issuer.as_deref().unwrap_or("the authorization server")
+            ));
+        }
+    };
+    still_wanted()?;
+    let (verifier, code_challenge, state) = pkce_and_state()?;
     // Re-authorizing asks for what was granted before *and* what the server
     // now wants — the step-up rule ("include these scopes alongside any
-    // previously granted scopes"), so a scope upgrade never drops the rest.
-    let scopes = scope_union(&[
-        meta.scopes.as_deref(),
-        stored.as_ref().and_then(|t| t.scope.as_deref()),
-    ]);
+    // previously granted scopes"), so a scope upgrade never drops the rest;
+    // another authorization server's scopes mean nothing here.
+    let granted = stored
+        .as_ref()
+        .filter(|tokens| same_authorization_server(tokens, &meta))
+        .and_then(|tokens| tokens.scope.as_deref());
+    let scopes = scope_union(&[meta.scopes.as_deref(), granted]);
     let authorize_url = build_authorize_url(
         &meta.authorization_endpoint,
-        &client_id,
+        &client.client_id,
         &redirect_uri,
         &code_challenge,
         &state,
@@ -1517,116 +2089,38 @@ pub fn run_auth_flow(
     );
     progress.on_url(&authorize_url);
     open_browser(&authorize_url);
-    let code = wait_for_code(&listener, &state, &meta, paste_rx, cancel)?;
+    let code = wait_for_code(&callback, &state, &meta, paste_rx, progress, cancel)?;
+    drop(callback);
+    let (client_params, basic) = client_authentication(
+        &client.client_id,
+        client.client_secret.as_deref(),
+        client.auth_method.as_deref(),
+    );
     let mut params = vec![
         ("grant_type".to_string(), "authorization_code".to_string()),
         ("code".to_string(), code),
         ("redirect_uri".to_string(), redirect_uri),
-        ("client_id".to_string(), client_id.clone()),
         ("code_verifier".to_string(), verifier),
         ("resource".to_string(), meta.resource.clone()),
     ];
-    if let Some(secret) = &client_secret {
-        params.push(("client_secret".to_string(), secret.clone()));
-    }
-    let response = post_form(&meta.token_endpoint, &params)
+    params.extend(client_params);
+    let response = post_form(&meta.token_endpoint, &params, basic.as_deref())
         .map_err(|e| format!("token exchange failed: {e}"))?;
     let prior = StoredTokens {
-        client_id,
-        client_secret,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
         token_endpoint: meta.token_endpoint.clone(),
         scope: scopes,
         resource: Some(meta.resource.clone()),
+        issuer: meta.issuer.clone(),
+        redirect_uri: client.redirect_uri,
+        token_auth_method: client.auth_method,
         ..Default::default()
     };
     let tokens = tokens_from_response(&response, &prior)
         .ok_or_else(|| "token response carried no access_token".to_string())?;
-    save_tokens(store_path, server_url, Some(&tokens))?;
-    Ok(())
-}
-
-/// Wait for the authorization code from **either** side: the loopback
-/// callback, or a pasted redirect URL. Validates `state` when the redirect
-/// carries one, and the RFC 9207 `iss` against the discovered issuer before
-/// the code is ever redeemed.
-fn wait_for_code(
-    listener: &TcpListener,
-    state: &str,
-    meta: &AuthServerMeta,
-    paste_rx: &mpsc::Receiver<String>,
-    cancel: &CancelToken,
-) -> Result<String, String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("callback port: {e}"))?;
-    let started = Instant::now();
-    loop {
-        if cancel.is_cancelled() {
-            return Err("cancelled".to_string());
-        }
-        if started.elapsed() > AUTH_FLOW_TIMEOUT {
-            return Err("timed out waiting for the browser callback".to_string());
-        }
-        // The pasted redirect URL — the headless/remote path.
-        match paste_rx.try_recv() {
-            Ok(text) => {
-                if let Some((code, got_state)) = parse_redirect(&text) {
-                    if got_state.as_deref().is_some_and(|got| got != state) {
-                        return Err("the pasted URL's state doesn't match".to_string());
-                    }
-                    validate_issuer(
-                        redirect_param(&text, "iss").as_deref(),
-                        meta.issuer.as_deref(),
-                        meta.iss_required,
-                    )?;
-                    return Ok(code);
-                }
-                // Not parseable — keep waiting; the page shows the format.
-            }
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {}
-        }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buffer = [0u8; 4096];
-                let read = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or_default();
-                let parsed = parse_redirect(path);
-                let ok = parsed.is_some();
-                let body = if ok {
-                    "<html><body><h3>Authentication complete.</h3>You can close this tab and return to the terminal.</body></html>"
-                } else {
-                    "<html><body><h3>Waiting for authentication…</h3></body></html>"
-                };
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-                if let Some((code, got_state)) = parsed {
-                    if got_state.as_deref().is_some_and(|got| got != state) {
-                        return Err("the callback's state doesn't match".to_string());
-                    }
-                    validate_issuer(
-                        redirect_param(path, "iss").as_deref(),
-                        meta.issuer.as_deref(),
-                        meta.iss_required,
-                    )?;
-                    return Ok(code);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL);
-            }
-            Err(e) => return Err(format!("callback port: {e}")),
-        }
-    }
+    save_tokens(store_path, server_url, Some(&tokens))
+        .map_err(|e| format!("signed in, but the grant couldn't be saved: {e}"))
 }
 
 #[cfg(test)]
@@ -1644,7 +2138,7 @@ mod tests {
 
     #[test]
     fn pkce_challenge_is_the_s256_of_the_verifier() {
-        let (verifier, challenge, state) = pkce_and_state();
+        let (verifier, challenge, state) = pkce_and_state().expect("entropy");
         assert!(verifier.len() >= 43, "verifier long enough for PKCE");
         assert!(!state.is_empty());
         use sha2::{Digest, Sha256};
@@ -2024,7 +2518,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read write".to_string()),
             resource: None,
-            issued_at: None,
+            ..Default::default()
         };
         let params = refresh_params(&tokens, "https://mcp.test/mcp");
         let get = |key: &str| {
@@ -2300,7 +2794,7 @@ mod tests {
                 token_endpoint: token_url,
                 scope: None,
                 resource: None,
-                issued_at: None,
+                ..Default::default()
             }),
         )
         .expect("the store write");
@@ -2356,7 +2850,7 @@ mod tests {
                         token_endpoint: "https://as/token".to_string(),
                         scope: None,
                         resource: None,
-                        issued_at: None,
+                        ..Default::default()
                     };
                     save_tokens(
                         Some(&path),
@@ -2389,7 +2883,7 @@ mod tests {
             token_endpoint: "https://as/token".to_string(),
             scope: Some("read".to_string()),
             resource: None,
-            issued_at: None,
+            ..Default::default()
         };
         let written = record_tokens("", "https://mcp.test/mcp", Some(&tokens));
         let parsed = parse_token_store(&written);
@@ -2680,5 +3174,752 @@ mod tests {
         let result = refresh_grant(Some(&path), server, Some("at-1"));
         assert_eq!(result, Err(RefreshFailure::NoGrant));
         assert_eq!(load_tokens(Some(&path), server), None);
+    }
+
+    fn meta_for(issuer: &str, iss_required: bool) -> AuthServerMeta {
+        AuthServerMeta {
+            authorization_endpoint: format!("{issuer}/authorize"),
+            token_endpoint: format!("{issuer}/token"),
+            registration_endpoint: None,
+            scopes: None,
+            issuer: Some(issuer.to_string()),
+            iss_required,
+            resource: "https://mcp.test/mcp".to_string(),
+            token_auth_methods: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn auth_responses_parse_codes_refusals_and_their_state() {
+        let response =
+            parse_auth_response("/callback?code=abc&state=xyz&iss=https%3A%2F%2Fas.test").unwrap();
+        assert_eq!(response.code.as_deref(), Some("abc"));
+        assert_eq!(response.state.as_deref(), Some("xyz"));
+        assert_eq!(response.iss.as_deref(), Some("https://as.test"));
+        let refusal = parse_auth_response(
+            "http://localhost:1/callback?error=access_denied&error_description=User%20said%20no&state=xyz#x",
+        )
+        .unwrap();
+        assert_eq!(refusal.error.as_deref(), Some("access_denied"));
+        assert_eq!(refusal.error_description.as_deref(), Some("User said no"));
+        assert_eq!(refusal.code, None);
+        // Neither a code nor an error: not an authorization response.
+        assert_eq!(parse_auth_response("/callback?foo=bar"), None);
+        assert_eq!(parse_auth_response("/callback?code=&state=x"), None);
+        assert_eq!(parse_auth_response("/favicon.ico"), None);
+        assert_eq!(parse_auth_response("not a url at all"), None);
+    }
+
+    /// A response is this flow's only when it carries the flow's own
+    /// `state` and names the right issuer; only then can it end the flow —
+    /// with its code, or with the authorization server's refusal.
+    #[test]
+    fn an_auth_response_counts_only_with_its_state_and_issuer() {
+        let meta = meta_for("https://as.test", true);
+        let check =
+            |text: &str| check_auth_response(&parse_auth_response(text).unwrap(), "s1", &meta);
+        assert_eq!(
+            check("?code=c&state=s1&iss=https%3A%2F%2Fas.test"),
+            Ok("c".to_string())
+        );
+        // No state: it can't be told from a forged one.
+        assert!(matches!(
+            check("?code=c&iss=https%3A%2F%2Fas.test"),
+            Err(Rejected::Foreign(_))
+        ));
+        assert!(matches!(
+            check("?code=c&state=s2&iss=https%3A%2F%2Fas.test"),
+            Err(Rejected::Foreign(_))
+        ));
+        // Another authorization server's response (RFC 9207), or none named
+        // where the metadata promised one.
+        assert!(matches!(
+            check("?code=c&state=s1&iss=https%3A%2F%2Fevil.test"),
+            Err(Rejected::Foreign(_))
+        ));
+        assert!(matches!(
+            check("?code=c&state=s1"),
+            Err(Rejected::Foreign(_))
+        ));
+        // A refusal is this flow's answer only under the same checks.
+        match check(
+            "?error=access_denied&error_description=no%20thanks&state=s1&iss=https%3A%2F%2Fas.test",
+        ) {
+            Err(Rejected::Refused(why)) => {
+                assert!(
+                    why.contains("access_denied") && why.contains("no thanks"),
+                    "{why}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            check("?error=access_denied"),
+            Err(Rejected::Foreign(_))
+        ));
+    }
+
+    #[test]
+    fn callback_pages_say_what_happened() {
+        let ok = callback_page(&Ok("c".to_string()));
+        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        assert!(ok.contains("return to the terminal"), "{ok}");
+        let refused = callback_page(&Err(Rejected::Refused(
+            "no <script>alert(1)</script>".to_string(),
+        )));
+        assert!(refused.contains("&lt;script&gt;"), "{refused}");
+        assert!(!refused.contains("<script>"), "{refused}");
+        let foreign = callback_page(&Err(Rejected::Foreign("state".to_string())));
+        assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
+        // Content-Length counts bytes, the page's non-ASCII included.
+        for page in [ok, refused, foreign] {
+            let (head, body) = page.split_once("\r\n\r\n").unwrap();
+            let length: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(length, body.len());
+        }
+    }
+
+    /// SEP-2352: client credentials belong to the authorization server that
+    /// issued them and are never presented to another. A grant stored before
+    /// the issuer was recorded is matched by its token endpoint.
+    #[test]
+    fn client_credentials_are_reused_only_with_their_issuer() {
+        let meta = meta_for("https://as.test", false);
+        let stored = StoredTokens {
+            client_id: "cid".to_string(),
+            issuer: Some("https://as.test".to_string()),
+            redirect_uri: Some("http://localhost:4242/callback".to_string()),
+            ..Default::default()
+        };
+        let client = reusable_client(Some(&stored), &meta).expect("same issuer");
+        assert_eq!(client.client_id, "cid");
+        assert_eq!(
+            client.redirect_uri.as_deref(),
+            Some("http://localhost:4242/callback")
+        );
+        let elsewhere = StoredTokens {
+            issuer: Some("https://other.test".to_string()),
+            ..stored.clone()
+        };
+        assert_eq!(reusable_client(Some(&elsewhere), &meta), None);
+        let legacy = StoredTokens {
+            issuer: None,
+            token_endpoint: "https://as.test/token".to_string(),
+            ..stored.clone()
+        };
+        assert!(reusable_client(Some(&legacy), &meta).is_some());
+        let legacy_elsewhere = StoredTokens {
+            token_endpoint: "https://other.test/token".to_string(),
+            ..legacy
+        };
+        assert_eq!(reusable_client(Some(&legacy_elsewhere), &meta), None);
+        let anonymous = StoredTokens {
+            client_id: String::new(),
+            ..stored
+        };
+        assert_eq!(reusable_client(Some(&anonymous), &meta), None);
+        assert_eq!(reusable_client(None, &meta), None);
+    }
+
+    /// A client authenticates at the token endpoint the way it registered:
+    /// a public client names itself, a `client_secret_basic` one sends HTTP
+    /// Basic (RFC 6749 §2.3.1, each half form-encoded) and nothing in the
+    /// body, a `client_secret_post` one puts both in the body.
+    #[test]
+    fn a_client_authenticates_the_way_it_registered() {
+        let (params, header) = client_authentication("cid", None, None);
+        assert_eq!(params, [("client_id".to_string(), "cid".to_string())]);
+        assert_eq!(header, None);
+        let (params, header) =
+            client_authentication("c id", Some("s:cret"), Some("client_secret_basic"));
+        assert!(params.is_empty(), "{params:?}");
+        let expected = format!(
+            "Basic {}",
+            crate::clipboard::base64_encode(b"c%20id:s%3Acret")
+        );
+        assert_eq!(header.as_deref(), Some(expected.as_str()));
+        for method in [Some("client_secret_post"), None] {
+            let (params, header) = client_authentication("cid", Some("sec"), method);
+            assert_eq!(
+                params,
+                [
+                    ("client_id".to_string(), "cid".to_string()),
+                    ("client_secret".to_string(), "sec".to_string())
+                ]
+            );
+            assert_eq!(header, None);
+        }
+        // A registration that came back public never sends a secret.
+        let (params, _) = client_authentication("cid", Some("sec"), Some("none"));
+        assert_eq!(params, [("client_id".to_string(), "cid".to_string())]);
+    }
+
+    /// Registration asks to be a public client unless the authorization
+    /// server says it can't serve one, then for the secret method it offers.
+    #[test]
+    fn registration_asks_for_a_method_the_server_offers() {
+        let methods = |list: &[&str]| list.iter().map(|m| m.to_string()).collect::<Vec<_>>();
+        assert_eq!(registration_auth_method(&methods(&[])), "none");
+        assert_eq!(
+            registration_auth_method(&methods(&["client_secret_basic", "none"])),
+            "none"
+        );
+        assert_eq!(
+            registration_auth_method(&methods(&["client_secret_post", "client_secret_basic"])),
+            "client_secret_basic"
+        );
+        assert_eq!(
+            registration_auth_method(&methods(&["client_secret_post"])),
+            "client_secret_post"
+        );
+        assert_eq!(
+            registration_auth_method(&methods(&["private_key_jwt"])),
+            "none"
+        );
+    }
+
+    /// The flow's progress, captured: the authorize URL and every rejected
+    /// paste.
+    #[derive(Default)]
+    struct Recorded {
+        urls: std::sync::Mutex<Vec<String>>,
+        rejected: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl AuthProgress for std::sync::Arc<Recorded> {
+        fn on_url(&self, url: &str) {
+            self.urls.lock().unwrap().push(url.to_string());
+        }
+        fn on_paste_rejected(&self, reason: &str) {
+            self.rejected.lock().unwrap().push(reason.to_string());
+        }
+    }
+
+    /// Send one raw request to the callback port and read the whole reply.
+    fn hit(port: u16, request: &str) -> String {
+        use std::io::Read as _;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut reply = String::new();
+        let _ = stream.read_to_string(&mut reply);
+        reply
+    }
+
+    /// Wait for the code on a thread; the receiver yields its result.
+    fn waiting(
+        server: CallbackServer,
+        meta: AuthServerMeta,
+        paste_rx: mpsc::Receiver<String>,
+        progress: std::sync::Arc<Recorded>,
+    ) -> mpsc::Receiver<Result<String, String>> {
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = wait_for_code(
+                &server,
+                "s1",
+                &meta,
+                &paste_rx,
+                &progress,
+                &CancelToken::new(),
+            );
+            let _ = done_tx.send(result);
+        });
+        done_rx
+    }
+
+    /// A browser preconnect — a connection that never sends a byte — must
+    /// not stall the callback: the real request on the next connection is
+    /// answered at once.
+    #[test]
+    fn an_idle_connection_never_stalls_the_callback() {
+        let server = bind_callback(None).expect("bind");
+        let port = server.port;
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let done = waiting(
+            server,
+            meta_for("https://as.test", false),
+            paste_rx,
+            Default::default(),
+        );
+        let _idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let reply = hit(
+            port,
+            "GET /callback?code=c1&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(3)).expect("answered"),
+            Ok("c1".to_string())
+        );
+    }
+
+    /// Stray requests — a favicon, a response from another sign-in — are
+    /// answered and turned away without ending the flow; the real one still
+    /// lands.
+    #[test]
+    fn a_stray_request_never_ends_the_sign_in() {
+        let server = bind_callback(None).expect("bind");
+        let port = server.port;
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let done = waiting(
+            server,
+            meta_for("https://as.test", false),
+            paste_rx,
+            Default::default(),
+        );
+        let favicon = hit(port, "GET /favicon.ico HTTP/1.1\r\n\r\n");
+        assert!(favicon.starts_with("HTTP/1.1 404"), "{favicon}");
+        let foreign = hit(port, "GET /callback?code=evil&state=s2 HTTP/1.1\r\n\r\n");
+        assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
+        let stateless = hit(port, "GET /callback?code=evil HTTP/1.1\r\n\r\n");
+        assert!(stateless.starts_with("HTTP/1.1 400"), "{stateless}");
+        assert!(
+            done.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the flow ended early"
+        );
+        let real = hit(port, "GET /callback?code=c1&state=s1 HTTP/1.1\r\n\r\n");
+        assert!(real.starts_with("HTTP/1.1 200"), "{real}");
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Ok("c1".to_string())
+        );
+    }
+
+    /// A user who declines on the consent screen ends the sign-in at once
+    /// with the authorization server's reason, instead of a five-minute wait
+    /// for a code that will never come.
+    #[test]
+    fn a_refusal_ends_the_sign_in_with_its_reason() {
+        let server = bind_callback(None).expect("bind");
+        let port = server.port;
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let done = waiting(
+            server,
+            meta_for("https://as.test", false),
+            paste_rx,
+            Default::default(),
+        );
+        let page = hit(
+            port,
+            "GET /callback?error=access_denied&error_description=The%20user%20declined&state=s1 HTTP/1.1\r\n\r\n",
+        );
+        assert!(page.contains("access_denied"), "{page}");
+        let result = done.recv_timeout(Duration::from_secs(3)).unwrap();
+        let error = result.expect_err("a refusal");
+        assert!(
+            error.contains("access_denied") && error.contains("The user declined"),
+            "{error}"
+        );
+    }
+
+    /// `localhost` may resolve to `::1` first; the callback answers there
+    /// too, on the same port, wherever this machine has IPv6 loopback.
+    #[test]
+    fn the_callback_answers_on_both_loopback_addresses() {
+        let server = bind_callback(None).expect("bind");
+        let port = server.port;
+        if std::net::TcpListener::bind(("::1", 0)).is_err() {
+            return; // no IPv6 loopback on this machine
+        }
+        assert_eq!(
+            server.listeners.len(),
+            2,
+            "IPv6 loopback is available but unbound"
+        );
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let done = waiting(
+            server,
+            meta_for("https://as.test", false),
+            paste_rx,
+            Default::default(),
+        );
+        use std::io::Read as _;
+        let mut stream = std::net::TcpStream::connect(("::1", port)).expect("connect over IPv6");
+        stream
+            .write_all(b"GET /callback?code=c6&state=s1 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        let mut reply = String::new();
+        let _ = stream.read_to_string(&mut reply);
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Ok("c6".to_string())
+        );
+    }
+
+    /// A pasted URL that isn't this sign-in's — another attempt's, or not a
+    /// redirect at all — is turned away with a reason the page can show, and
+    /// the flow keeps waiting for the right one.
+    #[test]
+    fn a_wrong_paste_is_turned_away_not_fatal() {
+        let server = bind_callback(None).expect("bind");
+        let (paste_tx, paste_rx) = mpsc::channel();
+        let progress = std::sync::Arc::new(Recorded::default());
+        let done = waiting(
+            server,
+            meta_for("https://as.test", false),
+            paste_rx,
+            std::sync::Arc::clone(&progress),
+        );
+        paste_tx
+            .send("http://localhost:1/callback?code=old&state=s0".to_string())
+            .unwrap();
+        paste_tx.send("hello".to_string()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(done.try_recv().is_err(), "a wrong paste ended the flow");
+        assert_eq!(progress.rejected.lock().unwrap().len(), 2);
+        paste_tx
+            .send("http://localhost:1/callback?code=new&state=s1".to_string())
+            .unwrap();
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Ok("new".to_string())
+        );
+    }
+
+    /// One fake authorization server: resource and AS metadata for
+    /// `{base}/mcp`, dynamic registration (counted, its reply overridable),
+    /// and a token endpoint recording each request's headers and body.
+    struct AuthServerFixture {
+        base: String,
+        registrations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        token_requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    fn spawn_auth_server(register_reply: Option<(u16, &'static str)>) -> AuthServerFixture {
+        use std::io::{BufRead, BufReader};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let registrations = std::sync::Arc::new(AtomicUsize::new(0));
+        let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fixture = AuthServerFixture {
+            base: base.clone(),
+            registrations: std::sync::Arc::clone(&registrations),
+            token_requests: std::sync::Arc::clone(&token_requests),
+        };
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut head = String::new();
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                    head.push_str(&header);
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let path = line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let (status, reply) = match path.as_str() {
+                    "/.well-known/oauth-protected-resource/mcp" => (
+                        200,
+                        format!(
+                            r#"{{"resource":"{base}/mcp","authorization_servers":["{base}"]}}"#
+                        ),
+                    ),
+                    "/.well-known/oauth-authorization-server" => (
+                        200,
+                        format!(
+                            r#"{{"issuer":"{base}","authorization_endpoint":"{base}/authorize","token_endpoint":"{base}/token","registration_endpoint":"{base}/register","code_challenge_methods_supported":["S256"]}}"#
+                        ),
+                    ),
+                    "/register" => {
+                        let n = registrations.fetch_add(1, Ordering::SeqCst) + 1;
+                        match register_reply {
+                            Some((status, reply)) => (status, reply.to_string()),
+                            None => (201, format!(r#"{{"client_id":"cid-{n}"}}"#)),
+                        }
+                    }
+                    "/token" => {
+                        token_requests
+                            .lock()
+                            .unwrap()
+                            .push((head.clone(), body.clone()));
+                        (
+                            200,
+                            r#"{"access_token":"at","refresh_token":"rt","expires_in":3600}"#
+                                .to_string(),
+                        )
+                    }
+                    _ => (404, String::new()),
+                };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        fixture
+    }
+
+    /// A browser that approves at once: it follows the authorize URL's
+    /// redirect back to the callback with `code`, the URL's own state, and
+    /// no `iss` (this fixture's metadata doesn't advertise it).
+    fn approving_browser(code: &'static str) -> impl Fn(&str) {
+        move |authorize_url: &str| {
+            let redirect = redirect_param(authorize_url, "redirect_uri").expect("redirect_uri");
+            let state = redirect_param(authorize_url, "state").expect("state");
+            let port = url::Url::parse(&redirect).unwrap().port().expect("a port");
+            std::thread::spawn(move || {
+                let _ = hit(
+                    port,
+                    &format!(
+                        "GET /callback?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                        url_encode(&state)
+                    ),
+                );
+            });
+        }
+    }
+
+    fn sign_in(
+        fixture: &AuthServerFixture,
+        store: &Path,
+        browser: &dyn Fn(&str),
+        cancel: &CancelToken,
+    ) -> (Result<(), String>, std::sync::Arc<Recorded>) {
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let progress = std::sync::Arc::new(Recorded::default());
+        let result = run_auth_flow(
+            &format!("{}/mcp", fixture.base),
+            None,
+            Some(store),
+            &paste_rx,
+            &progress,
+            browser,
+            cancel,
+        );
+        (result, progress)
+    }
+
+    fn port_of(authorize_url: &str) -> u16 {
+        let redirect = redirect_param(authorize_url, "redirect_uri").unwrap();
+        url::Url::parse(&redirect).unwrap().port().unwrap()
+    }
+
+    /// The whole flow against a fake authorization server: discovery,
+    /// registration, the browser's return, the exchange — and a second
+    /// sign-in reusing the client on the port it registered, where a taken
+    /// port registers again rather than sending the server a redirect it
+    /// never saw.
+    #[test]
+    fn a_sign_in_runs_end_to_end_and_reuses_its_client() {
+        use std::sync::atomic::Ordering;
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let (result, progress) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("code-1"),
+            &CancelToken::new(),
+        );
+        result.expect("signed in");
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+        let first_url = progress.urls.lock().unwrap()[0].clone();
+        let port = port_of(&first_url);
+        {
+            let requests = fixture.token_requests.lock().unwrap();
+            let (_, body) = &requests[0];
+            for expected in [
+                "grant_type=authorization_code".to_string(),
+                "code=code-1".to_string(),
+                "code_verifier=".to_string(),
+                "client_id=cid-1".to_string(),
+                format!(
+                    "redirect_uri={}",
+                    url_encode(&format!("http://localhost:{port}/callback"))
+                ),
+                format!("resource={}", url_encode(&server)),
+            ] {
+                assert!(body.contains(&expected), "{expected} missing from {body}");
+            }
+        }
+        let stored = load_tokens(Some(&store), &server).expect("stored");
+        assert_eq!(stored.access_token, "at");
+        assert_eq!(stored.client_id, "cid-1");
+        assert_eq!(stored.issuer.as_deref(), Some(fixture.base.as_str()));
+        assert_eq!(
+            stored.redirect_uri.as_deref(),
+            Some(format!("http://localhost:{port}/callback").as_str())
+        );
+        // Again: the same client, on the port it registered.
+        let (result, progress) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("code-2"),
+            &CancelToken::new(),
+        );
+        result.expect("signed in again");
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+        assert_eq!(port_of(&progress.urls.lock().unwrap()[0]), port);
+        // With that port taken, a new registration names the new one.
+        let _squatter = TcpListener::bind(("127.0.0.1", port)).expect("take the port");
+        let (result, progress) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("code-3"),
+            &CancelToken::new(),
+        );
+        result.expect("signed in on another port");
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 2);
+        assert_ne!(port_of(&progress.urls.lock().unwrap()[0]), port);
+        assert_eq!(
+            load_tokens(Some(&store), &server).unwrap().client_id,
+            "cid-2"
+        );
+    }
+
+    /// A client registered with another authorization server is never
+    /// presented to this one (SEP-2352): the flow registers afresh.
+    #[test]
+    fn a_sign_in_never_presents_another_servers_client() {
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        save_tokens(
+            Some(&store),
+            &server,
+            Some(&StoredTokens {
+                access_token: "old".to_string(),
+                client_id: "foreign-cid".to_string(),
+                client_secret: Some("foreign-secret".to_string()),
+                issuer: Some("https://other.test".to_string()),
+                token_endpoint: "https://other.test/token".to_string(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let (result, _) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("c"),
+            &CancelToken::new(),
+        );
+        result.expect("signed in");
+        let requests = fixture.token_requests.lock().unwrap();
+        let (head, body) = &requests[0];
+        assert!(body.contains("client_id=cid-1"), "{body}");
+        assert!(
+            !body.contains("foreign") && !head.contains("foreign"),
+            "{head}{body}"
+        );
+    }
+
+    /// A registration that comes back confidential with `client_secret_basic`
+    /// authenticates that way at the token endpoint.
+    #[test]
+    fn a_basic_auth_client_signs_in_with_basic_auth() {
+        let fixture = spawn_auth_server(Some((
+            201,
+            r#"{"client_id":"cid","client_secret":"sec","token_endpoint_auth_method":"client_secret_basic"}"#,
+        )));
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let (result, _) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("c"),
+            &CancelToken::new(),
+        );
+        result.expect("signed in");
+        let requests = fixture.token_requests.lock().unwrap();
+        let (head, body) = &requests[0];
+        let expected = format!(
+            "authorization: basic {}",
+            crate::clipboard::base64_encode(b"cid:sec")
+        );
+        assert!(
+            head.to_ascii_lowercase()
+                .contains(&expected.to_ascii_lowercase()),
+            "{head}"
+        );
+        assert!(!body.contains("client_secret"), "{body}");
+    }
+
+    /// The registration endpoint's own reason reaches the user (RFC 7591
+    /// §3.2.2), not a bare status.
+    #[test]
+    fn a_refused_registration_says_why() {
+        let fixture = spawn_auth_server(Some((
+            400,
+            r#"{"error":"invalid_redirect_uri","error_description":"loopback redirects are not allowed"}"#,
+        )));
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let (result, _) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("c"),
+            &CancelToken::new(),
+        );
+        let error = result.expect_err("refused");
+        assert!(
+            error.contains("invalid_redirect_uri")
+                && error.contains("loopback redirects are not allowed"),
+            "{error}"
+        );
+    }
+
+    /// Esc during discovery means the browser never opens; and with nowhere
+    /// to keep the grant the flow says so before it does.
+    #[test]
+    fn a_sign_in_that_cannot_finish_never_opens_the_browser() {
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let opened = std::sync::atomic::AtomicBool::new(false);
+        let browser = |_: &str| opened.store(true, std::sync::atomic::Ordering::SeqCst);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let (result, _) = sign_in(&fixture, &store, &browser, &cancel);
+        assert!(result.is_err());
+        assert!(
+            !opened.load(std::sync::atomic::Ordering::SeqCst),
+            "opened after Esc"
+        );
+        let (_paste_tx, paste_rx) = mpsc::channel();
+        let result = run_auth_flow(
+            &format!("{}/mcp", fixture.base),
+            None,
+            None,
+            &paste_rx,
+            &std::sync::Arc::new(Recorded::default()),
+            &browser,
+            &CancelToken::new(),
+        );
+        assert!(result.is_err());
+        assert!(
+            !opened.load(std::sync::atomic::Ordering::SeqCst),
+            "opened with no store"
+        );
     }
 }

@@ -48,35 +48,11 @@ pub fn header_value(text: &str) -> String {
     if !text.is_empty() && ascii_printable && !whitespace_framed && !looks_like_sentinel {
         return text.to_string();
     }
-    format!("=?base64?{}?=", b64_standard(text.as_bytes()))
-}
-
-/// Standard base64 (RFC 4648 §4, with padding) — the sentinel encoding's
-/// alphabet.
-fn b64_standard(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
+    // Standard base64 (RFC 4648 §4, with padding) — the sentinel's alphabet.
+    format!(
+        "=?base64?{}?=",
+        crate::clipboard::base64_encode(text.as_bytes())
+    )
 }
 
 /// The keywords whose subschemas a `properties` chain may **not** pass

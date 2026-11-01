@@ -866,10 +866,11 @@ pub struct Signin {
 /// caller shows [`Signin::url`], then blocks in [`await_callback`].
 ///
 /// # Errors
-/// A port neither of the two allow-listed numbers can take.
+/// A port neither of the two allow-listed numbers can take, or the system's
+/// random source failing.
 pub fn begin_signin() -> Result<Signin> {
     let (listener, port) = bind_listener()?;
-    let (verifier, challenge, state) = pkce_and_state();
+    let (verifier, challenge, state) = pkce_and_state().map_err(LlmError::Http)?;
     Ok(Signin {
         url: authorize_url(&challenge, &state, port),
         listener,

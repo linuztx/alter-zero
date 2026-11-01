@@ -257,6 +257,22 @@ release heading when a version is cut.
   is created, a sign-in whose tokens couldn't be saved says so instead of
   appearing to work, and **Clear authentication** says when it couldn't
   clear (`docs/mcp.md`).
+- **Signing in to an MCP server no longer hangs or takes a stray answer.**
+  Declining on the login page used to leave the sign-in waiting five
+  minutes for an answer that would never come; it now ends at once with
+  the login server's reason. A browser that opened a spare connection
+  without using it could hold the sign-in up, and on macOS a sign-in could
+  miss the browser's answer; the sign-in also answers when your system
+  sends `localhost` to the IPv6 address. An answer that doesn't carry this
+  sign-in's own check value, from an earlier attempt or anywhere else, is
+  turned away and the sign-in keeps waiting for the right one, and a
+  wrong pasted URL no longer ends the sign-in. A login server
+  that hands out a client secret is answered the way it asked, a refused
+  registration says why, and a sign-in reuses its client on the same port
+  or registers again rather than being refused by a login server that
+  checks the port. The client registered with one login server is never
+  sent to another, and pressing **Esc** while the sign-in starts no longer
+  opens the browser anyway (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

@@ -2551,7 +2551,7 @@ done
                 token_endpoint: fixture.token_url.clone(),
                 scope: None,
                 resource: None,
-                issued_at: None,
+                ..Default::default()
             }),
         )
         .expect("the store write");
