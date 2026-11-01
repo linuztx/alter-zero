@@ -131,6 +131,18 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **An MCP server with long or look-alike tool names no longer breaks every
+  request.** Each MCP tool reaches the model as `mcp__{server}__{tool}`, and
+  providers refuse the whole request over one bad tool name: a name over 64
+  characters (`mcp__atlassian-confluence-cloud__` is already 33), or two tools
+  that come out the same once the characters a name can't carry are
+  replaced (`files.read` and `files_read`), made every turn fail while that
+  server was connected. A long name is now cut to fit and ends on a short
+  hash, and look-alike or non-ASCII names each get one of their own, the
+  same whichever order the server lists them in. `/mcp` shows the name the
+  model calls. Two servers whose names come out the same can't be told
+  apart that way, so the second one doesn't connect and `/mcp` says why
+  (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

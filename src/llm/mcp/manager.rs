@@ -15,7 +15,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
     McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity, call_params,
-    parse_call_result, tool_wire_name,
+    parse_call_result,
 };
 use crate::stream::CancelToken;
 
@@ -124,8 +124,10 @@ struct ServerState {
     /// The live transport — its own lock, so a running tool call never
     /// blocks a snapshot.
     transport: Option<Arc<Mutex<Transport>>>,
-    /// wire tool name → the server's raw tool name.
-    wire_map: BTreeMap<String, String>,
+    /// Why this server can never be offered under its name
+    /// ([`crate::mcp::server_name_problems`]) — it stays `Failed` with this
+    /// reason, whoever asks it to connect.
+    name_problem: Option<String>,
     has_tokens: bool,
     /// The last 401's `WWW-Authenticate` challenge. Discovery runs blind
     /// without it: the challenge names the `resource_metadata` URL a server
@@ -135,6 +137,40 @@ struct ServerState {
     /// Bumped on disable/reconnect so a stale connect thread's result is
     /// dropped instead of resurrecting an old state.
     generation: u64,
+}
+
+impl ServerState {
+    /// Every tool this server offers the model, under the wire name it is
+    /// offered by — the one derivation the specs, the fingerprint, the
+    /// descriptions and the call routing all read ([`crate::mcp::wire_names`]),
+    /// so no two of them can disagree about a name. Empty unless connected.
+    fn offered(&self) -> Vec<(String, &McpToolInfo)> {
+        if self.status != McpServerStatus::Connected {
+            return Vec::new();
+        }
+        let mut by_name: std::collections::HashMap<&str, &McpToolInfo> =
+            std::collections::HashMap::new();
+        for tool in &self.tools {
+            by_name.entry(tool.name.as_str()).or_insert(tool);
+        }
+        let names: Vec<&str> = self.tools.iter().map(|tool| tool.name.as_str()).collect();
+        crate::mcp::wire_names(&self.entry.name, &names)
+            .into_iter()
+            .filter_map(|(wire, raw)| by_name.get(raw).map(|tool| (wire, *tool)))
+            .collect()
+    }
+
+    /// Forget the live connection and everything it told us — the transport
+    /// (dropping it ends a stdio child), the identity and the tool list —
+    /// and supersede any connect still in flight. What a disable, a
+    /// needs-auth refusal and a fresh connect all start from: the `/mcp`
+    /// page shows the *live* connection's facts, so none may outlive it.
+    fn drop_connection(&mut self) {
+        self.generation += 1;
+        self.transport = None;
+        self.identity = None;
+        self.tools.clear();
+    }
 }
 
 struct Inner {
@@ -170,10 +206,13 @@ impl McpManager {
     #[must_use]
     pub fn new(events: UnboundedSender<McpEvent>, sources: McpSources) -> Self {
         let auth_path = sources.auth_path.clone();
+        let names: Vec<&str> = sources.entries.iter().map(|e| e.name.as_str()).collect();
+        let problems = crate::mcp::server_name_problems(&names);
         let servers = sources
             .entries
             .into_iter()
-            .map(|entry| {
+            .zip(problems)
+            .map(|(entry, name_problem)| {
                 let disabled = sources.disabled.contains(&entry.name);
                 let held = sources.held.get(&entry.name).copied();
                 let has_tokens = entry
@@ -183,17 +222,19 @@ impl McpManager {
                 ServerState {
                     // The review outranks the user's own toggle: a held
                     // server may not run either way, and only an answer in
-                    // the review (or Enable in `/mcp`) releases it.
-                    status: match held {
-                        Some(McpHold::Review) => McpServerStatus::AwaitingReview,
-                        Some(McpHold::Declined) => McpServerStatus::Disabled,
-                        None if disabled => McpServerStatus::Disabled,
-                        None => McpServerStatus::Pending,
+                    // the review (or Enable in `/mcp`) releases it. A name
+                    // that can't be offered is refused next, whatever else.
+                    status: match (held, &name_problem) {
+                        (Some(McpHold::Review), _) => McpServerStatus::AwaitingReview,
+                        (Some(McpHold::Declined), _) => McpServerStatus::Disabled,
+                        (None, _) if disabled => McpServerStatus::Disabled,
+                        (None, Some(problem)) => McpServerStatus::Failed(problem.clone()),
+                        (None, None) => McpServerStatus::Pending,
                     },
                     identity: None,
                     tools: Vec::new(),
                     transport: None,
-                    wire_map: BTreeMap::new(),
+                    name_problem,
                     has_tokens,
                     challenge: None,
                     generation: 0,
@@ -281,18 +322,18 @@ impl McpManager {
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
             };
-            server.status = McpServerStatus::Pending;
-            server.generation += 1;
-            let generation = server.generation;
+            if let Some(problem) = &server.name_problem {
+                server.status = McpServerStatus::Failed(problem.clone());
+                return;
+            }
             // Drop the old transport now (kills a stdio child) — the new
             // connect starts clean, and so does what we say about the
             // server: the revision, capabilities and tools on the `/mcp`
             // page are the *live* connection's facts, so a reconnect that
             // never initializes must not leave the last one's behind.
-            server.transport = None;
-            server.identity = None;
-            server.tools.clear();
-            server.wire_map.clear();
+            server.drop_connection();
+            server.status = McpServerStatus::Pending;
+            let generation = server.generation;
             server.has_tokens = server
                 .entry
                 .config
@@ -362,11 +403,6 @@ impl McpManager {
             match result {
                 Ok(connection) => {
                     server.identity = Some(connection.identity);
-                    server.wire_map = connection
-                        .tools
-                        .iter()
-                        .map(|tool| (tool_wire_name(&name, &tool.name), tool.name.clone()))
-                        .collect();
                     server.tools = connection.tools;
                     server.transport = Some(Arc::new(Mutex::new(connection.transport)));
                     server.status = McpServerStatus::Connected;
@@ -434,11 +470,8 @@ impl McpManager {
             if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
                 server.generation += 1;
                 if disabled {
+                    server.drop_connection();
                     server.status = McpServerStatus::Disabled;
-                    server.transport = None; // kills a stdio child
-                    server.tools.clear();
-                    server.wire_map.clear();
-                    server.identity = None;
                 }
             }
         }
@@ -478,12 +511,8 @@ impl McpManager {
                 }
                 was_held && !user_disabled
             } else {
-                server.generation += 1;
+                server.drop_connection();
                 server.status = McpServerStatus::Disabled;
-                server.transport = None; // kills a stdio child
-                server.tools.clear();
-                server.wire_map.clear();
-                server.identity = None;
                 false
             }
         };
@@ -669,11 +698,7 @@ impl McpManager {
         let inner = self.lock();
         let mut out = Vec::new();
         for server in &inner.servers {
-            if server.status != McpServerStatus::Connected {
-                continue;
-            }
-            for tool in &server.tools {
-                let wire = tool_wire_name(&server.entry.name, &tool.name);
+            for (wire, tool) in server.offered() {
                 out.push(crate::llm::tools::function_spec(
                     &wire,
                     &tool.description,
@@ -699,12 +724,11 @@ impl McpManager {
     pub fn tool_description(&self, wire: &str) -> Option<String> {
         let inner = self.lock();
         inner.servers.iter().find_map(|server| {
-            let name = server.wire_map.get(wire)?;
             server
-                .tools
-                .iter()
-                .find(|tool| &tool.name == name)
-                .map(|tool| tool.description.clone())
+                .offered()
+                .into_iter()
+                .find(|(offered, _)| offered == wire)
+                .map(|(_, tool)| tool.description.clone())
         })
     }
 
@@ -726,8 +750,7 @@ impl McpManager {
         let mut names: Vec<String> = inner
             .servers
             .iter()
-            .filter(|s| s.status == McpServerStatus::Connected)
-            .flat_map(|s| s.wire_map.keys().cloned())
+            .flat_map(|s| s.offered().into_iter().map(|(wire, _)| wire))
             .collect();
         names.sort();
         names
@@ -740,20 +763,21 @@ impl McpManager {
     pub fn call_tool(&self, call: &ToolCallRequest, cancel: &CancelToken) -> ToolOutcome {
         let lookup = {
             let inner = self.lock();
-            inner
-                .servers
-                .iter()
-                .find(|s| s.wire_map.contains_key(&call.name))
-                .and_then(|server| {
-                    Some((
-                        server.entry.name.clone(),
-                        server.wire_map.get(&call.name)?.clone(),
-                        server.transport.clone()?,
-                        server.entry.config.url().map(str::to_string),
-                        inner.auth_path.clone(),
-                        inner.tool_timeout,
-                    ))
-                })
+            inner.servers.iter().find_map(|server| {
+                let raw_tool = server
+                    .offered()
+                    .into_iter()
+                    .find(|(wire, _)| *wire == call.name)
+                    .map(|(_, tool)| tool.name.clone())?;
+                Some((
+                    server.entry.name.clone(),
+                    raw_tool,
+                    server.transport.clone()?,
+                    server.entry.config.url().map(str::to_string),
+                    inner.auth_path.clone(),
+                    inner.tool_timeout,
+                ))
+            })
         };
         let Some((server_name, raw_tool, transport, server_url, auth_path, timeout)) = lookup
         else {
@@ -864,11 +888,8 @@ impl McpManager {
                         if challenge.is_some() {
                             server.challenge = challenge;
                         }
+                        server.drop_connection();
                         server.status = McpServerStatus::NeedsAuth;
-                        server.generation += 1;
-                        server.transport = None;
-                        server.tools.clear();
-                        server.wire_map.clear();
                     }
                 }
                 self.notify(McpEvent::Changed);
@@ -1002,6 +1023,77 @@ mod tests {
         let outcome = manager.call_tool(&call, &CancelToken::new());
         assert!(outcome.ok, "{}", outcome.output);
         assert_eq!(outcome.output, "echoed");
+        manager.shutdown();
+    }
+
+    /// Every offered function name is unique and inside the provider limit —
+    /// a duplicate or an over-long one fails the **whole** request — and the
+    /// specs, the fingerprint and the description lookup all agree on them.
+    #[test]
+    fn offered_names_are_unique_short_and_agree_everywhere() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("atlassian-confluence-cloud")]);
+        {
+            let mut inner = manager.lock();
+            let server = &mut inner.servers[0];
+            server.status = McpServerStatus::Connected;
+            server.tools = [
+                "files.read",
+                "files_read",
+                "confluence_search_using_cql_query_with_pagination",
+            ]
+            .into_iter()
+            .map(|name| McpToolInfo {
+                name: name.into(),
+                description: format!("{name} tool"),
+                input_schema: serde_json::json!({"type": "object"}),
+            })
+            .collect();
+        }
+        let specs = manager.tool_specs();
+        let names: Vec<String> = specs
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names.len(), 3);
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), 3, "{names:?}");
+        assert!(
+            names
+                .iter()
+                .all(|n| n.len() <= crate::mcp::MAX_WIRE_NAME_LEN),
+            "{names:?}"
+        );
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(manager.fingerprint(), sorted);
+        for spec in &specs {
+            let wire = spec["function"]["name"].as_str().unwrap();
+            assert_eq!(
+                manager.tool_description(wire).as_deref(),
+                spec["function"]["description"].as_str()
+            );
+        }
+    }
+
+    /// Two servers whose names normalize alike would hand the model one set
+    /// of names twice. The later one is refused, says why, and stays refused
+    /// when the user asks it to reconnect.
+    #[test]
+    fn a_server_whose_name_collides_never_connects_and_says_why() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("my.server"), stdio_entry("my_server")]);
+        manager.start_connections();
+        wait_connected(&manager, "my.server");
+        let snapshot = manager.snapshot();
+        let McpServerStatus::Failed(reason) = &snapshot[1].status else {
+            panic!("{:?}", snapshot[1].status);
+        };
+        assert!(reason.contains("my.server"), "{reason}");
+        manager.reconnect("my_server");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(matches!(
+            manager.snapshot()[1].status,
+            McpServerStatus::Failed(_)
+        ));
         manager.shutdown();
     }
 

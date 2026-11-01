@@ -111,7 +111,25 @@ in **`src/llm/mcp/`**.
   `tool_wire_name(server, tool)` builds `mcp__{server}__{tool}`;
   `is_mcp_tool` is the `mcp__` prefix test (the `is_task_tool` shape);
   `parse_wire_name` splits it back (the server part never contains `__` —
-  normalization collapses runs — so the split is unambiguous);
+  normalization collapses runs — so the split is unambiguous). A wire name
+  is a **function name on every request**, and providers refuse the
+  *whole* request over one bad name — OpenAI-shaped APIs cap names at 64
+  characters (`MAX_WIRE_NAME_LEN`) and every API refuses a duplicate — so
+  two more rules hold. A name over the cap keeps its server whole (cut only
+  when it alone would leave the tool under eight characters), cuts the
+  tool, and ends on `_` plus eight hex digits of the full name's SHA-256
+  (`mcp__atlassian-confluence-cloud__confluence_search_usin_8124286d`); and
+  `wire_names(server, tools)` — the **one** derivation the specs, the
+  fingerprint, the permission prompt's description and the call routing
+  all read, so no two can disagree — gives tools that normalize alike
+  (`files.read`, `files_read`) or to nothing (`検索`) that same hashed shape
+  keyed by the *raw* name, so each stays callable under a name that does
+  not depend on the order the server lists them in. Both shapes are fixed
+  points of `tool_wire_name`, which is what keeps the replay below exact.
+  Two *servers* whose names normalize alike (`my.server`, `my_server`), or a
+  name with nothing to normalize to, cannot be told apart that way —
+  `server_name_problems` refuses the later of the pair with the reason,
+  `✘ failed` in `/mcp`, and a Reconnect does not change that;
   `tool_display_name(server, tool)` is Claude Code's user-facing
   `{server} - {tool} (MCP)`, `tool_label`/`label_from_wire` is that name
   without the suffix (the permission prompt renders the arguments *between*

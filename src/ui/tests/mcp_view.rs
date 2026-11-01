@@ -205,6 +205,32 @@ fn the_tools_and_tool_detail_pages_render() {
     assert!(all.contains("Esc to go back"));
 }
 
+/// The `Full name:` row is the name the model actually calls, so a tool
+/// whose plain name clashes with a sibling's shows the name it is really
+/// offered under — the same one `mcp::wire_names` hands the manager.
+#[test]
+fn the_full_name_is_the_one_the_model_is_offered() {
+    let mut server = snapshot("srv", McpScope::User, McpServerStatus::Connected);
+    server.tools = ["files.read", "files_read"]
+        .into_iter()
+        .map(|name| McpToolInfo {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+        })
+        .collect();
+    let offered = crate::mcp::wire_names("srv", &["files.read", "files_read"]);
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter)); // its detail
+    app.on_key(key(KeyCode::Enter)); // View tools
+    app.on_key(key(KeyCode::Down)); // files_read
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains(&offered[1].0), "{all}");
+    assert!(!all.contains("mcp__srv__files_read\n"), "{all}");
+}
+
 /// Walk `app` to the `ask_question` detail page (list → deepwiki → tools →
 /// the tool), the deepest page and the one the two-tone body lives on.
 fn tool_detail_app() -> App {
