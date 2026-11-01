@@ -55,9 +55,9 @@ Claude Code conveniences that fit our config format: `--transport` to name
 remote servers, `add-json` for README snippets, and the duplicate-name
 error. All of it targets the **user** file only
 (`ALTER_ZERO_MCP_FILE`, else `{config_home}/mcp.json` — the same
-resolution the TUI uses); the project files are shared with a team and sit
-behind the `/trust` gate, so a CLI that wrote them would either bypass the
-gate or immediately re-pend it (`docs/project-config.md`).
+resolution the TUI uses); the project files are shared with a team and wait
+for the startup review, so a CLI that wrote them would either bypass the
+review or send its servers straight back to it (`docs/config-review.md`).
 
 ### The grammar (pure, `src/cli.rs`)
 
@@ -179,9 +179,9 @@ a failed write — one plain stderr line), **0** for success and help.
 ## Known divergences from the references
 
 - **No `--scope`**: project files (`.mcp.json`, `.alter-zero/mcp.json`)
-  are read-only here — they're shared with a team and trust-gated, so
-  installing into them belongs to an edit + `/trust` review, not a CLI
-  write. Claude Code's `local` scope doesn't exist in our two-scope model.
+  are read-only here — they're shared with a team and reviewed before they
+  run, so installing into them belongs to an edit and the startup review,
+  not a CLI write. Claude Code's `local` scope doesn't exist in our two-scope model.
 - **`list`/`get` read the config, they don't connect.** Claude Code's
   `mcp list` spawns every stdio server for a health check (its own help
   warns "only use this command in directories you trust"); codex probes

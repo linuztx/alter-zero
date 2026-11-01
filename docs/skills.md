@@ -99,8 +99,8 @@ markdown with no tool-specific behaviour in them, the ecosystem writes them to
 returns `NotFound`. A user who has already written skills for Claude Code gets
 them here for free.
 
-The project rows sit deliberately **outside** the `/trust` gate that guards
-the project's hooks and MCP files (`docs/project-config.md`): a `SKILL.md`
+The project rows sit deliberately **outside** the startup review that guards
+the project's hooks and MCP servers (`docs/config-review.md`): a `SKILL.md`
 is inert markdown until the model explicitly loads it, and any command in a
 loaded body still meets the permission gate like every other tool call —
 there is nothing here that executes on discovery.

@@ -1968,8 +1968,8 @@ pub(super) const HOOKS_DESC_GAP: usize = 3;
 /// The read-only banner under the count (events level only) — the reference's
 /// info line with our file and assistant names, its docs link swapped for the
 /// format's own doc.
-pub(super) const HOOKS_INFO: &str = "ℹ This menu is read-only. To add or modify hooks, \
-edit hooks.json directly or ask alter-zero. See docs/hooks.md";
+pub(super) const HOOKS_INFO: &str = "ℹ Open a hook to trust it, or to stop trusting it. To \
+add or modify hooks, edit hooks.json directly or ask alter-zero. See docs/hooks.md";
 
 /// The note when the file holds hooks but the session has them off
 /// (`/settings`, `ALTER_ZERO_HOOKS=0`) — the reference's restricted-by-policy
@@ -1986,6 +1986,15 @@ pub(super) const HOOKS_EMPTY_HINT: &str =
 pub(super) const HOOKS_HINT: &str = "Enter to confirm · Esc to cancel";
 pub(super) const HOOKS_DETAIL_HINT: &str = "Esc to go back";
 
+/// Trust in the `/hooks` menu (`docs/config-review.md`): the amber badge an
+/// untrusted hook's row wears, the detail page's `Trust:` values, and its
+/// hint — Enter toggles.
+pub(super) const HOOKS_UNTRUSTED_BADGE: &str = "⚠ not trusted";
+pub(super) const HOOKS_TRUSTED_VALUE: &str = "✔ trusted";
+pub(super) const HOOKS_UNTRUSTED_VALUE: &str = "⚠ not trusted — it does not run";
+pub(super) const HOOKS_TRUST_HINT: &str = "Enter to trust · Esc to go back";
+pub(super) const HOOKS_DISTRUST_HINT: &str = "Enter to stop trusting · Esc to go back";
+
 /// The single-source tags — one `hooks.json`, one origin (the reference has
 /// user/project/local/plugin layers; ours is user-level only,
 /// `docs/hooks.md`): the `[User]` matcher-row prefix, the hook rows'
@@ -1998,43 +2007,50 @@ pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
 /// so the values line up (`Event:    PreToolUse`).
 pub(super) const HOOKS_FIELD_COL: usize = 10;
 
-/// The `/trust` review menu (`docs/project-config.md`) — the hooks menu's
-/// sibling, borrowing the `HOOKS_*` marker and frame; only its own
-/// vocabulary lives here.
+/// The startup review (`docs/config-review.md`) — the hooks menu's sibling,
+/// borrowing the `HOOKS_*` marker and frame and the ask modal's checkboxes;
+/// only its own vocabulary lives here.
 ///
-/// The page title (the root's display path is appended).
-pub(super) const TRUST_TITLE: &str = "Project trust";
+/// The explanation under each page's title.
+pub(super) const REVIEW_HOOKS_INFO: &str = "Hooks run shell commands on their own whenever their \
+event fires, outside the permission prompt. Only hooks you trust will run.";
+pub(super) const REVIEW_MCP_INFO: &str = "An enabled server runs its command, or connects to its \
+URL, whenever a session starts here. Its tool calls still follow your permission mode.";
 
-/// The banner under the status: what approving means, in one breath.
-pub(super) const TRUST_INFO: &str = "ℹ A project's .alter-zero config can run commands — hooks \
-fire on lifecycle events and MCP servers are spawned processes — so nothing below runs until \
-you approve it. Approval is pinned to each file's content: an edited file asks again. See \
-docs/project-config.md";
+/// The servers page's question, under its title on every rung that keeps
+/// the title.
+pub(super) const REVIEW_MCP_QUESTION: &str = "Select any you wish to enable.";
 
-/// The two status headlines beside `Status:`.
-pub(super) const TRUST_STATUS_TRUSTED: &str = "trusted";
-pub(super) const TRUST_STATUS_UNTRUSTED: &str = "not trusted";
+/// The two action rows on each page — what Enter on them answers.
+pub(super) const REVIEW_TRUST_LABEL: &str = "Trust selected and continue";
+pub(super) const REVIEW_SKIP_LABEL: &str = "Continue without trusting";
+pub(super) const REVIEW_ENABLE_LABEL: &str = "Enable selected";
+pub(super) const REVIEW_DISABLE_LABEL: &str = "Disable all";
 
-/// The per-file badges: waiting on approval, recorded, or unreadable.
-pub(super) const TRUST_BADGE_PENDING: &str = "pending approval";
-pub(super) const TRUST_BADGE_TRUSTED: &str = "trusted";
-pub(super) const TRUST_BADGE_ERROR: &str = "won't parse";
+/// The key hints, saying what Esc means on each page.
+pub(super) const REVIEW_HOOKS_HINT: &str =
+    "Space to select · Enter to confirm · Esc to continue without trusting";
+pub(super) const REVIEW_MCP_HINT: &str = "Space to select · Enter to confirm · Esc to disable all";
 
-/// The option rows' labels — what Enter applies.
-pub const TRUST_APPROVE_LABEL: &str = "Trust this project's config";
-pub const TRUST_REVOKE_LABEL: &str = "Revoke trust";
+/// A changed item's amber badge, and the line saying what it was.
+pub(super) const REVIEW_CHANGED_BADGE: &str = "changed";
+pub(super) const REVIEW_WAS_PREFIX: &str = "was: ";
 
-/// The most item lines shown per file before the fold — enough to review a
-/// real config, few enough that a huge one can't push the options off the
-/// terminal (the permission prompt's body-cap instinct).
-pub const TRUST_MENU_MAX_ITEMS: usize = 8;
+/// The gap before a badge (and a folded item's first detail row), and
+/// before the title's `1/2` page counter.
+pub(super) const REVIEW_BADGE_GAP: &str = "  ";
+pub(super) const REVIEW_COUNTER_GAP: &str = "  ";
 
-/// The empty state: nothing found, so name exactly where the layer looks.
-pub(super) const TRUST_EMPTY: &str = "No project config found. Add one at:";
+/// Between a file heading's scope word and its path: `User · ~/…`.
+pub(super) const REVIEW_SCOPE_SEPARATOR: &str = " · ";
 
-/// The key hints — options on offer, or Esc-only when there are none.
-pub(super) const TRUST_HINT: &str = "Enter to apply · Esc to close";
-pub(super) const TRUST_CLOSE_HINT: &str = "Esc to close";
+/// The line a windowed page's highlighted item names its file on, the file
+/// headings being gone.
+pub(super) const REVIEW_FROM_PREFIX: &str = "from ";
+
+/// How many detail rows the highlighted item keeps on the rung that first
+/// cuts it.
+pub(super) const REVIEW_CAPPED_DETAIL_ROWS: usize = 3;
 
 /// The `/mcp` manager (`docs/mcp.md`) — the hooks menu's twin, so it borrows
 /// the whole `HOOKS_*` frame (marker, overflow arrows, window size, hints)

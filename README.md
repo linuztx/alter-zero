@@ -209,7 +209,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Review at the approval prompt.** Inspect proposed file content, diffs, and commands before approving them. Approve once, allow a session rule, or reject with instructions using **Tab**. **Ctrl+E** asks for a command explanation.
 - **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
-- **Project trust.** Review project-defined agents, hooks, and MCP servers with `/trust` before they can run.
+- **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook, yours or a project's, and any new project MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
 
 ### Give the agent the right tools
 
@@ -258,10 +258,9 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/theme` | Choose the colour theme |
 | `/mascot` | Choose the banner mascot |
 | `/spinner` | Choose the status spinner style |
-| `/hooks` | Browse the configured lifecycle hooks |
+| `/hooks` | Browse hooks and trust or stop trusting each one |
 | `/skills` | Browse skills and enable or disable each one |
 | `/mcp` | Manage MCP servers |
-| `/trust` | Review and approve this project's config |
 | `/donate` | Support the project with a crypto donation |
 | `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
 | `/quit` | Exit the app |
@@ -341,7 +340,7 @@ Your sign-ins, saved sessions, input history, and per-directory settings live un
 | `.alter-zero/` in a project | Project-specific `agents/`, `skills/`, `hooks.json`, and `mcp.json` |
 | `AGENTS.md` | Project instructions read by the agent |
 
-Claude Code-style `.claude/skills/` and `.mcp.json` files are also supported. Project-defined agents, hooks, and MCP servers require approval through `/trust`.
+Claude Code-style `.claude/skills/` and `.mcp.json` files are also supported. Hooks, yours and a project's, and a project's MCP servers run only after you approve them when the app starts.
 
 </details>
 

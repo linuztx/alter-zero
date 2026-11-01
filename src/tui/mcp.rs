@@ -3,27 +3,25 @@
 //! its snapshot, applying the menu's typed operations, and folding the MCP
 //! event channel's reports back into the app.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use alter_zero::app::{McpOp, ToastKind};
-use alter_zero::llm::mcp::{McpEvent, McpSources};
+use alter_zero::llm::mcp::{McpEvent, McpHold, McpSources};
 use alter_zero::mcp;
 
 use super::Session;
 use super::config;
 
 /// Gather everything the manager is built from: the user file parsed here,
-/// the project files taken from the bootstrap-loaded [`ProjectLayer`]
-/// snapshot (each already fingerprinted and trust-checked,
-/// `docs/project-config.md`), scopes merged trust-aware — a trusted project
-/// file shadows the user, an untrusted one is listed but held — plus this
-/// project's disabled set, the token-store path, and the timeout knobs.
-/// Pure parse/merge over boundary reads. Without a layer
-/// (`ALTER_ZERO_PROJECT_CONFIG` off) no project file contributes at all.
-pub(crate) fn load_mcp_sources(
-    cwd: &Path,
-    layer: Option<&super::trust::ProjectLayer>,
-) -> McpSources {
+/// the project files taken from the bootstrap-read project layer, scopes
+/// merged approval-aware (`docs/config-review.md`) — an enabled project
+/// server shadows the user's, one waiting for the review or declined is
+/// listed but held — plus this project's disabled set, the token-store path,
+/// and the timeout knobs. Pure parse/merge over boundary reads. Without a
+/// project layer (`ALTER_ZERO_PROJECT_CONFIG` off) no project file
+/// contributes at all.
+pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> McpSources {
     let project = cwd.display().to_string();
     let user_path = config::mcp_user_file_path();
     let user_contents = user_path
@@ -39,8 +37,19 @@ pub(crate) fn load_mcp_sources(
         .as_deref()
         .map(|path| alter_zero::ui::display_cwd(path, home.as_deref()))
         .unwrap_or_else(|| "~/.alter-zero/mcp.json".to_string());
-    // The project files ride the trust layer's snapshot: `(parse, display
-    // path, trusted)` per present file, plus its parse errors for the toast.
+    // Where each project server stands with the review, and so which of
+    // each file's servers may run.
+    let reviews = trust.server_reviews();
+    let approved = |path: &Path| -> BTreeSet<String> {
+        let source = path.display().to_string();
+        reviews
+            .iter()
+            .filter(|review| review.source == source && review.trust.approved())
+            .map(|review| review.name.clone())
+            .collect()
+    };
+    // The project files: `(parse, display path, enabled names)` per file
+    // that parsed, plus its parse errors for the toast.
     let mut errors = Vec::new();
     let scoped = |file: Option<&super::trust::ProjectFile<mcp::McpFile>>,
                   errors: &mut Vec<String>| {
@@ -54,7 +63,7 @@ pub(crate) fn load_mcp_sources(
                         .iter()
                         .map(|error| format!("{display}: {error}")),
                 );
-                Some((parsed.clone(), display, file.trusted))
+                Some((parsed.clone(), display, approved(&file.path)))
             }
             Err(error) => {
                 errors.push(format!("{display}: {error}"));
@@ -62,6 +71,7 @@ pub(crate) fn load_mcp_sources(
             }
         }
     };
+    let layer = trust.project.as_ref();
     let alter = scoped(layer.and_then(|l| l.mcp_alter.as_ref()), &mut errors);
     let compat = scoped(layer.and_then(|l| l.mcp_compat.as_ref()), &mut errors);
     if let Some(file) = user_file.as_ref() {
@@ -71,15 +81,31 @@ pub(crate) fn load_mcp_sources(
                 .map(|error| format!("{user_display}: {error}")),
         );
     }
-    let (entries, untrusted) = mcp::merge_project_scopes(
+    let (entries, held_names) = mcp::merge_project_scopes(
         alter
             .as_ref()
-            .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
+            .map(|(file, display, enabled)| (file, display.as_str(), enabled)),
         compat
             .as_ref()
-            .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
+            .map(|(file, display, enabled)| (file, display.as_str(), enabled)),
         user_file.as_ref().map(|file| (file, user_display.as_str())),
     );
+    // A held server waits for the review when it is new or changed, and is
+    // disabled when the user said so.
+    let held = held_names
+        .into_iter()
+        .map(|name| {
+            let review = reviews
+                .iter()
+                .any(|r| r.name == name && r.trust.needs_review());
+            let hold = if review {
+                McpHold::Review
+            } else {
+                McpHold::Declined
+            };
+            (name, hold)
+        })
+        .collect();
     // The era cache is retired — a connect re-derives the verdict every
     // time now, so the file only ever misleads (`docs/mcp.md`).
     config::remove_retired_mcp_era_cache();
@@ -87,7 +113,7 @@ pub(crate) fn load_mcp_sources(
         entries,
         errors,
         disabled,
-        untrusted,
+        held,
         project,
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
@@ -122,7 +148,12 @@ impl Session<'_> {
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
-                manager.set_disabled(&server, disabled);
+                // A project server's on/off is the review's decision, kept in
+                // trust.json (`docs/config-review.md`); a user server's is the
+                // user file's per-directory set.
+                if !self.set_project_server(&server, !disabled) {
+                    manager.set_disabled(&server, disabled);
+                }
                 let state = if disabled { "disabled" } else { "enabled" };
                 self.toast(format!("{server} {state}"), ToastKind::Info);
             }

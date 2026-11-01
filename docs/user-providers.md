@@ -86,8 +86,8 @@ there could point a stored key at a host of its choosing:
 `[providers.openrouter.kwargs] api_base = "https://…"` would have sent the
 user's OpenRouter key there — before the first frame, at that, since the
 startup capability probe lists the active provider's models unasked. Project
-files that run or reach something are what the `/trust` gate exists for
-(`docs/project-config.md`); a provider file belongs to the user, so it is read
+files that run or reach something are what the startup review exists for
+(`docs/config-review.md`); a provider file belongs to the user, so it is read
 from the user's config home only. (The repository's own `providers.toml` is
 the source of the embedded built-ins, so running from a checkout loses
 nothing.)

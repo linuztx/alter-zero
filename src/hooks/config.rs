@@ -272,6 +272,16 @@ impl HooksFile {
 }
 
 impl HookHandler {
+    /// The command this handler would run, as it would run it (trimmed), or
+    /// `None` for one the runner skips — another handler type, no command, an
+    /// `if` condition, a `powershell` shell. What the trust review asks about
+    /// (`docs/config-review.md`): a skipped handler never runs, so trusting
+    /// it would mean nothing.
+    #[must_use]
+    pub fn runnable_command(&self) -> Option<String> {
+        self.resolve().ok().map(|hook| hook.command)
+    }
+
     /// The runnable form, or why this handler is being skipped.
     fn resolve(&self) -> Result<CommandHook, String> {
         if let HandlerKind::Other(kind) = &self.kind {
@@ -627,6 +637,38 @@ mod tests {
             selection.warnings[0].contains("powershell"),
             "{:?}",
             selection.warnings
+        );
+    }
+
+    #[test]
+    fn runnable_command_is_the_command_a_handler_would_run() {
+        // What the trust review asks about (`docs/config-review.md`): exactly
+        // the handlers the runner would run, their command as it would run.
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[
+                {"type":"command","command":"  ./fmt.sh  "},
+                {"type":"command","command":"   "},
+                {"type":"prompt","command":"./never.sh"},
+                {"type":"command","command":"./scoped.sh","if":"Bash(git *)"},
+                {"type":"command","command":"./ps.ps1","shell":"powershell"},
+                {"type":"command","command":"./bash.sh","shell":"bash"}
+            ]}]}}"#,
+        );
+        let commands: Vec<Option<String>> = file.hooks["Stop"][0]
+            .hooks
+            .iter()
+            .map(HookHandler::runnable_command)
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                Some("./fmt.sh".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some("./bash.sh".to_string()),
+            ]
         );
     }
 

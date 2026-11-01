@@ -261,13 +261,13 @@ Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -879,7 +879,7 @@ that one's (`in_use`, `— kept the one in use`);
 `ALTER_ZERO_PROVIDERS_FILE` stands **alone**
 (`ProvidersFile::standalone`, the smoke suite's hermetic stubs);
 `./providers.toml` is **never** read (a checkout could point a stored key at
-its own host before the first frame — the `/trust` concern); a keyless
+its own host before the first frame — the startup review's concern); a keyless
 provider naming no host variable is configured by its block alone
 (`Provider::configured_by_definition` — LM Studio, llama.cpp, vLLM; no
 shipped provider qualifies); `drop_params` takes request fields a strict
@@ -2246,24 +2246,26 @@ auto-mode classifier does, and payloads resolve `permission_mode`,
 mode; the **conversation's** id — the rollout file's, the handle `--resume`
 takes, chosen before the file exists and moved on by `/clear`/`/resume` —
 and its path, which the recorder publishes into a shared `ConversationCell`),
-beside Claude Code's `scratchpad_dir`. User-level config only — a
-project layer needs a trust model, and layers
-would union, so it stays purely additive; a malformed file is a red startup
+beside Claude Code's `scratchpad_dir`. The user's file and a project's
+`.alter-zero/hooks.json` union (`HooksFile::merged`, purely additive), and
+every hook in either runs only once the user has trusted it in the startup
+review (`docs/config-review.md`); a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved and **on until a directory turns it off**
-(`docs/per-directory-state.md` — the user's own file runs with no opt-in, a
-project's waits for `/trust`); `ALTER_ZERO_HOOKS` seeds it for a run and
+(`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
 Phase 133 the session events through a refusing stub provider, and Phase
 134 a real prompt's `Notification` against a stub asking for one call) in
-`docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
+`docs/hooks.md`; and the **`/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
 no text entry, so the hardware cursor hides while its seat tracks the
 selected `❯` row (the permission prompt's kitty-cursor-trail rule, shared
-with `/mcp` and `/trust` — `ui::cursor_visible`) — walking events → matchers →
-hooks → detail over `hooks::HooksOverview`, the digest of the runner's own
-parsed file; ↑/↓/digits/Enter/Esc, a five-row selection-centered window
+with `/mcp` and the startup review — `ui::cursor_visible`) — walking events → matchers →
+hooks → detail over `hooks::HooksOverview`, the digest of every configured
+hook with its trust (an untrusted one's row marked `⚠ not trusted`, its
+detail page's Enter trusting it or no longer, `Action::SetHookTrust`,
+`docs/config-review.md`); ↑/↓/digits/Enter/Esc, a five-row selection-centered window
 with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
 runner's exit-code semantics, matcher level only for the events whose
 dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
@@ -2271,7 +2273,7 @@ dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
 command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **view
 flow** (`docs/view-flow.md`: a content-driven framed view's page taller than
 the terminal — an `/mcp` tool detail's long description, a `/hooks` detail's
-wrapped command box, a `/trust` review's verbatim listing — no longer clips
+wrapped command box — no longer clips
 at the bottom: every framed body paints **bottom-anchored**
 (`ui::view_body_skip`; the seat's `menu_marker_seat` and the pickers'
 `anchored_view_row` subtract the same skip) so the hint and closing rule
@@ -2316,44 +2318,57 @@ reflow tail), while scrollback commits pause under an active flow
 (`Session::commits_allowed`, the agent-view pattern — a queued turn
 dispatching under an open screen-tall menu regenerates from history at
 flow-exit instead of tearing the page), `smoke.sh` Phase 85); and the
-**project-level `.alter-zero` config layer behind the `/trust` gate**
-(`docs/project-config.md`: a project's own `{root}/.alter-zero/hooks.json`
-(union-merged after the user file — `HooksFile::merged`, the pre-committed
-additive semantics) and `{root}/.alter-zero/mcp.json` + the compat
+**project-level `.alter-zero` config layer and the startup review**
+(`docs/project-config.md` the layer, `docs/config-review.md` the review: a
+project's own `{root}/.alter-zero/hooks.json` (union-merged after the user
+file — `HooksFile::merged`) and `{root}/.alter-zero/mcp.json` + the compat
 `{root}/.mcp.json` (first-name-wins ahead of the user file) are read once at
 bootstrap — the root being the nearest-`.git` ancestor-or-self, else the cwd,
 **except the home directory, which is never a project**
 (`trust::is_project_root`: a git-less `~` would make `{root}/.alter-zero`
-the user's own config home and ask the user to trust their own files; a
-per-file identity guard catches the same collision under a moved
-`ALTER_ZERO_CONFIG_DIR`) — each file's bytes SHA-256-fingerprinted
-(`trust::fingerprint`)
-and checked against `{config_home}/trust.json` — **default-deny**, because a
-checked-in hooks handler or stdio server executing on clone is the hole the
-hooks doc refused to open (and `.mcp.json` used to have): untrusted hooks
-contribute nothing to the merge, untrusted servers sit in `/mcp` as
-`⚠ untrusted` (never launched, never shadowing the user's own same-named
-server — `mcp::merge_project_scopes`) while a startup toast points at
-**`/trust`**, the seventh composer-replacing picker (the `/hooks` browser's
-sibling: no text entry, hidden cursor seated on the `❯`) showing the root, each file's
-hook commands / server targets **verbatim** with a
-pending-approval/trusted/won't-parse badge, over `❯ 1. Trust this project's
-config` / `2. Revoke trust`; approval records the **reviewed snapshot's**
-fingerprints (never a re-read — no approve-what-you-didn't-see race, an
-edited file re-pends at the next launch) via `trust::record_trust`'s RMW and
-activates **live** — `ModelSession::set_hooks_file` swaps the merge into the
-next backend build, `McpManager::set_trusted` connects the held servers
-(revoke kills them back to `untrusted`); a malformed `trust.json` fails
-**closed** with a red toast (guard files are loud), an unparseable project
-file is pending-but-unapprovable (recording a hash sight-unseen is not
-trust); skills stay outside the gate (inert markdown; their bodies' commands
-still meet the permission gate); the pure format/fingerprint/review model is
-`src/trust.rs`, the boundary load/apply `src/tui/trust.rs`, gated by
-`ALTER_ZERO_PROJECT_CONFIG` — which `smoke.sh`'s base env turns **off** for
-hermeticity (the skills Phase 36 lesson: the suite's cwd is a real
-checkout), Phase 83 driving the whole flow — pending toast → untrusted
-`/mcp` row → review → approve → live connect + merged `/hooks` → relaunch
-still trusted — in a temp project); and the **`Skill`
+the user's own config home; a per-file identity guard catches the same
+collision under a moved `ALTER_ZERO_CONFIG_DIR`) — and **no hook, the user's
+or a project's, and no project MCP server runs until the user has seen it**:
+`{config_home}/trust.json` keeps, per file, the trusted hooks themselves
+(event, normalised matcher, command — `trust::HookIdentity`, so an untrusted
+hook whose event and matcher match a listed one the file no longer has is
+**changed**, its old command the review's `was:` line) and a decision per
+project server pinned to its whole entry (`trust::server_fingerprint`, the
+`target` kept for `was:`, never an env value or a header token). When
+anything is new or changed the **startup review** opens on the first frame
+(`App::config_review` — `app/config_review.rs`, `ui/config_review_view.rs`:
+a composer-replacing page in the `/hooks` family, no text entry, the hidden
+cursor seated on its `❯`, routed right after the two modals in the keys, the
+render, the height and the seat; up to two pages, hooks then servers, each a
+checkbox list grouped by file showing **verbatim** what runs, everything
+selected by default; Space toggles, Enter confirms, Esc declines, Ctrl+C
+quits without answering anything): a
+confirmed hooks page records the selected hooks trusted while the rest stay
+off, unrecorded, asked again at the next launch — as is a declined page,
+`Continue without trusting` — and a confirmed servers page records each
+server enabled or disabled, a declined one (`Disable all`, Esc) all
+disabled. Answers apply **live**: `ModelSession::set_hooks_file` rebinds the
+trusted share (`trust::trusted_only` per layer), `McpManager::set_approved`
+connects or holds (`McpHold::{Review, Declined}`,
+`McpServerStatus::AwaitingReview`; a held server never shadows the user's
+own same-named one, `mcp::merge_project_scopes`); `SessionStart` is held
+(`ModelSession::hold_session_start`) and a `[PROMPT]` waits until the review
+closes; and the page **sheds rows rather than flows** — info, then every
+item but the highlighted one folded, then a window around it, then its
+detail cut, then the title, then a one-row hint — since a flowed page's
+purge rebuild would wipe the terminal's own scrollback at startup. After
+startup `/hooks` toggles a hook's trust, `/mcp` Enable/Disable on a project
+server records the review's decision (never the user file's disabled set),
+and turning the `/settings` **Hooks** row on over hooks waiting for trust
+opens the hooks page. A malformed `trust.json` fails **closed** (nothing
+trusted) with a red toast; skills and agent definitions stay outside the
+review (inert markdown whose commands still meet the permission gate); the
+pure store is `src/trust.rs`, the boundary load/apply `src/tui/trust.rs`;
+`ALTER_ZERO_PROJECT_CONFIG` gates the project layer — `smoke.sh`'s base env
+turns it **off** for hermeticity (the skills Phase 36 lesson: the suite's cwd
+is a real checkout), and the phases that load a `hooks.json` answer the
+hooks page first — while Phase 83 drives both pages, the persistence, a
+changed hook and the `/hooks` and `/mcp` toggles in a temp project); and the **`Skill`
 tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
@@ -2743,8 +2758,9 @@ key, `SettingsFile::record_value`) so an `ALTER_ZERO_*` override merged in at
 startup can never *stick*: the environment wins for the run, per setting,
 and only the row the user actually cycled is saved. **Checkpoints** default
 to `false` — a whole-cwd snapshot before the first frame, so a directory opts
-in — while **Hooks** default to `true`: the user's own `hooks.json` runs with
-no opt-in, a project's still waits for `/trust`, and a directory opts out. The `/model` selection is per directory the same way
+in — while **Hooks** default to `true`: each hook, the user's or a
+project's, runs once it is trusted in the startup review, and a directory
+opts out. The `/model` selection is per directory the same way
 (`llm::settings::Settings`'s `projects` map over the top-level **last**
 selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`
@@ -3433,7 +3449,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/trust`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

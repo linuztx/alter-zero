@@ -275,17 +275,26 @@ impl<'t> Session<'t> {
         agent_errors.extend(walk_errors);
         let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
 
-        // The project's `.alter-zero` config layer (docs/project-config.md):
-        // each file read once, fingerprinted, and checked against trust.json
-        // — the snapshot /trust reviews. Loaded BEFORE the MCP manager and
-        // the hooks merge, both of which it feeds. Nothing untrusted runs.
-        let (project_layer, trust_error) = super::trust::load_project_layer(&cwd);
+        // What the startup review decides over (docs/config-review.md): the
+        // user's lifecycle hooks (`~/.alter-zero/hooks.json`, or
+        // `ALTER_ZERO_HOOKS_FILE`), the project's `.alter-zero` layer
+        // (docs/project-config.md) and trust.json — each read once, here,
+        // BEFORE the MCP manager and the hooks setup, both of which run only
+        // what the user trusts. A malformed hooks.json is deliberately loud —
+        // the startup toast below rather than a silent "no hooks", which is
+        // how a user comes to trust a guard that isn't there.
+        let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
+        let (user_hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
+        let (trust, trust_error) = super::trust::TrustState::load(
+            hooks_path.map(|path| (path, user_hooks_file)),
+            super::trust::load_project_layer(&cwd),
+        );
 
         // The MCP servers (docs/mcp.md): the config files parsed and merged
-        // (the project layer's, trust-aware), the manager built over them,
-        // and every enabled server's connect kicked off on worker threads —
-        // never blocking the first frame. The event channel is a select!
-        // source like the background shells'.
+        // (a project's servers held until the review enables them), the
+        // manager built over them, and every enabled server's connect kicked
+        // off on worker threads — never blocking the first frame. The event
+        // channel is a select! source like the background shells'.
         // The telemetry ping's report channel (docs/telemetry.md) — its own
         // `select!` source, because the worker outlives nothing but must
         // never write the file itself.
@@ -297,7 +306,7 @@ impl<'t> Session<'t> {
         let mcp_manager = config::mcp_enabled().then(|| {
             let manager = alter_zero::llm::mcp::McpManager::new(
                 mcp_tx,
-                super::mcp::load_mcp_sources(&cwd, project_layer.as_ref()),
+                super::mcp::load_mcp_sources(&cwd, &trust),
             );
             manager.start_connections();
             manager
@@ -328,26 +337,6 @@ impl<'t> Session<'t> {
         app.seed_tips(tips_file.next);
         let settings = config::apply_setting_overrides(settings);
 
-        // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
-        // (or `ALTER_ZERO_HOOKS_FILE`), read once here and re-attached to every
-        // backend rebuild through `HookSetup`. A malformed file is deliberately
-        // loud — it becomes the startup toast below rather than a silent "no
-        // hooks", which is how a user comes to trust a guard that isn't there.
-        let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
-        let (hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
-        // The trusted project layer unions in after the user's file
-        // (docs/project-config.md — one more entry from the loader; an
-        // untrusted or unparseable project file contributes nothing). The
-        // user layer is kept apart on the session so a /trust decision can
-        // rebuild this merge live.
-        let user_hooks_file = hooks_file.clone();
-        let hooks_file = match project_layer
-            .as_ref()
-            .and_then(super::trust::ProjectLayer::trusted_hooks)
-        {
-            Some(project_hooks) => user_hooks_file.merged(project_hooks),
-            None => hooks_file,
-        };
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
         // publishes into (below) and the sink reads at dispatch time. The
@@ -363,14 +352,14 @@ impl<'t> Session<'t> {
             sources.push("startup".to_string());
         }
         let hook_conversation = hook_handles.conversation.clone();
-        // Constructed even over an empty merge (docs/project-config.md): a
-        // /trust approval mid-session swaps its file in place, and the live
+        // Constructed even over an empty file (docs/config-review.md): a
+        // review answer mid-session swaps its file in place, and the live
         // handles must be THESE — a second set would split the transcript
-        // path and the SessionStart queue. `hooks_available()` reads the
-        // file's emptiness, so the /settings row reports exactly as before;
-        // an empty file's sink is `None` either way.
+        // path and the SessionStart queue. What it runs is the trusted share
+        // of the user's and the project's hooks; an empty file's sink is
+        // `None`.
         let hook_setup = Some(HookSetup {
-            file: std::sync::Arc::new(hooks_file),
+            file: std::sync::Arc::new(trust.runner_hooks()),
             session_id: session_id.clone(),
             cwd: cwd.clone(),
             // `$ALTER_ZERO_PROJECT_DIR`: the root the project layer reads
@@ -563,8 +552,8 @@ impl<'t> Session<'t> {
             subagents,
             secrets,
             mcp: mcp_manager,
-            project_layer,
-            user_hooks_file,
+            trust,
+            held_prompt: None,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
             reported_skill_errors: skill_errors
@@ -609,6 +598,11 @@ impl<'t> Session<'t> {
         // The capability probe for whatever model the session ended up on —
         // the directory's entry, or a resumed conversation's own.
         session.spawn_pending_probe();
+        // The startup review (docs/config-review.md), open on the very first
+        // frame when a hook or a project server is new or changed: nothing
+        // it asks about runs until it is answered, and the SessionStart
+        // fire below stays queued until then.
+        let reviewing = session.open_startup_review();
         session.paint_first_frame(picker)?;
         // SessionStart (docs/hooks.md), in the background as the session
         // opens — Claude Code's timing: the user can type at once, and the
@@ -636,8 +630,14 @@ impl<'t> Session<'t> {
         // them, exactly where a fast Enter would have put it. The grammar
         // already refused the one pairing with no sound meaning (a prompt
         // behind the interactive picker).
+        // While the review asks what may run, the prompt waits for its
+        // answers, so the first turn starts with them.
         if let Some(prompt) = prompt {
-            session.submit_startup_prompt(prompt);
+            if reviewing {
+                session.held_prompt = Some(prompt);
+            } else {
+                session.submit_startup_prompt(prompt);
+            }
         }
         // The herdr pane this runs in, if any (docs/herdr.md): its worker
         // starts after the first frame too, and the first report claims the

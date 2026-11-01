@@ -3,7 +3,7 @@
 ## The problem
 
 The composer-replacing inline views draw a **content-driven framed body**: the
-builder (`ui::mcp_view_lines`, `ui::hooks_view_lines`, `ui::trust_view_lines`,
+builder (`ui::mcp_view_lines`, `ui::hooks_view_lines`, `ui::config_review_lines`,
 `ui::background_view_lines`) produces the whole page as lines — top rule,
 title, content, hint, bottom rule — and the height helpers reserve
 `lines.len()` rows, clamped to the terminal (`ui::layout::view_height`). The
@@ -124,7 +124,7 @@ wrap. Each view's tests walk its states through one shared assertion
 
 Bottom-anchoring keeps a page's *tail* on screen, which is the right thing
 for a page whose choices sit at the bottom — the permission prompt's options,
-`/trust`'s two rows. A picker is the other shape: its `❯` search line and the
+the `/mcp` server page's actions. A picker is the other shape: its `❯` search line and the
 highlighted row sit near the **top**, under the page's header, and its
 description or preview sits below the list. Anchored on a short terminal,
 such a page kept the description and the hint and flowed the search line and
@@ -221,7 +221,7 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
-  menus (`/mcp`, `/hooks`, `/trust`, `/donate`, `/export`, `/context`, `/usage`, `/secrets`) *and* the windowed pickers (`/model`,
+  menus (`/mcp`, `/hooks`, the startup review, `/donate`, `/export`, `/context`, `/usage`, `/secrets`) *and* the windowed pickers (`/model`,
   `/login`, `/settings`, `/skills`), all of them line builders now
   (`*_view_lines` / `key_onboarding_lines`, their heights the built line
   count). Their content is **static per state**: it changes only on a user

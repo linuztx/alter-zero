@@ -65,8 +65,11 @@ pd_setting() {
 	printf '%s' "$pane"
 }
 
-# (a) The first directory: the last selection, pinned.
+# (a) The first directory: the last selection, pinned. The hook is trusted
+# at the startup review once (docs/config-review.md) — its record is keyed by
+# the hooks.json, so no later launch here asks again.
 tmux new-session -d -s "$S109" -x 100 -y 30 -c "$PD_A" "$APP_PD"
+trust_hooks "$S109"
 pd_a="$(pd_wait "$S109" "pinned-model-a")"
 echo "==== Phase 109: a directory launched in for the first time ===="
 printf '%s\n' "$pd_a"

@@ -88,7 +88,19 @@ fn palette_descriptions_are_concise_and_product_name_free() {
             .as_ref()
     };
     assert_eq!(desc("quit"), "Exit the app");
-    assert_eq!(desc("trust"), "Review and approve this project's config");
+    // The hooks browser is also where a hook's trust changes
+    // (docs/config-review.md), so it says so in the palette.
+    assert_eq!(
+        desc("hooks"),
+        "Browse hooks and trust or stop trusting each one"
+    );
+    // `/trust` is gone: hooks and project MCP servers are asked about at
+    // startup instead, and managed in `/hooks` and `/mcp`
+    // (docs/config-review.md).
+    assert!(
+        COMMANDS.iter().all(|c| c.name != "trust"),
+        "/trust is no longer a command"
+    );
     // `/login` has three ways in, and a description naming only a key sends
     // someone with a local server looking for one (docs/local-models.md).
     assert_eq!(

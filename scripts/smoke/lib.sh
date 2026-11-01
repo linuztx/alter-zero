@@ -358,6 +358,25 @@ launch() {
 	fi
 	return 0
 }
+# trust_hooks SESSION — answer the startup review's hooks page
+# (docs/config-review.md). A phase that loads a hooks.json meets it on the
+# first frame, in place of the composer, until its hooks are trusted: wait
+# for it, trust every hook it lists, and wait for the composer. Launch such a
+# phase with `launch -n` (or `-w` on the review) and call this next; a phase
+# whose config home already trusts its hooks never sees the page.
+trust_hooks() {
+	local sess="$1"
+	if ! wait_for 10 "$sess" -F "Esc to continue without trusting"; then
+		fail "the startup review never asked about the hooks in session $sess"
+		return 1
+	fi
+	tmux send-keys -t "$sess" Enter
+	if ! wait_for 10 "$sess" -E '^❯'; then
+		fail "the composer never came back after the hooks review in session $sess"
+		return 1
+	fi
+	return 0
+}
 # work_dir [NAME] — create and echo a short working directory for the app to run
 # in, under the phase's isolated HOME so the footer renders it as `~/{NAME}`.
 #

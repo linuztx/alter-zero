@@ -14,6 +14,30 @@ release heading when a version is cut.
 
 ### Added
 
+- **Hooks and a project's MCP servers are reviewed before they run.** A
+  hook runs a shell command on its own whenever its event fires, and a
+  project's `.mcp.json` or `.alter-zero/mcp.json` starts a program or
+  connects to a URL as soon as the session opens, so neither runs any more
+  until you have seen it. When the app starts and finds a hook that is new
+  or has changed since you trusted it, in your own `~/.alter-zero/hooks.json`
+  or in a project's `.alter-zero/hooks.json`, or a project server it has not
+  asked about, it opens a review before anything else: the hooks first, then
+  the servers, each listed under the file it comes from with exactly what it
+  runs, every command in full. Everything starts selected; **Space**
+  unselects one, **Enter** confirms. Trusted hooks run from then on and an
+  edited one is asked about again, shown beside what it used to run; hooks
+  you leave unselected, or skip with **Esc** ("Continue without trusting"),
+  stay off and are asked about at the next launch. Servers you enable
+  connect at once; the rest are disabled and remembered, and **Esc**
+  disables them all. While the review is open, `SessionStart` hooks wait,
+  and a prompt given on the command line is sent once you have answered.
+  Your choices are kept in `~/.alter-zero/trust.json`, never in the project
+  (`docs/config-review.md`).
+- **`/hooks` trusts a hook, or stops trusting it.** The browser marks a hook
+  that is not trusted with `⚠ not trusted` and says how many do not run;
+  **Enter** on a hook's page trusts it or stops trusting it, at once. In
+  `/mcp`, Enable and Disable on a project's server change the same decision
+  the review recorded (`docs/hooks-menu.md`).
 - **Reads, searches and listings fold into one line.** An agent finding its
   way around a project used to fill the screen with a cell per call: every
   `ls`, every `grep`, every file it read, each with its output under it.
@@ -66,11 +90,10 @@ release heading when a version is cut.
   (`docs/permissions.md`).
 - **Hooks run by default.** The `/settings` **Hooks** row used to be off in
   every folder until you turned it on there, so a `~/.alter-zero/hooks.json`
-  did nothing in a folder you had not set it up in. It is now on: your own
-  hooks file runs everywhere, as in Claude Code. A project's
-  `.alter-zero/hooks.json` still runs only after you approve it with
-  `/trust`. Turning the row off in a folder is remembered for that folder,
-  and `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/settings.md`).
+  did nothing in a folder you had not set it up in. It is now on
+  everywhere, and each hook runs once you have trusted it in the review
+  above. Turning the row off in a folder is remembered for that folder, and
+  `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/settings.md`).
 - **What a hook tells the agent is short and says which hook spoke.** When
   a hook refused a tool call, the agent used to read a five-line paragraph
   that never said which hook had refused it. It now reads one line in
@@ -87,6 +110,14 @@ release heading when a version is cut.
   refuses shows one line, `Prompt blocked by UserPromptSubmit hook: …`, and
   a hook that refuses without a reason now reads `no reason given` instead
   of saying "blocked" twice (`docs/hooks.md`).
+
+### Removed
+
+- **`/trust`.** It approved a project's `.alter-zero/hooks.json` and MCP
+  files whole, and only if you thought to open it; the review at startup
+  replaces it, covers your own `hooks.json` too, and asks about each hook
+  and server separately. A project you trusted with `/trust` is asked about
+  once more (`docs/config-review.md`).
 
 ### Fixed
 

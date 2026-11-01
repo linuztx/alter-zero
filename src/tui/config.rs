@@ -76,7 +76,7 @@ pub(crate) fn user_providers_path() -> Option<PathBuf> {
 /// Never `./providers.toml`. The working directory is a checkout the user may
 /// not have written, and a provider block there could send a stored key to a
 /// host of its choosing before the first frame — the startup capability probe
-/// lists models unasked. That is the risk the `/trust` gate exists for
+/// lists models unasked. That is the risk the startup review exists for
 /// (`docs/project-config.md`), so the file is read from the config home only.
 ///
 /// # Errors
@@ -537,48 +537,49 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
 
 /// Whether the project-level `.alter-zero` config layer is discovered at all
 /// (`docs/project-config.md`) — `ALTER_ZERO_PROJECT_CONFIG`, default on.
-/// Falsy = no project hooks/MCP discovery, no pending toast, `/trust`
-/// explains via toast — and the smoke suite's hermeticity switch, since its
+/// Falsy = no project hooks/MCP discovery and so nothing of a project's in
+/// the startup review — and the smoke suite's hermeticity switch, since its
 /// phases run with cwd inside a real checkout.
 pub(crate) fn project_config_enabled() -> bool {
     env_flag("ALTER_ZERO_PROJECT_CONFIG")
 }
 
-/// `{config_home}/trust.json` — the per-project trust store
-/// (`docs/project-config.md`). No override var of its own (the
+/// `{config_home}/trust.json` — what the user trusted to run
+/// (`docs/config-review.md`). No override var of its own (the
 /// `permissions.json` posture): `ALTER_ZERO_CONFIG_DIR` moves it.
 pub(crate) fn trust_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("trust.json"))
 }
 
-/// Load `trust.json` — the [`load_hooks`] posture, for the same reason: a
-/// guard file that silently reads as "nothing trusted" (or worse) must say
+/// Load `trust.json`, with the text the next decision is recorded over —
+/// the [`load_hooks`] posture, for the same reason: a guard file that
+/// silently reads as something other than what the user decided must say
 /// so. Missing is the normal case; malformed/unreadable **fails closed**
-/// (nothing trusted) with the message to raise.
+/// (nothing trusted, a fresh text) with the message to raise.
 pub(crate) fn load_trust_file(
     path: Option<&Path>,
-) -> (alter_zero::trust::TrustFile, Option<String>) {
-    let empty = alter_zero::trust::TrustFile::default;
+) -> (alter_zero::trust::TrustFile, String, Option<String>) {
+    let closed = |err: String| {
+        (
+            alter_zero::trust::TrustFile::default(),
+            String::new(),
+            Some(format!(
+                "trust.json: {err} — nothing in it is trusted this session"
+            )),
+        )
+    };
     let Some(path) = path else {
-        return (empty(), None);
+        return (alter_zero::trust::TrustFile::default(), String::new(), None);
     };
     match std::fs::read_to_string(path) {
         Ok(text) => match alter_zero::trust::TrustFile::parse(&text) {
-            Ok(file) => (file, None),
-            Err(err) => (
-                empty(),
-                Some(format!(
-                    "trust.json: {err} — project config stays untrusted this session"
-                )),
-            ),
+            Ok(file) => (file, text, None),
+            Err(err) => closed(err),
         },
-        Err(err) if err.kind() == io::ErrorKind::NotFound => (empty(), None),
-        Err(err) => (
-            empty(),
-            Some(format!(
-                "trust.json: {err} — project config stays untrusted this session"
-            )),
-        ),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            (alter_zero::trust::TrustFile::default(), String::new(), None)
+        }
+        Err(err) => closed(err.to_string()),
     }
 }
 

@@ -14,7 +14,7 @@ mod transport;
 
 pub use self::client::{ConnectError, Connection, connect};
 pub use self::manager::{
-    DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpManager, McpSources,
+    DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpHold, McpManager, McpSources,
 };
 pub use self::oauth::{
     AUTH_FLOW_TIMEOUT, AuthProgress, AuthServerMeta, RefreshFailure, StoredTokens, b64url,

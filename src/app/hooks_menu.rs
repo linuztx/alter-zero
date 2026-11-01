@@ -1,4 +1,4 @@
-//! The read-only `/hooks` menu: the open browser's level stack and key map.
+//! The `/hooks` menu: the open browser's level stack and key map.
 //!
 //! The fourth composer-replacing inline picker, beside
 //! [`super::model_picker`], [`super::login`] and [`super::settings`] — it
@@ -6,9 +6,10 @@
 //! while open, and closes back to the composer. Unlike those three it has
 //! **no text entry** (navigation is the whole grammar), so there is no query
 //! and the hardware cursor parks in the frame's corner. The data it browses —
-//! a [`HooksOverview`] digest of the runner's own parsed `hooks.json` — is
-//! injected whole at open ([`App::open_hooks_menu`]), the `/resume` picker's
-//! boundary seam. See `docs/hooks-menu.md`.
+//! a [`HooksOverview`] digest of every configured hook, the user's file and
+//! a project's, each with its trust (`docs/config-review.md`) — is injected
+//! whole at open ([`App::open_hooks_menu`]), the `/resume` picker's boundary
+//! seam; a hook's page toggles its trust. See `docs/hooks-menu.md`.
 
 use super::*;
 
@@ -49,8 +50,8 @@ pub enum HooksLevel {
         matcher: Option<usize>,
         selected: usize,
     },
-    /// Level 4: one handler's read-only details. No selection — Esc is the
-    /// only way out.
+    /// Level 4: one handler's details. No selection — Enter toggles a
+    /// runnable hook's trust (`docs/config-review.md`), Esc goes back.
     Detail {
         event: usize,
         matcher: Option<usize>,
@@ -153,6 +154,49 @@ impl HooksMenu {
         }
     }
 
+    /// Enter on a detail page: flip the hook's trust — every row naming the
+    /// same hook, so the page and the lists agree — and say what to record.
+    /// `None` for a hook with nothing to record (one that never runs, or was
+    /// read from no file).
+    fn toggle_trust(
+        &mut self,
+        event: usize,
+        matcher: Option<usize>,
+        hook: usize,
+    ) -> Option<Action> {
+        let (source, identity) = self
+            .overview
+            .events
+            .get(event)?
+            .hooks_at(matcher)
+            .get(hook)?
+            .trust_key
+            .clone()?;
+        let key = Some((source.clone(), identity.clone()));
+        let trusted = !self
+            .overview
+            .events
+            .iter()
+            .flat_map(|event| event.matchers.iter())
+            .flat_map(|matcher| matcher.hooks.iter())
+            .any(|hook| hook.trust_key == key && hook.trusted);
+        for row in self
+            .overview
+            .events
+            .iter_mut()
+            .flat_map(|event| event.matchers.iter_mut())
+            .flat_map(|matcher| matcher.hooks.iter_mut())
+            .filter(|row| row.trust_key == key)
+        {
+            row.trusted = trusted;
+        }
+        Some(Action::SetHookTrust {
+            source,
+            identity,
+            trusted,
+        })
+    }
+
     /// Esc: pop one frame, restoring the parent's selection. `false` when
     /// already at the events level — the caller closes the menu.
     fn back(&mut self) -> bool {
@@ -218,8 +262,9 @@ impl App {
 
     /// Keys while the `/hooks` menu is open. Owns **every** key (routed at
     /// the top of [`on_key`]): ↑/↓ move wrapping at the ends, Home/End jump,
-    /// digits 1–9 jump-activate, Enter descends, Esc ascends (closing from
-    /// the top), Ctrl+C closes.
+    /// digits 1–9 jump-activate, Enter descends — and on a hook's detail
+    /// page toggles its trust — Esc ascends (closing from the top), Ctrl+C
+    /// closes.
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_hooks(&mut self, key: KeyEvent) -> Action {
@@ -242,7 +287,21 @@ impl App {
             }
             KeyCode::Home => menu.select(0),
             KeyCode::End => menu.select(usize::MAX),
-            KeyCode::Enter => menu.activate(),
+            // On a hook's detail page Enter trusts it or stops trusting it
+            // (`docs/config-review.md`); everywhere else it descends.
+            KeyCode::Enter => {
+                if let HooksLevel::Detail {
+                    event,
+                    matcher,
+                    hook,
+                } = menu.level
+                {
+                    return menu
+                        .toggle_trust(event, matcher, hook)
+                        .unwrap_or(Action::None);
+                }
+                menu.activate();
+            }
             // Digits jump-activate their absolute row (the ask modal's rule
             // — Claude Code's Select selects on a number key). A digit past
             // the rows names nothing and is ignored.

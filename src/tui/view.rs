@@ -130,7 +130,7 @@ impl Session<'_> {
     }
 
     /// The framed-view rows that must be **flowed** into scrollback for the
-    /// current state — a screen-tall `/mcp`/`/hooks`/`/trust` page's top —
+    /// current state — a screen-tall `/mcp`/`/hooks` page's top —
     /// or `None` when nothing flows (`ui::view_flow`, `docs/view-flow.md`).
     /// Capped like every purge-rebuild write.
     pub(crate) fn current_view_flow(&self) -> Option<ui::ViewFlow> {
@@ -631,6 +631,11 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::permission_height(app, screen.width, screen.height) {
         return height;
     }
+    // The startup review replaces the composer next — only a modal outranks
+    // it, its render branch's order (docs/config-review.md).
+    if let Some(height) = ui::config_review_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The inline `/model` picker, `/login` flow, `/settings` menu and ↓
     // background manager each replace the **composer** with their own framed
     // body — never the streaming strip, whose rows they reserve above
@@ -685,10 +690,6 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     }
     // The read-only `/usage` page, likewise (docs/usage.md).
     if let Some(height) = ui::usage_page_height(app, screen.width, screen.height) {
-        return height;
-    }
-    // The `/trust` review menu, likewise (docs/project-config.md).
-    if let Some(height) = ui::trust_menu_height(app, screen.width, screen.height) {
         return height;
     }
     // The `/mcp` manager, likewise (docs/mcp.md).

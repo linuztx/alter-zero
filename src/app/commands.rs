@@ -164,11 +164,6 @@ pub enum CommandEffect {
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
     /// connection work runs on worker threads either way. See `docs/mcp.md`.
     Mcp,
-    /// Open the `/trust` review menu over the project's `.alter-zero`
-    /// config layer. Works **mid-turn** like `/hooks` — it only replaces
-    /// the composer; an approval rebinds the *next* turn's hooks and
-    /// connects servers on worker threads. See `docs/project-config.md`.
-    Trust,
     /// Open the read-only `/donate` page: the project's crypto donation
     /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
     /// only replaces the composer. See `docs/donate.md`.
@@ -311,7 +306,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     ),
     SlashCommand::builtin(
         "hooks",
-        "Browse the configured lifecycle hooks",
+        "Browse hooks and trust or stop trusting each one",
         CommandEffect::Hooks,
     ),
     SlashCommand::builtin(
@@ -320,11 +315,6 @@ pub const COMMANDS: &[SlashCommand] = &[
         CommandEffect::Skills,
     ),
     SlashCommand::builtin("mcp", "Manage MCP servers", CommandEffect::Mcp),
-    SlashCommand::builtin(
-        "trust",
-        "Review and approve this project's config",
-        CommandEffect::Trust,
-    ),
     SlashCommand::builtin(
         "donate",
         "Support the project with a crypto donation",
@@ -605,14 +595,6 @@ impl App {
                 // the menu (the /resume data-injection seam). See
                 // docs/hooks-menu.md.
                 Action::OpenHooksMenu
-            }
-            CommandEffect::Trust => {
-                // /trust works mid-turn too — reviewing touches nothing
-                // running, and an approval rebinds the *next* turn. The
-                // *loop* digests the project layer it loaded into the review
-                // and opens the menu (the same injection seam). See
-                // docs/project-config.md.
-                Action::OpenTrustMenu
             }
             CommandEffect::Skills => {
                 // /skills works mid-turn too — browsing and toggling touch

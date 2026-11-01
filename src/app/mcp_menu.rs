@@ -108,10 +108,10 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
             out
         }
         McpServerStatus::Pending => vec![A::Disable],
-        // An untrusted project server has no actions here — running it is
-        // exactly what the trust gate withholds, so the way in is `/trust`,
-        // not an Enable row (`docs/project-config.md`).
-        McpServerStatus::Untrusted => Vec::new(),
+        // A project server waiting for the startup review has no actions
+        // here: the review on screen is where it is answered
+        // (`docs/config-review.md`).
+        McpServerStatus::AwaitingReview => Vec::new(),
     }
 }
 

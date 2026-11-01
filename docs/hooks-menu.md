@@ -1,20 +1,22 @@
-# The `/hooks` menu — a read-only hooks browser
+# The `/hooks` menu — the hooks browser
 
-`/hooks` opens an inline, **read-only** browser over the user's configured
-lifecycle hooks (`docs/hooks.md`) — Claude Code's `/hooks` menu, ported whole
+`/hooks` opens an inline browser over every configured lifecycle hook — the
+user's `hooks.json` and a project's (`docs/hooks.md`) — Claude Code's `/hooks` menu, ported whole
 from its `HooksConfigMenu` (the `SelectEventMode` → `SelectMatcherMode` →
 `SelectHookMode` → `ViewHookMode` state machine). It answers "what guards are
 armed right now?" without leaving the session; to add or change a hook the
 user edits `hooks.json` (the menu says so on its face), because duplicating a
 settings-file editor in-menu is exactly the maintenance burden that made the
-reference go read-only.
+reference go read-only. The one thing it changes is **trust**
+(`docs/config-review.md`): a hook runs only once the user trusts it, and the
+menu is where that changes after the startup review.
 
 (codex grew its own `/hooks` browser too — `hooks_browser_view.rs`, a
 two-page events-table → handlers view with trust-review columns for its
-plugin sources. Ours follows Claude Code's four-level shape instead: this
-port has one user-level `hooks.json` and no trust model to review, and the
-numbered `❯` rows / `Hook details` page are the look the feature was asked
-for in.)
+plugin sources. Ours follows Claude Code's four-level shape instead, the
+numbered `❯` rows / `Hook details` page being the look the feature was asked
+for in, and carries trust on the rows and the detail page rather than in
+columns.)
 
 ## Where it lives
 
@@ -36,15 +38,18 @@ instead, the full-screen overlays' rule (`overlay_cursor_seat`): never on
 the bottom rule, whose far corner is where such a page used to park the
 seat (`docs/view-flow.md`).
 
-Because browsing touches nothing, `/hooks` works mid-turn (the `/model`
-rule), and closing is pure collapse — the loop has nothing to reap.
+Because browsing touches nothing running — a trust change rebinds the
+*next* backend build — `/hooks` works mid-turn (the `/model` rule), and
+closing is pure collapse — the loop has nothing to reap.
 
 ## The four levels
 
 A tiny stack machine (`app::HooksLevel`), Esc popping one frame at a time:
 
-1. **Events** — `Hooks` over `{N} hook(s) configured`, the read-only info
-   line (`ℹ This menu is read-only. To add or modify hooks, edit hooks.json
+1. **Events** — `Hooks` over `{N} hook(s) configured`, an amber note when
+   any hook is not trusted (`2 hooks are not trusted and do not run — open
+   one and press Enter to trust it`), the info line (`ℹ Open a hook to trust
+   it, or to stop trusting it. To add or modify hooks, edit hooks.json
    directly or ask alter-zero. See docs/hooks.md`), and the **fourteen**
    [`HookEvent`]s as numbered rows — `{n}.  {Event} ({count})` with the
    count in the selection accent (dropped at zero, Claude Code's shape) and
@@ -61,16 +66,23 @@ A tiny stack machine (`app::HooksLevel`), Esc popping one frame at a time:
 3. **Hooks** — `{Event} - Matcher: {matcher}` (for a matcher-less event just
    `{Event}`), the same event description, then one row per handler —
    `{n}. [{type}] {command}` (the handler's `statusMessage` stands in for
-   the command when set, Claude Code's `getHookDisplayText`) with
-   `User Settings` in the description column.
+   the command when set, Claude Code's `getHookDisplayText`), an amber
+   `⚠ not trusted` after a hook that waits for trust, and `User Settings` in
+   the description column.
 4. **Hook details** — `Hook details` over an aligned field block (`Event:` /
    `Matcher:` (only when the event matches on something) / `Type:` /
-   `Source:  User settings ({hooks.json path})`), the `Command:` label over
+   `Source:  User settings ({hooks.json path})` / `Trust:` — `✔ trusted`, or
+   `⚠ not trusted — it does not run` — for a hook that can run), the
+   `Command:` label over
    a rounded dim-bordered box holding the **real** command word-wrapped
    (`ui::wrap_output`, spaces preserved — `statusMessage` never stands in
    here), a `Status message:` line when one is set, and the closing
-   direction to edit `hooks.json`. The hint row reads `Esc to go back` —
-   Enter does nothing at the bottom of the stack. A detail whose wrapped
+   direction to edit `hooks.json`. **Enter toggles the hook's trust**
+   (`Action::SetHookTrust` — the page updates at once, the loop records it in
+   `trust.json` and rebinds the hooks the session runs), so the hint reads
+   `Enter to trust · Esc to go back` or `Enter to stop trusting · Esc to go
+   back`; a handler that never runs has no trust and the hint stays `Esc to
+   go back`. A detail whose wrapped
    command box outgrows the terminal renders **bottom-anchored** with its
    skipped top **flowed into real scrollback**, so the whole page stays
    readable and the hint/rule stay on screen (`docs/view-flow.md`;
@@ -121,8 +133,11 @@ the reference's, whose exit codes mean different things.
   each with its matcher groups merged by matcher string (config order kept)
   and every handler (any `type`, the skipped kinds included: they are
   *configured*, which is what a browser reports) resolved to
-  `{kind, content, status_message}`. Events the file names that we don't
-  model never show (the reference iterates its own registry the same way).
+  `{kind, content, status_message}` plus, for a hook that can run, its
+  `trust_key` (its `hooks.json` and `trust::HookIdentity`) — and
+  `with_trust` answers each one's `trusted`. Events the file names that we
+  don't model never show (the reference iterates its own registry the same
+  way).
 - **`app::hooks_menu`** (pure state): the open menu — the overview snapshot,
   the `Source:` path string, the enabled flag, and the level stack — plus
   `on_key_hooks`. Opening is `App::open_hooks_menu(overview, source,
@@ -138,8 +153,9 @@ the reference's, whose exit codes mean different things.
   the `/mcp` manager's: both menus are walks several levels deep, and the
   headline is the row that answers "where am I?".
 - **`tui`** (boundary): the `Action::OpenHooksMenu` arm derives the overview
-  from the live `HookSetup` (the same `Arc<HooksFile>` every backend rebuild
-  re-attaches, so the browser and the runner can never disagree), resolves
+  from every configured hook — the user's file and the project's, as read at
+  bootstrap — with the trust `trust.json` records (the runner runs exactly
+  the trusted share, so the browser and the runner can never disagree), resolves
   the display path (`llm::hooks::hooks_file_path` → `ui::display_cwd`
   ~-shortening), reads the live enabled flag, and hands all three to `App`.
   The `/resume`-picker pattern: the pure command returns the intent, the
@@ -151,8 +167,7 @@ startup toast (`docs/hooks.md`) carries the actual error.
 
 ## What this deliberately is not
 
-No editing, no reloading (the overview is snapshotted at open, exactly as
-the runner snapshotted the file at startup), no project-level sources (one
-file → one `[User]` tag, `User Settings`, `User settings ({path})`), and no
-new `StreamEvent`/`HistoryItem` — the menu is UI over config, never
+No editing beyond trust, no reloading (the overview is snapshotted at open,
+exactly as the runner snapshotted the files at startup), and no new
+`StreamEvent`/`HistoryItem` — the menu is UI over config, never
 conversation.

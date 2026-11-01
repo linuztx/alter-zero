@@ -31,22 +31,27 @@ impl Session<'_> {
         self.app.open_settings();
     }
 
-    /// `/hooks`: open the read-only hooks browser (`docs/hooks-menu.md`). The
-    /// pure command returned the intent; this derives the data — the overview
-    /// from the live `HookSetup` (the same parsed file the runner consults,
-    /// so the browser and the dispatcher can never disagree), the `Source:`
-    /// path display, and whether the session actually runs the hooks — and
-    /// hands all three to `App`, the `/resume` picker's injection seam.
+    /// `/hooks`: open the hooks browser (`docs/hooks-menu.md`). The pure
+    /// command returned the intent; this derives the data — every configured
+    /// hook, the user's file and the project's, each with its trust
+    /// (`docs/config-review.md`), the `Source:` path display, and whether
+    /// the session runs hooks at all — and hands all three to `App`, the
+    /// `/resume` picker's injection seam.
     pub(crate) fn open_hooks_menu(&mut self) {
-        let (overview, enabled) = self.models.hooks_browse();
+        let overview = alter_zero::hooks::HooksOverview::from_file(&self.trust.configured_hooks())
+            .with_trust(&|source, identity| self.trust.is_hook_trusted(source, identity));
+        let enabled = self.models.hooks_enabled();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let mut source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
             .map(|path| alter_zero::ui::display_cwd(&path, home.as_deref()));
-        // A trusted project file is part of the merge the browser shows, so
-        // the `Source:` row names it too (`docs/project-config.md`).
-        if let Some(layer) = &self.project_layer
-            && let Some(file) = &layer.hooks
-            && layer.trusted_hooks().is_some()
+        // A project's file is part of what the browser shows, so the
+        // `Source:` row names it too (`docs/project-config.md`).
+        if let Some(file) = self
+            .trust
+            .project
+            .as_ref()
+            .and_then(|project| project.hooks.as_ref())
+            .filter(|file| file.parsed.is_ok())
         {
             let project = alter_zero::ui::display_cwd(&file.path, home.as_deref());
             source = Some(match source {
@@ -184,7 +189,10 @@ impl Session<'_> {
     pub(crate) fn sync_setting_availability(&mut self) {
         self.app.set_setting_availability(SettingAvailability {
             checkpoints: self.checkpoints.is_capable(),
-            hooks: self.models.hooks_available(),
+            // Anything configured, trusted or not: the row is what lets the
+            // trusted ones run and the untrusted ones be asked about
+            // (`docs/config-review.md`).
+            hooks: !self.trust.configured_hooks().is_empty(),
             // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
             skills: !self.skill_registry.is_empty(),
             // Whether this terminal can draw a picture (`docs/images.md`).
@@ -271,7 +279,15 @@ impl Session<'_> {
             // The hook sink is attached per backend build, so flipping the
             // row rebuilds — the next turn genuinely stops (or starts)
             // consulting them (docs/hooks.md).
-            SettingKey::Hooks => self.models.set_hooks(settings.hooks_active()),
+            SettingKey::Hooks => {
+                self.models.set_hooks(settings.hooks_active());
+                // Turned on over hooks that wait for trust: ask now, rather
+                // than leaving them silent until the next launch
+                // (`docs/config-review.md`).
+                if settings.hooks_active() {
+                    self.open_hooks_review();
+                }
+            }
             // The tool rides the backend build and the listing rides the
             // context, so flipping the row does both — the next turn genuinely
             // stops (or starts) knowing about skills (`docs/skills.md`).

@@ -22,16 +22,19 @@ Code precedence, minus the `local` scope we don't model):
 - **User**: `{config_home}/mcp.json` (`~/.alter-zero/mcp.json`) — personal
   servers, every project.
 
-**The project scope sits behind the trust gate**
-(`docs/project-config.md`): a checked-in stdio entry is a process this app
-would spawn at startup, so an untrusted project file's servers are *listed*
-in `/mcp` — status `⚠ untrusted`, no actions — but never launched (and
-never shadow the user's own same-named server) until the user approves the
-project in `/trust`. Approval connects them live; an edited file is
-untrusted again at the next launch. This is the one behavioral change to
-the original two-scope design, and it is deliberate: `.mcp.json` used to
-launch unasked, which is exactly the clone-equals-code-execution hole the
-hooks doc refused to open.
+**A project server runs only once the user enables it**
+(`docs/config-review.md`): a checked-in stdio entry is a process this app
+would spawn at startup, so a new or changed project server waits for the
+**startup review**, which asks — Claude Code's dialog — which of them to
+enable. Until it is answered the server is *listed* in `/mcp` as
+`⚠ awaiting review`, never launched; a declined one reads `◯ disabled` and
+Enable there turns it on (Disable on a project server records the same
+decision — in `trust.json`, never in the user file's disabled set). Neither
+ever shadows the user's own same-named server. Each decision is pinned to
+the server's whole entry, so an edited one is asked about again at the next
+launch. This is the one behavioral change to the original two-scope design,
+and it is deliberate: `.mcp.json` used to launch unasked, which is exactly
+the clone-equals-code-execution hole the hooks doc refused to open.
 
 Both files carry Claude Code's exact shape, so a `.mcp.json` written for it
 loads here unchanged:

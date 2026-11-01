@@ -27,6 +27,13 @@ impl App {
         if self.view == View::Conversation && self.permission.is_some() {
             return self.on_key_permission(key);
         }
+        // The startup review owns every key next: it asks about hooks and
+        // project MCP servers before they run, so nothing else may be
+        // decided around it — only a modal, which a tool thread is blocked
+        // on, comes first. See `docs/config-review.md`.
+        if self.view == View::Conversation && self.config_review.is_some() {
+            return self.on_key_config_review(key);
+        }
         // An open Ctrl+R search owns *every* key (codex consumes them all in
         // handle_history_search_key) — including the global Ctrl+C/Ctrl+O
         // below, which it redefines: Ctrl+C cancels the search instead of
@@ -100,10 +107,6 @@ impl App {
         // …and the read-only `/hooks` menu. See `docs/hooks-menu.md`.
         if self.view == View::Conversation && self.hooks_menu.is_some() {
             return self.on_key_hooks(key);
-        }
-        // …and the `/trust` review menu. See `docs/project-config.md`.
-        if self.view == View::Conversation && self.trust_menu.is_some() {
-            return self.on_key_trust(key);
         }
         // The ↓ background manager band owns every key while open, the same
         // way the pickers do. See `docs/background.md`.

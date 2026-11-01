@@ -1,4 +1,5 @@
-//! The read-only `/hooks` menu. See `docs/hooks-menu.md`.
+//! The `/hooks` menu — the hooks configuration browsed, and each hook's
+//! trust toggled on its page. See `docs/hooks-menu.md`.
 //!
 //! The ↓ manager band's pattern rather than the `/settings` fixed-slot
 //! layout: [`hooks_view_lines`] builds the whole framed body line by line —
@@ -46,7 +47,7 @@ fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// `text` word-wrapped to inset dim rows — the read-only banner, an event
+/// `text` word-wrapped to inset dim rows — the info banner, an event
 /// description's lines, the detail page's closing note.
 fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
     wrapped(text, Style::new().fg(model_meta_color()), width)
@@ -169,8 +170,9 @@ fn hook_noun(n: usize) -> String {
     }
 }
 
-/// Level 1: `Hooks` over the count, the read-only banner (and the disabled
-/// note when the configured hooks are off), and the eleven event rows.
+/// Level 1: `Hooks` over the count, the untrusted note when hooks wait for
+/// trust, the disabled note when the configured hooks are off, the info
+/// banner, and the event rows.
 fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
@@ -181,6 +183,25 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
         ),
         Line::default(),
     ];
+    let untrusted = menu.overview.untrusted();
+    if untrusted > 0 {
+        // Amber: these hooks are configured and silent, which the user
+        // should know before reading anything else (`docs/config-review.md`).
+        let (is, does, which) = if untrusted == 1 {
+            ("is", "does", "it")
+        } else {
+            ("are", "do", "one")
+        };
+        lines.extend(wrapped(
+            &format!(
+                "{} {is} not trusted and {does} not run — open {which} and press Enter to trust it",
+                hook_noun(untrusted)
+            ),
+            Style::new().fg(ask_warning_color()),
+            width,
+        ));
+        lines.push(Line::default());
+    }
     if !menu.enabled && menu.overview.total() > 0 {
         // Wrapped, not clipped: the note's tail ("enable them in /settings")
         // is the actionable half, and a narrow terminal used to cut it
@@ -310,9 +331,15 @@ fn hook_list_lines(
         .enumerate()
         .map(|(i, hook)| {
             let text = format!("[{}] {}", hook.kind, hook.display());
-            let label_cols = cols(&text);
+            let mut label_cols = cols(&text);
+            let mut label = vec![label_span(text, i == selected)];
+            if hook.trust_key.is_some() && !hook.trusted {
+                let badge = format!(" {HOOKS_UNTRUSTED_BADGE}");
+                label_cols += cols(&badge);
+                label.push(Span::styled(badge, Style::new().fg(ask_warning_color())));
+            }
             MenuRow {
-                label: vec![label_span(text, i == selected)],
+                label,
                 label_cols,
                 desc: HOOKS_SOURCE_HEADER.to_string(),
             }
@@ -344,7 +371,8 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
     ])
 }
 
-/// Level 4: one handler's read-only details — the field block, the `Command:`
+/// Level 4: one handler's details — the field block (its `Trust:` row for a
+/// hook that can run), the `Command:`
 /// label over the rounded box holding the **real** command word-wrapped, the
 /// status message when one is set, and the closing direction.
 fn detail_lines(
@@ -381,6 +409,16 @@ fn detail_lines(
         |path| format!("{HOOKS_SOURCE_LABEL} ({path})"),
     );
     lines.push(field_line("Source:", &source, dim, width));
+    // Where the hook stands with the user, for one that can run
+    // (`docs/config-review.md`) — Enter on this page toggles it.
+    if hook.trust_key.is_some() {
+        let (value, color) = if hook.trusted {
+            (HOOKS_TRUSTED_VALUE, tool_ok_color())
+        } else {
+            (HOOKS_UNTRUSTED_VALUE, ask_warning_color())
+        };
+        lines.push(field_line("Trust:", value, Style::new().fg(color), width));
+    }
     lines.push(Line::default());
     lines.push(dim_line("Command:", width));
 
@@ -424,11 +462,12 @@ fn detail_lines(
     }
     lines.push(Line::default());
     lines.extend(dim_wrapped(HOOKS_MODIFY_NOTE, width));
-    lines.extend([
-        Line::default(),
-        dim_line(HOOKS_DETAIL_HINT, width),
-        model_rule(width),
-    ]);
+    let hint = match (&hook.trust_key, hook.trusted) {
+        (Some(_), false) => HOOKS_TRUST_HINT,
+        (Some(_), true) => HOOKS_DISTRUST_HINT,
+        (None, _) => HOOKS_DETAIL_HINT,
+    };
+    lines.extend([Line::default(), dim_line(hint, width), model_rule(width)]);
     lines
 }
 

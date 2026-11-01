@@ -22,14 +22,14 @@ pub enum McpServerStatus {
     Failed(String),
     /// Disabled here (per project) — never connected.
     Disabled,
-    /// Declared by the project but not yet trusted (`docs/project-config.md`)
-    /// — never launched; `/trust` is the way in.
-    Untrusted,
+    /// Declared by the project and waiting for the startup review's answer
+    /// (`docs/config-review.md`) — never launched until enabled there.
+    AwaitingReview,
 }
 
 impl McpServerStatus {
     /// The list row's status glyph — Claude Code's exact vocabulary (the
-    /// trust gate's `⚠` is ours).
+    /// review's `⚠` is ours).
     #[must_use]
     pub const fn glyph(&self) -> &'static str {
         match self {
@@ -37,7 +37,7 @@ impl McpServerStatus {
             Self::Connected => "✔",
             Self::NeedsAuth => "△",
             Self::Failed(_) => "✘",
-            Self::Untrusted => "⚠",
+            Self::AwaitingReview => "⚠",
         }
     }
 
@@ -51,7 +51,7 @@ impl McpServerStatus {
             Self::NeedsAuth => "needs authentication",
             Self::Failed(_) => "failed",
             Self::Disabled => "disabled",
-            Self::Untrusted => "untrusted",
+            Self::AwaitingReview => "awaiting review",
         }
     }
 }
@@ -317,12 +317,11 @@ mod tests {
             snapshot(McpServerStatus::Pending, 0).status_line(),
             "◯ connecting…"
         );
-        // The project-config trust gate's holding state
-        // (`docs/project-config.md`): declared by the project, never
-        // launched, waiting on `/trust`.
+        // The startup review's holding state (`docs/config-review.md`):
+        // declared by the project, never launched, waiting for an answer.
         assert_eq!(
-            snapshot(McpServerStatus::Untrusted, 0).status_line(),
-            "⚠ untrusted"
+            snapshot(McpServerStatus::AwaitingReview, 0).status_line(),
+            "⚠ awaiting review"
         );
     }
 

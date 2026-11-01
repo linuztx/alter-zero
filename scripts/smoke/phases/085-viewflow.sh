@@ -16,7 +16,10 @@ FL_CFG="$(mktemp -d)"
 FL_CMD="echo FLOW_TOP_OF_COMMAND $(printf 'lorem-ipsum-filler-%03d ' $(seq 1 220))FLOW_DEEP_MARKER_85 done"
 printf '{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "%s" } ] } ] } }' "$FL_CMD" >"$FL_CFG/hooks.json"
 APP_FL="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$FL_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
-launch "$S85" 100 24 "$APP_FL"
+# The startup review asks about the hook first, its screen-tall command cut
+# to fit rather than flowed at the first frame (docs/config-review.md).
+launch -n "$S85" 100 24 "$APP_FL"
+trust_hooks "$S85"
 tmux send-keys -t "$S85" -l "/hooks"
 sleep 0.4
 tmux send-keys -t "$S85" Enter
@@ -65,7 +68,7 @@ flow_closed="$(tmux capture-pane -t "$S85" -p -S -400)"
 echo "==== Phase 85: closed back to the composer ===="
 printf '%s\n' "$flow_closed" | tail -12
 expect_has "$flow_closed" -F "dummy_model_name" "the composer (and its footer) did not come back"
-for stale in "Hook details" "FLOW_TOP_OF_COMMAND" "This menu is read-only"; do
+for stale in "Hook details" "FLOW_TOP_OF_COMMAND" "Open a hook to trust it"; do
 	expect_lacks "$flow_closed" -F "$stale" "'$stale' survived the close (the purge should have wiped it)"
 done
 tmux kill-session -t "$S85" 2>/dev/null || true
