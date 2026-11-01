@@ -177,6 +177,29 @@ release heading when a version is cut.
   and listed in `/mcp` with the reason, and a call the server still
   refuses makes the client fetch the tool list again and retry once
   (`docs/mcp.md`).
+- **A remote MCP tool gets the whole time its call allows.** Over HTTP,
+  every MCP request was cut off after 60 seconds whatever the tool timeout
+  said, so a tool taking a minute or two failed with a vague "request
+  failed" while the same tool worked locally; raising
+  `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` changed nothing. Connecting to a server
+  is also held to its startup timeout as a whole, where each step used to
+  get the full allowance and a slow server with many pages of tools could
+  take minutes.
+- **Remote MCP servers are talked to more carefully.** An older server that
+  checks on the client mid-call with a `ping` gets its answer instead of
+  waiting out the call. A newer one whose reply stream breaks has the
+  request sent again once, as the 2026-07-28 revision requires. A refusal
+  such as `403 Forbidden` is reported as itself instead of being retried
+  as an old-style server and blamed on that ("HTTP 405 opening the event
+  stream"), and when both kinds of connection fail the message keeps both
+  answers. A `403` asking for more permission shows the server as needing
+  authentication. A reply to a notification no longer needs to be empty.
+- **An MCP server can't redirect your credentials elsewhere.** A remote
+  server's headers and token ride every request. The client now follows a
+  redirect only while it stays on the server's own address, and an
+  old-style SSE server that names a message endpoint on another address,
+  or switches from `https` to `http`, is refused. Each message from a
+  server is capped at 16 MB (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

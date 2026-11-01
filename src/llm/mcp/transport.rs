@@ -10,8 +10,9 @@
 //! wait abandons the thread rather than joining it.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,7 +21,8 @@ use serde_json::Value;
 
 use crate::mcp::{
     Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, header_value,
-    initialize_params_for, notification, param_header_values, parse_incoming, request, with_meta,
+    initialize_params_for, notification, param_header_values, parse_incoming, request,
+    server_request_answer, with_meta,
 };
 use crate::stream::CancelToken;
 
@@ -30,8 +32,14 @@ const POLL: Duration = Duration::from_millis(20);
 /// How much of a stdio server's stderr is retained for a connect error.
 const STDERR_TAIL_BYTES: usize = 4 * 1024;
 
-/// The per-read stall deadline handed to the pooled HTTP client for POSTs.
+/// The pooled HTTP client's own stall guard. A POST overrides it with its
+/// request's budget (`post_blocking`) — what a tool may take is the call's
+/// timeout, never this — so it only bounds the fire-and-forget answers.
+/// Short under test, so a test can prove the override.
+#[cfg(not(test))]
 const HTTP_OP_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const HTTP_OP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The legacy SSE stream's per-read deadline — long, because the stream idles
 /// between replies (Claude Code deliberately un-timeouts it; we keep a stall
@@ -96,12 +104,20 @@ impl Transport {
         }
     }
 
-    /// Send a notification (no response expected).
-    pub fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
+    /// Send a notification (no response expected), within `deadline` and
+    /// polling `cancel` like a request — a server slow to accept it must not
+    /// hold a handshake past its budget, nor Esc.
+    pub fn notify(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
         match self {
             Self::Stdio(t) => t.notify(method, params),
-            Self::Http(t) => t.notify(method, params),
-            Self::Sse(t) => t.notify(method, params),
+            Self::Http(t) => t.notify(method, params, deadline, cancel),
+            Self::Sse(t) => t.notify(method, params, deadline, cancel),
         }
     }
 
@@ -408,7 +424,7 @@ impl RemoteHeaders {
 /// initialize and echoes it thereafter; modern (2026-07-28) mode is
 /// stateless — `_meta` in every request, the `Mcp-Method`/`Mcp-Name`
 /// request-metadata headers beside the version echo, and no sessions (a
-/// modern server never mints one).
+/// session id a modern answer names anyway is never echoed back).
 pub struct HttpTransport {
     url: String,
     remote: RemoteHeaders,
@@ -439,17 +455,34 @@ struct ModernHeaders {
     params: Vec<(String, String)>,
 }
 
+/// Where one POST goes and what rides it — copied onto the worker thread.
+#[derive(Clone)]
+struct Endpoint {
+    url: String,
+    remote: RemoteHeaders,
+    session: Option<String>,
+    protocol_version: Option<String>,
+    /// A legacy (handshake-era) server may send its own requests on a
+    /// response stream and waits for the answer; a modern one never does.
+    legacy: bool,
+}
+
 /// What one POST resolved to, off the worker thread.
 enum PostOutcome {
     /// The response for the request id (or an error object).
     Response(Result<Value, RpcError>),
-    /// A notification-style acceptance (202/204/empty body).
+    /// A notification-style acceptance (any 2xx to a notification, a 202 or
+    /// 204, an empty body).
     Accepted,
     /// The server answered 404 to a request carrying our session id: the
     /// session is gone (a restart, an idle timeout) and the spec's answer is
     /// a fresh `initialize`. Only reachable in legacy mode — the modern era
     /// has no sessions, so a 404 there is an unknown method.
     SessionExpired,
+    /// The response stream ended before the request's answer arrived. Under
+    /// 2026-07-28 the request is lost — no resumption — and "MUST" be
+    /// re-issued under a new id.
+    StreamBroken,
     /// The captured session id rode along (initialize).
     Session(Option<String>, Box<PostOutcome>),
     Err(TransportError),
@@ -505,25 +538,36 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<PostOutcome, TransportError> {
-        let url = self.url.clone();
-        let remote = self.remote.clone();
-        let session = self.session.clone();
-        let protocol = self.protocol_version.clone();
+        let endpoint = Endpoint {
+            url: self.url.clone(),
+            remote: self.remote.clone(),
+            session: self.session.clone(),
+            protocol_version: self.protocol_version.clone(),
+            legacy: self.modern.is_none(),
+        };
         let (tx, rx) = mpsc::channel();
         let started = Instant::now();
+        // Set when this wait gives up: the worker then drops the response —
+        // closing a response stream is how streamable HTTP cancels — at its
+        // next line instead of reading on until its own timeout.
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let worker_abandoned = Arc::clone(&abandoned);
         std::thread::spawn(move || {
             let outcome = post_blocking(
-                &url,
-                &remote,
-                session.as_deref(),
-                protocol.as_deref(),
+                &endpoint,
                 modern.as_ref(),
                 &body,
                 want_id,
+                deadline,
+                &worker_abandoned,
             );
             let _ = tx.send(outcome);
         });
-        wait_channel(&rx, started, deadline, cancel)
+        let outcome = wait_channel(&rx, started, deadline, cancel);
+        if outcome.is_err() {
+            abandoned.store(true, Ordering::Relaxed);
+        }
+        outcome
     }
 
     /// The modern request-metadata headers for one request, when the
@@ -541,9 +585,14 @@ impl HttpTransport {
             .flatten();
         let params = match (method, &name) {
             ("tools/call", Some(tool)) => {
-                self.param_headers.get(tool).map_or_else(Vec::new, |decls| {
-                    param_header_values(decls, params.get("arguments").unwrap_or(&Value::Null))
-                })
+                self.param_headers
+                    .get(tool)
+                    .map_or_else(Vec::new, |declarations| {
+                        param_header_values(
+                            declarations,
+                            params.get("arguments").unwrap_or(&Value::Null),
+                        )
+                    })
             }
             _ => Vec::new(),
         };
@@ -561,17 +610,24 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        let started = Instant::now();
+        let left = || deadline.saturating_sub(started.elapsed());
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let mut outcome = self.send_once(method, &params, deadline, cancel)?;
+        let mut outcome = self.send_once(method, &params, left(), cancel)?;
         if matches!(outcome, PostOutcome::SessionExpired) {
             // The session died under us. Start a new one and replay, so a
             // server restart or an idle timeout costs a round trip instead
             // of the whole connection.
-            self.reinitialize(deadline, cancel)?;
-            outcome = self.send_once(method, &params, deadline, cancel)?;
+            self.reinitialize(left(), cancel)?;
+            outcome = self.send_once(method, &params, left(), cancel)?;
+        }
+        if matches!(outcome, PostOutcome::StreamBroken) && self.modern.is_some() {
+            // 2026-07-28 has no resumption: the request was lost with its
+            // stream, and goes again under a new id — once.
+            outcome = self.send_once(method, &params, left(), cancel)?;
         }
         match outcome {
             PostOutcome::Response(result) => result.map_err(TransportError::Rpc),
@@ -581,12 +637,15 @@ impl HttpTransport {
             PostOutcome::SessionExpired => Err(TransportError::Failed(
                 "the server keeps expiring the session".to_string(),
             )),
+            PostOutcome::StreamBroken => Err(TransportError::Failed(
+                "the event stream ended before the response arrived".to_string(),
+            )),
             PostOutcome::Err(e) => Err(e),
             PostOutcome::Session(..) => unreachable!("unwrapped in send_once"),
         }
     }
 
-    /// One POST of `method`, capturing any session id the server names.
+    /// One POST of `method`, capturing any session id a legacy server names.
     fn send_once(
         &mut self,
         method: &str,
@@ -606,10 +665,13 @@ impl HttpTransport {
         )?;
         Ok(match outcome {
             PostOutcome::Session(session, inner) => {
-                // The session id is captured whenever the server names one
-                // (initialize, per spec — but echoing whatever it says is
-                // harmless and simpler).
-                if let Some(session) = session {
+                // Sessions are the legacy revisions' alone: a modern answer
+                // naming one anyway is never echoed back, so a later 404 —
+                // a modern server's unknown method — can't be mistaken for
+                // an expired session.
+                if self.modern.is_none()
+                    && let Some(session) = session
+                {
                     self.session = Some(session);
                 }
                 *inner
@@ -628,6 +690,7 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<(), TransportError> {
+        let started = Instant::now();
         self.session = None;
         let version = self
             .protocol_version
@@ -642,19 +705,29 @@ impl HttpTransport {
             PostOutcome::Response(Ok(_)) | PostOutcome::Accepted => {}
             PostOutcome::Response(Err(e)) => return Err(TransportError::Rpc(e)),
             PostOutcome::Err(e) => return Err(e),
-            PostOutcome::SessionExpired => {
+            PostOutcome::SessionExpired | PostOutcome::StreamBroken => {
                 return Err(TransportError::Failed(
-                    "the server expired the session it just opened".to_string(),
+                    "the server dropped the session it was opening".to_string(),
                 ));
             }
             PostOutcome::Session(..) => unreachable!("unwrapped in send_once"),
         }
-        self.notify("notifications/initialized", Value::Null)
+        self.notify(
+            "notifications/initialized",
+            Value::Null,
+            deadline.saturating_sub(started.elapsed()),
+            cancel,
+        )
     }
 
-    fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
-        // Fire-and-forget on a worker thread with a generous deadline; an
-        // acceptance failure is not worth failing the connect over, but a
+    fn notify(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
+        // An acceptance failure is not worth failing the connect over, but a
         // transport error is surfaced. (Only the legacy handshake sends
         // notifications — the modern era has none of ours — but the `_meta`
         // and header rules are honoured all the same.)
@@ -663,47 +736,136 @@ impl HttpTransport {
             None => params,
         };
         let modern = self.modern_headers(method, &params);
-        let outcome = self.post(
-            notification(method, params),
-            None,
-            modern,
-            HTTP_OP_TIMEOUT,
-            &CancelToken::new(),
-        )?;
-        match outcome {
+        match self.post(notification(method, params), None, modern, deadline, cancel)? {
             PostOutcome::Err(e) => Err(e),
             _ => Ok(()),
         }
     }
 }
 
-/// The blocking POST body — runs on a worker thread.
+/// The most one MCP message — a JSON body, one SSE line — may hold: 16 MiB,
+/// Claude Code's bound. Every network read is bounded (`docs/memory.md`), and
+/// a server streaming without end must not grow this process without end.
+const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
+/// How much of an error body is kept for the message that reports it.
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Read one line of at most `cap` bytes (its `\n` dropped; a `\r` left for
+/// the SSE parser), decoded lossily — invalid UTF-8 from a misbehaving
+/// server costs a replacement character, not the stream. `Ok(None)` at the
+/// end of the stream; an error for a failed read or a longer line.
+fn read_line_capped(reader: &mut impl BufRead, cap: usize) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let limit = u64::try_from(cap).unwrap_or(u64::MAX).saturating_add(1);
+    let read = reader.by_ref().take(limit).read_until(b'\n', &mut buf)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    } else if buf.len() > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a message from the server is over {}", byte_size(cap)),
+        ));
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// Read a whole body of at most `cap` bytes, decoded lossily.
+fn read_body_capped(response: impl Read, cap: usize) -> Result<String, String> {
+    let mut buf = Vec::new();
+    let limit = u64::try_from(cap).unwrap_or(u64::MAX).saturating_add(1);
+    response
+        .take(limit)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read failed: {e}"))?;
+    if buf.len() > cap {
+        return Err(format!("the server's answer is over {}", byte_size(cap)));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// `16 MB`, for the over-the-cap messages.
+fn byte_size(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{} MB", bytes / (1024 * 1024))
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
+}
+
+/// The `WWW-Authenticate` challenge on a response, when it carries one.
+fn challenge_of(response: &reqwest::blocking::Response) -> Option<String> {
+    response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// A `403` that is an authentication state rather than a refusal: the
+/// challenge's `insufficient_scope` (RFC 6750 §3.1) says the token is fine
+/// but grants too little — the step-up the OAuth flow answers.
+fn wants_more_scope(challenge: Option<&str>) -> bool {
+    challenge.is_some_and(|c| c.to_ascii_lowercase().contains("insufficient_scope"))
+}
+
+/// Post a legacy server's due answer to its request, off the read loop —
+/// best-effort: a server that drops it gets nothing worse than silence.
+fn answer_server_request(endpoint: &Endpoint, id: &Value, method: &str) {
+    let answer = server_request_answer(id, method);
+    let endpoint = endpoint.clone();
+    std::thread::spawn(move || {
+        let Ok(client) = crate::llm::mcp_http_client(HTTP_OP_TIMEOUT) else {
+            return;
+        };
+        let mut req = client
+            .post(&endpoint.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        req = endpoint.remote.apply(req);
+        if let Some(session) = &endpoint.session {
+            req = req.header("Mcp-Session-Id", session);
+        }
+        if let Some(version) = &endpoint.protocol_version {
+            req = req.header("MCP-Protocol-Version", version);
+        }
+        let _ = req.body(answer.to_string()).send();
+    });
+}
+
+/// The blocking POST body — runs on a worker thread. `deadline` is the
+/// request's own budget: it bounds the wait for the headers and every read
+/// of the body, so a tool that takes longer than the pooled client's stall
+/// guard — but not longer than its call was given — still answers.
 fn post_blocking(
-    url: &str,
-    remote: &RemoteHeaders,
-    session: Option<&str>,
-    protocol_version: Option<&str>,
+    endpoint: &Endpoint,
     modern: Option<&ModernHeaders>,
     body: &Value,
     want_id: Option<u64>,
+    deadline: Duration,
+    abandoned: &AtomicBool,
 ) -> PostOutcome {
-    let client = match crate::llm::http_client(HTTP_OP_TIMEOUT) {
+    let client = match crate::llm::mcp_http_client(HTTP_OP_TIMEOUT) {
         Ok(client) => client,
         Err(e) => return PostOutcome::Err(TransportError::Failed(e.to_string())),
     };
     let mut req = client
-        .post(url)
+        .post(&endpoint.url)
+        .timeout(deadline.max(Duration::from_millis(50)))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream");
-    req = remote.apply(req);
-    if let Some(session) = session {
+    req = endpoint.remote.apply(req);
+    if let Some(session) = &endpoint.session {
         req = req.header("Mcp-Session-Id", session);
     }
-    if let Some(version) = protocol_version {
+    if let Some(version) = &endpoint.protocol_version {
         req = req.header("MCP-Protocol-Version", version);
     }
     if let Some(headers) = modern {
-        req = req.header("Mcp-Method", header_value(&headers.method));
+        req = req.header("Mcp-Method", headers.method.as_str());
         if let Some(name) = &headers.name {
             req = req.header("Mcp-Name", header_value(name));
         }
@@ -725,29 +887,26 @@ fn post_blocking(
         Some(_) => PostOutcome::Session(new_session.clone(), Box::new(outcome)),
         None => outcome,
     };
-    if status.as_u16() == 401 {
-        let challenge = response
-            .headers()
-            .get("www-authenticate")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
+    let challenge = challenge_of(&response);
+    if status.as_u16() == 401 || (status.as_u16() == 403 && wants_more_scope(challenge.as_deref()))
+    {
         return PostOutcome::Err(TransportError::NeedsAuth(challenge));
     }
     // A 404 to a request that carried a session id means that session is
     // gone — the spec's cue to open a new one and replay. Gated on having
     // sent one, because a modern (sessionless) server answers an unknown
     // *method* with 404 and re-handshaking would be nonsense there.
-    if status.as_u16() == 404 && session.is_some() {
+    if status.as_u16() == 404 && endpoint.session.is_some() {
         return PostOutcome::SessionExpired;
     }
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = read_body_capped(response, MAX_ERROR_BODY_BYTES).unwrap_or_default();
         // A modern server answers a version/header problem as `400` with a
         // JSON-RPC error *body* (`-32022` naming its supported versions) —
         // surface that as the RPC error it is, so era detection can read the
-        // code instead of a flattened refusal string.
-        // An `id: null` body counts too: the SDKs send their transport-level
-        // errors that way, and this POST's error is this request's.
+        // code instead of a flattened refusal string. An `id: null` body
+        // counts too: the SDKs send their transport-level errors that way,
+        // and this POST's error is this request's.
         if status.is_client_error()
             && let Some(Incoming::Response { result: Err(e), .. } | Incoming::OrphanError(e)) =
                 parse_incoming(&body)
@@ -755,13 +914,21 @@ fn post_blocking(
             return PostOutcome::Err(TransportError::Rpc(e));
         }
         let detail = format!("HTTP {}: {}", status.as_u16(), one_line(&body, 200));
-        // A 4xx on POST is the spec's cue to try the legacy transport; the
-        // client layer decides whether this config wants that.
-        if status.is_client_error() {
-            return PostOutcome::Err(TransportError::HttpRefused(detail));
-        }
-        return PostOutcome::Err(TransportError::Failed(detail));
+        // Only 400, 404 and 405 without a modern error body are the spec's
+        // cue to try the legacy HTTP+SSE transport; any other refusal — a
+        // 403, a 429, a redirect not followed — is the server's answer.
+        return if matches!(status.as_u16(), 400 | 404 | 405) {
+            PostOutcome::Err(TransportError::HttpRefused(detail))
+        } else {
+            PostOutcome::Err(TransportError::Failed(detail))
+        };
     }
+    // A notification's 2xx is its acceptance, whatever the body says — and
+    // the body is never read: a server that holds it open must not hold up
+    // the handshake.
+    let Some(want) = want_id else {
+        return wrap(PostOutcome::Accepted);
+    };
     if status.as_u16() == 202 || status.as_u16() == 204 {
         return wrap(PostOutcome::Accepted);
     }
@@ -773,13 +940,20 @@ fn post_blocking(
         .to_ascii_lowercase();
     if content_type.contains("text/event-stream") {
         // Drain the SSE body until the request's id answers.
-        let Some(want) = want_id else {
-            return wrap(PostOutcome::Accepted);
-        };
         let mut parser = SseParser::new();
-        let reader = BufReader::new(response);
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
+        let mut reader = BufReader::new(response);
+        loop {
+            if abandoned.load(Ordering::Relaxed) {
+                return PostOutcome::Err(TransportError::Cancelled);
+            }
+            let line = match read_line_capped(&mut reader, MAX_MESSAGE_BYTES) {
+                Ok(Some(line)) => line,
+                Ok(None) => return wrap(PostOutcome::StreamBroken),
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return PostOutcome::Err(TransportError::Failed(e.to_string()));
+                }
+                Err(_) => return wrap(PostOutcome::StreamBroken),
+            };
             let Some(event) = parser.push_line(&line) else {
                 continue;
             };
@@ -790,27 +964,31 @@ fn post_blocking(
                 Some(Incoming::OrphanError(error)) => {
                     return wrap(PostOutcome::Response(Err(error)));
                 }
+                // A legacy server's own request mid-stream — a `ping`, most
+                // likely — waits for its answer before the result comes.
+                Some(Incoming::Request { id, method }) if endpoint.legacy => {
+                    let mut endpoint = endpoint.clone();
+                    if new_session.is_some() {
+                        endpoint.session.clone_from(&new_session);
+                    }
+                    answer_server_request(&endpoint, &id, &method);
+                }
                 _ => {}
             }
         }
-        return PostOutcome::Err(TransportError::Failed(
-            "the event stream ended before the response arrived".to_string(),
-        ));
     }
-    let text = match response.text() {
+    let text = match read_body_capped(response, MAX_MESSAGE_BYTES) {
         Ok(text) => text,
-        Err(e) => return PostOutcome::Err(TransportError::Failed(format!("read failed: {e}"))),
+        Err(e) => return PostOutcome::Err(TransportError::Failed(e)),
     };
     if text.trim().is_empty() {
         return wrap(PostOutcome::Accepted);
     }
     match parse_incoming(&text) {
-        Some(Incoming::Response { id, result }) if want_id == Some(id) => {
+        Some(Incoming::Response { id, result }) if id == want => {
             wrap(PostOutcome::Response(result))
         }
-        Some(Incoming::OrphanError(error)) if want_id.is_some() => {
-            wrap(PostOutcome::Response(Err(error)))
-        }
+        Some(Incoming::OrphanError(error)) => wrap(PostOutcome::Response(Err(error))),
         Some(_) | None => PostOutcome::Err(TransportError::Failed(format!(
             "unexpected response body: {}",
             one_line(&text, 200)
@@ -829,7 +1007,17 @@ pub struct SseTransport {
     remote: RemoteHeaders,
     messages: mpsc::Receiver<String>,
     parked: HashMap<u64, Result<Value, RpcError>>,
+    /// Set when the transport is dropped: the stream thread stops at its
+    /// next line (a keep-alive comment included) instead of holding the
+    /// connection — and itself — for good.
+    closed: Arc<AtomicBool>,
     next_id: u64,
+}
+
+impl Drop for SseTransport {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
 }
 
 impl SseTransport {
@@ -843,10 +1031,12 @@ impl SseTransport {
     ) -> Result<Self, TransportError> {
         let (endpoint_tx, endpoint_rx) = mpsc::channel::<Result<String, TransportError>>();
         let (message_tx, messages) = mpsc::channel::<String>();
+        let closed = Arc::new(AtomicBool::new(false));
+        let stream_closed = Arc::clone(&closed);
         let stream_url = url.to_string();
         let stream_remote = remote.clone();
         std::thread::spawn(move || {
-            let client = match crate::llm::http_client(SSE_STREAM_TIMEOUT) {
+            let client = match crate::llm::mcp_http_client(SSE_STREAM_TIMEOUT) {
                 Ok(client) => client,
                 Err(e) => {
                     let _ = endpoint_tx.send(Err(TransportError::Failed(e.to_string())));
@@ -866,40 +1056,55 @@ impl SseTransport {
                     return;
                 }
             };
-            if response.status().as_u16() == 401 {
-                let challenge = response
-                    .headers()
-                    .get("www-authenticate")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
+            let challenge = challenge_of(&response);
+            let status = response.status().as_u16();
+            if status == 401 || (status == 403 && wants_more_scope(challenge.as_deref())) {
                 let _ = endpoint_tx.send(Err(TransportError::NeedsAuth(challenge)));
                 return;
             }
             if !response.status().is_success() {
                 let _ = endpoint_tx.send(Err(TransportError::Failed(format!(
-                    "HTTP {} opening the event stream",
-                    response.status().as_u16()
+                    "HTTP {status} opening the event stream"
                 ))));
                 return;
             }
             let mut parser = SseParser::new();
-            let mut endpoint_sent = false;
-            let reader = BufReader::new(response);
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                for event in [parser.push_line(&line)].into_iter().flatten() {
-                    match event.event.as_str() {
-                        "endpoint" if !endpoint_sent => {
-                            endpoint_sent = true;
-                            let resolved = resolve_endpoint(&stream_url, &event.data);
-                            let _ = endpoint_tx.send(resolved);
+            let mut answers: Option<Endpoint> = None;
+            let mut reader = BufReader::new(response);
+            while !stream_closed.load(Ordering::Relaxed) {
+                let Ok(Some(line)) = read_line_capped(&mut reader, MAX_MESSAGE_BYTES) else {
+                    break;
+                };
+                let Some(event) = parser.push_line(&line) else {
+                    continue;
+                };
+                match (event.event.as_str(), &answers) {
+                    ("endpoint", None) => {
+                        let resolved = resolve_endpoint(&stream_url, &event.data);
+                        if let Ok(endpoint) = &resolved {
+                            answers = Some(Endpoint {
+                                url: endpoint.clone(),
+                                remote: stream_remote.clone(),
+                                session: None,
+                                protocol_version: None,
+                                legacy: true,
+                            });
                         }
-                        _ => {
-                            if message_tx.send(event.data).is_err() {
-                                return;
-                            }
+                        let _ = endpoint_tx.send(resolved);
+                    }
+                    (_, Some(endpoint)) => {
+                        // The server's own requests — a `ping` — are owed an
+                        // answer, posted where requests go.
+                        if let Some(Incoming::Request { id, method }) = parse_incoming(&event.data)
+                        {
+                            answer_server_request(endpoint, &id, &method);
+                            continue;
+                        }
+                        if message_tx.send(event.data).is_err() {
+                            return;
                         }
                     }
+                    _ => {}
                 }
             }
         });
@@ -910,6 +1115,7 @@ impl SseTransport {
             remote,
             messages,
             parked: HashMap::new(),
+            closed,
             next_id: 1,
         })
     }
@@ -921,34 +1127,55 @@ impl SseTransport {
         self.remote.bearer = bearer;
     }
 
-    fn post(&self, body: &Value) -> Result<Option<Value>, TransportError> {
-        let client = crate::llm::http_client(HTTP_OP_TIMEOUT)
-            .map_err(|e| TransportError::Failed(e.to_string()))?;
-        let mut req = client
-            .post(&self.endpoint)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream");
-        req = self.remote.apply(req);
-        let response = req
-            .body(body.to_string())
-            .send()
-            .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
-        if response.status().as_u16() == 401 {
-            return Err(TransportError::NeedsAuth(None));
-        }
-        if !response.status().is_success() {
-            return Err(TransportError::Failed(format!(
-                "HTTP {} posting to the server",
-                response.status().as_u16()
-            )));
-        }
-        // Most servers answer 202 and reply on the stream; a few answer the
-        // JSON directly — accept both.
-        let text = response.text().unwrap_or_default();
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        Ok(serde_json::from_str(&text).ok())
+    /// POST one message to the endpoint on a worker thread, waiting with the
+    /// deadline and cancel polls every transport wait shares. `Some` when
+    /// the server answered in the body rather than on the stream.
+    fn post(
+        &self,
+        body: &Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Option<Value>, TransportError> {
+        let (endpoint, remote, body) =
+            (self.endpoint.clone(), self.remote.clone(), body.to_string());
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            let outcome = (|| {
+                let client = crate::llm::mcp_http_client(HTTP_OP_TIMEOUT)
+                    .map_err(|e| TransportError::Failed(e.to_string()))?;
+                let mut req = client
+                    .post(&endpoint)
+                    .timeout(deadline.max(Duration::from_millis(50)))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream");
+                req = remote.apply(req);
+                let response = req
+                    .body(body)
+                    .send()
+                    .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
+                let challenge = challenge_of(&response);
+                let status = response.status().as_u16();
+                if status == 401 || (status == 403 && wants_more_scope(challenge.as_deref())) {
+                    return Err(TransportError::NeedsAuth(challenge));
+                }
+                if !response.status().is_success() {
+                    return Err(TransportError::Failed(format!(
+                        "HTTP {status} posting to the server"
+                    )));
+                }
+                // Most servers answer 202 and reply on the stream; a few
+                // answer the JSON directly — accept both.
+                let text = read_body_capped(response, MAX_MESSAGE_BYTES)
+                    .map_err(TransportError::Failed)?;
+                if text.trim().is_empty() {
+                    return Ok(None);
+                }
+                Ok(serde_json::from_str(&text).ok())
+            })();
+            let _ = tx.send(outcome);
+        });
+        wait_channel(&rx, started, deadline, cancel)?
     }
 
     fn request(
@@ -958,9 +1185,10 @@ impl SseTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        let started = Instant::now();
         let id = self.next_id;
         self.next_id += 1;
-        let direct = self.post(&request(id, method, params))?;
+        let direct = self.post(&request(id, method, params), deadline, cancel)?;
         if let Some(direct) = direct
             && let Some(Incoming::Response { id: got, result }) =
                 parse_incoming(&direct.to_string())
@@ -973,7 +1201,6 @@ impl SseTransport {
         if let Some(result) = self.parked.remove(&id) {
             return result.map_err(TransportError::Rpc);
         }
-        let started = Instant::now();
         loop {
             let data = wait_channel(&self.messages, started, deadline, cancel)?;
             match parse_incoming(&data) {
@@ -989,19 +1216,37 @@ impl SseTransport {
         }
     }
 
-    fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
-        self.post(&notification(method, params)).map(|_| ())
+    fn notify(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
+        self.post(&notification(method, params), deadline, cancel)
+            .map(|_| ())
     }
 }
 
 /// Resolve the `endpoint` event's URI against the stream URL (it is usually
-/// relative — `/messages?sessionId=…`).
+/// relative — `/messages?sessionId=…`) — and refuse one on another origin:
+/// every POST carries the bearer and the configured headers, which a server
+/// naming someone else's endpoint (or downgrading `https` to `http`) would
+/// hand to them. The reference TypeScript SDK refuses the same.
 fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError> {
     let base = url::Url::parse(base)
         .map_err(|e| TransportError::Failed(format!("bad stream URL: {e}")))?;
-    base.join(endpoint.trim())
-        .map(|u| u.to_string())
-        .map_err(|e| TransportError::Failed(format!("bad endpoint URI: {e}")))
+    let resolved = base
+        .join(endpoint.trim())
+        .map_err(|e| TransportError::Failed(format!("bad endpoint URI: {e}")))?;
+    if resolved.origin() != base.origin() {
+        return Err(TransportError::Failed(format!(
+            "the server named an endpoint on another origin ({}), which this client \
+             won't send its requests to",
+            resolved.origin().ascii_serialization()
+        )));
+    }
+    Ok(resolved.to_string())
 }
 
 /// The command a stdio server runs as: piped stdio, the session
@@ -1187,15 +1432,310 @@ mod tests {
             resolve_endpoint("https://x.test/a/sse", "msgs").unwrap(),
             "https://x.test/a/msgs"
         );
-        assert_eq!(
-            resolve_endpoint("https://x.test/sse", "https://y.test/m").unwrap(),
-            "https://y.test/m"
-        );
+        // Another origin — host, port or scheme — would carry the bearer
+        // and the configured headers wherever the stream pointed them.
+        for elsewhere in [
+            "https://y.test/m",
+            "http://x.test/m",
+            "https://x.test:8443/m",
+        ] {
+            let refused = resolve_endpoint("https://x.test/sse", elsewhere).unwrap_err();
+            assert!(
+                refused.to_string().contains("origin"),
+                "{elsewhere}: {refused}"
+            );
+        }
     }
 
     #[test]
     fn one_line_flattens_and_caps() {
         assert_eq!(one_line("a\n  b\t c", 10), "a b c");
         assert_eq!(one_line("abcdef", 3), "abc…");
+    }
+
+    // -----------------------------------------------------------------------
+    // HTTP fixtures
+
+    /// One request a fixture saw.
+    struct Seen {
+        method: String,
+        headers: Vec<(String, String)>,
+        body: Value,
+    }
+
+    impl Seen {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+
+        fn rpc_method(&self) -> &str {
+            self.body["method"].as_str().unwrap_or_default()
+        }
+    }
+
+    /// A one-request-per-connection HTTP/1.1 fixture: `respond` gets each
+    /// request and writes the whole raw response itself (so it can stall,
+    /// stream, or cut a stream short). Returns the `/mcp` URL.
+    fn http_fixture(
+        respond: impl Fn(&Seen, &mut std::net::TcpStream) + Send + Sync + 'static,
+    ) -> String {
+        use std::io::Read as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let respond = Arc::new(respond);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let respond = Arc::clone(&respond);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        return;
+                    }
+                    let method = line
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    let mut headers = Vec::new();
+                    let mut length = 0usize;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                            break;
+                        }
+                        if let Some((key, value)) = header.split_once(':') {
+                            if key.eq_ignore_ascii_case("content-length") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                            headers.push((key.trim().to_string(), value.trim().to_string()));
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    let _ = reader.read_exact(&mut body);
+                    let seen = Seen {
+                        method,
+                        headers,
+                        body: serde_json::from_slice(&body).unwrap_or_default(),
+                    };
+                    respond(&seen, &mut stream);
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    fn write_json(stream: &mut std::net::TcpStream, status: &str, extra: &str, body: &Value) {
+        let body = body.to_string();
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+    }
+
+    fn result_for(seen: &Seen, result: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": seen.body["id"], "result": result})
+    }
+
+    fn legacy_http(url: String) -> HttpTransport {
+        let mut transport = HttpTransport::new(url, RemoteHeaders::default());
+        transport.set_legacy();
+        transport
+    }
+
+    /// The pooled client's own timeout is a stall guard, not the call's
+    /// budget: a tool that takes longer than it — but not longer than the
+    /// call was given — must still answer. (Under test that guard is 1 s.)
+    #[test]
+    fn a_slow_answer_gets_the_whole_budget_the_call_was_given() {
+        let url = http_fixture(|seen, stream| {
+            std::thread::sleep(Duration::from_millis(1500));
+            write_json(
+                stream,
+                "200 OK",
+                "",
+                &result_for(seen, json!({"slow": true})),
+            );
+        });
+        let mut t = legacy_http(url);
+        let answer = t
+            .request(
+                "tools/call",
+                json!({}),
+                Duration::from_secs(6),
+                &CancelToken::new(),
+            )
+            .expect("waited the call's own budget");
+        assert_eq!(answer, json!({"slow": true}));
+    }
+
+    /// A notification's 2xx is acceptance whatever its body says — a
+    /// server answering `{}` or `OK` used to fail the whole handshake.
+    #[test]
+    fn a_notification_is_accepted_whatever_the_body() {
+        let url = http_fixture(|_, stream| {
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+            );
+        });
+        let mut t = legacy_http(url);
+        t.notify(
+            "notifications/initialized",
+            Value::Null,
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        )
+        .expect("accepted");
+    }
+
+    /// Only 400/404/405 without a modern error body is the spec's cue to try
+    /// the legacy transport; a 403 is the server's answer, and a 403 asking
+    /// for more scope is an authentication state.
+    #[test]
+    fn a_forbidden_answer_is_never_read_as_a_legacy_server() {
+        let url = http_fixture(|seen, stream| {
+            let extra = if seen.rpc_method() == "tools/call" {
+                "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"\r\n"
+            } else {
+                ""
+            };
+            let _ = stream.write_all(
+                format!("HTTP/1.1 403 Forbidden\r\n{extra}Content-Length: 6\r\nConnection: close\r\n\r\ndenied")
+                    .as_bytes(),
+            );
+        });
+        let mut t = legacy_http(url);
+        let cancel = CancelToken::new();
+        match t.request("initialize", json!({}), Duration::from_secs(5), &cancel) {
+            Err(TransportError::Failed(detail)) => assert!(detail.contains("403"), "{detail}"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        match t.request("tools/call", json!({}), Duration::from_secs(5), &cancel) {
+            Err(TransportError::NeedsAuth(Some(challenge))) => {
+                assert!(challenge.contains("insufficient_scope"), "{challenge}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// A legacy (2025-11-25) server may `ping` mid-call on the response
+    /// stream and wait for the answer before sending its result — JSON-RPC's
+    /// "MUST reply". Unanswered, the call sat out its whole deadline.
+    #[test]
+    fn a_legacy_ping_on_the_response_stream_is_answered() {
+        let (pinged_tx, pinged_rx) = mpsc::channel::<()>();
+        let pinged_rx = Arc::new(Mutex::new(pinged_rx));
+        let url = http_fixture(move |seen, stream| {
+            if seen.method == "POST" && seen.body.get("result").is_some() {
+                // The client's answer to our ping: 202, and wake the call.
+                assert_eq!(seen.body["id"], json!("ping-1"));
+                assert_eq!(seen.header("mcp-session-id"), Some("s1"));
+                let _ = pinged_tx.send(());
+                let _ = stream.write_all(
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                return;
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            let ping = json!({"jsonrpc": "2.0", "id": "ping-1", "method": "ping"});
+            let _ = stream.write_all(format!("data: {ping}\n\n").as_bytes());
+            let _ = stream.flush();
+            let answered = pinged_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            if answered.is_ok() {
+                let done = result_for(seen, json!({"after": "ping"}));
+                let _ = stream.write_all(format!("data: {done}\n\n").as_bytes());
+            }
+        });
+        let mut t = legacy_http(url);
+        t.session = Some("s1".to_string());
+        let answer = t
+            .request(
+                "tools/call",
+                json!({}),
+                Duration::from_secs(8),
+                &CancelToken::new(),
+            )
+            .expect("answered");
+        assert_eq!(answer, json!({"after": "ping"}));
+    }
+
+    /// 2026-07-28 removed stream resumption: "a broken response stream
+    /// loses the in-flight request; clients MUST re-issue it as a new
+    /// request with a new request ID".
+    #[test]
+    fn a_broken_modern_stream_is_reissued_under_a_new_id() {
+        let attempts = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let seen_ids = Arc::clone(&attempts);
+        let url = http_fixture(move |seen, stream| {
+            let mut ids = seen_ids.lock().unwrap();
+            ids.push(seen.body["id"].clone());
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            if ids.len() > 1 {
+                let done = result_for(seen, json!({"second": true}));
+                let _ = stream.write_all(format!("data: {done}\n\n").as_bytes());
+            }
+            // The first stream just ends.
+        });
+        let mut t = HttpTransport::new(url, RemoteHeaders::default());
+        t.set_modern(crate::mcp::PROTOCOL_VERSION);
+        let answer = t
+            .request(
+                "tools/call",
+                json!({"name": "x"}),
+                Duration::from_secs(5),
+                &CancelToken::new(),
+            )
+            .expect("re-issued");
+        assert_eq!(answer, json!({"second": true}));
+        let ids = attempts.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    /// A redirect to another origin is not followed: the configured headers
+    /// (an API key, say) ride every MCP request, and reqwest only strips
+    /// `Authorization` on a cross-host hop.
+    #[test]
+    fn a_redirect_to_another_origin_is_not_followed() {
+        let elsewhere = http_fixture(|seen, _stream| {
+            panic!("followed the redirect with {:?}", seen.header("x-api-key"));
+        });
+        let url = http_fixture(move |_, stream| {
+            let _ = stream.write_all(
+                format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {elsewhere}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            );
+        });
+        let mut t = HttpTransport::new(
+            url,
+            RemoteHeaders {
+                headers: BTreeMap::from([("X-Api-Key".to_string(), "secret".to_string())]),
+                bearer: None,
+            },
+        );
+        t.set_legacy();
+        match t.request(
+            "tools/list",
+            json!({}),
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        ) {
+            Err(TransportError::Failed(detail)) => assert!(detail.contains("307"), "{detail}"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

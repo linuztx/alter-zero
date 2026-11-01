@@ -413,12 +413,42 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// the `pool_idle_timeout` set here. The env config a client bakes in (proxy,
 /// CA paths) never changes mid-process (this crate forbids `set_var`).
 pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
+    cached_client(op_timeout, Redirects::Any)
+}
+
+/// [`http_client`] for **MCP servers**: a redirect is followed only while
+/// every hop stays on the origin the request went to (ten hops at most).
+/// What an MCP request carries — the config's own headers, an API key among
+/// them, and the bearer — rides every hop, and reqwest strips only
+/// `Authorization` and cookies when a redirect changes host, so a server
+/// that bounced the request elsewhere would hand the rest away. A stopped
+/// redirect comes back as its own `3xx` response, which the transport
+/// reports.
+///
+/// # Errors
+/// Returns [`LlmError::Http`] if the client can't be built.
+pub(crate) fn mcp_http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
+    cached_client(op_timeout, Redirects::SameOrigin)
+}
+
+/// Which redirects a cached client follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Redirects {
+    /// reqwest's default — any, ten hops at most.
+    Any,
+    /// Only those staying on the first request's origin.
+    SameOrigin,
+}
+
+fn cached_client(op_timeout: Duration, redirects: Redirects) -> Result<reqwest::blocking::Client> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static CLIENTS: OnceLock<Mutex<HashMap<Duration, reqwest::blocking::Client>>> = OnceLock::new();
+    type Cache = Mutex<HashMap<(Duration, Redirects), reqwest::blocking::Client>>;
+    static CLIENTS: OnceLock<Cache> = OnceLock::new();
     let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (op_timeout, redirects);
     if let Ok(map) = cache.lock()
-        && let Some(client) = map.get(&op_timeout)
+        && let Some(client) = map.get(&key)
     {
         return Ok(client.clone());
     }
@@ -426,12 +456,27 @@ pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Cli
         .pool_idle_timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .timeout(op_timeout);
+    if redirects == Redirects::SameOrigin {
+        builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let same_origin = attempt
+                .previous()
+                .first()
+                .is_some_and(|first| first.origin() == attempt.url().origin());
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if same_origin {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }));
+    }
     for cert in extra_root_certificates() {
         builder = builder.add_root_certificate(cert);
     }
     let client = builder.build().map_err(|e| LlmError::Http(e.to_string()))?;
     if let Ok(mut map) = cache.lock() {
-        map.insert(op_timeout, client.clone());
+        map.insert(key, client.clone());
     }
     Ok(client)
 }

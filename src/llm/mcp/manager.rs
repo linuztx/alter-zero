@@ -886,8 +886,9 @@ impl McpManager {
                 Err(TransportError::Rpc(error))
                     if error.code == -32020 && transport.mirrors_param_headers() =>
                 {
-                    let budget = timeout.saturating_sub(started.elapsed());
-                    match super::client::list_tools(&mut transport, budget, cancel) {
+                    let until =
+                        std::time::Instant::now() + timeout.saturating_sub(started.elapsed());
+                    match super::client::list_tools(&mut transport, until, cancel) {
                         Ok(listing) => {
                             relisted = Some(listing);
                             let budget = timeout.saturating_sub(started.elapsed());

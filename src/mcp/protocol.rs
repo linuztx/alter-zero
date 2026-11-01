@@ -182,6 +182,27 @@ fn rpc_error(error: &Value) -> RpcError {
     }
 }
 
+/// This client's answer to a server→client request — what a **legacy**
+/// (handshake-era) server is owed: JSON-RPC's "MUST reply", and 2025-11-25's
+/// `ping` "MUST respond promptly". `ping` gets the empty result; anything
+/// else gets method-not-found, since this client declares no capability
+/// that would make it a request it could serve. A modern server never sends
+/// one (its requests ride `input_required` results).
+#[must_use]
+pub fn server_request_answer(id: &Value, method: &str) -> Value {
+    if method == "ping" {
+        return json!({"jsonrpc": "2.0", "id": id, "result": {}});
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32601,
+            "message": format!("Method not found: {method} (this client declares no capabilities)")
+        }
+    })
+}
+
 /// Why a result can't be read as an ordinary one — `None` for an absent
 /// `resultType` (an earlier-revision server; "MUST treat … as complete") and
 /// for `"complete"`. Anything else is "considered invalid" (2026-07-28), so a
@@ -965,6 +986,22 @@ mod tests {
                 data: None,
             }))
         );
+    }
+
+    /// A legacy server's request is answered the way JSON-RPC requires:
+    /// `ping` with the empty result, anything else (a `roots/list` from a
+    /// server ignoring our empty capabilities) with method-not-found — the
+    /// id echoed as it came.
+    #[test]
+    fn a_server_request_is_answered_ping_with_empty_the_rest_unknown() {
+        assert_eq!(
+            server_request_answer(&json!("p-1"), "ping"),
+            json!({"jsonrpc": "2.0", "id": "p-1", "result": {}})
+        );
+        let refused = server_request_answer(&json!(7), "roots/list");
+        assert_eq!(refused["id"], json!(7));
+        assert_eq!(refused["error"]["code"], json!(-32601));
+        assert!(refused.get("result").is_none());
     }
 
     /// A server that needs a capability this client didn't declare says

@@ -304,10 +304,43 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     the rest's declarations; a call the server still refuses `400
     HeaderMismatch` (`-32020`) lists the tools again, records the fresh
     listing, and is retried once, the spec's SHOULD (a changed schema is
-    the usual cause). A 4xx whose body parses as a JSON-RPC error surfaces as that
+    the usual cause). A 4xx whose body parses as a JSON-RPC error — its
+    id or `id: null`, the SDKs' transport-level shape — surfaces as that
     error (a modern server answers version/header problems as `400` + a
-    modern error body), else as the refusal the SSE fallback keys on;
-    notifications POST and ignore the body. A **404 to a request that
+    modern error body); **only 400, 404 and 405** without one are the
+    refusal the SSE fallback keys on (`TransportError::HttpRefused` — the
+    spec's three), while a 403, a 429 or a redirect not followed is the
+    server's answer, reported as such, and a **403 whose challenge says
+    `insufficient_scope`** is an authentication state like a 401
+    (`NeedsAuth`, the challenge kept for the step-up). A notification's 2xx
+    is its acceptance whatever the body, which is never read — a server
+    holding it open must not hold up the handshake.
+
+    Every POST runs on a worker with **its own request's budget as the
+    HTTP timeout** (`RequestBuilder::timeout`, which in reqwest's blocking
+    client bounds the wait for the headers *and* each body read). The
+    pooled client's 60 s stall guard used to be the effective limit, so a
+    tool taking 61–120 s failed on HTTP while the same tool worked on stdio,
+    and raising `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` did nothing. A wait that
+    gives up (Esc, the deadline) marks the POST abandoned and the worker
+    drops the response at its next line — closing the response stream *is*
+    streamable HTTP's cancellation. Each message is bounded at 16 MiB
+    (`MAX_MESSAGE_BYTES`, Claude Code's bound) and read with lossy UTF-8.
+    The client follows a **redirect only within the request's origin**
+    (`llm::mcp_http_client`, ten hops): every MCP request carries the
+    config's headers, which reqwest — stripping only `Authorization` and
+    cookies across hosts — would otherwise hand to wherever a server
+    bounced it.
+
+    On a response stream, a **legacy** server may send its own request
+    (`ping`, mostly) and wait for the answer before its result: answered
+    at once — `ping` with `{}`, anything else `-32601`
+    (`mcp::server_request_answer`) — by a POST of its own, session id and
+    all; unanswered, the call sat out its whole deadline. A modern stream
+    that **ends before its answer** loses the request — 2026-07-28 removed
+    resumption and says the client MUST re-issue it under a new id — so it
+    is re-issued once. A session id is captured only in legacy mode: a
+    modern answer naming one anyway is never echoed back. A **404 to a request that
     carried a session id** means that session is gone (a restart, an idle
     timeout): the spec's answer is a fresh `initialize` at the settled
     revision, a repeated `notifications/initialized`, and a replay of the
@@ -319,11 +352,29 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     with 404.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
-    base URL), requests POST there and answers arrive on the stream.
+    base URL — and **refused when it names another origin**, host, port or
+    scheme: every POST carries the bearer and the configured headers, so a
+    stream pointing elsewhere, or downgrading `https` to `http`, would hand
+    them over; the reference SDK refuses the same), requests POST there on
+    a worker thread under the same deadline and cancel polls as every other
+    wait (it used to block the turn's thread), and answers arrive on the
+    stream. A `ping` the server sends on the stream is answered with a
+    POST. A 401 or step-up 403 keeps its `WWW-Authenticate` challenge,
+    which the POST side used to drop. The stream thread stops at its next
+    line once the transport is dropped — a keep-alive comment is a line —
+    where it used to hold the connection, and itself, for good. A
+    byte-order mark opening the stream is stripped (the SSE spec's rule;
+    kept, it made the `endpoint` event never arrive).
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
-  enforce the configured deadlines.
-- `client` — the per-server connect sequence, **era detection first** (the
+  enforce the configured deadlines; a notification takes the caller's
+  deadline and cancel too, where it used to wait up to 60 s on a token
+  nothing could cancel.
+- `client` — the per-server connect sequence, under **one deadline for
+  the whole sequence** (the probe, the handshake, every page of the
+  listing and an SSE fallback all draw on it — each request used to restart
+  its own clock, so a slow, many-paged server took page count × budget),
+  **era detection first** (the
   2026-07-28 spec's own recipe): one `server/discover` probe under the
   modern version (a bounded slice of the connect budget — a server that
   answers *nothing* still leaves room for the handshake). A discover result
@@ -348,7 +399,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   modern side the newest revision the discover result's `supportedVersions`
   and ours share — a list that names no revision we can speak modern hands
   off to the handshake at the one it *did* name, which is what asking is
-  for. Nothing about the previous connect is consulted. A 401 anywhere
+  for. Nothing about the previous connect is consulted. A bare-`url`
+  config whose `initialize` is refused (`Handshake::Refused`) tries the
+  legacy transport, and when that fails too the message keeps **both**
+  answers, the streamable one first — it is usually the one that explains.
+  A 401 anywhere
   (or the http→sse fallback both failing with one) resolves as
   **NeedsAuth**, carrying the `WWW-Authenticate` detail for the OAuth
   discovery — auth outranks era, and detection re-runs on the authenticated

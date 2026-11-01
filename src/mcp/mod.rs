@@ -49,7 +49,7 @@ pub use self::protocol::{
     discover_params, initialize_params, initialize_params_for, input_required,
     input_schema_problem, is_modern_error, model_input_schema, notification, parse_call_result,
     parse_discover, parse_incoming, parse_initialize, parse_tools_page, request, request_meta,
-    result_type_problem, tools_list_params, unsupported_versions, with_meta,
+    result_type_problem, server_request_answer, tools_list_params, unsupported_versions, with_meta,
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{

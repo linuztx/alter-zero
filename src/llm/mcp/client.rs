@@ -16,7 +16,7 @@
 //! verdict just as permanently.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -67,6 +67,38 @@ impl ConnectError {
     }
 }
 
+/// Why a handshake over streamable HTTP failed: a [`ConnectError`], or the
+/// one refusal the spec says to answer by trying the legacy HTTP+SSE
+/// transport (`400`/`404`/`405` to `initialize`, no modern error body —
+/// `TransportError::HttpRefused`). Kept apart so the fallback keys on what
+/// happened rather than on the words a message happens to use.
+enum Handshake {
+    Error(ConnectError),
+    Refused(String),
+}
+
+impl From<ConnectError> for Handshake {
+    fn from(error: ConnectError) -> Self {
+        Self::Error(error)
+    }
+}
+
+impl Handshake {
+    /// A refusal no fallback answered is an ordinary failure.
+    fn settle(self) -> ConnectError {
+        match self {
+            Self::Error(error) => error,
+            Self::Refused(detail) => ConnectError::Failed(detail),
+        }
+    }
+}
+
+/// What is left of a connect's budget — every step draws on the one
+/// deadline, so the whole sequence, not each request, is what it bounds.
+fn left(until: Instant) -> Duration {
+    until.saturating_duration_since(Instant::now())
+}
+
 /// A connected server: its live transport, identity, and tool list. The
 /// revision this connect settled on rides `identity.protocol_version` — it
 /// is the server's own answer, never a remembered one.
@@ -81,7 +113,8 @@ pub struct Connection {
 }
 
 /// Connect one server end to end. `bearer` is the stored OAuth access token
-/// when one exists; `deadline` bounds the whole sequence.
+/// when one exists; `deadline` bounds the whole sequence — the probe, the
+/// handshake, every page of the listing and an SSE fallback all draw on it.
 pub fn connect(
     config: &McpServerConfig,
     bearer: Option<String>,
@@ -89,6 +122,7 @@ pub fn connect(
     deadline: Duration,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
+    let until = Instant::now() + deadline;
     match config {
         McpServerConfig::Stdio { command, args, env } => {
             let transport = StdioTransport::spawn(command, args, env, cwd)
@@ -96,7 +130,7 @@ pub fn connect(
             // Fold the child's stderr into a handshake failure so a crashing
             // server explains itself (`npx` printing a download error, say).
             let stderr = transport.stderr_tail();
-            handshake(Transport::Stdio(transport), deadline, cancel).map_err(|e| match e {
+            handshake(Transport::Stdio(transport), until, cancel).map_err(|e| match e.settle() {
                 ConnectError::Failed(detail) => {
                     let tail = stderr.trim();
                     if tail.is_empty() || detail.contains(tail) {
@@ -118,18 +152,30 @@ pub fn connect(
                 bearer: bearer.clone(),
             };
             let http = HttpTransport::new(url.clone(), remote.clone());
-            match handshake(Transport::Http(http), deadline, cancel) {
+            match handshake(Transport::Http(http), until, cancel) {
                 Ok(connection) => Ok(connection),
                 // The spec's compat recipe: a bare-`url` config whose
                 // streamable POST is refused retries the same URL as a
                 // legacy SSE server. A 401 is NOT a refusal — it is an
-                // answer (authenticate first).
-                Err(ConnectError::Failed(detail))
-                    if *sse_fallback && detail.contains("server refused") =>
-                {
-                    connect_sse(url, remote, deadline, cancel)
+                // answer (authenticate first) — and neither is a 403 or a
+                // 5xx. Both answers are kept when the fallback fails too:
+                // the first is usually the one that explains.
+                Err(Handshake::Refused(detail)) if *sse_fallback => {
+                    match connect_sse(url, remote, until, cancel) {
+                        Ok(connection) => Ok(connection),
+                        Err(Handshake::Error(ConnectError::NeedsAuth(challenge))) => {
+                            Err(ConnectError::NeedsAuth(challenge))
+                        }
+                        Err(sse) => Err(ConnectError::Failed(format!(
+                            "{detail}; as a legacy SSE server: {}",
+                            match sse.settle() {
+                                ConnectError::Failed(why) => why,
+                                ConnectError::NeedsAuth(_) => "authentication required".into(),
+                            }
+                        ))),
+                    }
                 }
-                Err(e) => Err(e),
+                Err(e) => Err(e.settle()),
             }
         }
         McpServerConfig::Sse { url, headers } => connect_sse(
@@ -138,21 +184,22 @@ pub fn connect(
                 headers: headers.clone(),
                 bearer,
             },
-            deadline,
+            until,
             cancel,
-        ),
+        )
+        .map_err(Handshake::settle),
     }
 }
 
 fn connect_sse(
     url: &str,
     remote: RemoteHeaders,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
-    let transport = SseTransport::connect(url, remote, deadline, cancel)
+) -> Result<Connection, Handshake> {
+    let transport = SseTransport::connect(url, remote, left(until), cancel)
         .map_err(ConnectError::from_transport)?;
-    handshake(Transport::Sse(transport), deadline, cancel)
+    handshake(Transport::Sse(transport), until, cancel)
 }
 
 /// The protocol sequence over an open transport: era detection (the spec's
@@ -163,25 +210,25 @@ fn connect_sse(
 /// between launches has to be believed the next time we ask, not the last.
 fn handshake(
     mut transport: Transport,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
+) -> Result<Connection, Handshake> {
     // The legacy HTTP+SSE transport predates the modern era by definition —
     // its servers speak 2024-11-05 — so only stdio and streamable HTTP probe.
     if matches!(transport, Transport::Sse(_)) {
-        return legacy_handshake(transport, LEGACY_PROTOCOL_VERSION, deadline, cancel);
+        return legacy_handshake(transport, LEGACY_PROTOCOL_VERSION, until, cancel);
     }
     transport.set_modern(PROTOCOL_VERSION);
     let probe = transport.request(
         "server/discover",
         discover_params(PROTOCOL_VERSION),
-        MODERN_PROBE_TIMEOUT.min(deadline),
+        MODERN_PROBE_TIMEOUT.min(left(until)),
         cancel,
     );
     let legacy_version = match probe {
         Ok(result) if result_type_problem(&result).is_some() => {
             let problem = result_type_problem(&result).unwrap_or_default();
-            return Err(ConnectError::Failed(format!("server/discover: {problem}")));
+            return Err(ConnectError::Failed(format!("server/discover: {problem}")).into());
         }
         Ok(result) => {
             // A modern server. Its identity rides the discover result
@@ -198,14 +245,14 @@ fn handshake(
                 // Either it named our revision, or it named none we know —
                 // and it answered a request sent under ours, which is the
                 // spec's own definition of accepting it.
-                _ => return finish(transport, identity, deadline, cancel),
+                _ => return Ok(finish(transport, identity, until, cancel)?),
             }
         }
         // Auth outranks era: the server wants credentials before it will
         // tell us anything — answer that first (era detection runs again on
         // the authenticated reconnect, like every other connect).
         Err(e @ (TransportError::NeedsAuth(_) | TransportError::Cancelled)) => {
-            return Err(ConnectError::from_transport(e));
+            return Err(ConnectError::from_transport(e).into());
         }
         Err(TransportError::Rpc(error)) if is_modern_error(error.code) => {
             // A modern server that doesn't speak our modern revision names
@@ -223,7 +270,8 @@ fn handshake(
                         } else {
                             supported.join(", ")
                         }
-                    )));
+                    ))
+                    .into());
                 }
             }
         }
@@ -232,7 +280,7 @@ fn handshake(
         // forbids keying this on one specific code.
         Err(_) => LEGACY_PROTOCOL_VERSION,
     };
-    legacy_handshake(transport, legacy_version, deadline, cancel)
+    legacy_handshake(transport, legacy_version, until, cancel)
 }
 
 /// The legacy handshake: `initialize` (proposing `version`) →
@@ -241,24 +289,36 @@ fn handshake(
 fn legacy_handshake(
     mut transport: Transport,
     version: &str,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
+) -> Result<Connection, Handshake> {
     transport.set_legacy();
-    let result = transport
-        .request(
-            "initialize",
-            initialize_params_for(version),
-            deadline,
-            cancel,
-        )
-        .map_err(ConnectError::from_transport)?;
+    let result = match transport.request(
+        "initialize",
+        initialize_params_for(version),
+        left(until),
+        cancel,
+    ) {
+        Ok(result) => result,
+        // The one answer the legacy-SSE fallback is for.
+        Err(TransportError::HttpRefused(detail)) => {
+            return Err(Handshake::Refused(format!(
+                "server refused the request: {detail}"
+            )));
+        }
+        Err(e) => return Err(ConnectError::from_transport(e).into()),
+    };
     let mut identity = parse_initialize(&result);
     if let Transport::Http(http) = &mut transport {
         http.set_protocol_version(&identity.protocol_version);
     }
     transport
-        .notify("notifications/initialized", Value::Null)
+        .notify(
+            "notifications/initialized",
+            Value::Null,
+            left(until),
+            cancel,
+        )
         .map_err(ConnectError::from_transport)?;
     // What the *server* answered is the settled revision — including when
     // it answered nothing at all (a pre-`protocolVersion` server), where the
@@ -268,17 +328,17 @@ fn legacy_handshake(
     if identity.protocol_version.trim().is_empty() {
         identity.protocol_version = version.to_string();
     }
-    finish(transport, identity, deadline, cancel)
+    Ok(finish(transport, identity, until, cancel)?)
 }
 
 /// The `tools/list` drain over a settled transport — both eras end here.
 fn finish(
     mut transport: Transport,
     identity: ServerIdentity,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
-    let (tools, excluded) = list_tools(&mut transport, deadline, cancel)?;
+    let (tools, excluded) = list_tools(&mut transport, until, cancel)?;
     Ok(Connection {
         transport,
         identity,
@@ -294,7 +354,7 @@ fn finish(
 /// (the spec's "SHOULD call `tools/list` to check for changes").
 pub(super) fn list_tools(
     transport: &mut Transport,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
 ) -> Result<(Vec<McpToolInfo>, Vec<ExcludedTool>), ConnectError> {
     let mut tools: Vec<McpToolInfo> = Vec::new();
@@ -309,7 +369,7 @@ pub(super) fn list_tools(
             .request(
                 "tools/list",
                 tools_list_params(cursor.as_deref()),
-                deadline,
+                left(until),
                 cancel,
             )
             .map_err(ConnectError::from_transport)?;
@@ -1113,6 +1173,91 @@ mod tests {
             Some("be modern")
         );
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    /// The connect budget bounds the **whole** sequence. Every request used
+    /// to restart its own clock, so a server paging slowly through its tools
+    /// took page count × budget, far past the startup timeout.
+    #[test]
+    fn the_connect_budget_bounds_the_whole_sequence() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      sleep 0.4
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[],"nextCursor":"p%s","ttlMs":0,"cacheScope":"public"}}\n' "$id" "$id" ;;
+  esac
+done
+"#;
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: Default::default(),
+        };
+        let started = std::time::Instant::now();
+        let result = connect(
+            &config,
+            None,
+            None,
+            Duration::from_millis(1500),
+            &CancelToken::new(),
+        );
+        assert!(
+            matches!(&result, Err(ConnectError::Failed(detail)) if detail.contains("timed out")),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A bare-`url` server refusing streamable HTTP *and* the legacy
+    /// transport reports both answers, the first one first — the old message
+    /// named only the SSE side's `HTTP 405 opening the event stream`.
+    #[test]
+    fn a_failed_sse_fallback_keeps_the_first_answer() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = [0u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let get = request[..read].starts_with(b"GET");
+                let reply: &[u8] = if get {
+                    b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nno such\r\n"
+                };
+                let _ = stream.write_all(reply);
+            }
+        });
+        let config = McpServerConfig::Http {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: Default::default(),
+            sse_fallback: true,
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                let first = detail.find("404").expect("the streamable answer");
+                let then = detail.find("405").expect("the SSE answer");
+                assert!(first < then, "{detail}");
+            }
+            Err(other) => panic!("unexpected: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
     }
 
     /// Paging follows the 2026-07-28 rules — an empty cursor continues the
