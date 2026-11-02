@@ -255,6 +255,11 @@ struct ServerState {
     /// Bumped on disable/reconnect so a stale connect thread's result is
     /// dropped instead of resurrecting an old state.
     generation: u64,
+    /// A listing prompted by the server's change notification is running —
+    /// a burst of them is one listing, plus one more if any arrived while it
+    /// ran (`relist_again`), never one each.
+    relisting: bool,
+    relist_again: bool,
 }
 
 impl ServerState {
@@ -398,6 +403,8 @@ impl McpManager {
                     has_tokens,
                     challenge: None,
                     generation: 0,
+                    relisting: false,
+                    relist_again: false,
                     entry,
                 }
             })
@@ -563,7 +570,13 @@ impl McpManager {
                 return; // a reconnect/disable superseded this attempt
             }
             match result {
-                Ok(connection) => {
+                Ok(mut connection) => {
+                    // The server's change notifications list its tools again;
+                    // one that promised them is asked for them.
+                    let subscribe = connection.identity.tools_list_changed;
+                    connection
+                        .transport
+                        .watch_changes(manager.change_sink(&name, generation), subscribe);
                     server.identity = Some(connection.identity);
                     server.tools = connection.tools;
                     server.excluded = connection.excluded;
@@ -599,6 +612,93 @@ impl McpManager {
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             drop(inner);
             manager.notify(McpEvent::Changed);
+        });
+    }
+
+    /// What a connection's change notifications reach: a tool-list change
+    /// lists `name` again (`relist`), while the connection of `generation`
+    /// is still the one in use. Holds the manager weakly — the transport
+    /// lives inside the manager, and a strong handle there would keep both
+    /// alive for good.
+    fn change_sink(&self, name: &str, generation: u64) -> super::transport::ChangeSink {
+        let inner = Arc::downgrade(&self.inner);
+        let events = self.events.clone();
+        let name = name.to_string();
+        Arc::new(move |method: &str| {
+            if method != crate::mcp::TOOLS_LIST_CHANGED {
+                return;
+            }
+            if let Some(inner) = inner.upgrade() {
+                McpManager {
+                    inner,
+                    events: events.clone(),
+                }
+                .relist(&name, generation);
+            }
+        })
+    }
+
+    /// List a server's tools again after it said they changed, on a worker —
+    /// the notification arrives on a reader thread that must not wait, and a
+    /// call may hold the connection. The fresh listing replaces the tools
+    /// the model is offered (the event loop re-attaches the backend when the
+    /// set moved), and a burst of notifications costs one listing, plus one
+    /// more for any that arrived while it ran.
+    fn relist(&self, name: &str, generation: u64) {
+        let (transport, budget) = {
+            let mut inner = self.lock();
+            let budget = inner.startup_timeout;
+            let Some(server) = inner
+                .servers
+                .iter_mut()
+                .find(|s| s.entry.name == name && s.generation == generation)
+            else {
+                return;
+            };
+            if server.status != McpServerStatus::Connected {
+                return;
+            }
+            if server.relisting {
+                server.relist_again = true;
+                return;
+            }
+            let Some(transport) = server.transport.clone() else {
+                return;
+            };
+            server.relisting = true;
+            (transport, budget)
+        };
+        let manager = self.clone();
+        let name = name.to_string();
+        std::thread::spawn(move || {
+            loop {
+                let listing = transport.lock().map_err(|_| ()).and_then(|mut transport| {
+                    let until = std::time::Instant::now() + budget;
+                    super::client::list_tools(&mut transport, until, &CancelToken::new())
+                        .map_err(|_| ())
+                });
+                let mut inner = manager.lock();
+                let Some(server) = inner
+                    .servers
+                    .iter_mut()
+                    .find(|s| s.entry.name == name && s.generation == generation)
+                else {
+                    return; // reconnected or disabled meanwhile
+                };
+                // A failed listing keeps the tools the server had: they are
+                // the best knowledge there is.
+                if let Ok((tools, excluded)) = listing {
+                    server.tools = tools;
+                    server.excluded = excluded;
+                }
+                if std::mem::take(&mut server.relist_again) {
+                    continue;
+                }
+                server.relisting = false;
+                drop(inner);
+                manager.notify(McpEvent::Changed);
+                return;
+            }
         });
     }
 
@@ -1458,6 +1558,209 @@ mod tests {
     /// Every offered function name is unique and inside the provider limit —
     /// a duplicate or an over-long one fails the **whole** request — and the
     /// specs, the fingerprint and the description lookup all agree on them.
+    /// A stdio server answering by method, whose tool list grows from
+    /// `one` to `one`, `two` once it announces the change. `modern` makes it
+    /// a 2026-07-28 server, which announces only on the `subscriptions/listen`
+    /// it was sent; a legacy one announces unasked.
+    fn changing_stdio_entry(name: &str, modern: bool) -> McpServerEntry {
+        let discover = if modern {
+            r#"{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{\"listChanged\":true}},\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"dyn\",\"version\":\"0\"}}}}"#
+        } else {
+            r#"{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"nope\"}}"#
+        };
+        let announce = r#"( sleep 0.2; printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{}}' ) &"#;
+        let (on_listen, on_first_list) = if modern {
+            (announce, "")
+        } else {
+            ("", announce)
+        };
+        let script = format!(
+            r#"n=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/*) ;;
+    *'"server/discover"'*) printf '%s\n' "{discover}" ;;
+    *'"initialize"'*) printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{\"tools\":{{\"listChanged\":true}}}},\"serverInfo\":{{\"name\":\"dyn\",\"version\":\"0\"}}}}}}" ;;
+    *'"subscriptions/listen"'*) {on_listen} ;;
+    *'"tools/list"'*)
+      n=$((n+1))
+      if [ $n -eq 1 ]; then
+        printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"tools\":[{{\"name\":\"one\",\"inputSchema\":{{\"type\":\"object\"}}}}]}}}}"
+        {on_first_list}
+      else
+        printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"tools\":[{{\"name\":\"one\",\"inputSchema\":{{\"type\":\"object\"}}}},{{\"name\":\"two\",\"inputSchema\":{{\"type\":\"object\"}}}}]}}}}"
+      fi ;;
+  esac
+done"#
+        );
+        McpServerEntry {
+            name: name.to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }
+    }
+
+    fn wait_for_tools(manager: &McpManager, name: &str, count: usize) {
+        for _ in 0..200 {
+            let snapshot = manager.snapshot();
+            if snapshot
+                .iter()
+                .find(|s| s.name == name)
+                .is_some_and(|s| s.tools.len() == count)
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "{name} never offered {count} tools (has {:?})",
+            manager.snapshot().iter().find(|s| s.name == name).map(|s| s
+                .tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>())
+        );
+    }
+
+    /// A server that says its tools changed is listed again, and the model
+    /// is offered what it lists now — unasked from a legacy server, on the
+    /// `subscriptions/listen` it was sent by a modern one (`docs/mcp.md`).
+    #[test]
+    fn a_server_announcing_new_tools_is_listed_again() {
+        for modern in [false, true] {
+            let (manager, _rx) = manager_with(vec![changing_stdio_entry("dyn", modern)]);
+            manager.start_connections();
+            wait_connected(&manager, "dyn");
+            wait_for_tools(&manager, "dyn", 2);
+            let names: Vec<String> = manager
+                .tool_specs()
+                .iter()
+                .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(names, ["mcp__dyn__one", "mcp__dyn__two"], "modern {modern}");
+            manager.shutdown();
+        }
+    }
+
+    /// A modern streamable-HTTP server whose tools grow from `one` to `one`,
+    /// `two`, announced on the `subscriptions/listen` stream it is sent —
+    /// each connection served on its own thread, since that stream stays
+    /// open while the listing goes out beside it. Returns its MCP URL.
+    fn spawn_changing_http() -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!(
+            "http://127.0.0.1:{}/mcp",
+            listener.local_addr().unwrap().port()
+        );
+        let lists = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let lists = Arc::clone(&lists);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        return;
+                    }
+                    let mut length = 0usize;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                            break;
+                        }
+                        if let Some(rest) =
+                            header.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = rest.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    let _ = reader.read_exact(&mut body);
+                    let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    let method = request["method"].as_str().unwrap_or_default().to_string();
+                    let tools = |names: &[&str]| -> Value {
+                        names
+                            .iter()
+                            .map(|name| serde_json::json!({"name": name, "inputSchema": {"type": "object"}}))
+                            .collect()
+                    };
+                    let result = match method.as_str() {
+                        "server/discover" => serde_json::json!({
+                            "resultType": "complete",
+                            "supportedVersions": ["2026-07-28"],
+                            "capabilities": {"tools": {"listChanged": true}},
+                            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "dyn", "version": "0"}}
+                        }),
+                        "tools/list" => {
+                            let n = lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let names: &[&str] = if n == 0 { &["one"] } else { &["one", "two"] };
+                            serde_json::json!({"resultType": "complete", "tools": tools(names)})
+                        }
+                        "subscriptions/listen" => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                            );
+                            let ack = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/subscriptions/acknowledged", "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": id}, "notifications": {"toolsListChanged": true}}});
+                            let _ = stream.write_all(format!("data: {ack}\n\n").as_bytes());
+                            std::thread::sleep(Duration::from_millis(300));
+                            let changed = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed", "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": id}}});
+                            let _ = stream.write_all(format!("data: {changed}\n\n").as_bytes());
+                            std::thread::sleep(Duration::from_secs(10));
+                            return;
+                        }
+                        _ => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            );
+                            return;
+                        }
+                    };
+                    let body = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+                        .to_string();
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                });
+            }
+        });
+        url
+    }
+
+    /// Over streamable HTTP the change arrives on the server's own stream:
+    /// a server that promised changes is sent `subscriptions/listen`, and
+    /// what it announces there lists its tools again.
+    #[test]
+    fn a_remote_server_announcing_new_tools_is_listed_again() {
+        let url = spawn_changing_http();
+        let (manager, _rx) = manager_with(vec![McpServerEntry {
+            name: "remote".to_string(),
+            config: McpServerConfig::Http {
+                url,
+                headers: Default::default(),
+                sse_fallback: false,
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }]);
+        manager.start_connections();
+        wait_connected(&manager, "remote");
+        wait_for_tools(&manager, "remote", 2);
+        manager.shutdown();
+    }
+
     /// The instructions the reminder carries: only a connected server with
     /// a tool it offers, in name order, and — for a subagent — only a server
     /// whose tools the agent may call (`docs/mcp.md`).

@@ -192,8 +192,21 @@ impl Transport {
     pub fn shutdown(&mut self, grace: Duration) {
         match self {
             Self::Stdio(t) => t.shutdown(grace),
-            Self::Http(_) => {}
+            Self::Http(t) => t.stop_listening(),
             Self::Sse(t) => t.closed.store(true, Ordering::Relaxed),
+        }
+    }
+
+    /// Hand the server's change notifications to `sink` from now on, read
+    /// wherever this transport reads the server — and, when the server
+    /// promised them (`subscribe`, its `tools.listChanged`), open what it
+    /// sends them on: a modern stdio server's `subscriptions/listen`, a
+    /// streamable-HTTP server's long-lived stream (`docs/mcp.md`).
+    pub fn watch_changes(&mut self, sink: ChangeSink, subscribe: bool) {
+        match self {
+            Self::Stdio(t) => t.watch_changes(sink, subscribe),
+            Self::Http(t) => t.watch_changes(sink, subscribe),
+            Self::Sse(t) => t.changes.set(sink),
         }
     }
 
@@ -236,6 +249,34 @@ fn wait_channel<T>(
 // ---------------------------------------------------------------------------
 // stdio
 
+/// Who hears a server's change notifications — the manager, which lists
+/// what changed again (`docs/mcp.md`). Called with the notification's
+/// method, on whichever thread read it: it must return at once.
+pub type ChangeSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A transport's change sink, shared with the threads that read the server.
+#[derive(Clone, Default)]
+pub(super) struct Changes(Arc<Mutex<Option<ChangeSink>>>);
+
+impl Changes {
+    fn set(&self, sink: ChangeSink) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(sink);
+        }
+    }
+
+    /// Hand `message` to the sink when it is a notification.
+    fn deliver(&self, message: &str) {
+        let Some(method) = crate::mcp::notification_method(message) else {
+            return;
+        };
+        let sink = self.0.lock().ok().and_then(|slot| slot.clone());
+        if let Some(sink) = sink {
+            sink(&method);
+        }
+    }
+}
+
 /// A local child process speaking newline-delimited JSON-RPC on its stdio,
 /// launched **detached from the TUI's terminal** — a session and process
 /// group of its own ([`crate::subprocess`]'s tier walk, the one every shell
@@ -258,6 +299,9 @@ pub struct StdioTransport {
     parked: HashMap<u64, Result<Value, RpcError>>,
     /// The retained stderr tail — what a connect error shows.
     stderr: Arc<Mutex<String>>,
+    /// Who hears the server's change notifications, fed by the reader
+    /// thread — which reads every line whether or not a request waits.
+    changes: Changes,
     /// The modern (2026-07-28) protocol version when the era detection
     /// settled modern — every request's params then carry the `_meta`
     /// block. Stdio has no header layer: the message body is everything.
@@ -322,11 +366,16 @@ impl StdioTransport {
             // Dropping `stdin` here closes the pipe: the server reads EOF.
         });
         let (tx, lines) = mpsc::channel();
+        let changes = Changes::default();
+        let heard = changes.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
                 let line = match read_line_capped(&mut reader, MAX_MESSAGE_BYTES) {
-                    Ok(Some(line)) => Ok(line),
+                    Ok(Some(line)) => {
+                        heard.deliver(&line);
+                        Ok(line)
+                    }
                     Ok(None) => break,
                     Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                         // The rest of the oversized line is noise — skip it,
@@ -380,9 +429,27 @@ impl StdioTransport {
             lines,
             parked: HashMap::new(),
             stderr: stderr_tail,
+            changes,
             modern: None,
             next_id: 1,
         })
+    }
+
+    /// [`Transport::watch_changes`] for stdio: the reader thread already
+    /// sees every line, so a legacy server's unsolicited notification needs
+    /// nothing more. A modern (2026-07-28) server sends none it was not asked
+    /// for, so one that promised them is asked: a `subscriptions/listen`
+    /// written now and never waited on — the subscription lasts as long as
+    /// the process, and its eventual answer is a late reply the request
+    /// loop drops.
+    fn watch_changes(&mut self, sink: ChangeSink, subscribe: bool) {
+        self.changes.set(sink);
+        if subscribe && let Some(version) = self.modern.clone() {
+            let id = self.next_id;
+            self.next_id += 1;
+            let params = with_meta(crate::mcp::listen_params(), &version);
+            let _ = self.send(&request(id, "subscriptions/listen", params));
+        }
     }
 
     /// The retained stderr tail — folded into a connect error so a crashing
@@ -724,7 +791,21 @@ pub struct HttpTransport {
     /// Each tool's `x-mcp-header` declarations, by its raw name — what a
     /// modern `tools/call` mirrors into `Mcp-Param-{Name}` headers.
     param_headers: HashMap<String, Vec<ParamHeader>>,
+    /// Who hears the server's change notifications.
+    changes: Changes,
+    /// The connection as the change stream should open it — kept current
+    /// on every request, so a refreshed bearer or a new legacy session
+    /// reaches its next reopening.
+    live: Arc<Mutex<Option<Endpoint>>>,
+    /// The change stream's stop flag, while one runs.
+    listener: Option<Arc<AtomicBool>>,
     next_id: u64,
+}
+
+impl Drop for HttpTransport {
+    fn drop(&mut self) {
+        self.stop_listening();
+    }
 }
 
 /// The modern request-metadata headers one POST carries.
@@ -749,6 +830,8 @@ struct Endpoint {
     /// A legacy (handshake-era) server may send its own requests on a
     /// response stream and waits for the answer; a modern one never does.
     legacy: bool,
+    /// Who hears a notification that arrives on a response stream.
+    changes: Changes,
 }
 
 /// What one POST resolved to, off the worker thread.
@@ -782,7 +865,55 @@ impl HttpTransport {
             protocol_version: None,
             modern: None,
             param_headers: HashMap::new(),
+            changes: Changes::default(),
+            live: Arc::new(Mutex::new(None)),
+            listener: None,
             next_id: 1,
+        }
+    }
+
+    /// The connection one request goes out on, and the one the change
+    /// stream reopens with.
+    fn endpoint(&self) -> Endpoint {
+        Endpoint {
+            url: self.url.clone(),
+            remote: self.remote.clone(),
+            session: self.session.clone(),
+            protocol_version: self.protocol_version.clone(),
+            legacy: self.modern.is_none(),
+            changes: self.changes.clone(),
+        }
+    }
+
+    /// Keep the change stream's view of the connection current.
+    fn publish(&self) {
+        if let Ok(mut live) = self.live.lock() {
+            *live = Some(self.endpoint());
+        }
+    }
+
+    /// [`Transport::watch_changes`] for streamable HTTP: a notification on
+    /// any response stream reaches `sink`, and a server that promised them
+    /// gets a stream of its own for them — a modern server's
+    /// `subscriptions/listen`, an earlier one's GET stream — reopened when
+    /// it ends, given up when the server offers none or fails it over and
+    /// over (`listen_for_changes`).
+    fn watch_changes(&mut self, sink: ChangeSink, subscribe: bool) {
+        self.changes.set(sink);
+        if subscribe && self.listener.is_none() {
+            self.publish();
+            let stop = Arc::new(AtomicBool::new(false));
+            self.listener = Some(Arc::clone(&stop));
+            let live = Arc::clone(&self.live);
+            let modern = self.modern.clone();
+            std::thread::spawn(move || listen_for_changes(&live, &stop, modern.as_deref()));
+        }
+    }
+
+    /// End the change stream, if one runs — at its next line or wake-up.
+    fn stop_listening(&mut self) {
+        if let Some(stop) = self.listener.take() {
+            stop.store(true, Ordering::Relaxed);
         }
     }
 
@@ -812,6 +943,7 @@ impl HttpTransport {
     /// Refresh the bearer the transport sends (a token refresh mid-session).
     pub fn set_bearer(&mut self, bearer: Option<String>) {
         self.remote.bearer = bearer;
+        self.publish();
     }
 
     fn post(
@@ -822,13 +954,10 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<PostOutcome, TransportError> {
-        let endpoint = Endpoint {
-            url: self.url.clone(),
-            remote: self.remote.clone(),
-            session: self.session.clone(),
-            protocol_version: self.protocol_version.clone(),
-            legacy: self.modern.is_none(),
-        };
+        let endpoint = self.endpoint();
+        if self.listener.is_some() {
+            self.publish();
+        }
         let (tx, rx) = mpsc::channel();
         let started = Instant::now();
         // Set when this wait gives up: the worker then drops the response —
@@ -1034,6 +1163,132 @@ const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How much of an error body is kept for the message that reports it.
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// How long the change stream waits on a quiet server before reopening —
+/// keep-alive comments are encouraged by the spec, not promised.
+const LISTEN_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How many openings of the change stream may fail in a row before the
+/// listener gives up on it.
+const LISTEN_MAX_FAILURES: u32 = 5;
+
+/// A change stream that ends sooner than this after opening counts as a
+/// failed opening — a server closing it at once must not be reopened in a
+/// tight loop.
+const LISTEN_MIN_LIFE: Duration = Duration::from_secs(2);
+
+/// Why a change stream couldn't be opened.
+enum ListenRefused {
+    /// The server offers none, or won't let us have one (400/401/403/404/
+    /// 405, or an answer that isn't an event stream): stop asking.
+    Never,
+    /// Anything else — a network failure, a 5xx: try again later.
+    Later,
+}
+
+/// Hold a change stream open for as long as the transport lives, handing
+/// every notification on it to the endpoint's sink (`docs/mcp.md`): a
+/// modern server's `subscriptions/listen` response stream, an earlier one's
+/// GET stream. Reopened when it ends — a timeout, a server restart — with a
+/// growing pause, and given up when the server offers no stream or every
+/// opening in a row fails.
+fn listen_for_changes(live: &Mutex<Option<Endpoint>>, stop: &AtomicBool, modern: Option<&str>) {
+    // The listen request's id: a range of its own, never one a call uses.
+    let mut id: u64 = 1 << 40;
+    let mut failures: u32 = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let Some(endpoint) = live.lock().ok().and_then(|endpoint| endpoint.clone()) else {
+            return;
+        };
+        let opened = Instant::now();
+        match open_change_stream(&endpoint, modern, id) {
+            Ok(response) => {
+                let mut parser = SseParser::new();
+                let mut reader = BufReader::new(response);
+                while !stop.load(Ordering::Relaxed) {
+                    let Ok(Some(line)) = read_line_capped(&mut reader, MAX_MESSAGE_BYTES) else {
+                        break;
+                    };
+                    if let Some(event) = parser.push_line(&line) {
+                        endpoint.changes.deliver(&event.data);
+                    }
+                }
+                if opened.elapsed() < LISTEN_MIN_LIFE {
+                    failures += 1;
+                } else {
+                    failures = 0;
+                }
+            }
+            Err(ListenRefused::Never) => return,
+            Err(ListenRefused::Later) => failures += 1,
+        }
+        if failures >= LISTEN_MAX_FAILURES {
+            return;
+        }
+        // A pause before reopening, growing with each failure in a row,
+        // woken early by the stop flag.
+        let pause = Duration::from_millis(500) * 2u32.saturating_pow(failures).min(120);
+        let until = Instant::now() + pause;
+        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        id += 1;
+    }
+}
+
+/// Open one change stream: `subscriptions/listen` POSTed to a modern
+/// server (its response is the stream), a GET to an earlier one.
+fn open_change_stream(
+    endpoint: &Endpoint,
+    modern: Option<&str>,
+    id: u64,
+) -> Result<reqwest::blocking::Response, ListenRefused> {
+    let client =
+        crate::llm::mcp_http_client(LISTEN_READ_TIMEOUT).map_err(|_| ListenRefused::Never)?;
+    let mut req = match modern {
+        Some(version) => client
+            .post(&endpoint.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Method", "subscriptions/listen")
+            .body(
+                request(
+                    id,
+                    "subscriptions/listen",
+                    with_meta(crate::mcp::listen_params(), version),
+                )
+                .to_string(),
+            ),
+        None => client
+            .get(&endpoint.url)
+            .header("Accept", "text/event-stream"),
+    };
+    req = endpoint.remote.apply(req.timeout(LISTEN_READ_TIMEOUT));
+    if let Some(session) = &endpoint.session {
+        req = req.header("Mcp-Session-Id", session);
+    }
+    if let Some(version) = &endpoint.protocol_version {
+        req = req.header("MCP-Protocol-Version", version);
+    }
+    let response = req.send().map_err(|_| ListenRefused::Later)?;
+    let status = response.status().as_u16();
+    if matches!(status, 400 | 401 | 403 | 404 | 405) {
+        return Err(ListenRefused::Never);
+    }
+    if !response.status().is_success() {
+        return Err(ListenRefused::Later);
+    }
+    let streaming = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("text/event-stream"));
+    if streaming {
+        Ok(response)
+    } else {
+        Err(ListenRefused::Never)
+    }
+}
 
 /// Read one line of at most `cap` bytes (its `\n` dropped; a `\r` left for
 /// the SSE parser), decoded lossily — invalid UTF-8 from a misbehaving
@@ -1257,7 +1512,7 @@ fn post_blocking(
                     }
                     answer_server_request(&endpoint, &id, &method);
                 }
-                _ => {}
+                _ => endpoint.changes.deliver(&event.data),
             }
         }
     }
@@ -1298,6 +1553,9 @@ pub struct SseTransport {
     /// Cleared when the stream thread ends, however it ends: the session's
     /// endpoint is gone with its stream.
     alive: Arc<AtomicBool>,
+    /// Who hears the server's change notifications, fed by the stream
+    /// thread — where a legacy SSE server sends them, unasked.
+    changes: Changes,
     next_id: u64,
 }
 
@@ -1333,6 +1591,8 @@ impl SseTransport {
         let stream_alive = ClearOnDrop(Arc::clone(&alive));
         let stream_url = url.to_string();
         let stream_remote = remote.clone();
+        let changes = Changes::default();
+        let heard = changes.clone();
         std::thread::spawn(move || {
             let _alive = stream_alive;
             let client = match crate::llm::mcp_http_client(SSE_STREAM_TIMEOUT) {
@@ -1387,6 +1647,7 @@ impl SseTransport {
                                 session: None,
                                 protocol_version: None,
                                 legacy: true,
+                                changes: Changes::default(),
                             });
                         }
                         let _ = endpoint_tx.send(resolved);
@@ -1399,6 +1660,7 @@ impl SseTransport {
                             answer_server_request(endpoint, &id, &method);
                             continue;
                         }
+                        heard.deliver(&event.data);
                         if message_tx.send(event.data).is_err() {
                             return;
                         }
@@ -1416,6 +1678,7 @@ impl SseTransport {
             parked: HashMap::new(),
             closed,
             alive,
+            changes,
             next_id: 1,
         })
     }

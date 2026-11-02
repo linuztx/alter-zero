@@ -1138,10 +1138,37 @@ tools surface is the feature — and neither is their modern replacement, the
 an empty `clientCapabilities` on every request, so a compliant server only
 ever sends it a `requestState`-only `input_required` (retried, above), and
 one asking for input anyway gets the recoverable red outcome naming what it
-asked for rather than a stalled turn. `subscriptions/listen`, response caching
-(`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
-registration (we are not a hosted client with an `https` client id — DCR,
-deprecated but retained, is our registration path) stay out with it. Server
+asked for rather than a stalled turn. Response caching (`ttlMs`/`cacheScope`
+parse-through but nothing caches) and CIMD client registration (we are not a
+hosted client with an `https` client id — DCR, deprecated but retained, is
+our registration path) stay out with it.
+
+**A server that says its tools changed is listed again.** A
+`notifications/tools/list_changed` reaches the manager from wherever the
+transport reads the server (`Transport::watch_changes`, a `ChangeSink` each
+connect registers): the stdio reader thread and the legacy SSE stream
+thread see every message whether or not a call waits, and a streamable-HTTP
+response stream hands over any notification it carries. A server whose
+capabilities promise changes (`tools.listChanged`,
+`ServerIdentity::tools_list_changed`) is also asked for them, since a
+modern one MUST NOT send what it was not asked for: on stdio a
+`subscriptions/listen` with the `toolsListChanged` filter is written once
+and never waited on (its eventual answer is a late reply the request loop
+drops); over streamable HTTP a background thread holds the change stream
+open (`listen_for_changes`) — the `subscriptions/listen` response stream on
+a modern server, the optional GET stream on an earlier one — reopening it
+when it ends with a growing pause, giving up on a server that offers none
+(400/401/403/404/405, or an answer that isn't an event stream) or fails
+every opening in a row, reading each reopening's bearer and session off the
+connection as the last request left them, and stopping with the transport.
+The manager then lists the server's tools again on a worker
+(`McpManager::relist`) — never on the reader thread, and never under the
+manager lock while it waits for a call holding the connection — coalescing a
+burst of notifications into one listing plus one more for any that arrived
+while it ran, and keeping the old tools if the listing fails. The fresh
+tools replace what the model is offered, the boundary re-attaches the
+backend when the set moved, and the change reaches the next request. The
+sink holds the manager weakly: the transport lives inside the manager. Server
 `instructions` — the spec's hint for how a server's tools are meant to be
 used — ride the `<system-reminder>` as its **last section**
 (`mcp::instructions_section`, the reference client's shape: `# MCP Server

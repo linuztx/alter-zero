@@ -41,6 +41,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             version: "1.0".to_string(),
             capabilities: vec!["tools".to_string()],
             instructions: None,
+            tools_list_changed: false,
         }),
         excluded: Vec::new(),
         tools: vec![McpToolInfo {

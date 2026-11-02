@@ -358,6 +358,7 @@ pub fn parse_discover(result: &Value, negotiated: &str) -> (ServerIdentity, Vec<
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            tools_list_changed: promises_tool_changes(result),
         },
         supported,
     )
@@ -437,9 +438,44 @@ pub struct ServerIdentity {
     /// The capability keys the server advertises (`tools`, `resources`,
     /// `prompts`, …) — the detail page's `Capabilities:` row.
     pub capabilities: Vec<String>,
-    /// The server's optional usage instructions — shown in the detail page,
-    /// never injected into the system prompt (v1).
+    /// The server's optional usage instructions — shown in the detail page
+    /// and carried by the `<system-reminder>` (`mcp::instructions_section`).
     pub instructions: Option<String>,
+    /// `capabilities.tools.listChanged`: the server says when its tools
+    /// change — what the client opens a change stream for (`docs/mcp.md`).
+    pub tools_list_changed: bool,
+}
+
+/// Does a result's `capabilities` promise tool-list change notifications?
+fn promises_tool_changes(result: &Value) -> bool {
+    result
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("tools"))
+        .and_then(|tools| tools.get("listChanged"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The notification a server sends when its tool list changed.
+pub const TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
+
+/// A notification's method — a message with a `method` and no `id` — when
+/// `message` is one.
+#[must_use]
+pub fn notification_method(message: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(message.trim()).ok()?;
+    if value.get("id").is_some() {
+        return None;
+    }
+    value.get("method")?.as_str().map(str::to_string)
+}
+
+/// The `subscriptions/listen` params (2026-07-28) asking for the tool list's
+/// change notifications — the one kind this client acts on, and a server
+/// MUST NOT send a kind the client did not ask for.
+#[must_use]
+pub fn listen_params() -> Value {
+    json!({"notifications": {"toolsListChanged": true}})
 }
 
 /// Parse an `initialize` result.
@@ -469,6 +505,7 @@ pub fn parse_initialize(result: &Value) -> ServerIdentity {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        tools_list_changed: promises_tool_changes(result),
     }
 }
 
@@ -902,6 +939,57 @@ fn elide_long_strings(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A change notification is told apart from everything else a server
+    /// sends — a response, its own request — by its method and the `id` it
+    /// lacks.
+    #[test]
+    fn notifications_are_read_by_method() {
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#)
+                .as_deref(),
+            Some(TOOLS_LIST_CHANGED)
+        );
+        assert_eq!(
+            notification_method(
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":3}}}"#
+            )
+            .as_deref(),
+            Some(TOOLS_LIST_CHANGED)
+        );
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#),
+            None
+        );
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            None
+        );
+        assert_eq!(notification_method("not json"), None);
+        assert_eq!(
+            listen_params(),
+            serde_json::json!({"notifications": {"toolsListChanged": true}})
+        );
+    }
+
+    /// `capabilities.tools.listChanged` — the server's promise to say when
+    /// its tools change — is read in both eras.
+    #[test]
+    fn a_server_promising_tool_changes_says_so_in_either_era() {
+        let legacy = parse_initialize(&serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {"listChanged": true}},
+            "serverInfo": {"name": "s", "version": "1"}
+        }));
+        assert!(legacy.tools_list_changed);
+        let (modern, _) = parse_discover(
+            &serde_json::json!({"capabilities": {"tools": {"listChanged": true}}}),
+            "2026-07-28",
+        );
+        assert!(modern.tools_list_changed);
+        let quiet = parse_initialize(&serde_json::json!({"capabilities": {"tools": {}}}));
+        assert!(!quiet.tools_list_changed);
+    }
 
     #[test]
     fn requests_and_notifications_frame_correctly() {

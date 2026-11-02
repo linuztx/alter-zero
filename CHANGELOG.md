@@ -14,6 +14,14 @@ release heading when a version is cut.
 
 ### Added
 
+- **An MCP server's new tools are offered as soon as it has them.** A
+  server whose tools change while it runs, one you are developing or one
+  that turns tool sets on and off, says so, and the client used to keep the
+  list it read at connect until you reconnected the server in `/mcp`. It
+  now reads the list again when the server announces a change, and the
+  agent can use the new tools from its next request. Servers on the newest
+  MCP version are asked for these announcements, as the version requires
+  (`docs/mcp.md`).
 - **MCP servers' instructions reach the agent.** A server can say how its
   tools are meant to be used: which to call first, what an argument means,
   what to avoid. That text used to be shown on the server's page in `/mcp`
