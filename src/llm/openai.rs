@@ -196,6 +196,7 @@ impl OpenAiClient {
             super::WireApi::Responses => format!("{base}/responses"),
             super::WireApi::Anthropic => format!("{base}/messages"),
             super::WireApi::Ollama => format!("{base}/api/chat"),
+            super::WireApi::CloudCode => format!("{base}/v1internal:streamGenerateContent?alt=sse"),
             super::WireApi::Chat => format!("{base}/chat/completions"),
         }
     }
@@ -358,6 +359,18 @@ impl OpenAiClient {
     /// # Errors
     /// A message that can't be serialized — which no [`ChatMessage`] is.
     pub fn request_stream(&self, messages: Vec<ChatMessage>) -> Result<(BodyReader, u64)> {
+        self.request_body(messages, None)
+    }
+
+    /// [`request_stream`](Self::request_stream) with what the credential
+    /// adds to the body: the Cloud Code project a Google Antigravity sign-in
+    /// bills to (`docs/antigravity.md`) — the one wire whose request names
+    /// the account it is made on. Every other wire ignores it.
+    fn request_body(
+        &self,
+        messages: Vec<ChatMessage>,
+        project: Option<&str>,
+    ) -> Result<(BodyReader, u64)> {
         match self.cfg.wire_api {
             super::WireApi::Chat => {
                 streamed_request(self.chat_request(Cow::Owned(messages)).into_owned())
@@ -377,6 +390,19 @@ impl OpenAiClient {
                 self.tools.clone(),
                 messages,
             )),
+            // The thought signatures and Claude thinking the round's calls
+            // must hand back are looked up here, at the boundary, so the
+            // request itself stays a pure function of what it is given.
+            super::WireApi::CloudCode => {
+                let memos = super::cloud_code::memos_for(&messages);
+                streamed_request(super::cloud_code::RequestSource::new(
+                    self.cfg.clone(),
+                    self.tools.clone(),
+                    messages,
+                    project.map(str::to_string),
+                    memos,
+                ))
+            }
         }
     }
 
@@ -492,7 +518,7 @@ impl OpenAiClient {
         req = self.chatgpt_request_headers(req);
         // The body streams out of a serializer thread as the transport
         // uploads it — never held whole (`docs/memory.md`).
-        let (body, len) = self.request_stream(messages)?;
+        let (body, len) = self.request_body(messages, auth.project.as_deref())?;
         req = req.body(reqwest::blocking::Body::sized(body, len));
 
         // All blocking network I/O — the send/header exchange and every body
@@ -510,6 +536,7 @@ impl OpenAiClient {
             super::WireApi::Responses => drain_responses(&rx, cancel, on_delta),
             super::WireApi::Anthropic => drain_anthropic(&rx, cancel, on_delta),
             super::WireApi::Ollama => drain_ollama(&rx, cancel, on_delta),
+            super::WireApi::CloudCode => drain_cloud_code(&rx, cancel, on_delta, &self.cfg.model),
             super::WireApi::Chat => drain_stream(&rx, cancel, on_delta),
         };
         outcome.map_err(|e| self.explain(e))
@@ -597,6 +624,10 @@ impl OpenAiClient {
             // Cline's API documents its 401/402/403 meanings, and each wants
             // a different sentence (`docs/cline.md`).
             super::AuthScheme::ClineAccount => super::cline::auth_advice(*status, body),
+            // Google's refusals name a status and little a user can act on:
+            // a spent quota, an account to verify, a model this account
+            // cannot reach (`docs/antigravity.md`).
+            super::AuthScheme::GoogleAntigravity => super::antigravity::auth_advice(*status, body),
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
@@ -991,6 +1022,57 @@ fn drain_ollama(
         tool_calls,
         finish_reason,
         usage,
+    })
+}
+
+/// [`drain_stream`]'s Cloud Code sibling, over the same [`pump_lines`] byte
+/// loop — so Esc is honoured identically on all five wire formats
+/// (`docs/antigravity.md`). The fold is
+/// [`super::cloud_code::StreamAccumulator`]'s; what the round must hand back
+/// on the next request — its calls' thought signatures, a Claude round's
+/// thinking — is kept in the wire's memo as the round finishes.
+fn drain_cloud_code(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    mut on_delta: impl FnMut(Delta),
+    model: &str,
+) -> Result<StreamOutcome> {
+    use super::cloud_code::Step;
+
+    let mut acc = super::cloud_code::StreamAccumulator::default();
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    pump_lines(rx, cancel, &mut |line: &[u8]| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return SseStep::Continue;
+        };
+        match acc.on_line(line) {
+            Step::Delta(delta) => {
+                text.push_str(&delta.response);
+                reasoning.push_str(&delta.reasoning);
+                on_delta(delta);
+                SseStep::Continue
+            }
+            Step::Continue => SseStep::Continue,
+            Step::Failed(message) => SseStep::Fail(LlmError::Api {
+                status: 0,
+                body: message,
+            }),
+        }
+    })?;
+    // A stream that ended without a finish reason was cut short: a
+    // transport failure, which the bounded retry answers by voiding the
+    // attempt (`docs/offline.md` *A connection lost mid-reply*).
+    let end = acc.finish().map_err(LlmError::Http)?;
+    super::cloud_code::remember_round(model, &end);
+    Ok(StreamOutcome {
+        text: super::thinking::ChatStreamResult {
+            response: text,
+            reasoning,
+        },
+        tool_calls: end.calls,
+        finish_reason: end.finish_reason,
+        usage: end.usage,
     })
 }
 
@@ -2731,6 +2813,83 @@ data: [DONE]
         (out, deltas)
     }
 
+    /// The Cloud Code drain's twin of [`drain_queued`].
+    fn drain_cloud_code_queued(
+        events: Vec<Result<Vec<u8>>>,
+        model: &str,
+    ) -> (Result<StreamOutcome>, Vec<Delta>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        drop(tx);
+        let mut deltas = Vec::new();
+        let out = drain_cloud_code(&rx, &CancelToken::new(), |d| deltas.push(d), model);
+        (out, deltas)
+    }
+
+    #[test]
+    fn drain_cloud_code_reads_a_whole_round_and_keeps_its_signature() {
+        let (out, deltas) = drain_cloud_code_queued(
+            vec![
+                Ok(b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Let me \",\"thought\":true}]}}]}}\n\n".to_vec()),
+                Ok(b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Reading.\"},{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"a\"}},\"thoughtSignature\":\"c2lnLWRyYWlu\"}]},\"finish".to_vec()),
+                Ok(b"Reason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2}}}\n\n".to_vec()),
+            ],
+            "gemini-3-flash",
+        );
+        let out = out.expect("a clean stream");
+        assert_eq!(out.text.response, "Reading.");
+        assert_eq!(out.text.reasoning, "Let me ");
+        assert_eq!(out.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(
+            out.usage.map(|u| (u.input, u.output, u.reasoning)),
+            Some((12, 7, 2))
+        );
+        assert!(
+            deltas.iter().any(|d| d.tool_calls.len() == 1),
+            "the call surfaced as it landed"
+        );
+        // The next request hands the signature back with the call.
+        let call = &out.tool_calls[0];
+        let memos = crate::llm::cloud_code::memos_for(&[ChatMessage::assistant_tool_calls(
+            "",
+            vec![crate::llm::ToolCallSpec::function(
+                &call.id,
+                &call.name,
+                &call.arguments,
+            )],
+        )]);
+        assert_eq!(
+            memos.get(&call.id).and_then(|m| m.signature.as_deref()),
+            Some("c2lnLWRyYWlu")
+        );
+    }
+
+    #[test]
+    fn a_cloud_code_stream_cut_short_fails_on_the_retry_rather_than_ending_the_turn() {
+        let (out, _) = drain_cloud_code_queued(
+            vec![Ok(b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"half a\"}]}}]}}\n".to_vec())],
+            "gemini-3-flash",
+        );
+        let error = out.expect_err("no finish reason");
+        assert!(
+            crate::llm::retry::is_retryable(&error),
+            "a reply cut short is retried, its attempt voided: {error}"
+        );
+        let (out, _) = drain_cloud_code_queued(
+            vec![Ok(
+                b"data: {\"error\":{\"code\":503,\"message\":\"No capacity available\"}}\n"
+                    .to_vec(),
+            )],
+            "gemini-3-flash",
+        );
+        assert!(
+            matches!(out, Err(LlmError::Api { status: 0, ref body }) if body == "No capacity available")
+        );
+    }
+
     #[test]
     fn drain_anthropic_reads_a_whole_round_off_the_wire() {
         // The frames are the ones the docs print, `event:` lines and all —
@@ -3382,6 +3541,33 @@ mod body_tests {
         assert!(
             messages[0].content == MessageContent::Text("persona".into()),
             "the caller's messages are untouched"
+        );
+    }
+
+    #[test]
+    fn a_cloud_code_client_streams_the_envelope_with_the_pictures_borrowed() {
+        let mut cfg = ModelConfig::fallback();
+        cfg.wire_api = super::super::WireApi::CloudCode;
+        cfg.model = "gemini-3-flash".to_string();
+        cfg.api_base = "https://daily-cloudcode-pa.googleapis.com".to_string();
+        let client = OpenAiClient::new(cfg);
+        assert_eq!(
+            client.request_url(None),
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+        );
+        let (body, len) = client.request_stream(vision_messages()).expect("streams");
+        let bytes = drain(body);
+        assert_eq!(len, bytes.len() as u64);
+        let tree: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(tree["model"], "gemini-3-flash");
+        assert_eq!(tree["requestType"], "agent");
+        assert_eq!(
+            tree["request"]["systemInstruction"]["parts"],
+            json!([{"text": "persona"}])
+        );
+        assert_eq!(
+            tree["request"]["contents"][0]["parts"][1]["inlineData"],
+            json!({"mimeType": "image/png", "data": "AAAA"})
         );
     }
 }

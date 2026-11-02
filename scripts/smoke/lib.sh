@@ -88,6 +88,11 @@ smoke_sanitize_env() {
 	# LM Studio's token, whose name does not end in API_KEY — would make the
 	# /model phases fetch from a server the suite doesn't run.
 	unset OLLAMA_HOST LMSTUDIO_HOST LM_API_TOKEN
+	# A developer's own Google Antigravity sign-in (docs/antigravity.md) —
+	# a refresh token whose name ends in no API_KEY, and the project it
+	# bills — would mark that subscription configured and send /model and
+	# /usage to Google; Phase 148 signs in against its own stub instead.
+	unset ANTIGRAVITY_REFRESH_TOKEN ANTIGRAVITY_PROJECT_ID
 	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
 	# report its turns to the developer's real herdr — the pane the suite was
 	# started from flickering through a hundred agents' states. The herdr

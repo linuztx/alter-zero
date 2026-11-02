@@ -853,7 +853,52 @@ report the whole prompt on a cache hit), and the machine-shaped refusals —
 server not running, model not pulled, `does not support tools/thinking`, an
 image on a blind model — rewritten into what to do. `tests/live_ollama.rs`
 drives it against a real server; `smoke.sh` unsets `OLLAMA_HOST` beside its
-key scrub for hermeticity; the **user's own providers**
+key scrub for hermeticity; the **Google Antigravity provider** — a Google
+sign-in to the models Antigravity serves (Gemini, and the Claude and GPT-OSS
+models Google routes through it) on the account's Antigravity quota, over a
+**fifth wire format** (`auth = "google_antigravity"`, `wire_api =
+"cloud_code"`, `src/llm/antigravity.rs` the sign-in, `src/llm/cloud_code.rs`
+the wire, `docs/antigravity.md`). An **unofficial** route, and the `/login`
+row says so: Antigravity's own public desktop OAuth client, Google's PKCE
+loopback on `localhost:51121` (any free port after), `access_type=offline` +
+`prompt=consent` for a refresh token, and the agy CLI `User-Agent` the
+backend gates its catalog on (404 for a hidden model otherwise) — but **no**
+"You are Antigravity" identity prompt, which the backend does not require
+(`no_client_identity_is_ever_injected_into_the_system_instruction` pins the
+system instruction to the user's own prompt, `docs/claude.md`'s line). Every
+request names the account's **Cloud Code project**, so `RequestAuth` gained
+`project` (the one credential fact that rides the body): `loadCodeAssist`
+finds it once per process, and the sign-in — the one place that may wait, on
+its cancellable worker — **onboards** an account the backend has never set up
+(`onboardUser`, re-asked until done), with `aicode-consumers` the last resort
+and `ANTIGRAVITY_PROJECT_ID` outranking all of it; `forget` drops a bearer,
+never the account's setup, since the `/login` boundary forgets the very token
+a sign-in just stored (`smoke.sh` Phase 148 caught exactly that). The request
+is Gemini's `generateContent` in a `{project, model, request, requestType,
+userAgent, requestId}` envelope on the **daily** host only (hosts are never
+mixed): the system prompt hoisted into `systemInstruction`, results as
+`functionResponse` parts of one user turn, call ids only for Claude/GPT-OSS,
+tool schemas per family (`parametersJsonSchema` with local `$ref`s inlined
+for Gemini; the bridge's six allowlisted keywords in `parameters` for the
+rest), `includeThoughts` with the level left to the runtime id's suffix for
+Gemini and a budget for Claude's `-thinking` routes and GPT-OSS, a per-family
+`maxOutputTokens`. **Thought signatures** must come back, and the crate keeps
+no reasoning in its context, so a process-wide byte-bounded memo keyed by call
+id holds them: the first call of each model turn carries its real signature
+or Google's `skip_thought_signature_validator`, and a Claude tool loop opens
+on the memoised thinking that started it — or, its opening round unknown (a
+`/resume` mid-loop), is sent without thinking rather than with a block the
+server would refuse. The catalog is `fetchAvailableModels` for the project,
+curated by the backend's own `agentModelSorts`, router slots/images/internals
+dropped, and **level siblings grouped** (`gemini-3.8-flash-{low,medium,high}`
+is one `gemini-3.8-flash` row whose Ctrl+T ladder is exactly those levels,
+the request re-appending the suffix — so the id sent is always one the
+catalog listed); its `quotaInfo` is the `/usage` page (a bar per row under
+its family, the plan off `paidTier` since `currentTier` reads free on a paid
+seat); `antigravity::auth_advice` words the verification link (Google's own
+host only), a spent quota and when it resets, a rate limit, no capacity and a
+model gone; `smoke.sh` Phase 148 plays the browser against a stub for the
+whole sign-in → onboarding → `/model` → turn → `/usage` path; the **user's own providers**
 (`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
 the embedded shipped table rather than replacing it —
 `ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a

@@ -406,8 +406,11 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
         // The browser by default, and OpenAI's device code for a headless
         // machine — the two flows Codex itself offers (`docs/chatgpt.md`).
         AuthScheme::ChatGptCodex => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
-        // A browser page with a link and a wait (`docs/claude.md`).
-        AuthScheme::AnthropicConsole => vec![SigninKind::BrowserLink],
+        // A browser page with a link and a wait (`docs/claude.md`,
+        // `docs/antigravity.md`).
+        AuthScheme::AnthropicConsole | AuthScheme::GoogleAntigravity => {
+            vec![SigninKind::BrowserLink]
+        }
         // One flow each, a device code: GitHub's own for Copilot, and Cline's
         // WorkOS one, which is also the way its extension and CLI sign in
         // (`docs/cline.md`).
@@ -1048,6 +1051,25 @@ pub(crate) fn cline_auth_base() -> Option<String> {
 /// `https://api.cline.bot` stands.
 pub(crate) fn cline_api_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::API_BASE_ENV)
+}
+
+/// Where the Google Antigravity sign-in's token and userinfo calls go:
+/// `ALTER_ZERO_GOOGLE_OAUTH_BASE` when set and non-empty (the smoke suite's
+/// stub), else `None` — Google's own hosts stand (`docs/antigravity.md`).
+pub(crate) fn google_oauth_base() -> Option<String> {
+    nonempty_env(alter_zero::llm::antigravity::OAUTH_BASE_ENV)
+}
+
+/// The `User-Agent` replacing the agy CLI's on Cloud Code requests:
+/// `ALTER_ZERO_ANTIGRAVITY_USER_AGENT`, for when Google moves its gate.
+pub(crate) fn antigravity_user_agent() -> Option<String> {
+    nonempty_env(alter_zero::llm::antigravity::USER_AGENT_ENV)
+}
+
+/// The Cloud Code project to bill instead of the account's own:
+/// `ANTIGRAVITY_PROJECT_ID`.
+pub(crate) fn antigravity_project() -> Option<String> {
+    nonempty_env(alter_zero::llm::antigravity::PROJECT_ENV)
 }
 
 /// Where GitHub's REST API calls go — the Copilot token exchange and the

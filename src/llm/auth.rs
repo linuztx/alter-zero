@@ -16,11 +16,15 @@
 //! That is a property of the (scheme, wire format) *pair*, which is why it is
 //! decided here rather than by either alone.
 //!
-//! See `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md` and
-//! `docs/cline.md`.
+//! And a fifth, for one scheme alone: the Google Antigravity sign-in names
+//! the account's Cloud Code **project**, which that API carries in the
+//! request body rather than in a header (`docs/antigravity.md`).
+//!
+//! See `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`,
+//! `docs/cline.md` and `docs/antigravity.md`.
 
 use super::config::{AuthScheme, ModelConfig, WireApi};
-use super::{Result, chatgpt, claude, cline, copilot};
+use super::{Result, antigravity, chatgpt, claude, cline, copilot};
 
 /// How one request authenticates itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,6 +41,10 @@ pub struct RequestAuth {
     /// made on behalf of, and the client identity that account expects.
     /// Merged on top of the provider's static `extra_headers`.
     pub headers: Vec<(String, String)>,
+    /// The Cloud Code project the request bills to — the one credential fact
+    /// that rides the request **body** (`docs/antigravity.md`). `None` for
+    /// every scheme but the Google Antigravity sign-in.
+    pub project: Option<String>,
 }
 
 impl RequestAuth {
@@ -46,6 +54,7 @@ impl RequestAuth {
             bearer: api_key,
             base: None,
             headers: Vec::new(),
+            project: None,
         }
     }
 
@@ -62,6 +71,7 @@ impl RequestAuth {
             bearer: None,
             base: None,
             headers,
+            project: None,
         }
     }
 }
@@ -83,6 +93,9 @@ impl RequestAuth {
 /// - **[`AuthScheme::ClineAccount`]** → an access token minted from the
 ///   stored refresh token, spelled `workos:<jwt>` because that is the form
 ///   Cline's API takes (`docs/cline.md`).
+/// - **[`AuthScheme::GoogleAntigravity`]** → an access token minted from the
+///   stored refresh token, the agy CLI `User-Agent` the backend gates its
+///   catalog on, and the account's Cloud Code project (`docs/antigravity.md`).
 ///
 /// A subscription config with no stored token resolves to an empty
 /// [`RequestAuth`] rather than calling out: the `/model` picker builds configs
@@ -118,6 +131,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 // a pasted key is refused *with* it. It belongs to the
                 // credential, which is why it is here and not in the file.
                 headers: vec![("anthropic-beta".to_string(), claude::OAUTH_BETA.to_string())],
+                project: None,
             })
         }
         AuthScheme::ClineAccount => {
@@ -133,6 +147,24 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 bearer: Some(access.bearer),
                 base: None,
                 headers: Vec::new(),
+                project: None,
+            })
+        }
+        AuthScheme::GoogleAntigravity => {
+            let Some(refresh) = stored else {
+                return Ok(RequestAuth::default());
+            };
+            // The account's project is looked up on the configured base —
+            // the host the request itself goes to, never another
+            // (`docs/antigravity.md` *What a provider file says*).
+            let access = antigravity::authorize(refresh, &cfg.api_base)?;
+            Ok(RequestAuth {
+                bearer: Some(access.bearer),
+                base: None,
+                // The agy CLI's: the backend gates its catalog on it, and
+                // answers a model it hides with 404.
+                headers: vec![("user-agent".to_string(), antigravity::user_agent())],
+                project: Some(access.project),
             })
         }
         AuthScheme::GithubCopilot => {
@@ -144,6 +176,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 bearer: Some(auth.bearer),
                 base: Some(auth.api_base),
                 headers: Vec::new(),
+                project: None,
             })
         }
         AuthScheme::ChatGptCodex => {
@@ -166,6 +199,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 bearer: Some(access.bearer),
                 base: None,
                 headers,
+                project: None,
             })
         }
     }
@@ -183,6 +217,10 @@ mod tests {
         assert_eq!(auth.bearer.as_deref(), Some("sk-test"));
         assert_eq!(auth.base, None, "the configured base stands");
         assert!(auth.headers.is_empty(), "a key implies no identity");
+        assert_eq!(
+            auth.project, None,
+            "only a Cloud Code sign-in names a project"
+        );
     }
 
     #[test]
@@ -227,6 +265,8 @@ mod tests {
             AuthScheme::GithubCopilot,
             AuthScheme::ChatGptCodex,
             AuthScheme::AnthropicConsole,
+            AuthScheme::ClineAccount,
+            AuthScheme::GoogleAntigravity,
         ] {
             let mut cfg = ModelConfig::fallback();
             cfg.auth = scheme;

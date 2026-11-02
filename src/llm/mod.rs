@@ -17,6 +17,7 @@
 pub mod agent;
 pub mod agent_tools;
 pub mod anthropic;
+pub mod antigravity;
 pub mod approval;
 pub mod ask;
 pub mod auth;
@@ -27,6 +28,7 @@ pub mod chatgpt;
 pub mod classifier;
 pub mod claude;
 pub mod cline;
+pub mod cloud_code;
 pub mod config;
 pub mod copilot;
 pub mod exec;

@@ -68,6 +68,17 @@ pub enum AuthScheme {
     /// value the provider file uses. A test pins it for the same silent
     /// degradation reason [`Self::AnthropicConsole`]'s does.
     ClineAccount,
+    /// A **Google account** signed in through Google Antigravity's own OAuth
+    /// client: `/login` runs Google's PKCE loopback flow and stores the
+    /// resulting **refresh** token, which each request mints a short-lived
+    /// access token from — and the account's Cloud Code project is looked up
+    /// once beside it, since every request names one. See
+    /// `docs/antigravity.md`.
+    ///
+    /// `rename_all = "snake_case"` spells this `google_antigravity`, which is
+    /// the value the provider file uses. A test pins it for the same silent
+    /// degradation reason [`Self::AnthropicConsole`]'s does.
+    GoogleAntigravity,
     /// A key that is **accepted but not required** — a model server the user
     /// runs. Ollama's or LM Studio's local server takes no credential unless
     /// it was set to, while a hosted one (or a proxy in front of one) takes
@@ -128,6 +139,13 @@ pub enum WireApi {
     /// `/v1` — an `options.num_ctx` the session sets the context window with.
     /// See `docs/ollama.md`.
     Ollama,
+    /// Google's **Cloud Code Assist** API — the backend Google Antigravity
+    /// (and Gemini CLI) talk to: `{api_base}/v1internal:streamGenerateContent`,
+    /// Gemini's `generateContent` request (`contents` of typed `parts`, a
+    /// top-level `systemInstruction`, `functionDeclarations`) wrapped in a
+    /// `{project, model, request}` envelope, and its SSE answer wrapped in a
+    /// `{response}` one. See `docs/antigravity.md`.
+    CloudCode,
     /// **Chat Completions**: `{api_base}/chat/completions` with `messages`.
     /// The default, and the **fallback** for an unrecognised value
     /// (`#[serde(other)]`, which serde requires on the last variant) — a
@@ -1227,6 +1245,30 @@ api_base = "https://api.cline.bot/api/v1"
     }
 
     #[test]
+    fn a_provider_can_declare_the_google_antigravity_sign_in() {
+        // The fifth sign-in: the stored secret is a Google refresh token, and
+        // every request mints a short-lived access token from it and names
+        // the account's Cloud Code project (`docs/antigravity.md`). The
+        // spelling is pinned because a mismatch degrades *silently* into a
+        // pasted-key row.
+        let text = r#"
+[providers.antigravity]
+name = "Google Antigravity"
+auth = "google_antigravity"
+wire_api = "cloud_code"
+description = "Sign in with your Google account"
+[providers.antigravity.kwargs]
+api_base = "https://cloudcode-pa.googleapis.com"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let antigravity = file.get("antigravity").unwrap();
+        assert_eq!(antigravity.auth, AuthScheme::GoogleAntigravity);
+        assert!(antigravity.auth.is_subscription());
+        assert!(!antigravity.auth.key_optional());
+        assert_eq!(antigravity.wire_api, WireApi::CloudCode);
+    }
+
+    #[test]
     fn every_key_the_shipped_file_sets_is_one_the_parse_reads() {
         // Unknown keys are ignored, so a file written for a newer build still
         // parses — which also means a key the shipped file sets and nothing
@@ -1394,6 +1436,36 @@ api_base = "https://x/v1"
         assert_eq!(copilot.name, "GitHub Copilot");
         assert_eq!(copilot.kwargs.api_base, "https://api.githubcopilot.com");
         assert_eq!(copilot.key_env("github_copilot"), "GITHUB_COPILOT_TOKEN");
+    }
+
+    #[test]
+    fn the_builtin_file_ships_google_antigravity_as_a_cloud_code_sign_in() {
+        let file = ProvidersFile::builtin();
+        let antigravity = file.get("antigravity").expect("shipped");
+        assert_eq!(antigravity.auth, AuthScheme::GoogleAntigravity);
+        assert_eq!(antigravity.wire_api, WireApi::CloudCode);
+        assert_eq!(antigravity.name, "Google Antigravity");
+        // The daily host: every Antigravity call goes there, and hosts are
+        // never mixed (`docs/antigravity.md`).
+        assert_eq!(
+            antigravity.kwargs.api_base,
+            "https://daily-cloudcode-pa.googleapis.com"
+        );
+        // The rotation write-back cannot ask the provider file, so the
+        // module pins the same name.
+        assert_eq!(
+            antigravity.key_env("antigravity"),
+            super::super::antigravity::REFRESH_ENV_VAR
+        );
+        let description = antigravity.description.as_deref().unwrap_or_default();
+        assert!(
+            description.to_ascii_lowercase().contains("unofficial"),
+            "the row says what signing in risks: {description}"
+        );
+        assert!(
+            antigravity.extra_headers.is_empty(),
+            "the User-Agent is built per machine"
+        );
     }
 
     #[test]

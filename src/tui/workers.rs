@@ -105,7 +105,9 @@ pub(crate) fn spawn_server_test(
 /// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
 /// device code (`docs/chatgpt.md` — the one scheme offering two, so its
 /// `kind` is what the user picked on the method choice), Anthropic's browser
-/// PKCE (`docs/claude.md`), or Cline's WorkOS device code (`docs/cline.md`).
+/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`), or
+/// Google's browser PKCE for Antigravity (`docs/antigravity.md`) — the one
+/// sign-in that also sets the account up, on `base`, the provider's own host.
 /// All report on the same two messages, because every page is the same page
 /// — something to show, then a wait.
 ///
@@ -117,6 +119,7 @@ pub(crate) fn spawn_server_test(
 pub(crate) fn spawn_signin(
     auth: AuthScheme,
     kind: SigninKind,
+    base: String,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
 ) {
@@ -127,6 +130,7 @@ pub(crate) fn spawn_signin(
         (AuthScheme::ChatGptCodex, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
         (AuthScheme::AnthropicConsole, _) => spawn_claude_login(cancel, tx),
         (AuthScheme::ClineAccount, _) => spawn_cline_login(cancel, tx),
+        (AuthScheme::GoogleAntigravity, _) => spawn_antigravity_login(base, cancel, tx),
         (AuthScheme::GithubCopilot, _) => spawn_copilot_login(cancel, tx),
         // A pasted key has nothing to sign in to. `start_device_login`
         // refuses such a row before it gets here; this arm only keeps the
@@ -252,6 +256,48 @@ fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
             // question this sign-in leaves open, and a user with several
             // orgs has just picked one in a browser.
             .map(|(refresh, access)| (refresh, llm::claude::plan_label(&access)))
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
+
+/// Run Google's PKCE loopback flow on Antigravity's client: bind the callback
+/// port (Antigravity's own first, any free one after), publish the URL to
+/// open, block until the browser comes back — then set the account up on
+/// `base`, onboarding it when the backend has never seen it, which is why
+/// this is the one place that may wait on it. See `docs/antigravity.md`.
+fn spawn_antigravity_login(
+    base: String,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
+) {
+    std::thread::spawn(move || {
+        let signin = match llm::antigravity::begin_signin() {
+            Ok(signin) => signin,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: signin.url.clone(),
+                user_code: String::new(),
+                expires_at: std::time::Instant::now() + llm::antigravity::AUTH_TIMEOUT,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::antigravity::await_callback(&signin, &base, &cancel)
+            // Which Google account, and on what plan: a user with several
+            // has just picked one in a browser.
+            .map(|signed_in| {
+                let label = signed_in.label();
+                (signed_in.refresh_token, label)
+            })
             .map_err(|e| e.to_string());
         if !cancel.is_cancelled() {
             let _ = tx.send(DeviceEvent::Done(result));

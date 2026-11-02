@@ -14,6 +14,16 @@ release heading when a version is cut.
 
 ### Added
 
+- **Sign in with a Google account to use Google Antigravity's models.**
+  `/login` → **Use a subscription** → **Google Antigravity** opens Google's
+  sign-in in your browser and comes back on its own; `/model` then lists the
+  Gemini, Claude and GPT-OSS models your account's Antigravity quota covers,
+  with a model's Low/Medium/High variants folded into one row whose level
+  **Ctrl+T** cycles, and `/usage` shows how much of each quota is left and
+  when it resets. An account Antigravity has never set up is set up during
+  the sign-in. This is an unofficial route that uses Antigravity's own
+  sign-in client, and Google may restrict accounts that use it outside
+  Antigravity, so weigh that before signing in (`docs/antigravity.md`).
 - **Sign in to MCP servers that need an OAuth client of your own.** Some
   servers, Google's among them, only accept a login client you create in
   the provider's console, and signing in to them ended in an error. A

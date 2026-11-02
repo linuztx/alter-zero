@@ -300,6 +300,20 @@ its own row, and one amber line says what to do about it, naming the window
 that resets **last** — how long the pause lasts — the dashboard's banner.
 Verified live.
 
+### Google Antigravity
+
+One read, the catalog's: `POST {base}/v1internal:fetchAvailableModels` for the
+account's Cloud Code project, minted and found through the same seam as the
+chat request (`docs/antigravity.md`). Every model's record carries a
+`quotaInfo` — `remainingFraction` and `resetTime` — so the section is a bar
+per `/model` row (a row's scarcest variant: the share used is `1 -
+remainingFraction`, and a `quotaInfo` with no fraction is spent), grouped
+under Gemini, then the other families, with one dim line saying the quotas are
+pools a family shares. The plan is `loadCodeAssist`'s `paidTier` name, else
+its `currentTier` (which reads `free-tier` even on a paid seat), and the
+account the `userinfo` email. Google publishes no quota page, so the section
+links none. `smoke.sh` Phase 148 reads it against a stub.
+
 ### Console sign-in
 
 A Console sign-in bills per token to the account's API organisation — there

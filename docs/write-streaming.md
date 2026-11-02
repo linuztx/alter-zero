@@ -41,7 +41,7 @@ everything else live.
 
 ## The wire: which call a fragment belongs to
 
-The four wire formats all stream a call in pieces, and each already knew which
+The wire formats all stream a call in pieces, and each already knew which
 call a piece belonged to. That identity was dropped at the seam: `Delta` carried
 one opaque `tool_call: String` per frame, the concatenated name and argument
 text of every call in it, and `StreamEvent::ToolCallDelta(String)` carried that
@@ -57,6 +57,7 @@ wire's own slot for the call:
 | Anthropic Messages | the `tool_use` content block's index | `content_block_start` |
 | Responses | the item's `output_index` — or, on a frame without one, the call still open (a new call when the frame opens one) | `response.output_item.added`, which the drain now reads; the name used to arrive only with the finished item |
 | Ollama | the call's position in the round | the whole call, which arrives in one frame |
+| Cloud Code | the call's position in the round | the whole `functionCall` part, which arrives in one frame (`docs/antigravity.md`) |
 
 The slot is an identity, not a position: an Anthropic text block takes an index
 too. The token tally is unchanged, because `ToolCallFragment::tally_text` is the

@@ -805,6 +805,13 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         }
         return clinepass_entries(cfg, plan, &catalog);
     }
+    // A Google Antigravity sign-in lists what Cloud Code serves *this*
+    // account: `fetchAvailableModels` for its project, a POST on the same
+    // host the chat goes to, read into rows with level siblings grouped
+    // under one ladder (`docs/antigravity.md` *The catalog*).
+    if cfg.wire_api == super::WireApi::CloudCode {
+        return cloud_code_catalog(cfg, cancel);
+    }
     // A one-shot GET on the session's **shared** HTTP client — the chat
     // stream's own per-operation stall deadline, on purpose: `http_client`
     // caches one client per timeout, so a models-only deadline paid a second
@@ -872,6 +879,35 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// The Cloud Code catalog for `cfg`'s account (boundary — real HTTP): the
+/// same auth seam the chat request uses, so the bearer is minted (and
+/// cached) and the project looked up once, then one `fetchAvailableModels`.
+///
+/// # Errors
+/// A config never signed in to, a refusal (worded by
+/// [`super::antigravity::auth_advice`]), or a catalog this parse cannot read.
+fn cloud_code_catalog(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<ModelEntry>> {
+    let auth = super::auth::request_auth(cfg)?;
+    let (Some(bearer), Some(project)) = (auth.bearer.as_deref(), auth.project.as_deref()) else {
+        return Err(LlmError::Api {
+            status: 401,
+            body: "not signed in — run /login and choose Use a subscription".to_string(),
+        });
+    };
+    let base = if cfg.api_model_base.trim().is_empty() {
+        &cfg.api_base
+    } else {
+        &cfg.api_model_base
+    };
+    let body = super::antigravity::fetch_catalog(base, bearer, project)
+        .map_err(super::antigravity::explained)?;
+    if cancel.is_cancelled() {
+        return Err(LlmError::Cancelled);
+    }
+    let rows = super::antigravity::catalog_rows(&body)?;
+    Ok(super::antigravity::model_entries(&rows, &cfg.provider_id))
 }
 
 /// The window Cline's own client assumes for a ClinePass model its catalog
