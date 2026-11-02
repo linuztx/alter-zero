@@ -1680,18 +1680,21 @@ mod tests {
             "/etc/alter-zero/hooks.json",
         ] {
             let file = Path::new(file);
-            assert_eq!(
-                shown_file(file, Some(home)),
-                crate::ui::display_cwd(file, Some(home)),
-                "{}",
-                file.display()
-            );
-            assert_eq!(
-                shown_file(file, None),
-                crate::ui::display_cwd(file, None),
-                "{}",
-                file.display()
-            );
+            // A known home, none, and the homes that name no directory —
+            // `$HOME` set but empty, or relative.
+            for home in [
+                Some(home),
+                None,
+                Some(Path::new("")),
+                Some(Path::new("home/u")),
+            ] {
+                assert_eq!(
+                    shown_file(file, home),
+                    crate::ui::display_cwd(file, home),
+                    "{} with HOME={home:?}",
+                    file.display()
+                );
+            }
         }
         assert_eq!(
             shown_file(Path::new("/home/u/repo/.alter-zero/hooks.json"), Some(home)),
@@ -1703,8 +1706,7 @@ mod tests {
     fn a_home_that_is_not_absolute_relates_nothing() {
         // `$HOME` set but empty — or relative — names no directory, so the
         // cell shows the path whole: an empty prefix strips from every path,
-        // and the `~//home/u/…` that made is the one place the cell parts
-        // from `ui::display_cwd`'s rule.
+        // which made `~//home/u/…`.
         let file = Path::new("/home/u/.alter-zero/hooks.json");
         for home in ["", "home/u"] {
             assert_eq!(

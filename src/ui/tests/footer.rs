@@ -655,6 +655,21 @@ fn display_cwd_outside_home_or_without_one_stays_absolute() {
 }
 
 #[test]
+fn display_cwd_relates_nothing_to_a_home_that_is_not_absolute() {
+    // `$HOME` set but empty arrives as `Some("")`, and an empty prefix strips
+    // from every path: the footer, the startup review's headings and the
+    // `/hooks` Source row all read `~//home/user/code` from it. A relative
+    // home names no directory either.
+    for home in ["", "home/user"] {
+        assert_eq!(
+            display_cwd(Path::new("/home/user/code"), Some(Path::new(home))),
+            "/home/user/code",
+            "HOME={home:?}"
+        );
+    }
+}
+
+#[test]
 fn the_footer_stays_while_a_turn_streams() {
     let mut app = with_session();
     app.begin_stream();
