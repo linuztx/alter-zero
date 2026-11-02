@@ -289,6 +289,68 @@ fn plain(line: &ratatui::text::Line<'_>) -> String {
 }
 
 #[test]
+fn the_hooks_demo_s_refusal_names_the_event_the_hook_and_its_file() {
+    // The offline refusal is the live one (`llm::hooks::block_texts`,
+    // docs/hooks.md): the red cell says which event's hook refused, which
+    // hook, and the `hooks.json` it is configured in — all three rows inline,
+    // never folded behind a hint — while the instruction not to retry is the
+    // model's alone.
+    let events = turn_events("show me the hooks demo", 0);
+    let (display, result) = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => Some((display.clone(), result.clone())),
+            _ => None,
+        })
+        .expect("the demo refuses one call");
+    assert!(
+        result.ends_with("\nDo not retry the same call; address the reason or ask the user."),
+        "{result}"
+    );
+    let call = crate::app::ToolCall {
+        name: "Bash".to_string(),
+        args: "rm -rf build/".to_string(),
+        status: crate::app::ToolStatus::Failed,
+        output: display,
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        context_output: Some(result),
+        arguments: None,
+        approval_note: None,
+        batch: None,
+        call_id: None,
+        position: None,
+    };
+    let rows: Vec<String> = crate::ui::tool_lines(&call, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● Bash(rm -rf build/)",
+            "  ⎿  Blocked by PreToolUse hook: no destructive deletes outside ./tmp",
+            "     Hook: ~/.alter-zero/hooks/no-deletes.sh",
+            "     Config: ~/.alter-zero/hooks.json",
+        ]
+    );
+    // The call that ran carries the PostToolUse hook's row, naming its event
+    // the way the live runner's does.
+    assert!(
+        events.iter().any(|e| matches!(e, StreamEvent::ToolNote(n)
+            if *n == crate::llm::hooks::context_added_note("PostToolUse"))),
+        "{events:?}"
+    );
+    assert_eq!(
+        crate::llm::hooks::context_added_note("PostToolUse"),
+        "Context added by PostToolUse hook"
+    );
+}
+
+#[test]
 fn the_demo_s_read_really_renders_as_a_numbered_file_cell() {
     // The end of the chain the test above starts: the scripted output must
     // survive `ui::file_cell_lines`' parse, or the cell silently falls back to

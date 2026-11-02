@@ -158,6 +158,17 @@ release heading when a version is cut.
   refuses shows one line, `Prompt blocked by UserPromptSubmit hook: …`, and
   a hook that refuses without a reason now reads `no reason given` instead
   of saying "blocked" twice (`docs/hooks.md`).
+- **A refused tool call shows which hook refused it.** The red cell used to
+  read `Blocked by hook: …` and nothing more, so with several hooks, or
+  hooks in both your own and a project's `hooks.json`, you had to guess
+  which one had stopped the call while the agent was told. It now names the
+  event, the hook and the file it is configured in, as the agent reads them:
+  `Blocked by PreToolUse hook: Use pnpm instead of npm.` over
+  `Hook: ~/.alter-zero/hooks/pnpm-only.sh` and
+  `Config: ~/.alter-zero/hooks.json`. A `PermissionRequest` hook's denial
+  reads the same way, and the dim rows a hook leaves under a call name its
+  event too: `Context added by PostToolUse hook`, `Flagged by PostToolUse
+  hook: …`, `Allowed by PermissionRequest hook` (`docs/hooks.md`).
 
 ### Removed
 

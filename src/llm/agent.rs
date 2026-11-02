@@ -15,7 +15,7 @@
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::exec::ToolProgress;
-use super::hooks::{HookSink, block_texts as hook_block_texts};
+use super::hooks::{HookSink, allowed_note, block_texts as hook_block_texts};
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
     summarize_call_naming,
@@ -535,7 +535,14 @@ pub fn run_agent(
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
                         if let Some(block) = &hook.blocked {
-                            let result = refuse_by_hook(tx, call, session_command, block, &hook);
+                            let result = refuse_by_hook(
+                                tx,
+                                call,
+                                session_command,
+                                block,
+                                &hook,
+                                hooks.home(),
+                            );
                             results.push((call.id.clone(), result));
                             continue;
                         }
@@ -625,7 +632,8 @@ pub fn run_agent(
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(block) = &hook.blocked {
-                        let result = refuse_by_hook(tx, call, session_command, block, &hook);
+                        let result =
+                            refuse_by_hook(tx, call, session_command, block, &hook, hooks.home());
                         results.push((call.id.clone(), result));
                         continue;
                     }
@@ -652,15 +660,17 @@ pub fn run_agent(
                         // `permissionDecision: "allow"` skips the gate wholesale
                         // — and with it the `PermissionRequest` hook, which asks
                         // "may this run without the user?" and has been answered.
-                        // The classifier's provenance row, with a hook's name on it.
+                        // The classifier's provenance row, with the hook's
+                        // event on it.
+                        let allowed = allowed_note(HookEvent::PreToolUse.name(), None);
                         Approval::AllowNoted {
-                            note: hook.note.clone().map_or_else(
-                                || "Allowed by hook".to_string(),
+                            note: match &hook.note {
                                 // Both facts are true and the user wants both:
                                 // *why it ran without them*, and what else the
                                 // hook did.
-                                |note| format!("Allowed by hook · {note}"),
-                            ),
+                                Some(note) => format!("{allowed} · {note}"),
+                                None => allowed,
+                            },
                         }
                     } else {
                         approve(call, hook.force_ask)
@@ -873,15 +883,18 @@ pub fn run_agent(
 /// red cell, model-facing text on `context_output`, and a `/resume` that
 /// replays both — with whatever else the hook said kept rather than dropped:
 /// its note (a sibling handler's warning, a `systemMessage`) on the cell's
-/// dim row, and its context after the refusal.
+/// dim row, and its context after the refusal. The cell names the hook's
+/// `hooks.json` from `home`, the sink's [`HookSink::home`] (`docs/hooks.md`
+/// *What the user sees*).
 fn refuse_by_hook(
     tx: &UnboundedSender<StreamEvent>,
     call: &ToolCallRequest,
     session_command: &dyn Fn(&str) -> Option<String>,
     block: &crate::hooks::HookBlock,
     hook: &super::hooks::PreToolVerdict,
+    home: Option<&std::path::Path>,
 ) -> String {
-    let (display, mut result) = hook_block_texts(HookEvent::PreToolUse.name(), block);
+    let (display, mut result) = hook_block_texts(HookEvent::PreToolUse.name(), block, home);
     if let Some(context) = &hook.context {
         result.push_str("\n\n");
         result.push_str(context);
@@ -1450,6 +1463,8 @@ mod tests {
         failures: std::sync::Mutex<Vec<(String, bool)>>,
         /// Every `StopFailure` dispatch: the error type and its details.
         stop_failures: std::sync::Mutex<Vec<(String, String)>>,
+        /// The user's home, as the boundary would hand it to a real sink.
+        home: Option<std::path::PathBuf>,
     }
 
     impl FakeHooks {
@@ -1532,6 +1547,10 @@ mod tests {
             } else {
                 stops.remove(0)
             }
+        }
+
+        fn home(&self) -> Option<&std::path::Path> {
+            self.home.as_deref()
         }
     }
 
@@ -2108,6 +2127,88 @@ mod tests {
              Hook: ./guard.sh\n\
              Do not retry the same call; address the reason or ask the user.",
             "the model is told why, by which hook, and what to do"
+        );
+    }
+
+    #[test]
+    fn a_pre_tool_use_refusal_names_its_event_hook_and_file_on_the_cell() {
+        // What the user asked of the red cell: which event's hook refused,
+        // which hook, and where it is configured — the file named from the
+        // user's home, the way the startup review named it, while the model
+        // reads the absolute path it can open.
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some(crate::hooks::HookBlock {
+                    reason: "Use pnpm instead of npm.".into(),
+                    hook: Some(crate::hooks::HookOrigin {
+                        command: "~/.alter-zero/hooks/pnpm-only.sh".into(),
+                        file: Some("/home/u/.alter-zero/hooks.json".into()),
+                    }),
+                }),
+                ..PreToolVerdict::default()
+            },
+            home: Some("/home/u".into()),
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with_hooks(&hooks);
+        let display = events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::ToolRejected { display, .. } => Some(display.as_str()),
+                _ => None,
+            })
+            .expect("a hook block resolves as a rejection");
+        assert_eq!(
+            display,
+            "Blocked by PreToolUse hook: Use pnpm instead of npm.\n\
+             Hook: ~/.alter-zero/hooks/pnpm-only.sh\n\
+             Config: ~/.alter-zero/hooks.json"
+        );
+        assert!(
+            result.contains("\nConfig: /home/u/.alter-zero/hooks.json\n"),
+            "the model reads the absolute path: {result}"
+        );
+        assert!(
+            !display.contains("Do not retry"),
+            "the instruction is the model's alone: {display}"
+        );
+    }
+
+    #[test]
+    fn a_pre_approving_hook_names_its_event_on_the_cells_row() {
+        // `permissionDecision: "allow"` runs the call without the gate; the
+        // dim row says a hook let it — and which event's, the row a
+        // `PermissionRequest` hook's allow leaves naming that event instead.
+        let quiet = FakeHooks {
+            pre: PreToolVerdict {
+                pre_approved: true,
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, _) = round_with_hooks(&quiet);
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolNote(note) => Some(note.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, ["Allowed by PreToolUse hook"]);
+
+        let spoke = FakeHooks {
+            pre: PreToolVerdict {
+                pre_approved: true,
+                note: Some("Context added by PreToolUse hook".into()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, _) = round_with_hooks(&spoke);
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::ToolNote(n)
+                if n == "Allowed by PreToolUse hook · Context added by PreToolUse hook")),
+            "{events:?}"
         );
     }
 

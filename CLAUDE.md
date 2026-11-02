@@ -2264,7 +2264,11 @@ that ends and **only for one whose start fired**
 (`ModelSession::end_conversation` — a still-queued source means it never
 started, so no end, the source dropped). A block
 *is* `Approval::Reject`'s two-text split (red cell, model-facing text,
-`ToolCall::context_output`, `/resume`-safe) — and every text a hook gives the
+`ToolCall::context_output`, `/resume`-safe) — the cell what the model reads
+minus its instruction, naming the event, the hook and the `hooks.json`
+`~`-relative (the home the boundary hands the sink, `HookSink::home`), and
+every dim row a hook leaves naming its event (`docs/hooks.md` *What the user
+sees*) — and every text a hook gives the
 model is codex's terse shape (`docs/hooks.md` *What the model reads*:
 `Blocked by PreToolUse hook: {reason}`, `{event} hook feedback: …`, `Stop
 hook feedback: …`), each decision naming its handler on `Hook: {command}`

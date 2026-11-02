@@ -483,11 +483,13 @@ const HOOKS_REPLY: &str = concat!(
      You configure them in `~/.alter-zero/hooks.json`; I'll try two `bash` \
      calls so you can see both halves.\n\n",
     "That's the pair. The first call never ran: a **PreToolUse** hook exited \
-     `2`, so its stderr became the refusal — a red cell for you; for me, the \
-     reason and the hook that gave it. The second ran, and a **PostToolUse** \
-     hook attached a note; the dim `⎿` row is the record, and the text itself \
-     rides into my context rather than onto the cell. Hooks can also rewrite \
-     a call's arguments or answer the permission prompt in your place.\n\n",
+     `2`, so its stderr became the refusal — a red cell naming the event, \
+     the hook and the `hooks.json` it is configured in; I read the same, \
+     plus a line telling me not to retry. The second ran, and a \
+     **PostToolUse** hook attached a note; the dim `⎿` row is the record, and \
+     the text itself rides into my context rather than onto the cell. Hooks \
+     can also rewrite a call's arguments or answer the permission prompt in \
+     your place.\n\n",
     handoff!()
 );
 
@@ -495,17 +497,18 @@ const HOOKS_REPLY: &str = concat!(
 /// blocking a destructive command, then a `PostToolUse` hook annotating one
 /// that ran.
 ///
-/// The refusal texts come from [`crate::llm::hooks::block_texts`] — the very
-/// function the live runner calls — so the offline cell is byte-for-byte the
-/// one a real `hooks.json` produces, the same rule every other scripted demo
-/// follows with the real executor's formatters.
+/// The refusal texts come from [`crate::llm::hooks::block_texts`] and the
+/// annotated call's row from [`crate::llm::hooks::context_added_note`] — the
+/// very functions the live runner calls — so the offline cells are
+/// byte-for-byte the ones a real `hooks.json` produces, the same rule every
+/// other scripted demo follows with the real executor's formatters.
 pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     const BLOCKED: &str = "rm -rf build/";
     const ALLOWED: &str = "ls -la src";
     const HOOK_REASON: &str = "no destructive deletes outside ./tmp";
     const HOOK_COMMAND: &str = "~/.alter-zero/hooks/no-deletes.sh";
+    // Already in the cell's `~` form, so no home is needed to name it.
     const HOOKS_FILE: &str = "~/.alter-zero/hooks.json";
-    const HOOK_NOTE: &str = "Context added by hook";
 
     let (first, second) = reply_parts(HOOKS_REPLY);
     let ran = ScriptedCall::command(ALLOWED, "total 8\ndrwxr-xr-x  app\ndrwxr-xr-x  ui\n", 0);
@@ -528,10 +531,10 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         detail: None,
         arguments: Some(serde_json::json!({ "command": BLOCKED }).to_string()),
     });
-    // Both texts, as the live runner sends them: the short one is the red
-    // cell, the other — the reason with the hook named under it — is what the
-    // model reads, and what the rollout keeps on `ToolCall::context_output`,
-    // so Ctrl+D and a `/resume` show it too.
+    // Both texts, as the live runner sends them: the red cell names the
+    // event, the hook and its file; the other — the same plus the line on
+    // what to do — is what the model reads, and what the rollout keeps on
+    // `ToolCall::context_output`, so Ctrl+D and a `/resume` show it too.
     let (display, result) = crate::llm::hooks::block_texts(
         crate::hooks::HookEvent::PreToolUse.name(),
         &crate::hooks::HookBlock {
@@ -541,6 +544,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
                 file: Some(HOOKS_FILE.into()),
             }),
         },
+        None,
     );
     events.push(StreamEvent::ToolRejected {
         display,
@@ -551,7 +555,9 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
 
     // The allowed call, with the hook's provenance row on its resolved cell.
     events.push(ran.start());
-    events.push(StreamEvent::ToolNote(HOOK_NOTE.to_string()));
+    events.push(StreamEvent::ToolNote(
+        crate::llm::hooks::context_added_note(crate::hooks::HookEvent::PostToolUse.name()),
+    ));
     events.push(StreamEvent::ToolEnd {
         output: ran.result(),
         ok: true,

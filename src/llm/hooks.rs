@@ -65,7 +65,9 @@ const PROJECT_DIR_VARS: &[&str] = &["ALTER_ZERO_PROJECT_DIR", "CLAUDE_PROJECT_DI
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreToolVerdict {
     /// Refuse the call, naming the hook that did. [`block_texts`] words it
-    /// twice — a short form for the cell, a fuller one for the model — the
+    /// twice — for the cell, the event, the hook and its `hooks.json` named
+    /// from the user's home; for the model, the same with the file's
+    /// absolute path and what to do — the
     /// [`crate::permission::Approval::Reject`] split.
     pub blocked: Option<HookBlock>,
     /// Skip the permission gate for this call (`permissionDecision: "allow"`).
@@ -295,6 +297,17 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// whose "prompt" hook is really `PreCompact` (`docs/hooks.md`).
     fn prompt_hook_label(&self) -> &'static str {
         "UserPromptSubmit"
+    }
+
+    /// The user's home directory, which the cell of a call this sink's
+    /// hooks refuse names the hook's `hooks.json` from
+    /// (`~/.alter-zero/hooks.json`) — the spelling the startup review and
+    /// the `/hooks` menu give the same file — while the model keeps the
+    /// absolute path ([`block_texts`], `docs/hooks.md` *What the user
+    /// sees*). `None`, the default — a sink nobody told — names the file as
+    /// recorded.
+    fn home(&self) -> Option<&Path> {
+        None
     }
 }
 
@@ -607,6 +620,10 @@ pub struct CommandHooks {
     /// resolved at **dispatch** time, so a payload reports the session as it
     /// is when the hook fires.
     handles: HookHandles,
+    /// The user's home, which a refused call's cell names the hook's file
+    /// from ([`HookSink::home`]); `None` until the boundary says
+    /// ([`with_home`](Self::with_home)).
+    home: Option<PathBuf>,
 }
 
 impl CommandHooks {
@@ -630,7 +647,18 @@ impl CommandHooks {
             project_dir: cwd.clone(),
             cwd,
             handles,
+            home: None,
         })
+    }
+
+    /// Name a refused call's `hooks.json` from `home` on its cell — the
+    /// boundary passes the user's home, as it does to the app's own path
+    /// display, so the cell names the file the way the startup review did
+    /// when its hook was trusted (`docs/hooks.md` *What the user sees*).
+    #[must_use]
+    pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
+        self.home = home;
+        self
     }
 
     /// Export `dir` as `$ALTER_ZERO_PROJECT_DIR` (and `$CLAUDE_PROJECT_DIR`)
@@ -1019,16 +1047,21 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
             "{} hook feedback: {}{}",
             event.name(),
             block.reason,
-            hook_lines(block.hook.as_ref())
+            hook_lines(block.hook.as_ref(), None)
         )
     });
     let context: Vec<String> = feedback.into_iter().chain(added.clone()).collect();
     let mut warnings = hooked.warnings.clone();
     if let Some(reason) = &hooked.block_reason {
-        warnings.insert(0, format!("Flagged by hook: {reason}"));
+        warnings.insert(0, format!("Flagged by {} hook: {reason}", event.name()));
     }
     PostToolVerdict {
-        note: note_line(&warnings, added.as_ref(), &hooked.system_messages),
+        note: note_line(
+            event.name(),
+            &warnings,
+            added.as_ref(),
+            &hooked.system_messages,
+        ),
         context: (!context.is_empty()).then(|| context.join("\n\n")),
     }
 }
@@ -1040,11 +1073,13 @@ const HOOK_LABEL_MAX_CHARS: usize = 80;
 /// The lines a decision names its handler on, each newline first: `Hook:
 /// {command}` — the command's first line, cut to [`HOOK_LABEL_MAX_CHARS`]
 /// with `…` marking what was dropped — then `Config: {path}`, the
-/// `hooks.json` it is configured in; empty when no handler is known. The
-/// command is what the user wrote, so it is the name they know the hook by
-/// and the path the agent can read it at; the file is where to look to see
-/// or change the rule (codex's `hook_run_id` names it on a Stop prompt).
-fn hook_lines(origin: Option<&HookOrigin>) -> String {
+/// `hooks.json` it is configured in, named from `home` when one is given
+/// ([`shown_file`] — the cell's form) and absolute otherwise (the model's);
+/// empty when no handler is known. The command is what the user wrote, so
+/// it is the name they know the hook by and the path the agent can read it
+/// at; the file is where to look to see or change the rule (codex's
+/// `hook_run_id` names it on a Stop prompt).
+fn hook_lines(origin: Option<&HookOrigin>, home: Option<&Path>) -> String {
     let Some(origin) = origin else {
         return String::new();
     };
@@ -1062,9 +1097,44 @@ fn hook_lines(origin: Option<&HookOrigin>) -> String {
     }
     if let Some(file) = &origin.file {
         lines.push_str("\nConfig: ");
-        lines.push_str(&file.display().to_string());
+        lines.push_str(&shown_file(file, home));
     }
     lines
+}
+
+/// `file` as the screen names a config file: `~`-relative under `home`
+/// (`~/.alter-zero/hooks.json`), as given elsewhere or with no home —
+/// `ui::display_cwd`'s rule, which names the same file on the startup
+/// review's headings and the `/hooks` detail page (held to it by a test
+/// rather than imported, since the backend reaches into no renderer).
+/// Home-relative and never cwd-relative, because the cell's text is
+/// recorded: a `/resume` from another directory replays it as written.
+fn shown_file(file: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| file.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => file.display().to_string(),
+    }
+}
+
+/// The dim row a hook's added context leaves on its call — `Context added by
+/// PostToolUse hook`: which event's hook spoke (`docs/hooks.md` *What the
+/// user sees*). The offline demo builds its row with it, so the two cannot
+/// drift.
+#[must_use]
+pub fn context_added_note(event: &str) -> String {
+    format!("Context added by {event} hook")
+}
+
+/// The dim row of a call a hook let run without asking — `Allowed by
+/// PreToolUse hook`, or `Allowed by PermissionRequest hook: {reason}` when
+/// the hook gave one: which event's hook answered in the user's stead.
+#[must_use]
+pub fn allowed_note(event: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some(reason) => format!("Allowed by {event} hook: {reason}"),
+        None => format!("Allowed by {event} hook"),
+    }
 }
 
 /// The one instruction a refused call carries: not the same call again, and
@@ -1073,18 +1143,21 @@ const BLOCKED_NEXT_STEP: &str = "Do not retry the same call; address the reason 
 
 /// The cell/model text pair for a hook refusal — the same two-text shape the
 /// permission gate's rejections use, so the whole recording, transcript and
-/// `/resume` path is the one that already exists. The model's is codex's
-/// `… blocked by PreToolUse hook: {reason}` with the hook named under it and
-/// one line on what to do (`docs/hooks.md` *What the model reads*); `event`
-/// is the event whose hook refused, `PreToolUse` or `PermissionRequest`.
+/// `/resume` path is the one that already exists. Both are codex's `Blocked
+/// by PreToolUse hook: {reason}` with the hook named under it — `event` is
+/// the event whose hook refused, `PreToolUse` or `PermissionRequest`. The
+/// cell names the hook's `hooks.json` from `home` (`~/.alter-zero/hooks.json`,
+/// `docs/hooks.md` *What the user sees*); the model reads its absolute path
+/// and one line on what to do (*What the model reads*).
 #[must_use]
-pub fn block_texts(event: &str, block: &HookBlock) -> (String, String) {
-    let reason = &block.reason;
+pub fn block_texts(event: &str, block: &HookBlock, home: Option<&Path>) -> (String, String) {
+    let headline = format!("Blocked by {event} hook: {}", block.reason);
+    let origin = block.hook.as_ref();
     (
-        format!("Blocked by hook: {reason}"),
+        format!("{headline}{}", hook_lines(origin, home)),
         format!(
-            "Blocked by {event} hook: {reason}{}\n{BLOCKED_NEXT_STEP}",
-            hook_lines(block.hook.as_ref())
+            "{headline}{}\n{BLOCKED_NEXT_STEP}",
+            hook_lines(origin, None)
         ),
     )
 }
@@ -1169,17 +1242,23 @@ pub fn stop_feedback_texts(block: &HookBlock) -> (String, String) {
         format!(
             "Stop hook feedback: {}{}",
             block.reason,
-            hook_lines(block.hook.as_ref())
+            hook_lines(block.hook.as_ref(), None)
         ),
     )
 }
 
 /// The dim `⎿` provenance row a hook's context or note leaves on the cell —
-/// the auto-mode classifier's `⎿ Allowed by auto mode classifier` pattern.
-fn note_line(warnings: &[String], context: Option<&String>, systems: &[String]) -> Option<String> {
+/// the auto-mode classifier's `⎿ Allowed by auto mode classifier` pattern,
+/// naming the `event` whose hook added the context.
+fn note_line(
+    event: &str,
+    warnings: &[String],
+    context: Option<&String>,
+    systems: &[String],
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if context.is_some() {
-        parts.push("Context added by hook".to_string());
+        parts.push(context_added_note(event));
     }
     parts.extend(systems.iter().cloned());
     parts.extend(warnings.iter().cloned());
@@ -1205,6 +1284,7 @@ impl HookSink for CommandHooks {
             force_ask: outcome.permission == Some(HookPermission::Ask),
             updated_input: outcome.updated_input,
             note: note_line(
+                HookEvent::PreToolUse.name(),
                 &outcome.warnings,
                 context.as_ref(),
                 &outcome.system_messages,
@@ -1312,9 +1392,9 @@ impl HookSink for CommandHooks {
                 // this verdict has — so "my guard is broken" is never silent.
                 // (A verdict-less outcome has no channel at all; its warnings
                 // are dropped, the documented fail-open posture.)
-                note: std::iter::once(outcome.permission_reason.map_or_else(
-                    || "Allowed by hook".to_string(),
-                    |reason| format!("Allowed by hook: {reason}"),
+                note: std::iter::once(allowed_note(
+                    HookEvent::PermissionRequest.name(),
+                    outcome.permission_reason.as_deref(),
                 ))
                 .chain(outcome.warnings)
                 .collect::<Vec<_>>()
@@ -1329,7 +1409,11 @@ impl HookSink for CommandHooks {
                         .unwrap_or_else(|| NO_REASON.to_string()),
                     hook: None,
                 });
-                let (display, result) = block_texts(HookEvent::PermissionRequest.name(), &block);
+                let (display, result) = block_texts(
+                    HookEvent::PermissionRequest.name(),
+                    &block,
+                    self.home.as_deref(),
+                );
                 Some(HookPermissionVerdict::Deny { display, result })
             }
             // An explicit `ask` is the default path stated out loud.
@@ -1472,6 +1556,10 @@ impl HookSink for CommandHooks {
     fn for_subagent(&self, agent_id: &str, agent_type: &str) -> Option<Arc<dyn HookSink>> {
         Some(Arc::new(self.tagged(agent_id, agent_type)))
     }
+
+    fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
 }
 
 /// The `hooks.json` path: `ALTER_ZERO_HOOKS_FILE`, else
@@ -1523,20 +1611,26 @@ mod tests {
     }
 
     #[test]
-    fn a_block_names_its_event_and_hook_and_says_what_to_do_in_one_line() {
-        let (display, result) = block_texts(
-            "PreToolUse",
-            &HookBlock {
-                reason: "no destructive deletes".into(),
-                hook: Some(HookOrigin {
-                    command: "~/.alter-zero/hooks/guard.sh".into(),
-                    file: Some("/home/u/.alter-zero/hooks.json".into()),
-                }),
-            },
+    fn a_block_names_its_event_and_hook_to_both_and_says_what_to_do_to_the_model() {
+        let block = HookBlock {
+            reason: "no destructive deletes".into(),
+            hook: Some(HookOrigin {
+                command: "~/.alter-zero/hooks/guard.sh".into(),
+                file: Some("/home/u/.alter-zero/hooks.json".into()),
+            }),
+        };
+        let (display, result) = block_texts("PreToolUse", &block, Some(Path::new("/home/u")));
+        // The cell says which event's hook refused, which hook, and the file
+        // it is configured in — named the way the startup review and the
+        // `/hooks` menu name it.
+        assert_eq!(
+            display,
+            "Blocked by PreToolUse hook: no destructive deletes\n\
+             Hook: ~/.alter-zero/hooks/guard.sh\n\
+             Config: ~/.alter-zero/hooks.json"
         );
-        // The cell keeps its short line; the model reads the hook, the file
-        // it is configured in, and what to do.
-        assert_eq!(display, "Blocked by hook: no destructive deletes");
+        // The model reads the same with the file's absolute path, which it
+        // can open, and one line on what to do.
         assert_eq!(
             result,
             "Blocked by PreToolUse hook: no destructive deletes\n\
@@ -1544,12 +1638,59 @@ mod tests {
              Config: /home/u/.alter-zero/hooks.json\n\
              Do not retry the same call; address the reason or ask the user."
         );
-        // No handler known (a fake sink, the demo): no `Hook:` line to guess.
-        let (_, unnamed) = block_texts("PermissionRequest", &HookBlock::from("never in prod"));
+        // No home to name it from: the cell names the file as recorded.
+        let (display, _) = block_texts("PreToolUse", &block, None);
+        assert!(
+            display.ends_with("\nConfig: /home/u/.alter-zero/hooks.json"),
+            "{display}"
+        );
+        // No handler known (a fake sink): the event alone, no `Hook:` line to
+        // guess.
+        let (display, unnamed) = block_texts(
+            "PermissionRequest",
+            &HookBlock::from("never in prod"),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(display, "Blocked by PermissionRequest hook: never in prod");
         assert_eq!(
             unnamed,
             "Blocked by PermissionRequest hook: never in prod\n\
              Do not retry the same call; address the reason or ask the user."
+        );
+    }
+
+    #[test]
+    fn a_hooks_file_reads_the_way_the_review_and_the_hooks_menu_name_it() {
+        // `~`-relative under home, as given elsewhere — `ui::display_cwd`'s
+        // rule, which names the same file on the startup review's headings
+        // and the `/hooks` detail page; held to it rather than imported, since
+        // the backend reaches into no renderer. Never cwd-relative: the cell's
+        // text is recorded, and a `/resume` from another directory replays it.
+        let home = Path::new("/home/u");
+        for file in [
+            "/home/u/.alter-zero/hooks.json",
+            "/home/u/repo/.alter-zero/hooks.json",
+            // Containment is component-wise: another user's home is not `~`.
+            "/home/user2/.alter-zero/hooks.json",
+            "/etc/alter-zero/hooks.json",
+        ] {
+            let file = Path::new(file);
+            assert_eq!(
+                shown_file(file, Some(home)),
+                crate::ui::display_cwd(file, Some(home)),
+                "{}",
+                file.display()
+            );
+            assert_eq!(
+                shown_file(file, None),
+                crate::ui::display_cwd(file, None),
+                "{}",
+                file.display()
+            );
+        }
+        assert_eq!(
+            shown_file(Path::new("/home/u/repo/.alter-zero/hooks.json"), Some(home)),
+            "~/repo/.alter-zero/hooks.json"
         );
     }
 
@@ -1562,6 +1703,7 @@ mod tests {
                     reason: "no".into(),
                     hook: Some(command.into()),
                 },
+                None,
             );
             result.lines().nth(1).expect("a Hook line").to_string()
         };
@@ -1700,7 +1842,11 @@ mod tests {
         );
         let updated = verdict.updated_input.expect("a rewrite");
         assert!(updated.contains("ls -la"), "{updated}");
-        assert!(verdict.note.is_some(), "the user sees that a hook spoke");
+        // The user sees that a hook spoke, and which event's.
+        assert_eq!(
+            verdict.note.as_deref(),
+            Some("Context added by PreToolUse hook")
+        );
     }
 
     #[test]
@@ -1874,10 +2020,11 @@ mod tests {
             context.starts_with("PostToolUse hook feedback: tests are red\nHook: grep -q 'FAILED'"),
             "{context}"
         );
-        // Nothing was added but the feedback, so the row says only that.
+        // Nothing was added but the feedback, so the row says only that —
+        // and which event's hook gave it.
         assert_eq!(
             verdict.note.as_deref(),
-            Some("Flagged by hook: tests are red")
+            Some("Flagged by PostToolUse hook: tests are red")
         );
     }
 
@@ -1906,6 +2053,11 @@ mod tests {
         assert_eq!(
             context,
             "PostToolUseFailure hook additional context: the build is known to be flaky"
+        );
+        assert_eq!(
+            verdict.note.as_deref(),
+            Some("Context added by PostToolUseFailure hook"),
+            "the cell's row names the event that spoke"
         );
         let written = std::fs::read_to_string(&probe).expect("the failure hook ran");
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
@@ -2270,7 +2422,13 @@ mod tests {
         );
         match deny.permission_request(&call("bash", "{}"), &CancelToken::new()) {
             Some(HookPermissionVerdict::Deny { display, result }) => {
-                assert_eq!(display, "Blocked by hook: never in prod");
+                // The cell names the event and the hook, as the model does.
+                assert!(
+                    display.starts_with(
+                        "Blocked by PermissionRequest hook: never in prod\nHook: printf '%s'"
+                    ),
+                    "{display}"
+                );
                 assert!(
                     result.starts_with(
                         "Blocked by PermissionRequest hook: never in prod\nHook: printf '%s'"
@@ -2285,10 +2443,67 @@ mod tests {
             r#"{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":
               "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'"}]}]}}"#,
         );
-        assert!(matches!(
-            allow.permission_request(&call("bash", "{}"), &CancelToken::new()),
-            Some(HookPermissionVerdict::Allow { .. })
-        ));
+        match allow.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Allow { note }) => {
+                assert_eq!(note, "Allowed by PermissionRequest hook");
+            }
+            other => panic!("expected an allow, got {other:?}"),
+        }
+        let reasoned = hooks_for(
+            r#"{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":
+              "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"read-only\"}}'"}]}]}}"#,
+        );
+        match reasoned.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Allow { note }) => {
+                assert_eq!(note, "Allowed by PermissionRequest hook: read-only");
+            }
+            other => panic!("expected an allow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sink_that_knows_the_users_home_names_the_hooks_file_from_it_on_the_cell() {
+        // The boundary hands the sink the user's home, so the red cell names
+        // the `hooks.json` the way the review did when the hook was trusted —
+        // while the model still reads the absolute path it can open.
+        let path = PathBuf::from("/home/u/.alter-zero/hooks.json");
+        let file = HooksFile::parse(
+            r#"{"hooks":{"PermissionRequest":[{"hooks":[{"type":"command",
+              "command":"echo 'never in prod' >&2; exit 2"}]}]}}"#,
+        )
+        .expect("fixture parses")
+        .with_source(&path);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable")
+        .with_home(Some(PathBuf::from("/home/u")));
+        assert_eq!(HookSink::home(&hooks), Some(Path::new("/home/u")));
+        match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Deny { display, result }) => {
+                assert_eq!(
+                    display,
+                    "Blocked by PermissionRequest hook: never in prod\n\
+                     Hook: echo 'never in prod' >&2; exit 2\n\
+                     Config: ~/.alter-zero/hooks.json"
+                );
+                assert!(
+                    result.contains("\nConfig: /home/u/.alter-zero/hooks.json\n"),
+                    "{result}"
+                );
+            }
+            other => panic!("exit 2 must deny, got {other:?}"),
+        }
+        // A subagent's calls are refused through its tagged sink, which keeps
+        // the home: its session view names the file the same way.
+        let tagged = hooks.for_subagent("a1", "explore").expect("a tagged sink");
+        assert_eq!(tagged.home(), Some(Path::new("/home/u")));
+        // A sink nobody told stays with the path as recorded.
+        assert_eq!(NoHooks.home(), None);
     }
 
     #[test]
@@ -2299,7 +2514,13 @@ mod tests {
         );
         match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
             Some(HookPermissionVerdict::Deny { display, result }) => {
-                assert_eq!(display, "Blocked by hook: never in prod");
+                // A config parsed from text names no file, so the cell's
+                // last line is the hook.
+                assert_eq!(
+                    display,
+                    "Blocked by PermissionRequest hook: never in prod\n\
+                     Hook: echo 'never in prod' >&2; exit 2"
+                );
                 assert!(
                     result.starts_with("Blocked by PermissionRequest hook: never in prod\n"),
                     "{result}"
@@ -2322,7 +2543,10 @@ mod tests {
         );
         match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
             Some(HookPermissionVerdict::Allow { note }) => {
-                assert!(note.starts_with("Allowed by hook"), "{note}");
+                assert!(
+                    note.starts_with("Allowed by PermissionRequest hook · "),
+                    "{note}"
+                );
                 assert!(
                     note.contains("/definitely/not/a/real/binary"),
                     "the broken sibling is named: {note}"
