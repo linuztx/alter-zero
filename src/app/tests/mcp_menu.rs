@@ -18,10 +18,12 @@ fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnaps
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,
         identity: None,
+        excluded: Vec::new(),
         tools: (0..tools)
             .map(|i| McpToolInfo {
                 name: format!("tool_{i}"),
@@ -179,7 +181,7 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
     );
     assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
     // The finished flow closes the page back to the server detail.
-    app.finish_mcp_auth();
+    app.finish_mcp_auth("linear");
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -322,4 +324,89 @@ fn arrows_wrap_at_the_ends_on_every_page() {
     );
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.mcp_menu.as_ref().unwrap().selected, 0);
+}
+
+/// Reconnect (or Enable) turns the server `connecting…`, and the snapshot
+/// that says so lands under the user's finger: the selection followed its
+/// *index* onto a connecting server's only action, Disable, so a second
+/// Enter disabled the server and saved that. It follows the action now, and
+/// a connecting server's first action is the harmless one.
+#[test]
+fn a_second_enter_after_reconnect_never_lands_on_disable() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // deepwiki detail
+    app.on_key(key(KeyCode::Down)); // Reconnect
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Reconnect {
+            server: "deepwiki".to_string()
+        })
+    );
+    app.update_mcp_snapshot(vec![
+        snapshot("deepwiki", McpServerStatus::Pending, 0),
+        snapshot("linear", McpServerStatus::NeedsAuth, 0),
+        snapshot("github", McpServerStatus::Disabled, 0),
+    ]);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Reconnect {
+            server: "deepwiki".to_string()
+        })
+    );
+    // Enable from a disabled server: the connecting page's first action is
+    // Reconnect, never Disable.
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter)); // github detail
+    app.on_key(key(KeyCode::Enter)); // Enable
+    app.update_mcp_snapshot(vec![
+        snapshot("deepwiki", McpServerStatus::Connected, 3),
+        snapshot("linear", McpServerStatus::NeedsAuth, 0),
+        snapshot("github", McpServerStatus::Pending, 0),
+    ]);
+    assert!(!matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SetDisabled { .. })
+    ));
+}
+
+/// A sign-in finishing closes only its own server's auth page: another
+/// server's flow ending — a superseded one — must not close the page the
+/// user is on now.
+#[test]
+fn a_finished_sign_in_closes_only_its_own_page() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter)); // linear's Authenticate
+    app.finish_mcp_auth("deepwiki");
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    app.finish_mcp_auth("linear");
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+}
+
+/// A paste the flow turned away gives the field back with the reason, and
+/// editing the URL clears it.
+#[test]
+fn a_rejected_paste_gives_the_field_back_with_its_reason() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.paste_into_mcp_auth("http://localhost:1/callback?code=a&state=old"));
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
+    // Another server's rejection is not this page's.
+    app.reject_mcp_auth_paste("deepwiki", "nope");
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.error, None);
+    app.reject_mcp_auth_paste("linear", "the response belongs to another sign-in attempt");
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert!(!auth.submitted, "the field takes a new paste");
+    assert_eq!(
+        auth.error.as_deref(),
+        Some("the response belongs to another sign-in attempt")
+    );
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.error, None);
 }

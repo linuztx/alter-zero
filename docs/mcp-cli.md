@@ -63,8 +63,9 @@ review or send its servers straight back to it (`docs/config-review.md`).
 
 ```
 alter-zero mcp add <name> --url <URL> [--transport http|sse] [-H|--header "Name: Value"]...
+                   [--client-id <ID> [--client-secret] [--callback-port <N>]]
 alter-zero mcp add <name> [--transport stdio] [-e|--env KEY=VALUE]... [--] <command> [args...]
-alter-zero mcp add-json <name> <json>
+alter-zero mcp add-json <name> <json> [--client-secret]
 alter-zero mcp remove <name>
 alter-zero mcp get <name>
 alter-zero mcp list
@@ -97,6 +98,26 @@ alter-zero mcp list
   trims both sides, rejects a missing `:` or empty name, and applies to
   remote only. Both are one-value-per-flag (never variadic — the trap
   that broke Claude Code's own help example). Repeated keys: last wins.
+- **A pre-registered OAuth client** — for a server whose login provider
+  registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
+  clients*; Google's servers are not supported yet, and signing in to them
+  this way is experimental, *Servers that list their tools to anyone*) —
+  is the flags other MCP clients' CLIs document:
+  `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
+  object (remote only; with a command they are a usage error), and
+  `--client-secret` is a **switch**, never a value — `--client-secret=…`
+  is refused, since a secret on the command line lands in the shell
+  history and the process list. `add-json` takes the switch too, naming
+  its client through the entry's own `oauth.clientId` (none there is a
+  usage error). The boundary reads the secret **before** anything is
+  written, so a missing one never leaves the server half-added: from
+  `MCP_CLIENT_SECRET` when set, else a prompt on stderr with echo off when
+  stdin is a terminal (rustix's `termios`, restored after), else one line
+  of stdin — and keeps it in the owner-only token store's `clients`
+  section under the server's URL (`llm::mcp::save_client_secret`), never
+  in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
+  `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
+  `***** (in the file)` for a `clientSecret` written there), never what.
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules
@@ -118,11 +139,11 @@ alter-zero mcp list
 string-in/string-out read-modify-write over the whole document — with two
 deliberate differences:
 
-- **A file that doesn't parse is refused, never clobbered.**
-  `record_disabled`'s silent `{}` fallback is the in-TUI never-kill-the-TUI
-  posture; for a CLI edit it would discard every declared server. Both
-  writers return `Err(McpWriteError::InvalidJson(reason))` instead (the
-  boundary exits 1: `{path} is not valid JSON … refusing to rewrite it`).
+- **A file that doesn't parse is refused, never clobbered** — for a CLI
+  edit, a fallback to `{}` would discard every declared server (the `/mcp`
+  toggle's `record_disabled` refuses the same way now). Both writers
+  return `Err(McpWriteError::InvalidJson(reason))` instead (the boundary
+  exits 1: `{path} is not valid JSON … refusing to rewrite it`).
   Empty/whitespace-only contents are a fresh `{}` (a `touch`ed file, or
   the boundary's missing-file read), not an error.
 - **`remove_server` uses `Map::shift_remove`.** serde_json is built with
@@ -149,8 +170,11 @@ no terminal, before `InlineViewport::init` (`docs/cli.md`'s ordering).
 The file is `config::mcp_user_file_path()` (`ALTER_ZERO_MCP_FILE`, else
 `{config_home}/mcp.json`); `None` — no `HOME`, no override — is a hard
 exit 1, unlike the TUI's best-effort writers, because there is nowhere to
-persist. A missing file reads as `{}`; the write `create_dir_all`s the
-parent and surfaces its error. `ALTER_ZERO_MCP=0` does not gate the CLI —
+persist. A missing file reads as `{}`; the write is
+`llm::mcp::write_config_file` — the parent created (owner-only) on first
+use, a temp file synced and renamed into place so a failed write leaves the
+old file whole, the file's permissions kept (owner-only for a new one) and
+a symlink followed to the file it names — and its error is surfaced. `ALTER_ZERO_MCP=0` does not gate the CLI —
 it edits a file, launches nothing; the feature switch keeps governing the
 TUI.
 
@@ -195,9 +219,6 @@ a failed write — one plain stderr line), **0** for success and help.
   `mcp remove` escape hatch.
 - **`remove` of a missing name fails** (exit 1, Claude Code again):
   codex's "success" would let a scripted cleanup misspell a name forever.
-- **OAuth flags are out**: `--client-id`/`--callback-port` configure a
-  flow our `/mcp` Authenticate page negotiates by RFC discovery instead
-  (`docs/mcp.md`); nothing to persist means nothing to flag.
 
 ## Testing
 

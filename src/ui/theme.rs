@@ -1776,13 +1776,13 @@ pub(super) const CONTEXT_USAGE_FULL_SHARE: f64 = 0.9;
 /// A category's colour — the bar's cells, the legend's swatch, the detail's
 /// bars. The system prompt and the tools wear the Ctrl+D view's system and
 /// tool tags (amber, purple), the conversation the brand accent, and the
-/// reminder's sections the other hues — two of them blends, so eight
+/// reminder's sections the other hues — three of them blends, so nine
 /// categories read apart on a palette of six. They are chosen in bar order,
 /// so every pair of neighbours on the bar differs in hue: amber, purple,
-/// peach (amber into red), blue, green, orchid (purple into red), red, cyan.
-/// Under the `ansi` theme the two blends are bright yellow and bright
-/// magenta ([`category_blend`]), so no two categories share a colour in any
-/// theme.
+/// peach (amber into red), blue, green, orchid (purple into red), red, teal
+/// (green into blue), cyan. Under the `ansi` theme the three blends are
+/// bright yellow, bright magenta and bright green ([`category_blend`]), so
+/// no two categories share a colour in any theme.
 pub(super) fn context_usage_color(category: crate::context_usage::Category) -> Color {
     use crate::context_usage::Category;
     match category {
@@ -1793,6 +1793,7 @@ pub(super) fn context_usage_color(category: crate::context_usage::Category) -> C
         Category::Skills => palette().success,
         Category::AgentTypes => category_blend(palette().purple, palette().error),
         Category::Secrets => palette().error,
+        Category::McpInstructions => category_blend(palette().success, palette().link),
         Category::Messages => palette().accent,
     }
 }

@@ -136,7 +136,13 @@ Four details are load-bearing and none of them is guessable:
 3. **The port is ephemeral.** Unlike OpenAI's allow-listed 1455/1457, this
    client pins no port — so a loopback listener is essentially always
    available, and the hosted paste-a-code page is a fallback rather than a
-   failure.
+   failure. The listener is the callback every browser sign-in shares,
+   `llm::loopback` (`docs/mcp.md`): both loopback addresses, a thread and a
+   read timeout per connection so a browser preconnect can't freeze the
+   wait, a request without this sign-in's `state` turned away while the
+   wait goes on, and a refusal ending the sign-in with Anthropic's reason.
+   A code **pasted** from the hosted page may still come without a state —
+   the user copied it, so nobody else could have sent it.
 4. **`state` is a value of its own**, not the verifier. (Some community
    write-ups of the *other* flow reuse the verifier as `state`; doing that
    here would publish in the URL the one secret the challenge exists to keep.)

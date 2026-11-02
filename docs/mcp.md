@@ -57,6 +57,37 @@ with only `url` defaults to `http` **with automatic fallback** — a
 streamable-HTTP handshake that fails with a client error retries the same
 URL as a legacy SSE server (the MCP spec's backwards-compatibility recipe),
 so a bare `{"url": …}` works against any generation of server.
+`streamable-http` and `streamableHttp` — other clients' spellings — read as
+`http`; a `"type": "stdio"` entry without its `command` says that (it used
+to read as an unsupported transport); and an empty, `touch`ed file is an
+empty config rather than a red "not valid JSON" at every launch.
+
+**`${VAR}` references are expanded** (`mcp::expand_config`) the way Claude
+Code defined them for `.mcp.json`, so a project's file means the same to
+both: `${NAME}` and `${NAME:-default}` in every value a launch reads — a
+stdio server's `command`, `args` and `env` values, a remote server's `url`
+and `headers` values — never in a name or key. A set variable is its value,
+an empty one too (unlike POSIX `:-`, which treats empty as unset); an unset
+one takes its default, taken as written; a bare `$NAME` is literal, and
+there is no escape. A variable neither set nor defaulted keeps its server
+from starting, `Failed` with the variable and where it is used named — a
+literal `${GITHUB_TOKEN}` sent as a credential, or run as a command, is
+never what was meant. The expansion is the manager's, once, from the
+session's environment (`ServerState::resolved`), and it is what every
+connect, restart and token-store lookup uses; the declared config — what
+`/mcp`, `mcp get` and the startup review show, and what the review's
+fingerprints are taken over — stays as written, so a secret kept in the
+environment stays off the screen and a changed variable is not a changed
+server. The review shows the reference itself, `${AWS_SECRET_ACCESS_KEY}`
+in a URL included, which is the one place a project's file can ask for a
+variable it shouldn't have — and for the variables most worth stealing it
+doesn't get to ask: a **project's remote** server may not have the
+session's own credentials (every provider's key variable,
+`McpSources::protected_env`, filled at the boundary from the provider
+table) expanded into its URL or headers (`mcp::resolve_config`); it fails
+naming them, never their values. The user's own file is trusted with them,
+and a project's *stdio* server inherits the environment anyway, so the
+guard is exactly where a value would leave the machine.
 
 ## Protocol versions — the dual-era client
 
@@ -78,9 +109,20 @@ project file, which may be shared with a team:
   "projects": { "/abs/cwd": { "disabled": ["github"] } } }
 ```
 
-— the `skills.json` pattern exactly: read-modify-write, best-effort, an
-empty set drops the entry, a name not installed here is kept (the same file
-serves a checkout elsewhere).
+— the `skills.json` pattern: an empty set drops the entry, a name not
+installed here is kept (the same file serves a checkout elsewhere). A
+toggle is a read-modify-write of **one name** over the file as it is now
+(`record_disabled`, `McpManager::set_disabled`): the old writer stored the
+session's whole set, erasing a toggle another session had made in the same
+project, and fell back to `{}` over a file that didn't parse — one typo,
+and every declared server was gone. A file that doesn't parse is now left
+as it is, the toggle holding for the session under a red toast that says
+so; a write that fails says so too. Every write of the file — this one and
+the CLI's — goes through `llm::mcp::write_config_file`: a temp file beside
+the target, synced and renamed into place (a crash mid-write used to leave
+an empty file), the file's own permissions kept (owner-only for a new one,
+since its headers and `env` can hold tokens), and a symlink followed to the
+file it names, so a dotfiles manager's link stays a link.
 
 The **user** file can be edited from the command line — `alter-zero mcp add
 {name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before
@@ -111,7 +153,25 @@ in **`src/llm/mcp/`**.
   `tool_wire_name(server, tool)` builds `mcp__{server}__{tool}`;
   `is_mcp_tool` is the `mcp__` prefix test (the `is_task_tool` shape);
   `parse_wire_name` splits it back (the server part never contains `__` —
-  normalization collapses runs — so the split is unambiguous);
+  normalization collapses runs — so the split is unambiguous). A wire name
+  is a **function name on every request**, and providers refuse the
+  *whole* request over one bad name — OpenAI-shaped APIs cap names at 64
+  characters (`MAX_WIRE_NAME_LEN`) and every API refuses a duplicate — so
+  two more rules hold. A name over the cap keeps its server whole (cut only
+  when it alone would leave the tool under eight characters), cuts the
+  tool, and ends on `_` plus eight hex digits of the full name's SHA-256
+  (`mcp__atlassian-confluence-cloud__confluence_search_usin_8124286d`); and
+  `wire_names(server, tools)` — the **one** derivation the specs, the
+  fingerprint, the permission prompt's description and the call routing
+  all read, so no two can disagree — gives tools that normalize alike
+  (`files.read`, `files_read`) or to nothing (`検索`) that same hashed shape
+  keyed by the *raw* name, so each stays callable under a name that does
+  not depend on the order the server lists them in. Both shapes are fixed
+  points of `tool_wire_name`, which is what keeps the replay below exact.
+  Two *servers* whose names normalize alike (`my.server`, `my_server`), or a
+  name with nothing to normalize to, cannot be told apart that way —
+  `server_name_problems` refuses the later of the pair with the reason,
+  `✘ failed` in `/mcp`, and a Reconnect does not change that;
   `tool_display_name(server, tool)` is Claude Code's user-facing
   `{server} - {tool} (MCP)`, `tool_label`/`label_from_wire` is that name
   without the suffix (the permission prompt renders the arguments *between*
@@ -137,22 +197,73 @@ in **`src/llm/mcp/`**.
   `discover_params`/`parse_discover` (`server/discover`, whose `serverInfo`
   rides the result's `_meta`, never a top-level field), `is_modern_error`
   (the `-32020`/`-32021`/`-32022` allowlist era detection keys on),
-  `unsupported_versions` + `choose_version` (the `-32022` negotiation),
-  `header_value` (the `Mcp-Method`/`Mcp-Name` header encoding with the
-  `=?base64?…?=` sentinel for non-header-safe names) — and the legacy side:
+  `unsupported_versions` + `choose_version` (the `-32022` negotiation) —
+  and the legacy side:
   the `initialize` params (`initialize_params_for`, proposing
   `LEGACY_PROTOCOL_VERSION` `2025-11-25` by default) and result parse
   (`ServerIdentity`: the settled `protocol_version`, name, version,
   capabilities, instructions); plus the era-neutral `tools/list` page parse
   (`McpToolInfo { name, description, input_schema }`, cursor-chained), the
+  **model's copy of a schema** — every request carries it as the
+  function's `parameters`, so one a provider refuses fails every turn:
+  `model_input_schema` always roots it at `{"type": "object", "properties":
+  {…}}` (both API families insist on the pair), drops `$schema` and a
+  `required` that isn't a list of names, and folds a root
+  `oneOf`/`anyOf`/`allOf` (refused at the top by Anthropic) into the one
+  object — every branch's properties, required where `allOf` requires or
+  every alternative does, `FOLDED_SCHEMA_NOTE` at the front of the
+  description for alternatives — while `input_schema_problem` names what
+  no repair fixes (a root type other than `object`, a parameter name
+  outside `^[a-zA-Z0-9_.-]{1,64}$`), and the connect sets such a tool aside
+  as an `ExcludedTool` the `/mcp` server page lists under *Not offered to
+  the model*; the
   `tools/call` params builder, and the result mapping: `CallToolResult` →
-  the cell/model text (a lone `text` content item is its text verbatim;
-  anything else renders as compact JSON so nothing is dropped), `is_error` →
-  the red cell, a modern `resultType: "input_required"` (a multi-round-trip
-  request this capability-less client can't answer) → a recoverable red
-  outcome, and a first `image` content item → a `data:` URL riding
-  `ToolOutcome::image` (the `read` tool's channel, so a vision model *sees*
-  an MCP image).
+  the cell/model text — text items are their text, in order (a lone one
+  verbatim), and binary content is **described, never dumped**: the first
+  `image` item becomes a `data:` URL riding `ToolOutcome::image` (the
+  `read` tool's channel, so a vision model *sees* an MCP image) under an
+  `[image: …]` line, while a second image, `audio` and a blob `resource`
+  each leave a one-line placeholder naming the type and size (base64 in the
+  text spent the 64 KiB output cap on noise), a `resource_link` says what it
+  links to, an embedded text resource is its text, and an unknown item is
+  JSON with any long string cut to its length; `structuredContent` stands
+  in when nothing else came, and `is_error` → the red cell.
+  `parse_incoming` reads what real servers send rather than what JSON-RPC
+  says: an id echoed as `"5"` or `5.0`, an `"error": null` beside a result,
+  and an error with `id: null` (`Incoming::OrphanError` — the answer to the
+  one request in flight; dropped, it left that request waiting out its
+  deadline), with a server's own request kept as `Incoming::Request` for
+  the transport to answer. **2026-07-28's result rules**:
+  `result_type_problem` passes an absent `resultType` (an earlier server)
+  and `complete` and calls everything else invalid — a `task` handle reads
+  as a red outcome, never as an empty success — and `input_required`
+  splits in two: a `requestState`-only answer is a load-shedding server's
+  "ask again" (`InputRequired::Retry`), which `call_tool` answers by
+  repeating the call with the state echoed (`call_params_retrying`, up to
+  three times, the first at once and then 250 ms further apart, inside the
+  call's budget), while `inputRequests` ask for elicitation, sampling or
+  roots this client never declared (`InputRequired::Unsupported`) and
+  resolve as a red outcome that names them. A `-32021`'s
+  `requiredCapabilities` ride the error text the model reads.
+- `mcp::headers` — the streamable-HTTP request-metadata headers:
+  `header_value` (the `Mcp-Name`/`Mcp-Param-{Name}` value encoding, the
+  `=?base64?…?=` sentinel around a value that isn't plain printable ASCII,
+  has whitespace at an end, matches that sentinel shape, or is empty — an
+  intermediary may drop an empty header, every server decodes the
+  sentinel) and **`x-mcp-header`** (2026-07-28, SEP-2243: a tool marking
+  parameters whose values must also ride the request as headers, for a
+  gateway that routes without reading bodies — a MUST for a client on
+  streamable HTTP). `param_headers` reads a tool's declarations or refuses
+  the tool, the reference TypeScript SDK's rules exactly: an RFC 9110
+  token for a name, case-insensitively unique, on a property typed
+  `string`, `integer` or `boolean` (no `number`, no type union) that a
+  chain of `properties` keys reaches — an annotation under `items`, a
+  combinator, a conditional or `$defs` makes the tool invalid.
+  `param_header_values` reads each value at its exact path (absent or
+  `null` → no header; a non-primitive or an integer past 2^53 − 1 → none
+  rather than a malformed one), and `strip_header_annotations` takes them
+  out of the model's copy of the schema, schema-aware (a *property named*
+  `x-mcp-header` stays).
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,
   multi-line data, comment lines) shared by both HTTP transports; pure over
   `&str` pushes, tested without a socket.
@@ -208,17 +319,100 @@ editable only by hand — a `NotAuthenticated` server affords `Authenticate`
 (reachable now from the connected and failed pages too, not only from
 needs-auth), and a header or a public server affords neither.
 
+### Servers that list their tools to anyone (Google's) — not supported yet
+
+Google's MCP servers (`drivemcp.googleapis.com`, `calendarmcp.googleapis.com`,
+`gmailmcp.googleapis.com`, …) answer the connect and list their tools without
+a token, then refuse every call with a 401. Connected that way, one read
+`✔ connected` and `✔ authenticated` (`NotRequired`), and the model was
+offered tools that could only fail. Their sign-in provider,
+`accounts.google.com`, registers no apps by itself — no dynamic
+registration, no client metadata documents — so this app can't sign in to
+them without an OAuth client the user creates in Google Cloud
+(*Pre-registered clients*, below).
+
+**Servers of this kind are not supported yet.** An anonymous connect to one
+(remote, no stored grant, no `Authorization` header) is **held**: it reads
+`△ needs authentication` and `Auth: ✘ not authenticated`, the connection is
+dropped, and none of its tools are offered to the model, the main session's
+or a subagent's, so neither are its instructions. The connect worker holds
+it when:
+
+- the entry names its own OAuth client (`oauth.clientId`) — a login the
+  user asked for, whatever the server lets through; or
+- `oauth::protected_without_registration` says so: the server publishes
+  protected-resource metadata (RFC 9728, a document whose `resource` is its
+  own) naming an authorization server whose metadata offers no
+  `registration_endpoint`.
+
+The second check runs on its own thread **beside** the handshake, so a
+server that publishes no metadata — DeepWiki, Cloudflare's docs — connects
+no slower; each document gets five seconds (`PROBE_TIMEOUT`), and a
+document that can't be read never holds a server that connected: only
+positive evidence does.
+
+**Why not "publishes OAuth metadata" alone.** That was the first idea, and
+it is wrong: Hugging Face (`huggingface.co/mcp`), Context7
+(`mcp.context7.com/mcp`) and Exa (`mcp.exa.ai/mcp`) publish the same
+metadata and serve calls without a token — sign-in is optional there — so
+that rule would cut off three servers that work. Their providers register
+apps; Google's doesn't. The registration check is a heuristic, not a
+guarantee: a server with optional sign-in through a provider that registers
+no apps would be held too. `live_google_servers_wait_for_sign_in_while_open_ones_connect`
+(`tests/live_mcp.rs`, ignored by default) checks both sides against the real
+servers.
+
+Pressing **Authenticate** on a held server with no client configured ends
+with the existing explanation: the provider registers no clients itself,
+so add one as `oauth.clientId` or with `alter-zero mcp add --client-id …
+--client-secret`. Signing in with such a client is **experimental** — it
+follows Google's published metadata (the trailing-slash issuer, the 401
+whose metadata URL names the tool rather than the server, the parameters
+that get a refresh token) but has not been tried end to end. Fuller support
+is future work: a guided client setup on the Authenticate page, Client ID
+Metadata Documents for the providers that offer them (Devin's), and a
+verified Google sign-in.
+
 `src/llm/mcp/` (boundary, verified hermetically against in-process fixtures —
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
 
 - `transport` — the three transports behind one `request`/`notify` surface:
-  - **stdio**: the configured command spawned with piped stdio (env merged
+  - **stdio**: the configured command launched **detached from the TUI's
+    terminal** — `exec {command line}`, each word quoted for the shell,
+    through `subprocess`'s tier walk (`setsid`, then this binary's helper
+    re-exec, `docs/tty-detach.md`), so the server leads a session and
+    process group of its own with no controlling terminal: one that runs
+    `sudo`, an SSH passphrase prompt or git's credential prompt fails fast
+    on `/dev/tty` instead of reading the keystrokes meant for the TUI. A
+    command that isn't there is refused by name before the launch (the
+    shell would otherwise turn it into an exit after the fact). Env merged
     over the session's, minus the herdr pane id — a server can be an agent
-    whose herdr hook would take the TUI's pane over, `docs/herdr.md`), a
-    reader thread turning stdout lines into messages,
-    stderr drained to a capped buffer (surfaced in a connect error), the
-    child killed on drop. Requests are newline-delimited JSON, answers
-    matched by id.
+    whose herdr hook would take the TUI's pane over (`docs/herdr.md`).
+    Writes go through a **writer thread** — a server that stops reading
+    its stdin (busy in a synchronous tool) costs a call its deadline, where
+    a request bigger than the pipe used to block the turn's thread in
+    `write_all` for good — and a reader thread turns stdout lines into
+    messages, decoded lossily (one line in Latin-1 used to end the
+    session) and bounded at 16 MiB. stderr is drained in chunks, never
+    lines — a progress bar redrawn with `\r` never ends one, and a reader
+    that stopped would leave the server to die of `EPIPE` — into a 4 KiB
+    tail that a failed connect folds into its message, read *after* the
+    failure (it was read at spawn, and always empty). Requests are
+    newline-delimited JSON, answers matched by id; a late answer to a
+    request already given up on is dropped, as the spec says, instead of
+    kept for good. A request given up on — Esc, its deadline — is
+    **cancelled on the server** with `notifications/cancelled` naming it
+    (a MUST on stdio, where there is no stream to close; never for
+    `initialize`), and a turn already cancelled sends nothing at all. A
+    legacy server's own request (`ping`) is answered on stdin; a modern
+    client MUST NOT write responses, and doesn't. Stopping a server follows
+    the spec: stdin closed, time to exit on its own, `SIGTERM` to its
+    process group, then `SIGKILL` — anything it left running in its group
+    (`npx`'s real server, a `sleep &`) going with it. A transport dropped
+    mid-session (a reconnect, a disable) is stopped off the dropping thread
+    with 2 s per step; a quit stops every server at once, 300 ms per step
+    and one bound for all (`McpManager::shutdown`), so a quit waits for a
+    well-behaved server's exit and never for a stuck one.
   - **streamable HTTP**: POST per message (`Accept: application/json,
     text/event-stream`), the response either a JSON body or an SSE stream
     drained until the request's id answers. **Legacy mode** captures the
@@ -226,12 +420,52 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     thereafter, with the `MCP-Protocol-Version` header once settled;
     **modern mode** is stateless — the `_meta` block in every request, the
     version header from the first probe (it MUST match the `_meta`), plus
-    `Mcp-Method` on every request and `Mcp-Name` on `tools/call` (the
-    `header_value` sentinel encoding for non-header-safe names), and no
-    sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
+    `Mcp-Method` on every request, `Mcp-Name` on `tools/call` (the
+    `header_value` sentinel encoding for non-header-safe names) and the
+    tool's `Mcp-Param-{Name}` mirrors, and no sessions. The connect's
+    tools listing (`client::list_tools`, shared by both eras) refuses a tool
+    whose `x-mcp-header` annotations break the rules — an `ExcludedTool`
+    like any other, so it costs only itself — and arms the transport with
+    the rest's declarations; a call the server still refuses `400
+    HeaderMismatch` (`-32020`) lists the tools again, records the fresh
+    listing, and is retried once, the spec's SHOULD (a changed schema is
+    the usual cause). A 4xx whose body parses as a JSON-RPC error — its
+    id or `id: null`, the SDKs' transport-level shape — surfaces as that
     error (a modern server answers version/header problems as `400` + a
-    modern error body), else as the refusal the SSE fallback keys on;
-    notifications POST and ignore the body. A **404 to a request that
+    modern error body); **only 400, 404 and 405** without one are the
+    refusal the SSE fallback keys on (`TransportError::HttpRefused` — the
+    spec's three), while a 403, a 429 or a redirect not followed is the
+    server's answer, reported as such, and a **403 whose challenge says
+    `insufficient_scope`** is an authentication state like a 401
+    (`NeedsAuth`, the challenge kept for the step-up). A notification's 2xx
+    is its acceptance whatever the body, which is never read — a server
+    holding it open must not hold up the handshake.
+
+    Every POST runs on a worker with **its own request's budget as the
+    HTTP timeout** (`RequestBuilder::timeout`, which in reqwest's blocking
+    client bounds the wait for the headers *and* each body read). The
+    pooled client's 60 s stall guard used to be the effective limit, so a
+    tool taking 61–120 s failed on HTTP while the same tool worked on stdio,
+    and raising `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` did nothing. A wait that
+    gives up (Esc, the deadline) marks the POST abandoned and the worker
+    drops the response at its next line — closing the response stream *is*
+    streamable HTTP's cancellation. Each message is bounded at 16 MiB
+    (`MAX_MESSAGE_BYTES`, Claude Code's bound) and read with lossy UTF-8.
+    The client follows a **redirect only within the request's origin**
+    (`llm::mcp_http_client`, ten hops): every MCP request carries the
+    config's headers, which reqwest — stripping only `Authorization` and
+    cookies across hosts — would otherwise hand to wherever a server
+    bounced it.
+
+    On a response stream, a **legacy** server may send its own request
+    (`ping`, mostly) and wait for the answer before its result: answered
+    at once — `ping` with `{}`, anything else `-32601`
+    (`mcp::server_request_answer`) — by a POST of its own, session id and
+    all; unanswered, the call sat out its whole deadline. A modern stream
+    that **ends before its answer** loses the request — 2026-07-28 removed
+    resumption and says the client MUST re-issue it under a new id — so it
+    is re-issued once. A session id is captured only in legacy mode: a
+    modern answer naming one anyway is never echoed back. A **404 to a request that
     carried a session id** means that session is gone (a restart, an idle
     timeout): the spec's answer is a fresh `initialize` at the settled
     revision, a repeated `notifications/initialized`, and a replay of the
@@ -243,11 +477,29 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     with 404.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
-    base URL), requests POST there and answers arrive on the stream.
+    base URL — and **refused when it names another origin**, host, port or
+    scheme: every POST carries the bearer and the configured headers, so a
+    stream pointing elsewhere, or downgrading `https` to `http`, would hand
+    them over; the reference SDK refuses the same), requests POST there on
+    a worker thread under the same deadline and cancel polls as every other
+    wait (it used to block the turn's thread), and answers arrive on the
+    stream. A `ping` the server sends on the stream is answered with a
+    POST. A 401 or step-up 403 keeps its `WWW-Authenticate` challenge,
+    which the POST side used to drop. The stream thread stops at its next
+    line once the transport is dropped — a keep-alive comment is a line —
+    where it used to hold the connection, and itself, for good. A
+    byte-order mark opening the stream is stripped (the SSE spec's rule;
+    kept, it made the `endpoint` event never arrive).
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
-  enforce the configured deadlines.
-- `client` — the per-server connect sequence, **era detection first** (the
+  enforce the configured deadlines; a notification takes the caller's
+  deadline and cancel too, where it used to wait up to 60 s on a token
+  nothing could cancel.
+- `client` — the per-server connect sequence, under **one deadline for
+  the whole sequence** (the probe, the handshake, every page of the
+  listing and an SSE fallback all draw on it — each request used to restart
+  its own clock, so a slow, many-paged server took page count × budget),
+  **era detection first** (the
   2026-07-28 spec's own recipe): one `server/discover` probe under the
   modern version (a bounded slice of the connect budget — a server that
   answers *nothing* still leaves room for the handshake). A discover result
@@ -261,14 +513,22 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   message. **Anything else** — a legacy error code, an HTTP refusal, a dead
   probe — is a legacy server: `set_legacy()` → `initialize` (proposing
   `2025-11-25`, the newest handshake revision) → `notifications/initialized`
-  → `tools/list` (cursors drained), the settled revision echoed on later
+  → `tools/list` (cursors drained — an empty-string cursor continues the
+  listing, as 2026-07-28 requires, and the drain stops at **any** cursor
+  it has already sent, not only an immediate repeat, or at one over
+  64 KiB; a name repeated across pages is listed once), the settled
+  revision echoed on later
   requests. **The settled revision is always the server's own answer**:
   `initialize`'s `protocolVersion` on the legacy side (our proposal only
   stands in when a pre-`protocolVersion` server names none), and on the
   modern side the newest revision the discover result's `supportedVersions`
   and ours share — a list that names no revision we can speak modern hands
   off to the handshake at the one it *did* name, which is what asking is
-  for. Nothing about the previous connect is consulted. A 401 anywhere
+  for. Nothing about the previous connect is consulted. A bare-`url`
+  config whose `initialize` is refused (`Handshake::Refused`) tries the
+  legacy transport, and when that fails too the message keeps **both**
+  answers, the streamable one first — it is usually the one that explains.
+  A 401 anywhere
   (or the http→sse fallback both failing with one) resolves as
   **NeedsAuth**, carrying the `WWW-Authenticate` detail for the OAuth
   discovery — auth outranks era, and detection re-runs on the authenticated
@@ -318,13 +578,161 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   (S256 challenge, `state`, RFC 8707 `resource`, and `offline_access`
   folded into the scopes **only when the AS metadata offers it** —
   SEP-2207's refresh-capable grant, never added blind) → a loopback
-  `TcpListener` callback server *and* the paste-the-redirect-URL fallback —
-  both accepted, whichever lands first, each validating the RFC 9207 `iss`
-  against the discovered issuer (byte-for-byte, absence rejected when the
-  metadata advertised the parameter) before the code is redeemed → the
-  token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
-  server URL (0600, best-effort), and ride every HTTP request as
-  `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+  callback server *and* the paste-the-redirect-URL fallback — both
+  accepted, whichever lands first → the token exchange.
+
+  **The response is checked before anything is redeemed**
+  (`loopback::check_auth_response`, the same rules for the callback and a
+  paste):
+  the `state` is **required** and must be this flow's — a response without
+  one can't be told from a forged one (RFC 6749 §10.12), where it used to
+  be accepted — then the RFC 9207 `iss` must name the discovered issuer
+  (byte-for-byte, absence rejected when the metadata advertised the
+  parameter), and only then does the content count. A response that fails
+  either check is **turned away and the wait goes on**: a stray request, a
+  previous attempt's redirect or a forged one can't end the sign-in (the
+  browser gets a 400 page saying so; a paste gets a reason on the auth page
+  through `AuthProgress::on_paste_rejected`). One that passes and carries
+  `error=` — the user declining on the consent screen — **ends the
+  sign-in with the authorization server's own reason**, where it used to
+  leave the flow waiting five minutes for a code that would never come.
+
+  **The callback server** is `llm::loopback`, the one every browser
+  sign-in shares — this flow, ChatGPT's and the Anthropic Console's, which
+  carried the same hand-rolled loop and the same weaknesses
+  (`CallbackServer::bind` over a list of ports, `0` for an ephemeral one,
+  and a path, `wait_for_code` over the flow's `Expected` state and issuer,
+  its `Pages` wording and an optional paste channel). It listens on
+  `127.0.0.1` **and** `[::1]` on the same port, since the redirect names
+  `localhost` and a browser may resolve it to either (IPv4 alone where the
+  machine has no IPv6 loopback). Each connection is served on a thread of
+  its own (`serve_connection`, at most `MAX_CONNECTIONS` at once) with a
+  read timeout, reading the
+  whole request head before it answers: the old loop read each connection
+  inline with no timeout, so a browser **preconnect** — a socket opened and
+  never written — blocked the wait, Esc and the paste field with it, until
+  the browser gave up on the socket; and on macOS an accepted socket
+  inherits the listener's non-blocking mode, so a request still on its way
+  read as empty and its code was lost. Anything but `GET /callback` is a
+  404 (the favicon), and the page the browser lands on says what actually
+  happened — received, refused (with the reason, HTML-escaped), or not this
+  sign-in's.
+
+  **The client** follows SEP-2352: client credentials are kept with the
+  issuer that registered them (`StoredTokens::issuer`; a grant stored before
+  that is matched by its token endpoint) and are **never presented to
+  another authorization server** — a server whose metadata now names a new
+  one registers afresh (`reusable_client`). A reused client signs in on the
+  port it registered (`StoredTokens::redirect_uri`) when that port is free,
+  since an authorization server may match the registered redirect exactly —
+  RFC 8252's loopback port leniency is a SHOULD — and **registers again**
+  when it isn't, where the old flow sent a redirect the server had never
+  seen and left the user on the server's error page. Registration asks for
+  `token_endpoint_auth_method: "none"` unless the metadata lists methods
+  without it, then for the secret method it offers (`client_secret_basic`
+  first, RFC 6749's default); a client registered with
+  `client_secret_basic` authenticates with HTTP Basic, neither half in the
+  body (`client_authentication`, the exchange and every refresh alike).
+  A refused registration or exchange carries the server's own `error` and
+  `error_description` (`oauth_error_detail`) rather than a bare status, and
+  a server offering no registration says how to add a pre-registered
+  client (below).
+
+  **Pre-registered clients.** Some authorization servers register no
+  clients at all — Google's, for its MCP servers (`calendarmcp.googleapis.com`
+  and friends): the user creates an OAuth client in the provider's console
+  and the MCP client signs in as it. A remote entry names it in the `oauth`
+  object other MCP clients write (`mcp::OAuthClientConfig`):
+
+  ```json
+  "calendar": {
+    "type": "http",
+    "url": "https://calendarmcp.googleapis.com/mcp/v1",
+    "oauth": { "clientId": "123.apps.googleusercontent.com",
+               "callbackPort": 8976,
+               "scopes": ["https://www.googleapis.com/auth/calendar"] }
+  }
+  ```
+
+  `clientId` is the client; `callbackPort` the port its registered redirect
+  URI names (`http://localhost:{port}/callback`) — bound **exactly**, the
+  sign-in failing with the port named when it is taken, since the provider
+  was told that one (a native/desktop client, which takes any loopback port
+  per RFC 8252, can leave it out); `scopes`, a string or a list, is asked
+  for as written in place of what discovery suggests. The secret is best
+  kept out of the file: `alter-zero mcp add … --client-id … --client-secret`
+  keeps it in the token store's `clients` section (`save_client_secret` —
+  owner-only, apart from the login so "Clear authentication" leaves it), and
+  a `clientSecret` in the entry, `${VAR}`-expanded like the rest of it, is
+  read too — under the same provider-key guard, which covers the `oauth`
+  values of a project's remote server. `run_auth_flow` (over a `SignIn`:
+  the server, its challenge, the store, this client) uses a configured
+  client ahead of any reused or registered one and never registers;
+  authenticates it as a public client without a secret, or with one in the
+  form body unless the server takes only HTTP Basic
+  (`configured_auth_method`); and stores the id and secret with the grant,
+  so a refresh presents them too. An authorization server with needs of its
+  own gets them on the authorize URL (`provider_authorize_params`): Google
+  issues a refresh token only for `access_type=offline` and re-issues one
+  only with `prompt=consent`, or the login lapses within the hour. A
+  server whose entry names a client waits for that login even when it let
+  an anonymous connect through (*Servers that list their tools to anyone*,
+  above), and signing in to Google's this way is **experimental**: it
+  follows Google's published metadata, but has not been tried end to end.
+  The review's `ServerParts` names an `oauth` change (`the OAuth client`).
+
+  **The flow stops where it should.** The cancel token is checked between
+  discovery, registration and the browser, so Esc during discovery never
+  opens a browser afterwards; with no config home to keep the grant in, the
+  flow says so before the browser opens; and the PKCE verifier and `state`
+  come from the system's random source or the flow fails
+  (`pkce_and_state`) — the old code fell back to zeroed bytes, a guessable
+  state and a decorative PKCE. Tokens persist in `{config_home}/mcp-auth.json` keyed by
+  server URL — the file created owner-only (0600) through a temp file of
+  its own, never written first and narrowed after, in a 0700 directory
+  when the save creates one — and ride every HTTP request as
+  `Authorization: Bearer …`. A grant that can't be stored fails the
+  sign-in instead of "succeeding" into nothing (no config home, a store
+  that can't be written), and a store that exists but can't be read is an
+  error, never "empty" — rewriting it would drop every other server's
+  grant. "Clear authentication" deletes the entry, and says so only when
+  the delete was written.
+
+  **Every discovered document is checked before it is trusted** — the
+  2026-07-28 authorization spec's MUSTs, and the reference TypeScript SDK's
+  reading of them:
+  - The **resource metadata** must be *this* server's (RFC 9728 §3.3,
+    `resource_allowed`: same origin, the server's path under the
+    document's `resource`); one for another resource is skipped, since it
+    would point the flow at someone else's authorization server. Its
+    `resource` is the RFC 8707 indicator the flow sends — authorize, token
+    exchange **and** every refresh (kept on the grant as
+    `StoredTokens::resource`, so a refreshed token's audience never drifts);
+    without resource metadata, the canonical server URL (`canonical_resource`:
+    lowercase scheme and host, no fragment, no lone `/`).
+  - The **authorization-server metadata** is looked for exactly where the
+    spec says (`authorization_server_candidates`): for an issuer with a
+    path, RFC 8414 path insertion, OIDC path insertion, then OIDC path
+    **appending** — where Keycloak realms and Entra tenants publish, and
+    which was never tried — and never the root, which for a path issuer is
+    some other issuer's document; and that document's `issuer` must be the
+    issuer its URL was built from (RFC 8414 §3.3, `issuer_matches`, with the
+    SDK's one trailing-slash tolerance) or it is skipped. That validated
+    issuer is the one RFC 9207's `iss` is then held to.
+  - Its endpoints must be **HTTPS** (`endpoint_is_secure`; loopback exempt
+    for a server under development), and it must support **PKCE with
+    S256**: metadata listing `code_challenge_methods_supported` without it
+    is refused, while metadata listing none is let through as the SDK does —
+    the spec's "MUST refuse" would turn away servers that support PKCE and
+    merely don't say so (`pkce_problem`).
+  - A `WWW-Authenticate` challenge is parsed as RFC 9110 auth-params, the
+    parameter matched **by name** (`challenge_param`): the old substring
+    search found `scope` inside `insufficient_scope`, so the step-up
+    challenge the spec itself shows carried no scope.
+  - A re-authorization asks for the **union** of the scopes granted before
+    and the ones the server now wants (`scope_union`, the step-up rule) —
+    a `403 insufficient_scope` arrives as `NeedsAuth` with its challenge,
+    and Authenticate on `/mcp` then asks for exactly that.
 
   Two things the flow must get right or the grant is born unrenewable:
   **`offline_access`** is what actually buys a refresh token, and SEP-2207
@@ -346,8 +754,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   **Token refresh — why a session never asks twice** (`refresh_grant` and
   friends; the reference client's own bug class, fixed here the way its
   v2.1.206/211 fixed it):
-  - **Proactive**: a stored grant inside the 300-second expiry skew
-    refreshes *before* it goes over the wire — at connect
+  - **Proactive**: a stored grant inside the 300-second expiry skew — or,
+    for a token living less than ten minutes, inside the second half of
+    its life (`issued_at` is kept beside `expires_at`; a five-minute token
+    was otherwise stale the moment it was minted, every request a renewal
+    and every renewal a rotation) — refreshes *before* it goes over the
+    wire — at connect
     (`connect_bearer`) and before every tool call (`refresh_if_stale` →
     `Transport::set_bearer`, the mid-session re-arm seam) — so the server
     never sees a dead token in the ordinary course.
@@ -356,10 +768,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     and per call — before anyone is asked to re-authenticate.
   - **Classification is the contract** (`RefreshFailure`,
     `refresh_failure_kind`): only the AS's own structured verdict on a
-    400/401 (`invalid_grant` and friends) is **permanent** — the dead grant
-    is *cleared* (kept, it would loop the failure into every request) and
-    the server truthfully reads `needs authentication`. Network failures,
-    5xx, 429, or an unreadable body are **transient**: the grant is kept
+    400/401 naming the **grant itself** — `invalid_grant`,
+    `invalid_client`, `unauthorized_client`, `unsupported_grant_type`,
+    `invalid_scope` — is **permanent**: the dead grant is *cleared* (kept,
+    it would loop the failure into every request) and the server
+    truthfully reads `needs authentication`. Everything else is
+    **transient** — network failures, 5xx, 429, an unreadable body, and
+    the errors that say nothing about the grant (`invalid_request`, an
+    AS's own `temporarily_unavailable`, an error code nobody has heard of),
+    which used to clear a grant that may have been perfectly good: the
+    grant is kept
     untouched, the server reads `✘ failed (token refresh failed: …)` whose
     `Reconnect` retries — never needs-auth, which would walk the user into
     discarding a working refresh token over a blip.
@@ -371,7 +789,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     `resource` — and **no scope** (it could only narrow the grant) and no
     PKCE (authorization-code only). The store is re-read before every
     refresh, so another process's newer grant is used instead of burning a
-    rotated token.
+    rotated token — and the outcome is written back **only over the grant
+    the refresh presented** (`settle_refresh`, a compare-and-swap on the
+    refresh token): a grant "Clear authentication" deleted while the
+    request was out stays deleted (the clear wins), and a newer grant a
+    sign-in stored meanwhile stays and is what the caller gets, so a
+    permanent rejection can never clear a grant it didn't reject.
   - **Single-flight, per server.** Serializing the store's *write* does not
     stop two threads presenting the same refresh token to the **network**,
     and that is the more expensive race: OAuth 2.1 §4.3.1 requires a
@@ -384,9 +807,22 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     if the access token it found unusable is no longer the stored one,
     another thread already rotated the grant and its result is returned
     instead of a replay. Per server rather than global, so a slow
-    authorization server can't hold up an unrelated one.
+    authorization server can't hold up an unrelated one. And **per session
+    too**: two sessions in different terminals share one store, and the
+    replay is as fatal when the second presenter is another process, so the
+    renewal also holds an exclusive `flock` on
+    `mcp-auth.locks/{digest}.lock` across its whole token request (released
+    on drop, and by the kernel if the process dies, so a crash never
+    strands it). A second session waits for it — up to `REFRESH_LOCK_WAIT`,
+    past the first one's token request — then re-reads and takes the grant
+    that session minted.
   - **The store is one file for every server**, so its read-modify-write is
-    serialized behind a process-wide lock and committed **write-then-rename**.
+    serialized behind a process-wide lock **and** a `flock` on
+    `mcp-auth.lock` (another session's write is waited for, never past a
+    stuck one — a dropped rotation costs more than a raced one) and
+    committed **write-then-rename**, through a temp name unique to the
+    write so two processes saving at once never write into each other's
+    file.
     Without the lock, two servers renewing at once (two subagents, or a tool
     call while the loop reconnects another) interleave read/read/write/write
     and drop one of the two rotated refresh tokens; the loser then presents
@@ -408,7 +844,8 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   config + live state, connects them **concurrently on worker threads at
   startup** (never blocking the first frame), exposes `tool_specs()` (the
   Chat Completions defs for every connected, enabled server's tools — the
-  `input_schema` passed through as the `parameters`), executes
+  `parameters` being `mcp::model_input_schema`'s repaired copy of the
+  server's `inputSchema`, below), executes
   `call_tool` (wire name → server + tool via the connect-time map), and
   reports every state change on the loop's **MCP event channel** (a
   `tokio` unbounded sender — the file-search/clipboard worker pattern), so
@@ -416,14 +853,34 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   authenticating.
 
   A connect attempt **starts from nothing**: alongside dropping the old
-  transport (which kills a stdio child), it clears the identity, the tools
-  and the wire map. Those are the *live* connection's facts — the protocol
-  revision, the capabilities, the tool list the detail page shows — so a
-  reconnect that never initializes must not leave the previous one's
-  behind, under a red `✘ failed` that says the opposite. The model never
-  saw them either way (`tool_specs`/`fingerprint`/`has_tools` all filter on
-  `Connected`), so what this changes is only whether the page tells the
-  truth while a server is down.
+  transport (which stops a stdio child), it clears the identity, the tools
+  and the set-aside tools (`ServerState::drop_connection`, the one teardown
+  a disable, a needs-auth refusal and a fresh connect share). Those are the
+  *live* connection's facts — the protocol revision, the capabilities, the
+  tool list the detail page shows — so a reconnect that never initializes
+  must not leave the previous one's behind, under a red `✘ failed` that
+  says the opposite. The model never saw them either way
+  (`tool_specs`/`fingerprint`/`has_tools` all read `ServerState::offered`,
+  which is empty unless `Connected`), so what this changes is only whether
+  the page tells the truth while a server is down.
+
+  `call_tool` guards the connection it runs on. Two calls to one server
+  share it, so the second **waits for the first polling the turn's
+  cancel** (`lock_unless_cancelled`) — it used to take the lock blind, and
+  a call the user had pressed Esc on still went out once the lock was
+  free. A `401` tears down only **the connection the call went out on**
+  (its generation): a reconnect that landed meanwhile is a newer one. And a
+  call that finds its connection **dead** — a stdio server that exited, a
+  legacy stream that ended (`Transport::is_alive`) — marks the server
+  failed with the reason and **restarts it** at once (the stdio spec's
+  "SHOULD restart"), telling the model to try again; it used to sit
+  `✔ connected` over a dead pipe, every later call failing until the user
+  reconnected by hand. At most once per 30 s (`RESTART_COOLDOWN`): a server
+  that dies again that soon stays failed for a manual Reconnect, never a
+  crash loop. **Clear authentication** reconnects a connected (or failed)
+  server once the grant is gone, since the live connection still carried
+  the old bearer and the server kept working on a login the page said was
+  cleared.
 
 ## The tool integration
 
@@ -438,9 +895,11 @@ The backend follows the skills pattern:
   fallthrough (the `is_task_tool`/`is_skill_tool` slot).
 - The offered set can change mid-session (a server connects late, a
   reconnect, a `/mcp` disable): the boundary re-checks a fingerprint of the
-  offered wire names at every MCP event and turn start
+  offered tools — each wire name beside a digest of its description and
+  schema, so a reconnect that changed only a schema (a stdio server's own
+  dev loop) counts too — at every MCP event and turn start
   (`Session::refresh_mcp`, the `skills_attached` pattern) and rebuilds the
-  backend only when the set actually flipped.
+  backend only when it actually moved.
 - **Display**: `llm::tools::display_name` maps a wire name to the
   `{server} - {tool} (MCP)` header; `summarize_call` returns the **raw
   arguments JSON** for an MCP call. That choice is what makes the record
@@ -620,19 +1079,41 @@ mid-turn (the strip stays above it). Pages:
    `Re-authenticate` (when OAuth tokens exist) / `Clear authentication` /
    `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
-   `Reconnect` / `Disable`; disabled → `Enable`.
+   `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
+   `Enable`. When a fresh snapshot changes the list under the user the
+   **selection follows its action**, not its index — a Reconnect turned the
+   server `connecting…`, whose list was `[Disable]` alone, so a second Enter
+   disabled the server and saved that — and a connecting server's first
+   action is the harmless one.
 3. **Tools list** — `Tools for {server}` over numbered tool names.
 4. **Tool detail** — the tool name + server, `Tool name:` / `Full name:`
    (the wire `mcp__{server}__{tool}` the model actually calls),
    the description, and the `Parameters:` listing derived from the
    `input_schema` (`● {name} (required): {type} - {description}`).
 5. **Authenticate** — `Authenticating with {server}…`: the flow opens the
-   browser (`xdg-open`/`open`, detached), shows the authorize URL (`c`
-   copies it via the `/copy` clipboard seam), and offers the `URL >`
-   paste-the-redirect fallback (a single-line field; paste routed to it
-   while the page is up); the loopback callback resolves it from either
-   side. Esc backs out; the result lands as a toast + the server list
+   browser (`open` on macOS, `xdg-open` elsewhere — never `open` on Linux,
+   which is `openvt` — the launcher reaped on a thread of its own), shows
+   the authorize URL (`c` copies it via the `/copy` clipboard seam), and
+   offers the `URL >` paste-the-redirect fallback (a single-line field;
+   paste routed to it while the page is up); the loopback callback
+   resolves it from either side. A paste the flow turns away — not a
+   redirect, or another attempt's — comes back as
+   `McpEvent::AuthPasteRejected`, its reason red under the field, which
+   takes another paste (`App::reject_mcp_auth_paste`; editing clears it).
+   Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
+
+   **One sign-in at a time, and each knows whether it still is the one.**
+   The manager keeps the running flow as an `AuthFlow` with an id; a second
+   Authenticate cancels the first and installs its own. The old flow, when
+   it ends, clears only its own entry: it used to clear whatever was
+   installed — the *new* flow's paste channel and cancel token, so the new
+   page's paste went nowhere and its Esc stopped nothing — and reported
+   `cancelled` as a red failure that closed the new page. A flow that ends
+   cancelled (Esc) or superseded reports nothing but a snapshot refresh,
+   and `App::finish_mcp_auth` closes only the page of the server whose flow
+   finished. `McpSources::open_browser` injects the launcher, so a test
+   signs in without one.
 
 ### Where the colour goes
 
@@ -750,16 +1231,65 @@ pending row shows `… connecting` until its thread reports.
 
 Resources, prompts, sampling, elicitation, and roots are not modeled — the
 tools surface is the feature — and neither is their modern replacement, the
-2026-07-28 multi-round-trip request: this client declares an empty
-`clientCapabilities` on every request, so a compliant server never sends
-`input_required`, and one that does anyway gets the recoverable red outcome
-rather than a stalled turn. `subscriptions/listen`, response caching
-(`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
-registration (we are not a hosted client with an `https` client id — DCR,
-deprecated but retained, is our registration path) stay out with it. Server
-`instructions` are shown in the detail page but not injected into the system
-prompt. WebSocket transport isn't offered (neither reference ships it for
-user servers). The dummy backend scripts no MCP scenario — the manager is
+2026-07-28 multi-round-trip request's `inputRequests`: this client declares
+an empty `clientCapabilities` on every request, so a compliant server only
+ever sends it a `requestState`-only `input_required` (retried, above), and
+one asking for input anyway gets the recoverable red outcome naming what it
+asked for rather than a stalled turn. Response caching (`ttlMs`/`cacheScope`
+parse-through but nothing caches) and CIMD client registration (we are not a
+hosted client with an `https` client id — DCR, deprecated but retained, is
+our registration path) stay out with it.
+
+**A server that says its tools changed is listed again.** A
+`notifications/tools/list_changed` reaches the manager from wherever the
+transport reads the server (`Transport::watch_changes`, a `ChangeSink` each
+connect registers): the stdio reader thread and the legacy SSE stream
+thread see every message whether or not a call waits, and a streamable-HTTP
+response stream hands over any notification it carries. A server whose
+capabilities promise changes (`tools.listChanged`,
+`ServerIdentity::tools_list_changed`) is also asked for them, since a
+modern one MUST NOT send what it was not asked for: on stdio a
+`subscriptions/listen` with the `toolsListChanged` filter is written once
+and never waited on (its eventual answer is a late reply the request loop
+drops); over streamable HTTP a background thread holds the change stream
+open (`listen_for_changes`) — the `subscriptions/listen` response stream on
+a modern server, the optional GET stream on an earlier one — reopening it
+when it ends with a growing pause, giving up on a server that offers none
+(400/401/403/404/405, or an answer that isn't an event stream) or fails
+every opening in a row, reading each reopening's bearer and session off the
+connection as the last request left them, and stopping with the transport.
+The manager then lists the server's tools again on a worker
+(`McpManager::relist`) — never on the reader thread, and never under the
+manager lock while it waits for a call holding the connection — coalescing a
+burst of notifications into one listing plus one more for any that arrived
+while it ran, and keeping the old tools if the listing fails. The fresh
+tools replace what the model is offered, the boundary re-attaches the
+backend when the set moved, and the change reaches the next request. The
+sink holds the manager weakly: the transport lives inside the manager. Server
+`instructions` — the spec's hint for how a server's tools are meant to be
+used — ride the `<system-reminder>` as its **last section**
+(`mcp::instructions_section`, the reference client's shape: `# MCP Server
+Instructions` over one `## {server}` part each), built at the boundary by
+`sync_listings` from `McpManager::instructions` and re-rendered on every MCP
+event, so a server that connects after the first frame is in the next
+turn's context. Only a connected server with at least one tool the model is
+offered contributes (its instructions are about tools; with **Tools** off
+none are offered, so none ride), in name order so the reminder holds still
+across reconnects, each cut at `MAX_INSTRUCTIONS_CHARS` (4,096). Last,
+because servers come and go and only what follows a changed section
+re-renders into the prompt cache. The text is the server's, so it is held
+inside its part: every line that starts with a heading's `#`s is pushed two
+levels down — inside a code fence too, since a reader of the raw text can't
+tell a fenced `# …` from a section, while a `#` comment stays a comment —
+and a fence left open is closed, so no server can open a section of its own
+or pose as another server's. A subagent's briefing carries the parts of the
+servers whose tools its type may call (`briefing_for`, its `tools:`
+allowlist), since the lead's reminder never reaches its fresh context.
+`/context` counts the section as **MCP instructions**, one part per server
+(`docs/context-usage.md`). WebSocket transport isn't offered: the MCP spec defines stdio and
+Streamable HTTP (and the legacy HTTP+SSE this client also speaks), and
+Claude Code's `"type": "ws"` is its own extension, which an entry here
+reports as an unsupported transport rather than dropping silently. The dummy backend scripts no MCP scenario — the manager is
 real I/O end to end; the smoke suite drives `/mcp` against a scripted
 (modern) stdio fixture instead.
 

@@ -30,7 +30,24 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
             println!("{}", cli::help(HelpPage::Mcp, stdout_style()));
             0
         }
-        McpCli::Add { name, config } => {
+        McpCli::Add {
+            name,
+            config,
+            client_secret,
+        } => {
+            // The secret first, so a missing one never leaves the server
+            // half-added.
+            let secret = if *client_secret {
+                match read_client_secret() {
+                    Ok(secret) => Some(secret),
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return 1;
+                    }
+                }
+            } else {
+                None
+            };
             with_user_file(
                 |path, contents| match mcp::record_server(&contents, name, config) {
                     Ok(updated) => {
@@ -41,6 +58,22 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
                             config.target()
                         );
                         println!("File: {}", path.display());
+                        if let Some(secret) = &secret {
+                            let store = config::mcp_auth_path();
+                            alter_zero::llm::mcp::save_client_secret(
+                                store.as_deref(),
+                                &resolved_url(config),
+                                Some(secret),
+                            )
+                            .map_err(|e| {
+                                format!(
+                                    "Added the server, but couldn't keep its client secret: {e}"
+                                )
+                            })?;
+                            if let Some(store) = store {
+                                println!("Client secret: kept in {}", store.display());
+                            }
+                        }
                         Ok(())
                     }
                     Err(err) => Err(write_error(&err, name, path)),
@@ -133,14 +166,11 @@ fn read_user_file(path: &PathBuf) -> Result<String, String> {
     }
 }
 
-/// Write the updated document, creating the config dir on first use.
+/// Write the updated document — atomically, keeping the file's permissions
+/// (owner-only for a new one) and any symlink to it, creating the config
+/// dir on first use (`docs/mcp-cli.md`).
 fn write_user_file(path: &Path, contents: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
-    {
-        return Err(format!("Failed to create {}: {err}", parent.display()));
-    }
-    std::fs::write(path, contents)
+    alter_zero::llm::mcp::write_config_file(path, contents)
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))
 }
 
@@ -190,16 +220,96 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
                 println!("  Env: {}", masked(env, "="));
             }
         }
-        McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers } => {
+        McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers, .. } => {
             println!("  URL: {url}");
             if !headers.is_empty() {
                 println!("  Headers: {}", masked(headers, ": "));
             }
         }
     }
+    if let Some(oauth) = config.oauth() {
+        if let Some(id) = &oauth.client_id {
+            println!("  OAuth client: {id}");
+        }
+        if let Some(port) = oauth.callback_port {
+            println!("  Callback port: {port}");
+        }
+        if let Some(scopes) = &oauth.scopes {
+            println!("  Scopes: {scopes}");
+        }
+        // Where the secret is — never the secret.
+        let kept = alter_zero::llm::mcp::load_client_secret(
+            config::mcp_auth_path().as_deref(),
+            &resolved_url(config),
+        )
+        .is_some();
+        match (&oauth.client_secret, kept) {
+            (Some(_), _) => println!("  Client secret: ***** (in the file)"),
+            (None, true) => println!("  Client secret: kept with the tokens"),
+            (None, false) => {}
+        }
+    }
     println!("  File: {}", path.display());
     println!();
     println!("Remove with: {} mcp remove {name}", bin_name());
+}
+
+/// A remote entry's URL as a session reaches it — its `${VAR}`s expanded
+/// from this environment, the address its tokens and client secret are
+/// kept under (`docs/mcp.md`) — else as written.
+fn resolved_url(config: &McpServerConfig) -> String {
+    let expanded = mcp::expand_config(config, &|name| std::env::var(name).ok());
+    expanded
+        .ok()
+        .as_ref()
+        .and_then(|config| config.url().map(str::to_string))
+        .or_else(|| config.url().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The client secret `--client-secret` asks for: `MCP_CLIENT_SECRET` when
+/// set, else a prompt with echo off when stdin is a terminal, else one line
+/// of stdin — never a command-line value, which would land in the shell
+/// history and the process list (`docs/mcp-cli.md`).
+fn read_client_secret() -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if let Ok(secret) = std::env::var("MCP_CLIENT_SECRET")
+        && !secret.trim().is_empty()
+    {
+        return Ok(secret.trim().to_string());
+    }
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.is_terminal() {
+        eprint!("Client secret: ");
+        let _ = std::io::stderr().flush();
+        let original = rustix::termios::tcgetattr(&stdin).ok();
+        if let Some(original) = &original {
+            let mut quiet = original.clone();
+            quiet.local_modes.remove(rustix::termios::LocalModes::ECHO);
+            let _ =
+                rustix::termios::tcsetattr(&stdin, rustix::termios::OptionalActions::Now, &quiet);
+        }
+        let read = stdin.lock().read_line(&mut line);
+        if let Some(original) = &original {
+            let _ =
+                rustix::termios::tcsetattr(&stdin, rustix::termios::OptionalActions::Now, original);
+        }
+        eprintln!();
+        read.map_err(|e| format!("couldn't read the client secret: {e}"))?;
+    } else {
+        stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| format!("couldn't read the client secret: {e}"))?;
+    }
+    let secret = line.trim().to_string();
+    if secret.is_empty() {
+        return Err(
+            "no client secret was given (set MCP_CLIENT_SECRET, or type it when asked)".to_string(),
+        );
+    }
+    Ok(secret)
 }
 
 /// `KEY=*****, Other=*****` — names visible, values masked.

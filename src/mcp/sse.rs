@@ -24,6 +24,9 @@ pub struct SseParser {
     data: Vec<String>,
     /// Carry for a chunk that ended mid-line ([`push_chunk`](Self::push_chunk)).
     partial: String,
+    /// Has a line been seen — the stream's first may open on a byte-order
+    /// mark, which the SSE spec strips.
+    started: bool,
 }
 
 impl SseParser {
@@ -35,8 +38,15 @@ impl SseParser {
     /// Feed one **line** (no trailing newline). Returns the completed event
     /// when this line was the blank separator ending one.
     pub fn push_line(&mut self, line: &str) -> Option<SseEvent> {
-        // A CR left by a CRLF split is not content.
+        // A CR left by a CRLF split is not content, and neither is a
+        // byte-order mark opening the stream.
         let line = line.strip_suffix('\r').unwrap_or(line);
+        let line = if self.started {
+            line
+        } else {
+            self.started = true;
+            line.strip_prefix('\u{feff}').unwrap_or(line)
+        };
         if line.is_empty() {
             return self.take_event();
         }
@@ -94,6 +104,26 @@ impl SseParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream may open on a UTF-8 byte-order mark, which the SSE spec
+    /// strips — kept, it made the first field `\u{feff}event` and the
+    /// legacy transport's `endpoint` event never arrived.
+    #[test]
+    fn a_leading_byte_order_mark_is_not_part_of_the_first_field() {
+        let mut parser = SseParser::new();
+        assert_eq!(parser.push_line("\u{feff}event: endpoint"), None);
+        assert_eq!(parser.push_line("data: /messages"), None);
+        assert_eq!(
+            parser.push_line(""),
+            Some(SseEvent {
+                event: "endpoint".to_string(),
+                data: "/messages".to_string(),
+            })
+        );
+        // Only the stream's first line: a mark later on is content.
+        assert_eq!(parser.push_line("data: \u{feff}x"), None);
+        assert_eq!(parser.push_line("").unwrap().data, "\u{feff}x");
+    }
 
     #[test]
     fn a_data_line_and_a_blank_complete_an_event() {

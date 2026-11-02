@@ -255,18 +255,28 @@ page and only the row knows which flow to run behind it.
 
 OpenAI's default is a browser PKCE loopback:
 
-1. Bind `127.0.0.1:1455`, falling back to `1457`. **Neither port is a free
+1. Bind port `1455`, falling back to `1457`. **Neither port is a free
    choice**: OpenAI's redirect allow-list is pinned to those two against this
    client id, so a port of our own is refused at the authorize step. Both
    already bound is a real failure, not a retry.
 2. Build the authorize URL (`chatgpt::authorize_url`) and show it.
-3. Block until the browser comes back on the loopback, checking `state`.
+3. Block until the browser comes back on the loopback with this sign-in's
+   `state`.
 4. Redeem the code for the token set; keep the refresh token.
 
-The redirect URI names **`localhost`**, while the listener binds the literal
-`127.0.0.1`. That asymmetry is deliberate: the allow-listed string is the
-hostname one, but binding `"localhost"` can resolve to `::1` and miss the
-browser's connection entirely.
+The redirect URI names **`localhost`**, the allow-listed string, and the
+callback is the one every browser sign-in shares, `llm::loopback`
+(`docs/mcp.md` describes it in full): it listens on `127.0.0.1` **and**
+`[::1]` on the same port, since the browser may resolve `localhost` to
+either (binding the name itself could take `::1` alone and miss a browser
+that went to `127.0.0.1`); each connection is served on a thread of its own
+with a read timeout, so a browser preconnect that never sends a byte no
+longer freezes the wait and Esc with it; a request without this sign-in's
+`state` — none at all, or a stale tab's — is answered and turned away
+while the wait goes on, where the old loop redeemed a stateless code and
+failed the whole sign-in on a stale tab; and OpenAI's own refusal (the
+user declining) ends the sign-in at once with its reason instead of the
+ten-minute wait.
 
 Scopes are `openid profile email offline_access` — the minimum this client
 uses. `offline_access` is the one that earns a refresh token. Codex
@@ -568,7 +578,7 @@ it already does for Copilot:
 | `Your ChatGPT sign-in has expired. Run /login and sign in again.` | the refresh token expired, was reused, or was revoked — all terminal |
 | `OpenAI refused this request. A ChatGPT plan that includes Codex is needed.` | a 403: the seat, not the request |
 | `ports 1455 and 1457 are both in use` | another sign-in is holding them; no third port is allow-listed — or use the device code, which binds none |
-| `the callback's state doesn't match` | a stale browser tab answered; start again |
+| `the authorization server refused the sign-in: access_denied (…)` | the user declined on OpenAI's page, or OpenAI refused the request; its own words follow |
 | `OpenAI's device code sign-in is not available right now — press Esc and choose Browser login instead.` | the code request answered `404`: device code login is not enabled for this server (Codex's own reading) |
 | `The code expired — press Esc and sign in again.` | fifteen minutes of polling without an approval |
 

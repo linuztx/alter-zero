@@ -32,6 +32,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             url: format!("https://{name}.test/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         },
         status,
         auth,
@@ -41,7 +42,9 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             version: "1.0".to_string(),
             capabilities: vec!["tools".to_string()],
             instructions: None,
+            tools_list_changed: false,
         }),
+        excluded: Vec::new(),
         tools: vec![McpToolInfo {
             name: "ask_question".to_string(),
             description: "Ask any question about a GitHub repository.".to_string(),
@@ -203,6 +206,49 @@ fn the_tools_and_tool_detail_pages_render() {
     assert!(all.contains("● repoName (required): unknown - owner/repo"));
     assert!(all.contains("● question (required): string - The question."));
     assert!(all.contains("Esc to go back"));
+}
+
+/// The `Full name:` row is the name the model actually calls, so a tool
+/// whose plain name clashes with a sibling's shows the name it is really
+/// offered under — the same one `mcp::wire_names` hands the manager.
+#[test]
+fn the_full_name_is_the_one_the_model_is_offered() {
+    let mut server = snapshot("srv", McpScope::User, McpServerStatus::Connected);
+    server.tools = ["files.read", "files_read"]
+        .into_iter()
+        .map(|name| McpToolInfo {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+        })
+        .collect();
+    let offered = crate::mcp::wire_names("srv", &["files.read", "files_read"]);
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter)); // its detail
+    app.on_key(key(KeyCode::Enter)); // View tools
+    app.on_key(key(KeyCode::Down)); // files_read
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains(&offered[1].0), "{all}");
+    assert!(!all.contains("mcp__srv__files_read\n"), "{all}");
+}
+
+/// A tool set aside at connect is named on the server page with the
+/// reason, so "why can't the model see `bad`?" has an answer on screen.
+#[test]
+fn the_server_page_names_the_tools_not_offered() {
+    let mut server = snapshot("srv", McpScope::User, McpServerStatus::Connected);
+    server.excluded = vec![crate::mcp::ExcludedTool {
+        name: "bad".to_string(),
+        reason: "its input schema has type \"string\", not \"object\"".to_string(),
+    }];
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Not offered to the model:"), "{all}");
+    assert!(all.contains("bad — its input schema has type"), "{all}");
 }
 
 /// Walk `app` to the `ask_question` detail page (list → deepwiki → tools →
@@ -737,4 +783,32 @@ fn the_empty_list_paths_wrap_instead_of_clipping() {
         all.contains("mcp.json"),
         "the add-one-at paths keep their filenames: {rows:#?}"
     );
+}
+
+/// A rejected paste's reason sits under the field; the page still hugs its
+/// rules.
+#[test]
+fn a_rejected_paste_shows_its_reason_under_the_field() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app.reject_mcp_auth_paste("linear", "the response belongs to another sign-in attempt");
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        let field = text
+            .iter()
+            .position(|line| line.contains("URL >"))
+            .expect("the URL field");
+        let below = text[field + 1..]
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            below.contains("the response belongs to another sign-in attempt"),
+            "{text:?}"
+        );
+        assert_frame_hugs_content(&format!("a rejected paste at width {width}"), &lines);
+    }
 }

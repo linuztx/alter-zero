@@ -267,6 +267,10 @@ pub struct ServerParts {
     /// fingerprint of its value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, String>,
+    /// The fingerprint of a remote entry's pre-registered OAuth client
+    /// block, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<String>,
 }
 
 impl ServerParts {
@@ -279,13 +283,20 @@ impl ServerParts {
                 let line = serde_json::to_string(&(command, args)).unwrap_or_default();
                 (fingerprint(line.as_bytes()), env)
             }
-            McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers } => {
-                (fingerprint(url.as_bytes()), headers)
-            }
+            McpServerConfig::Http { url, headers, .. }
+            | McpServerConfig::Sse { url, headers, .. } => (fingerprint(url.as_bytes()), headers),
         };
+        let oauth = config.oauth().map(|_| {
+            fingerprint(
+                crate::mcp::render_server(config)["oauth"]
+                    .to_string()
+                    .as_bytes(),
+            )
+        });
         Self {
             transport: config.transport_label().to_string(),
             target,
+            oauth,
             values: values
                 .iter()
                 .map(|(name, value)| {
@@ -343,6 +354,9 @@ impl ServerParts {
                 });
             }
         }
+        if self.oauth != now.oauth {
+            out.push(ServerChange::OAuthClient);
+        }
         out
     }
 }
@@ -363,6 +377,9 @@ pub enum ServerChange {
     Removed { kind: &'static str, name: String },
     /// One that is there still, with another value.
     Value { kind: &'static str, name: String },
+    /// A remote server's pre-registered OAuth client, added, removed or
+    /// changed.
+    OAuthClient,
 }
 
 impl ServerChange {
@@ -376,6 +393,7 @@ impl ServerChange {
             Self::Added { kind, name } => format!("{kind} {name} added"),
             Self::Removed { kind, name } => format!("{kind} {name} removed"),
             Self::Value { kind, name } => format!("{kind} {name}'s value"),
+            Self::OAuthClient => "the OAuth client".to_string(),
         }
     }
 }
@@ -703,6 +721,26 @@ pub fn review_servers(store: &TrustFile, files: &[(&str, &McpFile)]) -> Vec<Serv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remote entry's pre-registered OAuth client is part of what was
+    /// decided on: another client is a change the review names.
+    #[test]
+    fn another_oauth_client_is_a_change_the_review_names() {
+        let entry = |client: &str| {
+            crate::mcp::parse_server_entry(&format!(
+                r#"{{"url":"https://x.test/mcp","oauth":{{"clientId":"{client}"}}}}"#
+            ))
+            .unwrap()
+        };
+        let was = ServerParts::of(&entry("one"));
+        let now = ServerParts::of(&entry("two"));
+        assert_eq!(was.changes(&now), [ServerChange::OAuthClient]);
+        assert_eq!(ServerChange::OAuthClient.describe(), "the OAuth client");
+        // An entry without one keeps the parts it always had.
+        let plain = crate::mcp::parse_server_entry(r#"{"url":"https://x.test/mcp"}"#).unwrap();
+        let json = serde_json::to_string(&ServerParts::of(&plain)).unwrap();
+        assert!(!json.contains("oauth"), "{json}");
+    }
 
     const USER: &str = "/home/u/.alter-zero/hooks.json";
     const PROJECT: &str = "/repo/.alter-zero/hooks.json";

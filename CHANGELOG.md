@@ -14,6 +14,35 @@ release heading when a version is cut.
 
 ### Added
 
+- **Sign in to MCP servers that need an OAuth client of your own.** Some
+  servers, Google's among them, only accept a login client you create in
+  the provider's console, and signing in to them ended in an error. A
+  server's entry in `mcp.json` can now name that client in an `oauth` block
+  (`clientId`, and `callbackPort` and `scopes` if its setup asks for them),
+  or `alter-zero mcp add <name> --url <url> --client-id <id>
+  --client-secret` sets it up: the secret is asked for, or read from
+  `MCP_CLIENT_SECRET`, and kept with your MCP logins rather than in the
+  file. `/mcp` shows such a server as needing authentication straight
+  away, Google logins renew themselves instead of lapsing within the hour,
+  and `alter-zero mcp get` shows the client but never its secret. This is
+  experimental: signing in to Google's servers this way has not been tried
+  end to end yet (`docs/mcp.md`, `docs/mcp-cli.md`).
+- **An MCP server's new tools are offered as soon as it has them.** A
+  server whose tools change while it runs, one you are developing or one
+  that turns tool sets on and off, says so, and the client used to keep the
+  list it read at connect until you reconnected the server in `/mcp`. It
+  now reads the list again when the server announces a change, and the
+  agent can use the new tools from its next request. Servers on the newest
+  MCP version are asked for these announcements, as the version requires
+  (`docs/mcp.md`).
+- **MCP servers' instructions reach the agent.** A server can say how its
+  tools are meant to be used: which to call first, what an argument means,
+  what to avoid. That text used to be shown on the server's page in `/mcp`
+  and nowhere else. It is now sent to the agent with each turn, for every
+  connected server whose tools it can use, and a subagent gets the
+  instructions of the servers it may call. Each server's text is capped,
+  can't pose as another server's, and appears in `/context` as **MCP
+  instructions** (`docs/mcp.md`).
 - **Hooks and a project's MCP servers are reviewed before they run.** A
   hook runs a shell command on its own whenever its event fires, and a
   project's `.mcp.json` or `.alter-zero/mcp.json` starts a program or
@@ -131,6 +160,198 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Google's MCP servers no longer look connected while every call fails.**
+  Google Drive, Calendar and Gmail list their tools to anyone and refuse
+  every call without a sign-in, so `/mcp` read "✔ connected" and
+  "✔ authenticated" and the agent was offered tools that could only fail.
+  A server like that now reads "△ needs authentication" and
+  "✘ not authenticated", and its tools aren't offered until you sign in.
+  Servers of this kind aren't supported yet: their sign-in needs an OAuth
+  client you create with the provider, which is experimental. Servers that
+  work without signing in, like Hugging Face, Context7 and Exa, stay
+  connected (`docs/mcp.md`).
+- **An MCP server with long or look-alike tool names no longer breaks every
+  request.** Each MCP tool reaches the model as `mcp__{server}__{tool}`, and
+  providers refuse the whole request over one bad tool name: a name over 64
+  characters (`mcp__atlassian-confluence-cloud__` is already 33), or two tools
+  that come out the same once the characters a name can't carry are
+  replaced (`files.read` and `files_read`), made every turn fail while that
+  server was connected. A long name is now cut to fit and ends on a short
+  hash, and look-alike or non-ASCII names each get one of their own, the
+  same whichever order the server lists them in. `/mcp` shows the name the
+  model calls. Two servers whose names come out the same can't be told
+  apart that way, so the second one doesn't connect and `/mcp` says why
+  (`docs/mcp.md`).
+- **One MCP tool with an unusual input schema no longer fails every
+  turn.** A tool's schema rides every request, and a schema with no
+  `"type": "object"` at the top, no `properties`, or a `oneOf`/`anyOf` at
+  its root was refused by the provider along with the whole request. The
+  model is now offered a repaired copy: an object at the top with its
+  properties, alternatives folded into one object with a note in the
+  description saying so, and a dialect tag no model API reads dropped. A
+  tool no repair can save, one whose input is declared as a string, say, or
+  has a parameter name the APIs refuse, is left out instead, and the
+  server's page in `/mcp` lists it under *Not offered to the model* with
+  the reason (`docs/mcp.md`).
+- **An MCP tool's images, audio and files no longer fill its result with
+  base64.** Only the first image was turned into a picture the model can
+  see; a second image, a sound clip or an attached file reached the model
+  as raw base64 text, using up the output allowance on noise. Each is now
+  one line saying what it was and how big, a resource link says where it
+  points, and an attached text file is its text. The client also follows
+  the newest MCP rules (2026-07-28) on results it used to misread: a result
+  of an unknown kind is reported as an error instead of an empty success,
+  a server that answers "ask me again" is asked again, a tool listing
+  whose next page is named by an empty string is read to the end, and a
+  listing that loops back on itself stops instead of repeating tools.
+  Servers that send `"error": null`, echo request numbers as text, or
+  report an error without a request number are understood instead of
+  timing out (`docs/mcp.md`).
+- **A remote MCP server that routes on tool arguments can be called.** The
+  2026-07-28 MCP revision lets a server mark tool parameters, a region or
+  a tenant say, that must also be sent as request headers so a gateway can
+  route the call without reading it, and every call to such a tool used to
+  be refused with a header mismatch. Those values now ride along as
+  `Mcp-Param-…` headers. A tool whose marking breaks the rules is left out
+  and listed in `/mcp` with the reason, and a call the server still
+  refuses makes the client fetch the tool list again and retry once
+  (`docs/mcp.md`).
+- **A remote MCP tool gets the whole time its call allows.** Over HTTP,
+  every MCP request was cut off after 60 seconds whatever the tool timeout
+  said, so a tool taking a minute or two failed with a vague "request
+  failed" while the same tool worked locally; raising
+  `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` changed nothing. Connecting to a server
+  is also held to its startup timeout as a whole, where each step used to
+  get the full allowance and a slow server with many pages of tools could
+  take minutes.
+- **Remote MCP servers are talked to more carefully.** An older server that
+  checks on the client mid-call with a `ping` gets its answer instead of
+  waiting out the call. A newer one whose reply stream breaks has the
+  request sent again once, as the 2026-07-28 revision requires. A refusal
+  such as `403 Forbidden` is reported as itself instead of being retried
+  as an old-style server and blamed on that ("HTTP 405 opening the event
+  stream"), and when both kinds of connection fail the message keeps both
+  answers. A `403` asking for more permission shows the server as needing
+  authentication. A reply to a notification no longer needs to be empty.
+- **An MCP server can't redirect your credentials elsewhere.** A remote
+  server's headers and token ride every request. The client now follows a
+  redirect only while it stays on the server's own address, and an
+  old-style SSE server that names a message endpoint on another address,
+  or switches from `https` to `http`, is refused. Each message from a
+  server is capped at 16 MB (`docs/mcp.md`).
+- **A local MCP server can no longer take over the terminal.** A server
+  started from your config shared the app's terminal, so one that ran
+  `sudo`, asked for an SSH passphrase or a git credential would print its
+  prompt over the screen and read the keys you typed. Servers now run in a
+  session of their own, the way shell commands and hooks already did, and
+  such a prompt fails at once instead (`docs/tty-detach.md`).
+- **Local MCP servers are stopped gently and completely.** Pressing Esc on
+  a call, or a call timing out, now tells the server to stop working on it.
+  A server that stops reading its input can no longer freeze a call, a log
+  line that isn't valid UTF-8 no longer ends the connection, and an older
+  server that sends a `ping` gets its answer. When a server is stopped it
+  first gets the chance to exit on its own, as the MCP spec asks, then a
+  polite signal, and only then a forced one, and whatever it started goes
+  with it: an `npx` server's real process used to be left running. A
+  failed connection's message now includes what the server printed, and a
+  server that offers only resources or prompts connects with no tools
+  instead of failing (`docs/mcp.md`).
+- **An MCP server that crashes comes back by itself.** A local server that
+  died stayed listed as connected and every later call failed until you
+  reconnected it in `/mcp`. It is now restarted the moment a call finds it
+  gone, and the agent is told to try again; one that dies again within 30
+  seconds is left for you to look at.
+- **Esc stops an MCP call that is waiting its turn.** Two calls to one
+  server take turns, and the second one used to ignore Esc while it waited
+  and then run anyway, even a call that changes something.
+- **`/mcp` no longer disables a server on a double Enter.** Pressing Enter
+  twice on **Reconnect** or **Enable** turned the server off, because the
+  second press landed on **Disable** once the server started connecting.
+  **Clear authentication** now also stops the connection using the cleared
+  login, and changing a tool's description or inputs in a server you are
+  developing reaches the agent after a reconnect.
+- **Signing in to an MCP server checks what it is told, and finds more
+  login servers.** Login servers whose address has a path, like Keycloak
+  realms and Microsoft Entra tenants, publish their details where the
+  client never looked, so signing in failed with "could not discover the
+  authorization server". The client now looks where the MCP spec says,
+  never at a neighbouring login server's details, and uses a document only
+  when it is for the server you are signing in to and names the login
+  server it was fetched from. Login servers must use HTTPS (except on your
+  own machine) and support the secure PKCE method. A server asking for more
+  permission is asked for it alongside what it already had, and the
+  permission it named is read correctly: a parsing slip used to lose it
+  (`docs/mcp.md`).
+- **An MCP tool's description keeps its usage notes.** Descriptions were
+  cut at 2,048 characters, which lost the end of the longer ones servers
+  write to explain their tools; the limit is now 4,096, Claude Code's.
+- **Turning an MCP server off in `/mcp` no longer can wipe `mcp.json`.**
+  With one typo in the file, the toggle replaced the whole file, every
+  server in it included, with a few lines of its own; it now leaves such a
+  file alone, keeps the server off for the session and says why. A toggle
+  also no longer undoes one made in another session in the same project.
+  Every write of the file, from `/mcp` and from `alter-zero mcp add` and
+  `remove`, now replaces it in one step, so a full disk or a crash can't
+  leave it empty, keeps its permissions (a new file is readable by you
+  alone, since it can hold tokens) and writes through a symlink instead of
+  replacing it.
+- **`${VAR}` in an MCP config is filled in from your environment.** A
+  project's `.mcp.json` that says `"Authorization": "Bearer ${GITHUB_TOKEN}"`
+  used to send exactly that text. `${NAME}` and `${NAME:-default}` are now
+  filled in wherever a server's command, arguments, environment, URL or
+  headers use them, as in Claude Code. A server naming a variable that
+  isn't set and has no default doesn't start, and `/mcp` names the
+  variable; `/mcp` and `alter-zero mcp get` still show the reference, never
+  the value. A project's file can't have the API keys of the providers you
+  use sent to a remote server this way; a server asking for them doesn't
+  start. An empty config file is no longer an error at every start,
+  `"type": "streamable-http"` is understood, and a stdio entry missing its
+  command says so (`docs/mcp.md`).
+- **An MCP login is no longer lost to a renewal race.** A login server may
+  hand out a one-time renewal token and revoke the whole login when it sees
+  one used twice. Two sessions in different terminals renewing the same
+  server's login at once could both send it, and both then needed the
+  browser again; the second session now waits for the first and uses what
+  it got. A renewal also no longer deletes a login it didn't reject: one
+  you cleared while it was in flight stays cleared, and one you signed in
+  to again meanwhile is kept. An answer that says nothing about the login
+  itself, such as `invalid_request`, no longer deletes it either, and a
+  token that lasts only a few minutes is renewed halfway through its life
+  instead of on every call. The token file is private from the moment it
+  is created, a sign-in whose tokens couldn't be saved says so instead of
+  appearing to work, and **Clear authentication** says when it couldn't
+  clear (`docs/mcp.md`).
+- **Signing in to ChatGPT or the Anthropic Console no longer hangs or takes
+  a stray answer.** The two browser sign-ins in `/login` had the problems
+  the MCP sign-in had: a browser that opened a spare connection without
+  using it could hold the sign-in up, Esc included; a code that came back
+  without the sign-in's check value was used anyway; an old browser tab
+  answering ended the sign-in with an error; and declining on the login
+  page left it waiting ten minutes. They now share the MCP sign-in's
+  callback: an answer that isn't this sign-in's is turned away while the
+  sign-in keeps waiting, declining ends it at once with the reason, and it
+  also answers when your system sends `localhost` to the IPv6 address
+  (`docs/chatgpt.md`, `docs/claude.md`).
+- **Signing in to an MCP server no longer hangs or takes a stray answer.**
+  Declining on the login page used to leave the sign-in waiting five
+  minutes for an answer that would never come; it now ends at once with
+  the login server's reason. A browser that opened a spare connection
+  without using it could hold the sign-in up, and on macOS a sign-in could
+  miss the browser's answer; the sign-in also answers when your system
+  sends `localhost` to the IPv6 address. An answer that doesn't carry this
+  sign-in's own check value, from an earlier attempt or anywhere else, is
+  turned away and the sign-in keeps waiting for the right one, and a
+  wrong pasted URL no longer ends the sign-in: the page says why and takes
+  another. Pressing **Authenticate** again no longer leaves the new
+  sign-in deaf to its pasted URL and **Esc**, or closes it with a
+  "cancelled" error from the first, and **Esc** no longer shows an error
+  of its own. A login server
+  that hands out a client secret is answered the way it asked, a refused
+  registration says why, and a sign-in reuses its client on the same port
+  or registers again rather than being refused by a login server that
+  checks the port. The client registered with one login server is never
+  sent to another, and pressing **Esc** while the sign-in starts no longer
+  opens the browser anyway (`docs/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now

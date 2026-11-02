@@ -1314,11 +1314,23 @@ impl SubagentConfig {
         let allowed = self
             .definition(agent_type)
             .map_or(crate::subagents::AgentTools::All, |def| def.tools);
+        // The instructions of the servers whose tools this type may call —
+        // the lead's own reminder never reaches a subagent's fresh context.
+        let mcp_instructions = self
+            .mcp
+            .as_ref()
+            .map(|manager| {
+                crate::mcp::instructions_section(
+                    &manager.instructions(&|wire| allowed.allows(wire)),
+                )
+            })
+            .unwrap_or_default();
         subagent_briefing(
             self.skills
                 .as_ref()
                 .filter(|_| allowed.allows(crate::skills::SKILL_TOOL_NAME)),
             self.secrets.as_ref().filter(|_| allowed.reaches_secrets()),
+            &mcp_instructions,
         )
     }
 
@@ -1392,6 +1404,7 @@ fn subagent_tool_specs(
 fn subagent_briefing(
     skills: Option<&crate::skills::SkillRegistry>,
     secrets: Option<&crate::secrets::SecretRegistry>,
+    mcp_instructions: &str,
 ) -> Option<String> {
     let skills = skills
         .map(|skills| skills.listing(crate::skills::listing_budget(None)))
@@ -1402,6 +1415,7 @@ fn subagent_briefing(
     let rendered = crate::reminder::reminder_message(&[
         &crate::skills::skill_section(&skills),
         &crate::secrets::secret_section(&secrets),
+        mcp_instructions,
     ]);
     (!rendered.is_empty()).then_some(rendered)
 }
@@ -2770,16 +2784,38 @@ mod tests {
             dir: std::path::PathBuf::from("/s/commit"),
             path: std::path::PathBuf::from("/s/commit/SKILL.md"),
         }]);
-        let reminder = subagent_briefing(Some(&registry), None).expect("a reminder");
+        let reminder = subagent_briefing(Some(&registry), None, "").expect("a reminder");
         assert!(reminder.contains("<system-reminder>"), "{reminder}");
         assert!(
             reminder.contains("commit: Write a commit message"),
             "{reminder}"
         );
         // No registry (or nothing enabled) means no tool, so no reminder.
-        assert!(subagent_briefing(None, None).is_none());
+        assert!(subagent_briefing(None, None, "").is_none());
         registry.set_disabled(["commit".to_string()].into_iter().collect());
-        assert!(subagent_briefing(Some(&registry), None).is_none());
+        assert!(subagent_briefing(Some(&registry), None, "").is_none());
+    }
+
+    /// A subagent allowed an MCP server's tools is told how that server
+    /// wants them used — the lead's reminder never reaches its fresh context
+    /// — and the instructions close its briefing, as they close the lead's.
+    #[test]
+    fn a_subagent_with_mcp_tools_gets_their_servers_instructions() {
+        let section = crate::mcp::instructions_section(&[(
+            "deepwiki".to_string(),
+            "Ask about one repo at a time.".to_string(),
+        )]);
+        let reminder = subagent_briefing(None, None, &section).expect("a reminder");
+        assert!(
+            reminder.contains("## deepwiki\nAsk about one repo at a time."),
+            "{reminder}"
+        );
+        assert!(
+            reminder
+                .trim_end()
+                .ends_with(&format!("{section}\n</system-reminder>"))
+        );
+        assert!(subagent_briefing(None, None, "").is_none());
     }
 
     #[test]

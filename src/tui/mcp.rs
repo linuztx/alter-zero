@@ -109,6 +109,14 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
     // The era cache is retired — a connect re-derives the verdict every
     // time now, so the file only ever misleads (`docs/mcp.md`).
     config::remove_retired_mcp_era_cache();
+    // Every provider's key variable — what a project's remote server may not
+    // have expanded into its URL or headers.
+    let (providers, _) = config::startup_providers(home.as_deref());
+    let protected_env = providers
+        .providers
+        .keys()
+        .map(|id| config::key_env_name(&providers, id))
+        .collect();
     McpSources {
         entries,
         errors,
@@ -118,8 +126,13 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
         cwd: Some(cwd.to_path_buf()),
+        // This binary, for the tier that detaches a stdio server where no
+        // `setsid` binary exists (`docs/tty-detach.md`) — the shells' helper.
+        detach_helper: std::env::current_exe().ok(),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
+        open_browser: None,
+        protected_env,
     }
 }
 
@@ -148,23 +161,32 @@ impl Session<'_> {
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
+                let state = if disabled { "disabled" } else { "enabled" };
                 // A project server's on/off is the review's decision, kept in
                 // trust.json (`docs/config-review.md`); a user server's is the
                 // user file's per-directory set.
-                if !self.set_project_server(&server, !disabled) {
-                    manager.set_disabled(&server, disabled);
+                if !self.set_project_server(&server, !disabled)
+                    && let Err(error) = manager.set_disabled(&server, disabled)
+                {
+                    self.toast(
+                        format!("{server} {state} for this session only — {error}"),
+                        ToastKind::Error,
+                    );
+                    return;
                 }
-                let state = if disabled { "disabled" } else { "enabled" };
                 self.toast(format!("{server} {state}"), ToastKind::Info);
             }
             McpOp::Authenticate { server } => manager.authenticate(&server),
-            McpOp::ClearAuth { server } => {
-                manager.clear_auth(&server);
-                self.toast(
+            McpOp::ClearAuth { server } => match manager.clear_auth(&server) {
+                Ok(()) => self.toast(
                     format!("Cleared authentication for {server}"),
                     ToastKind::Info,
-                );
-            }
+                ),
+                Err(error) => self.toast(
+                    format!("Couldn't clear authentication for {server}: {error}"),
+                    ToastKind::Error,
+                ),
+            },
             McpOp::CancelAuth => manager.cancel_auth(),
             McpOp::CopyAuthUrl { url } => {
                 // The `/copy` seam: arboard with the OSC 52 fallback
@@ -192,8 +214,11 @@ impl Session<'_> {
             McpEvent::AuthUrl { server, url } => {
                 self.app.set_mcp_auth_url(&server, &url);
             }
+            McpEvent::AuthPasteRejected { server, reason } => {
+                self.app.reject_mcp_auth_paste(&server, &reason);
+            }
             McpEvent::AuthDone { server, ok, detail } => {
-                self.app.finish_mcp_auth();
+                self.app.finish_mcp_auth(&server);
                 let kind = if ok {
                     ToastKind::Info
                 } else {
@@ -212,8 +237,10 @@ impl Session<'_> {
         }
         // The offered tool set may have flipped (a server connected, failed,
         // was disabled) — re-attach the backend only when it really did (the
-        // `refresh_skills` pattern).
+        // `refresh_skills` pattern) — and with it the servers' instructions
+        // the reminder carries.
         self.models.refresh_mcp();
+        self.sync_listings();
         self.frame.schedule_frame();
     }
 

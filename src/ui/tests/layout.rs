@@ -974,6 +974,7 @@ fn tall_mcp_server_app() -> App {
         status: crate::mcp::McpServerStatus::Connected,
         auth: None,
         identity: None,
+        excluded: Vec::new(),
         tools: Vec::new(),
     }]);
     app.mcp_menu.as_mut().unwrap().page = crate::app::McpPage::Server;

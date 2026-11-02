@@ -20,15 +20,15 @@
 //! calls and the loopback listener are boundary code.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use super::mcp::{form_encode, parse_redirect, pkce_and_state};
+use super::loopback::{self, CallbackServer, Expected, Pages};
+use super::mcp::{form_encode, pkce_and_state};
 use super::{LlmError, Result};
 use crate::stream::CancelToken;
 
@@ -291,13 +291,15 @@ pub fn plan_label(raw: &str) -> String {
 // The flow's URLs and bodies (pure)
 // ---------------------------------------------------------------------------
 
+/// The path OpenAI redirects back to.
+const CALLBACK_PATH: &str = "/auth/callback";
+
 /// The redirect URI for a bound port. **`localhost`, not `127.0.0.1`**: the
-/// allow-listed string is the hostname one, even though the listener binds
-/// the literal address (binding `localhost` can resolve to `::1` and miss the
-/// browser's connection).
+/// allow-listed string is the hostname one, so the callback listens on both
+/// loopback addresses the browser may resolve it to (`llm::loopback`).
 #[must_use]
 pub fn redirect_uri(port: u16) -> String {
-    format!("http://localhost:{port}/auth/callback")
+    format!("http://localhost:{port}{CALLBACK_PATH}")
 }
 
 /// The authorize URL to send the user to.
@@ -825,24 +827,23 @@ fn token_failure(status: u16, body: &str) -> LlmError {
     }
 }
 
-/// Bind the loopback listener on the one port OpenAI allow-lists, falling
-/// back to the second. Returns the listener and the port it actually took —
-/// a port of our own choosing would be refused at the authorize step, so a
-/// second sign-in already holding both is a real failure, not a retry.
-fn bind_listener() -> Result<(TcpListener, u16)> {
-    for port in [DEFAULT_PORT, FALLBACK_PORT] {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            return Ok((listener, port));
-        }
-    }
-    Err(LlmError::Http(format!(
-        "ports {DEFAULT_PORT} and {FALLBACK_PORT} are both in use — close the other sign-in and try again"
-    )))
+/// Bind the loopback callback on the one port OpenAI allow-lists, falling
+/// back to the second — a port of our own choosing would be refused at the
+/// authorize step, so a second sign-in already holding both is a real
+/// failure, not a retry.
+fn bind_listener() -> Result<CallbackServer> {
+    CallbackServer::bind(&[DEFAULT_PORT, FALLBACK_PORT], CALLBACK_PATH).map_err(|_| {
+        LlmError::Http(format!(
+            "ports {DEFAULT_PORT} and {FALLBACK_PORT} are both in use — close the other sign-in and try again"
+        ))
+    })
 }
 
-/// What the browser is shown once the code is in hand. Plain and self-closing
-/// — the terminal is where the flow continues.
-const SUCCESS_PAGE: &str = "<html><body style=\"font-family:system-ui;padding:3rem\"><h3>Signed in to ChatGPT.</h3><p>You can close this tab and return to the terminal.</p></body></html>";
+/// What the browser is told at the end of the sign-in.
+const PAGES: Pages = Pages {
+    received: "Signed in to ChatGPT",
+    restart: "/login",
+};
 
 /// How long one nap between cancel checks lasts, matching the device flow's
 /// cadence so Esc is honoured about as fast here as there.
@@ -852,8 +853,8 @@ const POLL_NAP: Duration = Duration::from_millis(200);
 pub struct Signin {
     /// The URL to open — shown on the page and copyable.
     pub url: String,
-    /// The listener the browser comes back to.
-    listener: TcpListener,
+    /// The callback the browser comes back to.
+    callback: CallbackServer,
     /// The PKCE verifier the exchange redeems the code with.
     verifier: String,
     /// The `state` the callback must echo.
@@ -866,13 +867,15 @@ pub struct Signin {
 /// caller shows [`Signin::url`], then blocks in [`await_callback`].
 ///
 /// # Errors
-/// A port neither of the two allow-listed numbers can take.
+/// A port neither of the two allow-listed numbers can take, or the system's
+/// random source failing.
 pub fn begin_signin() -> Result<Signin> {
-    let (listener, port) = bind_listener()?;
-    let (verifier, challenge, state) = pkce_and_state();
+    let callback = bind_listener()?;
+    let port = callback.port;
+    let (verifier, challenge, state) = pkce_and_state().map_err(LlmError::Http)?;
     Ok(Signin {
         url: authorize_url(&challenge, &state, port),
-        listener,
+        callback,
         verifier,
         state,
         redirect_uri: redirect_uri(port),
@@ -886,7 +889,7 @@ pub fn begin_signin() -> Result<Signin> {
 /// A cancelled flow, a timeout, a `state` that doesn't match, or a token
 /// exchange OpenAI refused.
 pub fn await_callback(signin: &Signin, cancel: &CancelToken) -> Result<(String, Access)> {
-    let code = wait_for_code(&signin.listener, &signin.state, cancel)?;
+    let code = wait_for_code(&signin.callback, &signin.state, cancel)?;
     exchange_code(&code, &signin.verifier, &signin.redirect_uri)
 }
 
@@ -1036,58 +1039,24 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
     !cancel.is_cancelled()
 }
 
-/// Block until the callback arrives on `listener`, answering the browser
-/// either way. Polls `cancel` on the same cadence a stream does, so Esc on
-/// the sign-in page is honoured promptly.
-fn wait_for_code(listener: &TcpListener, state: &str, cancel: &CancelToken) -> Result<String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| LlmError::Http(format!("callback port: {e}")))?;
-    let started = Instant::now();
-    loop {
-        if cancel.is_cancelled() {
-            return Err(LlmError::Cancelled);
-        }
-        if started.elapsed() > AUTH_TIMEOUT {
-            return Err(LlmError::Http(
-                "timed out waiting for the browser to come back".to_string(),
-            ));
-        }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buffer = [0u8; 8192];
-                let read = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or_default();
-                let parsed = parse_redirect(path);
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SUCCESS_PAGE}",
-                        SUCCESS_PAGE.len()
-                    )
-                    .as_bytes(),
-                );
-                if let Some((code, got_state)) = parsed {
-                    if got_state.as_deref().is_some_and(|got| got != state) {
-                        return Err(LlmError::Http(
-                            "the callback's state doesn't match — start the sign-in again".into(),
-                        ));
-                    }
-                    return Ok(code);
-                }
-                // Anything else on the port (a favicon fetch, a stale tab) is
-                // not the callback — keep waiting rather than failing the flow.
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL_NAP);
-            }
-            Err(e) => return Err(LlmError::Http(format!("callback port: {e}"))),
-        }
-    }
+/// Block until this sign-in's callback arrives, answering the browser either
+/// way — the shared loopback's rules (`llm::loopback`): a request without
+/// this sign-in's `state` is turned away and the wait goes on, OpenAI's own
+/// refusal ends it with the reason, and Esc is honoured promptly.
+fn wait_for_code(callback: &CallbackServer, state: &str, cancel: &CancelToken) -> Result<String> {
+    let expected = Expected {
+        state,
+        issuer: None,
+        iss_required: false,
+    };
+    Ok(loopback::wait_for_code(
+        callback,
+        &expected,
+        &PAGES,
+        AUTH_TIMEOUT,
+        None,
+        cancel,
+    )?)
 }
 
 /// The [`Access`] a token response describes — its claims read off the access
@@ -1338,6 +1307,70 @@ pub fn user_agent() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One raw request to the callback port, the reply read whole.
+    fn browser_hit(port: u16, target: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut reply = String::new();
+        let _ = stream.read_to_string(&mut reply);
+        reply
+    }
+
+    /// The browser sign-in comes back through the shared loopback
+    /// (`llm::loopback`): a request without this sign-in's `state` — none at
+    /// all, or another attempt's — is turned away and the wait goes on, where
+    /// the old loop redeemed a stateless code and failed the sign-in on a
+    /// stale tab; the code that does carry it is taken.
+    #[test]
+    fn the_callback_takes_only_this_sign_ins_code() {
+        let callback = CallbackServer::bind(&[0], CALLBACK_PATH).expect("bind");
+        let port = callback.port;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(wait_for_code(&callback, "st", &CancelToken::new()));
+        });
+        let stateless = browser_hit(port, "/auth/callback?code=forged");
+        assert!(stateless.starts_with("HTTP/1.1 400"), "{stateless}");
+        let stale = browser_hit(port, "/auth/callback?code=forged&state=old");
+        assert!(stale.starts_with("HTTP/1.1 400"), "{stale}");
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "a stray request ended the sign-in"
+        );
+        let page = browser_hit(port, "/auth/callback?code=real&state=st");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        let code = done_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("answered")
+            .expect("the code");
+        assert_eq!(code, "real");
+    }
+
+    /// Declining on the consent page ends the sign-in at once with the
+    /// reason, instead of the whole wait for a code that never comes.
+    #[test]
+    fn a_declined_sign_in_ends_with_its_reason() {
+        let callback = CallbackServer::bind(&[0], CALLBACK_PATH).expect("bind");
+        let port = callback.port;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(wait_for_code(&callback, "st", &CancelToken::new()));
+        });
+        let _ = browser_hit(port, "/auth/callback?error=access_denied&state=st");
+        let result = done_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("answered");
+        assert!(
+            matches!(&result, Err(LlmError::Http(why)) if why.contains("access_denied")),
+            "{result:?}"
+        );
+    }
 
     /// A JWT whose payload is `claims` — header and signature are never read,
     /// so any non-empty pair will do.

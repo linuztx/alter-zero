@@ -1896,9 +1896,20 @@ impl Session<'_> {
         } else {
             String::new()
         };
+        // The connected MCP servers' own instructions (docs/mcp.md), after
+        // the secrets: servers connect after the first frame and come and
+        // go, and only what follows a changed section re-renders into the
+        // prompt cache. Gated on Tools, as their tools are.
+        let mcp_instructions = match &self.mcp {
+            Some(manager) if self.app.settings().tools => {
+                alter_zero::mcp::instructions_section(&manager.instructions(&|_| true))
+            }
+            _ => String::new(),
+        };
         let listings = alter_zero::reminder::join_sections(&[
             &alter_zero::subagents::listing_sections(&skills, &agents),
             &alter_zero::secrets::secret_section(&secrets),
+            &mcp_instructions,
         ]);
         self.app
             .set_listings((!listings.is_empty()).then_some(listings));

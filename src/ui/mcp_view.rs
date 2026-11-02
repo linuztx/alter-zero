@@ -11,7 +11,7 @@ use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
 use crate::app::{McpMenu, McpPage, server_actions};
-use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name};
+use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name, wire_names};
 
 /// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
 /// ([`ellipsize`] — a cut row says so, never a silent clip).
@@ -445,6 +445,18 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         lines.push(Line::default());
         lines.extend(dim_wrapped(&format!("Error: {reason}"), width));
     }
+    // The tools set aside at connect, by name and with the reason — the one
+    // place "why can't the model see this tool?" is answered.
+    if !server.excluded.is_empty() {
+        lines.push(Line::default());
+        lines.extend(dim_wrapped("Not offered to the model:", width));
+        for tool in &server.excluded {
+            lines.extend(dim_wrapped(
+                &format!("{} — {}", tool.name, tool.reason),
+                width,
+            ));
+        }
+    }
     lines.push(Line::default());
     let labels: Vec<&'static str> = server_actions(server)
         .into_iter()
@@ -535,11 +547,18 @@ fn tool_lines_page(
         Line::default(),
     ];
     lines.extend(tool_field_lines("Tool name:", &tool.name, width));
-    lines.extend(tool_field_lines(
-        "Full name:",
-        &tool_wire_name(&server.name, &tool.name),
-        width,
-    ));
+    // The name the model is offered — `wire_names` over the whole listing,
+    // the manager's own derivation, so a clashing or over-long name shows
+    // what is actually called rather than its plain spelling.
+    let names: Vec<&str> = server.tools.iter().map(|t| t.name.as_str()).collect();
+    let full = wire_names(&server.name, &names)
+        .into_iter()
+        .find(|(_, raw)| *raw == tool.name)
+        .map_or_else(
+            || tool_wire_name(&server.name, &tool.name),
+            |(wire, _)| wire,
+        );
+    lines.extend(tool_field_lines("Full name:", &full, width));
     if !tool.description.trim().is_empty() {
         lines.push(Line::default());
         lines.push(mcp_line("Description:", label, width));
@@ -655,6 +674,12 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     ]));
     if menu.auth.submitted {
         lines.push(dim_line(MCP_AUTH_SUBMITTED, width));
+    }
+    if let Some(error) = &menu.auth.error {
+        let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+        for row in wrap_output(error, room) {
+            lines.push(mcp_line(&row, Style::new().fg(error_color()), width));
+        }
     }
     lines.push(Line::default());
     // Wrapped: "Press Esc to go back" is the note's actionable tail.

@@ -50,32 +50,7 @@ fn connected_deepwiki() -> McpManager {
 
 /// A manager holding one remote server, connected (or panicking with why).
 fn connected_server(name: &str, url: &str) -> McpManager {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = McpManager::new(
-        tx,
-        McpSources {
-            entries: vec![mcp::McpServerEntry {
-                name: name.to_string(),
-                config: mcp::McpServerConfig::Http {
-                    url: url.to_string(),
-                    headers: Default::default(),
-                    sse_fallback: false,
-                },
-                scope: mcp::McpScope::User,
-                config_path: "<test>".to_string(),
-            }],
-            errors: Vec::new(),
-            disabled: BTreeSet::new(),
-            held: Default::default(),
-            project: ".".to_string(),
-            user_file: None,
-            auth_path: None,
-            cwd: None,
-            startup_timeout: Duration::from_secs(30),
-            tool_timeout: Duration::from_secs(120),
-        },
-    );
-    manager.start_connections();
+    let manager = connecting_server(name, url);
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
         if manager.has_tools() {
@@ -87,6 +62,95 @@ fn connected_server(name: &str, url: &str) -> McpManager {
         "{name} never connected: {:?}",
         manager.snapshot().first().map(|s| s.status_line())
     );
+}
+
+/// A manager holding one remote server, once its connect has settled —
+/// whatever it settled as.
+fn settled_server(name: &str, url: &str) -> McpManager {
+    let manager = connecting_server(name, url);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while Instant::now() < deadline {
+        if manager
+            .snapshot()
+            .first()
+            .is_some_and(|s| s.status != mcp::McpServerStatus::Pending)
+        {
+            return manager;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("{name} never settled");
+}
+
+/// A manager holding one remote server, its connect started.
+fn connecting_server(name: &str, url: &str) -> McpManager {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = McpManager::new(
+        tx,
+        McpSources {
+            entries: vec![mcp::McpServerEntry {
+                name: name.to_string(),
+                config: mcp::McpServerConfig::Http {
+                    url: url.to_string(),
+                    headers: Default::default(),
+                    sse_fallback: false,
+                    oauth: None,
+                },
+                scope: mcp::McpScope::User,
+                config_path: "<test>".to_string(),
+            }],
+            errors: Vec::new(),
+            disabled: BTreeSet::new(),
+            held: Default::default(),
+            project: ".".to_string(),
+            user_file: None,
+            auth_path: None,
+            cwd: None,
+            detach_helper: None,
+            startup_timeout: Duration::from_secs(30),
+            tool_timeout: Duration::from_secs(120),
+            open_browser: None,
+            protected_env: Default::default(),
+        },
+    );
+    manager.start_connections();
+    manager
+}
+
+/// Google's MCP servers list their tools to anyone and refuse every call,
+/// and their sign-in provider can't register this app: they wait for a
+/// sign-in instead of offering the model tools that fail. Hugging Face,
+/// Context7 and Exa publish the same OAuth metadata but serve calls without
+/// a token, and their providers register apps: they stay connected
+/// (`docs/mcp.md`).
+#[test]
+#[ignore = "hits the network (googleapis.com, huggingface.co, context7.com, exa.ai)"]
+fn live_google_servers_wait_for_sign_in_while_open_ones_connect() {
+    for (name, url) in [
+        ("drive", "https://drivemcp.googleapis.com/mcp/v1"),
+        ("calendar", "https://calendarmcp.googleapis.com/mcp/v1"),
+    ] {
+        let manager = settled_server(name, url);
+        let server = &manager.snapshot()[0];
+        assert_eq!(server.status, mcp::McpServerStatus::NeedsAuth, "{name}");
+        assert_eq!(
+            server.auth,
+            Some(mcp::McpAuthState::NotAuthenticated),
+            "{name}"
+        );
+        assert!(manager.tool_specs().is_empty(), "{name}");
+        manager.shutdown();
+    }
+    for (name, url) in [
+        ("hf", "https://huggingface.co/mcp"),
+        ("context7", "https://mcp.context7.com/mcp"),
+        ("exa", "https://mcp.exa.ai/mcp"),
+        ("deepwiki", DEEPWIKI_URL),
+    ] {
+        let manager = connected_server(name, url);
+        assert!(!manager.tool_specs().is_empty(), "{name}");
+        manager.shutdown();
+    }
 }
 
 /// The model under test.

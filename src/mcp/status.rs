@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use super::config::{McpScope, McpServerConfig};
-use super::protocol::{McpToolInfo, ServerIdentity};
+use super::protocol::{ExcludedTool, McpToolInfo, ServerIdentity};
 
 /// One server's live state, as the UI sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +174,8 @@ pub struct McpServerSnapshot {
     pub identity: Option<ServerIdentity>,
     /// The tools the server listed, in the server's order.
     pub tools: Vec<McpToolInfo>,
+    /// The tools it listed that the model is not offered, and why.
+    pub excluded: Vec<ExcludedTool>,
 }
 
 impl McpServerSnapshot {
@@ -277,10 +279,12 @@ mod tests {
                 url: "https://mcp.deepwiki.com/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: false,
+                oauth: None,
             },
             status,
             auth: Some(McpAuthState::NotAuthenticated),
             identity: None,
+            excluded: Vec::new(),
             tools: (0..tools)
                 .map(|i| McpToolInfo {
                     name: format!("t{i}"),

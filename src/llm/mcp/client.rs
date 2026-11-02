@@ -15,14 +15,16 @@
 //! merely timed out — a proxy blip, a server still booting — wrote that
 //! verdict just as permanently.
 
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::mcp::{
-    LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION, ServerIdentity,
-    choose_version, discover_params, initialize_params_for, is_modern_error, parse_discover,
-    parse_initialize, parse_tools_page, tools_list_params, unsupported_versions,
+    ExcludedTool, LEGACY_PROTOCOL_VERSION, McpServerConfig, McpToolInfo, PROTOCOL_VERSION,
+    ParamHeader, ServerIdentity, choose_version, discover_params, initialize_params_for,
+    input_schema_problem, is_modern_error, param_headers, parse_discover, parse_initialize,
+    parse_tools_page, result_type_problem, tools_list_params, unsupported_versions,
 };
 use crate::stream::CancelToken;
 
@@ -34,6 +36,10 @@ use super::transport::{
 /// `MAX_MCP_CATALOG_ITEMS` posture — a runaway cursor must terminate).
 const MAX_TOOL_PAGES: usize = 100;
 const MAX_TOOLS: usize = 2048;
+
+/// The largest pagination cursor sent back — an opaque token has no reason
+/// to be bigger, and a server growing it page by page is not paging.
+const MAX_CURSOR_BYTES: usize = 64 * 1024;
 
 /// The modern probe's deadline slice. A modern server answers
 /// `server/discover` at once and a legacy one errors it at once, so the
@@ -61,6 +67,38 @@ impl ConnectError {
     }
 }
 
+/// Why a handshake over streamable HTTP failed: a [`ConnectError`], or the
+/// one refusal the spec says to answer by trying the legacy HTTP+SSE
+/// transport (`400`/`404`/`405` to `initialize`, no modern error body —
+/// `TransportError::HttpRefused`). Kept apart so the fallback keys on what
+/// happened rather than on the words a message happens to use.
+enum Handshake {
+    Error(ConnectError),
+    Refused(String),
+}
+
+impl From<ConnectError> for Handshake {
+    fn from(error: ConnectError) -> Self {
+        Self::Error(error)
+    }
+}
+
+impl Handshake {
+    /// A refusal no fallback answered is an ordinary failure.
+    fn settle(self) -> ConnectError {
+        match self {
+            Self::Error(error) => error,
+            Self::Refused(detail) => ConnectError::Failed(detail),
+        }
+    }
+}
+
+/// What is left of a connect's budget — every step draws on the one
+/// deadline, so the whole sequence, not each request, is what it bounds.
+fn left(until: Instant) -> Duration {
+    until.saturating_duration_since(Instant::now())
+}
+
 /// A connected server: its live transport, identity, and tool list. The
 /// revision this connect settled on rides `identity.protocol_version` — it
 /// is the server's own answer, never a remembered one.
@@ -68,10 +106,18 @@ pub struct Connection {
     pub transport: Transport,
     pub identity: ServerIdentity,
     pub tools: Vec<McpToolInfo>,
+    /// The tools the server listed that can't be offered to the model
+    /// ([`crate::mcp::input_schema_problem`]) — set aside here, by name and
+    /// with the reason, so one broken definition never rides every request.
+    pub excluded: Vec<ExcludedTool>,
 }
 
 /// Connect one server end to end. `bearer` is the stored OAuth access token
-/// when one exists; `deadline` bounds the whole sequence.
+/// when one exists; `deadline` bounds the whole sequence — the probe, the
+/// handshake, every page of the listing and an SSE fallback all draw on it.
+/// A stdio server launches detached through the `setsid` binary, or attached
+/// where there is none; [`connect_with_helper`] names this binary for the
+/// tier that re-execs it.
 pub fn connect(
     config: &McpServerConfig,
     bearer: Option<String>,
@@ -79,15 +125,36 @@ pub fn connect(
     deadline: Duration,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
+    connect_with_helper(config, bearer, cwd, None, deadline, cancel)
+}
+
+/// [`connect`] with `detach_helper` — this binary, resolved at the boundary
+/// (`std::env::current_exe`) — for the launch tier that re-execs it, which is
+/// what keeps a stdio server off the TUI's terminal where no `setsid` binary
+/// exists (macOS, minimal images; `docs/tty-detach.md`).
+pub fn connect_with_helper(
+    config: &McpServerConfig,
+    bearer: Option<String>,
+    cwd: Option<&std::path::Path>,
+    detach_helper: Option<&std::path::Path>,
+    deadline: Duration,
+    cancel: &CancelToken,
+) -> Result<Connection, ConnectError> {
+    let until = Instant::now() + deadline;
     match config {
         McpServerConfig::Stdio { command, args, env } => {
-            let transport = StdioTransport::spawn(command, args, env, cwd)
+            let transport = StdioTransport::spawn(command, args, env, cwd, detach_helper)
                 .map_err(ConnectError::from_transport)?;
             // Fold the child's stderr into a handshake failure so a crashing
-            // server explains itself (`npx` printing a download error, say).
-            let stderr = transport.stderr_tail();
-            handshake(Transport::Stdio(transport), deadline, cancel).map_err(|e| match e {
+            // server explains itself (`npx` printing a download error, say) —
+            // read once the handshake has failed, when there is something in
+            // it (read at spawn, it was empty every time).
+            let stderr = transport.stderr_handle();
+            handshake(Transport::Stdio(transport), until, cancel).map_err(|e| match e.settle() {
                 ConnectError::Failed(detail) => {
+                    // A beat for the reader to catch the server's last words.
+                    std::thread::sleep(Duration::from_millis(50));
+                    let stderr = stderr.lock().map(|s| s.clone()).unwrap_or_default();
                     let tail = stderr.trim();
                     if tail.is_empty() || detail.contains(tail) {
                         ConnectError::Failed(detail)
@@ -102,47 +169,61 @@ pub fn connect(
             url,
             headers,
             sse_fallback,
+            ..
         } => {
             let remote = RemoteHeaders {
                 headers: headers.clone(),
                 bearer: bearer.clone(),
             };
             let http = HttpTransport::new(url.clone(), remote.clone());
-            match handshake(Transport::Http(http), deadline, cancel) {
+            match handshake(Transport::Http(http), until, cancel) {
                 Ok(connection) => Ok(connection),
                 // The spec's compat recipe: a bare-`url` config whose
                 // streamable POST is refused retries the same URL as a
                 // legacy SSE server. A 401 is NOT a refusal — it is an
-                // answer (authenticate first).
-                Err(ConnectError::Failed(detail))
-                    if *sse_fallback && detail.contains("server refused") =>
-                {
-                    connect_sse(url, remote, deadline, cancel)
+                // answer (authenticate first) — and neither is a 403 or a
+                // 5xx. Both answers are kept when the fallback fails too:
+                // the first is usually the one that explains.
+                Err(Handshake::Refused(detail)) if *sse_fallback => {
+                    match connect_sse(url, remote, until, cancel) {
+                        Ok(connection) => Ok(connection),
+                        Err(Handshake::Error(ConnectError::NeedsAuth(challenge))) => {
+                            Err(ConnectError::NeedsAuth(challenge))
+                        }
+                        Err(sse) => Err(ConnectError::Failed(format!(
+                            "{detail}; as a legacy SSE server: {}",
+                            match sse.settle() {
+                                ConnectError::Failed(why) => why,
+                                ConnectError::NeedsAuth(_) => "authentication required".into(),
+                            }
+                        ))),
+                    }
                 }
-                Err(e) => Err(e),
+                Err(e) => Err(e.settle()),
             }
         }
-        McpServerConfig::Sse { url, headers } => connect_sse(
+        McpServerConfig::Sse { url, headers, .. } => connect_sse(
             url,
             RemoteHeaders {
                 headers: headers.clone(),
                 bearer,
             },
-            deadline,
+            until,
             cancel,
-        ),
+        )
+        .map_err(Handshake::settle),
     }
 }
 
 fn connect_sse(
     url: &str,
     remote: RemoteHeaders,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
-    let transport = SseTransport::connect(url, remote, deadline, cancel)
+) -> Result<Connection, Handshake> {
+    let transport = SseTransport::connect(url, remote, left(until), cancel)
         .map_err(ConnectError::from_transport)?;
-    handshake(Transport::Sse(transport), deadline, cancel)
+    handshake(Transport::Sse(transport), until, cancel)
 }
 
 /// The protocol sequence over an open transport: era detection (the spec's
@@ -153,22 +234,26 @@ fn connect_sse(
 /// between launches has to be believed the next time we ask, not the last.
 fn handshake(
     mut transport: Transport,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
+) -> Result<Connection, Handshake> {
     // The legacy HTTP+SSE transport predates the modern era by definition —
     // its servers speak 2024-11-05 — so only stdio and streamable HTTP probe.
     if matches!(transport, Transport::Sse(_)) {
-        return legacy_handshake(transport, LEGACY_PROTOCOL_VERSION, deadline, cancel);
+        return legacy_handshake(transport, LEGACY_PROTOCOL_VERSION, until, cancel);
     }
     transport.set_modern(PROTOCOL_VERSION);
     let probe = transport.request(
         "server/discover",
         discover_params(PROTOCOL_VERSION),
-        MODERN_PROBE_TIMEOUT.min(deadline),
+        MODERN_PROBE_TIMEOUT.min(left(until)),
         cancel,
     );
     let legacy_version = match probe {
+        Ok(result) if result_type_problem(&result).is_some() => {
+            let problem = result_type_problem(&result).unwrap_or_default();
+            return Err(ConnectError::Failed(format!("server/discover: {problem}")).into());
+        }
         Ok(result) => {
             // A modern server. Its identity rides the discover result
             // (`serverInfo` in the `_meta`) — and so does the list of
@@ -184,14 +269,14 @@ fn handshake(
                 // Either it named our revision, or it named none we know —
                 // and it answered a request sent under ours, which is the
                 // spec's own definition of accepting it.
-                _ => return finish(transport, identity, deadline, cancel),
+                _ => return Ok(finish(transport, identity, until, cancel)?),
             }
         }
         // Auth outranks era: the server wants credentials before it will
         // tell us anything — answer that first (era detection runs again on
         // the authenticated reconnect, like every other connect).
         Err(e @ (TransportError::NeedsAuth(_) | TransportError::Cancelled)) => {
-            return Err(ConnectError::from_transport(e));
+            return Err(ConnectError::from_transport(e).into());
         }
         Err(TransportError::Rpc(error)) if is_modern_error(error.code) => {
             // A modern server that doesn't speak our modern revision names
@@ -209,7 +294,8 @@ fn handshake(
                         } else {
                             supported.join(", ")
                         }
-                    )));
+                    ))
+                    .into());
                 }
             }
         }
@@ -218,7 +304,7 @@ fn handshake(
         // forbids keying this on one specific code.
         Err(_) => LEGACY_PROTOCOL_VERSION,
     };
-    legacy_handshake(transport, legacy_version, deadline, cancel)
+    legacy_handshake(transport, legacy_version, until, cancel)
 }
 
 /// The legacy handshake: `initialize` (proposing `version`) →
@@ -227,24 +313,36 @@ fn handshake(
 fn legacy_handshake(
     mut transport: Transport,
     version: &str,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
-) -> Result<Connection, ConnectError> {
+) -> Result<Connection, Handshake> {
     transport.set_legacy();
-    let result = transport
-        .request(
-            "initialize",
-            initialize_params_for(version),
-            deadline,
-            cancel,
-        )
-        .map_err(ConnectError::from_transport)?;
+    let result = match transport.request(
+        "initialize",
+        initialize_params_for(version),
+        left(until),
+        cancel,
+    ) {
+        Ok(result) => result,
+        // The one answer the legacy-SSE fallback is for.
+        Err(TransportError::HttpRefused(detail)) => {
+            return Err(Handshake::Refused(format!(
+                "server refused the request: {detail}"
+            )));
+        }
+        Err(e) => return Err(ConnectError::from_transport(e).into()),
+    };
     let mut identity = parse_initialize(&result);
     if let Transport::Http(http) = &mut transport {
         http.set_protocol_version(&identity.protocol_version);
     }
     transport
-        .notify("notifications/initialized", Value::Null)
+        .notify(
+            "notifications/initialized",
+            Value::Null,
+            left(until),
+            cancel,
+        )
         .map_err(ConnectError::from_transport)?;
     // What the *server* answered is the settled revision — including when
     // it answered nothing at all (a pre-`protocolVersion` server), where the
@@ -254,44 +352,134 @@ fn legacy_handshake(
     if identity.protocol_version.trim().is_empty() {
         identity.protocol_version = version.to_string();
     }
-    finish(transport, identity, deadline, cancel)
+    Ok(finish(transport, identity, until, cancel)?)
 }
 
-/// The `tools/list` drain over a settled transport — both eras end here.
+/// The `tools/list` drain over a settled transport — both eras end here. A
+/// server whose capabilities name no `tools` (one serving only resources or
+/// prompts) has nothing to list, so it isn't asked: it connects with none.
 fn finish(
     mut transport: Transport,
     identity: ServerIdentity,
-    deadline: Duration,
+    until: Instant,
     cancel: &CancelToken,
 ) -> Result<Connection, ConnectError> {
-    let mut tools = Vec::new();
-    let mut cursor: Option<String> = None;
-    for _ in 0..MAX_TOOL_PAGES {
-        let page = transport
-            .request(
-                "tools/list",
-                tools_list_params(cursor.as_deref()),
-                deadline,
-                cancel,
-            )
-            .map_err(ConnectError::from_transport)?;
-        let (mut page_tools, next) = parse_tools_page(&page);
-        tools.append(&mut page_tools);
-        if tools.len() > MAX_TOOLS {
-            tools.truncate(MAX_TOOLS);
-            break;
-        }
-        // A server that repeats its cursor would loop forever.
-        if next.is_none() || next == cursor {
-            break;
-        }
-        cursor = next;
-    }
+    let lists_tools =
+        identity.capabilities.is_empty() || identity.capabilities.iter().any(|c| c == "tools");
+    let (tools, excluded) = if lists_tools {
+        list_tools(&mut transport, until, cancel)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Ok(Connection {
         transport,
         identity,
         tools,
+        excluded,
     })
+}
+
+/// List a settled transport's tools — every page — set aside the ones the
+/// model can't be offered, and arm the transport's `x-mcp-header` mirror
+/// with the rest's declarations. What a connect ends on, and what a call
+/// refused with `-32020 HeaderMismatch` runs again before its one retry
+/// (the spec's "SHOULD call `tools/list` to check for changes").
+pub(super) fn list_tools(
+    transport: &mut Transport,
+    until: Instant,
+    cancel: &CancelToken,
+) -> Result<(Vec<McpToolInfo>, Vec<ExcludedTool>), ConnectError> {
+    let mut tools: Vec<McpToolInfo> = Vec::new();
+    let mut listed: HashSet<String> = HashSet::new();
+    let mut cursor: Option<String> = None;
+    // Every cursor sent so far: a server that hands back one it already
+    // gave — not only the one just used — has started a cycle, and would
+    // otherwise be paged through until `MAX_TOOL_PAGES`.
+    let mut sent: HashSet<String> = HashSet::new();
+    for page_number in 0..MAX_TOOL_PAGES {
+        let page = match transport.request(
+            "tools/list",
+            tools_list_params(cursor.as_deref()),
+            left(until),
+            cancel,
+        ) {
+            Ok(page) => page,
+            // A server that doesn't do tools at all says so with
+            // method-not-found: no tools, not a failed server.
+            Err(TransportError::Rpc(error)) if error.code == -32601 && page_number == 0 => {
+                break;
+            }
+            Err(e) => return Err(ConnectError::from_transport(e)),
+        };
+        if let Some(problem) = result_type_problem(&page) {
+            return Err(ConnectError::Failed(format!("tools/list: {problem}")));
+        }
+        let (page_tools, next) = parse_tools_page(&page);
+        // A tool a later page lists again is the same tool.
+        tools.extend(
+            page_tools
+                .into_iter()
+                .filter(|tool| listed.insert(tool.name.clone())),
+        );
+        if tools.len() > MAX_TOOLS {
+            tools.truncate(MAX_TOOLS);
+            break;
+        }
+        match next {
+            Some(next) if next.len() <= MAX_CURSOR_BYTES && sent.insert(next.clone()) => {
+                cursor = Some(next);
+            }
+            // The end — or a cursor too large to be honest, or one already
+            // sent.
+            _ => break,
+        }
+    }
+    let (tools, excluded, declarations) =
+        set_aside_unusable(tools, transport.mirrors_param_headers());
+    transport.set_param_headers(declarations);
+    Ok((tools, excluded))
+}
+
+/// Split a listing into the tools the model can be offered and the ones no
+/// repair makes usable ([`input_schema_problem`]) — and, when the transport
+/// mirrors `x-mcp-header` parameters (`mirror`), each usable tool's
+/// declarations, a tool whose annotations break the rules being one the
+/// client MUST refuse ([`param_headers`]).
+fn set_aside_unusable(
+    tools: Vec<McpToolInfo>,
+    mirror: bool,
+) -> (
+    Vec<McpToolInfo>,
+    Vec<ExcludedTool>,
+    HashMap<String, Vec<ParamHeader>>,
+) {
+    let mut usable = Vec::with_capacity(tools.len());
+    let mut excluded = Vec::new();
+    let mut declarations = HashMap::new();
+    for tool in tools {
+        let problem = input_schema_problem(&tool.input_schema)
+            .map(Err)
+            .unwrap_or_else(|| {
+                if mirror {
+                    param_headers(&tool.input_schema)
+                } else {
+                    Ok(Vec::new())
+                }
+            });
+        match problem {
+            Ok(headers) => {
+                if !headers.is_empty() {
+                    declarations.insert(tool.name.clone(), headers);
+                }
+                usable.push(tool);
+            }
+            Err(reason) => excluded.push(ExcludedTool {
+                name: tool.name,
+                reason,
+            }),
+        }
+    }
+    (usable, excluded, declarations)
 }
 
 #[cfg(test)]
@@ -409,6 +597,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -572,6 +761,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -686,6 +876,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -810,6 +1001,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -919,6 +1111,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let first =
@@ -960,6 +1153,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         match connect(&config, None, None, Duration::from_secs(10), &cancel) {
@@ -1023,6 +1217,356 @@ mod tests {
             Some("be modern")
         );
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    /// A server that fails the handshake explains itself with what it wrote
+    /// to stderr — read once the failure is known. Read at spawn, the tail
+    /// was empty every time, and a stuck `npx` said only "timed out".
+    #[test]
+    fn a_failed_handshake_carries_what_the_server_said_on_stderr() {
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo 'npm warn: still downloading' >&2; cat > /dev/null".to_string(),
+            ],
+            env: Default::default(),
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_millis(800),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                assert!(detail.contains("still downloading"), "{detail}");
+            }
+            Err(other) => panic!("unexpected: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+    }
+
+    /// A server offering only resources or prompts has no tools to list:
+    /// asking anyway got `-32601` and a `✘ failed` server. It connects with
+    /// no tools instead — and a server that lists `tools` but answers the
+    /// listing `-32601` reads the same.
+    #[test]
+    fn a_server_without_tools_connects_with_none() {
+        let discover = r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"resources":{}},"ttlMs":0,"cacheScope":"public"}}"#;
+        let refused =
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"no tools here"}}"#;
+        let script = format!(
+            "cat > /dev/null & printf '%s\\n' '{discover}'; printf '%s\\n' '{refused}'; sleep 5"
+        );
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        )
+        .expect("connects");
+        assert!(connection.tools.is_empty());
+        assert_eq!(connection.identity.capabilities, ["resources"]);
+    }
+
+    /// The connect budget bounds the **whole** sequence. Every request used
+    /// to restart its own clock, so a server paging slowly through its tools
+    /// took page count × budget, far past the startup timeout.
+    #[test]
+    fn the_connect_budget_bounds_the_whole_sequence() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      sleep 0.4
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[],"nextCursor":"p%s","ttlMs":0,"cacheScope":"public"}}\n' "$id" "$id" ;;
+  esac
+done
+"#;
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: Default::default(),
+        };
+        let started = std::time::Instant::now();
+        let result = connect(
+            &config,
+            None,
+            None,
+            Duration::from_millis(1500),
+            &CancelToken::new(),
+        );
+        assert!(
+            matches!(&result, Err(ConnectError::Failed(detail)) if detail.contains("timed out")),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A bare-`url` server refusing streamable HTTP *and* the legacy
+    /// transport reports both answers, the first one first — the old message
+    /// named only the SSE side's `HTTP 405 opening the event stream`.
+    #[test]
+    fn a_failed_sse_fallback_keeps_the_first_answer() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = [0u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let get = request[..read].starts_with(b"GET");
+                let reply: &[u8] = if get {
+                    b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nno such\r\n"
+                };
+                let _ = stream.write_all(reply);
+            }
+        });
+        let config = McpServerConfig::Http {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: Default::default(),
+            sse_fallback: true,
+            oauth: None,
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(5),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                let first = detail.find("404").expect("the streamable answer");
+                let then = detail.find("405").expect("the SSE answer");
+                assert!(first < then, "{detail}");
+            }
+            Err(other) => panic!("unexpected: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+    }
+
+    /// Paging follows the 2026-07-28 rules — an empty cursor continues the
+    /// listing — and stops at any cursor it has already sent, not only an
+    /// immediate repeat (an A → B → A cycle used to fetch the same pages
+    /// until the page cap), with a tool repeated across pages listed once.
+    #[test]
+    fn paging_continues_on_an_empty_cursor_and_stops_on_any_repeat() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"cursor":"B"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"three","inputSchema":{"type":"object"}},{"name":"one","inputSchema":{"type":"object"}}],"nextCursor":"","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"cursor":""'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"two","inputSchema":{"type":"object"}}],"nextCursor":"B","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"one","inputSchema":{"type":"object"}}],"nextCursor":"B","ttlMs":0,"cacheScope":"public"}}\n' "$id" ;;
+  esac
+done
+"#;
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        // first page (B) → B's page (empty cursor) → "" page (B again: stop).
+        assert_eq!(names, ["one", "three", "two"]);
+    }
+
+    /// A modern streamable-HTTP server marking `region` with
+    /// `x-mcp-header: Region` rejects any call whose `Mcp-Param-Region`
+    /// header doesn't carry the body's value (`400` + `-32020`), and lists a
+    /// second tool whose annotation sits on a `number` — which the client
+    /// MUST refuse rather than offer.
+    fn spawn_param_header_fixture() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                let mut region_header: Option<String> = None;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("mcp-param-region:") {
+                        region_header = header.split_once(':').map(|(_, v)| v.trim().to_string());
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+                let respond = |stream: &mut std::net::TcpStream, status: &str, body: Value| {
+                    let body = body.to_string();
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                let complete = |result: Value| {
+                    let mut result = result;
+                    result["resultType"] = "complete".into();
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+                };
+                match parsed["method"].as_str().unwrap_or_default() {
+                    "server/discover" => respond(
+                        &mut stream,
+                        "200 OK",
+                        complete(serde_json::json!({
+                            "supportedVersions": ["2026-07-28"],
+                            "capabilities": {"tools": {}},
+                            "ttlMs": 0, "cacheScope": "public"
+                        })),
+                    ),
+                    "tools/list" => respond(
+                        &mut stream,
+                        "200 OK",
+                        complete(serde_json::json!({"tools": [
+                            {"name": "execute_sql", "inputSchema": {"type": "object", "properties": {
+                                "region": {"type": "string", "x-mcp-header": "Region"},
+                                "query": {"type": "string"}}}},
+                            {"name": "broken", "inputSchema": {"type": "object", "properties": {
+                                "ratio": {"type": "number", "x-mcp-header": "Ratio"}}}}
+                        ], "ttlMs": 0, "cacheScope": "public"})),
+                    ),
+                    "tools/call" => {
+                        let want = parsed["params"]["arguments"]["region"].as_str();
+                        if region_header.as_deref() == want {
+                            respond(
+                                &mut stream,
+                                "200 OK",
+                                complete(serde_json::json!({"content": [
+                                    {"type": "text", "text": format!("region {}", want.unwrap_or("-"))}
+                                ]})),
+                            );
+                        } else {
+                            respond(
+                                &mut stream,
+                                "400 Bad Request",
+                                serde_json::json!({"jsonrpc": "2.0", "id": id,
+                                    "error": {"code": -32020, "message": "Mcp-Param-Region mismatch"}}),
+                            );
+                        }
+                    }
+                    _ => respond(
+                        &mut stream,
+                        "404 Not Found",
+                        serde_json::json!({"jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "unknown"}}),
+                    ),
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    #[test]
+    fn annotated_parameters_ride_as_headers_and_a_broken_annotation_is_refused() {
+        let config = McpServerConfig::Http {
+            url: spawn_param_header_fixture(),
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let cancel = CancelToken::new();
+        let mut connection =
+            connect(&config, None, None, Duration::from_secs(10), &cancel).expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["execute_sql"]);
+        assert_eq!(connection.excluded.len(), 1);
+        assert_eq!(connection.excluded[0].name, "broken");
+        assert!(
+            connection.excluded[0].reason.contains("number"),
+            "{:?}",
+            connection.excluded
+        );
+        let result = connection
+            .transport
+            .request(
+                "tools/call",
+                crate::mcp::call_params(
+                    "execute_sql",
+                    &serde_json::json!({"region": "us-west1", "query": "SELECT 1"}),
+                ),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect("the header rode along");
+        assert_eq!(
+            crate::mcp::parse_call_result(&result).text,
+            "region us-west1"
+        );
+    }
+
+    /// A tool whose input can never be an object is set aside at connect,
+    /// by name and with the reason — one broken tool must not ride every
+    /// request and fail them all — while its siblings connect as usual.
+    #[test]
+    fn a_tool_no_model_could_call_is_set_aside_with_the_reason() {
+        let discover = r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":0,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"m","version":"1"}}}}"#;
+        let tools = r#"{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"good","inputSchema":{"type":"object"}},{"name":"bad","inputSchema":{"type":"string"}}],"ttlMs":0,"cacheScope":"public"}}"#;
+        let script = format!(
+            "cat > /dev/null & printf '%s\\n' '{discover}'; printf '%s\\n' '{tools}'; sleep 5"
+        );
+        let config = McpServerConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: Default::default(),
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .expect("connect");
+        let names: Vec<&str> = connection.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["good"]);
+        assert_eq!(connection.excluded.len(), 1);
+        assert_eq!(connection.excluded[0].name, "bad");
+        assert!(connection.excluded[0].reason.contains("string"));
     }
 
     /// `server/discover` exists to let a client **pick a version up front**

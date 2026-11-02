@@ -34,9 +34,11 @@ pub const SUPPORTED_VERSIONS: [&str; 5] = [
 ];
 
 /// How many characters of a server's tool description ride the tool spec —
-/// Claude Code's `MAX_MCP_DESCRIPTION_LENGTH`: a wiki-length description
-/// would spend the context budget the schemas share.
-pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 2048;
+/// Claude Code's `MAX_MCP_DESCRIPTION_LENGTH`, 4,096 since it doubled the
+/// old 2,048 (2.1.296): enough for the usage notes a server puts there, while
+/// a wiki-length description would spend the context budget the schemas
+/// share.
+pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 4096;
 
 /// A JSON-RPC 2.0 **request** — `id` pairs the eventual response.
 #[must_use]
@@ -58,9 +60,9 @@ pub fn notification(method: &str, params: Value) -> Value {
     out
 }
 
-/// One message parsed off a transport: the response to a request we made, or
-/// something else (a server notification/request — logged and dropped in v1;
-/// the tools surface needs neither).
+/// One message parsed off a transport: the response to a request we made, a
+/// request the server is making of us, or something else (a notification —
+/// dropped; the tools surface needs none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// A response carrying the `id` it answers and the outcome.
@@ -68,7 +70,16 @@ pub enum Incoming {
         id: u64,
         result: Result<Value, RpcError>,
     },
-    /// A notification or server→client request — not one of ours to answer.
+    /// An error response with no usable `id` — the `id: null` a server sends
+    /// when it could not read the request at all (a parse error, a missing
+    /// header). With one request in flight, it is that request's answer.
+    OrphanError(RpcError),
+    /// A server→client request (`ping`, `roots/list`, …), its `id` kept
+    /// exactly as it came so an answer can echo it. A legacy-era server
+    /// waits for one — JSON-RPC's "MUST reply" — while a modern server
+    /// never sends any (they ride `input_required` results instead).
+    Request { id: Value, method: String },
+    /// A notification — not one of ours to answer.
     Other,
 }
 
@@ -84,45 +95,180 @@ pub struct RpcError {
 
 impl std::fmt::Display for RpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (code {})", self.message, self.code)
+        write!(f, "{} (code {})", self.message, self.code)?;
+        // `-32021` names the capabilities the server needed and didn't get —
+        // the one part of the error the model can act on (by saying so).
+        if self.code == -32021
+            && let Some(needed) = self
+                .data
+                .as_ref()
+                .and_then(|data| data.get("requiredCapabilities"))
+                .and_then(Value::as_object)
+            && !needed.is_empty()
+        {
+            let names: Vec<&str> = needed.keys().map(String::as_str).collect();
+            write!(f, " — it needs: {}", names.join(", "))?;
+        }
+        Ok(())
     }
 }
 
 /// Parse one incoming JSON-RPC message. `None` when the text isn't JSON at
 /// all (transport noise — the caller decides how loud to be).
+///
+/// Read the way real servers write it rather than the way JSON-RPC says to:
+/// an id echoed as `"5"` or `5.0` is still request 5, an `"error": null`
+/// beside a result (Go structs without `omitempty`) is no error, and an
+/// error with `id: null` is surfaced as [`Incoming::OrphanError`] rather than
+/// dropped — dropped, it left the request waiting out its whole deadline.
 #[must_use]
 pub fn parse_incoming(text: &str) -> Option<Incoming> {
     let value: Value = serde_json::from_str(text.trim()).ok()?;
-    let id = value.get("id").and_then(Value::as_u64);
-    let Some(id) = id else {
-        return Some(Incoming::Other);
-    };
-    if let Some(error) = value.get("error") {
-        let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error")
-            .to_string();
-        return Some(Incoming::Response {
-            id,
-            result: Err(RpcError {
-                code,
-                message,
-                data: error.get("data").cloned(),
-            }),
+    let error = value.get("error").filter(|error| !error.is_null());
+    if let Some(method) = value.get("method").and_then(Value::as_str) {
+        // A message with a method is the server's: with an id it is a
+        // request of us, without one a notification.
+        return Some(match value.get("id").filter(|id| !id.is_null()) {
+            Some(id) => Incoming::Request {
+                id: id.clone(),
+                method: method.to_string(),
+            },
+            None => Incoming::Other,
         });
     }
-    // A message with an id and a method is a server→client REQUEST (an
-    // elicitation, a ping) — not a response to us. v1 drops it; answering
-    // would need capabilities we don't advertise.
-    if value.get("method").is_some() {
-        return Some(Incoming::Other);
+    let Some(id) = value.get("id").and_then(request_id) else {
+        return Some(match error {
+            Some(error) if value.get("id").is_none_or(Value::is_null) => {
+                Incoming::OrphanError(rpc_error(error))
+            }
+            _ => Incoming::Other,
+        });
+    };
+    if let Some(error) = error {
+        return Some(Incoming::Response {
+            id,
+            result: Err(rpc_error(error)),
+        });
     }
     Some(Incoming::Response {
         id,
         result: Ok(value.get("result").cloned().unwrap_or(Value::Null)),
     })
+}
+
+/// One of our request ids as a server echoed it: the integer we sent, or
+/// that integer spelled as a string or an integral float.
+fn request_id(id: &Value) -> Option<u64> {
+    match id {
+        Value::Number(number) => number.as_u64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|f| *f >= 0.0 && f.fract() == 0.0 && *f < 9.007_199_254_740_992e15)
+                .map(|f| f as u64)
+        }),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// A JSON-RPC error object, flattened.
+fn rpc_error(error: &Value) -> RpcError {
+    RpcError {
+        code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
+        message: error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error")
+            .to_string(),
+        data: error.get("data").cloned(),
+    }
+}
+
+/// This client's answer to a server→client request — what a **legacy**
+/// (handshake-era) server is owed: JSON-RPC's "MUST reply", and 2025-11-25's
+/// `ping` "MUST respond promptly". `ping` gets the empty result; anything
+/// else gets method-not-found, since this client declares no capability
+/// that would make it a request it could serve. A modern server never sends
+/// one (its requests ride `input_required` results).
+#[must_use]
+pub fn server_request_answer(id: &Value, method: &str) -> Value {
+    if method == "ping" {
+        return json!({"jsonrpc": "2.0", "id": id, "result": {}});
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32601,
+            "message": format!("Method not found: {method} (this client declares no capabilities)")
+        }
+    })
+}
+
+/// Why a result can't be read as an ordinary one — `None` for an absent
+/// `resultType` (an earlier-revision server; "MUST treat … as complete") and
+/// for `"complete"`. Anything else is "considered invalid" (2026-07-28), so a
+/// task handle or a value from a revision to come never passes for an empty
+/// success. `input_required` is the one other value this client handles,
+/// and only on `tools/call` ([`input_required`]).
+#[must_use]
+pub fn result_type_problem(result: &Value) -> Option<String> {
+    match result.get("resultType") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(kind)) if kind == "complete" => None,
+        Some(other) => Some(format!(
+            "the server answered with a result type this client does not know ({other})"
+        )),
+    }
+}
+
+/// What an `input_required` result asks of the client (2026-07-28's
+/// multi-round-trip requests).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputRequired {
+    /// Only a `requestState`: the server wants the same call again with the
+    /// state echoed — a load-shedding server's "ask me again", which a
+    /// client declaring no capabilities can still answer.
+    Retry { request_state: String },
+    /// `inputRequests` this client can't fulfil (it declares no elicitation,
+    /// sampling or roots) — named by method for the error the model reads.
+    Unsupported { methods: Vec<String> },
+}
+
+/// Read an `input_required` result — `None` for any other result.
+#[must_use]
+pub fn input_required(result: &Value) -> Option<InputRequired> {
+    if result.get("resultType").and_then(Value::as_str) != Some("input_required") {
+        return None;
+    }
+    let methods: Vec<String> = result
+        .get("inputRequests")
+        .and_then(Value::as_object)
+        .map(|requests| {
+            requests
+                .values()
+                .map(|request| {
+                    request
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or("an unknown request")
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !methods.is_empty() {
+        return Some(InputRequired::Unsupported { methods });
+    }
+    match result.get("requestState").and_then(Value::as_str) {
+        Some(state) => Some(InputRequired::Retry {
+            request_state: state.to_string(),
+        }),
+        // Neither: a malformed interim result — nothing to answer it with.
+        None => Some(InputRequired::Unsupported {
+            methods: Vec::new(),
+        }),
+    }
 }
 
 /// This client's identity — the legacy `clientInfo` and the modern
@@ -212,6 +358,7 @@ pub fn parse_discover(result: &Value, negotiated: &str) -> (ServerIdentity, Vec<
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            tools_list_changed: promises_tool_changes(result),
         },
         supported,
     )
@@ -261,50 +408,6 @@ pub fn choose_version(supported: &[String]) -> Option<&'static str> {
         .copied()
 }
 
-/// A value for the streamable-HTTP `Mcp-Method`/`Mcp-Name` request-metadata
-/// headers: verbatim when it is printable ASCII with no leading/trailing
-/// whitespace and doesn't itself look like the sentinel; else the spec's
-/// `=?base64?{value}?=` sentinel form. Tool names are only SHOULD-constrained
-/// to header-safe characters, so the encoding path is real, not theoretical.
-#[must_use]
-pub fn header_value(text: &str) -> String {
-    let ascii_printable = text.bytes().all(|b| (0x20..=0x7e).contains(&b));
-    let whitespace_framed = text.starts_with(' ') || text.ends_with(' ');
-    let looks_like_sentinel = text.starts_with("=?") && text.ends_with("?=");
-    if !text.is_empty() && ascii_printable && !whitespace_framed && !looks_like_sentinel {
-        return text.to_string();
-    }
-    format!("=?base64?{}?=", b64_standard(text.as_bytes()))
-}
-
-/// Standard base64 (RFC 4648 §4, with padding) — the sentinel encoding's
-/// alphabet.
-fn b64_standard(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// The `initialize` request params — the legacy handshake, proposing
 /// `version`. What this client is and can do; we advertise **no** client
 /// capabilities, the tools surface needing none.
@@ -335,9 +438,44 @@ pub struct ServerIdentity {
     /// The capability keys the server advertises (`tools`, `resources`,
     /// `prompts`, …) — the detail page's `Capabilities:` row.
     pub capabilities: Vec<String>,
-    /// The server's optional usage instructions — shown in the detail page,
-    /// never injected into the system prompt (v1).
+    /// The server's optional usage instructions — shown in the detail page
+    /// and carried by the `<system-reminder>` (`mcp::instructions_section`).
     pub instructions: Option<String>,
+    /// `capabilities.tools.listChanged`: the server says when its tools
+    /// change — what the client opens a change stream for (`docs/mcp.md`).
+    pub tools_list_changed: bool,
+}
+
+/// Does a result's `capabilities` promise tool-list change notifications?
+fn promises_tool_changes(result: &Value) -> bool {
+    result
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("tools"))
+        .and_then(|tools| tools.get("listChanged"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The notification a server sends when its tool list changed.
+pub const TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
+
+/// A notification's method — a message with a `method` and no `id` — when
+/// `message` is one.
+#[must_use]
+pub fn notification_method(message: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(message.trim()).ok()?;
+    if value.get("id").is_some() {
+        return None;
+    }
+    value.get("method")?.as_str().map(str::to_string)
+}
+
+/// The `subscriptions/listen` params (2026-07-28) asking for the tool list's
+/// change notifications — the one kind this client acts on, and a server
+/// MUST NOT send a kind the client did not ask for.
+#[must_use]
+pub fn listen_params() -> Value {
+    json!({"notifications": {"toolsListChanged": true}})
 }
 
 /// Parse an `initialize` result.
@@ -367,6 +505,7 @@ pub fn parse_initialize(result: &Value) -> ServerIdentity {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        tools_list_changed: promises_tool_changes(result),
     }
 }
 
@@ -376,10 +515,20 @@ pub struct McpToolInfo {
     /// The server's own (raw) tool name — what `tools/call` sends back.
     pub name: String,
     pub description: String,
-    /// The tool's JSON-Schema input, passed through as the Chat Completions
-    /// `parameters` — normalized to an object schema when absent/malformed
-    /// (a validating provider rejects anything else).
+    /// The tool's JSON-Schema input **as the server sent it** (a missing or
+    /// non-object one replaced by the empty object schema) — what the
+    /// `/mcp` page and the `x-mcp-header` mirror read. The model is offered
+    /// the repaired copy [`model_input_schema`] makes, never this.
     pub input_schema: Value,
+}
+
+/// A tool the server listed that the model is **not** offered, and why — set
+/// aside at connect, named on the `/mcp` server page, so one broken
+/// definition costs only itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludedTool {
+    pub name: String,
+    pub reason: String,
 }
 
 /// Parse one `tools/list` page: the tools plus the `nextCursor` when the
@@ -414,12 +563,163 @@ pub fn parse_tools_page(result: &Value) -> (Vec<McpToolInfo>, Option<String>) {
                 .collect()
         })
         .unwrap_or_default();
+    // An empty string is a cursor like any other (2026-07-28: it "MUST NOT
+    // be treated as the end of results"); only an absent one ends the list.
     let cursor = result
         .get("nextCursor")
         .and_then(Value::as_str)
-        .filter(|c| !c.is_empty())
         .map(str::to_string);
     (tools, cursor)
+}
+
+/// What a folded root combinator adds to the front of the tool's description
+/// ([`model_input_schema`]) — the one fact the flat object loses.
+pub const FOLDED_SCHEMA_NOTE: &str =
+    "Arguments come in one of several shapes; pass the parameters one of them needs.";
+
+/// A tool's input schema **as the model is offered it** — every request
+/// carries it as the function's `parameters`, so a shape a provider refuses
+/// fails every turn, not just this tool's calls. The server's own schema
+/// stays on [`McpToolInfo`] (the `/mcp` page and the `x-mcp-header` mirror
+/// read it); this is the repaired copy:
+///
+/// - the root is always `{"type": "object", "properties": {…}}` — both API
+///   families insist on the pair, and MCP requires the type anyway;
+/// - `$schema` goes (a dialect tag no function-calling API reads, which
+///   some refuse as an unknown keyword), as do a `required` that is not a
+///   list of names and every `x-mcp-header` annotation (transport metadata,
+///   [`strip_header_annotations`](crate::mcp::strip_header_annotations));
+/// - a root `oneOf`/`anyOf`/`allOf` — refused at the top of a schema by
+///   Anthropic — folds into the one object: every branch's properties, and
+///   required what `allOf` requires or what *every* alternative requires.
+///   For alternatives the returned note says so, for the caller to put at
+///   the front of the description.
+///
+/// Everything else passes through in the server's order, so the same
+/// listing always yields the same bytes (the prompt-cache prefix).
+#[must_use]
+pub fn model_input_schema(schema: &Value) -> (Value, Option<&'static str>) {
+    let mut source = match super::headers::strip_header_annotations(schema) {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    source.shift_remove("$schema");
+    source.shift_remove("type");
+    let mut properties = match source.shift_remove("properties") {
+        Some(Value::Object(properties)) => properties,
+        _ => serde_json::Map::new(),
+    };
+    let mut required = string_list(source.shift_remove("required"));
+    let mut note = None;
+    for key in ["allOf", "anyOf", "oneOf"] {
+        let Some(branches) = source.shift_remove(key) else {
+            continue;
+        };
+        let branches = match branches {
+            Value::Array(branches) => branches,
+            _ => Vec::new(),
+        };
+        let mut shared: Option<Vec<String>> = None;
+        for branch in &branches {
+            let branch_required = string_list(branch.get("required").cloned());
+            if let Some(Value::Object(more)) = branch.get("properties") {
+                for (name, property) in more {
+                    properties
+                        .entry(name.clone())
+                        .or_insert_with(|| property.clone());
+                }
+            }
+            if key == "allOf" {
+                extend_unique(&mut required, branch_required);
+            } else {
+                shared = Some(match shared {
+                    None => branch_required,
+                    Some(so_far) => so_far
+                        .into_iter()
+                        .filter(|name| branch_required.contains(name))
+                        .collect(),
+                });
+            }
+        }
+        if key != "allOf" {
+            extend_unique(&mut required, shared.unwrap_or_default());
+            if !branches.is_empty() {
+                note = Some(FOLDED_SCHEMA_NOTE);
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("type".to_string(), Value::String("object".to_string()));
+    out.insert("properties".to_string(), Value::Object(properties));
+    if !required.is_empty() {
+        out.insert(
+            "required".to_string(),
+            Value::Array(required.into_iter().map(Value::String).collect()),
+        );
+    }
+    out.extend(source);
+    (Value::Object(out), note)
+}
+
+/// The names in a `required` value — anything that is not a string dropped.
+fn string_list(value: Option<Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::String(name) => Some(name),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Append `more` to `list`, skipping names already in it.
+fn extend_unique(list: &mut Vec<String>, more: Vec<String>) {
+    for name in more {
+        if !list.contains(&name) {
+            list.push(name);
+        }
+    }
+}
+
+/// Why a tool can't be offered at all — `None` when its schema is usable
+/// once [`model_input_schema`] has repaired it. Two things no repair fixes:
+/// a root that declares a type other than `object` (the arguments the model
+/// would send could never be what the tool takes), and a parameter whose
+/// name Anthropic refuses (`^[a-zA-Z0-9_.-]{1,64}$`, the stricter of the two
+/// API families) — such a tool is left out by name rather than failing
+/// every request it rides in.
+#[must_use]
+pub fn input_schema_problem(schema: &Value) -> Option<String> {
+    match schema.get("type") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(kind)) if kind == "object" => {}
+        Some(Value::Array(kinds)) if kinds.iter().any(|kind| kind == "object") => {}
+        Some(other) => {
+            return Some(format!("its input schema has type {other}, not \"object\""));
+        }
+    }
+    let (schema, _) = model_input_schema(schema);
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    properties
+        .keys()
+        .find(|name| !is_model_parameter_name(name))
+        .map(|name| {
+            format!(
+                "its parameter \"{name}\" has a name model APIs refuse \
+                 (letters, digits, '_', '.', '-'; at most 64)"
+            )
+        })
+}
+
+/// `^[a-zA-Z0-9_.-]{1,64}$` — the parameter names every model API accepts.
+fn is_model_parameter_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// The `tools/list` params for a page.
@@ -435,12 +735,24 @@ pub fn tools_list_params(cursor: Option<&str>) -> Value {
 /// model sent is wrapped defensively so the request stays schema-valid.
 #[must_use]
 pub fn call_params(tool: &str, arguments: &Value) -> Value {
+    call_params_retrying(tool, arguments, None)
+}
+
+/// [`call_params`] for the retry an [`InputRequired::Retry`] asks for: the
+/// same name and arguments, the server's `requestState` echoed **exactly**
+/// (and none at all when it sent none — the MRTR rules).
+#[must_use]
+pub fn call_params_retrying(tool: &str, arguments: &Value, request_state: Option<&str>) -> Value {
     let arguments = match arguments {
         Value::Object(_) => arguments.clone(),
         Value::Null => json!({}),
         other => json!({"value": other}),
     };
-    json!({"name": tool, "arguments": arguments})
+    let mut params = json!({"name": tool, "arguments": arguments});
+    if let Some(state) = request_state {
+        params["requestState"] = Value::String(state.to_string());
+    }
+    params
 }
 
 /// A `tools/call` result mapped for the cell and the model: the text, the
@@ -453,26 +765,46 @@ pub struct CallOutcome {
     pub image: Option<String>,
 }
 
-/// Map a `tools/call` result. A lone `text` content item is its text
-/// verbatim (the overwhelmingly common shape); anything richer renders as
-/// pretty JSON so nothing is silently dropped; `structuredContent` wins when
-/// the content list is empty. `isError` flips the cell red. A modern
-/// `resultType` of `input_required` (2026-07-28's multi-round-trip request)
-/// resolves as a recoverable error — this client advertises no input
-/// capabilities, so a compliant server shouldn't send one, and stalling a
-/// tool call on input nobody will provide would hang the turn; an absent
-/// `resultType` is `complete` (the compatibility rule for earlier servers).
+/// Map a `tools/call` result. Text items are their text, in order (a lone
+/// one — the overwhelmingly common shape — verbatim); `structuredContent`
+/// stands in when nothing else came. Binary content is **described, never
+/// dumped**: the first image rides [`CallOutcome::image`] (the `read`
+/// tool's channel, so a vision model sees it) under a `[image: …]` line, and
+/// a second image, audio, a blob resource — base64 that would spend the
+/// output budget on noise — each leave a one-line placeholder, while a
+/// resource link says where it points and an embedded text resource is its
+/// text. `isError` flips the cell red.
+///
+/// The `resultType` rules (2026-07-28): absent means complete (an earlier
+/// server), `input_required` is a recoverable failure here — the caller
+/// answers the retryable kind before it gets this far
+/// ([`input_required`]) — and anything else is invalid
+/// ([`result_type_problem`]), never a silent empty success.
 #[must_use]
 pub fn parse_call_result(result: &Value) -> CallOutcome {
-    if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
-        return CallOutcome {
-            text: "the server requested additional user input mid-call (a 2026-07-28 \
-                   multi-round-trip request), which this client does not support — \
-                   retry with complete arguments"
-                .to_string(),
-            ok: false,
-            image: None,
-        };
+    let fail = |text: String| CallOutcome {
+        text,
+        ok: false,
+        image: None,
+    };
+    match input_required(result) {
+        Some(InputRequired::Unsupported { methods }) if !methods.is_empty() => {
+            return fail(format!(
+                "the server asked for input this client can't provide ({}) — \
+                 try the call another way, or tell the user it needs this",
+                methods.join(", ")
+            ));
+        }
+        Some(_) => {
+            return fail(
+                "the server kept asking for the call to be repeated — try again shortly"
+                    .to_string(),
+            );
+        }
+        None => {}
+    }
+    if let Some(problem) = result_type_problem(result) {
+        return fail(problem);
     }
     let ok = !result
         .get("isError")
@@ -484,28 +816,8 @@ pub fn parse_call_result(result: &Value) -> CallOutcome {
         Some(items) => {
             let mut texts: Vec<String> = Vec::new();
             for item in items {
-                match item.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        if let Some(text) = item.get("text").and_then(Value::as_str) {
-                            texts.push(text.to_string());
-                        }
-                    }
-                    Some("image") if image.is_none() => {
-                        if let (Some(data), Some(mime)) = (
-                            item.get("data").and_then(Value::as_str),
-                            item.get("mimeType").and_then(Value::as_str),
-                        ) {
-                            image = Some(format!("data:{mime};base64,{data}"));
-                            texts.push(format!("[image: {mime}]"));
-                        }
-                    }
-                    _ => {
-                        // A resource/audio/unknown item: keep it as JSON so
-                        // the model still sees what arrived.
-                        texts.push(
-                            serde_json::to_string_pretty(item).unwrap_or_else(|_| "{}".to_string()),
-                        );
-                    }
+                if let Some(text) = content_text(item, &mut image) {
+                    texts.push(text);
                 }
             }
             texts.join("\n")
@@ -514,11 +826,11 @@ pub fn parse_call_result(result: &Value) -> CallOutcome {
     };
     let text = if text.trim().is_empty() {
         match result.get("structuredContent") {
-            Some(structured) => {
+            Some(structured) if !structured.is_null() => {
                 serde_json::to_string_pretty(structured).unwrap_or_else(|_| "{}".to_string())
             }
-            None if ok => "(no content)".to_string(),
-            None => "tool call failed".to_string(),
+            _ if ok => "(no content)".to_string(),
+            _ => "tool call failed".to_string(),
         }
     } else {
         text
@@ -526,9 +838,158 @@ pub fn parse_call_result(result: &Value) -> CallOutcome {
     CallOutcome { text, ok, image }
 }
 
+/// One content item as the model reads it — see [`parse_call_result`].
+/// `image` takes the first image's `data:` URL.
+fn content_text(item: &Value, image: &mut Option<String>) -> Option<String> {
+    let field = |key: &str| item.get(key).and_then(Value::as_str);
+    let mime = || field("mimeType").unwrap_or("unknown type");
+    match field("type") {
+        Some("text") => field("text").map(str::to_string),
+        Some("image") => {
+            let data = field("data")?;
+            if image.is_none() {
+                *image = Some(format!("data:{};base64,{data}", mime()));
+                Some(format!("[image: {}]", mime()))
+            } else {
+                Some(format!(
+                    "[image: {}, {} — only the first image is shown]",
+                    mime(),
+                    encoded_size(data)
+                ))
+            }
+        }
+        Some("audio") => Some(format!(
+            "[audio: {}, {} — not supported here]",
+            mime(),
+            encoded_size(field("data").unwrap_or_default())
+        )),
+        Some("resource_link") => {
+            let uri = field("uri").unwrap_or_default();
+            let name = field("title").or_else(|| field("name")).unwrap_or(uri);
+            let mut line = format!("[resource link: {name} — {uri}");
+            if let Some(mime) = field("mimeType") {
+                line.push_str(&format!(" ({mime})"));
+            }
+            line.push(']');
+            if let Some(description) = field("description").filter(|d| !d.trim().is_empty()) {
+                line.push_str(&format!(" {}", description.trim()));
+            }
+            Some(line)
+        }
+        Some("resource") => {
+            let resource = item.get("resource")?;
+            let uri = resource
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if let Some(text) = resource.get("text").and_then(Value::as_str) {
+                return Some(format!("[resource: {uri}]\n{text}"));
+            }
+            let mime = resource
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown type");
+            let blob = resource
+                .get("blob")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(format!(
+                "[resource: {uri} ({mime}), {} of binary data — not shown]",
+                encoded_size(blob)
+            ))
+        }
+        // An item of a kind this client doesn't know: kept as JSON so the
+        // model still sees what arrived, with any long string (a payload,
+        // most likely) cut down to its length.
+        _ => Some(
+            serde_json::to_string_pretty(&elide_long_strings(item))
+                .unwrap_or_else(|_| "{}".to_string()),
+        ),
+    }
+}
+
+/// The decoded size of a base64 payload, for a placeholder line.
+fn encoded_size(base64: &str) -> String {
+    let bytes = base64.trim().len() / 4 * 3;
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// `value` with every string over 1 KiB replaced by a note of its length.
+fn elide_long_strings(value: &Value) -> Value {
+    match value {
+        Value::String(text) if text.len() > 1024 => {
+            Value::String(format!("[{} characters]", text.chars().count()))
+        }
+        Value::Array(items) => Value::Array(items.iter().map(elide_long_strings).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), elide_long_strings(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A change notification is told apart from everything else a server
+    /// sends — a response, its own request — by its method and the `id` it
+    /// lacks.
+    #[test]
+    fn notifications_are_read_by_method() {
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#)
+                .as_deref(),
+            Some(TOOLS_LIST_CHANGED)
+        );
+        assert_eq!(
+            notification_method(
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":3}}}"#
+            )
+            .as_deref(),
+            Some(TOOLS_LIST_CHANGED)
+        );
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#),
+            None
+        );
+        assert_eq!(
+            notification_method(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            None
+        );
+        assert_eq!(notification_method("not json"), None);
+        assert_eq!(
+            listen_params(),
+            serde_json::json!({"notifications": {"toolsListChanged": true}})
+        );
+    }
+
+    /// `capabilities.tools.listChanged` — the server's promise to say when
+    /// its tools change — is read in both eras.
+    #[test]
+    fn a_server_promising_tool_changes_says_so_in_either_era() {
+        let legacy = parse_initialize(&serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {"listChanged": true}},
+            "serverInfo": {"name": "s", "version": "1"}
+        }));
+        assert!(legacy.tools_list_changed);
+        let (modern, _) = parse_discover(
+            &serde_json::json!({"capabilities": {"tools": {"listChanged": true}}}),
+            "2026-07-28",
+        );
+        assert!(modern.tools_list_changed);
+        let quiet = parse_initialize(&serde_json::json!({"capabilities": {"tools": {}}}));
+        assert!(!quiet.tools_list_changed);
+    }
 
     #[test]
     fn requests_and_notifications_frame_correctly() {
@@ -571,11 +1032,83 @@ mod tests {
             parse_incoming(r#"{"jsonrpc":"2.0","method":"notifications/progress"}"#),
             Some(Incoming::Other)
         );
+        // A server→client request is one of its own — a legacy server's
+        // `ping` must be answered, with its id as it came.
         assert_eq!(
             parse_incoming(r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#),
-            Some(Incoming::Other)
+            Some(Incoming::Request {
+                id: json!(9),
+                method: "ping".to_string(),
+            })
         );
         assert_eq!(parse_incoming("not json"), None);
+    }
+
+    /// Real servers stretch JSON-RPC in ways that cost a whole connect when
+    /// read strictly: Go structs serialize `"error": null` beside a result,
+    /// some libraries echo the id as a string or a float, and transport-level
+    /// errors (a body that failed to parse, a missing header) carry `id: null`.
+    #[test]
+    fn incoming_reads_the_shapes_real_servers_send() {
+        assert_eq!(
+            parse_incoming(r#"{"jsonrpc":"2.0","id":2,"result":{"ok":1},"error":null}"#),
+            Some(Incoming::Response {
+                id: 2,
+                result: Ok(json!({"ok": 1})),
+            })
+        );
+        for raw in [
+            r#"{"jsonrpc":"2.0","id":"5","result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":5.0,"result":{}}"#,
+        ] {
+            assert!(
+                matches!(parse_incoming(raw), Some(Incoming::Response { id: 5, .. })),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            parse_incoming(
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#
+            ),
+            Some(Incoming::OrphanError(RpcError {
+                code: -32700,
+                message: "Parse error".to_string(),
+                data: None,
+            }))
+        );
+    }
+
+    /// A legacy server's request is answered the way JSON-RPC requires:
+    /// `ping` with the empty result, anything else (a `roots/list` from a
+    /// server ignoring our empty capabilities) with method-not-found — the
+    /// id echoed as it came.
+    #[test]
+    fn a_server_request_is_answered_ping_with_empty_the_rest_unknown() {
+        assert_eq!(
+            server_request_answer(&json!("p-1"), "ping"),
+            json!({"jsonrpc": "2.0", "id": "p-1", "result": {}})
+        );
+        let refused = server_request_answer(&json!(7), "roots/list");
+        assert_eq!(refused["id"], json!(7));
+        assert_eq!(refused["error"]["code"], json!(-32601));
+        assert!(refused.get("result").is_none());
+    }
+
+    /// A server that needs a capability this client didn't declare says
+    /// which (`-32021`'s `requiredCapabilities`) — the message the model
+    /// reads names it instead of a bare code.
+    #[test]
+    fn a_missing_capability_error_names_the_capability() {
+        let error = RpcError {
+            code: -32021,
+            message: "Missing required client capability".to_string(),
+            data: Some(json!({"requiredCapabilities": {"elicitation": {}, "sampling": {}}})),
+        };
+        let shown = error.to_string();
+        assert!(
+            shown.contains("elicitation") && shown.contains("sampling"),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -707,18 +1240,54 @@ mod tests {
         assert_eq!(choose_version(&[]), None);
     }
 
+    /// "A `resultType` of any value unrecognized by the client MUST be
+    /// considered invalid" — a task handle or a future value must never
+    /// read as a silent `(no content)` success.
     #[test]
-    fn header_values_encode_only_when_unsafe() {
-        assert_eq!(header_value("get_weather"), "get_weather");
-        assert_eq!(header_value("tools/call"), "tools/call");
-        // Non-ASCII, whitespace-framed, and sentinel-looking values take the
-        // spec's base64 sentinel form.
-        assert_eq!(header_value("héllo"), "=?base64?aMOpbGxv?=");
-        assert!(header_value(" padded").starts_with("=?base64?"));
-        // A value that *looks* like the sentinel is re-encoded so a decoder
-        // can never mistake it for one.
-        assert_eq!(header_value("=?base64?x?="), "=?base64?PT9iYXNlNjQ/eD89?=");
-        assert!(header_value("").starts_with("=?base64?"));
+    fn an_unknown_result_type_is_invalid() {
+        let outcome = parse_call_result(&json!({
+            "resultType": "task",
+            "task": {"taskId": "t1"}
+        }));
+        assert!(!outcome.ok);
+        assert!(outcome.text.contains("task"), "{}", outcome.text);
+        assert_eq!(
+            result_type_problem(&json!({"resultType": "complete"})),
+            None
+        );
+        assert_eq!(result_type_problem(&json!({})), None);
+        assert!(result_type_problem(&json!({"resultType": "later"})).is_some());
+    }
+
+    /// An `input_required` result carrying only `requestState` is a server
+    /// asking to be asked again (load shedding) — retryable by a client that
+    /// declared nothing; one carrying `inputRequests` asks for what this
+    /// client can't give, and names it.
+    #[test]
+    fn input_required_tells_a_retry_from_a_request_for_input() {
+        assert_eq!(
+            input_required(&json!({"resultType": "input_required", "requestState": "s1"})),
+            Some(InputRequired::Retry {
+                request_state: "s1".to_string()
+            })
+        );
+        assert_eq!(
+            input_required(&json!({
+                "resultType": "input_required",
+                "inputRequests": {"who": {"method": "elicitation/create", "params": {}}},
+                "requestState": "s2"
+            })),
+            Some(InputRequired::Unsupported {
+                methods: vec!["elicitation/create".to_string()]
+            })
+        );
+        assert_eq!(input_required(&json!({"resultType": "complete"})), None);
+        // The retry echoes the state exactly, beside the same name and
+        // arguments.
+        assert_eq!(
+            call_params_retrying("t", &json!({"a": 1}), Some("s1")),
+            json!({"name": "t", "arguments": {"a": 1}, "requestState": "s1"})
+        );
     }
 
     #[test]
@@ -789,8 +1358,123 @@ mod tests {
         assert_eq!(tools_list_params(None), Value::Null);
     }
 
+    /// The schema rides **every** request as the function's `parameters`,
+    /// so a shape a provider refuses fails every turn, not just the call:
+    /// the root must say `type: "object"` and carry `properties` (both
+    /// OpenAI- and Anthropic-shaped APIs insist), whatever the server left out.
+    #[test]
+    fn the_model_schema_always_has_an_object_root_with_properties() {
+        let cases = [
+            (json!({}), json!({"type": "object", "properties": {}})),
+            (json!(null), json!({"type": "object", "properties": {}})),
+            (json!(true), json!({"type": "object", "properties": {}})),
+            (
+                json!({"properties": {"q": {"type": "string"}}}),
+                json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            ),
+            (
+                json!({"type": "object"}),
+                json!({"type": "object", "properties": {}}),
+            ),
+            (
+                json!({"type": ["object", "null"], "properties": null}),
+                json!({"type": "object", "properties": {}}),
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(model_input_schema(&input).0, want, "{input}");
+        }
+    }
+
+    #[test]
+    fn the_model_schema_drops_what_providers_refuse_and_keeps_the_rest() {
+        let (schema, note) = model_input_schema(&json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"q": {"type": "string", "format": "uri"}},
+            "required": ["q", 7],
+            "additionalProperties": false
+        }));
+        assert_eq!(note, None);
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object",
+                "properties": {"q": {"type": "string", "format": "uri"}},
+                "required": ["q"],
+                "additionalProperties": false
+            })
+        );
+        let (schema, _) = model_input_schema(&json!({"type": "object", "required": "q"}));
+        assert_eq!(schema, json!({"type": "object", "properties": {}}));
+    }
+
+    /// Anthropic refuses `oneOf`/`anyOf`/`allOf` at the top of a tool's
+    /// schema, so the branches fold into one object — every branch's
+    /// properties, required only where every alternative requires it — and
+    /// the description says the shapes are alternatives.
+    #[test]
+    fn root_combinators_fold_into_one_object() {
+        let (schema, note) = model_input_schema(&json!({
+            "type": "object",
+            "oneOf": [
+                {"properties": {"id": {"type": "string"}, "kind": {"type": "string"}},
+                 "required": ["id", "kind"]},
+                {"properties": {"url": {"type": "string"}, "kind": {"type": "string"}},
+                 "required": ["url", "kind"]}
+            ]
+        }));
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "url": {"type": "string"}
+                },
+                "required": ["kind"]
+            })
+        );
+        assert!(note.is_some_and(|note| note.contains("one of")));
+        // allOf: every branch applies, so everything any branch requires is
+        // required.
+        let (schema, _) = model_input_schema(&json!({
+            "allOf": [
+                {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"properties": {"b": {"type": "integer"}}, "required": ["b"]}
+            ]
+        }));
+        assert_eq!(schema["required"], json!(["a", "b"]));
+        assert_eq!(schema["type"], "object");
+    }
+
+    /// What can't be repaired is refused, by tool and with the reason, so
+    /// one broken tool never takes the rest of the session down with it.
+    #[test]
+    fn a_tool_whose_input_can_never_be_an_object_is_refused() {
+        assert!(input_schema_problem(&json!({"type": "object"})).is_none());
+        assert!(input_schema_problem(&json!({})).is_none());
+        let refused = input_schema_problem(&json!({"type": "string"})).expect("refused");
+        assert!(refused.contains("string"), "{refused}");
+        // A parameter name Anthropic refuses (`^[a-zA-Z0-9_.-]{1,64}$`).
+        let refused = input_schema_problem(&json!({
+            "type": "object",
+            "properties": {"file path": {"type": "string"}}
+        }))
+        .expect("refused");
+        assert!(refused.contains("file path"), "{refused}");
+        let long = "p".repeat(65);
+        assert!(
+            input_schema_problem(&json!({"type": "object", "properties": {long: {}}})).is_some()
+        );
+    }
+
     #[test]
     fn a_huge_description_is_capped() {
+        // Claude Code's cap since 2.1.296 — a description long enough to
+        // carry real usage notes, short of a wiki page.
+        assert_eq!(MAX_TOOL_DESCRIPTION_CHARS, 4096);
         let long = "x".repeat(MAX_TOOL_DESCRIPTION_CHARS + 100);
         let (tools, _) = parse_tools_page(&json!({"tools": [{"name": "t", "description": long}]}));
         assert_eq!(
@@ -851,5 +1535,49 @@ mod tests {
         assert_eq!(empty.text, "(no content)");
         let empty_err = parse_call_result(&json!({"isError": true}));
         assert_eq!(empty_err.text, "tool call failed");
+    }
+
+    /// Binary content never reaches the model as base64 text: a second
+    /// image, audio and a blob resource are named in one line each, a link
+    /// says where it points, and an embedded text resource is its text.
+    #[test]
+    fn non_text_content_is_described_never_dumped() {
+        let base64 = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB".repeat(40);
+        let outcome = parse_call_result(&json!({"content": [
+            {"type": "image", "data": "AAAA", "mimeType": "image/png"},
+            {"type": "image", "data": base64, "mimeType": "image/jpeg"},
+            {"type": "audio", "data": base64, "mimeType": "audio/wav"},
+            {"type": "resource_link", "uri": "file:///r/a.txt", "name": "a.txt",
+             "mimeType": "text/plain"},
+            {"type": "resource", "resource": {"uri": "file:///r/b.md", "text": "# B"}},
+            {"type": "resource", "resource": {"uri": "file:///r/c.bin", "blob": base64,
+             "mimeType": "application/octet-stream"}}
+        ]}));
+        assert!(outcome.ok);
+        assert_eq!(outcome.image.as_deref(), Some("data:image/png;base64,AAAA"));
+        assert!(!outcome.text.contains("QUFB"), "{}", outcome.text);
+        assert!(
+            outcome.text.contains("[image: image/jpeg"),
+            "{}",
+            outcome.text
+        );
+        assert!(
+            outcome.text.contains("[audio: audio/wav"),
+            "{}",
+            outcome.text
+        );
+        assert!(outcome.text.contains("a.txt") && outcome.text.contains("file:///r/a.txt"));
+        assert!(outcome.text.contains("# B"), "{}", outcome.text);
+        assert!(outcome.text.contains("file:///r/c.bin"), "{}", outcome.text);
+    }
+
+    /// 2026-07-28: "an empty string is a valid cursor and thus MUST NOT be
+    /// treated as the end of results".
+    #[test]
+    fn an_empty_cursor_continues_the_listing() {
+        let (_, cursor) = parse_tools_page(&json!({"tools": [], "nextCursor": ""}));
+        assert_eq!(cursor.as_deref(), Some(""));
+        let (_, cursor) = parse_tools_page(&json!({"tools": []}));
+        assert_eq!(cursor, None);
     }
 }

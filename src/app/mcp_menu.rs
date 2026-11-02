@@ -107,7 +107,9 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
             out.push(A::Disable);
             out
         }
-        McpServerStatus::Pending => vec![A::Disable],
+        // Reconnect first: the page a Reconnect or an Enable lands on, so
+        // a second Enter on it restarts the attempt rather than disabling.
+        McpServerStatus::Pending => vec![A::Reconnect, A::Disable],
         // A project server waiting for the startup review has no actions
         // here: the review on screen is where it is answered
         // (`docs/config-review.md`).
@@ -125,6 +127,9 @@ pub struct McpAuthView {
     /// Set once the pasted URL was submitted — the field greys out while the
     /// exchange runs.
     pub submitted: bool,
+    /// Why the flow turned the last paste away — shown under the field until
+    /// the URL is edited.
+    pub error: Option<String>,
 }
 
 /// The open `/mcp` menu.
@@ -183,6 +188,17 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return;
         };
+        // On a server's page the selection is an *action*: a state change
+        // reorders the list under it (a Reconnect turns the server
+        // `connecting…`, whose list is shorter), and following the index
+        // landed a second Enter on Disable. It stays on the same action, or
+        // the first when that one is gone.
+        let chosen = (menu.page == McpPage::Server)
+            .then(|| {
+                menu.current_server()
+                    .and_then(|s| server_actions(s).get(menu.selected).copied())
+            })
+            .flatten();
         menu.servers = servers;
         let server_count = menu.servers.len();
         if server_count == 0 {
@@ -198,8 +214,13 @@ impl App {
         match menu.page {
             McpPage::List => menu.selected = clamp(menu.selected, server_count),
             McpPage::Server => {
-                let len = menu.current_server().map_or(0, |s| server_actions(s).len());
-                menu.selected = clamp(menu.selected, len);
+                let actions = menu
+                    .current_server()
+                    .map(server_actions)
+                    .unwrap_or_default();
+                menu.selected = chosen
+                    .and_then(|chosen| actions.iter().position(|action| *action == chosen))
+                    .unwrap_or(0);
             }
             McpPage::Tools => {
                 let len = menu.current_server().map_or(0, |s| s.tools.len());
@@ -226,15 +247,29 @@ impl App {
         }
     }
 
-    /// The auth flow finished — the auth page closes back to the server's
-    /// detail (the boundary raises the outcome toast beside this).
-    pub fn finish_mcp_auth(&mut self) {
+    /// `server`'s auth flow finished — its auth page closes back to the
+    /// server's detail (the boundary raises the outcome toast beside this).
+    /// Another server's page is left alone.
+    pub fn finish_mcp_auth(&mut self, server: &str) {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
+            && menu.current_server().is_some_and(|s| s.name == server)
         {
             menu.page = McpPage::Server;
             menu.selected = 0;
             menu.auth = McpAuthView::default();
+        }
+    }
+
+    /// `server`'s flow turned the pasted URL away: the field takes another
+    /// paste, with the reason under it.
+    pub fn reject_mcp_auth_paste(&mut self, server: &str, reason: &str) {
+        if let Some(menu) = &mut self.mcp_menu
+            && menu.page == McpPage::Auth
+            && menu.current_server().is_some_and(|s| s.name == server)
+        {
+            menu.auth.submitted = false;
+            menu.auth.error = Some(reason.to_string());
         }
     }
 
@@ -427,10 +462,12 @@ impl App {
             KeyCode::Backspace => {
                 menu.auth.input.pop();
                 menu.auth.submitted = false;
+                menu.auth.error = None;
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 menu.auth.input.push(c);
                 menu.auth.submitted = false;
+                menu.auth.error = None;
             }
             _ => {}
         }
@@ -447,6 +484,7 @@ impl App {
                 .input
                 .push_str(text.replace(['\n', '\r'], "").trim());
             menu.auth.submitted = false;
+            menu.auth.error = None;
             return true;
         }
         false

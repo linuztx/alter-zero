@@ -58,6 +58,36 @@ for expect in "error: mcp add needs a --url or a command" \
 	expect_has "$mcp84_bad" -F "$expect" "the grammar error is missing '$expect'"
 done
 expect_lacks "$mcp84_bad" -F "alter-zero mcp — manage MCP servers" "a grammar error dumped the whole help page instead of the usage trailer"
+# A pre-registered OAuth client (docs/mcp-cli.md): --client-id and
+# --callback-port go into the entry, the secret — read from
+# MCP_CLIENT_SECRET, never the command line — into the owner-only token
+# store and never the file, and `mcp get` says where it is, not what.
+MCP84_ENV="env ALTER_ZERO_MCP_FILE=$MCP84_CFG/mcp.json ALTER_ZERO_CONFIG_DIR=$MCP84_CFG"
+mcp84_oauth="$($MCP84_ENV MCP_CLIENT_SECRET=s3cret-value "$BIN" mcp add calendar --url https://calendar.example/mcp --client-id 123.apps --callback-port 8976 --client-secret 2>&1)"
+mcp84_oauth_exit=$?
+echo "==== Phase 84: mcp add with a pre-registered OAuth client ===="
+printf '%s\n' "$mcp84_oauth"
+if [ "$mcp84_oauth_exit" -ne 0 ]; then
+	fail "mcp add --client-id exited $mcp84_oauth_exit"
+fi
+expect_has "$mcp84_oauth" -F "Client secret: kept in $MCP84_CFG/mcp-auth.json" "mcp add did not say where the client secret went"
+if grep -qF s3cret-value "$MCP84_CFG/mcp.json"; then
+	fail "the client secret was written into mcp.json"
+fi
+if ! grep -qF s3cret-value "$MCP84_CFG/mcp-auth.json"; then
+	fail "the client secret was not kept in the token store"
+fi
+if [ "$(stat -c %a "$MCP84_CFG/mcp-auth.json" 2>/dev/null || stat -f %Lp "$MCP84_CFG/mcp-auth.json")" != "600" ]; then
+	fail "the token store holding the client secret is not owner-only"
+fi
+mcp84_get="$($MCP84_ENV "$BIN" mcp get calendar 2>&1)"
+echo "==== Phase 84: mcp get names the client, never its secret ===="
+printf '%s\n' "$mcp84_get"
+for expect in "OAuth client: 123.apps" "Callback port: 8976" "Client secret: kept with the tokens"; do
+	expect_has "$mcp84_get" -F "$expect" "mcp get is missing '$expect'"
+done
+expect_lacks "$mcp84_get" -F "s3cret-value" "mcp get printed the client secret"
+$MCP84_ENV "$BIN" mcp remove calendar >/dev/null 2>&1
 APP_MCP84="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$MCP84_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S84" -x 100 -y 36 "$APP_MCP84"
 sleep 0.8

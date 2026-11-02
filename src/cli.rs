@@ -88,6 +88,10 @@ pub enum McpCli {
     Add {
         name: String,
         config: McpServerConfig,
+        /// `--client-secret`: read the entry's OAuth client secret (from
+        /// `MCP_CLIENT_SECRET`, a prompt, or stdin) and keep it with the
+        /// tokens — never in the file.
+        client_secret: bool,
     },
     /// `mcp remove <name>`.
     Remove { name: String },
@@ -308,6 +312,23 @@ Manage MCP servers in the user config file (ALTER_ZERO_MCP_FILE, else
                 literal: "-H, --header",
                 placeholder: " <H>",
                 description: "\"Name: Value\" header for a remote server (repeatable)",
+            },
+            Row {
+                literal: "--client-id",
+                placeholder: " <ID>",
+                description: "Pre-registered OAuth client, for a server whose\n\
+                              login provider registers none",
+            },
+            Row {
+                literal: "--client-secret",
+                placeholder: "",
+                description: "Ask for its secret (or read MCP_CLIENT_SECRET) and\n\
+                              keep it with the tokens, never in the file",
+            },
+            Row {
+                literal: "--callback-port",
+                placeholder: " <N>",
+                description: "The port the client's redirect URI names",
             },
             Row {
                 literal: "-h, --help",
@@ -545,6 +566,12 @@ where
         "--help" | "-h" => Ok(McpCli::Help),
         "add" => parse_mcp_add(args),
         "add-json" => {
+            let mut client_secret = false;
+            let args = args.filter(|arg| {
+                let switch = arg == "--client-secret";
+                client_secret |= switch;
+                !switch
+            });
             let Some(mut positionals) = plain_arguments(args)? else {
                 return Ok(McpCli::Help);
             };
@@ -560,7 +587,22 @@ where
             mcp::validate_server_name(&name)?;
             let config =
                 mcp::parse_server_entry(&json).map_err(|e| format!("invalid server JSON: {e}"))?;
-            Ok(McpCli::Add { name, config })
+            if client_secret
+                && config
+                    .oauth()
+                    .and_then(|oauth| oauth.client_id.as_ref())
+                    .is_none()
+            {
+                return Err(
+                    "--client-secret needs the entry's oauth.clientId to keep a secret for"
+                        .to_string(),
+                );
+            }
+            Ok(McpCli::Add {
+                name,
+                config,
+                client_secret,
+            })
         }
         "remove" | "get" => {
             let Some(positionals) = plain_arguments(args)? else {
@@ -607,6 +649,9 @@ where
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     let mut headers: BTreeMap<String, String> = BTreeMap::new();
     let mut command: Vec<String> = Vec::new();
+    let mut client_id: Option<String> = None;
+    let mut callback_port: Option<u16> = None;
+    let mut client_secret = false;
     while let Some(arg) = args.next() {
         if arg == "--" {
             command.extend(args.by_ref());
@@ -637,6 +682,27 @@ where
                     let (key, val) = parse_header_pair(&flag_value(&flag, value, &mut args)?)?;
                     headers.insert(key, val);
                 }
+                "--client-id" => client_id = Some(flag_value(&flag, value, &mut args)?),
+                "--callback-port" => {
+                    let port = flag_value(&flag, value, &mut args)?;
+                    callback_port = Some(
+                        port.parse::<u16>()
+                            .ok()
+                            .filter(|port| *port != 0)
+                            .ok_or_else(|| {
+                                format!("--callback-port needs a port number, not \"{port}\"")
+                            })?,
+                    );
+                }
+                "--client-secret" => {
+                    if value.is_some() {
+                        return Err("--client-secret takes no value: a secret on the command \
+                                    line is never safe — it is read from MCP_CLIENT_SECRET, \
+                                    or asked for"
+                            .to_string());
+                    }
+                    client_secret = true;
+                }
                 _ => return Err(format!("unrecognized mcp add flag: {arg}")),
             }
             continue;
@@ -654,8 +720,35 @@ where
         return Err("mcp add needs a server name".to_string());
     };
     mcp::validate_server_name(&name)?;
-    let config = build_add_config(url, transport.as_deref(), env, headers, command)?;
-    Ok(McpCli::Add { name, config })
+    let mut config = build_add_config(url, transport.as_deref(), env, headers, command)?;
+    if client_secret && client_id.is_none() {
+        return Err("--client-secret needs --client-id, the client it belongs to".to_string());
+    }
+    if client_id.is_some() || callback_port.is_some() {
+        let oauth = Some(mcp::OAuthClientConfig {
+            client_id,
+            client_secret: None,
+            callback_port,
+            scopes: None,
+        });
+        match &mut config {
+            McpServerConfig::Http { oauth: slot, .. }
+            | McpServerConfig::Sse { oauth: slot, .. } => {
+                *slot = oauth;
+            }
+            McpServerConfig::Stdio { .. } => {
+                return Err(
+                    "--client-id and --callback-port are for a remote (http/sse) server"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(McpCli::Add {
+        name,
+        config,
+        client_secret,
+    })
 }
 
 /// A value-taking `mcp add` flag's value: the `=`-attached one, else the
@@ -726,13 +819,19 @@ fn build_add_config(
                     url,
                     headers,
                     sse_fallback: true,
+                    oauth: None,
                 }),
                 Some("http") => Ok(McpServerConfig::Http {
                     url,
                     headers,
                     sse_fallback: false,
+                    oauth: None,
                 }),
-                Some("sse") => Ok(McpServerConfig::Sse { url, headers }),
+                Some("sse") => Ok(McpServerConfig::Sse {
+                    url,
+                    headers,
+                    oauth: None,
+                }),
                 Some(other) => Err(format!("--transport {other} takes a command, not --url")),
             }
         }
@@ -1236,6 +1335,105 @@ Options:
         }
     }
 
+    /// `mcp add` takes a pre-registered OAuth client the way other MCP
+    /// clients' CLIs do — `--client-id`, `--callback-port`, and
+    /// `--client-secret` as a switch, since a secret on the command line
+    /// lands in the shell history and the process list (`docs/mcp-cli.md`).
+    #[test]
+    fn mcp_add_takes_a_preregistered_oauth_client() {
+        let Ok(McpCli::Add {
+            name,
+            config,
+            client_secret,
+        }) = parsed_mcp(&[
+            "mcp",
+            "add",
+            "calendar",
+            "--url",
+            "https://calendarmcp.googleapis.com/mcp/v1",
+            "--client-id",
+            "123.apps.googleusercontent.com",
+            "--callback-port",
+            "8976",
+            "--client-secret",
+        ])
+        else {
+            panic!("an add");
+        };
+        assert_eq!(name, "calendar");
+        assert!(client_secret);
+        let oauth = config.oauth().expect("the client");
+        assert_eq!(
+            oauth.client_id.as_deref(),
+            Some("123.apps.googleusercontent.com")
+        );
+        assert_eq!(oauth.callback_port, Some(8976));
+        assert_eq!(oauth.client_secret, None, "never written to the file");
+        for (args, needle) in [
+            (
+                &[
+                    "mcp",
+                    "add",
+                    "x",
+                    "--url",
+                    "https://x/mcp",
+                    "--client-secret=s",
+                ][..],
+                "never",
+            ),
+            (
+                &[
+                    "mcp",
+                    "add",
+                    "x",
+                    "--url",
+                    "https://x/mcp",
+                    "--callback-port",
+                    "0",
+                ],
+                "--callback-port",
+            ),
+            (
+                &[
+                    "mcp",
+                    "add",
+                    "x",
+                    "--url",
+                    "https://x/mcp",
+                    "--client-secret",
+                ],
+                "--client-id",
+            ),
+            (
+                &["mcp", "add", "x", "--client-id", "c", "--", "srv"],
+                "remote",
+            ),
+        ] {
+            let error = parsed_mcp(args).expect_err("refused");
+            assert!(error.contains(needle), "{args:?}: {error}");
+        }
+        // `add-json` names its client in the entry, and takes the switch.
+        let Ok(McpCli::Add { client_secret, .. }) = parsed_mcp(&[
+            "mcp",
+            "add-json",
+            "cal",
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"c"}}"#,
+            "--client-secret",
+        ]) else {
+            panic!("an add");
+        };
+        assert!(client_secret);
+        let error = parsed_mcp(&[
+            "mcp",
+            "add-json",
+            "cal",
+            r#"{"url":"https://x/mcp"}"#,
+            "--client-secret",
+        ])
+        .expect_err("no client to keep a secret for");
+        assert!(error.contains("clientId"), "{error}");
+    }
+
     fn pairs(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
         entries
             .iter()
@@ -1253,7 +1451,9 @@ Options:
                 url: "https://mcp.vercel.com".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: true,
+                oauth: None,
             },
+            client_secret: false,
         });
         assert_eq!(
             parsed_mcp(&["mcp", "add", "vercel", "--url", "https://mcp.vercel.com"]),
@@ -1289,7 +1489,9 @@ Options:
                     url: "https://x".to_string(),
                     headers: BTreeMap::new(),
                     sse_fallback: false,
+                    oauth: None,
                 },
+                client_secret: false,
             })
         );
         let sse = parsed_mcp(&["mcp", "add", "old", "-t", "sse", "--url", "https://x/sse"]);
@@ -1300,7 +1502,9 @@ Options:
                 config: McpServerConfig::Sse {
                     url: "https://x/sse".to_string(),
                     headers: BTreeMap::new(),
+                    oauth: None,
                 },
+                client_secret: false,
             })
         );
         // `--transport stdio` is the explicit spelling of the command form.
@@ -1314,6 +1518,7 @@ Options:
                     args: Vec::new(),
                     env: BTreeMap::new(),
                 },
+                client_secret: false,
             })
         );
         let err = parsed_mcp(&["mcp", "add", "x", "-t", "ws", "--url", "https://x"])
@@ -1341,6 +1546,7 @@ Options:
                         .collect(),
                     env: BTreeMap::new(),
                 },
+                client_secret: false,
             })
         );
         // `--` starts the command outright — needed when its first word
@@ -1355,6 +1561,7 @@ Options:
                     args: vec!["--help".to_string()],
                     env: BTreeMap::new(),
                 },
+                client_secret: false,
             })
         );
     }
@@ -1374,6 +1581,7 @@ Options:
                     // First `=` splits; empty values are legal.
                     env: pairs(&[("A", "1"), ("B", "x=y"), ("C", "")]),
                 },
+                client_secret: false,
             })
         );
         let got = parsed_mcp(&[
@@ -1396,7 +1604,9 @@ Options:
                     // First `:` splits, both sides trimmed.
                     headers: pairs(&[("Authorization", "Bearer a:b"), ("X-Custom", "v")]),
                     sse_fallback: true,
+                    oauth: None,
                 },
+                client_secret: false,
             })
         );
         let err = parsed_mcp(&["mcp", "add", "x", "-e", "NOEQ", "--", "c"]).expect_err("bad env");
@@ -1454,7 +1664,9 @@ Options:
                     url: "https://x/mcp".to_string(),
                     headers: BTreeMap::new(),
                     sse_fallback: false,
+                    oauth: None,
                 },
+                client_secret: false,
             })
         );
         let err = parsed_mcp(&["mcp", "add-json", "wiki", "{not json"]).expect_err("bad json");
