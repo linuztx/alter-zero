@@ -873,11 +873,6 @@ pub fn run_agent(
     }
 }
 
-/// The `ToolStart` announcing `call`: the display name, the one-line header
-/// summary, the model's own `description` when it gave one — and the
-/// **verbatim arguments**, which is what lets the recorded call replay
-/// losslessly next turn instead of being rebuilt from the summary
-/// (`docs/context.md`).
 /// Refuse `call` on its `PreToolUse` hook's block, and hand back what the
 /// model reads. The permission gate's own rejection event, reused whole —
 /// red cell, model-facing text on `context_output`, and a `/resume` that
@@ -912,6 +907,11 @@ fn refuse_by_hook(
     result
 }
 
+/// The `ToolStart` announcing `call`: the display name, the one-line header
+/// summary, the model's own `description` when it gave one — and the
+/// **verbatim arguments**, which is what lets the recorded call replay
+/// losslessly next turn instead of being rebuilt from the summary
+/// (`docs/context.md`).
 fn tool_start_event(
     call: &ToolCallRequest,
     session_command: &dyn Fn(&str) -> Option<String>,
