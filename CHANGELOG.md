@@ -14,6 +14,18 @@ release heading when a version is cut.
 
 ### Added
 
+- **Sign in to MCP servers that need an OAuth client of your own.** Some
+  servers, Google's among them, only accept a login client you create in
+  the provider's console, and signing in to them ended in an error. A
+  server's entry in `mcp.json` can now name that client in an `oauth` block
+  (`clientId`, and `callbackPort` and `scopes` if its setup asks for them),
+  or `alter-zero mcp add <name> --url <url> --client-id <id>
+  --client-secret` sets it up: the secret is asked for, or read from
+  `MCP_CLIENT_SECRET`, and kept with your MCP logins rather than in the
+  file. `/mcp` offers **Authenticate** for such a server straight away,
+  Google logins renew themselves instead of lapsing within the hour, and
+  `alter-zero mcp get` shows the client but never its secret
+  (`docs/mcp.md`, `docs/mcp-cli.md`).
 - **An MCP server's new tools are offered as soon as it has them.** A
   server whose tools change while it runs, one you are developing or one
   that turns tool sets on and off, says so, and the client used to keep the

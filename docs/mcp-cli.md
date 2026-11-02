@@ -63,8 +63,9 @@ review or send its servers straight back to it (`docs/config-review.md`).
 
 ```
 alter-zero mcp add <name> --url <URL> [--transport http|sse] [-H|--header "Name: Value"]...
+                   [--client-id <ID> [--client-secret] [--callback-port <N>]]
 alter-zero mcp add <name> [--transport stdio] [-e|--env KEY=VALUE]... [--] <command> [args...]
-alter-zero mcp add-json <name> <json>
+alter-zero mcp add-json <name> <json> [--client-secret]
 alter-zero mcp remove <name>
 alter-zero mcp get <name>
 alter-zero mcp list
@@ -97,6 +98,24 @@ alter-zero mcp list
   trims both sides, rejects a missing `:` or empty name, and applies to
   remote only. Both are one-value-per-flag (never variadic — the trap
   that broke Claude Code's own help example). Repeated keys: last wins.
+- **A pre-registered OAuth client** — for a server whose login provider
+  registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
+  clients*) — is the flags other MCP clients' CLIs document:
+  `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
+  object (remote only; with a command they are a usage error), and
+  `--client-secret` is a **switch**, never a value — `--client-secret=…`
+  is refused, since a secret on the command line lands in the shell
+  history and the process list. `add-json` takes the switch too, naming
+  its client through the entry's own `oauth.clientId` (none there is a
+  usage error). The boundary reads the secret **before** anything is
+  written, so a missing one never leaves the server half-added: from
+  `MCP_CLIENT_SECRET` when set, else a prompt on stderr with echo off when
+  stdin is a terminal (rustix's `termios`, restored after), else one line
+  of stdin — and keeps it in the owner-only token store's `clients`
+  section under the server's URL (`llm::mcp::save_client_secret`), never
+  in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
+  `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
+  `***** (in the file)` for a `clientSecret` written there), never what.
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules

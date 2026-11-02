@@ -3674,6 +3674,7 @@ fn live_mcp_deepwiki_tool_call_round_trips() {
                     url: "https://mcp.deepwiki.com/mcp".to_string(),
                     headers: Default::default(),
                     sse_fallback: false,
+                    oauth: None,
                 },
                 scope: McpScope::User,
                 config_path: "~/.alter-zero/mcp.json".to_string(),

@@ -854,7 +854,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path, open_browser) = {
+        let (url, challenge, auth_path, open_browser, configured) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -880,8 +880,22 @@ impl McpManager {
                 server.challenge.clone(),
                 inner.auth_path.clone(),
                 inner.open_browser,
+                server
+                    .resolved
+                    .as_ref()
+                    .ok()
+                    .and_then(McpServerConfig::oauth)
+                    .cloned(),
             )
         };
+        // The entry's pre-registered client, its secret the file's or the
+        // one `mcp add --client-secret` kept with the tokens.
+        let client = configured.map(|mut client| {
+            if client.client_secret.is_none() {
+                client.client_secret = oauth::load_client_secret(auth_path.as_deref(), &url);
+            }
+            client
+        });
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
         let id = {
@@ -924,9 +938,12 @@ impl McpManager {
                 server: name.clone(),
             };
             let result = oauth::run_auth_flow(
-                &url,
-                challenge.as_deref(),
-                auth_path.as_deref(),
+                &oauth::SignIn {
+                    server_url: &url,
+                    challenge: challenge.as_deref(),
+                    store_path: auth_path.as_deref(),
+                    client: client.as_ref(),
+                },
                 &paste_rx,
                 &progress,
                 &open_browser,
@@ -1001,12 +1018,25 @@ impl McpManager {
                 config_path: server.entry.config_path.clone(),
                 config: server.entry.config.clone(),
                 status: server.status.clone(),
-                auth: crate::mcp::auth_state(
+                auth: match crate::mcp::auth_state(
                     server.entry.config.is_remote(),
                     server.entry.config.has_auth_header(),
                     server.has_tokens,
                     &server.status,
-                ),
+                ) {
+                    // An entry naming its OAuth client wants a login, even
+                    // from a server that let an anonymous connect through.
+                    Some(crate::mcp::McpAuthState::NotRequired)
+                        if server
+                            .entry
+                            .config
+                            .oauth()
+                            .is_some_and(|oauth| oauth.client_id.is_some()) =>
+                    {
+                        Some(crate::mcp::McpAuthState::NotAuthenticated)
+                    }
+                    auth => auth,
+                },
                 identity: server.identity.clone(),
                 tools: server.tools.clone(),
                 excluded: server.excluded.clone(),
@@ -1751,6 +1781,7 @@ done"#
                 url,
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -1759,6 +1790,34 @@ done"#
         wait_connected(&manager, "remote");
         wait_for_tools(&manager, "remote", 2);
         manager.shutdown();
+    }
+
+    /// A server whose entry names its OAuth client wants a login even when
+    /// it lets an anonymous connect through — Google's list their tools to
+    /// anyone and refuse the calls — so the page offers Authenticate at
+    /// once, instead of "not required" until the first call fails.
+    #[test]
+    fn a_server_with_a_configured_client_offers_a_sign_in() {
+        let entry = McpServerEntry {
+            name: "calendar".to_string(),
+            config: McpServerConfig::Http {
+                url: "https://calendar.test/mcp".to_string(),
+                headers: Default::default(),
+                sse_fallback: false,
+                oauth: Some(crate::mcp::OAuthClientConfig {
+                    client_id: Some("cid".to_string()),
+                    ..Default::default()
+                }),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
+        manager.lock().servers[0].status = McpServerStatus::Connected;
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
     }
 
     /// The instructions the reminder carries: only a connected server with
@@ -2024,6 +2083,7 @@ done"#,
                 url: format!("http://127.0.0.1:{port}/mcp"),
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -2121,6 +2181,7 @@ done"#,
                         url: url.clone(),
                         headers: Default::default(),
                         sse_fallback: false,
+                        oauth: None,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -2307,6 +2368,7 @@ echo {name} >> '{marks}'"#,
                 url: format!("http://127.0.0.1:{port}/mcp"),
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -2613,6 +2675,7 @@ done
                 url,
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -3059,6 +3122,7 @@ done
                         url: fixture.url.clone(),
                         headers: Default::default(),
                         sse_fallback: false,
+                        oauth: None,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -3295,6 +3359,7 @@ done
                 url: "https://${ALTER_ZERO_TEST_NEVER_SET_TENANT}.test/mcp".to_string(),
                 headers: Default::default(),
                 sse_fallback: false,
+                oauth: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
@@ -3426,6 +3491,7 @@ done
                         url: format!("{base}/mcp"),
                         headers: Default::default(),
                         sse_fallback: false,
+                        oauth: None,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),

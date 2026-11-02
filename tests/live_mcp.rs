@@ -60,6 +60,7 @@ fn connected_server(name: &str, url: &str) -> McpManager {
                     url: url.to_string(),
                     headers: Default::default(),
                     sse_fallback: false,
+                    oauth: None,
                 },
                 scope: mcp::McpScope::User,
                 config_path: "<test>".to_string(),

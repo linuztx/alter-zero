@@ -169,6 +169,7 @@ pub fn connect_with_helper(
             url,
             headers,
             sse_fallback,
+            ..
         } => {
             let remote = RemoteHeaders {
                 headers: headers.clone(),
@@ -201,7 +202,7 @@ pub fn connect_with_helper(
                 Err(e) => Err(e.settle()),
             }
         }
-        McpServerConfig::Sse { url, headers } => connect_sse(
+        McpServerConfig::Sse { url, headers, .. } => connect_sse(
             url,
             RemoteHeaders {
                 headers: headers.clone(),
@@ -596,6 +597,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -759,6 +761,7 @@ mod tests {
             url,
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -873,6 +876,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -997,6 +1001,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =
@@ -1106,6 +1111,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let first =
@@ -1147,6 +1153,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         match connect(&config, None, None, Duration::from_secs(10), &cancel) {
@@ -1336,6 +1343,7 @@ done
             url: format!("http://127.0.0.1:{port}/mcp"),
             headers: Default::default(),
             sse_fallback: true,
+            oauth: None,
         };
         match connect(
             &config,
@@ -1499,6 +1507,7 @@ done
             url: spawn_param_header_fixture(),
             headers: Default::default(),
             sse_fallback: false,
+            oauth: None,
         };
         let cancel = CancelToken::new();
         let mut connection =

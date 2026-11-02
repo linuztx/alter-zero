@@ -581,8 +581,51 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   body (`client_authentication`, the exchange and every refresh alike).
   A refused registration or exchange carries the server's own `error` and
   `error_description` (`oauth_error_detail`) rather than a bare status, and
-  a server offering no registration says the sign-in needs a pre-registered
-  client.
+  a server offering no registration says how to add a pre-registered
+  client (below).
+
+  **Pre-registered clients.** Some authorization servers register no
+  clients at all — Google's, for its MCP servers (`calendarmcp.googleapis.com`
+  and friends): the user creates an OAuth client in the provider's console
+  and the MCP client signs in as it. A remote entry names it in the `oauth`
+  object other MCP clients write (`mcp::OAuthClientConfig`):
+
+  ```json
+  "calendar": {
+    "type": "http",
+    "url": "https://calendarmcp.googleapis.com/mcp/v1",
+    "oauth": { "clientId": "123.apps.googleusercontent.com",
+               "callbackPort": 8976,
+               "scopes": ["https://www.googleapis.com/auth/calendar"] }
+  }
+  ```
+
+  `clientId` is the client; `callbackPort` the port its registered redirect
+  URI names (`http://localhost:{port}/callback`) — bound **exactly**, the
+  sign-in failing with the port named when it is taken, since the provider
+  was told that one (a native/desktop client, which takes any loopback port
+  per RFC 8252, can leave it out); `scopes`, a string or a list, is asked
+  for as written in place of what discovery suggests. The secret is best
+  kept out of the file: `alter-zero mcp add … --client-id … --client-secret`
+  keeps it in the token store's `clients` section (`save_client_secret` —
+  owner-only, apart from the login so "Clear authentication" leaves it), and
+  a `clientSecret` in the entry, `${VAR}`-expanded like the rest of it, is
+  read too — under the same provider-key guard, which covers the `oauth`
+  values of a project's remote server. `run_auth_flow` (over a `SignIn`:
+  the server, its challenge, the store, this client) uses a configured
+  client ahead of any reused or registered one and never registers;
+  authenticates it as a public client without a secret, or with one in the
+  form body unless the server takes only HTTP Basic
+  (`configured_auth_method`); and stores the id and secret with the grant,
+  so a refresh presents them too. An authorization server with needs of its
+  own gets them on the authorize URL (`provider_authorize_params`): Google
+  issues a refresh token only for `access_type=offline` and re-issues one
+  only with `prompt=consent`, or the login lapses within the hour. A
+  server whose entry names a client and that let an anonymous connect
+  through — Google's list their tools to anyone and refuse the calls —
+  reads `✘ not authenticated` on the `/mcp` page with Authenticate offered,
+  where it read "not required" until the first call failed. The review's
+  `ServerParts` names an `oauth` change (`the OAuth client`).
 
   **The flow stops where it should.** The cancel token is checked between
   discovery, registration and the browser, so Esc during discovery never

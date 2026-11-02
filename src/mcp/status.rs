@@ -279,6 +279,7 @@ mod tests {
                 url: "https://mcp.deepwiki.com/mcp".to_string(),
                 headers: BTreeMap::new(),
                 sse_fallback: false,
+                oauth: None,
             },
             status,
             auth: Some(McpAuthState::NotAuthenticated),
