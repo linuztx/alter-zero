@@ -28,7 +28,7 @@ expect_has "$hooks_pane" -F "Blocked by PreToolUse hook: no destructive deletes 
 # under it name the hook and its file. (A plain `grep -F` of a multi-line
 # literal would match each line on its own, so this reads the following lines
 # explicitly.)
-hooks_after_blocked="$(printf '%s\n' "$hooks_pane" | awk '/● Bash\(rm -rf build\/\)/{for (i = 0; i < 3; i++) {getline; print}; exit}')"
+hooks_after_blocked="$(printf '%s\n' "$hooks_pane" | awk '/● Bash\(rm -rf build\/\)/{for (i = 0; i < 3 && (getline line) > 0; i++) print line; exit}')"
 expect_has "$(printf '%s\n' "$hooks_after_blocked" | sed -n 1p)" -F "Blocked by PreToolUse hook" "the blocked call produced output of its own; it must never have run (saw: $hooks_after_blocked)"
 expect_has "$(printf '%s\n' "$hooks_after_blocked" | sed -n 2p)" -F "Hook: ~/.alter-zero/hooks/no-deletes.sh" "the refusal cell did not name the hook that refused (saw: $hooks_after_blocked)"
 expect_has "$(printf '%s\n' "$hooks_after_blocked" | sed -n 3p)" -F "Config: ~/.alter-zero/hooks.json" "the refusal cell did not name the hooks.json its hook is configured in (saw: $hooks_after_blocked)"
@@ -56,7 +56,11 @@ echo "==== Phase 72: captured overlay tail (the hook note) ===="
 printf '%s\n' "$hooks_overlay_tail"
 expect_has "$hooks_overlay_tail" -F "Stop hook feedback" "the Ctrl+O transcript lost the hook note"
 expect_has "$hooks_overlay_tail" -F "Hook: ~/.alter-zero/hooks/stop.sh" "the Ctrl+O transcript lost the hook that gave the note"
-expect_has "$hooks_overlay_tail" -F "Config: ~/.alter-zero/hooks.json" "the Ctrl+O transcript lost the hooks.json the note's hook is configured in"
+# The refusal cell names the same hooks.json, so a bare grep for the line
+# could pass on the cell while the note had lost its own: read the line right
+# under the note's Hook line.
+hooks_note_config="$(printf '%s\n' "$hooks_overlay_tail" | awk '/Hook: ~\/\.alter-zero\/hooks\/stop\.sh/{if ((getline line) > 0) print line; exit}')"
+expect_has "$hooks_note_config" -F "Config: ~/.alter-zero/hooks.json" "the Ctrl+O transcript lost the hooks.json the note's hook is configured in (saw: $hooks_note_config)"
 tmux send-keys -t "$S72" q
 sleep 0.3
 tmux kill-session -t "$S72" 2>/dev/null || true
