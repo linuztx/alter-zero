@@ -1158,8 +1158,9 @@ pub struct AuthServerMeta {
     pub token_auth_methods: Vec<String>,
 }
 
-fn get_json(url: &str) -> Result<Value, String> {
-    let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+/// GET a metadata document as JSON, waiting at most `timeout`.
+fn get_json_within(url: &str, timeout: Duration) -> Result<Value, String> {
+    let client = crate::llm::http_client(timeout).map_err(|e| e.to_string())?;
     let response = client
         .get(url)
         .header("Accept", "application/json")
@@ -1237,28 +1238,7 @@ fn oauth_error_detail(status: u16, body: &str) -> String {
 ///    document naming another `issuer` is skipped (§3.3), and the one used
 ///    must serve its endpoints over HTTPS and support PKCE with S256.
 pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerMeta, String> {
-    let mut resource_meta: Option<Value> = None;
-    let mut candidates: Vec<String> = Vec::new();
-    if let Some(named) = challenge.and_then(challenge_resource_metadata) {
-        candidates.push(named);
-    }
-    candidates.extend(well_known_candidates(
-        server_url,
-        "oauth-protected-resource",
-    ));
-    for candidate in candidates {
-        let Ok(value) = get_json(&candidate) else {
-            continue;
-        };
-        let ours = value
-            .get("resource")
-            .and_then(Value::as_str)
-            .is_some_and(|resource| resource_allowed(server_url, resource));
-        if ours {
-            resource_meta = Some(value);
-            break;
-        }
-    }
+    let resource_meta = protected_resource(server_url, challenge, HTTP_TIMEOUT);
     // The challenge's own `scope` outranks the resource's metadata: the spec
     // makes it authoritative for the operation that was refused, so a server
     // wanting more than it advertises gets what it actually asked for.
@@ -1292,9 +1272,135 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
             "the authorization server {auth_base} isn't served over HTTPS"
         ));
     }
+    let IssuerMetadata {
+        meta,
+        authorization_endpoint,
+        token_endpoint,
+    } = issuer_metadata(&auth_base, HTTP_TIMEOUT)?;
+    let registration_endpoint = field(&meta, "registration_endpoint");
+    for endpoint in [
+        Some(&authorization_endpoint),
+        Some(&token_endpoint),
+        registration_endpoint.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !endpoint_is_secure(endpoint) {
+            return Err(format!(
+                "the authorization server's endpoint {endpoint} isn't served over HTTPS"
+            ));
+        }
+    }
+    if let Some(problem) = pkce_problem(&meta) {
+        return Err(problem);
+    }
+    let as_scopes = string_list(&meta, "scopes_supported");
+    // SEP-2207: the *resource's* scopes, plus `offline_access` when this
+    // authorization server advertises it — the only way a refresh token is
+    // ever issued, and the reason an authenticated server stops needing the
+    // browser every hour. Deliberately never the AS's whole catalogue as a
+    // fallback: asking for scopes the resource never wanted is what strict
+    // providers answer with `invalid_scope`, failing the flow outright.
+    let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
+    let scopes = with_offline_access(base, &as_scopes);
+    Ok(AuthServerMeta {
+        authorization_endpoint,
+        token_endpoint,
+        registration_endpoint,
+        scopes,
+        issuer: field(&meta, "issuer"),
+        iss_required: meta
+            .get("authorization_response_iss_parameter_supported")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        resource,
+        token_auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
+    })
+}
+
+/// How long the connect-time probe ([`protected_without_registration`])
+/// waits on each document: a server that publishes none answers 404 at
+/// once, and one that hangs must not hold its connect for long.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Is `server_url` an OAuth-protected resource whose authorization server
+/// can't register this app? It publishes protected-resource metadata (RFC
+/// 9728, a document whose `resource` is this server's) naming an
+/// authorization server whose own metadata offers no `registration_endpoint`
+/// — Google's MCP servers, which list their tools to anyone and refuse every
+/// call. Hugging Face's, Context7's and Exa's publish the same metadata but
+/// answer calls without a token, and their authorization servers register
+/// apps, so they read `false`. The manager holds an anonymous connect to a
+/// server this says `true` for as needing a sign-in (`docs/mcp.md`). `false`
+/// too whenever a document couldn't be read: only positive evidence holds a
+/// server that connected.
+#[must_use]
+pub fn protected_without_registration(server_url: &str) -> bool {
+    let Some(resource) = protected_resource(server_url, None, PROBE_TIMEOUT) else {
+        return false;
+    };
+    let Some(auth_base) = resource
+        .get("authorization_servers")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    issuer_metadata(auth_base, PROBE_TIMEOUT).is_ok_and(|found| {
+        found
+            .meta
+            .get("registration_endpoint")
+            .and_then(Value::as_str)
+            .is_none()
+    })
+}
+
+/// The server's protected-resource metadata (RFC 9728): the challenge's
+/// named URL first, then the well-known candidates on the server itself —
+/// the first document whose `resource` is this server's, any other skipped
+/// (§3.3).
+fn protected_resource(
+    server_url: &str,
+    challenge: Option<&str>,
+    timeout: Duration,
+) -> Option<Value> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(named) = challenge.and_then(challenge_resource_metadata) {
+        candidates.push(named);
+    }
+    candidates.extend(well_known_candidates(
+        server_url,
+        "oauth-protected-resource",
+    ));
+    candidates.into_iter().find_map(|candidate| {
+        let value = get_json_within(&candidate, timeout).ok()?;
+        value
+            .get("resource")
+            .and_then(Value::as_str)
+            .is_some_and(|resource| resource_allowed(server_url, resource))
+            .then_some(value)
+    })
+}
+
+/// An authorization server's metadata document and the two endpoints every
+/// flow needs from it.
+struct IssuerMetadata {
+    meta: Value,
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+/// The first of the issuer's metadata documents
+/// ([`authorization_server_candidates`]) that names `auth_base` as its
+/// issuer (RFC 8414 §3.3) and carries both endpoints — one naming another
+/// issuer, or missing an endpoint, skipped for the next.
+fn issuer_metadata(auth_base: &str, timeout: Duration) -> Result<IssuerMetadata, String> {
+    let field = |meta: &Value, key: &str| meta.get(key).and_then(Value::as_str).map(str::to_string);
     let mut last_err = String::from("no authorization-server metadata found");
-    for candidate in authorization_server_candidates(&auth_base) {
-        let meta = match get_json(&candidate) {
+    for candidate in authorization_server_candidates(auth_base) {
+        let meta = match get_json_within(&candidate, timeout) {
             Ok(meta) => meta,
             Err(e) => {
                 last_err = format!("{candidate}: {e}");
@@ -1302,7 +1408,7 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
             }
         };
         let issuer = field(&meta, "issuer");
-        if !issuer_matches(&auth_base, issuer.as_deref()) {
+        if !issuer_matches(auth_base, issuer.as_deref()) {
             last_err = format!(
                 "{candidate} names issuer {}, not {auth_base}",
                 issuer.as_deref().unwrap_or("none")
@@ -1316,46 +1422,10 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
             last_err = format!("{candidate}: missing endpoints");
             continue;
         };
-        let registration_endpoint = field(&meta, "registration_endpoint");
-        for endpoint in [
-            Some(&authorization_endpoint),
-            Some(&token_endpoint),
-            registration_endpoint.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !endpoint_is_secure(endpoint) {
-                return Err(format!(
-                    "the authorization server's endpoint {endpoint} isn't served over HTTPS"
-                ));
-            }
-        }
-        if let Some(problem) = pkce_problem(&meta) {
-            return Err(problem);
-        }
-        let as_scopes = string_list(&meta, "scopes_supported");
-        // SEP-2207: the *resource's* scopes, plus `offline_access` when this
-        // authorization server advertises it — the only way a refresh token
-        // is ever issued, and the reason an authenticated server stops
-        // needing the browser every hour. Deliberately never the AS's whole
-        // catalogue as a fallback: asking for scopes the resource never
-        // wanted is what strict providers answer with `invalid_scope`,
-        // failing the flow outright.
-        let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
-        let scopes = with_offline_access(base, &as_scopes);
-        return Ok(AuthServerMeta {
+        return Ok(IssuerMetadata {
+            meta,
             authorization_endpoint,
             token_endpoint,
-            registration_endpoint,
-            scopes,
-            issuer,
-            iss_required: meta
-                .get("authorization_response_iss_parameter_supported")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            resource,
-            token_auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
         });
     }
     Err(format!(

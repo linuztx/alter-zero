@@ -22,10 +22,11 @@ release heading when a version is cut.
   or `alter-zero mcp add <name> --url <url> --client-id <id>
   --client-secret` sets it up: the secret is asked for, or read from
   `MCP_CLIENT_SECRET`, and kept with your MCP logins rather than in the
-  file. `/mcp` offers **Authenticate** for such a server straight away,
-  Google logins renew themselves instead of lapsing within the hour, and
-  `alter-zero mcp get` shows the client but never its secret
-  (`docs/mcp.md`, `docs/mcp-cli.md`).
+  file. `/mcp` shows such a server as needing authentication straight
+  away, Google logins renew themselves instead of lapsing within the hour,
+  and `alter-zero mcp get` shows the client but never its secret. This is
+  experimental: signing in to Google's servers this way has not been tried
+  end to end yet (`docs/mcp.md`, `docs/mcp-cli.md`).
 - **An MCP server's new tools are offered as soon as it has them.** A
   server whose tools change while it runs, one you are developing or one
   that turns tool sets on and off, says so, and the client used to keep the
@@ -159,6 +160,16 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Google's MCP servers no longer look connected while every call fails.**
+  Google Drive, Calendar and Gmail list their tools to anyone and refuse
+  every call without a sign-in, so `/mcp` read "✔ connected" and
+  "✔ authenticated" and the agent was offered tools that could only fail.
+  A server like that now reads "△ needs authentication" and
+  "✘ not authenticated", and its tools aren't offered until you sign in.
+  Servers of this kind aren't supported yet: their sign-in needs an OAuth
+  client you create with the provider, which is experimental. Servers that
+  work without signing in, like Hugging Face, Context7 and Exa, stay
+  connected (`docs/mcp.md`).
 - **An MCP server with long or look-alike tool names no longer breaks every
   request.** Each MCP tool reaches the model as `mcp__{server}__{tool}`, and
   providers refuse the whole request over one bad tool name: a name over 64

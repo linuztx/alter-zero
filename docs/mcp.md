@@ -319,6 +319,60 @@ editable only by hand — a `NotAuthenticated` server affords `Authenticate`
 (reachable now from the connected and failed pages too, not only from
 needs-auth), and a header or a public server affords neither.
 
+### Servers that list their tools to anyone (Google's) — not supported yet
+
+Google's MCP servers (`drivemcp.googleapis.com`, `calendarmcp.googleapis.com`,
+`gmailmcp.googleapis.com`, …) answer the connect and list their tools without
+a token, then refuse every call with a 401. Connected that way, one read
+`✔ connected` and `✔ authenticated` (`NotRequired`), and the model was
+offered tools that could only fail. Their sign-in provider,
+`accounts.google.com`, registers no apps by itself — no dynamic
+registration, no client metadata documents — so this app can't sign in to
+them without an OAuth client the user creates in Google Cloud
+(*Pre-registered clients*, below).
+
+**Servers of this kind are not supported yet.** An anonymous connect to one
+(remote, no stored grant, no `Authorization` header) is **held**: it reads
+`△ needs authentication` and `Auth: ✘ not authenticated`, the connection is
+dropped, and none of its tools are offered to the model, the main session's
+or a subagent's, so neither are its instructions. The connect worker holds
+it when:
+
+- the entry names its own OAuth client (`oauth.clientId`) — a login the
+  user asked for, whatever the server lets through; or
+- `oauth::protected_without_registration` says so: the server publishes
+  protected-resource metadata (RFC 9728, a document whose `resource` is its
+  own) naming an authorization server whose metadata offers no
+  `registration_endpoint`.
+
+The second check runs on its own thread **beside** the handshake, so a
+server that publishes no metadata — DeepWiki, Cloudflare's docs — connects
+no slower; each document gets five seconds (`PROBE_TIMEOUT`), and a
+document that can't be read never holds a server that connected: only
+positive evidence does.
+
+**Why not "publishes OAuth metadata" alone.** That was the first idea, and
+it is wrong: Hugging Face (`huggingface.co/mcp`), Context7
+(`mcp.context7.com/mcp`) and Exa (`mcp.exa.ai/mcp`) publish the same
+metadata and serve calls without a token — sign-in is optional there — so
+that rule would cut off three servers that work. Their providers register
+apps; Google's doesn't. The registration check is a heuristic, not a
+guarantee: a server with optional sign-in through a provider that registers
+no apps would be held too. `live_google_servers_wait_for_sign_in_while_open_ones_connect`
+(`tests/live_mcp.rs`, ignored by default) checks both sides against the real
+servers.
+
+Pressing **Authenticate** on a held server with no client configured ends
+with the existing explanation: the provider registers no clients itself,
+so add one as `oauth.clientId` or with `alter-zero mcp add --client-id …
+--client-secret`. Signing in with such a client is **experimental** — it
+follows Google's published metadata (the trailing-slash issuer, the 401
+whose metadata URL names the tool rather than the server, the parameters
+that get a refresh token) but has not been tried end to end. Fuller support
+is future work: a guided client setup on the Authenticate page, Client ID
+Metadata Documents for the providers that offer them (Devin's), and a
+verified Google sign-in.
+
 `src/llm/mcp/` (boundary, verified hermetically against in-process fixtures —
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
 
@@ -621,11 +675,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   own gets them on the authorize URL (`provider_authorize_params`): Google
   issues a refresh token only for `access_type=offline` and re-issues one
   only with `prompt=consent`, or the login lapses within the hour. A
-  server whose entry names a client and that let an anonymous connect
-  through — Google's list their tools to anyone and refuse the calls —
-  reads `✘ not authenticated` on the `/mcp` page with Authenticate offered,
-  where it read "not required" until the first call failed. The review's
-  `ServerParts` names an `oauth` change (`the OAuth client`).
+  server whose entry names a client waits for that login even when it let
+  an anonymous connect through (*Servers that list their tools to anyone*,
+  above), and signing in to Google's this way is **experimental**: it
+  follows Google's published metadata, but has not been tried end to end.
+  The review's `ServerParts` names an `oauth` change (`the OAuth client`).
 
   **The flow stops where it should.** The cancel token is checked between
   discovery, registration and the browser, so Esc during discovery never

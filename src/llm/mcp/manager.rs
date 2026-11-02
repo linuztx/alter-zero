@@ -526,6 +526,22 @@ impl McpManager {
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
             let (cwd, helper) = cwd;
+            // A remote connect presenting nothing: no stored grant, no
+            // `Authorization` header in the entry.
+            let mut anonymous =
+                config.url().is_some() && bearer.is_none() && !config.has_auth_header();
+            let names_client = config
+                .oauth()
+                .is_some_and(|oauth| oauth.client_id.is_some());
+            // Asked beside the handshake rather than after it, so a server
+            // that publishes no metadata connects no slower.
+            let probe = config
+                .url()
+                .filter(|_| anonymous && !names_client)
+                .map(|url| {
+                    let url = url.to_string();
+                    std::thread::spawn(move || oauth::protected_without_registration(&url))
+                });
             let launch = |bearer: Option<String>| {
                 connect_with_helper(
                     &config,
@@ -554,6 +570,7 @@ impl McpManager {
                     oauth::load_tokens(auth_path.as_deref(), url).map(|t| t.access_token);
                 match oauth::refresh_grant(auth_path.as_deref(), url, presented.as_deref()) {
                     Ok(tokens) => {
+                        anonymous = false;
                         result = launch(Some(tokens.access_token));
                     }
                     Err(oauth::RefreshFailure::Transient(detail)) => {
@@ -561,6 +578,18 @@ impl McpManager {
                     }
                     Err(_) => {} // no grant, or a cleared dead one: needs-auth is truthful
                 }
+            }
+            // An anonymous connect is no proof the calls will be served:
+            // Google's MCP servers list their tools to anyone and refuse
+            // every call. A server whose entry names its OAuth client, or an
+            // OAuth resource whose authorization server can't register this
+            // app, waits for a sign-in instead of offering the model tools
+            // that only fail (`docs/mcp.md`).
+            if result.is_ok()
+                && anonymous
+                && (names_client || probe.is_some_and(|probe| probe.join().unwrap_or(false)))
+            {
+                result = Err(ConnectError::NeedsAuth(None));
             }
             let mut inner = manager.lock();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
@@ -1018,25 +1047,12 @@ impl McpManager {
                 config_path: server.entry.config_path.clone(),
                 config: server.entry.config.clone(),
                 status: server.status.clone(),
-                auth: match crate::mcp::auth_state(
+                auth: crate::mcp::auth_state(
                     server.entry.config.is_remote(),
                     server.entry.config.has_auth_header(),
                     server.has_tokens,
                     &server.status,
-                ) {
-                    // An entry naming its OAuth client wants a login, even
-                    // from a server that let an anonymous connect through.
-                    Some(crate::mcp::McpAuthState::NotRequired)
-                        if server
-                            .entry
-                            .config
-                            .oauth()
-                            .is_some_and(|oauth| oauth.client_id.is_some()) =>
-                    {
-                        Some(crate::mcp::McpAuthState::NotAuthenticated)
-                    }
-                    auth => auth,
-                },
+                ),
                 identity: server.identity.clone(),
                 tools: server.tools.clone(),
                 excluded: server.excluded.clone(),
@@ -1792,32 +1808,186 @@ done"#
         manager.shutdown();
     }
 
-    /// A server whose entry names its OAuth client wants a login even when
-    /// it lets an anonymous connect through — Google's list their tools to
-    /// anyone and refuse the calls — so the page offers Authenticate at
-    /// once, instead of "not required" until the first call fails.
-    #[test]
-    fn a_server_with_a_configured_client_offers_a_sign_in() {
-        let entry = McpServerEntry {
-            name: "calendar".to_string(),
+    fn http_entry(
+        name: &str,
+        url: &str,
+        oauth: Option<crate::mcp::OAuthClientConfig>,
+    ) -> McpServerEntry {
+        McpServerEntry {
+            name: name.to_string(),
             config: McpServerConfig::Http {
-                url: "https://calendar.test/mcp".to_string(),
+                url: url.to_string(),
                 headers: Default::default(),
                 sse_fallback: false,
-                oauth: Some(crate::mcp::OAuthClientConfig {
-                    client_id: Some("cid".to_string()),
-                    ..Default::default()
-                }),
+                oauth,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
-        };
-        let (manager, _rx) = manager_with(vec![entry]);
-        manager.lock().servers[0].status = McpServerStatus::Connected;
+        }
+    }
+
+    /// The tool names the model is offered, in order.
+    fn offered_names(manager: &McpManager) -> Vec<String> {
+        manager
+            .tool_specs()
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// A streamable-HTTP server in the shape of Google's MCP servers: it
+    /// answers the connect and lists its tool to anyone, and publishes
+    /// protected-resource metadata naming an authorization server on its own
+    /// origin — one offering dynamic registration only when `registers`
+    /// (Hugging Face's, Context7's and Exa's do; Google's doesn't). Returns
+    /// its MCP URL.
+    fn spawn_oauth_resource_http(registers: bool) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let url = format!("{origin}/mcp");
+        let resource =
+            serde_json::json!({"resource": url, "authorization_servers": [origin]}).to_string();
+        let mut authorization = serde_json::json!({
+            "issuer": origin,
+            "authorization_endpoint": format!("{origin}/authorize"),
+            "token_endpoint": format!("{origin}/token"),
+            "code_challenge_methods_supported": ["S256"],
+        });
+        if registers {
+            authorization["registration_endpoint"] = Value::String(format!("{origin}/register"));
+        }
+        let authorization = authorization.to_string();
+        std::thread::spawn(move || {
+            let reply = |status: &str, body: &str| {
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let path = line.split_whitespace().nth(1).unwrap_or_default();
+                let response = if line.starts_with("GET ") {
+                    match path {
+                        "/.well-known/oauth-protected-resource/mcp" => reply("200 OK", &resource),
+                        "/.well-known/oauth-authorization-server" => {
+                            reply("200 OK", &authorization)
+                        }
+                        _ => reply("404 Not Found", "{}"),
+                    }
+                } else {
+                    let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    let result = match request["method"].as_str().unwrap_or_default() {
+                        "server/discover" => serde_json::json!({
+                            "resultType": "complete",
+                            "supportedVersions": ["2026-07-28"],
+                            "capabilities": {"tools": {}},
+                            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "drive", "version": "0"}}
+                        }),
+                        "tools/list" => serde_json::json!({
+                            "resultType": "complete",
+                            "tools": [{"name": "one", "inputSchema": {"type": "object"}}]
+                        }),
+                        _ => Value::Null,
+                    };
+                    if result.is_null() {
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    } else {
+                        reply(
+                            "200 OK",
+                            &serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+                                .to_string(),
+                        )
+                    }
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        url
+    }
+
+    /// Google's MCP servers list their tools to anyone and refuse every
+    /// call. An anonymous connect to an OAuth resource whose authorization
+    /// server can't register this app is held as needing a sign-in, its
+    /// tools never offered to a model that could only watch them fail
+    /// (`docs/mcp.md`).
+    #[test]
+    fn an_oauth_resource_this_app_cant_register_with_waits_for_sign_in() {
+        let url = spawn_oauth_resource_http(false);
+        let (manager, _rx) = manager_with(vec![http_entry("drive", &url, None)]);
+        manager.start_connections();
+        wait_status(&manager, "drive", |status| {
+            *status != McpServerStatus::Pending
+        });
+        let server = &manager.snapshot()[0];
+        assert_eq!(server.status, McpServerStatus::NeedsAuth);
         assert_eq!(
-            manager.snapshot()[0].auth,
+            server.auth,
             Some(crate::mcp::McpAuthState::NotAuthenticated)
         );
+        assert!(server.tools.is_empty(), "{:?}", server.tools);
+        assert!(offered_names(&manager).is_empty());
+        manager.shutdown();
+    }
+
+    /// Hugging Face, Context7 and Exa publish the same metadata yet answer
+    /// calls without a token: an authorization server that can register
+    /// this app leaves the anonymous connect usable, as it always was.
+    #[test]
+    fn an_oauth_resource_this_app_can_register_with_stays_connected() {
+        let url = spawn_oauth_resource_http(true);
+        let (manager, _rx) = manager_with(vec![http_entry("hub", &url, None)]);
+        manager.start_connections();
+        wait_connected(&manager, "hub");
+        assert_eq!(offered_names(&manager), ["mcp__hub__one"]);
+        manager.shutdown();
+    }
+
+    /// An entry naming its OAuth client asked for a login, so it waits for
+    /// one even from a server that publishes no metadata and let an
+    /// anonymous connect through — never "not authenticated" while its
+    /// tools are offered anyway.
+    #[test]
+    fn a_server_naming_its_oauth_client_waits_for_sign_in() {
+        let url = spawn_changing_http();
+        let oauth = crate::mcp::OAuthClientConfig {
+            client_id: Some("cid".to_string()),
+            ..Default::default()
+        };
+        let (manager, _rx) = manager_with(vec![http_entry("calendar", &url, Some(oauth))]);
+        manager.start_connections();
+        wait_status(&manager, "calendar", |status| {
+            *status != McpServerStatus::Pending
+        });
+        let server = &manager.snapshot()[0];
+        assert_eq!(server.status, McpServerStatus::NeedsAuth);
+        assert_eq!(
+            server.auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        assert!(offered_names(&manager).is_empty());
+        manager.shutdown();
     }
 
     /// The instructions the reminder carries: only a connected server with

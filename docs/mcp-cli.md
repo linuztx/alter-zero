@@ -100,7 +100,9 @@ alter-zero mcp list
   that broke Claude Code's own help example). Repeated keys: last wins.
 - **A pre-registered OAuth client** — for a server whose login provider
   registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
-  clients*) — is the flags other MCP clients' CLIs document:
+  clients*; Google's servers are not supported yet, and signing in to them
+  this way is experimental, *Servers that list their tools to anyone*) —
+  is the flags other MCP clients' CLIs document:
   `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
   object (remote only; with a command they are a usage error), and
   `--client-secret` is a **switch**, never a value — `--client-secret=…`
@@ -217,9 +219,6 @@ a failed write — one plain stderr line), **0** for success and help.
   `mcp remove` escape hatch.
 - **`remove` of a missing name fails** (exit 1, Claude Code again):
   codex's "success" would let a scripted cleanup misspell a name forever.
-- **OAuth flags are out**: `--client-id`/`--callback-port` configure a
-  flow our `/mcp` Authenticate page negotiates by RFC discovery instead
-  (`docs/mcp.md`); nothing to persist means nothing to flag.
 
 ## Testing
 
