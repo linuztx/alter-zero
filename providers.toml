@@ -31,13 +31,14 @@
 #     `LMSTUDIO_HOST`); a bare host there is completed from the base.
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`, `cline_account`), or `optional_key` for a server
+#     `anthropic_console`, `cline_account`, `google_antigravity`), or
+#     `optional_key` for a server
 #     that needs none. It also decides the `/login` list a provider is under:
 #     Use a subscription, Use an API key, or Use a local model, whose page
 #     tests the server's address before saving it (docs/local-models.md).
 #   - `wire_api` (optional) is the request shape: chat completions by default,
-#     `responses`, `anthropic`, or `ollama` (docs/chatgpt.md, docs/claude.md,
-#     docs/ollama.md).
+#     `responses`, `anthropic`, `ollama`, or `cloud_code` (docs/chatgpt.md,
+#     docs/claude.md, docs/ollama.md, docs/antigravity.md).
 #   - `drop_params` (optional) lists top-level request fields the provider's
 #     server refuses (`prompt_cache_key`, `stream_options`, …), taken out of
 #     every request after everything else is set (docs/user-providers.md).
@@ -320,3 +321,29 @@ api_key_env = "CLINE_ACCOUNT_REFRESH_TOKEN"
 
 [providers.cline_pass.kwargs]
 api_base = "https://api.cline.bot/api/v1"
+
+# Google Antigravity — the models Antigravity serves (Gemini, and the Claude
+# and GPT-OSS models Google routes through it) on a Google account's
+# Antigravity quota, reached with a **Google sign-in** (docs/antigravity.md).
+# `/login` runs Google's PKCE flow in the browser on Antigravity's own public
+# desktop OAuth client, and what `api_key_env` stores is the long-lived Google
+# **refresh** token; every request mints a short-lived access token from it
+# and names the account's Cloud Code project, looked up once per run.
+#
+# The backend is Google's Cloud Code Assist API, not chat completions — hence
+# `wire_api` — on the **daily** host every consumer Antigravity client uses;
+# hosts are never mixed (the production host serves Gemini CLI's separate
+# pool). The agy CLI `User-Agent` the backend gates its catalog on is built
+# per machine at the auth seam, so it is not here.
+#
+# This is an unofficial route: Google publishes no API for third-party
+# clients, and may restrict accounts that use one. The description says so.
+[providers.antigravity]
+name = "Google Antigravity"
+auth = "google_antigravity"
+wire_api = "cloud_code"
+description = "Sign in with your Google account to use Antigravity's Gemini and Claude quota — unofficial: Google may restrict accounts used outside Antigravity"
+api_key_env = "ANTIGRAVITY_REFRESH_TOKEN"
+
+[providers.antigravity.kwargs]
+api_base = "https://daily-cloudcode-pa.googleapis.com"

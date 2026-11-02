@@ -280,6 +280,20 @@ impl ModelSession {
         if let Some(base) = config::cline_api_base() {
             llm::cline::set_api_base(base);
         }
+        // Google's refresh token can rotate too, and the Antigravity sign-in
+        // reads three overrides: its OAuth host (the smoke suite's stub), the
+        // `User-Agent` the backend gates its catalog on, and a project to
+        // bill (`docs/antigravity.md`).
+        llm::antigravity::set_store_path(env_file_path.clone());
+        if let Some(base) = config::google_oauth_base() {
+            llm::antigravity::set_oauth_base(base);
+        }
+        if let Some(agent) = config::antigravity_user_agent() {
+            llm::antigravity::set_user_agent(agent);
+        }
+        if let Some(project) = config::antigravity_project() {
+            llm::antigravity::set_project(project);
+        }
         // GitHub's REST API — Copilot's token exchange and the `/usage`
         // quota read — overridable the same way (docs/usage.md).
         if let Some(base) = config::github_api_base() {
@@ -747,6 +761,16 @@ impl ModelSession {
             .get(provider)
             .map(|p| p.auth)
             .filter(|auth| auth.is_subscription())
+    }
+
+    /// A subscription provider's configured base — the host its sign-in sets
+    /// the account up on (`docs/antigravity.md`).
+    pub(crate) fn subscription_base(&self, provider: &str) -> Option<String> {
+        self.providers
+            .get(provider)
+            .filter(|p| p.auth.is_subscription())
+            .map(|p| p.kwargs.api_base.trim().to_string())
+            .filter(|base| !base.is_empty())
     }
 
     /// Is this provider signed in to rather than keyed?

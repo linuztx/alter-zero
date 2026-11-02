@@ -38,6 +38,8 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does a Cline sign-in's: the ClinePass plan's published list, each model's facts borrowed from Cline's catalog — `docs/cline.md`) | split |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
+| `llm/cloud_code.rs` | Google's **Cloud Code Assist** wire format (`wire_api = "cloud_code"`): the `{project, model, request}` envelope around Gemini's `generateContent` body, the per-family tool schemas (`parametersJsonSchema` for Gemini, the bridge's six keywords for Claude/GPT-OSS), thinking per family, the SSE fold, and the process-wide memo of the thought signatures (and Claude thinking) a later request must hand back (`docs/antigravity.md`) | mostly |
+| `llm/antigravity.rs` | the Google Antigravity sign-in: the PKCE URLs and grants, the agy CLI `User-Agent`, `loadCodeAssist`/`onboardUser`'s shapes, the catalog's curation and level grouping, the explained refusals (pure); the flow, the token cache, the project lookup and the catalog fetch (`docs/antigravity.md`) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -143,18 +145,20 @@ comments for the block shape. Two of its keys change how a provider is *reached*
 rather than what it is called, and both degrade to their default on a value this
 build doesn't know: `auth` decides which `/login` list the provider appears in
 and what the `Authorization` header gets (`docs/copilot.md`,
-`docs/chatgpt.md`, `docs/ollama.md` — whose `optional_key` is the scheme for
-a server that needs none), and `wire_api` decides whether requests take the
-Chat Completions, Responses, Messages or native-Ollama shape
-(`docs/chatgpt.md`, `docs/claude.md`, `docs/ollama.md`). They are
+`docs/chatgpt.md`, `docs/antigravity.md`, `docs/ollama.md` — whose
+`optional_key` is the scheme for a server that needs none), and `wire_api`
+decides whether requests take the Chat Completions, Responses, Messages,
+native-Ollama or Cloud Code shape (`docs/chatgpt.md`, `docs/claude.md`,
+`docs/ollama.md`, `docs/antigravity.md`). They are
 deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
 environment variable that replaces the base (Ollama's `OLLAMA_HOST`). The
 table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
 and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
 `github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
-`cline` and `cline_pass` (`docs/cline.md`); `ollama` and `ollama_cloud`; and
-`lmstudio`, `docs/local-models.md`), with
+`cline` and `cline_pass` (`docs/cline.md`); `antigravity`
+(`docs/antigravity.md`); `ollama` and `ollama_cloud`; and `lmstudio`,
+`docs/local-models.md`), with
 the user's own `~/.alter-zero/providers.toml` **laid over** them: a block with
 a new id adds a provider, one naming a shipped provider changes only the keys
 it sets, and every problem in the file is a toast rather than a silence

@@ -1121,6 +1121,70 @@ pub fn console_report() -> UsageReport {
 }
 
 // ---------------------------------------------------------------------------
+// Google Antigravity (pure)
+// ---------------------------------------------------------------------------
+
+/// The families in the order the page lists them.
+const ANTIGRAVITY_FAMILIES: [&str; 3] = ["Gemini", "Claude", "GPT-OSS"];
+
+/// Said under an Antigravity report's bars: the quotas are pools, so a bar
+/// moving under a model that was not used is the pool, not a miscount.
+const ANTIGRAVITY_SHARED_POOLS: &str =
+    "Models of one family share their quota, so their bars move together.";
+
+/// An Antigravity account's usage, from the catalog rows `fetchAvailableModels`
+/// gave (`docs/antigravity.md` */usage*): a bar per `/model` row with a
+/// quota — the share used, `1 - remainingFraction`, spent at none left —
+/// grouped by family, Gemini first.
+#[must_use]
+pub fn antigravity_report(
+    rows: &[super::antigravity::CatalogRow],
+    plan: Option<String>,
+    account: Option<String>,
+) -> UsageReport {
+    let family_rank = |family: &str| {
+        ANTIGRAVITY_FAMILIES
+            .iter()
+            .position(|f| *f == family)
+            .unwrap_or(ANTIGRAVITY_FAMILIES.len())
+    };
+    let mut metered: Vec<&super::antigravity::CatalogRow> =
+        rows.iter().filter(|row| row.quota.is_some()).collect();
+    metered.sort_by_key(|row| family_rank(row.family));
+    let meters: Vec<UsageMeter> = metered
+        .iter()
+        .filter_map(|row| {
+            let quota = row.quota.as_ref()?;
+            let remaining = quota.remaining.clamp(0.0, 1.0);
+            Some(UsageMeter {
+                group: Some(row.family.to_string()),
+                label: row.display_name.clone(),
+                value: MeterValue::Limit(Limit {
+                    used_percent: (1.0 - remaining) * 100.0,
+                    counts: None,
+                    resets_at: quota.resets_at.as_deref().and_then(timestamp_seconds),
+                    reached: remaining <= 0.0,
+                }),
+            })
+        })
+        .collect();
+    let notes = if meters.is_empty() {
+        vec![UsageNote::new(
+            NoteTone::Info,
+            "The account reported no quota for its models.",
+        )]
+    } else {
+        vec![UsageNote::new(NoteTone::Info, ANTIGRAVITY_SHARED_POOLS)]
+    };
+    UsageReport {
+        plan,
+        account,
+        meters,
+        notes,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The providers' own pages (pure)
 // ---------------------------------------------------------------------------
 
@@ -1134,7 +1198,9 @@ pub fn dashboard_url(auth: AuthScheme) -> Option<&'static str> {
         AuthScheme::GithubCopilot => Some(COPILOT_DASHBOARD),
         AuthScheme::ClineAccount => Some(CLINEPASS_DASHBOARD),
         AuthScheme::AnthropicConsole => Some(CONSOLE_DASHBOARD),
-        AuthScheme::ApiKey | AuthScheme::OptionalKey => None,
+        // Google publishes no page of Antigravity quotas; the app shows them
+        // in its own settings, which no link can open.
+        AuthScheme::GoogleAntigravity | AuthScheme::ApiKey | AuthScheme::OptionalKey => None,
     }
 }
 
@@ -1363,6 +1429,22 @@ pub fn fetch_usage(cfg: &ModelConfig, cancel: &CancelToken) -> Result<UsageRepor
         }
         // Nothing to read: a Console sign-in has no plan (`console_report`).
         AuthScheme::AnthropicConsole => console_report(),
+        // The catalog carries each model's quota: the same seam as the chat
+        // request mints the bearer and finds the project, then one
+        // `fetchAvailableModels` (`docs/antigravity.md` */usage*).
+        AuthScheme::GoogleAntigravity => {
+            let refresh = signed_in(cfg.api_key.as_deref())?;
+            let access = super::antigravity::authorize(refresh, &cfg.api_base)?;
+            let body =
+                super::antigravity::fetch_catalog(&cfg.api_base, &access.bearer, &access.project)
+                    .map_err(super::antigravity::explained)?;
+            let rows = super::antigravity::catalog_rows(&body)?;
+            antigravity_report(
+                &rows,
+                access.plan,
+                super::antigravity::account_email(&access.bearer),
+            )
+        }
         AuthScheme::ApiKey | AuthScheme::OptionalKey => {
             return Err(refusal(format!(
                 "{} bills per token through an API key — there is no subscription plan to \
@@ -2365,5 +2447,87 @@ mod tests {
         assert_eq!(report.plan, None);
         assert_eq!(report.account, None);
         assert_eq!(report.meters.len(), 1);
+    }
+
+    #[test]
+    fn an_antigravity_report_has_a_bar_per_model_grouped_by_family() {
+        use crate::llm::antigravity::{CatalogRow, Quota};
+        let row = |id: &str, name: &str, family: &'static str, quota: Option<Quota>| CatalogRow {
+            id: id.to_string(),
+            display_name: name.to_string(),
+            family,
+            context: None,
+            vision: None,
+            levels: Vec::new(),
+            thinks: false,
+            quota,
+        };
+        let rows = vec![
+            row(
+                "claude-opus-4-6-thinking",
+                "Claude Opus 4.6 (Thinking)",
+                "Claude",
+                Some(Quota {
+                    remaining: 0.0,
+                    resets_at: Some("2026-11-02T18:00:00Z".to_string()),
+                }),
+            ),
+            row(
+                "gemini-3.8-flash",
+                "Gemini 3.8 Flash",
+                "Gemini",
+                Some(Quota {
+                    remaining: 0.75,
+                    resets_at: None,
+                }),
+            ),
+            row("gemini-unmetered", "Unmetered", "Gemini", None),
+            row(
+                "gemini-3-pro",
+                "Gemini 3 Pro",
+                "Gemini",
+                Some(Quota {
+                    remaining: 1.0,
+                    resets_at: None,
+                }),
+            ),
+        ];
+        let report = antigravity_report(
+            &rows,
+            Some("Google AI Pro".to_string()),
+            Some("me@example.com".to_string()),
+        );
+        assert_eq!(report.plan.as_deref(), Some("Google AI Pro"));
+        assert_eq!(report.account.as_deref(), Some("me@example.com"));
+        let shown: Vec<(Option<&str>, &str)> = report
+            .meters
+            .iter()
+            .map(|m| (m.group.as_deref(), m.label.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (Some("Gemini"), "Gemini 3.8 Flash"),
+                (Some("Gemini"), "Gemini 3 Pro"),
+                (Some("Claude"), "Claude Opus 4.6 (Thinking)"),
+            ],
+            "Gemini first, each family's rows together, a model with no quota left out"
+        );
+        let MeterValue::Limit(flash) = &report.meters[0].value else {
+            panic!("a bar");
+        };
+        assert!((flash.used_percent - 25.0).abs() < 1e-9);
+        assert!(!flash.reached);
+        let MeterValue::Limit(opus) = &report.meters[2].value else {
+            panic!("a bar");
+        };
+        assert!(opus.reached && (opus.used_percent - 100.0).abs() < 1e-9);
+        assert_eq!(opus.resets_at, Some(1_793_642_400));
+        assert!(
+            report.notes.iter().any(|n| n.text.contains("share")),
+            "the page says the pools are shared: {:?}",
+            report.notes
+        );
+        assert_eq!(dashboard_url(AuthScheme::GoogleAntigravity), None);
     }
 }

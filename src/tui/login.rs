@@ -107,7 +107,10 @@ impl Session<'_> {
         };
         let cancel = CancelToken::new();
         self.device_cancel = Some(cancel.clone());
-        spawn_signin(auth, kind, cancel, self.device_tx.clone());
+        // The Antigravity sign-in sets the account up on the provider's own
+        // host; every other flow ignores it.
+        let base = self.models.subscription_base(provider).unwrap_or_default();
+        spawn_signin(auth, kind, base, cancel, self.device_tx.clone());
     }
 
     /// Reap a running device flow's worker, if any. Idempotent — Esc, Ctrl+C
@@ -186,6 +189,7 @@ impl Session<'_> {
         llm::chatgpt::forget(token);
         llm::claude::forget(token);
         llm::cline::forget(token);
+        llm::antigravity::forget(token);
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();
