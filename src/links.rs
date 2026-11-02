@@ -50,6 +50,21 @@ pub fn find_urls(text: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// Whether `text` is, whole, one `http://`/`https://` URL: the scheme at its
+/// very first byte, something after the scheme, and nothing anywhere a URL
+/// cannot hold — whitespace, a control, one of the `<>"`` ` ``|` delimiters
+/// ([`find_urls`]' body rule). Such a text is linked **verbatim**:
+/// [`find_urls`] trims a closing `.`, `!` or unbalanced `)` because the prose
+/// around a URL owns it, and a text that *is* the URL has no prose to give it
+/// back to. The `/mcp` sign-in page shows exactly that text, its authorize
+/// URL, where a trimmed target would open something other than what `c`
+/// copies and the browser was handed (`docs/links.md`).
+#[must_use]
+pub fn is_whole_url(text: &str) -> bool {
+    matches!(next_scheme(text, 0), Some((0, body)) if body < text.len())
+        && text.chars().all(is_url_char)
+}
+
 /// Code's counterpart of [`find_urls`]. A URL at the start of a literal
 /// (including a URL-only code span) or introduced by a quote keeps its exact
 /// punctuation. A matching quote terminates it before surrounding code such
@@ -451,6 +466,43 @@ mod tests {
 
     fn urls(text: &str) -> Vec<&str> {
         find_urls(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn a_text_that_is_one_url_is_whole_whatever_it_ends_on() {
+        // Prose detection gives a closing `.`/`!`/`)` back to the sentence
+        // around a URL; a text that IS the URL has no sentence, so what it
+        // ends on stays part of it (`docs/links.md`).
+        for text in [
+            "https://as.test/authorize?client_id=c1&state=xyz",
+            "https://as.test/authorize?resource=https%3A%2F%2Fmcp.test.",
+            "https://as.test/authorize?state=s!",
+            "https://as.test/o(auth)/authorize?client_id=c1)",
+            "HTTPS://AS.TEST/A",
+            "http://127.0.0.1:8080/authorize?x=1",
+        ] {
+            assert!(is_whole_url(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_text_with_anything_but_one_url_in_it_is_not_whole() {
+        for text in [
+            "",
+            "https://",
+            "see https://as.test/a",
+            " https://as.test/a",
+            "https://as.test/a and more",
+            "https://as.test/a\nnext",
+            "https://as.test/a\u{1b}]8;;x",
+            "https://as.test/<a>",
+            "xhttps://as.test/a",
+            "ftp://as.test/a",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+        ] {
+            assert!(!is_whole_url(text), "{text:?}");
+        }
     }
 
     #[test]

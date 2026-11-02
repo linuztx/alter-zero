@@ -1033,7 +1033,12 @@ underline, so the styled run and the clickable run are one run: the pure
 `links` module detects/interns
 and stamps the id into `Style::underline_color`, `ui::inline` marks prose and
 code (a code URL gaining only the invisible target, never the link dress),
-`ui::tool`'s header stamps the file target, and
+`ui::tool`'s header stamps the file target, `ui::model_view`'s builders link
+the sign-in pages' URLs (`/login`'s, and the `/mcp` Authenticate page's
+authorize URL — linked **verbatim**, `model_url_rows` over
+`links::is_whole_url`, so a click opens exactly what `c` copies, where it
+used to print as plain rows that opened a truncated URL; `smoke.sh` Phase
+149), and
 `term::draw_cells` — the choke point all four cell-write paths share — strips
 the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
 in `docs/links.md`; the `@` file-path picker (async walk+rank file search below

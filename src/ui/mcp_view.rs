@@ -4,8 +4,9 @@
 //! [`render_mcp_menu`] can never disagree), the pages walking
 //! servers → server detail → tools → tool detail, plus the OAuth page.
 
+use super::inline::wrap_inline;
 use super::menu::centered_window;
-use super::model_view::model_rule;
+use super::model_view::{model_linked_rows, model_rule, model_url_rows, whole_url_run};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
@@ -234,25 +235,52 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
 /// routinely outrun a narrow terminal, and the tail is the distinguishing
 /// part.
 fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
-    let room = (width as usize)
+    let rows = wrap_text(value, field_room(width))
+        .into_iter()
+        .map(|row| vec![Span::styled(row, value_style)])
+        .collect();
+    field_rows(label, rows)
+}
+
+/// [`field_lines`] for a remote server's address: the same rows, every
+/// fragment a link to the whole URL (`docs/links.md`) — a wrapped address is
+/// exactly where a terminal's own detection opens a truncated target. A value
+/// that is not one whole URL reads as plain [`field_lines`].
+fn url_field_lines(label: &str, url: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
+    match whole_url_run(url, value_style) {
+        Some(run) => field_rows(label, wrap_inline(&[run], field_room(width))),
+        None => field_lines(label, url, value_style, width),
+    }
+}
+
+/// The room a field's value wraps to: what is left of the row past the inset
+/// and the label column.
+fn field_room(width: u16) -> u16 {
+    (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
-        .max(1) as u16;
-    let mut rows = wrap_text(value, room).into_iter();
-    let first = rows.next().unwrap_or_default();
-    let mut lines = vec![Line::from(vec![
+        .max(1) as u16
+}
+
+/// A field's already-wrapped value rows laid out under its label: the first
+/// row beside the label, the rest hanging at the field column.
+fn field_rows(label: &str, rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
+    let mut rows = rows.into_iter();
+    let mut first = vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<MCP_FIELD_COL$}"),
             Style::new().fg(mcp_detail_label_color()),
         ),
-        Span::styled(first, value_style),
-    ])];
+    ];
+    first.extend(rows.next().unwrap_or_default());
+    let mut lines = vec![Line::from(first)];
     lines.extend(rows.map(|row| {
-        Line::from(vec![
+        let mut spans = vec![
             Span::raw(MODEL_INDENT),
             Span::raw(" ".repeat(MCP_FIELD_COL)),
-            Span::styled(row, value_style),
-        ])
+        ];
+        spans.extend(row);
+        Line::from(spans)
     }));
     lines
 }
@@ -404,19 +432,15 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     {
         lines.push(field_line("Protocol:", version, value, width));
     }
-    let target_label = if server.config.is_remote() {
-        "URL:"
-    } else {
-        "Command:"
-    };
     // The two values the user opens the page to read whole — the startup
-    // review's verbatim rule: they wrap under their labels, never clip.
-    lines.extend(field_lines(
-        target_label,
-        &server.config.target(),
-        value,
-        width,
-    ));
+    // review's verbatim rule: they wrap under their labels, never clip. An
+    // address is also a link to itself; a launch command is not.
+    let target = server.config.target();
+    lines.extend(if server.config.is_remote() {
+        url_field_lines("URL:", &target, value, width)
+    } else {
+        field_lines("Command:", &target, value, width)
+    });
     lines.extend(field_lines(
         "Config location:",
         &server.config_path,
@@ -443,7 +467,13 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     }
     if let McpServerStatus::Failed(reason) = &server.status {
         lines.push(Line::default());
-        lines.extend(dim_wrapped(&format!("Error: {reason}"), width));
+        // A reason can name a page to act on (a console to enable an API
+        // in): its URL is linked, the `/login` failures' rule.
+        lines.extend(model_linked_rows(
+            &format!("Error: {reason}"),
+            model_meta_color(),
+            width,
+        ));
     }
     // The tools set aside at connect, by name and with the reason — the one
     // place "why can't the model see this tool?" is answered.
@@ -639,14 +669,14 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     match &menu.auth.url {
         Some(url) => {
             lines.extend(dim_wrapped(MCP_AUTH_COPY_NOTE, width));
-            let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
-            for row in wrap_output(url, room) {
-                lines.push(mcp_line(
-                    &row,
-                    Style::new().fg(model_selected_color()),
-                    width,
-                ));
-            }
+            // A real hyperlink (`docs/links.md`), the `/login` sign-in pages'
+            // way: an authorize URL is wider than any row, so it hard-breaks,
+            // and a terminal's own detection reads row text — the first row
+            // opened a truncated URL and the rest were no links at all. Every
+            // fragment carries the whole URL now, verbatim, so a click opens
+            // exactly what `c` copies and the browser was handed; the accent
+            // the page has always lit it in stays, underlined.
+            lines.extend(model_url_rows(url, model_selected_color(), width));
         }
         None => lines.push(dim_line(MCP_AUTH_WAITING, width)),
     }
@@ -676,10 +706,9 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
         lines.push(dim_line(MCP_AUTH_SUBMITTED, width));
     }
     if let Some(error) = &menu.auth.error {
-        let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
-        for row in wrap_output(error, room) {
-            lines.push(mcp_line(&row, Style::new().fg(error_color()), width));
-        }
+        // A reason can name a page to visit (an authorization server's
+        // `error_uri`): its URL is linked, the `/login` failures' rule.
+        lines.extend(model_linked_rows(error, error_color(), width));
     }
     lines.push(Line::default());
     // Wrapped: "Press Esc to go back" is the note's actionable tail.
