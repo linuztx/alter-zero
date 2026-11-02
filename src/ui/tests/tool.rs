@@ -188,6 +188,40 @@ fn the_note_waits_for_the_call_to_resolve() {
 }
 
 #[test]
+fn a_hook_refusal_shows_its_event_hook_and_config_whole_in_a_command_cell() {
+    // What a refusal tells the user (docs/hooks.md *What the user sees*)
+    // must survive the command cell's fold: its three rows sit under the
+    // four-row ceiling, so the cell shows every one and no `+N lines` hint —
+    // and never the instruction the model reads beside them.
+    let (display, result) = crate::llm::hooks::block_texts(
+        "PreToolUse",
+        &crate::hooks::HookBlock {
+            reason: "Use pnpm instead of npm.".into(),
+            hook: Some(crate::hooks::HookOrigin {
+                command: "~/.alter-zero/hooks/use-pnpm.sh".into(),
+                file: Some("/home/u/.alter-zero/hooks.json".into()),
+            }),
+        },
+        Some(std::path::Path::new("/home/u")),
+    );
+    let mut refused = tool("Bash", "npm --version", ToolStatus::Failed, &display);
+    refused.context_output = Some(result);
+    let rows: Vec<String> = tool_lines(&refused, 80, &PathDisplay::VERBATIM)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● Bash(npm --version)",
+            "  ⎿  Blocked by PreToolUse hook: Use pnpm instead of npm.",
+            "     Hook: ~/.alter-zero/hooks/use-pnpm.sh",
+            "     Config: ~/.alter-zero/hooks.json",
+        ]
+    );
+}
+
+#[test]
 fn a_noted_backgrounded_cell_keeps_its_fixed_row_over_the_note() {
     let lines = tool_lines(
         &noted(

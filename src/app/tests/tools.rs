@@ -278,12 +278,13 @@ fn every_note_a_call_collects_stays_on_its_row() {
     app.start_tool("Bash", "ls -la", None);
     app.set_tool_note("Allowed by auto mode classifier");
     app.set_tool_note("Context added by hook");
-    app.set_tool_note("Flagged by hook: lint failed");
+    app.set_tool_note("Flagged by PostToolUse hook: lint failed");
     let finished = app.end_tool("Exit code: 0\ntotal 40", true).expect("ran");
     assert_eq!(
         finished.approval_note.as_deref(),
         Some(
-            "Allowed by auto mode classifier · Context added by hook · Flagged by hook: lint failed"
+            "Allowed by auto mode classifier · Context added by hook · \
+             Flagged by PostToolUse hook: lint failed"
         )
     );
 }

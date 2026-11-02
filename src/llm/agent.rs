@@ -15,7 +15,7 @@
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::exec::ToolProgress;
-use super::hooks::{HookSink, block_texts as hook_block_texts};
+use super::hooks::HookSink;
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
     summarize_call_naming,
@@ -535,7 +535,8 @@ pub fn run_agent(
                     for call in agent_calls {
                         let hook = hooks.pre_tool_use(call, cancel);
                         if let Some(block) = &hook.blocked {
-                            let result = refuse_by_hook(tx, call, session_command, block, &hook);
+                            let result =
+                                refuse_by_hook(tx, call, session_command, block, &hook, hooks);
                             results.push((call.id.clone(), result));
                             continue;
                         }
@@ -625,7 +626,7 @@ pub fn run_agent(
                     // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(block) = &hook.blocked {
-                        let result = refuse_by_hook(tx, call, session_command, block, &hook);
+                        let result = refuse_by_hook(tx, call, session_command, block, &hook, hooks);
                         results.push((call.id.clone(), result));
                         continue;
                     }
@@ -871,23 +872,26 @@ pub fn run_agent(
 /// Refuse `call` on its `PreToolUse` hook's block, and hand back what the
 /// model reads. The permission gate's own rejection event, reused whole —
 /// red cell, model-facing text on `context_output`, and a `/resume` that
-/// replays both — with whatever else the hook said kept rather than dropped:
-/// its note (a sibling handler's warning, a `systemMessage`) on the cell's
-/// dim row, and its context after the refusal.
+/// replays both — worded by the sink that refused (`hooks`, which knows the
+/// home the cell's config path is shown relative to), with whatever else
+/// the hook said kept rather than dropped: its note (a sibling handler's
+/// warning, a `systemMessage`) on the cell's dim row, and its context after
+/// the refusal.
 fn refuse_by_hook(
     tx: &UnboundedSender<StreamEvent>,
     call: &ToolCallRequest,
     session_command: &dyn Fn(&str) -> Option<String>,
     block: &crate::hooks::HookBlock,
-    hook: &super::hooks::PreToolVerdict,
+    verdict: &super::hooks::PreToolVerdict,
+    hooks: &dyn HookSink,
 ) -> String {
-    let (display, mut result) = hook_block_texts(HookEvent::PreToolUse.name(), block);
-    if let Some(context) = &hook.context {
+    let (display, mut result) = hooks.refusal_texts(HookEvent::PreToolUse, block);
+    if let Some(context) = &verdict.context {
         result.push_str("\n\n");
         result.push_str(context);
     }
     let _ = tx.send(tool_start_event(call, session_command));
-    if let Some(note) = &hook.note {
+    if let Some(note) = &verdict.note {
         let _ = tx.send(StreamEvent::ToolNote(note.clone()));
     }
     let _ = tx.send(StreamEvent::ToolRejected {
@@ -913,7 +917,7 @@ fn tool_start_event(
 
 #[cfg(test)]
 mod tests {
-    use super::super::hooks::{HookSink, NoHooks, PostToolVerdict, PreToolVerdict};
+    use super::super::hooks::{HookSink, NoHooks, PostToolVerdict, PreToolVerdict, block_texts};
     use super::*;
     use crate::llm::ToolCallSpec;
     use std::cell::RefCell;
@@ -1450,6 +1454,9 @@ mod tests {
         failures: std::sync::Mutex<Vec<(String, bool)>>,
         /// Every `StopFailure` dispatch: the error type and its details.
         stop_failures: std::sync::Mutex<Vec<(String, String)>>,
+        /// How this sink words a refusal, when a test scripts it; `None`
+        /// keeps the default wording.
+        refusal: Option<(String, String)>,
     }
 
     impl FakeHooks {
@@ -1532,6 +1539,16 @@ mod tests {
             } else {
                 stops.remove(0)
             }
+        }
+
+        fn refusal_texts(
+            &self,
+            event: HookEvent,
+            block: &crate::hooks::HookBlock,
+        ) -> (String, String) {
+            self.refusal
+                .clone()
+                .unwrap_or_else(|| block_texts(event.name(), block, None))
         }
     }
 
@@ -2095,7 +2112,12 @@ mod tests {
         else {
             panic!("a hook block resolves as a rejection: {events:?}");
         };
-        assert!(display.contains("no destructive deletes"), "{display}");
+        // The cell names the event and the hook; the instruction is the
+        // model's alone.
+        assert_eq!(
+            display,
+            "Blocked by PreToolUse hook: no destructive deletes\nHook: ./guard.sh"
+        );
         assert!(
             !events
                 .iter()
@@ -2109,6 +2131,31 @@ mod tests {
              Do not retry the same call; address the reason or ask the user.",
             "the model is told why, by which hook, and what to do"
         );
+    }
+
+    #[test]
+    fn a_refusal_is_worded_by_the_sink_that_refused() {
+        // The sink knows what the loop does not — the home its hook's file is
+        // shown relative to — so the loop asks it for both texts rather than
+        // wording the block itself.
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some("no destructive deletes".into()),
+                ..PreToolVerdict::default()
+            },
+            refusal: Some(("the cell's words".into(), "the model's words".into())),
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with_hooks(&hooks);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolRejected { display, result, .. }
+                    if display == "the cell's words" && result == "the model's words"
+            )),
+            "{events:?}"
+        );
+        assert_eq!(result, "the model's words");
     }
 
     #[test]

@@ -483,8 +483,9 @@ const HOOKS_REPLY: &str = concat!(
      You configure them in `~/.alter-zero/hooks.json`; I'll try two `bash` \
      calls so you can see both halves.\n\n",
     "That's the pair. The first call never ran: a **PreToolUse** hook exited \
-     `2`, so its stderr became the refusal — a red cell for you; for me, the \
-     reason and the hook that gave it. The second ran, and a **PostToolUse** \
+     `2`, so its stderr became the refusal — the red cell names the event, \
+     the hook and the `hooks.json` it lives in, and I read the same plus a \
+     line telling me not to retry. The second ran, and a **PostToolUse** \
      hook attached a note; the dim `⎿` row is the record, and the text itself \
      rides into my context rather than onto the cell. Hooks can also rewrite \
      a call's arguments or answer the permission prompt in your place.\n\n",
@@ -528,10 +529,11 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         detail: None,
         arguments: Some(serde_json::json!({ "command": BLOCKED }).to_string()),
     });
-    // Both texts, as the live runner sends them: the short one is the red
-    // cell, the other — the reason with the hook named under it — is what the
-    // model reads, and what the rollout keeps on `ToolCall::context_output`,
-    // so Ctrl+D and a `/resume` show it too.
+    // Both texts, as the live runner sends them: the red cell's names the
+    // event, the hook and its hooks.json; the model's adds what to do, and is
+    // what the rollout keeps on `ToolCall::context_output`, so Ctrl+D and a
+    // `/resume` show it too. No home to relate the file to: the stand-in
+    // path is already the short form a real one is shown in.
     let (display, result) = crate::llm::hooks::block_texts(
         crate::hooks::HookEvent::PreToolUse.name(),
         &crate::hooks::HookBlock {
@@ -541,6 +543,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
                 file: Some(HOOKS_FILE.into()),
             }),
         },
+        None,
     );
     events.push(StreamEvent::ToolRejected {
         display,

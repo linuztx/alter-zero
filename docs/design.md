@@ -770,7 +770,11 @@ which Ctrl+V reads the clipboard from.
   (a background process it left holding the pipes holds nothing). The
   pure half is `hooks/`; the
   runner is `llm/hooks.rs`, behind the one-trait-object `HookSink` seam.
-  Verdicts reuse the permission gate's rendering and recording wholesale;
+  Verdicts reuse the permission gate's rendering and recording wholesale —
+  a refused call's red cell naming the event whose hook refused, the hook's
+  command and the `hooks.json` it is configured in, the path `~`-relative
+  as every config path on screen is, while the model reads the same lines
+  with the path absolute and one more on what to do;
   the two conversation-level additions are `StreamEvent::HookNote` → the
   cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
   verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.

@@ -171,8 +171,8 @@ pub fn truncate_output(text: &str) -> String {
 }
 
 /// Stands in when a hook refuses but says nothing about why — the cell and
-/// the model both need *something*. It is read after `Blocked by hook:`, so
-/// it says only what is missing.
+/// the model both need *something*. It is read after `Blocked by {event}
+/// hook:`, so it says only what is missing.
 pub const NO_REASON: &str = "no reason given";
 
 /// The events whose plain-text stdout becomes context. Claude Code's rule:
@@ -456,7 +456,7 @@ mod tests {
             ..HookRun::default()
         };
         let parsed = parse_run(&run, HookEvent::PreToolUse);
-        // Read after `Blocked by hook:` — so it says only what is missing.
+        // Read after `Blocked by {event} hook:` — so it says only what is missing.
         assert_eq!(
             parsed.block_reason.as_deref(),
             Some("no reason given"),

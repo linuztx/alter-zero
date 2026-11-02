@@ -7,7 +7,9 @@ that feature, ported to this codebase.
 
 ```
 ● Bash(rm -rf build/)
-  ⎿  Blocked by hook: no destructive deletes outside ./tmp
+  ⎿  Blocked by PreToolUse hook: no destructive deletes outside ./tmp
+     Hook: ~/.alter-zero/hooks/no-deletes.sh
+     Config: ~/.alter-zero/hooks.json
 ```
 
 The **`/hooks`** command opens a read-only inline browser over this
@@ -365,9 +367,11 @@ somewhere for every hook verdict to land, under another name. **No new
   gate's own two-text rejection. It already renders as a red cell, already
   keeps the longer model-facing text on `ToolCall::context_output`, already
   round-trips through the rollout, and already shows correctly in Ctrl+D. A
-  hook block is spelled `⎿ Blocked by hook: {reason}` and the model reads
-  which event's hook refused, the hook's command and one line on what to do
-  (*What the model reads*, below). A hook that blocks and also speaks is
+  hook block's cell names the event whose hook refused, the hook and the
+  file it is configured in — `⎿ Blocked by PreToolUse hook: {reason}` over
+  `Hook: {command}` and `Config: {hooks.json}` (*What the user sees*,
+  below) — and the model reads those same lines and one more on what to do
+  (*What the model reads*). A hook that blocks and also speaks is
   heard on both counts (`llm::agent`'s `refuse_by_hook`, an `agent` launch
   included): its `additionalContext` follows the refusal the model reads, and
   its note — a sibling handler's warning, a `systemMessage` — sits under the
@@ -420,6 +424,52 @@ providers key the prompt prefix, so front-injection would invalidate the
 prompt cache every single turn. Hook context therefore lands on the tool call
 that produced it: cache-stable, `/resume`-safe, and — being an append —
 needing no `history_generation` bump.
+
+## What the user sees
+
+A refused call is where a hook takes the turn out of the user's hands, and
+the question it raises is *which hook, and where do I change it?* With
+several hooks configured, or the user's file and a project's merged, the old
+`Blocked by hook: {reason}` could not say. So the red cell carries the three
+facts the model reads:
+
+```
+● Bash(npm --version)
+  ⎿  Blocked by PreToolUse hook: Use pnpm instead of npm.
+     Hook: ~/.alter-zero/hooks/use-pnpm.sh
+     Config: ~/.alter-zero/hooks.json
+```
+
+- **The event** leads the headline, as it does on the model's line and on
+  the `Prompt blocked by UserPromptSubmit hook:` notice: `PreToolUse` for a
+  hook gating the call, `PermissionRequest` for one answering the prompt in
+  the user's stead.
+- **`Hook:`** is the hook's command, labelled exactly as the model's line
+  labels it (its first line, cut to 80 characters with `…`). For a script,
+  that is the hook's path.
+- **`Config:`** is the `hooks.json` it is configured in, shown the way every
+  config path shows on screen: `~`-relative under the home directory, as the
+  startup review and `/hooks` show it, and whole elsewhere. A project's file
+  reads `~/code/app/.alter-zero/hooks.json` beside the user's own
+  `~/.alter-zero/hooks.json`, so which layer refused is plain. The model's
+  line keeps the path absolute, so the agent can read the file.
+- **Not the instruction.** `Do not retry the same call…` is addressed to the
+  model and stays on its side of the split.
+
+A hook read from no file (a config parsed from text) shows no `Config:`
+line, and a block with no known handler shows the headline alone. The lines
+are ordinary output rows, so a reason long enough to fill the cell's four
+rows folds the rest behind `… +N lines (ctrl+o to expand)`, like any other
+output. A cell recorded before this wording keeps its old line after a
+`/resume`.
+
+Only the sink knows the home the path is shown relative to — the boundary
+hands it to every sink it builds, `CommandHooks::with_home` — so the agent
+loop does not word a `PreToolUse` block itself. It asks the sink that refused
+(`HookSink::refusal_texts`, which shows the path whole by default), and that
+is where a `PermissionRequest` deny is worded too. A `PostToolUse` block
+refuses nothing, so it keeps its one-line dim note and names its event
+there: `⎿ Flagged by PostToolUse hook: {reason}`.
 
 ## What the model reads
 
@@ -480,9 +530,9 @@ first turn; it is wrapped like the session's now (`subagent_start_note`).
 
 **A refusal without a reason reads `no reason given`** (`hooks::NO_REASON`):
 exit 2 with empty stderr, a deny with no message, `continue: false` with no
-`stopReason`. It follows `Blocked by hook:`, so it says only what is
-missing; the old `blocked by a hook (no reason given)` made the cell say it
-twice.
+`stopReason`. It follows `Blocked by {event} hook:`, so it says only what
+is missing; the old `blocked by a hook (no reason given)` made the cell say
+it twice.
 
 A rollout recorded before this wording keeps what it was sent with: a
 `/resume` replays what the model actually read.
@@ -631,6 +681,9 @@ pub trait HookSink: Send + Sync + Debug {
     fn session_end(&self, _reason: &str) {}
     fn for_subagent(&self, …) -> Option<Arc<dyn HookSink>> { None }
     fn prompt_hook_label(&self) -> &'static str { "UserPromptSubmit" }
+    fn refusal_texts(&self, event: HookEvent, block: &HookBlock) -> (String, String) {
+        block_texts(event.name(), block, None)
+    }
 }
 ```
 
@@ -648,6 +701,12 @@ the whole point of the design; if a later change breaks it, the change is
 wrong. It held for the three events added after the first eleven:
 `post_tool_use_failure`, `stop_failure` and `permission_prompt` are three
 defaulted methods, each with one call site.
+
+The last two methods are not events. `prompt_hook_label` names the event
+the compact wrapper's prompt hook really is, and `refusal_texts` words a
+refusal's two texts: the command sink relates the cell's `Config:` path to
+the home the boundary gave it (*What the user sees*), and the default shows
+it whole.
 
 ## Deliberately not doing
 
@@ -671,7 +730,9 @@ a scripted turn with both halves of the contract:
 
 ```
 ● Bash(rm -rf build/)
-  ⎿  Blocked by hook: no destructive deletes outside ./tmp
+  ⎿  Blocked by PreToolUse hook: no destructive deletes outside ./tmp
+     Hook: ~/.alter-zero/hooks/no-deletes.sh
+     Config: ~/.alter-zero/hooks.json
 
 ● Bash(ls -la src)
   ⎿  total 8
@@ -685,10 +746,11 @@ runner calls, handed a stand-in hook command — so the offline cell is
 byte-for-byte the one a real `hooks.json` produces, the rule every other
 scripted demo follows with the real executor's formatters. **`smoke.sh`
 Phase 72** drives it and asserts the blocked call produced no output of its
-own, the allowed one kept its output under the provenance row, the
-model-facing lines never reached scrollback, the Ctrl+O transcript kept the
-refusal, and the demo's closing Stop-hook feedback note stayed cell-less
-inline while the transcript recorded it, with the hook that gave it.
+own, its cell named the event, the hook and the `hooks.json`, the allowed
+one kept its output under the provenance row, the instruction meant for the
+model never reached scrollback, the Ctrl+O transcript kept the refusal, and
+the demo's closing Stop-hook feedback note stayed cell-less inline while
+the transcript recorded it, with the hook that gave it.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
 prompt`) through the real loop arm: the blocked submission leaves scrollback
 (exactly the composer's restored copy of the text remains) under the red
@@ -713,8 +775,9 @@ startup review's hooks page first, trusting its fixture's hooks
 (`docs/config-review.md`). **Phase 134b** trusts a project's
 own `hooks.json` whose guard is `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh`
 and launches in the repository's `src/`: the guard runs (in the cwd), the
-stub's `rm -rf build/` never does, and the model reads the hook and the
-project's `hooks.json` by path.
+stub's `rm -rf build/` never does, the model reads the hook and the
+project's `hooks.json` by path, and the red cell names both, the file
+`~`-relative.
 
 Three layers cover the rest:
 

@@ -125,6 +125,17 @@ release heading when a version is cut.
 
 ### Changed
 
+- **A tool call a hook refuses says which hook refused it.** The red cell
+  under a blocked call used to read only `Blocked by hook: …`, so with
+  several hooks, or your own `hooks.json` and a project's, there was no
+  telling which one had fired or where to change it. It now names the event
+  and shows the hook's command and the `hooks.json` it lives in, the same
+  facts the agent reads: `Blocked by PreToolUse hook: Use pnpm instead of
+  npm.` over `Hook: ~/.alter-zero/hooks/use-pnpm.sh` and `Config:
+  ~/.alter-zero/hooks.json`. A `PermissionRequest` hook's denial reads the
+  same way, and the note a `PostToolUse` hook's complaint leaves under a
+  call says which event it came from (`Flagged by PostToolUse hook: …`)
+  (`docs/hooks.md`).
 - **Auto mode runs commands that only read without asking the
   classifier.** In auto mode every command used to wait on a safety check
   by the model, even `ls` or `git status`, and each check is a request to

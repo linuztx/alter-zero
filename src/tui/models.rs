@@ -1665,6 +1665,10 @@ pub(crate) struct HookSetup {
     /// The session's scratchpad, for the payloads' `scratchpad_dir` — `None`
     /// when the session has none (`docs/scratchpad.md`).
     pub(crate) scratchpad_dir: Option<std::path::PathBuf>,
+    /// `$HOME`, which a refusal's cell shows its `hooks.json` relative to,
+    /// as every config path on screen is (`docs/hooks.md` *What the user
+    /// sees*).
+    pub(crate) home: Option<std::path::PathBuf>,
 }
 
 impl HookSetup {
@@ -1709,7 +1713,11 @@ impl HookSetup {
             self.cwd.clone(),
             self.handles.clone(),
         )
-        .map(|hooks| hooks.with_project_dir(self.project_dir.clone()))
+        .map(|hooks| {
+            hooks
+                .with_project_dir(self.project_dir.clone())
+                .with_home(self.home.clone())
+        })
     }
 }
 

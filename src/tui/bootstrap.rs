@@ -382,6 +382,8 @@ impl<'t> Session<'t> {
             // finds this temp tree once `session_id` follows the
             // conversation rather than the process.
             scratchpad_dir: scratchpad_dir.clone(),
+            // What a refusal's cell shows its hooks.json relative to.
+            home: home.clone(),
         });
 
         // The mid-turn message queue (docs/queue.md): what the user types
