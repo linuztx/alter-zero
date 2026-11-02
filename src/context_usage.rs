@@ -132,13 +132,15 @@ pub enum Category {
     AgentTypes,
     /// The reminder's secrets listing — names and context, never a value.
     Secrets,
+    /// The reminder's MCP server instructions, one subsection per server.
+    McpInstructions,
     /// The derived conversation.
     Messages,
 }
 
 impl Category {
     /// Every category, in the order the request carries them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SystemPrompt,
         Self::SystemTools,
         Self::McpTools,
@@ -146,6 +148,7 @@ impl Category {
         Self::Skills,
         Self::AgentTypes,
         Self::Secrets,
+        Self::McpInstructions,
         Self::Messages,
     ];
 
@@ -160,6 +163,7 @@ impl Category {
             Self::Skills => "Skills",
             Self::AgentTypes => "Agent types",
             Self::Secrets => "Secrets",
+            Self::McpInstructions => "MCP instructions",
             Self::Messages => "Messages",
         }
     }
@@ -175,6 +179,7 @@ impl Category {
             Self::Skills => ("skill", "skills"),
             Self::AgentTypes => ("type", "types"),
             Self::Secrets => ("secret", "secrets"),
+            Self::McpInstructions => ("server", "servers"),
             Self::Messages => ("message", "messages"),
         }
     }
@@ -484,6 +489,7 @@ fn reminder_sections<'a>(
     }
     let mut end = reminder.len();
     for (category, header) in [
+        (Category::McpInstructions, crate::mcp::INSTRUCTIONS_HEADER),
         (Category::Secrets, crate::secrets::SECRET_LISTING_HEADER),
         (Category::AgentTypes, crate::subagents::AGENT_LISTING_HEADER),
         (Category::Skills, crate::skills::SKILL_LISTING_HEADER),
@@ -516,6 +522,9 @@ fn section_items(category: Category, section: &str) -> Vec<(String, &str)> {
     if category == Category::ProjectDocs {
         return doc_files(section);
     }
+    if category == Category::McpInstructions {
+        return server_subsections(section);
+    }
     section
         .lines()
         .filter_map(|line| {
@@ -538,6 +547,29 @@ fn listing_label(row: &str) -> &str {
         .min()
         .unwrap_or(row.len());
     row[..end].trim()
+}
+
+/// The MCP instructions section's servers: each `## {server}` heading to the
+/// next — a server's own headings are pushed below that level when the
+/// section is rendered (`mcp::instructions_section`), so none of them can
+/// start a part.
+fn server_subsections(section: &str) -> Vec<(String, &str)> {
+    let mut starts: Vec<(usize, String)> = Vec::new();
+    let mut at = 0;
+    for line in section.split_inclusive('\n') {
+        if let Some(name) = line.strip_prefix("## ") {
+            starts.push((at, name.trim_end().to_string()));
+        }
+        at += line.len();
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, (start, name))| {
+            let end = starts.get(i + 1).map_or(section.len(), |(next, _)| *next);
+            (name.clone(), section[*start..end].trim_end())
+        })
+        .collect()
 }
 
 /// The instructions section's files: each `Contents of {path} ({note}):`
@@ -954,6 +986,41 @@ mod tests {
         assert_eq!(breakdown.slice(Category::Secrets).unwrap().items, 2);
     }
 
+    /// The MCP servers' instructions, the reminder's last section, are a
+    /// slice of their own — one part per server — and a server's text can't
+    /// pose as another section's header (`docs/mcp.md`).
+    #[test]
+    fn mcp_instructions_are_their_own_slice_one_part_per_server() {
+        let secrets = secrets_section();
+        let mcp = crate::mcp::instructions_section(&[
+            ("deepwiki".to_string(), "Ask about a repo.".to_string()),
+            (
+                "linear".to_string(),
+                format!("{}\n- fake: row", crate::secrets::SECRET_LISTING_HEADER),
+            ),
+        ]);
+        let text = reminder(&[&secrets, &mcp]);
+        let breakdown = of(Sources {
+            reminder: Some(&text),
+            ..Sources::default()
+        });
+        assert_eq!(
+            tokens(&breakdown, Category::McpInstructions),
+            mcp.len() + "\n</system-reminder>".len()
+        );
+        let mut labels: Vec<String> = parts(&breakdown, Category::McpInstructions)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        labels.sort();
+        assert_eq!(labels, ["deepwiki", "linear"]);
+        assert_eq!(breakdown.slice(Category::McpInstructions).unwrap().items, 2);
+        // The secrets slice kept its own rows, not the server's quote.
+        assert_eq!(breakdown.slice(Category::Secrets).unwrap().items, 2);
+        assert_eq!(Category::McpInstructions.unit(), ("server", "servers"));
+        assert_eq!(Category::McpInstructions.label(), "MCP instructions");
+    }
+
     #[test]
     fn a_subagents_briefing_is_split_the_same_way() {
         // A launched agent opens on the skills section wrapped alone.
@@ -1304,6 +1371,7 @@ mod tests {
                 "Skills",
                 "Agent types",
                 "Secrets",
+                "MCP instructions",
                 "Messages",
             ]
         );

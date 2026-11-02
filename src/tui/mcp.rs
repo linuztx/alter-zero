@@ -237,8 +237,10 @@ impl Session<'_> {
         }
         // The offered tool set may have flipped (a server connected, failed,
         // was disabled) — re-attach the backend only when it really did (the
-        // `refresh_skills` pattern).
+        // `refresh_skills` pattern) — and with it the servers' instructions
+        // the reminder carries.
         self.models.refresh_mcp();
+        self.sync_listings();
         self.frame.schedule_frame();
     }
 

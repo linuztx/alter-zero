@@ -112,14 +112,15 @@ share too small to print as a tenth reading `<0.1%` rather than a `0.0%` that
 would say the category is free. The colours are theme roles
 (`ui::theme::context_usage_color`): the system prompt and the tools keep the
 Ctrl+D view's own two, the messages the accent, the project docs the link
-blue, the skills the success green, the secrets the error red, and the two
+blue, the skills the success green, the secrets the error red, and the three
 categories with no role of their own are blends — the MCP tools between the
-warning and the error hues, the agent types between the purple and the red —
-so every row stays distinct in every theme. The terminal's own sixteen
-colours (`ansi`) have no components to mix, and a blend of two named colours
-would step to one of its ends — the MCP tools and the agent types both
-landing on the secrets' red — so there each takes the bright variant of its
-first hue instead (bright yellow, bright magenta; `palette::bright`).
+warning and the error hues, the agent types between the purple and the red,
+the MCP instructions between the green and the blue — so every row stays
+distinct in every theme. The terminal's own sixteen colours (`ansi`) have no
+components to mix, and a blend of two named colours would step to one of its
+ends — the MCP tools and the agent types both landing on the secrets' red —
+so there each takes the bright variant of its first hue instead (bright
+yellow, bright magenta, bright green; `palette::bright`).
 
 The highlighted row's **detail** sits beside the legend on a terminal wide
 enough for both (`CONTEXT_USAGE_SIDE_BY_SIDE_MIN_COLS`), and under it
@@ -143,6 +144,7 @@ sends it back to the largest.
 | Skills | the reminder's skills section (`docs/skills.md`) | one per listed skill |
 | Agent types | the reminder's subagent-type section (`docs/subagents.md`) | one per type |
 | Secrets | the reminder's secrets section (`docs/secrets.md`) — names and context only, never a value | one per secret |
+| MCP instructions | the reminder's last section: the connected MCP servers' own instructions (`docs/mcp.md`) | one per server, by its `## {server}` heading |
 | Messages | the derived conversation (`context::context_messages`, `docs/context.md`) | your messages, shell commands, app notices, the compaction summary, replies, tool calls, tool results, images |
 
 The reminder's wrapper — the tags and its one-line preamble, a few tokens —
@@ -167,8 +169,11 @@ carries it: an `AGENTS.md` is the user's own text and may quote any of the
 headers below, so no header inside it may cut it. The listings after it are
 the session's own rendering, in a fixed order, and each is found by the
 header its contributor writes (`skills::SKILL_LISTING_HEADER`,
-`subagents::AGENT_LISTING_HEADER`, `secrets::SECRET_LISTING_HEADER`), from
-the end, where the session writes it. A subagent's briefing carries no
+`subagents::AGENT_LISTING_HEADER`, `secrets::SECRET_LISTING_HEADER`,
+`mcp::INSTRUCTIONS_HEADER`), from the end, where the session writes it. The
+MCP section holds text the servers chose, so its rendering pushes every one
+of their headings two levels down: none of it can start a line the way a
+section header or a `## {server}` part does. A subagent's briefing carries no
 instructions, so it has no **Project docs** row.
 
 The **Messages** parts split the user-role text by where it came from rather

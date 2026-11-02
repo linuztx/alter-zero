@@ -1142,8 +1142,27 @@ asked for rather than a stalled turn. `subscriptions/listen`, response caching
 (`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
 registration (we are not a hosted client with an `https` client id — DCR,
 deprecated but retained, is our registration path) stay out with it. Server
-`instructions` are shown in the detail page but not injected into the system
-prompt. WebSocket transport isn't offered: the MCP spec defines stdio and
+`instructions` — the spec's hint for how a server's tools are meant to be
+used — ride the `<system-reminder>` as its **last section**
+(`mcp::instructions_section`, the reference client's shape: `# MCP Server
+Instructions` over one `## {server}` part each), built at the boundary by
+`sync_listings` from `McpManager::instructions` and re-rendered on every MCP
+event, so a server that connects after the first frame is in the next
+turn's context. Only a connected server with at least one tool the model is
+offered contributes (its instructions are about tools; with **Tools** off
+none are offered, so none ride), in name order so the reminder holds still
+across reconnects, each cut at `MAX_INSTRUCTIONS_CHARS` (4,096). Last,
+because servers come and go and only what follows a changed section
+re-renders into the prompt cache. The text is the server's, so it is held
+inside its part: every line that starts with a heading's `#`s is pushed two
+levels down — inside a code fence too, since a reader of the raw text can't
+tell a fenced `# …` from a section, while a `#` comment stays a comment —
+and a fence left open is closed, so no server can open a section of its own
+or pose as another server's. A subagent's briefing carries the parts of the
+servers whose tools its type may call (`briefing_for`, its `tools:`
+allowlist), since the lead's reminder never reaches its fresh context.
+`/context` counts the section as **MCP instructions**, one part per server
+(`docs/context-usage.md`). WebSocket transport isn't offered: the MCP spec defines stdio and
 Streamable HTTP (and the legacy HTTP+SSE this client also speaks), and
 Claude Code's `"type": "ws"` is its own extension, which an entry here
 reports as an unsupported transport rather than dropping silently. The dummy backend scripts no MCP scenario — the manager is

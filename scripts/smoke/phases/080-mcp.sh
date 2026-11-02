@@ -19,7 +19,7 @@ MCP_DIR="$(mktemp -d)"
 cat >"$MCP_DIR/server.sh" <<'MCPSRV'
 #!/bin/sh
 cat > /dev/null &
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":60000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1.0"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":60000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1.0"}},"instructions":"Echo only short text."}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}],"ttlMs":60000,"cacheScope":"public"}}'
 sleep 60
 MCPSRV
@@ -93,5 +93,16 @@ echo "==== Phase 80: closed back to the composer ===="
 printf '%s\n' "$mcp_closed"
 expect_lacks "$mcp_closed" -F "Manage MCP servers" "Esc did not close the /mcp manager"
 expect_has "$mcp_closed" -F "dummy_model_name" "the session footer did not come back after closing /mcp"
+# The connected server's own instructions ride the <system-reminder> the
+# context leads with (docs/mcp.md) — Ctrl+D shows exactly what is sent.
+tmux send-keys -t "$S80" C-d
+sleep 0.6
+mcp_context="$(tmux capture-pane -t "$S80" -p -S -200)"
+echo "==== Phase 80: Ctrl+D, the server's instructions in the reminder ===="
+printf '%s\n' "$mcp_context"
+for expect in "# MCP Server Instructions" "## fixture" "Echo only short text."; do
+	expect_has "$mcp_context" -F "$expect" "the context is missing the server's instructions ('$expect')"
+done
+tmux send-keys -t "$S80" q
 tmux kill-session -t "$S80" 2>/dev/null
 rm -rf "$MCP_CFG" "$MCP_DIR"

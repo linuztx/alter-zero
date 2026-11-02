@@ -21,6 +21,7 @@
 
 mod config;
 mod headers;
+mod instructions;
 mod names;
 mod protocol;
 mod sse;
@@ -34,6 +35,9 @@ pub use self::config::{
 pub use self::headers::{
     MCP_PARAM_HEADER_PREFIX, ParamHeader, X_MCP_HEADER_KEY, header_value, param_header_values,
     param_headers, strip_header_annotations,
+};
+pub use self::instructions::{
+    INSTRUCTIONS_HEADER, INSTRUCTIONS_PREAMBLE, MAX_INSTRUCTIONS_CHARS, instructions_section,
 };
 pub use self::names::{
     MAX_WIRE_NAME_LEN, MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, capitalize_display,

@@ -948,6 +948,28 @@ impl McpManager {
         out
     }
 
+    /// Each server's own instructions the model is given
+    /// (`mcp::instructions_section`, `docs/mcp.md`): a connected server with
+    /// at least one offered tool that `allowed` admits by wire name — every
+    /// one for the lead, a subagent's own allowlist for its briefing — and
+    /// instructions to give, in name order so the reminder holds still
+    /// across reconnects.
+    #[must_use]
+    pub fn instructions(&self, allowed: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+        let inner = self.lock();
+        let mut out: Vec<(String, String)> = inner
+            .servers
+            .iter()
+            .filter(|server| server.offered().iter().any(|(wire, _)| allowed(wire)))
+            .filter_map(|server| {
+                let text = server.identity.as_ref()?.instructions.as_deref()?.trim();
+                (!text.is_empty()).then(|| (server.entry.name.clone(), text.to_string()))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// The server's own one-line description of the tool `wire` names — the
     /// dim row the permission prompt shows under the call (`docs/mcp.md`).
     /// `None` for a tool no connected server offers.
@@ -1436,6 +1458,50 @@ mod tests {
     /// Every offered function name is unique and inside the provider limit —
     /// a duplicate or an over-long one fails the **whole** request — and the
     /// specs, the fingerprint and the description lookup all agree on them.
+    /// The instructions the reminder carries: only a connected server with
+    /// a tool it offers, in name order, and — for a subagent — only a server
+    /// whose tools the agent may call (`docs/mcp.md`).
+    #[test]
+    fn instructions_come_from_servers_whose_tools_are_offered() {
+        let (manager, _rx) = manager_with(vec![
+            stdio_entry("zeta"),
+            stdio_entry("alpha"),
+            stdio_entry("idle"),
+            stdio_entry("bare"),
+        ]);
+        {
+            let mut inner = manager.lock();
+            for server in &mut inner.servers {
+                let name = server.entry.name.clone();
+                server.identity = Some(ServerIdentity {
+                    instructions: Some(format!("Use {name} wisely.")),
+                    ..Default::default()
+                });
+                if name != "idle" {
+                    server.status = McpServerStatus::Connected;
+                }
+                if name != "bare" {
+                    server.tools = vec![McpToolInfo {
+                        name: "go".into(),
+                        description: "Go.".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }];
+                }
+            }
+        }
+        let all = manager.instructions(&|_| true);
+        assert_eq!(
+            all,
+            [
+                ("alpha".to_string(), "Use alpha wisely.".to_string()),
+                ("zeta".to_string(), "Use zeta wisely.".to_string()),
+            ]
+        );
+        let only_alpha = manager.instructions(&|wire| wire.starts_with("mcp__alpha__"));
+        assert_eq!(only_alpha.len(), 1);
+        assert_eq!(only_alpha[0].0, "alpha");
+    }
+
     #[test]
     fn offered_names_are_unique_short_and_agree_everywhere() {
         let (manager, _rx) = manager_with(vec![stdio_entry("atlassian-confluence-cloud")]);

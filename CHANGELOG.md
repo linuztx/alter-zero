@@ -14,6 +14,14 @@ release heading when a version is cut.
 
 ### Added
 
+- **MCP servers' instructions reach the agent.** A server can say how its
+  tools are meant to be used: which to call first, what an argument means,
+  what to avoid. That text used to be shown on the server's page in `/mcp`
+  and nowhere else. It is now sent to the agent with each turn, for every
+  connected server whose tools it can use, and a subagent gets the
+  instructions of the servers it may call. Each server's text is capped,
+  can't pose as another server's, and appears in `/context` as **MCP
+  instructions** (`docs/mcp.md`).
 - **Hooks and a project's MCP servers are reviewed before they run.** A
   hook runs a shell command on its own whenever its event fires, and a
   project's `.mcp.json` or `.alter-zero/mcp.json` starts a program or
