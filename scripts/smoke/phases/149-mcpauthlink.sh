@@ -130,21 +130,42 @@ if ! wait_for 5 "$S149" -F "1. Authenticate"; then
 	fail "the server page offers no Authenticate action"
 fi
 keys "$S149" Enter # Authenticate
-auth_page="$(wait_pane 15 "$S149" -F "c to copy")"
+# The browser stand-in is handed the authorize URL as soon as the flow has
+# built it — the one URL the page and its link are held to below.
+browser_url=""
+if wait_file 15 "$BROWSER_LOG" -F "$AUTH_BASE/oauth/authorize"; then
+	browser_url="$(head -1 "$BROWSER_LOG")"
+else
+	fail "the flow never handed the browser its URL"
+fi
+
+# The URL as the page spells it: the rows from the one its scheme opens down
+# to the blank row under them, each without its inset. Polled until it is the
+# browser's URL whole, since a capture taken while tmux is still part-way
+# through a repaint (a loaded machine splits the frame) spells half of the
+# new page over half of the old one.
+auth_page=""
+shown_url=""
+shown_rows=0
+spell_url() {
+	local spelled
+	auth_page="$(tmux capture-pane -t "$S149" -p)"
+	spelled="$(printf '%s\n' "$auth_page" | awk -v head="$AUTH_BASE/oauth/authorize" '
+		!on && index($0, head) { on = 1 }
+		on && /^[[:space:]]*$/ { exit }
+		on { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); printf "%s", $0; rows++ }
+		END { printf "\n%d\n", rows }')"
+	shown_url="$(printf '%s\n' "$spelled" | sed -n 1p)"
+	shown_rows="$(printf '%s\n' "$spelled" | sed -n 2p)"
+	[ -n "$browser_url" ] && [ "$shown_url" = "$browser_url" ]
+}
+if ! poll 10 spell_url; then
+	fail "the page never spelled the URL the browser was handed (it spelled '$shown_url')"
+fi
 note "the auth page in a 60-col pane"
 printf '%s\n' "$auth_page"
 expect_has "$auth_page" -F "Authenticating with stub" "the auth page never opened"
 expect_has "$auth_page" -E "^ *$AUTH_BASE/oauth/authorize\?" "the authorize URL does not open its own row"
-
-# The URL as the page spells it: the rows from the one its scheme opens down
-# to the blank row under them, each without its inset.
-shown_url="$(printf '%s\n' "$auth_page" | awk -v head="$AUTH_BASE/oauth/authorize" '
-	!on && index($0, head) { on = 1 }
-	on && /^[[:space:]]*$/ { exit }
-	on { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); printf "%s", $0; rows++ }
-	END { if (rows) printf "\n%d\n", rows }')"
-shown_rows="$(printf '%s\n' "$shown_url" | sed -n 2p)"
-shown_url="$(printf '%s\n' "$shown_url" | sed -n 1p)"
 note "the URL the page spells across ${shown_rows:-0} rows"
 printf '%s\n' "$shown_url"
 [ "${shown_rows:-0}" -ge 2 ] || fail "the URL fits one row; narrow the pane so this phase tests the split"
@@ -153,13 +174,20 @@ for want in "response_type=code" "client_id=smoke-149-dynamically-registered-cli
 	expect_has "$shown_url" -F "$want" "the authorize URL is missing \"$want\""
 done
 
-# The raw stream: every OSC 8 open, as its URI alone.
-sleep 0.3
-link_targets="$(grep -aoE $']8;id=az[0-9]+;[^\x1b]*' "$AUTH_RAW" | sed -E 's/^\]8;id=az[0-9]+;//')"
+# The raw stream: every OSC 8 open, as its URI alone. pipe-pane copies the
+# stream on its own schedule, so wait for the painted frame's opens to land.
+link_targets=""
+read_links() {
+	link_targets="$(grep -aoE $']8;id=az[0-9]+;[^\x1b]*' "$AUTH_RAW" | sed -E 's/^\]8;id=az[0-9]+;//')"
+	[ -n "$shown_url" ] &&
+		[ "$(printf '%s\n' "$link_targets" | grep -cxF "$shown_url")" -ge "${shown_rows:-1}" ]
+}
+poll 5 read_links
 note "the OSC 8 targets in the raw stream"
 if [ -n "$link_targets" ]; then printf '%s\n' "$link_targets" | sort | uniq -c; else echo "(none)"; fi
-# Every open is the whole authorize URL or the server page's address — never
-# a row's fragment of either.
+# Every open is the whole authorize URL — the one the page spells and the
+# browser was handed — or the server page's address; never a row's fragment
+# of either.
 strays="$(printf '%s\n' "$link_targets" | grep -v '^$' | grep -vxF -e "$shown_url" -e "$AUTH_BASE/mcp")"
 expect_eq "$strays" "" "an OSC 8 open carries something other than a whole URL the walk shows"
 opens="$(printf '%s\n' "$link_targets" | grep -cxF "$shown_url")"
@@ -171,13 +199,6 @@ if ! grep -aqF $'\x1b]8;;\x1b' "$AUTH_RAW"; then
 fi
 if grep -aqF $'\x1b[58;' "$AUTH_RAW"; then
 	fail "the link-id carrier leaked as an SGR 58 underline colour"
-fi
-
-# The browser was handed the very URL the link opens.
-if wait_file 5 "$BROWSER_LOG" -F "$AUTH_BASE/oauth/authorize"; then
-	expect_eq "$(head -1 "$BROWSER_LOG")" "$shown_url" "the link and the browser open different URLs"
-else
-	fail "the flow never handed the browser its URL"
 fi
 
 # Esc backs out of the sign-in to the server page.
