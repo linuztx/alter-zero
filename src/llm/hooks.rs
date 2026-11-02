@@ -1106,11 +1106,16 @@ fn hook_lines(origin: Option<&HookOrigin>, home: Option<&Path>) -> String {
 /// (`~/.alter-zero/hooks.json`), as given elsewhere or with no home —
 /// `ui::display_cwd`'s rule, which names the same file on the startup
 /// review's headings and the `/hooks` detail page (held to it by a test
-/// rather than imported, since the backend reaches into no renderer).
+/// rather than imported, since the backend reaches into no renderer). A
+/// `home` that is not absolute — `$HOME` set but empty — relates nothing:
+/// an empty prefix strips from every path, which made `~//home/u/…`.
 /// Home-relative and never cwd-relative, because the cell's text is
 /// recorded: a `/resume` from another directory replays it as written.
 fn shown_file(file: &Path, home: Option<&Path>) -> String {
-    match home.and_then(|home| file.strip_prefix(home).ok()) {
+    match home
+        .filter(|home| home.is_absolute())
+        .and_then(|home| file.strip_prefix(home).ok())
+    {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => file.display().to_string(),
@@ -1695,9 +1700,49 @@ mod tests {
     }
 
     #[test]
+    fn a_home_that_is_not_absolute_relates_nothing() {
+        // `$HOME` set but empty — or relative — names no directory, so the
+        // cell shows the path whole: an empty prefix strips from every path,
+        // and the `~//home/u/…` that made is the one place the cell parts
+        // from `ui::display_cwd`'s rule.
+        let file = Path::new("/home/u/.alter-zero/hooks.json");
+        for home in ["", "home/u"] {
+            assert_eq!(
+                shown_file(file, Some(Path::new(home))),
+                "/home/u/.alter-zero/hooks.json",
+                "HOME={home:?}"
+            );
+        }
+        let (display, _) = block_texts(
+            "PreToolUse",
+            &HookBlock {
+                reason: "no".into(),
+                hook: Some(HookOrigin {
+                    command: "./guard.sh".into(),
+                    file: Some(file.into()),
+                }),
+            },
+            Some(Path::new("")),
+        );
+        assert!(
+            display.ends_with("\nConfig: /home/u/.alter-zero/hooks.json"),
+            "{display}"
+        );
+        // A path already in its short form (the offline demo's stand-in)
+        // shows as written.
+        assert_eq!(
+            shown_file(
+                Path::new("~/.alter-zero/hooks.json"),
+                Some(Path::new("/home/u"))
+            ),
+            "~/.alter-zero/hooks.json"
+        );
+    }
+
+    #[test]
     fn a_hook_is_named_by_its_commands_first_line_within_a_budget() {
         let named = |command: &str| {
-            let (_, result) = block_texts(
+            let (display, result) = block_texts(
                 "PreToolUse",
                 &HookBlock {
                     reason: "no".into(),
@@ -1705,7 +1750,10 @@ mod tests {
                 },
                 None,
             );
-            result.lines().nth(1).expect("a Hook line").to_string()
+            let line = result.lines().nth(1).expect("a Hook line").to_string();
+            // The cell names the hook by the very same label.
+            assert_eq!(display.lines().nth(1), Some(line.as_str()), "{display}");
+            line
         };
         // A script path reads as written.
         assert_eq!(

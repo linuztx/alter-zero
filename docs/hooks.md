@@ -467,7 +467,13 @@ never cwd-relative because the cell's text is recorded: a `/resume` from
 another directory replays it as written. The boundary hands the sink the
 user's home (`CommandHooks::with_home`, read back through `HookSink::home`),
 the way it hands the app its path display; a sink with none — a test's fake —
-names the file as recorded.
+names the file as recorded, and so does one whose home is not absolute: a
+`$HOME` set but empty would otherwise strip from every path and show
+`~//home/u/…`, the one place the cell parts from `display_cwd`. A hook read
+from no file (a config parsed from text) has no `Config:` line, and a block
+with no known handler shows the headline alone. A conversation recorded
+before this wording keeps its old `Blocked by hook:` line after a `/resume`:
+the record is what the screen showed.
 
 **The dim rows name only the event.** They are one line under a call, joined
 by ` · ` when several things are said, where a command and a path would
