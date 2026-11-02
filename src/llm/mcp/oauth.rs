@@ -10,8 +10,6 @@
 //! the challenge parse, the store format, form encoding — are unit-tested;
 //! the HTTP/socket work is exercised by the manager's fixtures.
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -19,13 +17,11 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::files::{FileLock, LockMiss, write_private};
+use crate::llm::loopback::{self, CallbackServer, Expected, Pages};
 use crate::stream::CancelToken;
 
 /// The whole interactive flow's budget — Claude Code's 5 minutes.
 pub const AUTH_FLOW_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The wait-loop poll cadence (the transport's).
-const POLL: Duration = Duration::from_millis(50);
 
 /// Discovery/token requests' per-operation deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1487,390 +1483,11 @@ fn redirect_port(redirect_uri: &str) -> Option<u16> {
     url::Url::parse(redirect_uri).ok()?.port()
 }
 
-// ---------------------------------------------------------------------------
-// the authorization response (pure)
-
-/// What an authorization response carried (RFC 6749 §4.1.2 and §4.1.2.1,
-/// plus RFC 9207's `iss`) — the loopback callback's query, or a pasted
-/// redirect URL's.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct AuthResponse {
-    code: Option<String>,
-    state: Option<String>,
-    iss: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-/// Parse an authorization response out of a redirect URL, a request path or
-/// a bare query: `None` unless it carries a code or an error.
-fn parse_auth_response(text: &str) -> Option<AuthResponse> {
-    let response = AuthResponse {
-        code: redirect_param(text, "code"),
-        state: redirect_param(text, "state"),
-        iss: redirect_param(text, "iss"),
-        error: redirect_param(text, "error"),
-        error_description: redirect_param(text, "error_description"),
-    };
-    (response.code.is_some() || response.error.is_some()).then_some(response)
-}
-
-/// Why an authorization response was not taken.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Rejected {
-    /// Not this flow's answer — no `state`, another attempt's, or another
-    /// authorization server's: turned away, and the flow keeps waiting for
-    /// its own.
-    Foreign(String),
-    /// This flow's answer, and it is a refusal: the flow ends with the
-    /// authorization server's reason.
-    Refused(String),
-}
-
-/// Text cut to `max` characters — an authorization server's words shown to
-/// the user are its to choose, their length is not.
-fn clip(text: &str, max: usize) -> String {
-    let mut clipped: String = text.chars().take(max).collect();
-    if clipped.len() < text.len() {
-        clipped.push('…');
-    }
-    clipped
-}
-
-/// What an authorization response means for the flow that sent `state` to
-/// `meta`'s authorization server: its code, its refusal, or not its answer.
-/// The state comes first and is **required** — a response without one can't
-/// be told from a forged one (RFC 6749 §10.12) — then the issuer (RFC 9207),
-/// and only then does the content count, so a forged refusal can't end a
-/// sign-in any more than a forged code can complete one.
-fn check_auth_response(
-    response: &AuthResponse,
-    state: &str,
-    meta: &AuthServerMeta,
-) -> Result<String, Rejected> {
-    match response.state.as_deref() {
-        None => {
-            return Err(Rejected::Foreign(
-                "the response carries no state, so it can't be this sign-in's".to_string(),
-            ));
-        }
-        Some(got) if got != state => {
-            return Err(Rejected::Foreign(
-                "the response belongs to another sign-in attempt".to_string(),
-            ));
-        }
-        Some(_) => {}
-    }
-    validate_issuer(
-        response.iss.as_deref(),
-        meta.issuer.as_deref(),
-        meta.iss_required,
-    )
-    .map_err(Rejected::Foreign)?;
-    if let Some(error) = &response.error {
-        let description = response
-            .error_description
-            .as_deref()
-            .map(|d| format!(" ({})", clip(d, 300)))
-            .unwrap_or_default();
-        return Err(Rejected::Refused(format!(
-            "the authorization server refused the sign-in: {}{description}",
-            clip(error, 100)
-        )));
-    }
-    response
-        .code
-        .clone()
-        .ok_or_else(|| Rejected::Foreign("the response carries no code".to_string()))
-}
-
-/// The page the browser lands on — whether the sign-in got what it needed,
-/// as a whole HTTP response.
-fn callback_page(verdict: &Result<String, Rejected>) -> String {
-    match verdict {
-        Ok(_) => html_response(
-            "200 OK",
-            "Authorization received",
-            "You can close this tab and return to the terminal.",
-        ),
-        Err(Rejected::Refused(why)) => html_response(
-            "200 OK",
-            "Sign-in refused",
-            &format!("{why}. Return to the terminal to try again."),
-        ),
-        Err(Rejected::Foreign(why)) => html_response(
-            "400 Bad Request",
-            "Not this sign-in's response",
-            &format!("{why}. To sign in, start again from /mcp in the terminal."),
-        ),
-    }
-}
-
-/// A small HTML page as a whole HTTP response, `detail` escaped.
-fn html_response(status: &str, title: &str, detail: &str) -> String {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
-         <body><h3>{title}</h3><p>{}</p></body></html>",
-        html_escape(detail)
-    );
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
-
-fn html_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// the loopback callback (I/O)
-
-/// How long a browser connection may take to send its request: a
-/// preconnect that never does costs its own thread this long, nothing else.
-const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The most of a request head the callback reads — the request line is all
-/// it needs, and a browser's whole head fits many times over.
-const CALLBACK_HEAD_MAX: usize = 16 * 1024;
-
-/// Browser connections served at once; more are closed unread.
-const CALLBACK_MAX_CONNECTIONS: usize = 16;
-
-/// The loopback callback (RFC 8252 §7.3): `127.0.0.1` and, where this
-/// machine has IPv6 loopback, `[::1]` on the **same** port — the redirect
-/// names `localhost`, which a browser may resolve to either.
-struct CallbackServer {
-    listeners: Vec<TcpListener>,
-    port: u16,
-}
-
-/// Bind the callback — on `preferred` when given and free (a reused
-/// client's registered port), else an ephemeral one.
-fn bind_callback(preferred: Option<u16>) -> Result<CallbackServer, String> {
-    let mut v4_only = None;
-    let mut last_error = None;
-    for port in preferred.into_iter().chain(std::iter::repeat_n(0, 8)) {
-        let v4 = match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
-            Ok(listener) => listener,
-            Err(e) => {
-                last_error = Some(e);
-                continue;
-            }
-        };
-        let port = match v4.local_addr() {
-            Ok(address) => address.port(),
-            Err(e) => {
-                last_error = Some(e);
-                continue;
-            }
-        };
-        match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
-            Ok(v6) => {
-                return Ok(CallbackServer {
-                    listeners: vec![v4, v6],
-                    port,
-                });
-            }
-            // Taken on IPv6 alone: try another pair, keeping this as a
-            // fallback.
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                v4_only.get_or_insert(CallbackServer {
-                    listeners: vec![v4],
-                    port,
-                });
-            }
-            // No IPv6 loopback here, so `localhost` can only mean 127.0.0.1.
-            Err(_) => {
-                return Ok(CallbackServer {
-                    listeners: vec![v4],
-                    port,
-                });
-            }
-        }
-    }
-    v4_only.ok_or_else(|| {
-        format!(
-            "could not open the callback port: {}",
-            last_error.map_or_else(|| "no port was free".to_string(), |e| e.to_string())
-        )
-    })
-}
-
-/// A callback request for the flow to judge, and where its page goes.
-struct CallbackHit {
-    response: AuthResponse,
-    page: mpsc::Sender<String>,
-}
-
-/// Serve one browser connection on its own thread: read the request head,
-/// hand an authorization response to the flow and write the page it decides,
-/// answer anything else itself. A connection that never sends — a browser
-/// preconnect — costs this thread its read timeout; it used to block the
-/// whole wait, and with it Esc, the paste field and the real callback.
-fn serve_callback_connection(mut stream: std::net::TcpStream, hits: &mpsc::Sender<CallbackHit>) {
-    // An accepted socket inherits the listener's non-blocking mode on BSD
-    // and macOS (never on Linux), and a non-blocking read of a request still
-    // on its way reads nothing.
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(CALLBACK_READ_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CALLBACK_READ_TIMEOUT));
-    let head = read_request_head(&mut stream);
-    let not_ours = || {
-        html_response(
-            "404 Not Found",
-            "Not found",
-            "This address only receives sign-in responses.",
-        )
-    };
-    let target = head
-        .lines()
-        .next()
-        .and_then(|line| {
-            let mut words = line.split_whitespace();
-            (words.next() == Some("GET")).then(|| words.next())?
-        })
-        .filter(|target| target.split(['?', '#']).next() == Some("/callback"));
-    let reply = match target.map(parse_auth_response) {
-        None => not_ours(),
-        Some(None) => html_response(
-            "400 Bad Request",
-            "Not a sign-in response",
-            "This address only receives sign-in responses.",
-        ),
-        Some(Some(response)) => {
-            let (page_tx, page_rx) = mpsc::channel();
-            let sent = hits.send(CallbackHit {
-                response,
-                page: page_tx,
-            });
-            sent.ok()
-                .and_then(|()| page_rx.recv_timeout(CALLBACK_READ_TIMEOUT).ok())
-                .unwrap_or_else(|| {
-                    html_response(
-                        "410 Gone",
-                        "Sign-in over",
-                        "This sign-in is no longer waiting. To sign in, start again from /mcp in the terminal.",
-                    )
-                })
-        }
-    };
-    let _ = stream.write_all(reply.as_bytes());
-    let _ = stream.flush();
-}
-
-/// Read a request head — to its blank line, the cap, or the timeout. The
-/// whole head, not just the request line: closing a socket with unread
-/// bytes resets it, and a reset can discard the page before the browser
-/// reads it.
-fn read_request_head(stream: &mut impl Read) -> String {
-    let mut head = Vec::new();
-    let mut chunk = [0u8; 2048];
-    while head.len() < CALLBACK_HEAD_MAX && !head.windows(4).any(|w| w == b"\r\n\r\n") {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => head.extend_from_slice(&chunk[..n]),
-        }
-    }
-    String::from_utf8_lossy(&head).into_owned()
-}
-
-/// Wait for the authorization code from **either** side: the loopback
-/// callback, or a pasted redirect URL. Each response is checked
-/// ([`check_auth_response`]) before its code is ever redeemed: one that isn't
-/// this sign-in's is turned away and the wait goes on — a stray request, or
-/// a forged one, can't end it — while this sign-in's refusal ends it with
-/// the authorization server's reason.
-fn wait_for_code(
-    server: &CallbackServer,
-    state: &str,
-    meta: &AuthServerMeta,
-    paste_rx: &mpsc::Receiver<String>,
-    progress: &dyn AuthProgress,
-    cancel: &CancelToken,
-) -> Result<String, String> {
-    for listener in &server.listeners {
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| format!("callback port: {e}"))?;
-    }
-    let (hits_tx, hits_rx) = mpsc::channel::<CallbackHit>();
-    let serving = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let started = Instant::now();
-    loop {
-        if cancel.is_cancelled() {
-            return Err("cancelled".to_string());
-        }
-        if started.elapsed() > AUTH_FLOW_TIMEOUT {
-            return Err("timed out waiting for the browser callback".to_string());
-        }
-        // The pasted redirect URL — the headless/remote path.
-        while let Ok(text) = paste_rx.try_recv() {
-            let Some(response) = parse_auth_response(&text) else {
-                progress.on_paste_rejected(
-                    "that isn't the address the browser landed on — paste the whole URL, with its code and state",
-                );
-                continue;
-            };
-            match check_auth_response(&response, state, meta) {
-                Ok(code) => return Ok(code),
-                Err(Rejected::Refused(why)) => return Err(why),
-                Err(Rejected::Foreign(why)) => progress.on_paste_rejected(&why),
-            }
-        }
-        // New browser connections, each served on a thread of its own.
-        for listener in &server.listeners {
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        use std::sync::atomic::Ordering;
-                        if serving.load(Ordering::SeqCst) >= CALLBACK_MAX_CONNECTIONS {
-                            continue; // closed unread
-                        }
-                        serving.fetch_add(1, Ordering::SeqCst);
-                        let (hits, serving) = (hits_tx.clone(), std::sync::Arc::clone(&serving));
-                        std::thread::spawn(move || {
-                            serve_callback_connection(stream, &hits);
-                            serving.fetch_sub(1, Ordering::SeqCst);
-                        });
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::Interrupted
-                        ) => {}
-                    Err(e) => return Err(format!("callback port: {e}")),
-                }
-            }
-        }
-        // The requests those threads read, judged here.
-        while let Ok(hit) = hits_rx.try_recv() {
-            let verdict = check_auth_response(&hit.response, state, meta);
-            let _ = hit.page.send(callback_page(&verdict));
-            match verdict {
-                Ok(code) => return Ok(code),
-                Err(Rejected::Refused(why)) => return Err(why),
-                Err(Rejected::Foreign(_)) => {}
-            }
-        }
-        std::thread::sleep(POLL);
-    }
-}
+/// What the browser is told at the end of an MCP sign-in.
+const MCP_PAGES: Pages = Pages {
+    received: "Authorization received",
+    restart: "/mcp",
+};
 
 // ---------------------------------------------------------------------------
 // the interactive flow
@@ -1924,7 +1541,12 @@ pub fn run_auth_flow(
         .as_ref()
         .and_then(|client| client.redirect_uri.as_deref())
         .and_then(redirect_port);
-    let callback = bind_callback(preferred)?;
+    // The reused client's port first, else any free one.
+    let ports: Vec<u16> = preferred
+        .into_iter()
+        .chain(std::iter::repeat_n(0, 8))
+        .collect();
+    let callback = CallbackServer::bind(&ports, "/callback")?;
     let redirect_uri = format!("http://localhost:{}/callback", callback.port);
     let client = match (reused, &meta.registration_endpoint) {
         (Some(client), _) if client.redirect_uri.as_deref() == Some(redirect_uri.as_str()) => {
@@ -1965,7 +1587,20 @@ pub fn run_auth_flow(
     );
     progress.on_url(&authorize_url);
     open_browser(&authorize_url);
-    let code = wait_for_code(&callback, &state, &meta, paste_rx, progress, cancel)?;
+    let rejected = |reason: &str| progress.on_paste_rejected(reason);
+    let code = loopback::wait_for_code(
+        &callback,
+        &Expected {
+            state: &state,
+            issuer: meta.issuer.as_deref(),
+            iss_required: meta.iss_required,
+        },
+        &MCP_PAGES,
+        AUTH_FLOW_TIMEOUT,
+        Some((paste_rx, &rejected)),
+        cancel,
+    )
+    .map_err(|end| end.to_string())?;
     drop(callback);
     let (client_params, basic) = client_authentication(
         &client.client_id,
@@ -2002,6 +1637,8 @@ pub fn run_auth_flow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn b64url_matches_the_rfc_vectors() {
@@ -3047,101 +2684,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auth_responses_parse_codes_refusals_and_their_state() {
-        let response =
-            parse_auth_response("/callback?code=abc&state=xyz&iss=https%3A%2F%2Fas.test").unwrap();
-        assert_eq!(response.code.as_deref(), Some("abc"));
-        assert_eq!(response.state.as_deref(), Some("xyz"));
-        assert_eq!(response.iss.as_deref(), Some("https://as.test"));
-        let refusal = parse_auth_response(
-            "http://localhost:1/callback?error=access_denied&error_description=User%20said%20no&state=xyz#x",
-        )
-        .unwrap();
-        assert_eq!(refusal.error.as_deref(), Some("access_denied"));
-        assert_eq!(refusal.error_description.as_deref(), Some("User said no"));
-        assert_eq!(refusal.code, None);
-        // Neither a code nor an error: not an authorization response.
-        assert_eq!(parse_auth_response("/callback?foo=bar"), None);
-        assert_eq!(parse_auth_response("/callback?code=&state=x"), None);
-        assert_eq!(parse_auth_response("/favicon.ico"), None);
-        assert_eq!(parse_auth_response("not a url at all"), None);
-    }
-
-    /// A response is this flow's only when it carries the flow's own
-    /// `state` and names the right issuer; only then can it end the flow —
-    /// with its code, or with the authorization server's refusal.
-    #[test]
-    fn an_auth_response_counts_only_with_its_state_and_issuer() {
-        let meta = meta_for("https://as.test", true);
-        let check =
-            |text: &str| check_auth_response(&parse_auth_response(text).unwrap(), "s1", &meta);
-        assert_eq!(
-            check("?code=c&state=s1&iss=https%3A%2F%2Fas.test"),
-            Ok("c".to_string())
-        );
-        // No state: it can't be told from a forged one.
-        assert!(matches!(
-            check("?code=c&iss=https%3A%2F%2Fas.test"),
-            Err(Rejected::Foreign(_))
-        ));
-        assert!(matches!(
-            check("?code=c&state=s2&iss=https%3A%2F%2Fas.test"),
-            Err(Rejected::Foreign(_))
-        ));
-        // Another authorization server's response (RFC 9207), or none named
-        // where the metadata promised one.
-        assert!(matches!(
-            check("?code=c&state=s1&iss=https%3A%2F%2Fevil.test"),
-            Err(Rejected::Foreign(_))
-        ));
-        assert!(matches!(
-            check("?code=c&state=s1"),
-            Err(Rejected::Foreign(_))
-        ));
-        // A refusal is this flow's answer only under the same checks.
-        match check(
-            "?error=access_denied&error_description=no%20thanks&state=s1&iss=https%3A%2F%2Fas.test",
-        ) {
-            Err(Rejected::Refused(why)) => {
-                assert!(
-                    why.contains("access_denied") && why.contains("no thanks"),
-                    "{why}"
-                );
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(matches!(
-            check("?error=access_denied"),
-            Err(Rejected::Foreign(_))
-        ));
-    }
-
-    #[test]
-    fn callback_pages_say_what_happened() {
-        let ok = callback_page(&Ok("c".to_string()));
-        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
-        assert!(ok.contains("return to the terminal"), "{ok}");
-        let refused = callback_page(&Err(Rejected::Refused(
-            "no <script>alert(1)</script>".to_string(),
-        )));
-        assert!(refused.contains("&lt;script&gt;"), "{refused}");
-        assert!(!refused.contains("<script>"), "{refused}");
-        let foreign = callback_page(&Err(Rejected::Foreign("state".to_string())));
-        assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
-        // Content-Length counts bytes, the page's non-ASCII included.
-        for page in [ok, refused, foreign] {
-            let (head, body) = page.split_once("\r\n\r\n").unwrap();
-            let length: usize = head
-                .lines()
-                .find_map(|l| l.strip_prefix("Content-Length: "))
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert_eq!(length, body.len());
-        }
-    }
-
     /// SEP-2352: client credentials belong to the authorization server that
     /// issued them and are never presented to another. A grant stored before
     /// the issuer was recorded is matched by its token endpoint.
@@ -3266,179 +2808,6 @@ mod tests {
         let mut reply = String::new();
         let _ = stream.read_to_string(&mut reply);
         reply
-    }
-
-    /// Wait for the code on a thread; the receiver yields its result.
-    fn waiting(
-        server: CallbackServer,
-        meta: AuthServerMeta,
-        paste_rx: mpsc::Receiver<String>,
-        progress: std::sync::Arc<Recorded>,
-    ) -> mpsc::Receiver<Result<String, String>> {
-        let (done_tx, done_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = wait_for_code(
-                &server,
-                "s1",
-                &meta,
-                &paste_rx,
-                &progress,
-                &CancelToken::new(),
-            );
-            let _ = done_tx.send(result);
-        });
-        done_rx
-    }
-
-    /// A browser preconnect — a connection that never sends a byte — must
-    /// not stall the callback: the real request on the next connection is
-    /// answered at once.
-    #[test]
-    fn an_idle_connection_never_stalls_the_callback() {
-        let server = bind_callback(None).expect("bind");
-        let port = server.port;
-        let (_paste_tx, paste_rx) = mpsc::channel();
-        let done = waiting(
-            server,
-            meta_for("https://as.test", false),
-            paste_rx,
-            Default::default(),
-        );
-        let _idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        std::thread::sleep(Duration::from_millis(150));
-        let reply = hit(
-            port,
-            "GET /callback?code=c1&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
-        );
-        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-        assert_eq!(
-            done.recv_timeout(Duration::from_secs(3)).expect("answered"),
-            Ok("c1".to_string())
-        );
-    }
-
-    /// Stray requests — a favicon, a response from another sign-in — are
-    /// answered and turned away without ending the flow; the real one still
-    /// lands.
-    #[test]
-    fn a_stray_request_never_ends_the_sign_in() {
-        let server = bind_callback(None).expect("bind");
-        let port = server.port;
-        let (_paste_tx, paste_rx) = mpsc::channel();
-        let done = waiting(
-            server,
-            meta_for("https://as.test", false),
-            paste_rx,
-            Default::default(),
-        );
-        let favicon = hit(port, "GET /favicon.ico HTTP/1.1\r\n\r\n");
-        assert!(favicon.starts_with("HTTP/1.1 404"), "{favicon}");
-        let foreign = hit(port, "GET /callback?code=evil&state=s2 HTTP/1.1\r\n\r\n");
-        assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
-        let stateless = hit(port, "GET /callback?code=evil HTTP/1.1\r\n\r\n");
-        assert!(stateless.starts_with("HTTP/1.1 400"), "{stateless}");
-        assert!(
-            done.recv_timeout(Duration::from_millis(200)).is_err(),
-            "the flow ended early"
-        );
-        let real = hit(port, "GET /callback?code=c1&state=s1 HTTP/1.1\r\n\r\n");
-        assert!(real.starts_with("HTTP/1.1 200"), "{real}");
-        assert_eq!(
-            done.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Ok("c1".to_string())
-        );
-    }
-
-    /// A user who declines on the consent screen ends the sign-in at once
-    /// with the authorization server's reason, instead of a five-minute wait
-    /// for a code that will never come.
-    #[test]
-    fn a_refusal_ends_the_sign_in_with_its_reason() {
-        let server = bind_callback(None).expect("bind");
-        let port = server.port;
-        let (_paste_tx, paste_rx) = mpsc::channel();
-        let done = waiting(
-            server,
-            meta_for("https://as.test", false),
-            paste_rx,
-            Default::default(),
-        );
-        let page = hit(
-            port,
-            "GET /callback?error=access_denied&error_description=The%20user%20declined&state=s1 HTTP/1.1\r\n\r\n",
-        );
-        assert!(page.contains("access_denied"), "{page}");
-        let result = done.recv_timeout(Duration::from_secs(3)).unwrap();
-        let error = result.expect_err("a refusal");
-        assert!(
-            error.contains("access_denied") && error.contains("The user declined"),
-            "{error}"
-        );
-    }
-
-    /// `localhost` may resolve to `::1` first; the callback answers there
-    /// too, on the same port, wherever this machine has IPv6 loopback.
-    #[test]
-    fn the_callback_answers_on_both_loopback_addresses() {
-        let server = bind_callback(None).expect("bind");
-        let port = server.port;
-        if std::net::TcpListener::bind(("::1", 0)).is_err() {
-            return; // no IPv6 loopback on this machine
-        }
-        assert_eq!(
-            server.listeners.len(),
-            2,
-            "IPv6 loopback is available but unbound"
-        );
-        let (_paste_tx, paste_rx) = mpsc::channel();
-        let done = waiting(
-            server,
-            meta_for("https://as.test", false),
-            paste_rx,
-            Default::default(),
-        );
-        use std::io::Read as _;
-        let mut stream = std::net::TcpStream::connect(("::1", port)).expect("connect over IPv6");
-        stream
-            .write_all(b"GET /callback?code=c6&state=s1 HTTP/1.1\r\n\r\n")
-            .unwrap();
-        let mut reply = String::new();
-        let _ = stream.read_to_string(&mut reply);
-        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-        assert_eq!(
-            done.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Ok("c6".to_string())
-        );
-    }
-
-    /// A pasted URL that isn't this sign-in's — another attempt's, or not a
-    /// redirect at all — is turned away with a reason the page can show, and
-    /// the flow keeps waiting for the right one.
-    #[test]
-    fn a_wrong_paste_is_turned_away_not_fatal() {
-        let server = bind_callback(None).expect("bind");
-        let (paste_tx, paste_rx) = mpsc::channel();
-        let progress = std::sync::Arc::new(Recorded::default());
-        let done = waiting(
-            server,
-            meta_for("https://as.test", false),
-            paste_rx,
-            std::sync::Arc::clone(&progress),
-        );
-        paste_tx
-            .send("http://localhost:1/callback?code=old&state=s0".to_string())
-            .unwrap();
-        paste_tx.send("hello".to_string()).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(done.try_recv().is_err(), "a wrong paste ended the flow");
-        assert_eq!(progress.rejected.lock().unwrap().len(), 2);
-        paste_tx
-            .send("http://localhost:1/callback?code=new&state=s1".to_string())
-            .unwrap();
-        assert_eq!(
-            done.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Ok("new".to_string())
-        );
     }
 
     /// One fake authorization server: resource and AS metadata for

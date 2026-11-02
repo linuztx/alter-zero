@@ -282,6 +282,17 @@ release heading when a version is cut.
   is created, a sign-in whose tokens couldn't be saved says so instead of
   appearing to work, and **Clear authentication** says when it couldn't
   clear (`docs/mcp.md`).
+- **Signing in to ChatGPT or the Anthropic Console no longer hangs or takes
+  a stray answer.** The two browser sign-ins in `/login` had the problems
+  the MCP sign-in had: a browser that opened a spare connection without
+  using it could hold the sign-in up, Esc included; a code that came back
+  without the sign-in's check value was used anyway; an old browser tab
+  answering ended the sign-in with an error; and declining on the login
+  page left it waiting ten minutes. They now share the MCP sign-in's
+  callback: an answer that isn't this sign-in's is turned away while the
+  sign-in keeps waiting, declining ends it at once with the reason, and it
+  also answers when your system sends `localhost` to the IPv6 address
+  (`docs/chatgpt.md`, `docs/claude.md`).
 - **Signing in to an MCP server no longer hangs or takes a stray answer.**
   Declining on the login page used to leave the sign-in waiting five
   minutes for an answer that would never come; it now ends at once with

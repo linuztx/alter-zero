@@ -33,6 +33,7 @@ pub mod exec;
 pub mod hooks;
 pub mod keystore;
 pub mod local;
+mod loopback;
 pub mod mcp;
 pub mod models;
 pub mod ollama;

@@ -528,7 +528,8 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   accepted, whichever lands first → the token exchange.
 
   **The response is checked before anything is redeemed**
-  (`check_auth_response`, the same rules for the callback and a paste):
+  (`loopback::check_auth_response`, the same rules for the callback and a
+  paste):
   the `state` is **required** and must be this flow's — a response without
   one can't be told from a forged one (RFC 6749 §10.12), where it used to
   be accepted — then the RFC 9207 `iss` must name the discovered issuer
@@ -542,12 +543,17 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   sign-in with the authorization server's own reason**, where it used to
   leave the flow waiting five minutes for a code that would never come.
 
-  **The callback server** (`CallbackServer`, `bind_callback`) listens on
+  **The callback server** is `llm::loopback`, the one every browser
+  sign-in shares — this flow, ChatGPT's and the Anthropic Console's, which
+  carried the same hand-rolled loop and the same weaknesses
+  (`CallbackServer::bind` over a list of ports, `0` for an ephemeral one,
+  and a path, `wait_for_code` over the flow's `Expected` state and issuer,
+  its `Pages` wording and an optional paste channel). It listens on
   `127.0.0.1` **and** `[::1]` on the same port, since the redirect names
   `localhost` and a browser may resolve it to either (IPv4 alone where the
   machine has no IPv6 loopback). Each connection is served on a thread of
-  its own (`serve_callback_connection`, at most
-  `CALLBACK_MAX_CONNECTIONS` at once) with a read timeout, reading the
+  its own (`serve_connection`, at most `MAX_CONNECTIONS` at once) with a
+  read timeout, reading the
   whole request head before it answers: the old loop read each connection
   inline with no timeout, so a browser **preconnect** — a socket opened and
   never written — blocked the wait, Esc and the paste field with it, until
