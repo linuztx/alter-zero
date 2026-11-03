@@ -1,7 +1,8 @@
 //! The loopback callback every browser sign-in comes back through — an MCP
-//! server's OAuth flow (`docs/mcp.md`), ChatGPT's (`docs/chatgpt.md`) and
-//! the Anthropic Console's (`docs/claude.md`). One implementation, because
-//! the three used to share one hand-rolled loop and its weaknesses: a
+//! server's OAuth flow (`docs/mcp.md`), ChatGPT's (`docs/chatgpt.md`), the
+//! Anthropic Console's (`docs/claude.md`) and Google Antigravity's
+//! (`docs/antigravity.md`). One implementation, because the first three
+//! used to share one hand-rolled loop and its weaknesses: a
 //! browser preconnect that never sends a byte froze the wait (and Esc with
 //! it), a macOS socket inheriting the listener's non-blocking mode read a
 //! request still on its way as nothing, a code with no `state` was redeemed,
@@ -9,8 +10,9 @@
 //! consent page left the flow waiting minutes for a code that would never
 //! come.
 //!
-//! The pure halves — the response parse, its checks, the pages — are tested
-//! as such; the server is exercised against real sockets.
+//! The pure halves — the response parse, its checks, the pages the browser
+//! lands on (`page`, `docs/callback-page.md`) — are tested as such; the
+//! server is exercised against real sockets.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -18,6 +20,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::stream::CancelToken;
+
+mod page;
+
+use page::{Detail, Page, Tone};
 
 /// The wait loop's cadence — the cancel check, the paste channel, new
 /// connections.
@@ -72,7 +78,32 @@ pub(crate) enum Rejected {
     Foreign(String),
     /// This flow's answer, and it is a refusal: the flow ends with the
     /// authorization server's reason.
-    Refused(String),
+    Refused(Refusal),
+}
+
+/// The authorization server's refusal (RFC 6749 §4.1.2.1), its two parts
+/// kept apart: the browser's page sets them in a box of their own, while the
+/// flow and the terminal read them as one sentence (`Display`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    /// The `error` code — `access_denied`.
+    pub(crate) error: String,
+    /// The `error_description`, when the server gave one.
+    pub(crate) description: Option<String>,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the authorization server refused the sign-in: {}",
+            self.error
+        )?;
+        if let Some(description) = &self.description {
+            write!(f, " ({description})")?;
+        }
+        Ok(())
+    }
 }
 
 /// What a response must carry to be this sign-in's answer.
@@ -127,20 +158,30 @@ pub(crate) fn check_auth_response(
     )
     .map_err(Rejected::Foreign)?;
     if let Some(error) = &response.error {
-        let description = response
-            .error_description
-            .as_deref()
-            .map(|d| format!(" ({})", clip(d, 300)))
-            .unwrap_or_default();
-        return Err(Rejected::Refused(format!(
-            "the authorization server refused the sign-in: {}{description}",
-            clip(error, 100)
-        )));
+        return Err(Rejected::Refused(Refusal {
+            error: clip(error, 100),
+            description: response.error_description.as_deref().map(|d| clip(d, 300)),
+        }));
     }
     response
         .code
         .clone()
         .ok_or_else(|| Rejected::Foreign("the response carries no code".to_string()))
+}
+
+/// `text` as a sentence for the page: its first letter a capital and a full
+/// stop closing it, so a reason worded for the terminal ("the response
+/// carries no code") reads as the page's own.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut sentence: String = first.to_uppercase().chain(chars).collect();
+    if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    sentence
 }
 
 /// What the browser is told, in a flow's own words.
@@ -154,57 +195,95 @@ pub(crate) struct Pages {
 }
 
 /// The page the browser lands on — whether the sign-in got what it needed,
-/// as a whole HTTP response.
+/// as a whole HTTP response (`docs/callback-page.md`).
 pub(crate) fn callback_page(verdict: &Result<String, Rejected>, pages: &Pages) -> String {
+    let app = crate::APP_NAME;
     match verdict {
-        Ok(_) => html_response(
+        Ok(_) => page::response(
             "200 OK",
-            pages.received,
-            "You can close this tab and return to the terminal.",
+            &Page {
+                tone: Tone::Success,
+                title: pages.received,
+                lead: &format!("You can close this tab and return to {app}."),
+                restart: None,
+                detail: None,
+            },
         ),
-        Err(Rejected::Refused(why)) => html_response(
+        Err(Rejected::Refused(refusal)) => page::response(
             "200 OK",
-            "Sign-in refused",
-            &format!("{why}. Return to the terminal to try again."),
+            &Page {
+                tone: Tone::Refused,
+                title: "Sign-in refused",
+                lead: &format!(
+                    "The authorization server turned the sign-in down. Return to {app} to try \
+                     again."
+                ),
+                restart: None,
+                detail: Some(Detail {
+                    code: &refusal.error,
+                    text: refusal.description.as_deref(),
+                }),
+            },
         ),
-        Err(Rejected::Foreign(why)) => html_response(
+        Err(Rejected::Foreign(why)) => page::response(
             "400 Bad Request",
-            "Not this sign-in's response",
-            &format!(
-                "{why}. To sign in, start again from {} in the terminal.",
-                pages.restart
-            ),
+            &Page {
+                tone: Tone::Notice,
+                title: "Not this sign-in’s response",
+                lead: &sentence(why),
+                restart: Some(pages.restart),
+                detail: None,
+            },
         ),
     }
 }
 
-/// A small HTML page as a whole HTTP response, `detail` escaped.
-fn html_response(status: &str, title: &str, detail: &str) -> String {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
-         <body style=\"font-family:system-ui;padding:3rem\"><h3>{title}</h3><p>{}</p></body></html>",
-        html_escape(detail)
-    );
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
+/// A request the callback answers itself, without asking the flow: it is
+/// no answer to the sign-in at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stray {
+    /// Not the callback path — a hand-typed address, a browser's own probe
+    /// for `/favicon.ico`.
+    Elsewhere,
+    /// The callback path with neither a code nor an error.
+    NoAnswer,
+    /// An answer that arrived after the sign-in stopped waiting.
+    Over,
 }
 
-fn html_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
+/// The page a stray request gets. Nothing failed, so none of them is an
+/// error; only an answer that came too late has a sign-in to start again.
+fn stray_page(stray: Stray, pages: &Pages) -> String {
+    let (status, title, lead, restart) = match stray {
+        Stray::Elsewhere => (
+            "404 Not Found",
+            "Nothing here",
+            "This address only receives sign-in responses.",
+            None,
+        ),
+        Stray::NoAnswer => (
+            "400 Bad Request",
+            "Not a sign-in response",
+            "It carries neither an authorization code nor an error.",
+            None,
+        ),
+        Stray::Over => (
+            "410 Gone",
+            "This sign-in has ended",
+            "It stopped waiting before this answer arrived.",
+            Some(pages.restart),
+        ),
+    };
+    page::response(
+        status,
+        &Page {
+            tone: Tone::Notice,
+            title,
+            lead,
+            restart,
+            detail: None,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +447,9 @@ pub(crate) fn wait_for_code(
                 };
                 match check_auth_response(&response, expected) {
                     Ok(code) => return Ok(code),
-                    Err(Rejected::Refused(why)) => return Err(WaitEnd::Refused(why)),
+                    Err(Rejected::Refused(refusal)) => {
+                        return Err(WaitEnd::Refused(refusal.to_string()));
+                    }
                     Err(Rejected::Foreign(why)) => rejected(&why),
                 }
             }
@@ -409,7 +490,9 @@ pub(crate) fn wait_for_code(
             let _ = hit.page.send(callback_page(&verdict, pages));
             match verdict {
                 Ok(code) => return Ok(code),
-                Err(Rejected::Refused(why)) => return Err(WaitEnd::Refused(why)),
+                Err(Rejected::Refused(refusal)) => {
+                    return Err(WaitEnd::Refused(refusal.to_string()));
+                }
                 Err(Rejected::Foreign(_)) => {}
             }
         }
@@ -444,16 +527,8 @@ fn serve_connection(
         })
         .filter(|target| target.split(['?', '#']).next() == Some(path));
     let reply = match target.map(parse_auth_response) {
-        None => html_response(
-            "404 Not Found",
-            "Not found",
-            "This address only receives sign-in responses.",
-        ),
-        Some(None) => html_response(
-            "400 Bad Request",
-            "Not a sign-in response",
-            "This address only receives sign-in responses.",
-        ),
+        None => stray_page(Stray::Elsewhere, pages),
+        Some(None) => stray_page(Stray::NoAnswer, pages),
         Some(Some(response)) => {
             let (page_tx, page_rx) = mpsc::channel();
             let sent = hits.send(CallbackHit {
@@ -462,17 +537,7 @@ fn serve_connection(
             });
             sent.ok()
                 .and_then(|()| page_rx.recv_timeout(READ_TIMEOUT).ok())
-                .unwrap_or_else(|| {
-                    html_response(
-                        "410 Gone",
-                        "Sign-in over",
-                        &format!(
-                            "This sign-in is no longer waiting. To sign in, start again from {} \
-                             in the terminal.",
-                            pages.restart
-                        ),
-                    )
-                })
+                .unwrap_or_else(|| stray_page(Stray::Over, pages))
         }
     };
     let _ = stream.write_all(reply.as_bytes());
@@ -568,11 +633,9 @@ mod tests {
         match check(
             "?error=access_denied&error_description=no%20thanks&state=s1&iss=https%3A%2F%2Fas.test",
         ) {
-            Err(Rejected::Refused(why)) => {
-                assert!(
-                    why.contains("access_denied") && why.contains("no thanks"),
-                    "{why}"
-                );
+            Err(Rejected::Refused(refusal)) => {
+                assert_eq!(refusal.error, "access_denied");
+                assert_eq!(refusal.description.as_deref(), Some("no thanks"));
             }
             other => panic!("{other:?}"),
         }
@@ -592,34 +655,119 @@ mod tests {
         );
     }
 
+    /// What the flow and the terminal say of a refusal reads as it always
+    /// has — the code, then the description when there is one.
+    #[test]
+    fn a_refusal_reads_as_the_servers_words() {
+        let refusal = Refusal {
+            error: "access_denied".to_string(),
+            description: Some("no thanks".to_string()),
+        };
+        assert_eq!(
+            refusal.to_string(),
+            "the authorization server refused the sign-in: access_denied (no thanks)"
+        );
+        let bare = Refusal {
+            description: None,
+            ..refusal
+        };
+        assert_eq!(
+            bare.to_string(),
+            "the authorization server refused the sign-in: access_denied"
+        );
+    }
+
+    /// A reason written for the terminal reads as a sentence on the page.
+    #[test]
+    fn a_reason_becomes_a_sentence() {
+        assert_eq!(
+            sentence("the response carries no code"),
+            "The response carries no code."
+        );
+        assert_eq!(sentence("Already one."), "Already one.");
+        assert_eq!(sentence("évidemment"), "Évidemment.");
+        assert_eq!(sentence(""), "");
+    }
+
+    /// Each verdict's page says what happened, in the flow's own words and
+    /// the page's tone, and names the app to return to.
     #[test]
     fn callback_pages_say_what_happened() {
         let ok = callback_page(&Ok("c".to_string()), &PAGES);
         assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
-        assert!(ok.contains("Authorization received"), "{ok}");
-        assert!(ok.contains("return to the terminal"), "{ok}");
+        assert!(ok.contains("<h1>Authorization received</h1>"), "{ok}");
+        assert!(
+            ok.contains(&format!(
+                "You can close this tab and return to {}.",
+                crate::APP_NAME
+            )),
+            "{ok}"
+        );
+        assert!(ok.contains(r#"<main class="success">"#), "{ok}");
+
         let refused = callback_page(
-            &Err(Rejected::Refused(
-                "no <script>alert(1)</script>".to_string(),
+            &Err(Rejected::Refused(Refusal {
+                error: "access_denied".to_string(),
+                description: Some("no <script>alert(1)</script>".to_string()),
+            })),
+            &PAGES,
+        );
+        assert!(refused.starts_with("HTTP/1.1 200"), "{refused}");
+        assert!(refused.contains("<h1>Sign-in refused</h1>"), "{refused}");
+        assert!(refused.contains(r#"<main class="refused">"#), "{refused}");
+        assert!(
+            refused.contains(&format!("Return to {} to try again.", crate::APP_NAME)),
+            "{refused}"
+        );
+        assert!(
+            refused.contains(
+                r#"<div class="detail"><code>access_denied</code>no &lt;script&gt;alert(1)&lt;/script&gt;</div>"#
+            ),
+            "{refused}"
+        );
+        assert!(!refused.contains("<script>"), "{refused}");
+
+        let foreign = callback_page(
+            &Err(Rejected::Foreign(
+                "the response belongs to another sign-in attempt".to_string(),
             )),
             &PAGES,
         );
-        assert!(refused.contains("&lt;script&gt;"), "{refused}");
-        assert!(!refused.contains("<script>"), "{refused}");
-        let foreign = callback_page(&Err(Rejected::Foreign("state".to_string())), &PAGES);
         assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
-        assert!(foreign.contains("/mcp"), "{foreign}");
-        // Content-Length counts bytes, the page's non-ASCII included.
-        for page in [ok, refused, foreign] {
-            let (head, body) = page.split_once("\r\n\r\n").unwrap();
-            let length: usize = head
-                .lines()
-                .find_map(|l| l.strip_prefix("Content-Length: "))
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert_eq!(length, body.len());
+        assert!(foreign.contains(r#"<main class="notice">"#), "{foreign}");
+        assert!(
+            foreign.contains(&format!(
+                "The response belongs to another sign-in attempt. To sign in, start again \
+                 from <code>/mcp</code> in {}.",
+                crate::APP_NAME
+            )),
+            "{foreign}"
+        );
+    }
+
+    /// A request that is not this sign-in's answer gets a page of its own:
+    /// nothing failed, so none of them is an error, and only the one that
+    /// came too late has a sign-in to start again.
+    #[test]
+    fn stray_requests_get_pages_of_their_own() {
+        let elsewhere = stray_page(Stray::Elsewhere, &PAGES);
+        assert!(elsewhere.starts_with("HTTP/1.1 404"), "{elsewhere}");
+        assert!(elsewhere.contains("<h1>Nothing here</h1>"), "{elsewhere}");
+        let no_answer = stray_page(Stray::NoAnswer, &PAGES);
+        assert!(no_answer.starts_with("HTTP/1.1 400"), "{no_answer}");
+        assert!(
+            no_answer.contains("<h1>Not a sign-in response</h1>"),
+            "{no_answer}"
+        );
+        let over = stray_page(Stray::Over, &PAGES);
+        assert!(over.starts_with("HTTP/1.1 410"), "{over}");
+        assert!(over.contains("<h1>This sign-in has ended</h1>"), "{over}");
+        assert!(over.contains("<code>/mcp</code>"), "{over}");
+        for page in [&elsewhere, &no_answer, &over] {
+            assert!(page.contains(r#"<main class="notice">"#), "{page}");
         }
+        assert!(!elsewhere.contains("<code>"), "{elsewhere}");
+        assert!(!no_answer.contains("<code>"), "{no_answer}");
     }
 
     /// Send one raw request to the callback port and read the whole reply.
@@ -691,6 +839,7 @@ mod tests {
         let done = waiting(server, None, Default::default());
         let favicon = hit(port, "GET /favicon.ico HTTP/1.1\r\n\r\n");
         assert!(favicon.starts_with("HTTP/1.1 404"), "{favicon}");
+        assert!(favicon.contains("<h1>Nothing here</h1>"), "{favicon}");
         let elsewhere = hit(port, "GET /other?code=c1&state=s1 HTTP/1.1\r\n\r\n");
         assert!(elsewhere.starts_with("HTTP/1.1 404"), "{elsewhere}");
         let foreign = hit(port, "GET /callback?code=evil&state=s2 HTTP/1.1\r\n\r\n");

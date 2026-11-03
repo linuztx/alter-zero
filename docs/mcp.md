@@ -614,9 +614,13 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   the browser gave up on the socket; and on macOS an accepted socket
   inherits the listener's non-blocking mode, so a request still on its way
   read as empty and its code was lost. Anything but `GET /callback` is a
-  404 (the favicon), and the page the browser lands on says what actually
-  happened — received, refused (with the reason, HTML-escaped), or not this
-  sign-in's.
+  404, and the page the browser lands on says what actually happened —
+  received, refused (the authorization server's own words set apart), or
+  not this sign-in's — in the project's own dress: the mascot in pixels
+  over a serif headline, its colours and motion saying how it went, every
+  word from outside escaped and nothing fetched (`docs/callback-page.md`).
+  The page carries its own icon, so the browser no longer asks the callback
+  for `/favicon.ico`.
 
   **The client** follows SEP-2352: client credentials are kept with the
   issuer that registered them (`StoredTokens::issuer`; a grant stored before
