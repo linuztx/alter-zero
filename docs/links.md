@@ -71,6 +71,14 @@ survives the trip.
      *unbalanced* closers (`)`/`]`/`}` — `…/Foo_(bar)` keeps its `)`, a URL
      inside `(see …)` gives it back). Control characters (an `ESC` smuggled
      into model output) terminate the URL — they can never enter a target.
+   - `is_whole_url` answers the other question: is a text, whole, *one*
+     URL — the scheme at its first byte and nothing in it a URL cannot hold
+     (the same body rule: no whitespace, control or `<>"`` ` ``|`)? Such a
+     text is linked **verbatim**, since the tail trimming above is prose's
+     rule — a sentence owns its closing `.`, a parenthetical its `)` — and
+     a text that *is* the URL has no prose to give anything back to. Only
+     `http://`/`https://` qualify, so no other scheme becomes a target this
+     way.
    - A process-global, append-only **URL interner** (the `highlight`
      grammar-singleton precedent: a render-layer cache, not app state) maps
      each URL to a stable 24-bit id and back.
@@ -133,6 +141,33 @@ survives the trip.
    on — `docs/copilot.md`) and the chat link dress would overrule that. The
    browser sign-in page then needs no verb in front of its URL at all
    (`docs/chatgpt.md`): the link is the affordance.
+
+   The `/mcp` manager's sign-in walk (`docs/mcp.md`) shows URLs too, and used
+   to print them as plain rows — so its **Authenticate** page's authorize
+   URL, hundreds of characters wide and always hard-broken, opened only its
+   first row's fragment when clicked and nothing at all from the rows under
+   it, while the same click on `/login`'s page worked: the reported bug. It
+   now goes through the family's builders, three of them:
+   - `model_url_rows` for a text that **is** one URL
+     (`links::is_whole_url`): `model_linked_rows`' dress, but the whole
+     text is the target, verbatim (`whole_url_run`). The authorize URL is
+     the one thing the page shows, the URL `c` copies and the browser was
+     handed, so the click must open exactly that — even where it ends on a
+     `.` or an unbalanced `)` that prose detection would give back to a
+     sentence that isn't there. It keeps the accent the page always lit it
+     in, underlined.
+   - `whole_url_run` on the **server page's `URL:` row**, which wraps under
+     its label (`field_rows` lays the wrapped spans out, so the row reads
+     exactly as it did); a stdio server's `Command:` row is no address and
+     stays plain, as does any value that is not one whole URL.
+   - `model_linked_rows` for the two **reasons** the walk shows — a paste
+     the sign-in turned away (an authorization server's `error_uri`) and a
+     server that failed to connect (a console to enable an API in): a URL
+     inside the prose is linked, the reason's own colour kept, the `/login`
+     failures' rule.
+
+   The tool pages' server-written text (a description, a parameter's) is
+   not linked, the *Limitations* rule for tool output.
 4. **`src/term.rs` — the emission.** All four cell-writing paths — scrollback
    commits + reflow (`draw_lines`), the live-region blit, the live-region
    diff, and the alt-screen overlay (`draw_overlay`) — already funnel into
@@ -234,6 +269,20 @@ fragment carrying the whole file, `Bash`/`Agent` headers plain, the live
 cell and the transcript alike — in `ui/tests/tool.rs`, and **Phase 113**
 reads the `file://` open for the dummy's `● Read(about.py)` off the raw
 stream while the pane shows the unchanged header text.
+
+The `/mcp` sign-in walk has both halves as well. `ui/tests/mcp_view.rs`
+renders the Authenticate page at widths that break the authorize URL and
+requires every fragment to carry the whole of it, underlined in the page's
+accent, as the page's one link; requires the target to equal what `c`
+copies for URLs ending on `.`, `!` and an unbalanced `)`; and links the
+reasons' URLs and the server page's `URL:` row (byte-identical rows) while
+a `Command:` row stays plain — `is_whole_url`'s two sides are unit-tested
+in `links.rs`. **Phase 149** runs the real flow against a stub server that
+demands OAuth (a 401, RFC 9728 and 8414 metadata, dynamic registration) in
+a 60-column pane, and reads off the raw stream an OSC 8 open carrying the
+whole authorize URL for every row the page paints it on — the URL the page
+spells, and the one a stand-in `xdg-open` was handed — with no open
+anywhere carrying a fragment of it.
 
 ## Limitations
 

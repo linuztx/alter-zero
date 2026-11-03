@@ -1084,7 +1084,9 @@ mid-turn (the strip stays above it). Pages:
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first
-   action is the harmless one.
+   action is the harmless one. A remote server's `URL:` row is a link to
+   its address, every wrapped row opening the whole URL, and a URL in a
+   failed server's `Error:` reason is a link too (`docs/links.md`).
 3. **Tools list** — `Tools for {server}` over numbered tool names.
 4. **Tool detail** — the tool name + server, `Tool name:` / `Full name:`
    (the wire `mcp__{server}__{tool}` the model actually calls),
@@ -1100,6 +1102,19 @@ mid-turn (the strip stays above it). Pages:
    redirect, or another attempt's — comes back as
    `McpEvent::AuthPasteRejected`, its reason red under the field, which
    takes another paste (`App::reject_mcp_auth_paste`; editing clears it).
+
+   **The authorize URL is a real hyperlink**, as the `/login` sign-in
+   pages' is (`docs/links.md`). It is far wider than any row — the PKCE
+   challenge, the state, the encoded redirect and resource — so it always
+   hard-breaks, and it used to be printed as plain rows: a terminal's own
+   URL detection reads row text, so a click opened the first row's
+   truncated URL and the rows under it were no links at all. Every row now
+   carries the whole URL as its OSC 8 target, **verbatim**
+   (`model_url_rows`): the click opens exactly what `c` copies and the
+   browser was handed, whatever character the URL ends on. It keeps its
+   accent and gains an underline; a URL inside a rejected paste's reason is
+   linked the same way. `smoke.sh` Phase 149 reads the link off the raw
+   byte stream against a stub server that demands OAuth.
    Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
 

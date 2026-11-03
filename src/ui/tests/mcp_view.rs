@@ -812,3 +812,319 @@ fn a_rejected_paste_shows_its_reason_under_the_field() {
         assert_frame_hugs_content(&format!("a rejected paste at width {width}"), &lines);
     }
 }
+
+// --- Clickable URLs on the sign-in walk (docs/links.md, docs/mcp.md) ---
+
+/// A realistic authorize URL: far wider than any terminal row, as a real one
+/// always is (the PKCE challenge, the state, the percent-encoded redirect and
+/// resource), so the page has to hard-break it across rows.
+const AUTH_URL: &str = "https://auth.linear.test/oauth/authorize?response_type=code\
+    &client_id=dyn-4f2c9a7e&redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2Fcallback\
+    &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256\
+    &state=6a1f0c2e9b&resource=https%3A%2F%2Flinear.test%2Fmcp";
+
+/// The `linear` server's auth page, showing `url` as its authorize URL.
+fn auth_page(url: &str) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    app.set_mcp_auth_url("linear", url);
+    app
+}
+
+/// Every distinct link target the spans of `lines` carry, in page order.
+fn link_targets(lines: &[Line<'static>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for span in lines.iter().flat_map(|l| l.spans.iter()) {
+        if let Some(url) = crate::links::style_link(&span.style)
+            && !out.iter().any(|seen| seen.as_str() == &*url)
+        {
+            out.push(url.to_string());
+        }
+    }
+    out
+}
+
+/// The rows `url` is painted on — from the row that opens it to the last row
+/// whose text still continues it — and what those rows spell together.
+fn url_rows<'a>(lines: &'a [Line<'static>], url: &str) -> (&'a [Line<'static>], String) {
+    let start = lines
+        .iter()
+        .position(|l| {
+            let text = plain(l);
+            let text = text.trim();
+            !text.is_empty() && url.starts_with(text)
+        })
+        .expect("a row opening the URL");
+    let mut spelled = String::new();
+    let mut end = start;
+    while end < lines.len() {
+        let text = plain(&lines[end]).trim().to_string();
+        if text.is_empty() || !url[spelled.len()..].starts_with(&text) {
+            break;
+        }
+        spelled.push_str(&text);
+        end += 1;
+    }
+    (&lines[start..end], spelled)
+}
+
+/// The spans of `rows` that paint something (the inset is not part of a link).
+fn inked<'a>(rows: &'a [Line<'static>]) -> impl Iterator<Item = &'a Span<'static>> {
+    rows.iter()
+        .flat_map(|l| l.spans.iter())
+        .filter(|s| !s.content.trim().is_empty())
+}
+
+#[test]
+fn the_auth_pages_url_opens_the_whole_target_from_every_fragment() {
+    // The reported bug: `/login`'s sign-in URL opens when clicked, `/mcp`'s
+    // did not. An authorize URL is wider than any row, so it hard-breaks,
+    // and a terminal's own URL detection only ever reads row text: the first
+    // row opened a truncated URL and the rows under it were no links at all.
+    // Every fragment must carry the WHOLE target — the carrier `term` turns
+    // into one OSC 8 hyperlink (docs/links.md).
+    let app = auth_page(AUTH_URL);
+    for width in [40u16, 80, 120] {
+        let lines = mcp_view_lines(&app, width);
+        let (rows, spelled) = url_rows(&lines, AUTH_URL);
+        assert_eq!(
+            spelled, AUTH_URL,
+            "the rows still spell the whole URL (width {width})"
+        );
+        assert!(
+            rows.len() >= 2,
+            "the URL must wrap for this test to mean anything (width {width})"
+        );
+        for span in inked(rows) {
+            assert_eq!(
+                crate::links::style_link(&span.style).as_deref(),
+                Some(AUTH_URL),
+                "every fragment opens the whole URL, not its own row text: {:?} (width {width})",
+                span.content
+            );
+        }
+    }
+}
+
+#[test]
+fn the_auth_url_keeps_its_accent_gains_an_underline_and_is_the_pages_one_link() {
+    // The `/login` family's dress for a URL the user acts on: the page's own
+    // colour kept — the accent this page has always lit its URL in — and an
+    // underline that says "clickable". Nothing else on the page links: not
+    // the notes around it, not the paste field.
+    use crate::ui::theme::model_selected_color;
+    let app = auth_page(AUTH_URL);
+    let lines = mcp_view_lines(&app, 80);
+    assert_eq!(link_targets(&lines), vec![AUTH_URL.to_string()]);
+    let (rows, _) = url_rows(&lines, AUTH_URL);
+    for span in inked(rows) {
+        assert_eq!(
+            span.style.fg,
+            Some(model_selected_color()),
+            "{:?}",
+            span.content
+        );
+        assert!(
+            span.style.add_modifier.contains(Modifier::UNDERLINED),
+            "{:?}",
+            span.content
+        );
+    }
+}
+
+#[test]
+fn the_auth_link_opens_exactly_what_c_copies_whatever_it_ends_on() {
+    // The page shows one thing, the URL: the target `c` copies and the
+    // browser was handed. Prose detection gives a trailing `.`, `!` or
+    // unbalanced `)` back to the sentence around a URL — there is no
+    // sentence here, so the link is the text verbatim, and a click can never
+    // open a different URL than the copy.
+    use crate::app::{Action, McpOp};
+    for url in [
+        "https://as.test/authorize?client_id=c1&resource=https%3A%2F%2Fmcp.test.",
+        "https://as.test/authorize?client_id=c1&state=s!",
+        "https://as.test/o(auth)/authorize?client_id=c1)",
+    ] {
+        let mut app = auth_page(url);
+        let lines = mcp_view_lines(&app, 100);
+        assert_eq!(link_targets(&lines), vec![url.to_string()], "{url}");
+        let Action::McpOp(McpOp::CopyAuthUrl { url: copied }) = app.on_key(key(KeyCode::Char('c')))
+        else {
+            panic!("c copies the authorize URL");
+        };
+        assert_eq!(copied, url, "the link and the copy are one URL");
+    }
+}
+
+#[test]
+fn a_rejected_pastes_reason_links_a_url_it_names() {
+    // A reason can name a page to visit (an authorization server's
+    // `error_uri`), and the reason is what the user acts on next — the
+    // `/login` failures' rule: the URL inside the prose linked, the error's
+    // red kept, the prose around it plain.
+    use crate::ui::theme::error_color;
+    let help = "https://as.test/errors/access_denied?topic=consent";
+    let mut app = auth_page(AUTH_URL);
+    app.reject_mcp_auth_paste(
+        "linear",
+        &format!("the authorization server refused it (see {help})"),
+    );
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        assert_eq!(
+            link_targets(&lines),
+            vec![AUTH_URL.to_string(), help.to_string()],
+            "the reason's URL is a link, its `)` given back (width {width})"
+        );
+        let reason: Vec<&Span<'static>> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| s.style.fg == Some(error_color()) && !s.content.trim().is_empty())
+            .collect();
+        assert!(!reason.is_empty(), "the reason is painted in red");
+        for span in &reason {
+            let target = crate::links::style_link(&span.style);
+            if help.contains(span.content.trim()) && span.content.trim().len() > 1 {
+                assert_eq!(target.as_deref(), Some(help), "{:?}", span.content);
+                assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+            } else {
+                assert!(target.is_none(), "prose is no link: {:?}", span.content);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_failed_servers_reason_links_the_url_it_names() {
+    // Where a server that could not connect says what to do — and a page
+    // to do it on is a link, the `/login` failures' rule again. The prose
+    // stays plain, the reason's dim colour is kept, and the sentence's own
+    // comma is given back.
+    let console = "https://console.linear.test/settings/api?enable=mcp";
+    let mut app = App::new();
+    app.open_mcp_menu(vec![snapshot(
+        "linear",
+        McpScope::User,
+        McpServerStatus::Failed(format!(
+            "HTTP 403: enable the API at {console}, then reconnect"
+        )),
+    )]);
+    app.on_key(key(KeyCode::Enter)); // the server's detail
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        assert!(
+            link_targets(&lines).contains(&console.to_string()),
+            "the reason's URL is a link (width {width}): {:?}",
+            link_targets(&lines)
+        );
+        let error_at = lines
+            .iter()
+            .position(|l| plain(l).trim_start().starts_with("Error:"))
+            .expect("the Error: row");
+        for span in inked(&lines[error_at..]) {
+            if span.content.contains("Error:") || span.content.contains("reconnect") {
+                assert!(
+                    crate::links::style_link(&span.style).is_none(),
+                    "prose is no link: {:?}",
+                    span.content
+                );
+            }
+            if crate::links::style_link(&span.style).as_deref() == Some(console) {
+                assert_eq!(span.style.fg, Some(model_meta_color()), "still dim");
+                assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+            }
+        }
+    }
+}
+
+#[test]
+fn the_remote_url_row_opens_the_whole_address_from_every_row_and_reads_as_before() {
+    // The server's address wraps under its label — it is one of the two
+    // values the page is opened to read whole — and a wrapped URL is exactly
+    // where a terminal's own detection opens a truncated target. Linked
+    // verbatim, its rows read exactly as they did.
+    let url = "https://a-very-long-subdomain-for-the-docs-server.test/mcp";
+    let mut app = App::new();
+    app.open_mcp_menu(vec![snapshot(
+        "a-very-long-subdomain-for-the-docs-server",
+        McpScope::User,
+        McpServerStatus::Connected,
+    )]);
+    app.on_key(key(KeyCode::Enter)); // the server's detail
+    let width = 40u16;
+    let lines = mcp_view_lines(&app, width);
+    let start = lines
+        .iter()
+        .position(|l| plain(l).trim_start().starts_with("URL:"))
+        .expect("the URL: row");
+    let indent = crate::ui::theme::MODEL_INDENT;
+    let room = usize::from(width) - crate::ui::wrap::cols(indent) - MCP_FIELD_COL;
+    let expected = crate::ui::wrap::wrap_text(url, room as u16);
+    assert!(expected.len() >= 2, "the address must wrap: {expected:?}");
+    for (i, text) in expected.iter().enumerate() {
+        let line = &lines[start + i];
+        let lead = if i == 0 {
+            format!("{indent}{:<MCP_FIELD_COL$}", "URL:")
+        } else {
+            " ".repeat(crate::ui::wrap::cols(indent) + MCP_FIELD_COL)
+        };
+        assert_eq!(
+            plain(line),
+            format!("{lead}{text}"),
+            "row {i} reads as before"
+        );
+        let value: Vec<&Span<'static>> = line
+            .spans
+            .iter()
+            .filter(|s| !s.content.trim().is_empty() && s.content.trim() != "URL:")
+            .collect();
+        assert!(!value.is_empty(), "row {i} paints part of the address");
+        for span in value {
+            assert_eq!(
+                crate::links::style_link(&span.style).as_deref(),
+                Some(url),
+                "row {i}'s fragment opens the whole address: {:?}",
+                span.content
+            );
+            assert_eq!(span.style.fg, Some(mcp_detail_value_color()), "still quiet");
+            assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+        }
+    }
+    let label = lines[start]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("URL:"))
+        .expect("the label");
+    assert!(
+        crate::links::style_link(&label.style).is_none(),
+        "the label is no link"
+    );
+}
+
+#[test]
+fn a_stdio_servers_command_row_is_no_link() {
+    // A launch command is not an address — the page links only what opens.
+    let mut server = snapshot("local", McpScope::User, McpServerStatus::Connected);
+    server.config = McpServerConfig::Stdio {
+        command: "npx".to_string(),
+        args: vec!["-y".to_string(), "some-mcp-server".to_string()],
+        env: Default::default(),
+    };
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter)); // the server's detail
+    let lines = mcp_view_lines(&app, 100);
+    let command = lines
+        .iter()
+        .map(plain)
+        .find(|row| row.contains("Command:"))
+        .expect("the Command: row");
+    assert!(command.contains("npx -y some-mcp-server"), "{command:?}");
+    assert!(
+        link_targets(&lines).is_empty(),
+        "{:?}",
+        link_targets(&lines)
+    );
+}

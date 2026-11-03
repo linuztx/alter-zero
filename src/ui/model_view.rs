@@ -526,13 +526,48 @@ pub(super) fn model_linked_rows(text: &str, color: Color, width: u16) -> Vec<Lin
     let base = Style::new().fg(color);
     text.split('\n')
         .flat_map(|part| super::inline::wrap_inline(&linked_segments(part, base), room))
-        .map(|spans| {
-            let mut row = Vec::with_capacity(spans.len() + 1);
-            row.push(Span::raw(MODEL_INDENT));
-            row.extend(spans);
-            Line::from(row)
-        })
+        .map(inset_row)
         .collect()
+}
+
+/// [`model_linked_rows`] for a text that **is** one URL — the `/mcp` sign-in
+/// page's authorize URL (`docs/mcp.md`): the same dress, the caller's colour
+/// underlined, but the target is the whole text **verbatim**
+/// ([`whole_url_run`]). The page shows one thing, the URL `c` copies and the
+/// browser was handed, so a click must open exactly that — where prose
+/// detection would give a closing `.` or an unbalanced `)` back to a
+/// sentence that isn't there. Any other text is linked the prose way.
+pub(super) fn model_url_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
+    let Some(run) = whole_url_run(text, Style::new().fg(color)) else {
+        return model_linked_rows(text, color, width);
+    };
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    super::inline::wrap_inline(&[run], room)
+        .into_iter()
+        .map(inset_row)
+        .collect()
+}
+
+/// One wrapped row of spans behind the pages' `MODEL_INDENT` inset.
+fn inset_row(spans: Vec<Span<'static>>) -> Line<'static> {
+    let mut row = Vec::with_capacity(spans.len() + 1);
+    row.push(Span::raw(MODEL_INDENT));
+    row.extend(spans);
+    Line::from(row)
+}
+
+/// A text that is, whole, one URL ([`links::is_whole_url`]) as the one
+/// styled run that links it: underlined over `base` and carrying the whole
+/// text as its target, which the wrap then carries onto every fragment —
+/// `None` for anything else. The shared piece of [`model_url_rows`] and of
+/// the `/mcp` server page's `URL:` row, which wraps under its label.
+///
+/// [`links::is_whole_url`]: crate::links::is_whole_url
+pub(super) fn whole_url_run(text: &str, base: Style) -> Option<(String, Style)> {
+    crate::links::is_whole_url(text).then(|| {
+        let dress = base.add_modifier(Modifier::UNDERLINED);
+        (text.to_string(), crate::links::linked(dress, text))
+    })
 }
 
 /// One line split into styled runs: the prose under `base`, each bare URL

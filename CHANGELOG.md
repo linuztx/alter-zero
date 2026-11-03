@@ -181,6 +181,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **The sign-in link on `/mcp`'s Authenticate page opens when you click
+  it.** The link is wider than any terminal row, so it wraps, and only the
+  `/login` sign-in pages made it a real link: on `/mcp` your terminal saw
+  each row on its own, so a click opened the first row's cut-off address
+  and the rest weren't links at all. Every row of it now opens the whole
+  link, the same one `c` copies and your browser is sent to, and it is
+  underlined like `/login`'s. A server's address on its `/mcp` page, and a
+  web address named in a sign-in or connection error there, open whole too
+  (`docs/links.md`, `docs/mcp.md`).
 - **Google's MCP servers no longer look connected while every call fails.**
   Google Drive, Calendar and Gmail list their tools to anyone and refuse
   every call without a sign-in, so `/mcp` read "✔ connected" and
