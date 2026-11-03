@@ -169,6 +169,17 @@ release heading when a version is cut.
   reads the same way, and the dim rows a hook leaves under a call name its
   event too: `Context added by PostToolUse hook`, `Flagged by PostToolUse
   hook: …`, `Allowed by PermissionRequest hook` (`docs/hooks.md`).
+- **The page your browser lands on after signing in looks like Alter
+  Zero.** Signing in to an MCP server, ChatGPT, the Anthropic Console or
+  Google Antigravity in the browser used to end on a line of black text on
+  white. That page now shows the app's mascot in pixels over a large
+  headline, on a dark, faintly starry background (light, if your browser
+  is), and its colour and motion tell you how it went: the mascot hops and
+  sparkles when the sign-in worked, shakes its head when the server refused
+  it, with the server's own reason underneath, and tilts its head at an
+  answer meant for an older sign-in. It blinks now and then, and stays
+  still if your system asks for reduced motion. The page is built into the
+  app and loads nothing from the internet (`docs/callback-page.md`).
 
 ### Removed
 
