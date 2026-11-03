@@ -841,12 +841,19 @@ pub(super) const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 // raw LLM context window (docs/context.md): the transcript pager's chrome
 // (slash-tiled title, `~` filler, percentage separator, dim key hints) over
 // a body listing exactly what the model is sent — the system prompt, then
-// every derived context message role-tagged, its text **verbatim** (image
+// every derived context message, each opening on a lit role chip over its
+// text hung on the tool cell's `⎿` gutter, the text **verbatim** (image
 // placeholders and bracketed tool/shell/notice formats unrendered) with the
 // attachment paths dim beneath. ---
 
 /// The view's spaced-caps title, overlaid on the slash tiling.
 pub(super) const CONTEXT_VIEW_TITLE: &str = "C O N T E X T";
+
+/// First key-hint row — the pager's ([`TOOL_VIEW_HINT_KEYS`]) with the
+/// message step added, since a window of a few dozen entries is thousands
+/// of rows and ←/→ open the previous or next one at the top.
+pub(super) const CONTEXT_VIEW_HINT_KEYS: &str =
+    " ↑/↓ to scroll   ←/→ prev/next message   pgup/pgdn to page   home/end to jump";
 
 /// Second key-hint row: every key that closes the view.
 pub(super) const CONTEXT_VIEW_HINT_QUIT: &str = " q/esc/ctrl+d to quit";
@@ -855,9 +862,44 @@ pub(super) const CONTEXT_VIEW_HINT_QUIT: &str = " q/esc/ctrl+d to quit";
 /// the dummy sends none — and nothing said yet).
 pub(super) const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message to fill it.";
 
-/// The system prompt's role tag — set apart from a mid-conversation
-/// `system:` note (a derived `[system]`/`[error]` notice).
-pub(super) const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
+/// Each entry's role chip label, by wire role — upper-case, so the row the
+/// eye hunts for reads as a heading and never as a word of the text under
+/// it (the lower-case `user:` tags it replaced did).
+pub(super) const CONTEXT_ROLE_SYSTEM: &str = "SYSTEM";
+pub(super) const CONTEXT_ROLE_USER: &str = "USER";
+pub(super) const CONTEXT_ROLE_ASSISTANT: &str = "ASSISTANT";
+pub(super) const CONTEXT_ROLE_TOOL: &str = "TOOL";
+
+/// The padding inside a role chip's fill, either side of its label — the
+/// agent label's own, so the chip reads as a tab rather than a smudge.
+pub(super) const CONTEXT_CHIP_PAD: &str = " ";
+
+/// Between a role chip and the dim facts beside it — one bare cell, the
+/// chip's own padding already standing inside its fill.
+pub(super) const CONTEXT_HEADER_GAP: &str = " ";
+
+/// Between the facts of an entry header (`#4 · read · ≈120 tokens`) and of
+/// the bottom rule's summary.
+pub(super) const CONTEXT_DETAIL_SEPARATOR: &str = " · ";
+
+/// The mark before an entry's position in the request.
+pub(super) const CONTEXT_INDEX_MARK: &str = "#";
+
+/// What the gutter shows for an entry with no text, no calls and no
+/// attachments — an empty tool result still went over the wire, and a
+/// header over nothing would read as a rendering bug.
+pub(super) const CONTEXT_EMPTY_BODY: &str = "(empty)";
+
+/// The fewest columns an entry's text keeps beside the [`TOOL_RESULT_PREFIX`]
+/// gutter — room for one wide glyph. A terminal narrower than the gutter
+/// plus this gives the gutter's columns back to the text.
+pub(super) const CONTEXT_BODY_MIN_COLS: usize = 2;
+
+/// The fewest body rows that may give their top one up to a **pinned
+/// header** — the entry the window opens inside, named on its top row while
+/// its own header is scrolled off (`docs/context.md`). Fewer, and the pin
+/// would cost the very text it names.
+pub(super) const CONTEXT_PIN_MIN_ROWS: usize = 3;
 
 // --- The Ctrl+D view's classifier page (`docs/permissions.md`) — Tab's
 // other half: the same pager chrome over the bounded task context auto
@@ -909,14 +951,16 @@ pub(super) const CLASSIFIER_PROMPT_PEEK_COLS: usize = 240;
 /// expand it into.
 pub(super) const CLASSIFIER_PROMPT_MORE_PREFIX: &str = "… ";
 
+/// The classifier page's system prompt header fact: the page shows the
+/// rubric's structure, not all of it, and the header says so where the
+/// sibling page's says what an entry costs.
+pub(super) const CLASSIFIER_PROMPT_ABRIDGED: &str = "abridged";
+
 /// The dim placeholder under the `## Action to review` header that closes
 /// the page's `user:` message: the request's real shape ends on the one
 /// action being judged, which is only known when a verdict is asked.
 pub(super) const CLASSIFIER_ACTION_PLACEHOLDER: &str =
     "(the command or MCP call being judged — filled in when a verdict is asked)";
-
-/// The inset of an entry's raw text (and attachment rows) under its tag.
-pub(super) const CONTEXT_INDENT: &str = "  ";
 
 /// The label of an attachment row under a user entry's text.
 pub(super) const CONTEXT_IMAGE_LABEL: &str = "image: ";
@@ -925,10 +969,25 @@ pub(super) const CONTEXT_IMAGE_LABEL: &str = "image: ";
 /// `→ name(arguments)`, the model's request in the raw wire form.
 pub(super) const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
 
-/// Role-tag colours — the tool palette's hues (user blue, assistant green,
+/// A role chip's ink — `on_accent`, the pair the agent session view's label
+/// and the ask countdown already stand on ([`agent_view_label_fg`]), over
+/// every role's fill: near-black on a dark theme's hues, Latte's pale `base`
+/// on its darker ones, black on ANSI's named colours.
+pub(super) fn context_chip_fg() -> Color {
+    palette().on_accent
+}
+
+/// The ink of an entry's text, its call arguments included — the reply's
+/// own ([`ai_color`]), so the raw window reads like the conversation it was
+/// derived from rather than in the terminal's default foreground.
+pub(super) fn context_text_color() -> Color {
+    ai_color()
+}
+
+/// Role-chip fills — the tool palette's hues (user blue, assistant green,
 /// system amber, tool-result purple) so the roles scan apart at a glance. The
 /// blue was the running tool's until that went grey ([`tool_running_color`]);
-/// a role tag is not a running state, so it keeps the hue as its own value.
+/// a role chip is not a running state, so it keeps the hue as its own value.
 pub(super) fn context_user_color() -> Color {
     palette().link
 }
@@ -941,7 +1000,7 @@ pub(super) fn context_system_color() -> Color {
     palette().warning
 }
 
-/// The `tool:` result-role tag and the `→ name(args)` tool-call lines under an
+/// The TOOL result chip's fill and the `→ name` head of a call row under an
 /// assistant entry — a distinct purple so the native tool round-trip reads
 /// apart from plain assistant text.
 pub(super) fn context_tool_color() -> Color {

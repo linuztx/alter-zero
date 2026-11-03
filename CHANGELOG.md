@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Ctrl+D context view is easier to read and to move around in.** Each
+  message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
+  label with its place in the request and a rough token count beside it, and
+  its text sits under a `⎿` gutter, wrapped between words instead of in the
+  middle of them. A tool result names the call it answers, and blank lines a
+  reply ended on no longer pad the space before its tool calls. **←/→** jump
+  to the previous or next message, the message you are scrolled into keeps
+  its label on the top row, and the bottom rule shows how many messages the
+  window holds and roughly how many tokens they add up to. Tab's page, with
+  what the auto-mode classifier reads, has the same look.
+
 ## [0.18.0] - 2026-11-03
 
 ### Added

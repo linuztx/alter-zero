@@ -47,9 +47,10 @@ dump "timed out; the agent carried on and the draft is back" "$settled"
 keys "$S128" C-d
 context="$(wait_pane 5 "$S128" -F "is not available")"
 dump "Ctrl+D — the tool result the model read" "$context"
-# The page hard-wraps mid-word under a two-space indent: join each wrapped
-# row back onto the one before it.
-context_flat="$(printf '%s' "$context" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  //g')"
+# The page word-wraps each entry's text under the five-column `⎿` gutter:
+# join each continuation row back onto the one before it with the space the
+# wrap broke at.
+context_flat="$(printf '%s' "$context" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n     / /g')"
 keys "$S128" C-d
 tmux kill-session -t "$S128" 2>/dev/null
 

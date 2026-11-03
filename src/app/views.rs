@@ -176,6 +176,17 @@ impl App {
             // the prompt's Tab (its amend field) and this one never contend.
             KeyCode::Tab | KeyCode::BackTab => {
                 self.debug_page = self.debug_page.flipped();
+                // The page left behind's entry rows say nothing about this
+                // one; its first draw injects its own.
+                self.debug_headers.clear();
+                Action::None
+            }
+            KeyCode::Left => {
+                self.step_debug_entry(false);
+                Action::None
+            }
+            KeyCode::Right => {
+                self.step_debug_entry(true);
                 Action::None
             }
             KeyCode::Up => {
@@ -217,6 +228,42 @@ impl App {
         }
     }
 
+    /// ←/→ in the Ctrl+D view: open the previous or the next entry of the
+    /// page on screen at the top of the window — a context window is a few
+    /// dozen messages over thousands of rows (`docs/context.md`). Back from
+    /// inside an entry opens that entry's own head first, the way a
+    /// paragraph motion does; past the last entry → is End and before the
+    /// first ← is Home. Stepping back leaves the tail-follow, or the next
+    /// draw would snap the view back to the bottom; stepping forward leaves
+    /// it to the settle, which re-engages it at the bottom. With no rows
+    /// injected yet — a page not drawn since it opened — there is nothing to
+    /// step between, and the keys do nothing.
+    fn step_debug_entry(&mut self, forward: bool) {
+        if self.debug_headers.is_empty() {
+            return;
+        }
+        let current = *self.debug_page_scroll().0;
+        let target = if forward {
+            self.debug_headers
+                .iter()
+                .copied()
+                .find(|&row| row > current)
+                .unwrap_or(usize::MAX)
+        } else {
+            self.debug_headers
+                .iter()
+                .rev()
+                .copied()
+                .find(|&row| row < current)
+                .unwrap_or(0)
+        };
+        let (scroll, follow) = self.debug_page_scroll();
+        *scroll = target;
+        if !forward {
+            *follow = false;
+        }
+    }
+
     /// The scroll offset and tail-follow flag **of the page currently
     /// showing** — so one set of pager arms drives whichever is up, and each
     /// page keeps its own place when you flip to compare them and back.
@@ -246,6 +293,9 @@ impl App {
         // across opens, so Ctrl+D comes back to whichever you were reading.
         self.classifier_scroll = 0;
         self.classifier_follow = self.view == View::ContextDebug;
+        // An opening view waits for its first draw's rows; a closing one's
+        // are rows of a page no longer on screen.
+        self.debug_headers.clear();
     }
 
     /// Whether the draw tick should **re-arm** the next animation frame — the

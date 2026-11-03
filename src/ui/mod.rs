@@ -93,14 +93,16 @@ pub use self::agent::{
 };
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
-pub use self::classifier_view::classifier_lines;
+pub use self::classifier_view::{classifier_body, classifier_lines};
 pub use self::config_review_view::{
     config_review_height, config_review_lines, render_config_review,
 };
 pub use self::context_usage_view::{
     context_usage_height, context_usage_lines, render_context_usage,
 };
-pub use self::context_view::{ContextCache, context_lines, render_context_view};
+pub use self::context_view::{
+    ContextCache, DebugBody, context_body, context_lines, render_context_view,
+};
 pub use self::conversation::{
     banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,
 };

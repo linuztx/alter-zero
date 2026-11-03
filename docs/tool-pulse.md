@@ -157,8 +157,8 @@ the grey, still distinct from the green/red around it.
 
 ## What stayed blue
 
-`context_user_color()`, the Ctrl+D context view's `user:` role tag, used to
-alias the running colour. It is a *role* tag, not a running state, so it keeps
+`context_user_color()`, the fill of the Ctrl+D context view's `USER` role
+chip, used to alias the running colour. It is a *role*, not a running state, so it keeps
 the link blue (the palette's `link` role — `#61AFEF` in the One Dark theme) as
 its own value and the two simply parted ways.
 

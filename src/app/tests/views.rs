@@ -130,6 +130,115 @@ fn settle_debug_scroll_caps_a_stale_offset_and_repins_follow() {
 }
 
 #[test]
+fn left_and_right_step_between_the_entries_of_the_page_on_screen() {
+    // A context window is thousands of rows of a few dozen messages; ←/→
+    // open the previous and next one at the top of the page (`docs/context.md`).
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.set_debug_headers(&[0, 4, 9, 15]);
+    app.debug_follow = false;
+    app.debug_scroll = 6; // inside the second entry
+    assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
+    assert_eq!(app.debug_scroll, 9, "→ opens the next entry");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.debug_scroll, 15);
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.debug_scroll, 9, "← the one before");
+    app.debug_scroll = 11; // inside the third entry
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(
+        app.debug_scroll, 9,
+        "← from inside an entry opens that entry's own head first"
+    );
+}
+
+#[test]
+fn stepping_back_leaves_the_tail_follow() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.set_debug_headers(&[0, 4, 9]);
+    app.settle_debug_scroll(12);
+    assert!(app.debug_follow, "the view opens pinned to the bottom");
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.debug_scroll, 9);
+    assert!(
+        !app.debug_follow,
+        "or the next draw would snap it back to the bottom"
+    );
+}
+
+#[test]
+fn past_the_last_entry_right_goes_to_the_end_and_before_the_first_left_to_the_top() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.set_debug_headers(&[2, 8]);
+    app.debug_follow = false;
+    app.debug_scroll = 8;
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.debug_scroll, usize::MAX, "End: the draw settles it");
+    app.debug_scroll = 1;
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.debug_scroll, 0, "Home");
+}
+
+#[test]
+fn a_page_not_yet_drawn_ignores_the_jump_keys() {
+    // The entry rows come from the page's last draw; with none yet there is
+    // nothing to step between, and guessing would jump the page.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 5;
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.debug_scroll, 5);
+}
+
+#[test]
+fn tab_forgets_the_entry_rows_of_the_page_it_leaves() {
+    // The two pages have different rows; until the classifier page is drawn
+    // the context page's rows would send ←/→ to the wrong places.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.set_debug_headers(&[0, 4]);
+    app.on_key(key(KeyCode::Tab));
+    app.classifier_follow = false;
+    app.classifier_scroll = 2;
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.classifier_scroll, 2);
+}
+
+#[test]
+fn the_jump_keys_move_the_classifier_pages_own_scroll() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    app.set_debug_headers(&[2, 6]);
+    app.classifier_follow = false;
+    app.classifier_scroll = 0;
+    app.debug_scroll = 3;
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.classifier_scroll, 2);
+    assert_eq!(app.debug_scroll, 3, "the other page keeps its place");
+}
+
+#[test]
+fn closing_the_view_forgets_its_entry_rows() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.set_debug_headers(&[0, 4]);
+    app.on_key(ctrl('d'));
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 1;
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(
+        app.debug_scroll, 1,
+        "a reopened view waits for its own first draw"
+    );
+}
+
+#[test]
 fn ctrl_o_opens_the_tool_view_even_while_streaming() {
     let mut app = App::new();
     app.begin_stream();

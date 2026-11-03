@@ -25,15 +25,22 @@ pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Li
 /// chain-of-thought (`docs/thinking-stream.md`). The corner/indent stays dim
 /// either way; this is the one place that geometry lives.
 pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Line<'static> {
+    gutter_row_spans(index, vec![Span::styled(text, style)])
+}
+
+/// [`gutter_row_styled`] over content already cut into styled spans — a row
+/// that mixes inks, like the Ctrl+D view's `→ name(arguments)` call rows
+/// (`docs/context.md`).
+pub(super) fn gutter_row_spans(index: usize, content: Vec<Span<'static>>) -> Line<'static> {
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
     } else {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
-    Line::from(vec![
-        Span::styled(prefix, Style::new().fg(tool_dim_color())),
-        Span::styled(text, style),
-    ])
+    let mut spans = Vec::with_capacity(content.len() + 1);
+    spans.push(Span::styled(prefix, Style::new().fg(tool_dim_color())));
+    spans.extend(content);
+    Line::from(spans)
 }
 
 /// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`

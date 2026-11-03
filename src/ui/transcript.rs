@@ -697,24 +697,56 @@ pub(super) fn overlay_header(title: &str, width: u16) -> Line<'static> {
 /// top, 100% at the bottom (or whenever everything fits) — codex's transcript
 /// overlay bottom bar.
 pub(super) fn tool_view_separator(width: u16, scroll: usize, max: usize) -> Line<'static> {
+    labeled_separator(width, scroll, max, None)
+}
+
+/// [`tool_view_separator`] with a `lead` set into the rule's left end, one
+/// dash in — the Ctrl+D view's `5 messages · ≈1.2k tokens` summary
+/// (`docs/context.md`). The percentage keeps its place; a lead the rule
+/// cannot hold beside it, a dash between them, is left out whole rather
+/// than cut.
+pub(super) fn labeled_separator(
+    width: u16,
+    scroll: usize,
+    max: usize,
+    lead: Option<&str>,
+) -> Line<'static> {
     let pct = if max == 0 {
         100
     } else {
         (scroll.min(max) * 100 + max / 2) / max
     };
-    rule_with_label(width, &format!(" {pct}% "))
+    rule_with_labels(width, lead, &format!(" {pct}% "))
 }
 
 /// A dim full-width `─` rule with `label` embedded right-aligned one dash in
 /// from the edge — the bottom bar shared by the transcript pager (its scroll
 /// percentage) and the `/resume` picker (its selection count).
 pub(super) fn rule_with_label(width: u16, label: &str) -> Line<'static> {
+    rule_with_labels(width, None, label)
+}
+
+/// [`rule_with_label`] with an optional `lead` label set in from the left
+/// edge the way `label` is from the right ([`labeled_separator`]). Both are
+/// placed a character a cell, so they are one column per character.
+fn rule_with_labels(width: u16, lead: Option<&str>, label: &str) -> Line<'static> {
     let width = width as usize;
     let mut rule = vec!['─'; width];
     let start = width.saturating_sub(cols(label) + 1);
     for (i, ch) in label.chars().enumerate() {
         if let Some(cell) = rule.get_mut(start + i) {
             *cell = ch;
+        }
+    }
+    if let Some(lead) = lead {
+        let lead = format!(" {lead} ");
+        // A dash before the lead, and at least one between it and `label`.
+        if cols(&lead) + 2 <= start {
+            for (i, ch) in lead.chars().enumerate() {
+                if let Some(cell) = rule.get_mut(1 + i) {
+                    *cell = ch;
+                }
+            }
         }
     }
     Line::from(Span::styled(

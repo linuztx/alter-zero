@@ -3152,9 +3152,13 @@ call's complete output while the conversation keeps streaming underneath (see
 invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
 (the raw LLM context window — the derived conversation the real backend sends
 each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
-(an assistant `→ name(args)` request + a `tool:` result entry) and `[Image #N]`
-placeholders unrendered; `ui::render_context_view`/`ui::context_lines` over
-the pure `context::context_messages`, see `docs/context.md`) — whose **Tab** opens its
+(an assistant `→ name(args)` request + a `TOOL` result entry naming the call
+it answers) and `[Image #N]` placeholders unrendered, every entry on a lit
+role chip — `#n`, a `≈` token estimate — over its text word-wrapped on the
+`⎿` gutter, ←/→ stepping between entries, the one the window opens inside
+pinned on its top row and the bottom rule counting the messages;
+`ui::render_context_view`/`ui::context_body` over the pure
+`context::context_messages`, see `docs/context.md`) — whose **Tab** opens its
 second page, auto mode's reviewer's own window: the bounded task context the
 classifier reads before each command, pulled live from the backend per draw
 (`ReplySource::classifier_context` → `App::set_classifier_context`, so it

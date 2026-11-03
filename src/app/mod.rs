@@ -395,6 +395,13 @@ pub struct App {
     /// exactly like [`tool_follow`](Self::tool_follow) — so a page left open
     /// while the agent works keeps the newest actions in sight as they land.
     pub classifier_follow: bool,
+    /// The row each entry of the Ctrl+D page on screen opens on — its role
+    /// chip — injected per draw at the boundary from the built page
+    /// (`ui::DebugBody::headers`, [`set_debug_headers`](Self::set_debug_headers)),
+    /// so ←/→ can step between messages (`docs/context.md`). Empty until the
+    /// page is first drawn, and again whenever Tab or a close leaves it: the
+    /// other page's rows would send the keys to the wrong places.
+    debug_headers: Vec<usize>,
     /// The auto mode classifier's **rendered task context** — the block the
     /// next verdict will read, injected per draw at the boundary from the
     /// live backend log (`ReplySource::classifier_context`), the
@@ -1124,6 +1131,14 @@ impl App {
     /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
     pub fn set_system_prompt(&mut self, prompt: Option<String>) {
         self.system_prompt = prompt;
+    }
+
+    /// Inject the rows the Ctrl+D page just drawn opens its entries on
+    /// (`ui::DebugBody::headers`) — per draw, beside the scroll settle — so
+    /// ←/→ step between them. See `docs/context.md`.
+    pub fn set_debug_headers(&mut self, headers: &[usize]) {
+        self.debug_headers.clear();
+        self.debug_headers.extend_from_slice(headers);
     }
 
     /// Inject the auto mode classifier's rendered task context (from

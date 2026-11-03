@@ -323,10 +323,12 @@ impl Session<'_> {
             screen.height,
         );
         self.app.settle_debug_scroll(max);
-        let lines = self.context.lines(&self.app, screen.width);
+        let body = self.context.body(&self.app, screen.width);
+        // ←/→ step between the entries of the page as drawn.
+        self.app.set_debug_headers(&body.headers);
         let app = &self.app;
         self.term
-            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, lines))
+            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, body))
     }
 
     /// Render the Ctrl+D view's **classifier page** (Tab) onto the alternate
@@ -355,12 +357,13 @@ impl Session<'_> {
         };
         self.app.set_classifier_context(context);
         let screen = self.term.screen();
-        let lines = ui::classifier_lines(&self.app, screen.width);
-        let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+        let body = ui::classifier_body(&self.app, screen.width);
+        let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
         self.app.settle_classifier_scroll(max);
+        self.app.set_debug_headers(&body.headers);
         let app = &self.app;
         self.term
-            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, &lines))
+            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, &body))
     }
 
     /// Paint whichever view is current — the draw tick's whole body.

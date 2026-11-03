@@ -280,8 +280,8 @@ again (`docs/agent-tools.md` *A resume is news when it starts*).
   work with the roster still below them; **Ctrl+O shows the viewed agent's
   own transcript** (a fresh bounded build — `ui::agent_transcript_lines` —
   the main cache untouched) and **Ctrl+D its derived context**
-  (`ui::context_lines` branches on the viewed agent: the body derives from
-  the agent's transcript, the `system prompt:` block shows the prompt a
+  (`ui::context_body` branches on the viewed agent: the body derives from
+  the agent's transcript, the `SYSTEM` entry shows the prompt a
   subagent is *actually sent* — the main prompt + the subagent note,
   `ReplySource::agent_system_prompt()` injected at the boundary as
   `App::agent_system_prompt` — and no AGENTS.md section, since subagent
