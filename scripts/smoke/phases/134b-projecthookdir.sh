@@ -13,7 +13,9 @@ smoke_begin
 #     reads `.alter-zero/` from), while the hook still runs in the cwd;
 #   - the guard's block holds: `rm -rf build/` never runs;
 #   - what the model reads names the hook and the trusted project's own
-#     hooks.json it is configured in.
+#     hooks.json it is configured in, and so does the refusal's cell — the
+#     file named from the phase's home, `~/projrepo/…` (docs/hooks.md *What
+#     the user sees*).
 # A stub provider asks for that one `bash` call and records the tool result
 # the model is sent back.
 S134B="${S}_projecthookdir"
@@ -91,8 +93,12 @@ trust_hooks "$S134B"
 submit "$S134B" "clean the build"
 ph_pane="$(wait_settled 30 "$S134B" -S -200 -- -F "Done.")" || fail "the turn never settled"
 dump "the turn, launched in $REPO/src" "$ph_pane"
-expect_has "$ph_pane" -F "Blocked by hook: no destructive deletes (ran in $REPO/src)" \
+expect_has "$ph_pane" -F "Blocked by PreToolUse hook: no destructive deletes (ran in $REPO/src)" \
 	"the project's guard never ran from the subdirectory, or did not run in the cwd"
+expect_has "$ph_pane" -F 'Hook: ${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh' \
+	"the refusal cell did not name the project's hook"
+expect_has "$ph_pane" -F "Config: ~/projrepo/.alter-zero/hooks.json" \
+	"the refusal cell did not name the project's hooks.json from the user's home"
 [ -e "$REPO/src/build/keep" ] || fail "the refused rm -rf ran: the project hook did not guard it"
 ph_result="$(python3 -c 'import json,sys; [print(json.loads(l)["content"]) for l in open(sys.argv[1])]' "$PH_BODIES" 2>/dev/null)"
 dump "what the model read back" "$ph_result"

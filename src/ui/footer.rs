@@ -472,10 +472,15 @@ pub fn search_line(search: &HistorySearch) -> Line<'static> {
 /// (`format_directory_display`): `~` for the home directory itself, `~/rel`
 /// for paths under it (component-wise, so `/home/userx` is *not* under
 /// `/home/user`), and the absolute path as-is otherwise — or when no home is
-/// known. Pure: `main.rs` reads the environment and passes both paths in.
+/// known, or the one given is not absolute (`$HOME` set but empty, whose
+/// empty prefix would strip from every path into `~//…`). Pure: `main.rs`
+/// reads the environment and passes both paths in.
 #[must_use]
 pub fn display_cwd(cwd: &Path, home: Option<&Path>) -> String {
-    if let Some(rel) = home.and_then(|home| cwd.strip_prefix(home).ok()) {
+    if let Some(rel) = home
+        .filter(|home| home.is_absolute())
+        .and_then(|home| cwd.strip_prefix(home).ok())
+    {
         if rel.as_os_str().is_empty() {
             return "~".to_string();
         }

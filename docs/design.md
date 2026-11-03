@@ -770,7 +770,9 @@ which Ctrl+V reads the clipboard from.
   (a background process it left holding the pipes holds nothing). The
   pure half is `hooks/`; the
   runner is `llm/hooks.rs`, behind the one-trait-object `HookSink` seam.
-  Verdicts reuse the permission gate's rendering and recording wholesale;
+  Verdicts reuse the permission gate's rendering and recording wholesale —
+  a refusal's red cell naming the event, the hook and its `hooks.json`
+  (`~`-relative), every dim row a hook leaves naming its event;
   the two conversation-level additions are `StreamEvent::HookNote` → the
   cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
   verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
