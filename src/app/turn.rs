@@ -170,17 +170,23 @@ impl App {
     }
 
     /// Record a hook-injected conversation entry (`docs/hooks.md`): the
-    /// cell-less [`HistoryItem::HookNote`] the Ctrl+O transcript shows and
-    /// the derived context replays verbatim. The caller flushes the
+    /// [`HistoryItem::HookNote`] whose `report` is the hooks' cell and whose
+    /// `text` the derived context replays verbatim. The caller flushes the
     /// streaming segment first (the loop's ToolBatch dance), so the note
     /// slots between the finalised text and whatever streams next. Appended,
     /// never a rewrite — no `history_generation` bump.
-    pub fn record_hook_note(&mut self, label: &str, text: &str) {
+    pub fn record_hook_note(
+        &mut self,
+        label: &str,
+        text: &str,
+        report: Option<crate::hooks::HookReport>,
+    ) {
         let timestamp = self.now_stamp();
         self.history
             .push(HistoryItem::HookNote(crate::app::HookNote {
                 label: label.to_string(),
                 text: text.to_string(),
+                report,
                 timestamp,
             }));
     }

@@ -522,6 +522,13 @@ impl Session<'_> {
                 HistoryItem::Message(message) if message.role == Role::User => {
                     Some(ui::message_lines(Role::User, &message.text, width))
                 }
+                // What the agent's SubagentStop hooks said — its `● Ran 1
+                // SubagentStop hook` cell (docs/hooks.md *The hook-run
+                // cell*); a note with no report stays cell-less.
+                HistoryItem::HookNote(note) => note
+                    .report
+                    .as_ref()
+                    .map(|report| ui::hook_report_lines(report, width)),
                 _ => None,
             })
             .filter(|lines| !lines.is_empty())

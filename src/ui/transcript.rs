@@ -8,6 +8,7 @@ use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::cached_lines::CachedLines;
 use super::conversation::is_shell_header;
 use super::file_cell::draft_cell_lines;
+use super::hook_cell::hook_report_full_lines;
 use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
@@ -103,9 +104,13 @@ fn transcript_item_lines(
         // The transcript is where a thought's whole chain-of-thought lives —
         // inline it is the one collapsed line (docs/thinking-stream.md).
         HistoryItem::Reasoning(r) => lines.extend(reasoning_full_lines(r, width)),
-        // Hook-injected conversation text (docs/hooks.md): invisible inline,
-        // the transcript is its record.
-        HistoryItem::HookNote(n) => lines.extend(hook_note_lines(n, width)),
+        // What the hooks said, expanded — each hook that ran and what it
+        // said (docs/hooks.md *The hook-run cell*); a note without a report
+        // keeps its label over the text the model read.
+        HistoryItem::HookNote(n) => match &n.report {
+            Some(report) => lines.extend(hook_report_full_lines(report, width)),
+            None => lines.extend(hook_note_lines(n, width)),
+        },
     }
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them

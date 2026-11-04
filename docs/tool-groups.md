@@ -288,7 +288,9 @@ edit that failed did nothing.
 A group is a property of the **history**, like the parallel MCP run
 (`docs/mcp.md`): the records stay ordinary `HistoryItem::Tool`s, and a group is
 any maximal run of members, allowing through the items that have no inline
-cell of their own (a task call, a hook note) and the **thoughts** between them
+cell of their own (a task call, a hook note without a report) and the
+**thoughts** between them — a hook note carrying the hooks' cell is a cell,
+and ends the group (`docs/hooks.md` *The hook-run cell*)
 ([`app::group_run`]). That is what lets every rebuild — a resize, an overlay
 return, a `/resume` — derive the same line from the same records
 (`ui::conversation_lines`), with no group id to record or to drift.

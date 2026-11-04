@@ -194,16 +194,18 @@ pub fn is_group_member(tool: &ToolCall, paths: &PathDisplay) -> bool {
     }
 }
 
-/// Whether `item` lets a group run on through it: a task call and a hook
-/// note have no cell inline at all, and a thought the model has while the
-/// group is open is part of the run its line stands for rather than ending
-/// it — shown only in the Ctrl+O transcript (`docs/tool-groups.md`
-/// *Thoughts*).
+/// Whether `item` lets a group run on through it: a task call and a
+/// cell-less hook note have no cell inline at all, and a thought the model
+/// has while the group is open is part of the run its line stands for rather
+/// than ending it — shown only in the Ctrl+O transcript (`docs/tool-groups.md`
+/// *Thoughts*). A hook note carrying the hooks' cell is a cell of its own
+/// (`docs/hooks.md` *The hook-run cell*), so the group ends there.
 fn passes_through(item: &HistoryItem) -> bool {
-    matches!(
-        item,
-        HistoryItem::TaskCall(_) | HistoryItem::HookNote(_) | HistoryItem::Reasoning(_)
-    )
+    match item {
+        HistoryItem::TaskCall(_) | HistoryItem::Reasoning(_) => true,
+        HistoryItem::HookNote(note) => !note.has_cell(),
+        _ => false,
+    }
 }
 
 /// The group `items` opens with, as how many items it spans: from its first

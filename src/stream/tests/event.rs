@@ -53,6 +53,7 @@ fn only_what_a_streaming_request_emits_is_attempt_output() {
         StreamEvent::HookNote {
             label: "Stop hook".into(),
             text: "keep going".into(),
+            report: None,
         },
         StreamEvent::Error("boom".into()),
         StreamEvent::StreamDone,

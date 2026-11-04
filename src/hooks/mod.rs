@@ -24,12 +24,15 @@
 //! - `verdict` — parsing one handler's answer and merging several.
 //! - `overview` — the display tree the read-only `/hooks` menu browses
 //!   (`docs/hooks-menu.md`).
+//! - `report`  — what one event's hooks did, as the conversation's
+//!   `● Ran 1 Stop hook` cell shows it (`docs/hooks.md` *The hook-run cell*).
 
 mod config;
 mod event;
 mod matcher;
 mod overview;
 mod payload;
+mod report;
 mod verdict;
 
 pub use self::config::{CommandHook, HandlerKind, HookHandler, HooksFile, MatcherGroup, Selection};
@@ -45,7 +48,8 @@ pub use self::payload::{
     pre_tool_use_payload, session_end_payload, session_start_payload, stop_failure_payload,
     stop_payload, subagent_start_payload, subagent_stop_payload, user_prompt_submit_payload,
 };
+pub use self::report::{HookReport, HookSaid, RanHook};
 pub use self::verdict::{
-    HOOK_OUTPUT_MAX_BYTES, HookBlock, HookOrigin, HookOutcome, HookPermission, HookRun, NO_REASON,
-    ParsedHook, merge, parse_run, truncate_output,
+    HOOK_LABEL_MAX_CHARS, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookOrigin, HookOutcome,
+    HookPermission, HookRun, NO_REASON, ParsedHook, hook_label, merge, parse_run, truncate_output,
 };

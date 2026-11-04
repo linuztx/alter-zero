@@ -217,11 +217,13 @@ only the last one would leave the cells in front of it off the screen.
 
 Everything else that reaches the transcript has its own committer and must not
 land twice — a flushed text segment belongs to `agent_render`, a settled
-thought to `settle_agent_reasoning`, a hook note is invisible inline — so they
-fall through. And the red error notice is the one thing a failure does *not*
-record (the run keeps only its `error` field), so it still commits explicitly,
-after the cell the failure resolved: before this change the `Error` arm
-committed the notice and silently dropped that cell.
+thought to `settle_agent_reasoning` — so they fall through. A hook note
+commits here only when it carries a report: the agent's `● Ran 1
+SubagentStop hook` cell (`docs/hooks.md` *The hook-run cell*); one without
+is invisible inline. And the red error notice is the one thing a failure
+does *not* record (the run keeps only its `error` field), so it still
+commits explicitly, after the cell the failure resolved: before this change
+the `Error` arm committed the notice and silently dropped that cell.
 
 The same helper closes the **local** settles, which carry no event at all: the
 roster's `x` resolves the agent's live batch through `AgentRun::interrupt` —

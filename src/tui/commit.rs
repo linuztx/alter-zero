@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 
 use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall, ToolPlacement, TurnSummary};
+use alter_zero::hooks::HookReport;
 use alter_zero::ui;
 
 use super::Session;
@@ -139,6 +140,35 @@ impl Session<'_> {
         self.term.set_view_height(height);
         self.term.insert_before(lines);
         self.term.insert_before(vec![Line::default()]);
+    }
+
+    /// Record a hook note and commit its cell — the `● Ran 1 Stop hook`
+    /// the report draws (`docs/hooks.md` *The hook-run cell*); a note with no
+    /// report records cell-less, as it always has. The caller has finalised
+    /// the streamed text before it (invariant 4). A cell is no part of an
+    /// open read/search group, so the group's line commits above it, and the
+    /// viewport is reseated first, the tool cell's dance (invariant 3).
+    pub(crate) fn commit_hook_note(
+        &mut self,
+        label: &str,
+        text: &str,
+        report: Option<HookReport>,
+        committing: bool,
+        width: u16,
+    ) {
+        let cell = report
+            .as_ref()
+            .map(|report| ui::hook_report_lines(report, width));
+        if cell.is_some() {
+            self.close_tool_group(committing, width);
+        }
+        self.app.record_hook_note(label, text, report);
+        if committing && let Some(lines) = cell {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term.insert_before(lines);
+            self.term.insert_before(vec![Line::default()]);
+        }
     }
 
     /// Commit a one-off notice to scrollback + history, finalising any in-flight

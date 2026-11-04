@@ -486,10 +486,12 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
         | HistoryItem::TaskCall(_)
         | HistoryItem::Background(_)
         | HistoryItem::AgentNotice(_)
-        | HistoryItem::HookNote(_)
         // The compacted shape always pushes the summary bridge, even over an
         // empty summary ("(no summary available)").
         | HistoryItem::Compaction(_) => true,
+        // A hook cell with no text gave the model nothing (docs/hooks.md
+        // *The hook-run cell*).
+        HistoryItem::HookNote(note) => !note.text.is_empty(),
         // One `agent` call per entry — an entryless group derives nothing.
         HistoryItem::AgentGroup(group) => !group.agents.is_empty(),
         // TUI chrome / private chain-of-thought — never conversation.
@@ -890,9 +892,13 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
     match &history[position] {
         // Hook-injected conversation text (docs/hooks.md): the model read
         // it as a user message mid-turn, so every later turn replays it
-        // verbatim in place.
+        // verbatim in place. A note with no text is the hooks' cell alone —
+        // it gave the model nothing, so nothing is replayed (an empty entry
+        // would merge into the next user message as a stray blank line).
         HistoryItem::HookNote(note) => {
-            push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
+            if !note.text.is_empty() {
+                push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
+            }
         }
         HistoryItem::Message(message) => match message.role {
             // A pasted picture's placeholder names the file it was saved
@@ -1114,6 +1120,37 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_cell_that_gave_the_model_nothing_changes_nothing_it_reads() {
+        // docs/hooks.md *The hook-run cell*: a hook that broke, or said
+        // something to the user alone, leaves a cell with no text — and the
+        // context is exactly what it would be without the cell.
+        let cell = HistoryItem::HookNote(crate::app::HookNote {
+            label: "Stop hook".into(),
+            text: String::new(),
+            report: Some(crate::hooks::HookReport {
+                event: "Stop".into(),
+                hooks: Vec::new(),
+                warnings: vec!["hooks.json: a warning".into()],
+            }),
+            timestamp: String::new(),
+        });
+        let without = vec![
+            message(Role::User, "fix it"),
+            message(Role::Assistant, "done"),
+        ];
+        let mut with = without.clone();
+        with.insert(2, cell.clone());
+        with.push(message(Role::User, "and the docs"));
+        let mut expected = without;
+        expected.push(message(Role::User, "and the docs"));
+        assert_eq!(context_messages(&with), context_messages(&expected));
+        assert!(
+            !derives_conversation(&[cell]),
+            "a cell alone is no conversation"
+        );
+    }
+
+    #[test]
     fn a_hook_note_replays_verbatim_as_a_user_message() {
         // The model read it as a user message mid-turn (docs/hooks.md), so
         // every later turn replays exactly that — no prefix, no wrapper: the
@@ -1124,6 +1161,7 @@ mod tests {
             HistoryItem::HookNote(crate::app::HookNote {
                 label: "Stop hook".into(),
                 text: "Stop hook feedback:\ntests are red".into(),
+                report: None,
                 timestamp: String::new(),
             }),
             message(Role::Assistant, "fixed for real"),
@@ -1986,6 +2024,23 @@ mod tests {
                 vec![HistoryItem::HookNote(crate::app::HookNote {
                     label: "Stop hook".into(),
                     text: "tests are red".into(),
+                    report: None,
+                    timestamp: String::new(),
+                })],
+            ),
+            // The cell of hooks that gave the model nothing — a hook that
+            // broke, a message for the user — derives nothing
+            // (docs/hooks.md *The hook-run cell*).
+            (
+                "hook cell with no text",
+                vec![HistoryItem::HookNote(crate::app::HookNote {
+                    label: "Stop hook".into(),
+                    text: String::new(),
+                    report: Some(crate::hooks::HookReport {
+                        event: "Stop".into(),
+                        hooks: Vec::new(),
+                        warnings: vec!["hooks.json: a warning".into()],
+                    }),
                     timestamp: String::new(),
                 })],
             ),

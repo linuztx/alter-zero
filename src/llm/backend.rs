@@ -795,12 +795,17 @@ impl ReplySource for LlmBackend {
             // prompt cache. A blocked prompt sends PromptBlocked instead of
             // ever reaching the model: the loop rolls the submission back.
             let opening = super::hooks::turn_start(hooks.as_ref(), &prompt, &cancel);
-            for (label, text) in &opening.notes {
+            for note in opening.notes {
+                // A note with no text is the hooks' cell alone: it gave the
+                // model nothing (docs/hooks.md *The hook-run cell*).
+                if !note.text.is_empty() {
+                    messages.push(ChatMessage::user(&note.text));
+                }
                 let _ = tx.send(StreamEvent::HookNote {
-                    label: label.clone(),
-                    text: text.clone(),
+                    label: note.label,
+                    text: note.text,
+                    report: note.report,
                 });
-                messages.push(ChatMessage::user(text));
             }
             if let Some(reason) = opening.blocked {
                 if !cancel.is_cancelled() {
@@ -1758,11 +1763,14 @@ fn spawn_subagent_run(
         // parent launching a batch of agents must not block on each one's
         // hook in turn, and whatever the hook returns is context for *this*
         // agent — so it has to land before the first round, which is here,
-        // wrapped so it never reads as the lead talking.
-        if let Some(note) =
-            super::hooks::subagent_start_note(hooks.as_ref(), &id, &agent_type, &cancel)
-        {
-            messages.push(ChatMessage::user(&note));
+        // wrapped so it never reads as the lead talking. The note goes on the
+        // agent's own transcript too, once its channel exists below: the
+        // hooks' cell for its session view, and the context it read for its
+        // Ctrl+D (docs/hooks.md *The hook-run cell*).
+        let start_note =
+            super::hooks::subagent_start_note(hooks.as_ref(), &id, &agent_type, &cancel);
+        if let Some(note) = start_note.as_ref().filter(|note| !note.text.is_empty()) {
+            messages.push(ChatMessage::user(&note.text));
         }
         // The forwarder tags every event with the agent id and tracks the
         // terminal outcome, while its `RunRecorder` keeps the final reply
@@ -1801,6 +1809,13 @@ fn spawn_subagent_run(
             }
             (recorder.into_answer(), outcome, terminal)
         });
+        if let Some(note) = start_note {
+            let _ = tx2.send(StreamEvent::HookNote {
+                label: note.label,
+                text: note.text,
+                report: note.report,
+            });
+        }
         let mut executor = RealToolExecutor::new()
             .with_vision(vision)
             .with_detach_helper(detach);

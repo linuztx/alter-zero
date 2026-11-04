@@ -262,6 +262,12 @@ pub enum AgentStop {
 /// `output` replays into later contexts.
 pub const AGENT_STOPPED_OUTPUT: &str = "[agent stopped by the user before completion]";
 
+/// How many hook notes from agents not yet on the roster wait for their
+/// launch's announcement — room for a batch's every `SubagentStart` note;
+/// past it the oldest goes, so a note whose agent never arrives costs
+/// nothing for long.
+const EARLY_AGENT_NOTES_MAX: usize = 32;
+
 /// Snapshot one roster entry into a recorded [`AgentGroupEntry`] around the
 /// model-facing `output` (see [`App::finish_agent_group`]).
 fn agent_entry_of(agent: &AgentRun, output: &str) -> AgentGroupEntry {
@@ -380,16 +386,19 @@ impl App {
                 .round
                 .as_ref()
                 .and_then(|round| spec.call_id.as_deref().and_then(|id| round.position_of(id)));
-            self.agents.push(
-                AgentRun::new(
-                    spec.id.clone(),
-                    spec.description.clone(),
-                    spec.agent_type.clone(),
-                    spec.prompt.clone(),
-                    spec.background,
-                )
-                .with_call(spec.call_id.clone(), spec.arguments.clone(), position),
-            );
+            let mut run = AgentRun::new(
+                spec.id.clone(),
+                spec.description.clone(),
+                spec.agent_type.clone(),
+                spec.prompt.clone(),
+                spec.background,
+            )
+            .with_call(spec.call_id.clone(), spec.arguments.clone(), position);
+            // Its SubagentStart note may have beaten this announcement here.
+            for note in self.take_early_agent_notes(&spec.id) {
+                run.apply(&note);
+            }
+            self.agents.push(run);
         }
         self.agent_group = Some(AgentGroupLive {
             ids: specs.iter().map(|spec| spec.id.clone()).collect(),
@@ -397,6 +406,34 @@ impl App {
             batch: self.round.as_ref().map(|round| round.batch),
         });
         self.agents_generation += 1;
+    }
+
+    /// An event for an agent the roster does not list: a hook note waits
+    /// for the agent's announcement — a launch's `SubagentStart` note can
+    /// beat it, the two arriving on different channels — while anything else
+    /// is dropped (a chunk racing a sweep).
+    fn hold_early_agent_note(&mut self, id: &str, event: &StreamEvent) {
+        if !matches!(event, StreamEvent::HookNote { .. }) {
+            return;
+        }
+        if self.early_agent_notes.len() == EARLY_AGENT_NOTES_MAX {
+            self.early_agent_notes.pop_front();
+        }
+        self.early_agent_notes
+            .push_back((id.to_string(), event.clone()));
+    }
+
+    /// The notes held for agent `id` ([`hold_early_agent_note`]), in the
+    /// order they came, taken off the list.
+    ///
+    /// [`hold_early_agent_note`]: Self::hold_early_agent_note
+    fn take_early_agent_notes(&mut self, id: &str) -> Vec<StreamEvent> {
+        let (taken, waiting): (VecDeque<_>, VecDeque<_>) =
+            std::mem::take(&mut self.early_agent_notes)
+                .into_iter()
+                .partition(|(early, _)| early == id);
+        self.early_agent_notes = waiting;
+        taken.into_iter().map(|(_, note)| note).collect()
     }
 
     /// Fold one subagent event (the agent channel) into its roster entry.
@@ -417,6 +454,10 @@ impl App {
         // the `/context` page's Since launch row (docs/context-usage.md).
         if let StreamEvent::Usage(usage) = event {
             self.usage_since_launch.record(usage);
+        }
+        if !self.agents.iter().any(|agent| agent.id == id) {
+            self.hold_early_agent_note(id, event);
+            return None;
         }
         let stamp = self.now_stamp();
         let in_live_group = self.in_live_agent_group(id);

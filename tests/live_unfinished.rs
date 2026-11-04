@@ -141,7 +141,7 @@ fn notes(events: &[StreamEvent]) -> Vec<(String, String)> {
     events
         .iter()
         .filter_map(|event| match event {
-            StreamEvent::HookNote { label, text } => Some((label.clone(), text.clone())),
+            StreamEvent::HookNote { label, text, .. } => Some((label.clone(), text.clone())),
             _ => None,
         })
         .collect()

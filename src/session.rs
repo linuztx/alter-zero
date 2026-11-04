@@ -126,9 +126,15 @@ enum ItemRecord {
     TaskCall(TaskToolRecord),
     /// Hook-injected conversation text (`docs/hooks.md`) — persists so a
     /// `/resume`'s derived context still carries what the model read
-    /// mid-turn. Old builds skip the unknown record type (the
-    /// forward-compatibility contract).
+    /// mid-turn, and the hooks' cell beside it. Old builds skip the unknown
+    /// record type (the forward-compatibility contract), and a build from
+    /// before the cell reads the text and ignores the report.
     HookNote(HookNoteRecord),
+    /// A hook note with **no text** — the cell of hooks that gave the model
+    /// nothing (`docs/hooks.md` *The hook-run cell*). A record type of its
+    /// own so a build from before the cell skips it, rather than replaying an
+    /// empty message as a `hook_note` it understands.
+    HookReport(HookNoteRecord),
     /// The session's own model selection (`docs/session-model.md`) — not a
     /// [`HistoryItem`] but recorded in the same file, so a resume brings the
     /// conversation back on the model it ran on. The payload is the
@@ -138,14 +144,118 @@ enum ItemRecord {
     Model(ModelSelection),
 }
 
-/// A [`crate::app::HookNote`] on disk: the transcript heading and the
-/// verbatim wire text (`docs/hooks.md`).
+/// A [`crate::app::HookNote`] on disk: the transcript heading, the verbatim
+/// wire text and the hooks' cell (`docs/hooks.md`).
 #[derive(Serialize, Deserialize)]
 struct HookNoteRecord {
     label: String,
+    #[serde(default)]
     text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<HookReportRecord>,
     #[serde(default)]
     timestamp: String,
+}
+
+/// A [`crate::hooks::HookReport`] on disk — every row's words as the cell
+/// showed them, so a `/resume` draws the record rather than today's wording.
+#[derive(Serialize, Deserialize)]
+struct HookReportRecord {
+    event: String,
+    #[serde(default)]
+    hooks: Vec<RanHookRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+}
+
+/// A [`crate::hooks::RanHook`] on disk.
+#[derive(Serialize, Deserialize)]
+struct RanHookRecord {
+    command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config: Option<String>,
+    #[serde(default)]
+    millis: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    said: Vec<HookSaidRecord>,
+}
+
+/// A [`crate::hooks::HookSaid`] on disk: its kind and its row.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum HookSaidRecord {
+    Stopped { row: String },
+    Feedback { row: String },
+    Context { row: String, text: String },
+    Message { row: String },
+    Error { row: String },
+}
+
+impl From<&crate::hooks::HookReport> for HookReportRecord {
+    fn from(report: &crate::hooks::HookReport) -> Self {
+        use crate::hooks::HookSaid;
+        Self {
+            event: report.event.clone(),
+            hooks: report
+                .hooks
+                .iter()
+                .map(|hook| RanHookRecord {
+                    command: hook.command.clone(),
+                    config: hook.config.clone(),
+                    millis: hook.millis,
+                    said: hook
+                        .said
+                        .iter()
+                        .map(|said| match said {
+                            HookSaid::Stopped(row) => HookSaidRecord::Stopped { row: row.clone() },
+                            HookSaid::Feedback(row) => {
+                                HookSaidRecord::Feedback { row: row.clone() }
+                            }
+                            HookSaid::Context { row, text } => HookSaidRecord::Context {
+                                row: row.clone(),
+                                text: text.clone(),
+                            },
+                            HookSaid::Message(row) => HookSaidRecord::Message { row: row.clone() },
+                            HookSaid::Error(row) => HookSaidRecord::Error { row: row.clone() },
+                        })
+                        .collect(),
+                })
+                .collect(),
+            warnings: report.warnings.clone(),
+        }
+    }
+}
+
+impl From<HookReportRecord> for crate::hooks::HookReport {
+    fn from(record: HookReportRecord) -> Self {
+        use crate::hooks::{HookSaid, RanHook};
+        Self {
+            event: record.event,
+            hooks: record
+                .hooks
+                .into_iter()
+                .map(|hook| RanHook {
+                    command: hook.command,
+                    config: hook.config,
+                    millis: hook.millis,
+                    said: hook
+                        .said
+                        .into_iter()
+                        .map(|said| match said {
+                            HookSaidRecord::Stopped { row } => HookSaid::Stopped(row),
+                            HookSaidRecord::Feedback { row } => HookSaid::Feedback(row),
+                            HookSaidRecord::Context { row, text } => {
+                                HookSaid::Context { row, text }
+                            }
+                            HookSaidRecord::Message { row } => HookSaid::Message(row),
+                            HookSaidRecord::Error { row } => HookSaid::Error(row),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            warnings: record.warnings,
+        }
+    }
 }
 
 /// A [`TaskCallRecord`] on disk (`docs/task-tools.md`): the call's texts plus
@@ -597,11 +707,21 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             waiting: notice.waiting,
             timestamp: notice.timestamp.clone(),
         }),
-        HistoryItem::HookNote(note) => ItemRecord::HookNote(HookNoteRecord {
-            label: note.label.clone(),
-            text: note.text.clone(),
-            timestamp: note.timestamp.clone(),
-        }),
+        HistoryItem::HookNote(note) => {
+            let record = HookNoteRecord {
+                label: note.label.clone(),
+                text: note.text.clone(),
+                report: note.report.as_ref().map(HookReportRecord::from),
+                timestamp: note.timestamp.clone(),
+            };
+            // A cell with no text gave the model nothing: its own record
+            // type, which a build from before the cell skips.
+            if note.text.is_empty() && note.report.is_some() {
+                ItemRecord::HookReport(record)
+            } else {
+                ItemRecord::HookNote(record)
+            }
+        }
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
             summary: compaction.summary.clone(),
             timestamp: compaction.timestamp.clone(),
@@ -835,10 +955,11 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     resumed: notice.resumed,
                 }));
             }
-            ItemRecord::HookNote(note) => {
+            ItemRecord::HookNote(note) | ItemRecord::HookReport(note) => {
                 items.push(HistoryItem::HookNote(crate::app::HookNote {
                     label: note.label,
                     text: note.text,
+                    report: note.report.map(crate::hooks::HookReport::from),
                     timestamp: note.timestamp,
                 }));
             }
@@ -1080,12 +1201,105 @@ mod tests {
         let item = HistoryItem::HookNote(crate::app::HookNote {
             label: "Stop hook".into(),
             text: "Stop hook feedback:\ntests are red".into(),
+            report: None,
             timestamp: "03:20 PM".into(),
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(value["type"], "hook_note");
         assert_eq!(value["payload"]["label"], "Stop hook");
+        assert!(
+            value["payload"].get("report").is_none(),
+            "no report, no key: {line}"
+        );
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    /// A Stop hook's cell: one hook that blocked, one that broke beside it.
+    fn stop_report() -> crate::hooks::HookReport {
+        use crate::hooks::{HookReport, HookSaid, RanHook};
+        HookReport {
+            event: "Stop".into(),
+            hooks: vec![
+                RanHook {
+                    command: "./check-git.sh".into(),
+                    config: Some("~/.alter-zero/hooks.json".into()),
+                    millis: 412,
+                    said: vec![HookSaid::Feedback(
+                        "Stop hook feedback: commit first".into(),
+                    )],
+                },
+                RanHook {
+                    command: "./notify.sh".into(),
+                    config: None,
+                    millis: 0,
+                    said: vec![
+                        HookSaid::Context {
+                            row: "Context added by Stop hook".into(),
+                            text: "a context".into(),
+                        },
+                        HookSaid::Stopped("Stopped by Stop hook: done".into()),
+                        HookSaid::Message("Formatted 3 files".into()),
+                        HookSaid::Error("Stop hook error: did not run: failed to spawn".into()),
+                    ],
+                },
+            ],
+            warnings: vec!["hooks.json: a warning".into()],
+        }
+    }
+
+    #[test]
+    fn a_hook_notes_cell_rides_beside_the_text_an_older_build_replays() {
+        // docs/hooks.md *The hook-run cell*: the report persists so a
+        // `/resume` draws the same cell — every row's words as shown — and a
+        // note that carries text keeps its `hook_note` record, whose text a
+        // build from before the cell still replays (it ignores the report).
+        let item = HistoryItem::HookNote(crate::app::HookNote {
+            label: "Stop hook".into(),
+            text: "Stop hook feedback: commit first".into(),
+            report: Some(stop_report()),
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "hook_note");
+        assert_eq!(value["payload"]["text"], "Stop hook feedback: commit first");
+        assert_eq!(
+            value["payload"]["report"]["hooks"][0]["said"][0],
+            serde_json::json!({"kind": "feedback", "row": "Stop hook feedback: commit first"})
+        );
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+
+        // The record an older build wrote — no report key — still reads.
+        let old = r#"{"timestamp":"t","type":"hook_note","payload":{"label":"Stop hook","text":"keep going","timestamp":"03:20 PM"}}"#;
+        let (_, parsed) =
+            parse_session(&format!("{}\n{old}\n", meta_line(&meta(), "t0"))).expect("parses");
+        assert_eq!(
+            parsed,
+            vec![HistoryItem::HookNote(crate::app::HookNote {
+                label: "Stop hook".into(),
+                text: "keep going".into(),
+                report: None,
+                timestamp: "03:20 PM".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn a_cell_that_gave_the_model_nothing_is_a_record_an_older_build_skips() {
+        // An older build reads `hook_note` text as a user message; a cell
+        // with none would replay an empty one, so it is its own type.
+        let item = HistoryItem::HookNote(crate::app::HookNote {
+            label: "Stop hook".into(),
+            text: String::new(),
+            report: Some(stop_report()),
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "hook_report");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }

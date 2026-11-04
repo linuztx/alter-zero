@@ -487,11 +487,22 @@ const HOOKS_REPLY: &str = concat!(
      the hook and the `hooks.json` it is configured in; I read the same, \
      plus a line telling me not to retry. The second ran, and a \
      **PostToolUse** hook attached a note; the dim `⎿` row is the record, and \
-     the text itself rides into my context rather than onto the cell. Hooks \
-     can also rewrite a call's arguments or answer the permission prompt in \
-     your place.\n\n",
+     the text itself rides into my context rather than onto the cell."
+);
+
+/// The round the demo's **Stop** hook buys: what the turn says once it has
+/// read the hook's feedback, closing on the hand-off like every demo.
+const HOOKS_CONTINUATION: &str = concat!(
+    "And as I went to finish, a **Stop** hook exited `2`: its stderr came \
+     back to me as feedback — the `Ran 1 Stop hook` cell above, with the \
+     hook itself one **ctrl+o** away — so this paragraph is the round it \
+     bought. Hooks can also rewrite a call's arguments or answer the \
+     permission prompt in your place.\n\n",
     handoff!()
 );
+
+/// What the demo's Stop hook says when it blocks — its stderr.
+const HOOKS_STOP_REASON: &str = "Before you finish, explain what a Stop hook does.";
 
 /// The **lifecycle-hooks** demo (`docs/hooks.md`): a `PreToolUse` hook
 /// blocking a destructive command, then a `PostToolUse` hook annotating one
@@ -565,18 +576,33 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     });
 
     events.extend(say(&second));
-    // A Stop hook's continuation feedback, recorded but cell-less inline —
-    // built by the very function the live loop calls
-    // (`llm::hooks::stop_feedback_texts`), so the Ctrl+O row is
-    // byte-for-byte the live one (docs/hooks.md).
-    let (label, text) = crate::llm::hooks::stop_feedback_texts(&crate::hooks::HookBlock {
-        reason: "demo only — the transcript keeps this note".to_string(),
-        hook: Some(crate::hooks::HookOrigin {
-            command: "~/.alter-zero/hooks/stop.sh".to_string(),
-            file: Some(HOOKS_FILE.into()),
-        }),
+    // A Stop hook that blocks as the turn would finish (docs/hooks.md *The
+    // hook-run cell*): its run read the way the live runner reads one, the
+    // feedback worded by the very function the live loop calls
+    // (`llm::hooks::stop_feedback_texts`) and the cell built by the live
+    // builder (`llm::hooks::hook_report`), so the `● Ran 1 Stop hook` cell
+    // and the Ctrl+O expansion are byte-for-byte the live ones. Then the
+    // round it bought.
+    let stop = crate::hooks::HookEvent::Stop;
+    let run = crate::hooks::HookRun {
+        command: "~/.alter-zero/hooks/stop.sh".to_string(),
+        file: Some(HOOKS_FILE.into()),
+        exit_code: Some(2),
+        stderr: HOOKS_STOP_REASON.to_string(),
+        elapsed: std::time::Duration::from_millis(120),
+        ..crate::hooks::HookRun::default()
+    };
+    let parsed = crate::hooks::parse_run(&run, stop);
+    let block = crate::hooks::merge(vec![parsed.clone()])
+        .block()
+        .expect("an exit 2 blocks");
+    let (label, text) = crate::llm::hooks::stop_feedback_texts(&block);
+    events.push(StreamEvent::HookNote {
+        label,
+        text,
+        report: crate::llm::hooks::hook_report(stop, &[(run, parsed)], &[], None),
     });
-    events.push(StreamEvent::HookNote { label, text });
+    events.extend(say(HOOKS_CONTINUATION));
     events.push(StreamEvent::StreamDone);
     events
 }

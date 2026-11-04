@@ -87,13 +87,16 @@ pub enum HistoryItem {
     /// the earlier items. Appended (never a rewrite), so the transcript, the
     /// recorder, and the checkpoint keys are untouched.
     Compaction(Compaction),
-    /// Conversation text a **lifecycle hook** injected mid-turn
-    /// (`docs/hooks.md`) — a `Stop` block's continuation feedback, a
-    /// `UserPromptSubmit`/`SessionStart` hook's additional context.
-    /// **Cell-less inline** (Claude Code hides these from the normal view
-    /// too): `conversation_lines` skips it, the Ctrl+O transcript shows it
-    /// under its `label`, and [`crate::context::context_messages`] replays
-    /// `text` verbatim as the user-role message the model actually read.
+    /// What the **lifecycle hooks** put into the conversation mid-turn, and
+    /// what they said (`docs/hooks.md`) — a `Stop` block's continuation
+    /// feedback, a `UserPromptSubmit`/`SessionStart` hook's additional
+    /// context, the `● Ran 1 Stop hook` cell. With a
+    /// [`report`](HookNote::report) it is that cell, collapsed inline and
+    /// expanded in Ctrl+O; without one it is **cell-less inline** (the loop's
+    /// own continuation prompts, a note recorded before reports) and only
+    /// the Ctrl+O transcript shows it, under its `label`.
+    /// [`crate::context::context_messages`] replays a non-empty `text`
+    /// verbatim as the user-role message the model actually read.
     HookNote(HookNote),
 }
 
@@ -105,10 +108,25 @@ pub struct HookNote {
     pub label: String,
     /// Verbatim what the model reads as a user-role message — formatted by
     /// the producer (`Stop hook feedback:\n…`, the system-reminder-wrapped
-    /// additional context), so the replay is exactly the wire text.
+    /// additional context), so the replay is exactly the wire text. Empty
+    /// when the hooks gave the model nothing — a cell for a hook that broke,
+    /// or a message meant for the user alone.
     pub text: String,
+    /// What the hooks said, as their cell shows it (`docs/hooks.md` *The
+    /// hook-run cell*); `None` keeps the note cell-less inline.
+    pub report: Option<crate::hooks::HookReport>,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
+}
+
+impl HookNote {
+    /// Whether the note shows inline — it carries the hooks' cell. A note
+    /// without one is transcript-only, and lets an open read/search group
+    /// run on through it (`docs/tool-groups.md`).
+    #[must_use]
+    pub const fn has_cell(&self) -> bool {
+        self.report.is_some()
+    }
 }
 
 /// The number of tokens in `text`, via the real `tiktoken` `o200k_base`

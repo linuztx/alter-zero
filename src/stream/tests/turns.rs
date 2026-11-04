@@ -351,6 +351,52 @@ fn the_hooks_demo_s_refusal_names_the_event_the_hook_and_its_file() {
 }
 
 #[test]
+fn the_hooks_demo_s_stop_hook_keeps_it_going_under_the_live_cell() {
+    // docs/hooks.md *The hook-run cell*: the demo's closing Stop hook blocks
+    // the way a real one does — the feedback is the live wire text, the
+    // cell the live builder's report, drawn by the live renderer — and the
+    // round it bought streams after it, closing on the hand-off.
+    let events = turn_events("show me the hooks demo", 0);
+    let at = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::HookNote { .. }))
+        .expect("the demo's Stop hook speaks");
+    let StreamEvent::HookNote {
+        label,
+        text,
+        report,
+    } = &events[at]
+    else {
+        unreachable!("found above");
+    };
+    assert_eq!(label, "Stop hook");
+    assert!(
+        text.starts_with("Stop hook feedback: ")
+            && text
+                .ends_with("\nHook: ~/.alter-zero/hooks/stop.sh\nConfig: ~/.alter-zero/hooks.json"),
+        "the model's feedback, naming the hook: {text}"
+    );
+    let report = report.as_ref().expect("the block is shown");
+    let rows: Vec<String> = crate::ui::hook_report_lines(report, 100)
+        .iter()
+        .map(|line| plain(line).trim_end().to_string())
+        .collect();
+    assert_eq!(rows[0], "● Ran 1 Stop hook (ctrl+o to expand)");
+    assert_eq!(
+        rows[1],
+        format!("  ⎿  {}", text.lines().next().unwrap()),
+        "the row is the first line the model reads"
+    );
+    assert!(
+        events[at + 1..]
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Chunk(_))),
+        "the block bought a round: {events:?}"
+    );
+    assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+}
+
+#[test]
 fn the_demo_s_read_really_renders_as_a_numbered_file_cell() {
     // The end of the chain the test above starts: the scripted output must
     // survive `ui::file_cell_lines`' parse, or the cell silently falls back to
