@@ -431,6 +431,14 @@ pub fn run_agent(
                 // (docs/hooks.md *The hook-run cell*).
                 if !cancel.is_cancelled() {
                     let verdict = hooks.stop(stop_hook_active, &text, cancel);
+                    // An Esc while they ran reaped them, so what they said
+                    // is moot: no feedback to continue on (the user stopped
+                    // the turn), no cell saying a hook broke because of it,
+                    // and no StreamDone — a cancelled round sends nothing,
+                    // the interrupt's notice being the boundary's to write.
+                    if cancel.is_cancelled() {
+                        return;
+                    }
                     if let Some(block) = verdict.block {
                         let (label, feedback) = super::hooks::stop_feedback_texts(&block);
                         let _ = tx.send(StreamEvent::HookNote {
@@ -445,12 +453,7 @@ pub fn run_agent(
                         stop_hook_active = true;
                         continue;
                     }
-                    // An Esc while they ran reaped them: a cell saying a
-                    // hook broke because the user stopped the turn would be
-                    // wrong, so none goes out.
-                    if !cancel.is_cancelled() {
-                        send_hook_report(tx, verdict.report);
-                    }
+                    send_hook_report(tx, verdict.report);
                 }
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -2149,6 +2152,61 @@ mod tests {
             &no_sessions,
         );
         assert!(hook_notes(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn an_esc_during_the_stop_hooks_sends_nothing_after_them() {
+        // Whatever the reaped hooks came back with — a block from the one
+        // that finished first, or nothing — the turn was interrupted: no
+        // feedback note, no round bought, and no StreamDone either, the
+        // cancelled round's own silence (the UI owns the notice).
+        #[derive(Debug)]
+        struct Interrupted(CancelToken, Option<crate::hooks::HookBlock>);
+        impl HookSink for Interrupted {
+            fn stop(
+                &self,
+                _active: bool,
+                _last: &str,
+                _cancel: &CancelToken,
+            ) -> super::super::hooks::StopVerdict {
+                self.0.cancel();
+                super::super::hooks::StopVerdict {
+                    block: self.1.clone(),
+                    report: Some(cell(
+                        "Stop",
+                        crate::hooks::HookSaid::Feedback("Stop hook feedback: keep going".into()),
+                    )),
+                }
+            }
+        }
+        for block in [Some(crate::hooks::HookBlock::from("keep going")), None] {
+            let (tx, mut rx) = unbounded_channel();
+            let cancel = CancelToken::new();
+            let rounds = RefCell::new(0);
+            run_agent(
+                &tx,
+                &cancel,
+                MAX_TOOL_ITERATIONS,
+                &mut vec![ChatMessage::user("hi")],
+                |_msgs| {
+                    *rounds.borrow_mut() += 1;
+                    reply("done")
+                },
+                |_c, _sink| panic!("no tools"),
+                Vec::new,
+                |_calls| Vec::new(),
+                |_call, _force| Approval::Allow,
+                &Interrupted(cancel.clone(), block.clone()),
+                &no_sessions,
+            );
+            let events = drain(&mut rx);
+            assert!(hook_notes(&events).is_empty(), "{block:?}: {events:?}");
+            assert!(
+                !events.iter().any(|e| matches!(e, StreamEvent::StreamDone)),
+                "{block:?}: {events:?}"
+            );
+            assert_eq!(*rounds.borrow(), 1, "{block:?}: the Esc bought no round");
+        }
     }
 
     #[test]
