@@ -83,8 +83,8 @@ read as a verdict when it starts with `{`, else treated as plain text. `2` —
 **block**, and the reason is **stderr**, not stdout; for `PermissionRequest`,
 which answers in permissions, a block is a **deny** (it used to fall through
 to the classifier and the prompt), and on an event with nothing to block —
-`SessionStart`, `PreCompact`, `PostCompact` — the reason is shown to the user
-alone, on the hook-run cell (*The hook-run cell*). Any other non-zero — a
+`SessionStart`, `SubagentStart`, `PreCompact`, `PostCompact` — the reason is
+shown to the user alone, on the hook-run cell (*The hook-run cell*). Any other non-zero — a
 non-blocking error, surfaced to the user and otherwise ignored. Stdout that
 starts with `{` but fails to parse is a non-blocking error too, never a
 silent allow.
@@ -532,6 +532,7 @@ and in Ctrl+O, every hook that ran with what it said under it:
 | ------------------------------ | -------------------------------------------------------- |
 | `Stop`                         | under the reply, above the continuation it bought or the turn's `Worked for` line |
 | `SubagentStop`                 | the same, on the agent's own transcript (its session view and its Ctrl+O) |
+| `SubagentStart`                | under the task that opens the agent's own transcript, where its first round reads them |
 | `SessionStart`, `UserPromptSubmit` | under the prompt that read them                      |
 | `PreCompact`, `PostCompact`    | above the compaction's `● Context compacted` line        |
 | `StopFailure`                  | above the turn's red error                               |
@@ -539,8 +540,16 @@ and in Ctrl+O, every hook that ran with what it said under it:
 The tool events have none — their rows are on the call's own cell — and
 neither do two events with nowhere to show one: `Notification` runs on its
 lane while the prompt it announces holds the screen, and `SessionEnd` fires as
-the conversation it ends goes away. `SubagentStart` has none yet (*Known
-gaps*).
+the conversation it ends goes away.
+
+**A `SubagentStart` cell can beat its agent.** The hooks run on the agent's
+own thread before its first round, while the lead announces the launch
+(`StreamEvent::AgentBatch`) on its own channel once every agent of the batch
+is spawned — and the loop reads the two channels in either order, so the
+hooks' note can arrive for an agent the roster does not list yet. Such a
+note waits for the announcement (`App::start_agent_group`) instead of being
+dropped with the rest of an unknown agent's events — a chunk racing a sweep
+is still dropped — at most 32 of them, oldest first.
 
 **Only when a hook said something.** A hook that exits `0` and prints nothing
 has approved by saying nothing — the common case, and on every turn — so it
@@ -553,7 +562,7 @@ row, most consequential first:
 | `Stop hook feedback: {reason}`          | the block the agent keeps going on — the first line of what the model reads |
 | `Context added by {event} hook`         | `additionalContext`, or the plain stdout that is context for that event |
 | `{systemMessage}`                       | a line the hook addressed to the user, verbatim                |
-| `{reason}`                              | a block where there is nothing to block — exit `2` (its stderr) or `decision: "block"` from `SessionStart`, `PreCompact` or `PostCompact` — verbatim |
+| `{reason}`                              | a block where there is nothing to block — exit `2` (its stderr) or `decision: "block"` from `SessionStart`, `SubagentStart`, `PreCompact` or `PostCompact` — verbatim |
 | `{event} hook error: {hook} {what broke}` | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: ./check.sh failed (exit 1): {stderr}` |
 | `hooks.json: …`                         | a config problem on the way: a matcher that is no regex, a handler skipped — red |
 
@@ -586,7 +595,8 @@ second hook's block is merged away, the rule above); `continue: false`
 outranks a block, so a stopped turn shows the stop and no feedback; a
 `UserPromptSubmit` block is the red notice that replaces the prompt, so the
 cell never repeats it. A block on an event with nothing to block —
-`SessionStart`, `PreCompact`, `PostCompact` — changes nothing, so its reason
+`SessionStart`, `SubagentStart`, `PreCompact`, `PostCompact` — changes
+nothing, so its reason
 is a message for the user, never feedback: Claude Code shows that stderr to
 the user alone, where this runner used to drop it; a bare exit `2` gave no
 reason and says nothing. Plain stdout from an event that does not take it as
@@ -919,7 +929,12 @@ round it bought; the second
 firing a cell of the error alone — the model reading the feedback and the
 context and none of what was the user's alone, Ctrl+O listing both hooks
 with their times, and a refused turn's `StopFailure` hook's cell above the
-red error.
+red error. **Phase 151** drives a subagent's `SubagentStart` cell: a lead
+launching one foreground agent beside two `SubagentStart` hooks, one briefing
+it and one exiting 2 — the agent's first request carrying the briefing and
+not the reason, its session view showing the `● Ran 2 SubagentStart hooks`
+cell under its task (the context row, then the reason as a message), and the
+lead's conversation never showing it.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
 prompt`) through the real loop arm: the blocked submission leaves scrollback
 (exactly the composer's restored copy of the text remains) under the red
@@ -1011,14 +1026,11 @@ Verified against both sources, and chosen — not accidental:
 
 - **`"async": true` runs synchronously**, with a warning. So does a
   `statusMessage`, which is parsed and not displayed.
-- **Three events leave no cell.** `Notification` runs on its lane while the
+- **Two events leave no cell.** `Notification` runs on its lane while the
   prompt it announces holds the screen, with no channel back to the
   conversation, and `SessionEnd` fires as the conversation it ends goes
   away; both ignore their hooks' output by contract, so only a hook that
-  broke goes unseen. A `SubagentStart` hook's context reaches the agent, but
-  a cell for it would race the agent's own arrival in the roster — the hook
-  runs on the agent's thread before its first round, and an event for an
-  agent the app has not listed yet is dropped — so it has none yet.
+  broke goes unseen.
 - **Plain stdout an event does not read is not shown.** A `Stop` hook that
   prints and exits `0` is chatter (Claude Code's `suppressOutput` exists to
   hide such output from its transcript); it never reaches the cell.

@@ -129,8 +129,8 @@ pub struct StopVerdict {
 }
 
 /// What an event whose hooks hand the model context returned
-/// (`SessionStart`, `PreCompact`): the contexts, in handler order, and the
-/// hooks' cell.
+/// (`SessionStart`, `SubagentStart`, `PreCompact`): the contexts, in handler
+/// order, and the hooks' cell.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HookContexts {
     pub contexts: Vec<String>,
@@ -235,8 +235,9 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// A subagent was launched; the returned strings are extra context for
-    /// **that** agent's own conversation.
+    /// A subagent was launched; the returned contexts are extra context for
+    /// **that** agent's own conversation, and the report the hooks' cell on
+    /// its own transcript (`docs/hooks.md` *The hook-run cell*).
     ///
     /// Takes the agent's own [`CancelToken`], like every other blocking method
     /// here: an Esc while a subagent is starting must reap its hook rather
@@ -246,8 +247,8 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         _agent_id: &str,
         _agent_type: &str,
         _cancel: &CancelToken,
-    ) -> Vec<String> {
-        Vec::new()
+    ) -> HookContexts {
+        HookContexts::default()
     }
 
     /// The model finished answering — `Stop` for the lead sink,
@@ -1463,20 +1464,26 @@ pub fn turn_start(hooks: &dyn HookSink, prompt: &str, cancel: &CancelToken) -> T
     }
 }
 
-/// The message a launched agent opens on when its `SubagentStart` hooks
-/// added context — wrapped and labelled like the session's own
-/// ([`context_note_texts`]), since a bare user message would read as words
-/// from the agent that launched it. Pure over the sink, [`turn_start`]'s
-/// pattern; `None` when the hooks added nothing.
+/// The note a launched agent opens on when its `SubagentStart` hooks said
+/// something: the context they added, wrapped and labelled like the
+/// session's own ([`context_note_texts`]) since a bare user message would
+/// read as words from the agent that launched it, and the hooks' cell for
+/// the agent's own transcript — the cell alone when they added no context.
+/// Pure over the sink, [`turn_start`]'s pattern; `None` when the hooks said
+/// nothing.
 #[must_use]
 pub fn subagent_start_note(
     hooks: &dyn HookSink,
     agent_id: &str,
     agent_type: &str,
     cancel: &CancelToken,
-) -> Option<String> {
-    let contexts = hooks.subagent_start(agent_id, agent_type, cancel);
-    context_note_texts(HookEvent::SubagentStart.name(), &contexts).map(|(_, text)| text)
+) -> Option<OpeningNote> {
+    let started = hooks.subagent_start(agent_id, agent_type, cancel);
+    OpeningNote::of(
+        HookEvent::SubagentStart.name(),
+        &started.contexts,
+        started.report,
+    )
 }
 
 /// `additionalContext` as the model reads it — Claude Code's `{hookName}
@@ -1709,13 +1716,16 @@ impl HookSink for CommandHooks {
         agent_id: &str,
         agent_type: &str,
         cancel: &CancelToken,
-    ) -> Vec<String> {
+    ) -> HookContexts {
         let tagged = self.tagged(agent_id, agent_type);
         let payload =
             crate::hooks::subagent_start_payload(&tagged.live_context(), agent_id, agent_type);
-        tagged
-            .dispatch(HookEvent::SubagentStart, Some(agent_type), &payload, cancel)
-            .additional_context
+        let dispatch =
+            tagged.dispatch_runs(HookEvent::SubagentStart, Some(agent_type), &payload, cancel);
+        HookContexts {
+            report: tagged.report(&dispatch),
+            contexts: dispatch.outcome().additional_context,
+        }
     }
 
     fn stop(
@@ -2426,7 +2436,10 @@ mod tests {
         let c = call("bash", "{}");
         assert_eq!(NoHooks.pre_tool_use(&c, &cancel), PreToolVerdict::default());
         assert!(NoHooks.permission_request(&c, &cancel).is_none());
-        assert!(NoHooks.subagent_start("a", "explore", &cancel).is_empty());
+        assert_eq!(
+            NoHooks.subagent_start("a", "explore", &cancel),
+            HookContexts::default()
+        );
     }
 
     #[test]
@@ -3247,16 +3260,36 @@ mod tests {
             r#"{"hooks":{"SubagentStart":[{"matcher":"explore","hooks":[{"type":"command",
               "command":"echo 'the repo root is /srv/app'"}]}]}}"#,
         );
+        let started = hooks.subagent_start("a1", "explore", &CancelToken::new());
         assert_eq!(
-            hooks.subagent_start("a1", "explore", &CancelToken::new()),
+            started.contexts,
             vec!["the repo root is /srv/app".to_string()]
         );
+        // …and its cell says so, as the session's own SessionStart's does.
+        let report = started.report.expect("the hooks' cell");
+        assert_eq!(report.event, "SubagentStart");
+        assert_eq!(rows(&report), vec!["Context added by SubagentStart hook"]);
         // A different agent type is not this hook's business.
-        assert!(
-            hooks
-                .subagent_start("a2", "reviewer", &CancelToken::new())
-                .is_empty(),
+        assert_eq!(
+            hooks.subagent_start("a2", "reviewer", &CancelToken::new()),
+            HookContexts::default(),
             "the matcher gates on agent_type"
+        );
+        // A hook that broke briefs nothing, and its cell says what broke.
+        let broken = hooks_for(
+            r#"{"hooks":{"SubagentStart":[{"hooks":[{"type":"command",
+              "command":"echo 'no briefing today' >&2; exit 1"}]}]}}"#,
+        );
+        let started = broken.subagent_start("a3", "explore", &CancelToken::new());
+        assert!(started.contexts.is_empty());
+        let report = started.report.expect("the broken hook's cell");
+        assert!(report.failed());
+        assert_eq!(
+            rows(&report),
+            vec![
+                "SubagentStart hook error: echo 'no briefing today' >&2; exit 1 failed \
+                 (exit 1): no briefing today"
+            ]
         );
     }
 
@@ -3765,30 +3798,59 @@ mod tests {
         // A bare user message would read as the lead talking; the wrapper and
         // label say the harness's hook put it there.
         #[derive(Debug)]
-        struct Briefing;
+        struct Briefing(Option<HookReport>);
         impl HookSink for Briefing {
-            fn subagent_start(&self, _id: &str, kind: &str, _cancel: &CancelToken) -> Vec<String> {
-                if kind == "explore" {
-                    vec![
-                        "the repo root is /srv/app".into(),
-                        "tests: cargo test".into(),
-                    ]
-                } else {
-                    Vec::new()
+            fn subagent_start(&self, _id: &str, kind: &str, _cancel: &CancelToken) -> HookContexts {
+                HookContexts {
+                    contexts: if kind == "explore" {
+                        vec![
+                            "the repo root is /srv/app".into(),
+                            "tests: cargo test".into(),
+                        ]
+                    } else {
+                        Vec::new()
+                    },
+                    report: self.0.clone(),
                 }
             }
         }
+        let briefed = HookReport {
+            event: "SubagentStart".to_string(),
+            hooks: Vec::new(),
+            warnings: vec!["hooks.json: a warning".to_string()],
+        };
+        let note = subagent_start_note(
+            &Briefing(Some(briefed.clone())),
+            "a1",
+            "explore",
+            &CancelToken::new(),
+        )
+        .expect("a note");
+        assert_eq!(note.label, "SubagentStart hook");
         assert_eq!(
-            subagent_start_note(&Briefing, "a1", "explore", &CancelToken::new()).as_deref(),
-            Some(
-                "<system-reminder>\nSubagentStart hook additional context: \
-                 the repo root is /srv/app\ntests: cargo test\n</system-reminder>"
-            )
+            note.text,
+            "<system-reminder>\nSubagentStart hook additional context: \
+             the repo root is /srv/app\ntests: cargo test\n</system-reminder>"
+        );
+        assert_eq!(note.report, Some(briefed.clone()), "with the hooks' cell");
+        // Hooks that only said something leave their cell and no message.
+        assert_eq!(
+            subagent_start_note(
+                &Briefing(Some(briefed.clone())),
+                "a2",
+                "reviewer",
+                &CancelToken::new()
+            ),
+            Some(OpeningNote {
+                label: "SubagentStart hook".to_string(),
+                text: String::new(),
+                report: Some(briefed),
+            })
         );
         assert_eq!(
-            subagent_start_note(&Briefing, "a2", "reviewer", &CancelToken::new()),
+            subagent_start_note(&Briefing(None), "a2", "reviewer", &CancelToken::new()),
             None,
-            "no context, no message"
+            "no context and nothing said, no note"
         );
     }
 

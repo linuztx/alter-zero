@@ -308,7 +308,7 @@ pub const fn event_description(event: HookEvent) -> &'static str {
             "Runs when an Agent-tool subagent launches; the matcher selects the \
              agent type.\n\
              Exit code 0 - stdout becomes context for the subagent\n\
-             Blocking is ignored\n\
+             Exit code 2 - nothing to block; stderr is shown to the user\n\
              Other exit codes - non-blocking error"
         }
         HookEvent::SubagentStop => {

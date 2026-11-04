@@ -57,6 +57,50 @@ fn agent_batch_seeds_the_roster_and_the_live_group() {
 }
 
 #[test]
+fn a_hook_note_that_beats_its_agents_launch_waits_for_it() {
+    // An agent's thread runs its SubagentStart hooks as soon as it spawns —
+    // before the lead announces the launch — and the two channels race at
+    // the loop, so the hooks' note can reach the roster ahead of its agent.
+    // It waits for the agent rather than being dropped (docs/hooks.md *The
+    // hook-run cell*); anything else for an id the roster does not list is
+    // still dropped (a chunk racing a sweep).
+    let mut app = App::new();
+    app.begin_stream();
+    let report = crate::hooks::HookReport {
+        event: "SubagentStart".to_string(),
+        hooks: Vec::new(),
+        warnings: vec!["hooks.json: a warning".to_string()],
+    };
+    let note = StreamEvent::HookNote {
+        label: "SubagentStart hook".to_string(),
+        text: String::new(),
+        report: Some(report.clone()),
+    };
+    assert_eq!(app.apply_agent_event("a2", &note), None);
+    assert_eq!(
+        app.apply_agent_event("a2", &StreamEvent::Chunk("stray".into())),
+        None
+    );
+    app.start_agent_group(false, &agent_specs(false));
+    let notes = |agent: &AgentRun| -> Vec<Option<crate::hooks::HookReport>> {
+        agent
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::HookNote(note) => Some(note.report.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(notes(&app.agents()[1]), vec![Some(report)], "on its agent");
+    assert!(notes(&app.agents()[0]).is_empty(), "and only on its own");
+    assert_eq!(app.agents()[1].tokens, 0, "the stray chunk was dropped");
+    // Delivered once: a second announcement finds nothing waiting.
+    app.start_agent_group(false, &agent_specs(false));
+    assert!(notes(&app.agents()[3]).is_empty());
+}
+
+#[test]
 fn finish_agent_group_snapshots_the_roster_around_the_outputs() {
     let mut app = App::new();
     app.begin_stream();

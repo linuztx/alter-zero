@@ -24,11 +24,12 @@ release heading when a version is cut.
   into every hook that ran, how long it took and the `hooks.json` it is
   configured in. SessionStart and UserPromptSubmit hooks get the same cell
   under your prompt when they add context or say something, PreCompact and
-  PostCompact hooks above `Context compacted` (a SessionStart, PreCompact or
+  PostCompact hooks above `Context compacted`, StopFailure hooks above a
+  failed turn's error, and a subagent's SubagentStart and SubagentStop hooks
+  on its own transcript. A SessionStart, SubagentStart, PreCompact or
   PostCompact hook that exits 2 has nothing to block, so its reason is shown
-  there instead of dropped), StopFailure hooks above a failed turn's error,
-  and a subagent's SubagentStop hooks on its own transcript. A PreToolUse
-  hook that rewrites a call's arguments now says so on the call, under a dim
+  in its cell instead of dropped. A PreToolUse hook that rewrites a call's
+  arguments now says so on the call, under a dim
   `Rewritten by PreToolUse hook` row, where the cell used to show the hook's
   version as if the agent had asked for it. What the agent reads is
   unchanged, and a hook that runs silently still leaves nothing

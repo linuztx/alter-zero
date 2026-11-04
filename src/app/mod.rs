@@ -836,6 +836,14 @@ pub struct App {
     /// to the roster with its whole conversation
     /// ([`resume_agent`](App::resume_agent), `docs/agent-tools.md`).
     retired_agents: VecDeque<AgentRun>,
+    /// Hook notes from an agent the roster does not list yet, oldest first:
+    /// a launch's `SubagentStart` note, which its thread sends before the
+    /// lead's [`StreamEvent::AgentBatch`] announcing it may have reached the
+    /// roster — the two arrive on different channels. Each waits for that
+    /// announcement ([`start_agent_group`](App::start_agent_group)), at most
+    /// `EARLY_AGENT_NOTES_MAX` of them (`docs/hooks.md` *The hook-run
+    /// cell*).
+    early_agent_notes: VecDeque<(String, StreamEvent)>,
     /// Bumped on every roster mutation — what the Ctrl+O transcript cache's
     /// signature fingerprints so a streaming agent invalidates it.
     agents_generation: u64,
@@ -1293,6 +1301,7 @@ impl App {
         // …and the retired ones: the conversation that knew their ids is
         // gone, so nothing may bring them back (docs/agent-tools.md).
         self.retired_agents.clear();
+        self.early_agent_notes.clear();
         self.agents_generation += 1;
         self.agent_group = None;
         self.agent_selection = None;
