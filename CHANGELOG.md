@@ -20,8 +20,8 @@ release heading when a version is cut.
   silently dropped. Each now leaves a `● Ran 1 Stop hook` cell under the
   reply: the feedback the agent continues on, the reason a hook stopped it,
   its message, and `Stop hook error: …` in red for a hook that broke, naming
-  the hook, folded like a tool's output. **Ctrl+O** expands the cell into
-  every hook that ran, how long it took and the `hooks.json` it is
+  the hook, each folded like a tool's output. **Ctrl+O** expands the cell
+  into every hook that ran, how long it took and the `hooks.json` it is
   configured in. SessionStart and UserPromptSubmit hooks get the same cell
   under your prompt when they add context or say something, PreCompact and
   PostCompact hooks above `Context compacted` (a SessionStart, PreCompact or

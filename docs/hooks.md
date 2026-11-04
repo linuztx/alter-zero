@@ -557,11 +557,14 @@ row, most consequential first:
 | `{event} hook error: {hook} {what broke}` | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: ./check.sh failed (exit 1): {stderr}` |
 | `hooks.json: …`                         | a config problem on the way: a matcher that is no regex, a handler skipped — red |
 
-Each row opens its own `⎿` and wraps under its own text, and the rows fold
-like a tool cell's output (`docs/long-lines.md`): three rows and a `… +N lines`
-row, or four shown whole. The header carries the `(ctrl+o to expand)` hint —
-there is always something to expand, the hooks themselves — so the fold row
-does not repeat it.
+Each row opens its own `⎿` and wraps under its own text, and **each row folds
+on its own** like a tool cell's output (`docs/long-lines.md`): three rows and a
+`… +N lines` row, or four shown whole. Row by row rather than the body as a
+whole, because folding the body let one long row — a Stop hook's paragraph of
+feedback — fold every row after it out of sight, a red bullet over an error
+row nobody could see; every row shows at least its head. The header carries
+the `(ctrl+o to expand)` hint — there is always something to expand, the
+hooks themselves — so the fold row does not repeat it.
 
 **`feedback`, not `error`.** Claude Code prints a blocking Stop hook's reason
 as `Stop hook error:`. It is not an error: the hook did its job, and its words

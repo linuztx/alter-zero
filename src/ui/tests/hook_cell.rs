@@ -140,31 +140,83 @@ fn a_long_row_wraps_under_its_own_text_not_under_the_corner() {
     assert!(rows.iter().all(|row| cols(row) <= 60), "{rows:?}");
 }
 
+/// `n` numbered lines as one message: one row of the cell's that wraps to
+/// `n` display rows.
+fn lines_of(n: usize) -> HookSaid {
+    HookSaid::Message(
+        (1..=n)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 #[test]
-fn the_rows_fold_like_a_tool_cells_output_with_the_hint_left_to_the_header() {
+fn a_long_row_folds_like_a_tool_cells_output_with_the_hint_left_to_the_header() {
     // Three rows and a `… +N lines` row past four — the header already says
     // `ctrl+o to expand`, so the fold row does not say it again.
-    let said = (1..=6)
-        .map(|n| HookSaid::Message(format!("line {n}")))
-        .collect();
-    let rows = texts(&hook_report_lines(&stop(vec![check_git(said)]), 80));
+    let rows = texts(&hook_report_lines(
+        &stop(vec![check_git(vec![lines_of(6)])]),
+        80,
+    ));
     assert_eq!(
         rows,
         vec![
             "● Ran 1 Stop hook (ctrl+o to expand)",
             "  ⎿  line 1",
-            "  ⎿  line 2",
-            "  ⎿  line 3",
+            "     line 2",
+            "     line 3",
             "     … +3 lines",
         ]
     );
     // Exactly four rows show whole: a hint hiding one row would cost it.
-    let said = (1..=4)
-        .map(|n| HookSaid::Message(format!("line {n}")))
+    let rows = texts(&hook_report_lines(
+        &stop(vec![check_git(vec![lines_of(4)])]),
+        80,
+    ));
+    assert_eq!(rows.len(), 5, "header and four rows: {rows:?}");
+    assert_eq!(rows[4], "     line 4");
+}
+
+#[test]
+fn each_row_folds_on_its_own_so_no_row_hides_behind_another() {
+    // Folding the body as a whole let a long feedback row push the error
+    // after it out of sight — a red bullet over no red row. Each row folds on
+    // its own, so every row shows its head.
+    let report = stop(vec![
+        check_git(vec![lines_of(6)]),
+        ran(
+            "./notify.sh",
+            9,
+            vec![HookSaid::error(
+                "Stop",
+                "hook ./notify.sh failed (exit 1): offline",
+            )],
+        ),
+    ]);
+    let lines = hook_report_lines(&report, 80);
+    assert_eq!(
+        texts(&lines),
+        vec![
+            "● Ran 2 Stop hooks (ctrl+o to expand)",
+            "  ⎿  line 1",
+            "     line 2",
+            "     line 3",
+            "     … +3 lines",
+            "  ⎿  Stop hook error: ./notify.sh failed (exit 1): offline",
+        ]
+    );
+    assert_eq!(
+        style_of(&lines[5], "Stop hook error").fg,
+        Some(tool_fail_color())
+    );
+    // Six one-row messages are six rows: none is the fold's to hide.
+    let said = (1..=6)
+        .map(|n| HookSaid::Message(format!("message {n}")))
         .collect();
     let rows = texts(&hook_report_lines(&stop(vec![check_git(said)]), 80));
-    assert_eq!(rows.len(), 5, "header and four rows: {rows:?}");
-    assert_eq!(rows[4], "  ⎿  line 4");
+    assert_eq!(rows.len(), 7, "the header and every message: {rows:?}");
+    assert_eq!(rows[6], "  ⎿  message 6");
 }
 
 #[test]

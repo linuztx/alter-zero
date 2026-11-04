@@ -2304,7 +2304,7 @@ hook's own line in Ctrl+O, `RanHook::row_under`), `Context added
 by … hook`, a `systemMessage` verbatim, and the reason of a block on an
 event with nothing to block (`SessionStart`, the compact events — exit 2 is
 shown to the user alone there, Claude Code's rule) — folded like a tool
-cell's output,
+cell's output row by row, so no row hides behind another,
 committed under the reply / the prompt / above `Context compacted` / above a
 failed turn's red error for `Stop`, `SubagentStop` (on the agent's own
 transcript), `SessionStart`, `UserPromptSubmit`, `PreCompact`/`PostCompact`

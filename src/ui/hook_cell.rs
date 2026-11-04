@@ -155,28 +155,28 @@ fn fold_line(hidden: usize) -> Line<'static> {
 /// The **collapsed** cell, inline and committed to scrollback: the header,
 /// then what took effect, most consequential first — the stop, the feedback
 /// the agent keeps going on, context, messages, then what broke and the
-/// configuration's problems ([`HookReport::collapsed`]). The body folds like
-/// a tool cell's output: past `TOOL_FOLD_ROWS + 1` display rows it keeps the
-/// first `TOOL_FOLD_ROWS` and counts the rest on one `… +N lines` row.
+/// configuration's problems ([`HookReport::collapsed`]). Each row folds like
+/// a tool cell's output: past `TOOL_FOLD_ROWS + 1` display rows it keeps its
+/// first `TOOL_FOLD_ROWS` and counts the rest on a `… +N lines` row. Row by
+/// row, never the body as a whole, so a long row cannot fold the rows after
+/// it out of sight — a red bullet over an error row the fold hid.
 #[must_use]
 pub fn hook_report_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> {
-    let rows: Vec<Row> = report
+    let mut lines = header_lines(report, width, true);
+    let rows = report
         .collapsed()
         .into_iter()
         .map(Row::said)
-        .chain(report.warnings.iter().map(|warning| Row::warning(warning)))
-        .collect();
-    let body: Vec<Line<'static>> = rows
-        .iter()
-        .flat_map(|row| row.lines(body_width(width)))
-        .collect();
-    let mut lines = header_lines(report, width, true);
-    if body.len() <= TOOL_FOLD_ROWS + 1 {
-        lines.extend(body);
-    } else {
-        let hidden = body.len() - TOOL_FOLD_ROWS;
-        lines.extend(body.into_iter().take(TOOL_FOLD_ROWS));
-        lines.push(fold_line(hidden));
+        .chain(report.warnings.iter().map(|warning| Row::warning(warning)));
+    for row in rows {
+        let row = row.lines(body_width(width));
+        if row.len() <= TOOL_FOLD_ROWS + 1 {
+            lines.extend(row);
+        } else {
+            let hidden = row.len() - TOOL_FOLD_ROWS;
+            lines.extend(row.into_iter().take(TOOL_FOLD_ROWS));
+            lines.push(fold_line(hidden));
+        }
     }
     lines
 }
