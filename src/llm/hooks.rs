@@ -1263,6 +1263,21 @@ const fn decides_continuation(event: HookEvent) -> bool {
     matches!(event, HookEvent::Stop | HookEvent::SubagentStop)
 }
 
+/// Whether `event`'s hooks have nothing a block could stop — the events
+/// whose block (an exit `2`, a `decision: "block"`) is, Claude Code's rule,
+/// shown to the user alone: what the hook wanted said, which only its cell
+/// can show. `UserPromptSubmit` is not one (its block refuses the prompt),
+/// nor `StopFailure`, whose output goes nowhere.
+const fn blocks_nothing(event: HookEvent) -> bool {
+    matches!(
+        event,
+        HookEvent::SessionStart
+            | HookEvent::SubagentStart
+            | HookEvent::PreCompact
+            | HookEvent::PostCompact
+    )
+}
+
 /// Whether `event`'s hooks hand the model context — the events whose
 /// `additionalContext` (or plain stdout) the conversation, the agent or the
 /// summarization reads.
@@ -1284,10 +1299,12 @@ const fn takes_context(event: HookEvent) -> bool {
 ///
 /// Only what took effect is a row. The feedback is the first block's — the
 /// one the agent continues on, [`merge`]'s rule — and none at all when a
-/// hook answered `continue: false`, which outranks it; context is a row only
-/// for the events that hand it on; a `UserPromptSubmit` block is the red
-/// notice that replaces the prompt, never a row; plain stdout an event does
-/// not read is chatter. Each hook is named as a refusal's cell names it —
+/// hook answered `continue: false`, which outranks it; a block where there
+/// is nothing to block is a message for the user (`blocks_nothing`) unless
+/// it gave no reason; context is a row only for the events that hand it on;
+/// a `UserPromptSubmit` block is the red notice that replaces the prompt,
+/// never a row; plain stdout an event does not read is chatter. Each hook is
+/// named as a refusal's cell names it —
 /// its command's label and its `hooks.json` from `home`. The offline demo
 /// builds its cell here too, so the two cannot drift.
 #[must_use]
@@ -1317,6 +1334,12 @@ pub fn hook_report(
             {
                 feedback_given = true;
                 said.push(HookSaid::Feedback(feedback_line(name, reason)));
+            }
+            if blocks_nothing(event)
+                && let Some(reason) = &parsed.block_reason
+                && reason != NO_REASON
+            {
+                said.push(HookSaid::Message(reason.clone()));
             }
             if takes_context(event)
                 && let Some(text) = &parsed.additional_context
@@ -2191,6 +2214,51 @@ mod tests {
         assert_eq!(report.hooks[0].command, inline);
         assert_eq!(report.hooks[3].command, "set -e…");
         assert!(report.failed());
+    }
+
+    #[test]
+    fn a_block_where_there_is_nothing_to_block_is_a_message_for_the_user() {
+        // SessionStart, SubagentStart and the compact events have nothing a
+        // block could stop, and Claude Code shows such a hook's stderr to the
+        // user alone — so the reason is a message row: never feedback, since
+        // nothing continues on it, and never dropped.
+        for event in [
+            HookEvent::SessionStart,
+            HookEvent::SubagentStart,
+            HookEvent::PreCompact,
+            HookEvent::PostCompact,
+        ] {
+            let refused = ran(
+                event,
+                HookRun {
+                    stderr: "not on a Friday".into(),
+                    ..run_of("./guard.sh", Some(2))
+                },
+            );
+            let report = hook_report(event, &[refused], &[], None)
+                .unwrap_or_else(|| panic!("{event:?}: the reason was dropped"));
+            assert_eq!(rows(&report), vec!["not on a Friday"], "{event:?}");
+            assert!(
+                matches!(report.collapsed()[0], HookSaid::Message(_)),
+                "{event:?}"
+            );
+            assert!(!report.failed(), "{event:?}: exit 2 is not a hook breaking");
+            // A bare exit 2 gave no reason, so it said nothing to show.
+            let bare = ran(event, run_of("./guard.sh", Some(2)));
+            assert_eq!(hook_report(event, &[bare], &[], None), None, "{event:?}");
+        }
+        // Where a block does something it is that thing's: the prompt's red
+        // notice; and StopFailure's output goes nowhere.
+        for event in [HookEvent::UserPromptSubmit, HookEvent::StopFailure] {
+            let refused = ran(
+                event,
+                HookRun {
+                    stderr: "not on a Friday".into(),
+                    ..run_of("./guard.sh", Some(2))
+                },
+            );
+            assert_eq!(hook_report(event, &[refused], &[], None), None, "{event:?}");
+        }
     }
 
     #[test]

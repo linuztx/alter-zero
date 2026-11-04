@@ -284,7 +284,7 @@ pub const fn event_description(event: HookEvent) -> &'static str {
             "Runs in the background as the session opens (launch, /resume, /clear) \
              and the first turn waits for it; the matcher selects the source.\n\
              Exit code 0 - stdout becomes context for the model\n\
-             Blocking is ignored\n\
+             Exit code 2 - nothing to block; stderr is shown to the user\n\
              Other exit codes - non-blocking error"
         }
         HookEvent::SessionEnd => {
@@ -321,13 +321,14 @@ pub const fn event_description(event: HookEvent) -> &'static str {
             "Runs before a /compact summarization; the matcher selects the trigger \
              (manual, auto).\n\
              Exit code 0 - stdout becomes extra compaction instructions\n\
-             Blocking is not honoured\n\
+             Exit code 2 - the compaction still runs; stderr is shown to the user\n\
              Other exit codes - non-blocking error"
         }
         HookEvent::PostCompact => {
             "Runs after a compaction lands; the matcher selects the trigger \
              (manual, auto).\n\
-             Fire-and-forget - output and exit codes are ignored"
+             Fire-and-forget - nothing it prints reaches the model\n\
+             Exit code 2 - stderr is shown to the user"
         }
     }
 }

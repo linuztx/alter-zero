@@ -82,7 +82,9 @@ Fourteen events are modelled. What each may return:
 read as a verdict when it starts with `{`, else treated as plain text. `2` —
 **block**, and the reason is **stderr**, not stdout; for `PermissionRequest`,
 which answers in permissions, a block is a **deny** (it used to fall through
-to the classifier and the prompt). Any other non-zero — a
+to the classifier and the prompt), and on an event with nothing to block —
+`SessionStart`, `PreCompact`, `PostCompact` — the reason is shown to the user
+alone, on the hook-run cell (*The hook-run cell*). Any other non-zero — a
 non-blocking error, surfaced to the user and otherwise ignored. Stdout that
 starts with `{` but fails to parse is a non-blocking error too, never a
 silent allow.
@@ -551,6 +553,7 @@ row, most consequential first:
 | `Stop hook feedback: {reason}`          | the block the agent keeps going on — the first line of what the model reads |
 | `Context added by {event} hook`         | `additionalContext`, or the plain stdout that is context for that event |
 | `{systemMessage}`                       | a line the hook addressed to the user, verbatim                |
+| `{reason}`                              | a block where there is nothing to block — exit `2` (its stderr) or `decision: "block"` from `SessionStart`, `PreCompact` or `PostCompact` — verbatim |
 | `{event} hook error: {hook} {what broke}` | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: ./check.sh failed (exit 1): {stderr}` |
 | `hooks.json: …`                         | a config problem on the way: a matcher that is no regex, a handler skipped — red |
 
@@ -579,7 +582,11 @@ the feedback row is the first block's, the one the agent continues on (a
 second hook's block is merged away, the rule above); `continue: false`
 outranks a block, so a stopped turn shows the stop and no feedback; a
 `UserPromptSubmit` block is the red notice that replaces the prompt, so the
-cell never repeats it. Plain stdout from an event that does not take it as
+cell never repeats it. A block on an event with nothing to block —
+`SessionStart`, `PreCompact`, `PostCompact` — changes nothing, so its reason
+is a message for the user, never feedback: Claude Code shows that stderr to
+the user alone, where this runner used to drop it; a bare exit `2` gave no
+reason and says nothing. Plain stdout from an event that does not take it as
 context (`Stop`, `PostCompact`, `StopFailure`) is chatter and stays unshown.
 And an Esc that reaps a running Stop hook leaves no cell: the runner reports
 the hook as `did not run: interrupted`, which would read as a hook that

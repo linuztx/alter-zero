@@ -2301,7 +2301,10 @@ Stop hook: …`, the `Stop hook feedback: …` the agent continues on (never
 command's first line cut at 80 characters, the name every warning and the
 tool cells' dim rows give a hook too — and dropping the name under that
 hook's own line in Ctrl+O, `RanHook::row_under`), `Context added
-by … hook`, a `systemMessage` verbatim — folded like a tool cell's output,
+by … hook`, a `systemMessage` verbatim, and the reason of a block on an
+event with nothing to block (`SessionStart`, the compact events — exit 2 is
+shown to the user alone there, Claude Code's rule) — folded like a tool
+cell's output,
 committed under the reply / the prompt / above `Context compacted` / above a
 failed turn's red error for `Stop`, `SubagentStop` (on the agent's own
 transcript), `SessionStart`, `UserPromptSubmit`, `PreCompact`/`PostCompact`
