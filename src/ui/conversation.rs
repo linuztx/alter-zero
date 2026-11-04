@@ -77,9 +77,14 @@ pub fn conversation_lines(
             // the live checklist is its display, and the record expands only
             // in the Ctrl+O transcript (docs/task-tools.md).
             HistoryItem::TaskCall(_) => continue,
-            // Hook-injected conversation text is cell-less inline too — the
-            // Ctrl+O transcript is its record (docs/hooks.md).
-            HistoryItem::HookNote(_) => continue,
+            // What the hooks said is their `● Ran 1 Stop hook` cell; a
+            // note no hook said anything about — a continuation prompt, a
+            // note recorded before reports — is cell-less inline, the Ctrl+O
+            // transcript its record (docs/hooks.md *The hook-run cell*).
+            HistoryItem::HookNote(note) => match &note.report {
+                Some(report) => lines.extend(hook_report_lines(report, width)),
+                None => continue,
+            },
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width, paths)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),

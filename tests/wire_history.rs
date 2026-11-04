@@ -201,9 +201,13 @@ fn fold(app: &mut App, events: Vec<StreamEvent>) {
             } => {
                 app.reject_tool(&display, &result);
             }
-            StreamEvent::HookNote { label, text } => {
+            StreamEvent::HookNote {
+                label,
+                text,
+                report,
+            } => {
                 app.flush_streaming_segment();
-                app.record_hook_note(&label, &text);
+                app.record_hook_note(&label, &text, report);
             }
             StreamEvent::StreamDone => {
                 app.finish_stream();
@@ -233,7 +237,7 @@ impl HookSink for BlockPrompt {
     fn user_prompt_submit(&self, prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
         PromptVerdict {
             blocked: (prompt == self.0).then(|| "not now".to_string()),
-            contexts: Vec::new(),
+            ..PromptVerdict::default()
         }
     }
 }
@@ -353,7 +357,7 @@ fn the_next_responses_turn_sends_the_prefix_the_provider_already_saw() {
 /// The continuation prompt a turn's events carried, by its label.
 fn continuation(events: &[StreamEvent]) -> Option<(String, String)> {
     events.iter().find_map(|event| match event {
-        StreamEvent::HookNote { label, text } => Some((label.clone(), text.clone())),
+        StreamEvent::HookNote { label, text, .. } => Some((label.clone(), text.clone())),
         _ => None,
     })
 }

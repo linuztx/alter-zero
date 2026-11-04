@@ -2290,11 +2290,27 @@ to do — a `PreToolUse` allow *is*
 reads the augmented text — appended **at the frontier**, never in front of
 `user_instructions`, which is rewritten per turn and would invalidate the
 prompt cache. The two conversation-level additions that *were* needed:
-`StreamEvent::HookNote` → the cell-less `HistoryItem::HookNote` (invisible
-inline, expanded in Ctrl+O, replayed verbatim by `context_messages`,
-rollout-round-tripped) and the terminal `PromptBlocked`. `PreToolUse` may
+`StreamEvent::HookNote` → the `HistoryItem::HookNote` (replayed verbatim by
+`context_messages`, rollout-round-tripped; its optional `report` —
+`hooks::HookReport`, built by `llm::hooks::hook_report` from each handler's
+run and parsed answer — is the **hook-run cell**: `● Ran 1 Stop hook (ctrl+o
+to expand)` over what took effect, most consequential first — `Stopped by
+Stop hook: …`, the `Stop hook feedback: …` the agent continues on (never
+"error": that red row is kept for a hook that broke, `Stop hook error:
+failed (exit 1): …`, the hook's own command left to Ctrl+O), `Context added
+by … hook`, a `systemMessage` verbatim — folded like a tool cell's output,
+committed under the reply / the prompt / above `Context compacted` / above a
+failed turn's red error for `Stop`, `SubagentStop` (on the agent's own
+transcript), `SessionStart`, `UserPromptSubmit`, `PreCompact`/`PostCompact`
+and `StopFailure`, and expanded in Ctrl+O into each hook that ran, how long
+it ran and its `hooks.json`; a silent run leaves no cell, a note with no
+text — the cell of hooks that gave the model nothing — replays nothing and
+is a `hook_report` rollout record an older build skips, and a note without a
+report stays cell-less — `docs/hooks.md` *The hook-run cell*, `smoke.sh`
+Phases 72 and 150) and the terminal `PromptBlocked`. `PreToolUse` may
 also **rewrite** the call (`updatedInput` replaces the arguments for the
-gate, the executor and the cell), `PermissionRequest` sits exactly where the
+gate, the executor and the cell, which names it on a dim `Rewritten by
+PreToolUse hook` row), `PermissionRequest` sits exactly where the
 auto-mode classifier does, and payloads resolve `permission_mode`,
 `session_id` and `transcript_path` **live at dispatch** (the gate's current
 mode; the **conversation's** id — the rollout file's, the handle `--resume`

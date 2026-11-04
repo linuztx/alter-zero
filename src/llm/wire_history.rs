@@ -315,6 +315,7 @@ mod tests {
             HistoryItem::HookNote(HookNote {
                 label: "hook".into(),
                 text: text.into(),
+                report: None,
                 timestamp: String::new(),
             })
         };

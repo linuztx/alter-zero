@@ -320,13 +320,23 @@ pub enum StreamEvent {
     /// (`docs/hooks.md`): a `Stop`/`SubagentStop` block's continuation
     /// feedback, or a `UserPromptSubmit`/`SessionStart` hook's additional
     /// context. `text` is verbatim what the model reads as a user-role
-    /// message — the loop finalises the assistant run before it (invariant
-    /// 4's flush-before-you-interleave) and records the cell-less
-    /// [`crate::app::HistoryItem::HookNote`], so the Ctrl+O transcript shows
-    /// why the turn kept going, the derived context replays it on every
-    /// later turn, and a `/resume` restores it. `label` is the short
-    /// transcript heading (`Stop hook`, `UserPromptSubmit hook`).
-    HookNote { label: String, text: String },
+    /// message — **empty** when the hooks gave it nothing — and the loop
+    /// finalises the assistant run before it (invariant 4's
+    /// flush-before-you-interleave) and records the
+    /// [`crate::app::HistoryItem::HookNote`], so the transcript shows why the
+    /// turn kept going, the derived context replays the text on every later
+    /// turn, and a `/resume` restores it. `label` is the short transcript
+    /// heading (`Stop hook`, `UserPromptSubmit hook`).
+    ///
+    /// `report` is the hooks' **cell** — `● Ran 1 Stop hook` and what they
+    /// said, committed inline and expanded in Ctrl+O (`docs/hooks.md` *The
+    /// hook-run cell*) — `None` for a note no hook said anything about (the
+    /// loop's own continuation prompts), which stays cell-less inline.
+    HookNote {
+        label: String,
+        text: String,
+        report: Option<crate::hooks::HookReport>,
+    },
     /// A message the user queued **while this turn was already running** has
     /// been folded into its context, at the round boundary the agent loop
     /// reached (right after the previous round's tool results) — codex's

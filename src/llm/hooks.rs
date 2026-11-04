@@ -32,7 +32,8 @@ use std::time::{Duration, Instant};
 use crate::frontmatter::truncate_chars;
 use crate::hooks::{
     CommandHook, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookContext, HookEvent, HookOrigin, HookOutcome,
-    HookPermission, HookRun, HooksFile, NO_REASON, ParsedHook, merge, parse_run, truncate_output,
+    HookPermission, HookReport, HookRun, HookSaid, HooksFile, NO_REASON, ParsedHook, RanHook,
+    merge, parse_run, truncate_output,
 };
 use crate::stream::CancelToken;
 use crate::subprocess;
@@ -111,6 +112,31 @@ pub struct PromptVerdict {
     /// `additionalContext` entries, in handler order — injected **even on a
     /// block**, both references' rule.
     pub contexts: Vec<String>,
+    /// The hooks' cell (`docs/hooks.md` *The hook-run cell*) — `None` when
+    /// they said nothing it would show. A block is the red notice's, never a
+    /// row here.
+    pub report: Option<HookReport>,
+}
+
+/// What the `Stop` / `SubagentStop` hooks decided (`docs/hooks.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopVerdict {
+    /// Keep going, on this feedback — [`stop_feedback_texts`] words the
+    /// next user message. `None` lets the turn end: nothing blocked, or a
+    /// hook answered `continue: false`, which outranks a block.
+    pub block: Option<HookBlock>,
+    /// The hooks' cell — `None` when they said nothing it would show.
+    pub report: Option<HookReport>,
+}
+
+/// What an event whose hooks hand the model context returned
+/// (`SessionStart`, `PreCompact`): the contexts, in handler order, and the
+/// hooks' cell.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookContexts {
+    pub contexts: Vec<String>,
+    /// `None` when the hooks said nothing the cell would show.
+    pub report: Option<HookReport>,
 }
 
 /// What a `PermissionRequest` hook decided in the user's stead, if anything.
@@ -231,8 +257,10 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// agent id). Fired by `run_agent` at the point the turn would complete
     /// — never on a cancel, an error, a compact turn or a `!` shell.
     ///
-    /// `Some(feedback)` is a **block**: the agent keeps going, its next user
-    /// message the feedback as [`stop_feedback_texts`] words it.
+    /// A [`block`](StopVerdict::block) makes the agent keep going, its next
+    /// user message the feedback as [`stop_feedback_texts`] words it; the
+    /// [`report`](StopVerdict::report) is the hooks' cell, whether or not
+    /// they blocked (`docs/hooks.md` *The hook-run cell*).
     /// `stop_hook_active` is true on the second and later firings within one
     /// turn — the loop guard's flag, which the hook itself checks to avoid
     /// looping forever (the engine never refuses a re-block; that is Claude
@@ -242,16 +270,25 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         _stop_hook_active: bool,
         _last_message: &str,
         _cancel: &CancelToken,
-    ) -> Option<HookBlock> {
-        None
+    ) -> StopVerdict {
+        StopVerdict::default()
     }
 
     /// The turn ended on an error instead of an answer — Claude Code's
     /// `StopFailure`: `error` the [`stop_failure_kind`] (also the matcher),
     /// `details` the text the conversation shows. Fired by `run_agent` just
     /// before it reports the error; the session's turn only — a subagent's
-    /// failed round is not the session's turn ending. Observation only.
-    fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) {}
+    /// failed round is not the session's turn ending. Its output decides
+    /// nothing; the returned report is the cell for what the hooks still
+    /// said — a `systemMessage`, a hook that broke — or `None`.
+    fn stop_failure(
+        &self,
+        _error: &str,
+        _details: &str,
+        _cancel: &CancelToken,
+    ) -> Option<HookReport> {
+        None
+    }
 
     /// The `SessionStart` context for the turn about to run, at its top on
     /// the backend thread. The boundary fires the event itself, in the
@@ -260,9 +297,10 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// paint, the checkpoint probe's lesson — so this waits for those hooks
     /// and takes what they returned, then runs any source still queued (one
     /// crossed while hooks were off or no real backend existed). Returns the
-    /// hooks' `additionalContext` strings; the matcher gates on the source.
-    fn session_start(&self, _cancel: &CancelToken) -> Vec<String> {
-        Vec::new()
+    /// hooks' `additionalContext` strings and their cell; the matcher gates
+    /// on the source.
+    fn session_start(&self, _cancel: &CancelToken) -> HookContexts {
+        HookContexts::default()
     }
 
     /// The user submitted `prompt` — fired right after the SessionStart
@@ -345,9 +383,11 @@ impl CompactHooks {
 
 impl HookSink for CompactHooks {
     fn user_prompt_submit(&self, _prompt: &str, cancel: &CancelToken) -> PromptVerdict {
+        let HookContexts { contexts, report } = self.inner.pre_compact(self.trigger, "", cancel);
         PromptVerdict {
             blocked: None,
-            contexts: self.inner.pre_compact(self.trigger, "", cancel),
+            contexts,
+            report,
         }
     }
 
@@ -356,9 +396,11 @@ impl HookSink for CompactHooks {
         _stop_hook_active: bool,
         last_message: &str,
         cancel: &CancelToken,
-    ) -> Option<HookBlock> {
-        self.inner.post_compact(self.trigger, last_message, cancel);
-        None
+    ) -> StopVerdict {
+        StopVerdict {
+            block: None,
+            report: self.inner.post_compact(self.trigger, last_message, cancel),
+        }
     }
 
     fn prompt_hook_label(&self) -> &'static str {
@@ -405,11 +447,11 @@ pub struct SessionStartRun {
 }
 
 /// One background firing: its own token (a discard kills its hooks) and the
-/// thread that returns their context.
+/// thread that returns their context and their cell.
 #[derive(Debug)]
 struct StartRun {
     cancel: CancelToken,
-    handle: std::thread::JoinHandle<Vec<String>>,
+    handle: std::thread::JoinHandle<HookContexts>,
 }
 
 impl SessionStartRun {
@@ -426,15 +468,15 @@ impl SessionStartRun {
         }
     }
 
-    /// Wait for the held run — while `cancel` is not — and take its context.
-    /// A cancelled wait leaves the run held: the next turn is still the
-    /// first response, and it waits too.
-    fn take(&self, cancel: &CancelToken) -> Vec<String> {
+    /// Wait for the held run — while `cancel` is not — and take its context
+    /// and its cell. A cancelled wait leaves the run held: the next turn is
+    /// still the first response, and it waits too.
+    fn take(&self, cancel: &CancelToken) -> HookContexts {
         loop {
             {
                 let mut slot = self.lock();
                 match slot.as_ref() {
-                    None => return Vec::new(),
+                    None => return HookContexts::default(),
                     Some(run) if run.handle.is_finished() => {
                         let run = slot.take().expect("held, just checked");
                         drop(slot);
@@ -444,7 +486,7 @@ impl SessionStartRun {
                 }
             }
             if cancel.is_cancelled() {
-                return Vec::new();
+                return HookContexts::default();
             }
             std::thread::sleep(POLL_INTERVAL);
         }
@@ -702,6 +744,19 @@ impl CommandHooks {
         payload: &str,
         cancel: &CancelToken,
     ) -> HookOutcome {
+        self.dispatch_runs(event, query, payload, cancel).outcome()
+    }
+
+    /// [`dispatch`](Self::dispatch), keeping what each handler that ran
+    /// answered — what the hooks' cell is built from ([`hook_report`]) for
+    /// the events that have one.
+    fn dispatch_runs(
+        &self,
+        event: HookEvent,
+        query: Option<&str>,
+        payload: &str,
+        cancel: &CancelToken,
+    ) -> Dispatch {
         let selection = self.file.select(event, query);
         // A notification already shown runs first, so the event's hooks see
         // the session in the order things happened (`docs/hooks.md`) — unless
@@ -709,22 +764,32 @@ impl CommandHooks {
         if event != HookEvent::Notification && !selection.handlers.is_empty() {
             self.handles.notifications.wait_for_earlier(cancel, None);
         }
-        let mut parsed: Vec<ParsedHook> = selection
-            .warnings
-            .into_iter()
-            .map(|warning| ParsedHook {
-                warning: Some(warning),
-                ..ParsedHook::default()
-            })
-            .collect();
+        let mut runs = Vec::new();
         for handler in &selection.handlers {
             if cancel.is_cancelled() {
                 break;
             }
             let run = self.run_handler(handler, payload, cancel);
-            parsed.push(parse_run(&run, event));
+            let parsed = parse_run(&run, event);
+            runs.push((run, parsed));
         }
-        merge(parsed)
+        Dispatch {
+            event,
+            runs,
+            warnings: selection.warnings,
+        }
+    }
+
+    /// The cell for what a dispatch's hooks said ([`hook_report`]), their
+    /// files named from this sink's home the way a refusal's cell names
+    /// them.
+    fn report(&self, dispatch: &Dispatch) -> Option<HookReport> {
+        hook_report(
+            dispatch.event,
+            &dispatch.runs,
+            &dispatch.warnings,
+            self.home.as_deref(),
+        )
     }
 
     /// Spawn one handler, feed it `payload` on stdin, and wait for it.
@@ -847,6 +912,7 @@ impl CommandHooks {
                 run.error = Some("killed by a signal".to_string());
             }
         }
+        run.elapsed = started.elapsed();
         run
     }
 
@@ -883,22 +949,34 @@ impl CommandHooks {
         let cancel = CancelToken::new();
         let run_cancel = cancel.clone();
         let handle = std::thread::spawn(move || {
-            let mut contexts = Vec::new();
+            let mut started = HookContexts::default();
             for (source, payload) in jobs {
                 if run_cancel.is_cancelled() {
                     break;
                 }
-                let outcome = hooks.dispatch(
-                    HookEvent::SessionStart,
-                    Some(&source),
-                    &payload,
-                    &run_cancel,
-                );
-                contexts.extend(outcome.additional_context);
+                started = hooks.session_start_source(started, &source, &payload, &run_cancel);
             }
-            contexts
+            started
         });
         self.handles.started.hold(StartRun { cancel, handle });
+    }
+
+    /// One `SessionStart` source dispatched, its context and its cell folded
+    /// into `started` — what the background firing and the turn-top drain
+    /// both build.
+    fn session_start_source(
+        &self,
+        mut started: HookContexts,
+        source: &str,
+        payload: &str,
+        cancel: &CancelToken,
+    ) -> HookContexts {
+        let dispatch = self.dispatch_runs(HookEvent::SessionStart, Some(source), payload, cancel);
+        started.report = HookReport::joined(started.report, self.report(&dispatch));
+        started
+            .contexts
+            .extend(dispatch.outcome().additional_context);
+        started
     }
 
     /// `Notification(permission_prompt)`, dispatched: the payload is built
@@ -926,17 +1004,27 @@ impl CommandHooks {
     /// codex has no exit-2 arm for it) — its real contract is that stdout /
     /// `additionalContext` become extra instructions for the summarization
     /// prompt, which is what the returned strings are.
-    fn pre_compact(&self, trigger: &str, custom: &str, cancel: &CancelToken) -> Vec<String> {
+    fn pre_compact(&self, trigger: &str, custom: &str, cancel: &CancelToken) -> HookContexts {
         let payload = crate::hooks::pre_compact_payload(&self.live_context(), trigger, custom);
-        self.dispatch(HookEvent::PreCompact, Some(trigger), &payload, cancel)
-            .additional_context
+        let dispatch = self.dispatch_runs(HookEvent::PreCompact, Some(trigger), &payload, cancel);
+        HookContexts {
+            report: self.report(&dispatch),
+            contexts: dispatch.outcome().additional_context,
+        }
     }
 
     /// `PostCompact` (`docs/hooks.md`): the summary that replaced the
-    /// conversation, envelope-only — nothing to return.
-    fn post_compact(&self, trigger: &str, summary: &str, cancel: &CancelToken) {
+    /// conversation, envelope-only — it decides nothing, and the cell is
+    /// whatever its hooks still said.
+    fn post_compact(
+        &self,
+        trigger: &str,
+        summary: &str,
+        cancel: &CancelToken,
+    ) -> Option<HookReport> {
         let payload = crate::hooks::post_compact_payload(&self.live_context(), trigger, summary);
-        let _ = self.dispatch(HookEvent::PostCompact, Some(trigger), &payload, cancel);
+        let dispatch = self.dispatch_runs(HookEvent::PostCompact, Some(trigger), &payload, cancel);
+        self.report(&dispatch)
     }
 
     /// A `HookContext` naming the subagent that is acting.
@@ -945,6 +1033,31 @@ impl CommandHooks {
         clone.context.agent_id = Some(agent_id.to_string());
         clone.context.agent_type = Some(agent_type.to_string());
         clone
+    }
+}
+
+/// What one event's dispatch did: every handler that ran, with its parsed
+/// answer, in the order it ran, and the configuration's problems on the way.
+#[derive(Debug)]
+struct Dispatch {
+    event: HookEvent,
+    runs: Vec<(HookRun, ParsedHook)>,
+    warnings: Vec<String>,
+}
+
+impl Dispatch {
+    /// The merged verdict the caller acts on — the configuration's warnings
+    /// ahead of the handlers' answers, the order they always merged in.
+    fn outcome(self) -> HookOutcome {
+        let warnings = self.warnings.into_iter().map(|warning| ParsedHook {
+            warning: Some(warning),
+            ..ParsedHook::default()
+        });
+        merge(
+            warnings
+                .chain(self.runs.into_iter().map(|(_, parsed)| parsed))
+                .collect(),
+        )
     }
 }
 
@@ -1044,9 +1157,8 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
     let added = context_line(event.name(), &hooked.additional_context);
     let feedback = hooked.block().map(|block| {
         format!(
-            "{} hook feedback: {}{}",
-            event.name(),
-            block.reason,
+            "{}{}",
+            feedback_line(event.name(), &block.reason),
             hook_lines(block.hook.as_ref(), None)
         )
     });
@@ -1058,6 +1170,7 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
     PostToolVerdict {
         note: note_line(
             event.name(),
+            false,
             &warnings,
             added.as_ref(),
             &hooked.system_messages,
@@ -1084,22 +1197,27 @@ fn hook_lines(origin: Option<&HookOrigin>, home: Option<&Path>) -> String {
         return String::new();
     };
     let mut lines = String::new();
-    let command = origin.command.trim();
-    if !command.is_empty() {
-        let label = match command.split_once('\n') {
-            Some((first, _)) => {
-                truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS)
-            }
-            None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
-        };
+    if !origin.command.trim().is_empty() {
         lines.push_str("\nHook: ");
-        lines.push_str(&label);
+        lines.push_str(&command_label(&origin.command));
     }
     if let Some(file) = &origin.file {
         lines.push_str("\nConfig: ");
         lines.push_str(&shown_file(file, home));
     }
     lines
+}
+
+/// A hook's command as it is named — on a refusal's `Hook:` line, to the
+/// model, on the hook-run cell: the first line, cut to
+/// [`HOOK_LABEL_MAX_CHARS`] with `…` marking what was dropped, since an
+/// inline program is not a name.
+fn command_label(command: &str) -> String {
+    let command = command.trim();
+    match command.split_once('\n') {
+        Some((first, _)) => truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS),
+        None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
+    }
 }
 
 /// `file` as the screen names a config file: `~`-relative under `home`
@@ -1142,6 +1260,128 @@ pub fn allowed_note(event: &str, reason: Option<&str>) -> String {
     }
 }
 
+/// The line a block is read under — `Stop hook feedback: {reason}` — the
+/// model's (over the hook's `Hook:`/`Config:` lines) and the hook-run cell's
+/// row alike, so the two cannot drift.
+fn feedback_line(event: &str, reason: &str) -> String {
+    format!("{event} hook feedback: {reason}")
+}
+
+/// The hook-run cell's row for a `continue: false` — `Stopped by Stop hook:
+/// {reason}` — the refusal rows' `{Verb} by {event} hook` shape, with
+/// [`NO_REASON`] when the hook gave none.
+fn stopped_note(event: &str, reason: Option<&str>) -> String {
+    format!("Stopped by {event} hook: {}", reason.unwrap_or(NO_REASON))
+}
+
+/// The hook-run cell's red row for a hook that broke — `Stop hook error:
+/// failed (exit 1): …`, Claude Code's row — from the warning the parse wrote
+/// for `command` (`hook ./check.sh failed (exit 1): …`), less the lead
+/// naming the hook: the row says what went wrong, and the expanded cell
+/// sets it under the hook's own command, so an inline program is not
+/// printed twice.
+fn hook_error_note(event: &str, command: &str, warning: &str) -> String {
+    let detail = warning
+        .strip_prefix(&format!("hook {command} "))
+        .unwrap_or(warning);
+    format!("{event} hook error: {detail}")
+}
+
+/// Whether `event`'s hooks decide if the agent goes on: a block is feedback
+/// it keeps going on, `continue: false` a stop.
+const fn decides_continuation(event: HookEvent) -> bool {
+    matches!(event, HookEvent::Stop | HookEvent::SubagentStop)
+}
+
+/// Whether `event`'s hooks hand the model context — the events whose
+/// `additionalContext` (or plain stdout) the conversation, the agent or the
+/// summarization reads.
+const fn takes_context(event: HookEvent) -> bool {
+    matches!(
+        event,
+        HookEvent::SessionStart
+            | HookEvent::UserPromptSubmit
+            | HookEvent::SubagentStart
+            | HookEvent::PreCompact
+    )
+}
+
+/// What `event`'s hooks did, as their cell shows it (`docs/hooks.md` *The
+/// hook-run cell*) — or `None` when they said nothing it would show, so a
+/// silent run costs no cell, inline or in Ctrl+O. `runs` are the handlers
+/// that ran with their parsed answers, in order; `warnings` the
+/// configuration's problems on the way.
+///
+/// Only what took effect is a row. The feedback is the first block's — the
+/// one the agent continues on, [`merge`]'s rule — and none at all when a
+/// hook answered `continue: false`, which outranks it; context is a row only
+/// for the events that hand it on; a `UserPromptSubmit` block is the red
+/// notice that replaces the prompt, never a row; plain stdout an event does
+/// not read is chatter. Each hook is named as a refusal's cell names it —
+/// its command's label and its `hooks.json` from `home`. The offline demo
+/// builds its cell here too, so the two cannot drift.
+#[must_use]
+pub fn hook_report(
+    event: HookEvent,
+    runs: &[(HookRun, ParsedHook)],
+    warnings: &[String],
+    home: Option<&Path>,
+) -> Option<HookReport> {
+    let name = event.name();
+    let continues = decides_continuation(event);
+    let stopped = continues && runs.iter().any(|(_, parsed)| parsed.stopped);
+    let mut feedback_given = false;
+    let hooks: Vec<RanHook> = runs
+        .iter()
+        .map(|(run, parsed)| {
+            let mut said = Vec::new();
+            if continues && parsed.stopped {
+                said.push(HookSaid::Stopped(stopped_note(
+                    name,
+                    parsed.stop_reason.as_deref(),
+                )));
+            } else if continues
+                && !stopped
+                && !feedback_given
+                && let Some(reason) = &parsed.block_reason
+            {
+                feedback_given = true;
+                said.push(HookSaid::Feedback(feedback_line(name, reason)));
+            }
+            if takes_context(event)
+                && let Some(text) = &parsed.additional_context
+            {
+                said.push(HookSaid::Context {
+                    row: context_added_note(name),
+                    text: text.clone(),
+                });
+            }
+            if let Some(message) = &parsed.system_message {
+                said.push(HookSaid::Message(message.clone()));
+            }
+            if let Some(warning) = &parsed.warning {
+                said.push(HookSaid::Error(hook_error_note(
+                    name,
+                    &run.command,
+                    warning,
+                )));
+            }
+            RanHook {
+                command: command_label(&run.command),
+                config: run.file.as_deref().map(|file| shown_file(file, home)),
+                millis: u64::try_from(run.elapsed.as_millis()).unwrap_or(u64::MAX),
+                said,
+            }
+        })
+        .collect();
+    let said_anything = !warnings.is_empty() || hooks.iter().any(|hook| !hook.said.is_empty());
+    said_anything.then(|| HookReport {
+        event: name.to_string(),
+        hooks,
+        warnings: warnings.to_vec(),
+    })
+}
+
 /// The one instruction a refused call carries: not the same call again, and
 /// the two ways forward.
 const BLOCKED_NEXT_STEP: &str = "Do not retry the same call; address the reason or ask the user.";
@@ -1168,16 +1408,46 @@ pub fn block_texts(event: &str, block: &HookBlock, home: Option<&Path>) -> (Stri
 }
 
 /// What the turn's opening hooks decided (`docs/hooks.md`): the notes to
-/// record + inject (SessionStart's first, then UserPromptSubmit's — each a
-/// `(label, wire text)` pair), and the block reason when the prompt was
-/// refused. The notes come back even on a block, both references' rule. The
-/// glue in `LlmBackend::spawn` sends each note as a
-/// [`crate::stream::StreamEvent::HookNote`] and appends it as a user message
-/// after the prompt; a block sends `PromptBlocked` and returns.
+/// record + inject (SessionStart's first, then UserPromptSubmit's), and the
+/// block reason when the prompt was refused. The notes come back even on a
+/// block, both references' rule. The glue in `LlmBackend::spawn` sends each
+/// note as a [`crate::stream::StreamEvent::HookNote`] and appends its text,
+/// when it has any, as a user message after the prompt; a block sends
+/// `PromptBlocked` and returns.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnStart {
-    pub notes: Vec<(String, String)>,
+    pub notes: Vec<OpeningNote>,
     pub blocked: Option<String>,
+}
+
+/// One opening event's note: its transcript label, the user-role wire text
+/// the model reads — **empty** when the hooks gave it nothing — and the
+/// hooks' cell (`docs/hooks.md` *The hook-run cell*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningNote {
+    pub label: String,
+    pub text: String,
+    pub report: Option<HookReport>,
+}
+
+impl OpeningNote {
+    /// The note an event's hooks leave: the labelled context when they added
+    /// some, the cell alone when they only said something, `None` when they
+    /// said nothing.
+    fn of(event: &str, contexts: &[String], report: Option<HookReport>) -> Option<Self> {
+        match context_note_texts(event, contexts) {
+            Some((label, text)) => Some(Self {
+                label,
+                text,
+                report,
+            }),
+            None => report.map(|report| Self {
+                label: report.note_label(),
+                text: String::new(),
+                report: Some(report),
+            }),
+        }
+    }
 }
 
 /// Run the turn's opening hooks — the SessionStart drain, then
@@ -1186,13 +1456,18 @@ pub struct TurnStart {
 #[must_use]
 pub fn turn_start(hooks: &dyn HookSink, prompt: &str, cancel: &CancelToken) -> TurnStart {
     let mut notes = Vec::new();
-    if let Some(note) = context_note_texts("SessionStart", &hooks.session_start(cancel)) {
-        notes.push(note);
-    }
+    let started = hooks.session_start(cancel);
+    notes.extend(OpeningNote::of(
+        HookEvent::SessionStart.name(),
+        &started.contexts,
+        started.report,
+    ));
     let verdict = hooks.user_prompt_submit(prompt, cancel);
-    if let Some(note) = context_note_texts(hooks.prompt_hook_label(), &verdict.contexts) {
-        notes.push(note);
-    }
+    notes.extend(OpeningNote::of(
+        hooks.prompt_hook_label(),
+        &verdict.contexts,
+        verdict.report,
+    ));
     TurnStart {
         notes,
         blocked: verdict.blocked,
@@ -1245,23 +1520,35 @@ pub fn stop_feedback_texts(block: &HookBlock) -> (String, String) {
     (
         "Stop hook".to_string(),
         format!(
-            "Stop hook feedback: {}{}",
-            block.reason,
+            "{}{}",
+            feedback_line(HookEvent::Stop.name(), &block.reason),
             hook_lines(block.hook.as_ref(), None)
         ),
     )
 }
 
+/// The dim row a `PreToolUse` hook's `updatedInput` leaves on the call it
+/// rewrote — `Rewritten by PreToolUse hook`: the cell shows the hook's
+/// arguments, and without the row they read as the model's own.
+fn rewritten_note(event: &str) -> String {
+    format!("Rewritten by {event} hook")
+}
+
 /// The dim `⎿` provenance row a hook's context or note leaves on the cell —
 /// the auto-mode classifier's `⎿ Allowed by auto mode classifier` pattern,
-/// naming the `event` whose hook added the context.
+/// naming the `event` whose hook rewrote the call (first: the call on the
+/// cell is not the one the model made) or added the context.
 fn note_line(
     event: &str,
+    rewritten: bool,
     warnings: &[String],
     context: Option<&String>,
     systems: &[String],
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
+    if rewritten {
+        parts.push(rewritten_note(event));
+    }
     if context.is_some() {
         parts.push(context_added_note(event));
     }
@@ -1283,6 +1570,7 @@ impl HookSink for CommandHooks {
             return PreToolVerdict::default();
         }
         let context = context_line(HookEvent::PreToolUse.name(), &outcome.additional_context);
+        let rewritten = outcome.updated_input.is_some();
         PreToolVerdict {
             blocked: outcome.block(),
             pre_approved: outcome.permission == Some(HookPermission::Allow),
@@ -1290,6 +1578,7 @@ impl HookSink for CommandHooks {
             updated_input: outcome.updated_input,
             note: note_line(
                 HookEvent::PreToolUse.name(),
+                rewritten,
                 &outcome.warnings,
                 context.as_ref(),
                 &outcome.system_messages,
@@ -1445,7 +1734,7 @@ impl HookSink for CommandHooks {
         stop_hook_active: bool,
         last_message: &str,
         cancel: &CancelToken,
-    ) -> Option<HookBlock> {
+    ) -> StopVerdict {
         // The sink's tag picks the event — Claude Code's own rule (`Stop`
         // for the lead, `SubagentStop` when an agent id is present); the
         // subagent event matches on its agent type, the lead's on nothing.
@@ -1468,39 +1757,46 @@ impl HookSink for CommandHooks {
                 crate::hooks::stop_payload(&context, stop_hook_active, last_message),
             ),
         };
-        let outcome = self.dispatch(event, query.as_deref(), &payload, cancel);
+        let dispatch = self.dispatch_runs(event, query.as_deref(), &payload, cancel);
+        let report = self.report(&dispatch);
+        let outcome = dispatch.outcome();
         // `continue: false` outranks a block (codex's aggregate rule): a
         // hook that says *stop everything* is not asking for another round.
-        if outcome.stopped {
-            return None;
+        StopVerdict {
+            block: if outcome.stopped {
+                None
+            } else {
+                outcome.block()
+            },
+            report,
         }
-        outcome.block()
     }
 
-    fn stop_failure(&self, error: &str, details: &str, cancel: &CancelToken) {
+    fn stop_failure(&self, error: &str, details: &str, cancel: &CancelToken) -> Option<HookReport> {
         // The session's turn, not a subagent's round: a tagged sink is a
         // subagent's (Claude Code fires its stop events the same way).
         if self.context.agent_id.is_some() {
-            return;
+            return None;
         }
         let payload =
             crate::hooks::stop_failure_payload(&self.live_context(), error, details, details);
-        // Observation only: the output is ignored, as in the reference.
-        let _ = self.dispatch(HookEvent::StopFailure, Some(error), &payload, cancel);
+        // The output decides nothing, as in the reference — the cell is what
+        // the hooks still said: a message, a hook that broke.
+        let dispatch = self.dispatch_runs(HookEvent::StopFailure, Some(error), &payload, cancel);
+        self.report(&dispatch)
     }
 
-    fn session_start(&self, cancel: &CancelToken) -> Vec<String> {
+    fn session_start(&self, cancel: &CancelToken) -> HookContexts {
         // What the boundary fired in the background as the session opened —
         // waited for first (Claude Code's rule: the first response waits for
         // its SessionStart hooks), so its context is this turn's.
-        let mut contexts = self.handles.started.take(cancel);
+        let mut started = self.handles.started.take(cancel);
         // …then whatever is still queued: a source the boundary could not
         // fire (hooks off, no real backend yet) runs here, the codex drain.
         for (source, payload) in self.queued_session_starts() {
-            let outcome = self.dispatch(HookEvent::SessionStart, Some(&source), &payload, cancel);
-            contexts.extend(outcome.additional_context);
+            started = self.session_start_source(started, &source, &payload, cancel);
         }
-        contexts
+        started
     }
 
     fn user_prompt_submit(&self, prompt: &str, cancel: &CancelToken) -> PromptVerdict {
@@ -1515,7 +1811,9 @@ impl HookSink for CommandHooks {
         }
         let payload = crate::hooks::user_prompt_submit_payload(&self.live_context(), prompt);
         // Matcher-less, both references' rule: every configured group fires.
-        let outcome = self.dispatch(HookEvent::UserPromptSubmit, None, &payload, cancel);
+        let dispatch = self.dispatch_runs(HookEvent::UserPromptSubmit, None, &payload, cancel);
+        let report = self.report(&dispatch);
+        let outcome = dispatch.outcome();
         let blocked = outcome.block_reason.clone().or_else(|| {
             outcome.stopped.then(|| {
                 outcome
@@ -1527,6 +1825,7 @@ impl HookSink for CommandHooks {
         PromptVerdict {
             blocked,
             contexts: outcome.additional_context,
+            report,
         }
     }
 
@@ -1771,6 +2070,259 @@ mod tests {
         assert_eq!(named("set -e\n./check.sh"), "Hook: set -e…");
     }
 
+    /// One handler's run as the runner reports it, read the way the runner
+    /// reads it — the pair [`hook_report`] is built from.
+    fn ran(event: HookEvent, run: HookRun) -> (HookRun, ParsedHook) {
+        let parsed = parse_run(&run, event);
+        (run, parsed)
+    }
+
+    /// A handler of `hooks.json` under `/home/u` that ran for 412 ms.
+    fn run_of(command: &str, exit_code: Option<i32>) -> HookRun {
+        HookRun {
+            command: command.into(),
+            file: Some("/home/u/.alter-zero/hooks.json".into()),
+            exit_code,
+            elapsed: Duration::from_millis(412),
+            ..HookRun::default()
+        }
+    }
+
+    fn rows(report: &HookReport) -> Vec<&str> {
+        report.collapsed().into_iter().map(HookSaid::row).collect()
+    }
+
+    #[test]
+    fn a_stop_block_is_reported_as_the_feedback_the_model_reads() {
+        // The reported gap: a Stop hook that kept the agent going left no
+        // trace inline. Its cell names the hook as a refusal does and shows
+        // the feedback the agent continues on, worded as the model reads it.
+        let command = r#"bash "$HOME/.alter-zero/hooks/check-git.sh""#;
+        let blocked = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "There are uncommitted Git changes.".into(),
+                ..run_of(command, Some(2))
+            },
+        );
+        let report = hook_report(
+            HookEvent::Stop,
+            std::slice::from_ref(&blocked),
+            &[],
+            Some(Path::new("/home/u")),
+        )
+        .expect("a block is something said");
+        assert_eq!(
+            report,
+            HookReport {
+                event: "Stop".into(),
+                hooks: vec![RanHook {
+                    command: command.into(),
+                    config: Some("~/.alter-zero/hooks.json".into()),
+                    millis: 412,
+                    said: vec![HookSaid::Feedback(
+                        "Stop hook feedback: There are uncommitted Git changes.".into()
+                    )],
+                }],
+                warnings: Vec::new(),
+            }
+        );
+        let block = merge(vec![blocked.1]).block().expect("a block");
+        let (_, model) = stop_feedback_texts(&block);
+        assert_eq!(
+            model.lines().next(),
+            Some(rows(&report)[0]),
+            "the row is the first line the model reads"
+        );
+    }
+
+    #[test]
+    fn a_silent_run_is_no_cell_and_neither_is_chatter_an_event_does_not_read() {
+        let silent = ran(HookEvent::Stop, run_of("./notify.sh", Some(0)));
+        assert_eq!(hook_report(HookEvent::Stop, &[silent], &[], None), None);
+        // Plain stdout is context only for the events that take it.
+        let chatter = ran(
+            HookEvent::Stop,
+            HookRun {
+                stdout: "notified".into(),
+                ..run_of("./notify.sh", Some(0))
+            },
+        );
+        assert_eq!(hook_report(HookEvent::Stop, &[chatter], &[], None), None);
+        // …and a Stop hook's additionalContext goes nowhere, so it shows
+        // nowhere either.
+        let context = ran(
+            HookEvent::Stop,
+            HookRun {
+                stdout: r#"{"hookSpecificOutput":{"additionalContext":"x"}}"#.into(),
+                ..run_of("./ctx.sh", Some(0))
+            },
+        );
+        assert_eq!(hook_report(HookEvent::Stop, &[context], &[], None), None);
+    }
+
+    #[test]
+    fn a_hook_that_broke_is_an_error_row_saying_what_broke_not_a_dropped_warning() {
+        // The row says what went wrong, Claude Code's `Stop hook error:`
+        // row; which hook it was is the expanded cell's, where the row sits
+        // under the hook's command — so an inline program is not repeated
+        // into the row.
+        let inline = "echo 'notifier offline' >&2; exit 1";
+        let failed = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "notifier offline".into(),
+                ..run_of(inline, Some(1))
+            },
+        );
+        let missing = ran(
+            HookEvent::Stop,
+            HookRun {
+                error: Some("timed out after 60s".into()),
+                ..run_of("./slow.sh", None)
+            },
+        );
+        let garbled = ran(
+            HookEvent::Stop,
+            HookRun {
+                stdout: "{oops".into(),
+                ..run_of("./json.sh", Some(0))
+            },
+        );
+        let report =
+            hook_report(HookEvent::Stop, &[failed, missing, garbled], &[], None).expect("reported");
+        assert_eq!(
+            rows(&report),
+            vec![
+                "Stop hook error: failed (exit 1): notifier offline",
+                "Stop hook error: did not run: timed out after 60s",
+                "Stop hook error: printed invalid JSON: {oops",
+            ]
+        );
+        assert_eq!(report.hooks[0].command, inline, "the hook is named once");
+        assert!(report.failed());
+    }
+
+    #[test]
+    fn only_the_block_the_agent_continues_on_is_feedback() {
+        // merge's rule: the first block is the feedback; a second hook's is
+        // merged away, so it is no row either.
+        let first = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "tests are red".into(),
+                ..run_of("./tests.sh", Some(2))
+            },
+        );
+        let second = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "commit first".into(),
+                ..run_of("./git.sh", Some(2))
+            },
+        );
+        let report = hook_report(HookEvent::Stop, &[first, second], &[], None).expect("reported");
+        assert_eq!(rows(&report), vec!["Stop hook feedback: tests are red"]);
+        assert_eq!(report.hooks.len(), 2, "both ran, both counted");
+    }
+
+    #[test]
+    fn continue_false_is_the_stop_and_outranks_every_block() {
+        let blocked = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "keep going".into(),
+                ..run_of("./more.sh", Some(2))
+            },
+        );
+        let stopped = ran(
+            HookEvent::Stop,
+            HookRun {
+                stdout: r#"{"continue":false,"stopReason":"budget spent"}"#.into(),
+                ..run_of("./budget.sh", Some(0))
+            },
+        );
+        let report =
+            hook_report(HookEvent::Stop, &[blocked, stopped], &[], None).expect("reported");
+        assert_eq!(
+            rows(&report),
+            vec!["Stopped by Stop hook: budget spent"],
+            "no feedback the agent never got"
+        );
+    }
+
+    #[test]
+    fn a_subagents_stop_names_its_own_event() {
+        let blocked = ran(
+            HookEvent::SubagentStop,
+            HookRun {
+                stderr: "cite your sources".into(),
+                ..run_of("./cite.sh", Some(2))
+            },
+        );
+        let report = hook_report(HookEvent::SubagentStop, &[blocked], &[], None).expect("reported");
+        assert_eq!(report.event, "SubagentStop");
+        assert_eq!(
+            rows(&report),
+            vec!["SubagentStop hook feedback: cite your sources"]
+        );
+    }
+
+    #[test]
+    fn context_a_hook_hands_the_model_is_a_row_with_the_text_it_added() {
+        let context = ran(
+            HookEvent::SessionStart,
+            HookRun {
+                stdout: "On branch main".into(),
+                ..run_of("./git-status.sh", Some(0))
+            },
+        );
+        let report = hook_report(HookEvent::SessionStart, &[context], &[], None).expect("reported");
+        assert_eq!(
+            report.hooks[0].said,
+            vec![HookSaid::Context {
+                row: "Context added by SessionStart hook".into(),
+                text: "On branch main".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_prompts_block_is_its_notice_never_a_row() {
+        // The red `Prompt blocked by UserPromptSubmit hook:` notice replaces
+        // the prompt; the cell would only say it twice.
+        let blocked = ran(
+            HookEvent::UserPromptSubmit,
+            HookRun {
+                stderr: "no secrets".into(),
+                ..run_of("./secrets.sh", Some(2))
+            },
+        );
+        assert_eq!(
+            hook_report(HookEvent::UserPromptSubmit, &[blocked], &[], None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_system_message_is_shown_verbatim_and_a_config_problem_alone_is_a_cell() {
+        let message = ran(
+            HookEvent::PostCompact,
+            HookRun {
+                stdout: r#"{"systemMessage":"Summary saved to notes/"}"#.into(),
+                ..run_of("./save.sh", Some(0))
+            },
+        );
+        let report = hook_report(HookEvent::PostCompact, &[message], &[], None).expect("reported");
+        assert_eq!(rows(&report), vec!["Summary saved to notes/"]);
+
+        let warnings =
+            vec!["hooks.json: Stop handler \"./x\" is \"async\" — run synchronously".to_string()];
+        let report = hook_report(HookEvent::Stop, &[], &warnings, None).expect("reported");
+        assert!(report.hooks.is_empty());
+        assert_eq!(report.warnings, warnings);
+    }
+
     #[test]
     fn stop_feedback_is_the_reason_and_the_hook_that_gave_it() {
         assert_eq!(
@@ -1892,10 +2444,29 @@ mod tests {
         );
         let updated = verdict.updated_input.expect("a rewrite");
         assert!(updated.contains("ls -la"), "{updated}");
-        // The user sees that a hook spoke, and which event's.
+        // The user sees that a hook spoke, and which event's — the rewrite
+        // first: the call on the cell is not the one the model made.
         assert_eq!(
             verdict.note.as_deref(),
-            Some("Context added by PreToolUse hook")
+            Some("Rewritten by PreToolUse hook · Context added by PreToolUse hook")
+        );
+    }
+
+    #[test]
+    fn a_rewrite_alone_is_named_on_the_cell() {
+        // Silently, the cell would show the hook's command as if the model
+        // had asked for it (docs/hooks.md *What the user sees*).
+        let hooks = hooks_for(&pre_hook(
+            r#"printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"pnpm install"}}}'"#,
+        ));
+        let verdict = hooks.pre_tool_use(
+            &call("bash", r#"{"command":"npm install"}"#),
+            &CancelToken::new(),
+        );
+        assert!(verdict.updated_input.is_some());
+        assert_eq!(
+            verdict.note.as_deref(),
+            Some("Rewritten by PreToolUse hook")
         );
     }
 
@@ -2014,7 +2585,11 @@ mod tests {
             "waited on the background process: {:?}",
             started.elapsed()
         );
-        assert_eq!(contexts, ["started"], "what it printed still counts");
+        assert_eq!(
+            contexts.contexts,
+            ["started"],
+            "what it printed still counts"
+        );
     }
 
     #[test]
@@ -2638,9 +3213,8 @@ mod tests {
         ));
         // First firing: the flag is false, the hook blocks — the reason is
         // the continuation feedback.
-        let feedback = hooks
-            .stop(false, "the answer", &CancelToken::new())
-            .expect("the hook blocked");
+        let verdict = hooks.stop(false, "the answer", &CancelToken::new());
+        let feedback = verdict.block.clone().expect("the hook blocked");
         assert_eq!(feedback.reason, "tests are red");
         assert!(
             feedback
@@ -2657,8 +3231,12 @@ mod tests {
             value["last_assistant_message"],
             serde_json::json!("the answer")
         );
-        // Second firing: the flag is true, the hook lets go.
-        assert_eq!(hooks.stop(true, "fixed it", &CancelToken::new()), None);
+        // Second firing: the flag is true, the hook lets go — silently, so
+        // there is no cell either.
+        assert_eq!(
+            hooks.stop(true, "fixed it", &CancelToken::new()),
+            StopVerdict::default()
+        );
         let _ = std::fs::remove_file(&probe);
     }
 
@@ -2674,7 +3252,10 @@ mod tests {
         let sink = hooks
             .for_subagent("a1", "explore")
             .expect("a real sink re-tags itself");
-        assert_eq!(sink.stop(false, "found it", &CancelToken::new()), None);
+        assert_eq!(
+            sink.stop(false, "found it", &CancelToken::new()),
+            StopVerdict::default()
+        );
         let written = std::fs::read_to_string(&probe).expect("the stop hook ran");
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
         assert_eq!(value["hook_event_name"], serde_json::json!("SubagentStop"));
@@ -2693,7 +3274,10 @@ mod tests {
         // A different agent type is not this hook's business.
         let other = hooks.for_subagent("a2", "reviewer").expect("re-tags");
         let _ = std::fs::remove_file(&probe);
-        assert_eq!(other.stop(false, "done", &CancelToken::new()), None);
+        assert_eq!(
+            other.stop(false, "done", &CancelToken::new()),
+            StopVerdict::default()
+        );
         assert!(!probe.exists(), "the matcher gates on agent_type");
     }
 
@@ -2705,7 +3289,13 @@ mod tests {
             r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":
               "printf '%s' '{\"continue\":false,\"decision\":\"block\",\"reason\":\"keep going\"}'"}]}]}}"#,
         );
-        assert_eq!(hooks.stop(false, "answer", &CancelToken::new()), None);
+        let verdict = hooks.stop(false, "answer", &CancelToken::new());
+        assert_eq!(verdict.block, None, "no round for a hook that said stop");
+        // …and the cell says it stopped, with the stand-in reason — never
+        // the block it outranked.
+        let report = verdict.report.expect("the stop is shown");
+        let rows: Vec<&str> = report.collapsed().into_iter().map(HookSaid::row).collect();
+        assert_eq!(rows, vec!["Stopped by Stop hook: no reason given"]);
     }
 
     #[test]
@@ -2830,14 +3420,18 @@ mod tests {
             handles,
         )
         .expect("runnable");
+        let started = hooks.session_start(&CancelToken::new());
         assert_eq!(
-            hooks.session_start(&CancelToken::new()),
+            started.contexts,
             vec!["the build id is ZX-4417".to_string()],
             "plain stdout is the context; the clear source matched nothing"
         );
+        let report = started.report.expect("the context is the hook's cell");
+        assert_eq!(report.event, "SessionStart");
+        assert_eq!(report.hooks.len(), 1, "only the startup source ran a hook");
         assert_eq!(
             hooks.session_start(&CancelToken::new()),
-            Vec::<String>::new(),
+            HookContexts::default(),
             "the queue drained"
         );
     }
@@ -2873,7 +3467,7 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(
-            hooks.session_start(&CancelToken::new()),
+            hooks.session_start(&CancelToken::new()).contexts,
             ["the build id is ZX-4417"],
             "the first turn waits for the hook and takes its context"
         );
@@ -2884,7 +3478,7 @@ mod tests {
         );
         assert_eq!(
             hooks.session_start(&CancelToken::new()),
-            Vec::<String>::new(),
+            HookContexts::default(),
             "the context is the first turn's alone"
         );
     }
@@ -2897,8 +3491,8 @@ mod tests {
         hooks.fire_session_start();
         let cancel = CancelToken::new();
         cancel.cancel();
-        assert_eq!(hooks.session_start(&cancel), Vec::<String>::new());
-        assert_eq!(hooks.session_start(&CancelToken::new()), ["ctx"]);
+        assert_eq!(hooks.session_start(&cancel), HookContexts::default());
+        assert_eq!(hooks.session_start(&CancelToken::new()).contexts, ["ctx"]);
     }
 
     #[test]
@@ -2914,7 +3508,7 @@ mod tests {
         hooks.handles.discard_session_start();
         assert_eq!(
             hooks.session_start(&CancelToken::new()),
-            Vec::<String>::new()
+            HookContexts::default()
         );
         std::thread::sleep(Duration::from_millis(1500));
         assert!(!probe.exists(), "the discarded hook ran on");
@@ -2943,7 +3537,7 @@ mod tests {
         queue("clear");
         hooks.fire_session_start();
         assert_eq!(
-            hooks.session_start(&CancelToken::new()),
+            hooks.session_start(&CancelToken::new()).contexts,
             [r#"source":"clear"#]
         );
     }
@@ -3020,33 +3614,92 @@ mod tests {
         #[derive(Debug)]
         struct Fake;
         impl HookSink for Fake {
-            fn session_start(&self, _cancel: &CancelToken) -> Vec<String> {
-                vec!["the repo root is /srv/app".to_string()]
+            fn session_start(&self, _cancel: &CancelToken) -> HookContexts {
+                HookContexts {
+                    contexts: vec!["the repo root is /srv/app".to_string()],
+                    report: None,
+                }
             }
             fn user_prompt_submit(&self, prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
                 PromptVerdict {
                     blocked: prompt.contains("secret").then(|| "no secrets".to_string()),
                     contexts: vec!["shipped today: v2".to_string()],
+                    report: None,
                 }
             }
         }
         let opening = turn_start(&Fake, "hello", &CancelToken::new());
         assert_eq!(opening.blocked, None);
         assert_eq!(opening.notes.len(), 2);
-        assert_eq!(opening.notes[0].0, "SessionStart hook");
+        assert_eq!(opening.notes[0].label, "SessionStart hook");
         assert!(
-            opening.notes[0].1.starts_with("<system-reminder>\n")
+            opening.notes[0].text.starts_with("<system-reminder>\n")
                 && opening.notes[0]
-                    .1
+                    .text
                     .contains("SessionStart hook additional context: the repo root is /srv/app"),
             "{:?}",
-            opening.notes[0].1
+            opening.notes[0].text
         );
-        assert_eq!(opening.notes[1].0, "UserPromptSubmit hook");
+        assert_eq!(opening.notes[1].label, "UserPromptSubmit hook");
 
         let blocked = turn_start(&Fake, "my secret", &CancelToken::new());
         assert_eq!(blocked.blocked.as_deref(), Some("no secrets"));
         assert_eq!(blocked.notes.len(), 2, "context injects even on a block");
+    }
+
+    #[test]
+    fn turn_start_hands_on_a_cell_even_when_the_hooks_gave_the_model_nothing() {
+        // docs/hooks.md *The hook-run cell*: a UserPromptSubmit hook that
+        // broke adds no context, so its note carries no text — the model
+        // reads nothing new — but its cell still reaches the screen, labelled
+        // like every hook note. Context and a cell ride one note together.
+        let broke = HookReport {
+            event: "UserPromptSubmit".to_string(),
+            hooks: Vec::new(),
+            warnings: vec!["hooks.json: a warning".to_string()],
+        };
+        let started = HookReport {
+            event: "SessionStart".to_string(),
+            ..broke.clone()
+        };
+        #[derive(Debug)]
+        struct Fake(HookReport, HookReport);
+        impl HookSink for Fake {
+            fn session_start(&self, _cancel: &CancelToken) -> HookContexts {
+                HookContexts {
+                    contexts: vec!["on branch main".to_string()],
+                    report: Some(self.0.clone()),
+                }
+            }
+            fn user_prompt_submit(&self, _prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
+                PromptVerdict {
+                    report: Some(self.1.clone()),
+                    ..PromptVerdict::default()
+                }
+            }
+        }
+        let opening = turn_start(
+            &Fake(started.clone(), broke.clone()),
+            "hello",
+            &CancelToken::new(),
+        );
+        assert_eq!(opening.notes.len(), 2);
+        assert!(opening.notes[0].text.contains("on branch main"));
+        assert_eq!(opening.notes[0].report, Some(started));
+        assert_eq!(
+            opening.notes[1],
+            OpeningNote {
+                label: "UserPromptSubmit hook".to_string(),
+                text: String::new(),
+                report: Some(broke),
+            }
+        );
+        // Hooks that said nothing leave no note at all.
+        assert!(
+            turn_start(&NoHooks, "hello", &CancelToken::new())
+                .notes
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3144,7 +3797,9 @@ mod tests {
         assert_eq!(wrapper.prompt_hook_label(), "PreCompact");
 
         assert_eq!(
-            wrapper.stop(false, "the handoff summary", &CancelToken::new()),
+            wrapper
+                .stop(false, "the handoff summary", &CancelToken::new())
+                .block,
             None,
             "a summarization is never continued by a hook"
         );

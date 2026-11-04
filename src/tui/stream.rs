@@ -278,20 +278,30 @@ impl Session<'_> {
                 self.app.set_tool_title(&title);
                 false
             }
-            StreamEvent::HookNote { label, text } => {
-                // A lifecycle hook injected conversation text mid-turn
-                // (docs/hooks.md): finalise the assistant run before it —
-                // invariant 4's flush-before-you-interleave, so the
-                // continuation that may follow streams as its own message —
-                // and record the cell-less item the transcript shows and the
-                // derived context replays. A compact turn's notes
-                // (PreCompact's instructions) are ephemeral like its chunks:
-                // they reached the summarization request, and must not enter
-                // the conversation's own record.
-                if !self.app.is_compacting() {
+            StreamEvent::HookNote {
+                label,
+                text,
+                report,
+            } => {
+                // A lifecycle hook injected conversation text mid-turn, or
+                // said something its cell shows (docs/hooks.md *The hook-run
+                // cell*): finalise the assistant run before it — invariant
+                // 4's flush-before-you-interleave, so the continuation that
+                // may follow streams as its own message — then record the
+                // note and commit its cell, the `● Ran 1 Stop hook` under
+                // the reply. A compact turn's notes (PreCompact's
+                // instructions) are ephemeral like its chunks: they reached
+                // the summarization request, and their text must not enter
+                // the conversation's own record — their cell alone does, the
+                // compact hooks' trace above the `Context compacted` line.
+                if self.app.is_compacting() {
+                    if report.is_some() {
+                        self.commit_hook_note(&label, "", report, committing, width);
+                    }
+                } else {
                     self.flush_segment(committing, width);
                     self.render.reset();
-                    self.app.record_hook_note(&label, &text);
+                    self.commit_hook_note(&label, &text, report, committing, width);
                 }
                 false
             }

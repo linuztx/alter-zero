@@ -15,7 +15,9 @@ smoke_begin
 # blocked call resolves with no output of its own, its cell names the event,
 # the hook and the hooks.json it is configured in (docs/hooks.md *What the
 # user sees*), the allowed one keeps its command output under a row naming
-# its event, and the model-only instruction never reaches scrollback.
+# its event, the model-only instruction never reaches scrollback, and the
+# closing Stop hook's block is a `● Ran 1 Stop hook` cell inline that Ctrl+O
+# expands into the hook that ran (docs/hooks.md *The hook-run cell*).
 S72="${S}_hooks"
 launch "$S72" 100 30
 submit "$S72" "show me the hooks demo"
@@ -38,9 +40,15 @@ expect_has "$hooks_pane" -F "drwxr-xr-x" "the allowed call lost its own output"
 # next (ToolCall::context_output). It may not be committed to the
 # conversation: the cell is the transcript's record.
 expect_lacks "$hooks_pane" -F "Do not retry the same call" "the model-facing instruction was committed to scrollback"
-# A Stop hook's feedback note is CELL-LESS inline (docs/hooks.md): the demo
-# ends with one, and it must not have painted a row in the conversation.
-expect_lacks "$hooks_pane" -F "Stop hook feedback" "the hook note leaked into the inline conversation"
+# The demo's Stop hook blocks as the turn would finish (docs/hooks.md *The
+# hook-run cell*): its `● Ran 1 Stop hook` cell is committed under the reply
+# with the feedback the agent continues on right under it, and the round it
+# bought follows. The hook's own command is Ctrl+O's, never inline.
+expect_has "$hooks_pane" -F "● Ran 1 Stop hook (ctrl+o to expand)" "the Stop hook left no cell inline — its block was invisible again"
+hooks_stop_row="$(printf '%s\n' "$hooks_pane" | awk '/● Ran 1 Stop hook \(ctrl\+o to expand\)/{if ((getline line) > 0) print line; exit}')"
+expect_has "$hooks_stop_row" -F "⎿  Stop hook feedback: Before you finish, explain what a Stop hook does." "the Stop hook's cell lost the feedback row under its header (saw: $hooks_stop_row)"
+expect_has "$hooks_pane" -F "so this paragraph is the round it" "the Stop hook's block bought no continuation round"
+expect_lacks "$hooks_pane" -F "hooks/stop.sh" "the Stop hook's command reached the inline cell — it belongs to Ctrl+O"
 tmux send-keys -t "$S72" C-o
 sleep 0.6
 tmux send-keys -t "$S72" Home
@@ -52,15 +60,17 @@ expect_has "$hooks_overlay" -F "Blocked by PreToolUse hook" "the Ctrl+O transcri
 tmux send-keys -t "$S72" End
 sleep 0.3
 hooks_overlay_tail="$(tmux capture-pane -t "$S72" -p)"
-echo "==== Phase 72: captured overlay tail (the hook note) ===="
+echo "==== Phase 72: captured overlay tail (the Stop hook's expanded cell) ===="
 printf '%s\n' "$hooks_overlay_tail"
-expect_has "$hooks_overlay_tail" -F "Stop hook feedback" "the Ctrl+O transcript lost the hook note"
-expect_has "$hooks_overlay_tail" -F "Hook: ~/.alter-zero/hooks/stop.sh" "the Ctrl+O transcript lost the hook that gave the note"
-# The refusal cell names the same hooks.json, so a bare grep for the line
-# could pass on the cell while the note had lost its own: read the line right
-# under the note's Hook line.
-hooks_note_config="$(printf '%s\n' "$hooks_overlay_tail" | awk '/Hook: ~\/\.alter-zero\/hooks\/stop\.sh/{if ((getline line) > 0) print line; exit}')"
-expect_has "$hooks_note_config" -F "Config: ~/.alter-zero/hooks.json" "the Ctrl+O transcript lost the hooks.json the note's hook is configured in (saw: $hooks_note_config)"
+# Expanded, the cell lists the hook that ran — its command and how long it
+# ran, then the hooks.json it is configured in — over what it said. The
+# refusal cell names the same hooks.json, so a bare grep for the line could
+# pass on the cell while this one had lost its own: read the three lines
+# right under the expanded header.
+hooks_expanded="$(printf '%s\n' "$hooks_overlay_tail" | awk '/● Ran 1 Stop hook *$/{for (i = 0; i < 3 && (getline line) > 0; i++) print line; exit}')"
+expect_has "$(printf '%s\n' "$hooks_expanded" | sed -n 1p)" -E "⎿  ~/\.alter-zero/hooks/stop\.sh \([0-9.]+m?s\)" "the Ctrl+O cell lost the hook that ran, or how long it ran (saw: $hooks_expanded)"
+expect_has "$(printf '%s\n' "$hooks_expanded" | sed -n 2p)" -F "Config: ~/.alter-zero/hooks.json" "the Ctrl+O cell lost the hooks.json its hook is configured in (saw: $hooks_expanded)"
+expect_has "$(printf '%s\n' "$hooks_expanded" | sed -n 3p)" -F "⎿  Stop hook feedback: Before you finish" "the Ctrl+O cell lost what the hook said (saw: $hooks_expanded)"
 tmux send-keys -t "$S72" q
 sleep 0.3
 tmux kill-session -t "$S72" 2>/dev/null || true

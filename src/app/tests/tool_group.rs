@@ -245,6 +245,34 @@ fn a_group_runs_through_task_calls_hook_notes_and_thoughts() {
 }
 
 #[test]
+fn a_hook_note_runs_through_a_group_only_while_it_has_no_cell() {
+    // A cell-less note has nothing inline to interrupt the group's line; a
+    // note carrying the hooks' cell (docs/hooks.md *The hook-run cell*) is a
+    // cell of its own, which the group's line must land above.
+    let note = |report: Option<crate::hooks::HookReport>| {
+        HistoryItem::HookNote(crate::app::HookNote {
+            label: "SessionStart hook".to_string(),
+            text: "context".to_string(),
+            report,
+            timestamp: String::new(),
+        })
+    };
+    let cell = crate::hooks::HookReport {
+        event: "SessionStart".to_string(),
+        hooks: Vec::new(),
+        warnings: vec!["hooks.json: a warning".to_string()],
+    };
+    let quiet = vec![tool("Read", "a.rs"), note(None), tool("Read", "b.rs")];
+    assert_eq!(group_run(&quiet, &PathDisplay::VERBATIM), Some(3));
+    let shown = vec![tool("Read", "a.rs"), note(Some(cell)), tool("Read", "b.rs")];
+    assert_eq!(
+        group_run(&shown, &PathDisplay::VERBATIM),
+        Some(1),
+        "the cell ends the group"
+    );
+}
+
+#[test]
 fn a_call_that_is_not_a_read_ends_the_group() {
     let items = vec![
         tool("Read", "a.rs"),

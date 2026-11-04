@@ -123,6 +123,7 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
     let note = HistoryItem::HookNote(crate::app::HookNote {
         label: "Stop hook".to_string(),
         text: "Stop hook feedback:\ntests are red".to_string(),
+        report: None,
         timestamp: String::new(),
     });
     let history = [msg(Role::User, "hi"), note.clone()];
@@ -145,6 +146,79 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
     assert!(
         transcript.contains("● Stop hook") && transcript.contains("tests are red"),
         "the transcript is the record: {transcript:?}"
+    );
+}
+
+#[test]
+fn a_hook_note_with_a_report_is_its_cell_inline_and_expanded_in_the_transcript() {
+    // docs/hooks.md *The hook-run cell*: the note that carries the hooks'
+    // report is the `● Ran 1 Stop hook` cell between the reply and the
+    // continuation it bought, with its spacer like every cell; Ctrl+O shows
+    // the hook that ran in place of the old label-over-wire-text note.
+    let report = crate::hooks::HookReport {
+        event: "Stop".to_string(),
+        hooks: vec![crate::hooks::RanHook {
+            command: "./stop.sh".to_string(),
+            config: Some("~/.alter-zero/hooks.json".to_string()),
+            millis: 40,
+            said: vec![crate::hooks::HookSaid::Feedback(
+                "Stop hook feedback: tests are red".to_string(),
+            )],
+        }],
+        warnings: Vec::new(),
+    };
+    let note = HistoryItem::HookNote(crate::app::HookNote {
+        label: "Stop hook".to_string(),
+        text: "Stop hook feedback: tests are red\nHook: ./stop.sh".to_string(),
+        report: Some(report),
+        timestamp: String::new(),
+    });
+    let history = [
+        msg(Role::User, "hi"),
+        msg(Role::Assistant, "done"),
+        note,
+        msg(Role::Assistant, "fixed"),
+    ];
+    let inline: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, true)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        inline,
+        vec![
+            "❯ hi",
+            "",
+            "● done",
+            "",
+            "● Ran 1 Stop hook (ctrl+o to expand)",
+            "  ⎿  Stop hook feedback: tests are red",
+            "",
+            "● fixed",
+            "",
+        ]
+    );
+    let mut app = crate::app::App::new();
+    app.history.extend(history);
+    let transcript: Vec<String> = transcript_lines(&app, 80)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let at = transcript
+        .iter()
+        .position(|row| row == "● Ran 1 Stop hook")
+        .unwrap_or_else(|| panic!("the expanded cell, hint-less: {transcript:?}"));
+    assert_eq!(
+        transcript[at..at + 4],
+        [
+            "● Ran 1 Stop hook",
+            "  ⎿  ./stop.sh (40ms)",
+            "     Config: ~/.alter-zero/hooks.json",
+            "  ⎿  Stop hook feedback: tests are red",
+        ]
+    );
+    assert!(
+        !transcript.iter().any(|row| row == "● Stop hook"),
+        "the cell replaces the old note heading: {transcript:?}"
     );
 }
 

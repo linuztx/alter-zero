@@ -177,7 +177,10 @@ fn continue_unfinished(
     }
     if *unfinished_rounds >= MAX_CONTINUATIONS {
         let message = unfinished_error(kind);
-        hooks.stop_failure(kind.stop_failure_kind(), &message, cancel);
+        send_hook_report(
+            tx,
+            hooks.stop_failure(kind.stop_failure_kind(), &message, cancel),
+        );
         let _ = tx.send(StreamEvent::Error(message));
         return false;
     }
@@ -186,12 +189,29 @@ fn continue_unfinished(
         messages.push(ChatMessage::new("assistant", said));
     }
     let (label, note) = kind.continuation();
+    // The app speaking, not a hook: no report, so the note stays cell-less.
     let _ = tx.send(StreamEvent::HookNote {
         label: label.to_string(),
         text: note.to_string(),
+        report: None,
     });
     messages.push(ChatMessage::user(note));
     true
+}
+
+/// Send the cell of a hook event that put nothing into the conversation —
+/// a `Stop` that let the turn end, a `StopFailure` — when its hooks said
+/// something (`docs/hooks.md` *The hook-run cell*): a hook note with no text,
+/// so the loop records and commits the cell while the model's context stays
+/// exactly what it was.
+fn send_hook_report(tx: &UnboundedSender<StreamEvent>, report: Option<crate::hooks::HookReport>) {
+    if let Some(report) = report {
+        let _ = tx.send(StreamEvent::HookNote {
+            label: report.note_label(),
+            text: String::new(),
+            report: Some(report),
+        });
+    }
 }
 
 /// What one streaming round produced, as [`run_agent`] sees it. The `round`
@@ -405,20 +425,32 @@ pub fn run_agent(
                 // reference's exact posture), and Esc stays the stop button
                 // (the runner polls the token; an interrupt never fires
                 // Stop, so it always breaks the chain).
-                if !cancel.is_cancelled()
-                    && let Some(block) = hooks.stop(stop_hook_active, &text, cancel)
-                {
-                    let (label, feedback) = super::hooks::stop_feedback_texts(&block);
-                    let _ = tx.send(StreamEvent::HookNote {
-                        label,
-                        text: feedback.clone(),
-                    });
-                    if !text.trim().is_empty() {
-                        messages.push(ChatMessage::new("assistant", &text));
+                //
+                // Whatever the hooks said rides the note as their cell — the
+                // feedback's, or one of its own when they let the turn end
+                // (docs/hooks.md *The hook-run cell*).
+                if !cancel.is_cancelled() {
+                    let verdict = hooks.stop(stop_hook_active, &text, cancel);
+                    if let Some(block) = verdict.block {
+                        let (label, feedback) = super::hooks::stop_feedback_texts(&block);
+                        let _ = tx.send(StreamEvent::HookNote {
+                            label,
+                            text: feedback.clone(),
+                            report: verdict.report,
+                        });
+                        if !text.trim().is_empty() {
+                            messages.push(ChatMessage::new("assistant", &text));
+                        }
+                        messages.push(ChatMessage::user(&feedback));
+                        stop_hook_active = true;
+                        continue;
                     }
-                    messages.push(ChatMessage::user(&feedback));
-                    stop_hook_active = true;
-                    continue;
+                    // An Esc while they ran reaped them: a cell saying a
+                    // hook broke because the user stopped the turn would be
+                    // wrong, so none goes out.
+                    if !cancel.is_cancelled() {
+                        send_hook_report(tx, verdict.report);
+                    }
                 }
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -431,7 +463,10 @@ pub fn run_agent(
                 // the moment it hears, and that turn's hooks must not
                 // overtake this one.
                 let details = err.to_string();
-                hooks.stop_failure(super::hooks::stop_failure_kind(&err), &details, cancel);
+                send_hook_report(
+                    tx,
+                    hooks.stop_failure(super::hooks::stop_failure_kind(&err), &details, cancel),
+                );
                 let _ = tx.send(StreamEvent::Error(details));
                 return;
             }
@@ -455,7 +490,7 @@ pub fn run_agent(
                     // The ceiling ends the turn like an error does: `unknown`
                     // is the reference's catch-all — a local limit is no API
                     // error type.
-                    hooks.stop_failure("unknown", &message, cancel);
+                    send_hook_report(tx, hooks.stop_failure("unknown", &message, cancel));
                     let _ = tx.send(StreamEvent::Error(message));
                     return;
                 }
@@ -864,7 +899,7 @@ pub fn run_agent(
                 // asking for a round whose budget is already spent.
                 if !refused.is_empty() {
                     let message = limit_error(max_tool_calls);
-                    hooks.stop_failure("unknown", &message, cancel);
+                    send_hook_report(tx, hooks.stop_failure("unknown", &message, cancel));
                     let _ = tx.send(StreamEvent::Error(message));
                     return;
                 }
@@ -1206,7 +1241,7 @@ mod tests {
         events
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::HookNote { label, text } => Some((label.as_str(), text.as_str())),
+                StreamEvent::HookNote { label, text, .. } => Some((label.as_str(), text.as_str())),
                 _ => None,
             })
             .collect()
@@ -1454,6 +1489,11 @@ mod tests {
         posts: std::sync::Mutex<Vec<(String, bool)>>,
         /// Scripted `stop` answers, popped front-first; empty = never block.
         stops: std::sync::Mutex<Vec<Option<crate::hooks::HookBlock>>>,
+        /// Scripted `stop` cells, popped front-first beside [`Self::stops`];
+        /// empty = the hooks said nothing.
+        stop_reports: std::sync::Mutex<Vec<Option<crate::hooks::HookReport>>>,
+        /// The scripted `StopFailure` cell.
+        stop_failure_report: Option<crate::hooks::HookReport>,
         /// Every `stop` dispatch: the loop-guard flag and the last message it
         /// was shown.
         stop_seen: std::sync::Mutex<Vec<(bool, String)>>,
@@ -1465,6 +1505,17 @@ mod tests {
         stop_failures: std::sync::Mutex<Vec<(String, String)>>,
         /// The user's home, as the boundary would hand it to a real sink.
         home: Option<std::path::PathBuf>,
+    }
+
+    /// The next scripted answer off `queue`, front-first; `None` once it is
+    /// empty.
+    fn pop_front<T>(queue: &std::sync::Mutex<Vec<Option<T>>>) -> Option<T> {
+        let mut queue = queue.lock().expect("not poisoned");
+        if queue.is_empty() {
+            None
+        } else {
+            queue.remove(0)
+        }
     }
 
     impl FakeHooks {
@@ -1524,11 +1575,17 @@ mod tests {
             self.failure.clone()
         }
 
-        fn stop_failure(&self, error: &str, details: &str, _cancel: &CancelToken) {
+        fn stop_failure(
+            &self,
+            error: &str,
+            details: &str,
+            _cancel: &CancelToken,
+        ) -> Option<crate::hooks::HookReport> {
             self.stop_failures
                 .lock()
                 .expect("not poisoned")
                 .push((error.to_string(), details.to_string()));
+            self.stop_failure_report.clone()
         }
 
         fn stop(
@@ -1536,16 +1593,14 @@ mod tests {
             stop_hook_active: bool,
             last_message: &str,
             _cancel: &CancelToken,
-        ) -> Option<crate::hooks::HookBlock> {
+        ) -> super::super::hooks::StopVerdict {
             self.stop_seen
                 .lock()
                 .expect("not poisoned")
                 .push((stop_hook_active, last_message.to_string()));
-            let mut stops = self.stops.lock().expect("not poisoned");
-            if stops.is_empty() {
-                None
-            } else {
-                stops.remove(0)
+            super::super::hooks::StopVerdict {
+                block: pop_front(&self.stops),
+                report: pop_front(&self.stop_reports),
             }
         }
 
@@ -1950,6 +2005,189 @@ mod tests {
         );
         assert!(
             matches!(drain(&mut rx).last(), Some(StreamEvent::Error(m)) if m == "HTTP 429: slow down")
+        );
+    }
+
+    /// A hook cell saying `row` — what a real sink's report would carry.
+    fn cell(event: &str, said: crate::hooks::HookSaid) -> crate::hooks::HookReport {
+        crate::hooks::HookReport {
+            event: event.to_string(),
+            hooks: vec![crate::hooks::RanHook {
+                command: "./hook.sh".to_string(),
+                config: None,
+                millis: 5,
+                said: vec![said],
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Every hook note's `(text, report)`, in order.
+    fn hook_notes(events: &[StreamEvent]) -> Vec<(String, Option<crate::hooks::HookReport>)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::HookNote { text, report, .. } => Some((text.clone(), report.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One plain-text turn of `rounds` answers through `hooks`.
+    fn answer_through(hooks: &FakeHooks) -> (Vec<StreamEvent>, Vec<ChatMessage>) {
+        let (tx, mut rx) = unbounded_channel();
+        let mut messages = vec![ChatMessage::user("fix it")];
+        let rounds = RefCell::new(0);
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                reply(&format!("answer {n}"))
+            },
+            |_c, _sink| panic!("no tools in this turn"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            hooks,
+            &no_sessions,
+        );
+        (drain(&mut rx), messages)
+    }
+
+    #[test]
+    fn a_stop_blocks_cell_rides_the_feedback_note() {
+        // docs/hooks.md *The hook-run cell*: the feedback the model reads and
+        // the cell the user sees go out as one note, so they land together.
+        let feedback = crate::hooks::HookSaid::Feedback("Stop hook feedback: tests are red".into());
+        let hooks = FakeHooks {
+            stops: std::sync::Mutex::new(vec![Some("tests are red".into()), None]),
+            stop_reports: std::sync::Mutex::new(vec![Some(cell("Stop", feedback.clone()))]),
+            ..FakeHooks::default()
+        };
+        let (events, _) = answer_through(&hooks);
+        assert_eq!(
+            hook_notes(&events),
+            vec![(
+                "Stop hook feedback: tests are red".to_string(),
+                Some(cell("Stop", feedback))
+            )]
+        );
+    }
+
+    #[test]
+    fn a_stop_that_lets_the_turn_end_still_shows_what_its_hooks_said() {
+        // No block, but a hook broke: its cell goes out with no text — the
+        // model reads nothing new — before the turn's StreamDone.
+        let broke = cell(
+            "Stop",
+            crate::hooks::HookSaid::Error("Stop hook error: failed (exit 1): boom".into()),
+        );
+        let hooks = FakeHooks {
+            stop_reports: std::sync::Mutex::new(vec![Some(broke.clone())]),
+            ..FakeHooks::default()
+        };
+        let (events, messages) = answer_through(&hooks);
+        assert_eq!(hook_notes(&events), vec![(String::new(), Some(broke))]);
+        let at = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::HookNote { .. }))
+            .expect("the cell");
+        assert!(
+            matches!(events.get(at + 1), Some(StreamEvent::StreamDone)),
+            "the cell lands before the turn ends: {events:?}"
+        );
+        assert_eq!(
+            roles_and_texts(&messages),
+            vec![("user".to_string(), "fix it".to_string())],
+            "nothing the model reads was added"
+        );
+    }
+
+    #[test]
+    fn an_esc_during_the_stop_hooks_sends_no_cell() {
+        // The runner reaps a hook the Esc interrupted and reports it as
+        // `did not run: interrupted` — a cell saying a hook broke because the
+        // user stopped the turn would be wrong, so none goes out.
+        #[derive(Debug)]
+        struct Interrupted(CancelToken);
+        impl HookSink for Interrupted {
+            fn stop(
+                &self,
+                _active: bool,
+                _last: &str,
+                _cancel: &CancelToken,
+            ) -> super::super::hooks::StopVerdict {
+                self.0.cancel();
+                super::super::hooks::StopVerdict {
+                    block: None,
+                    report: Some(cell(
+                        "Stop",
+                        crate::hooks::HookSaid::Error(
+                            "Stop hook error: did not run: interrupted".into(),
+                        ),
+                    )),
+                }
+            }
+        }
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| reply("done"),
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &Interrupted(cancel.clone()),
+            &no_sessions,
+        );
+        assert!(hook_notes(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn a_stop_failures_cell_goes_out_before_the_error() {
+        let broke = cell(
+            "StopFailure",
+            crate::hooks::HookSaid::Error(
+                "StopFailure hook error: did not run: failed to spawn".into(),
+            ),
+        );
+        let (tx, mut rx) = unbounded_channel();
+        let hooks = FakeHooks {
+            stop_failure_report: Some(broke.clone()),
+            ..FakeHooks::default()
+        };
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| {
+                RoundOutcome::Failed(LlmError::Api {
+                    status: 429,
+                    body: "slow down".to_string(),
+                })
+            },
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+            &no_sessions,
+        );
+        let events = drain(&mut rx);
+        assert_eq!(hook_notes(&events), vec![(String::new(), Some(broke))]);
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error(_)))
+                && matches!(events[events.len() - 2], StreamEvent::HookNote { .. }),
+            "the cell, then the error that ends the turn: {events:?}"
         );
     }
 

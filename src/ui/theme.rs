@@ -216,6 +216,15 @@ pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
+/// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the
+/// header's `Ran 1 Stop hook` around the count and the event, and the
+/// expanded cell's file row under a hook's command — a refusal's `Config:`
+/// line. Every row under the header is the report's own words.
+pub(super) const HOOK_CELL_RAN: &str = "Ran ";
+pub(super) const HOOK_CELL_HOOK: &str = " hook";
+pub(super) const HOOK_CELL_HOOKS: &str = " hooks";
+pub(super) const HOOK_CELL_CONFIG: &str = "Config: ";
+
 /// The collapsed MCP cell's vocabulary (`docs/mcp.md`): a running call's
 /// `● Calling {server}… (ctrl+o to expand)` header and the resolved
 /// bullet-less dim `Called {server} (ctrl+o to expand)` line (the settled

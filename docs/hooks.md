@@ -389,13 +389,16 @@ somewhere for every hook verdict to land, under another name. **No new
 Two additions were needed for the conversation-level events, because nothing
 existing could express them:
 
-- **`StreamEvent::HookNote { label, text }`** carries hook-injected
+- **`StreamEvent::HookNote { label, text, report }`** carries hook-injected
   conversation text — a Stop block's feedback, a SessionStart/
-  UserPromptSubmit hook's additional context. The loop finalises the
-  assistant run before it (invariant 4's flush-before-you-interleave) and
-  records a cell-less **`HistoryItem::HookNote`**: invisible inline (Claude
-  Code hides these from its normal view too — `isMeta`), expanded in the
-  Ctrl+O transcript under its dim `● {label}` heading, replayed **verbatim**
+  UserPromptSubmit hook's additional context — and, when the hooks said
+  something, the **report** that is their cell (*The hook-run cell*, below;
+  `text` is then empty for a report that added nothing to the
+  conversation). The loop finalises the assistant run before it (invariant
+  4's flush-before-you-interleave), records a **`HistoryItem::HookNote`** and
+  commits the report's cell; a note with no report stays cell-less inline
+  and shows in the Ctrl+O transcript under its dim `● {label}` heading. The
+  text is replayed **verbatim**
   by `context_messages` as the user-role message the model actually read,
   and round-tripped through the rollout so a `/resume` keeps it. Context
   wire text uses Claude Code's exact shape — the
@@ -437,10 +440,12 @@ is the one thing a user goes looking for the cause of:
 | refuses a call (`PreToolUse`)                         | the red cell `Blocked by PreToolUse hook: {reason}` · `Hook: {command}` · `Config: {hooks.json}` |
 | denies it (`PermissionRequest`)                       | the same, as `Blocked by PermissionRequest hook: …`                    |
 | lets it run without asking                            | the dim row `Allowed by PreToolUse hook`, or `Allowed by PermissionRequest hook: {reason}` |
+| rewrites it (`PreToolUse` `updatedInput`)             | the dim row `Rewritten by PreToolUse hook` — the cell shows the hook's arguments, not the model's |
 | blocks a result (`PostToolUse`, `PostToolUseFailure`) | the dim row `Flagged by {event} hook: {reason}`                        |
 | adds context to a call                                | the dim row `Context added by {event} hook`                            |
 | blocks a prompt (`UserPromptSubmit`)                  | the red notice `Prompt blocked by UserPromptSubmit hook: {reason}`     |
-| blocks a stop (`Stop`, `SubagentStop`)                | nothing inline; Ctrl+O's `● Stop hook` note, with its `Hook:` and `Config:` lines |
+| blocks a stop (`Stop`, `SubagentStop`)                | the `● Ran 1 Stop hook` cell, `Stop hook feedback: {reason}` under it  |
+| says anything at a turn's edge (the events below)     | the same cell — *The hook-run cell*, below                             |
 
 (`·` separates lines.) A refusal, as it reads on screen:
 
@@ -486,6 +491,118 @@ of a row or two leaves the whole refusal inline, while a longer one keeps its
 first rows and the `Hook:` and `Config:` lines join the rest behind `… +N
 lines (ctrl+o to expand)` — the reason comes first because it is what the
 user reads the cell for.
+
+### The hook-run cell
+
+A hook that answers a **call** leaves its trace on that call's cell. The
+events at a turn's edges have no call to hang a row from, so what their hooks
+said used to land nowhere the user looked: a `Stop` block was a cell-less note
+only Ctrl+O showed, and a `Stop` hook that broke, said a `systemMessage` or
+answered `continue: false` was dropped outright — as was everything but the
+context a `SessionStart` or `UserPromptSubmit` hook gave. They get a cell of
+their own now, Claude Code's `Ran 1 stop hook` in this app's dress:
+
+```
+● Ran 1 Stop hook (ctrl+o to expand)
+  ⎿  Stop hook feedback: There are uncommitted Git changes. Review the
+     changes and commit the relevant files with a descriptive commit
+     message before finishing.
+```
+
+and in Ctrl+O, every hook that ran with what it said under it:
+
+```
+● Ran 1 Stop hook
+  ⎿  bash "$HOME/.alter-zero/hooks/check-git.sh" (0.4s)
+     Config: ~/.alter-zero/hooks.json
+  ⎿  Stop hook feedback: There are uncommitted Git changes. Review the
+     changes and commit the relevant files with a descriptive commit
+     message before finishing.
+```
+
+**Which events, and where.** The cell lands where the hooks ran:
+
+| event                          | the cell sits                                            |
+| ------------------------------ | -------------------------------------------------------- |
+| `Stop`                         | under the reply, above the continuation it bought or the turn's `Worked for` line |
+| `SubagentStop`                 | the same, on the agent's own transcript (its session view and its Ctrl+O) |
+| `SessionStart`, `UserPromptSubmit` | under the prompt that read them                      |
+| `PreCompact`, `PostCompact`    | above the compaction's `● Context compacted` line        |
+| `StopFailure`                  | above the turn's red error                               |
+
+The tool events have none — their rows are on the call's own cell — and
+neither do two events with nowhere to show one: `Notification` runs on its
+lane while the prompt it announces holds the screen, and `SessionEnd` fires as
+the conversation it ends goes away. `SubagentStart` has none yet (*Known
+gaps*).
+
+**Only when a hook said something.** A hook that exits `0` and prints nothing
+has approved by saying nothing — the common case, and on every turn — so it
+leaves no cell, inline or in Ctrl+O, exactly as before. What counts, row by
+row, most consequential first:
+
+| row                                     | when                                                           |
+| --------------------------------------- | -------------------------------------------------------------- |
+| `Stopped by Stop hook: {reason}`        | `continue: false` from `Stop`/`SubagentStop` — the agent stops, a sibling's block notwithstanding |
+| `Stop hook feedback: {reason}`          | the block the agent keeps going on — the first line of what the model reads |
+| `Context added by {event} hook`         | `additionalContext`, or the plain stdout that is context for that event |
+| `{systemMessage}`                       | a line the hook addressed to the user, verbatim                |
+| `{event} hook error: {what broke}`      | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: failed (exit 1): {stderr}` |
+| `hooks.json: …`                         | a config problem on the way: a matcher that is no regex, a handler skipped — red |
+
+Each row opens its own `⎿` and wraps under its own text, and the rows fold
+like a tool cell's output (`docs/long-lines.md`): three rows and a `… +N lines`
+row, or four shown whole. The header carries the `(ctrl+o to expand)` hint —
+there is always something to expand, the hooks themselves — so the fold row
+does not repeat it.
+
+**`feedback`, not `error`.** Claude Code prints a blocking Stop hook's reason
+as `Stop hook error:`. It is not an error: the hook did its job, and its words
+are what the agent acts on next. So the row says *feedback* — the word the
+model reads it under — and *error* is kept for a hook that broke, in red, so a
+guard doing its work and a guard that crashed cannot be mistaken for each
+other at a glance. An error row says what went wrong and not which hook: the
+warning the parse wrote (`hook ./check.sh failed (exit 1): …`) loses the lead
+that names the hook, which the expanded cell shows the row under — an inline
+program's whole text, repeated into the row, buried what broke.
+
+**Only what took effect.** The rows are the outcome, not every word printed:
+the feedback row is the first block's, the one the agent continues on (a
+second hook's block is merged away, the rule above); `continue: false`
+outranks a block, so a stopped turn shows the stop and no feedback; a
+`UserPromptSubmit` block is the red notice that replaces the prompt, so the
+cell never repeats it. Plain stdout from an event that does not take it as
+context (`Stop`, `PostCompact`, `StopFailure`) is chatter and stays unshown.
+And an Esc that reaps a running Stop hook leaves no cell: the runner reports
+the hook as `did not run: interrupted`, which would read as a hook that
+broke when it was the user who stopped the turn.
+
+**Expanded**, the cell lists every hook that ran, in order: its command (the
+first line, cut at 80 characters — the `Hook:` line's label), how long it ran,
+and the `hooks.json` it is configured in (`~`-relative, the refusal cell's
+rule); then the rows that hook said, a context row followed by the text it
+added. A silent hook beside a talkative one is listed too — the header counts
+every hook that ran.
+
+**The bullet** is green when every hook ran cleanly — a block is a hook
+working — and red when any row is an error.
+
+**The record.** The cell is the hook note's **report**: `HistoryItem::HookNote`
+carries an optional `hooks::HookReport` beside its text, built by
+`llm::hooks::hook_report` from each handler's run (command, file, how long)
+and its parsed answer, every row's words composed by the function that words
+the matching row elsewhere (`context_added_note`, the model's `Stop hook
+feedback:` line). The note's `text` is still exactly what the model read —
+empty for a cell that added nothing to the conversation (a hook's failure, a
+`PostCompact` message) — and the derived context replays only non-empty text,
+so **a cell changes nothing the model reads**. On disk a note that carries
+text keeps its `hook_note` record with the report beside it — an older build
+replays the text and ignores the report — and one with no text is a
+`hook_report` record, which an older build skips (it would otherwise replay an
+empty message). A note recorded before this keeps its old Ctrl+O rendering:
+the record is what the screen showed. The agent loop's own continuation
+prompts (`docs/unfinished-replies.md`) ride the note with no report and stay
+cell-less.
 
 ## What the model reads
 
@@ -665,7 +782,7 @@ Following the pure-core / boundary split the rest of the crate uses:
 
 | where               | what                                                                | tested by  |
 | ------------------- | -------------------------------------------------------------------- | ---------- |
-| `src/hooks/` (pure) | config parse · matcher · payload builders · verdict parse · merge      | unit, TDD  |
+| `src/hooks/` (pure) | config parse · matcher · payload builders · verdict parse · merge · the cell's report | unit, TDD  |
 | `src/subprocess.rs` | `spawn_shell_with` — the tier walk with caller-chosen stdio            | unit + real-`sh` |
 | `src/llm/hooks.rs`  | the runner and the `HookSink` glue: payload → spawn → parse → merge    | real-`sh` unit tests + `smoke.sh` |
 | `src/tui/config.rs` | locating and loading `hooks.json`                                      | existing   |
@@ -690,9 +807,9 @@ pub trait HookSink: Send + Sync + Debug {
     fn permission_request(&self, …) -> Option<HookPermissionVerdict> { None }
     fn permission_prompt(&self, _call: &ToolCallRequest, _cancel: &CancelToken) -> Option<OnShown> { None }
     fn subagent_start(&self, …) -> Vec<String> { Vec::new() }
-    fn stop(&self, _active: bool, _last: &str, _cancel: &CancelToken) -> Option<String> { None }
-    fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) {}
-    fn session_start(&self, _cancel: &CancelToken) -> Vec<String> { Vec::new() }
+    fn stop(&self, _active: bool, _last: &str, _cancel: &CancelToken) -> StopVerdict { … }
+    fn stop_failure(&self, _error: &str, _details: &str, _cancel: &CancelToken) -> Option<HookReport> { None }
+    fn session_start(&self, _cancel: &CancelToken) -> HookContexts { … }
     fn user_prompt_submit(&self, _prompt: &str, _cancel: &CancelToken) -> PromptVerdict { … }
     fn session_end(&self, _reason: &str) {}
     fn for_subagent(&self, …) -> Option<Arc<dyn HookSink>> { None }
@@ -750,19 +867,39 @@ a scripted turn with both halves of the contract:
      drwxr-xr-x  app
      drwxr-xr-x  ui
   ⎿  Context added by PostToolUse hook
+
+● …
+
+● Ran 1 Stop hook (ctrl+o to expand)
+  ⎿  Stop hook feedback: Before you finish, explain what a Stop hook does.
+
+● And as I went to finish, a Stop hook exited 2: …
 ```
 
-Its refusal text comes from `llm::hooks::block_texts` and its row from
-`llm::hooks::context_added_note` — the functions the live runner calls,
-handed a stand-in hook command and file — so the offline cell is
-byte-for-byte the one a real `hooks.json` produces, the rule every other
-scripted demo follows with the real executor's formatters. **`smoke.sh`
-Phase 72** drives it and asserts the blocked call produced no output of its
-own, its cell named the event, the hook and the file, the allowed one kept
-its output under the provenance row naming its event, the model-only
-instruction never reached scrollback, the Ctrl+O transcript kept the
-refusal, and the demo's closing Stop-hook feedback note stayed cell-less
-inline while the transcript recorded it, with the hook that gave it.
+Its refusal text comes from `llm::hooks::block_texts`, its row from
+`llm::hooks::context_added_note`, and its closing Stop hook's feedback and
+cell from `llm::hooks::stop_feedback_texts` and `llm::hooks::hook_report` —
+the functions the live runner calls, handed a stand-in hook command and file
+(the Stop hook's run read by `hooks::parse_run`, the way a real one is) — so
+the offline cells are byte-for-byte the ones a real `hooks.json` produces,
+the rule every other scripted demo follows with the real executor's
+formatters. **`smoke.sh` Phase 72** drives it and asserts the blocked call
+produced no output of its own, its cell named the event, the hook and the
+file, the allowed one kept its output under the provenance row naming its
+event, the model-only instruction never reached scrollback, the Ctrl+O
+transcript kept the refusal, and the closing Stop hook's block is a `● Ran 1
+Stop hook` cell inline — the feedback right under its header, the round it
+bought after it, its command nowhere inline — that Ctrl+O expands into the
+hook that ran, how long it ran and its `hooks.json`. **Phase 150** drives
+the hook-run cell through the real runner and a stub provider: a
+`SessionStart` hook's message and a `UserPromptSubmit` hook's context as
+cells under the prompt, a `Stop` hook that blocks once beside one that
+always breaks — the feedback leading the first cell and the error row
+saying what broke, not the hook's command; the round it bought; the second
+firing a cell of the error alone — the model reading the feedback and the
+context and none of what was the user's alone, Ctrl+O listing both hooks
+with their times, and a refused turn's `StopFailure` hook's cell above the
+red error.
 **Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
 prompt`) through the real loop arm: the blocked submission leaves scrollback
 (exactly the composer's restored copy of the text remains) under the red
@@ -854,6 +991,17 @@ Verified against both sources, and chosen — not accidental:
 
 - **`"async": true` runs synchronously**, with a warning. So does a
   `statusMessage`, which is parsed and not displayed.
+- **Three events leave no cell.** `Notification` runs on its lane while the
+  prompt it announces holds the screen, with no channel back to the
+  conversation, and `SessionEnd` fires as the conversation it ends goes
+  away; both ignore their hooks' output by contract, so only a hook that
+  broke goes unseen. A `SubagentStart` hook's context reaches the agent, but
+  a cell for it would race the agent's own arrival in the roster — the hook
+  runs on the agent's thread before its first round, and an event for an
+  agent the app has not listed yet is dropped — so it has none yet.
+- **Plain stdout an event does not read is not shown.** A `Stop` hook that
+  prints and exits `0` is chatter (Claude Code's `suppressOutput` exists to
+  hide such output from its transcript); it never reaches the cell.
 - **The rest of Claude Code's events are unmodelled** (`PermissionDenied`,
   `TeammateIdle`, `FileChanged`, …), as are its `Notification` types other
   than `permission_prompt`; a config naming them loads fine and never

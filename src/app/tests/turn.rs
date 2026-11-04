@@ -2448,7 +2448,7 @@ fn record_hook_note_slots_after_the_flushed_segment() {
     app.begin_stream();
     app.push_chunk("first answer");
     app.flush_streaming_segment();
-    app.record_hook_note("Stop hook", "Stop hook feedback:\ntests are red");
+    app.record_hook_note("Stop hook", "Stop hook feedback:\ntests are red", None);
     app.push_chunk("second answer");
     app.finish_stream();
     let kinds: Vec<String> = app
@@ -2480,7 +2480,7 @@ fn block_prompt_rolls_the_submission_back_and_keeps_hook_notes() {
     let mut app = App::new();
     app.record_user_message("here is my secret");
     app.begin_stream();
-    app.record_hook_note("SessionStart hook", "the build id is ZX-4417");
+    app.record_hook_note("SessionStart hook", "the build id is ZX-4417", None);
     let generation = app.history_generation();
     assert!(app.block_prompt("no secrets in prompts"));
     assert_eq!(

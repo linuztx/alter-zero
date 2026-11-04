@@ -795,12 +795,17 @@ impl ReplySource for LlmBackend {
             // prompt cache. A blocked prompt sends PromptBlocked instead of
             // ever reaching the model: the loop rolls the submission back.
             let opening = super::hooks::turn_start(hooks.as_ref(), &prompt, &cancel);
-            for (label, text) in &opening.notes {
+            for note in opening.notes {
+                // A note with no text is the hooks' cell alone: it gave the
+                // model nothing (docs/hooks.md *The hook-run cell*).
+                if !note.text.is_empty() {
+                    messages.push(ChatMessage::user(&note.text));
+                }
                 let _ = tx.send(StreamEvent::HookNote {
-                    label: label.clone(),
-                    text: text.clone(),
+                    label: note.label,
+                    text: note.text,
+                    report: note.report,
                 });
-                messages.push(ChatMessage::user(text));
             }
             if let Some(reason) = opening.blocked {
                 if !cancel.is_cancelled() {

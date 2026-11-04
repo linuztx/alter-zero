@@ -566,13 +566,20 @@ impl AgentRun {
             // A SubagentStop block's continuation feedback on this agent's
             // own loop (docs/hooks.md): the reply so far becomes its own
             // message — the continuation streams a fresh one — and the note
-            // stays on the agent's transcript, exactly like the main turn's.
-            StreamEvent::HookNote { label, text } => {
+            // stays on the agent's transcript, exactly like the main turn's,
+            // its report the `● Ran 1 SubagentStop hook` cell the session
+            // view commits (*The hook-run cell*).
+            StreamEvent::HookNote {
+                label,
+                text,
+                report,
+            } => {
                 self.flush_segment();
                 self.history
                     .push(HistoryItem::HookNote(crate::app::HookNote {
                         label: label.clone(),
                         text: text.clone(),
+                        report: report.clone(),
                         timestamp: String::new(),
                     }));
                 self.tokens += crate::app::count_tokens(text) as u64;
@@ -3357,6 +3364,41 @@ mod tests {
     }
 
     #[test]
+    fn apply_keeps_a_subagent_stop_hooks_cell_on_the_agents_transcript() {
+        // docs/hooks.md *The hook-run cell*: what an agent's SubagentStop
+        // hooks said is its cell, so the fold keeps the report beside the
+        // feedback — the session view draws it, inline and in Ctrl+O — after
+        // the reply it interrupted.
+        let report = crate::hooks::HookReport {
+            event: "SubagentStop".to_string(),
+            hooks: Vec::new(),
+            warnings: vec!["hooks.json: a warning".to_string()],
+        };
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&chunk("Found it."));
+        run.apply(&StreamEvent::HookNote {
+            label: "Stop hook".to_string(),
+            text: "Stop hook feedback: cite your sources".to_string(),
+            report: Some(report.clone()),
+        });
+        let notes: Vec<&crate::app::HookNote> = run
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::HookNote(note) => Some(note),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].report, Some(report));
+        assert!(
+            matches!(&run.history[run.history.len() - 2], HistoryItem::Message(m) if m.text == "Found it."),
+            "the reply settles ahead of the cell: {:?}",
+            run.history
+        );
+    }
+
+    #[test]
     fn apply_folds_a_full_turn_into_the_transcript() {
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert!(!run.apply(&chunk("Let me check. ")));
@@ -4549,6 +4591,7 @@ mod tests {
                 StreamEvent::HookNote {
                     label: "SubagentStop".to_string(),
                     text: "keep going".to_string(),
+                    report: None,
                 },
             ),
             (
@@ -6427,6 +6470,7 @@ mod tests {
             StreamEvent::HookNote {
                 label: "Stop hook".into(),
                 text: "run the tests too".into(),
+                report: None,
             },
             chunk("It has 42 repos."),
         ] {

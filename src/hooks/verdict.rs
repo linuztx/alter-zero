@@ -44,6 +44,9 @@ pub struct HookRun {
     pub stderr: String,
     /// Why there is no exit code, when there isn't one.
     pub error: Option<String>,
+    /// How long the handler ran — the hook-run cell's Ctrl+O rows show it
+    /// (`docs/hooks.md` *The hook-run cell*).
+    pub elapsed: std::time::Duration,
 }
 
 /// What a hook said about a call it was asked to gate.

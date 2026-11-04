@@ -778,8 +778,14 @@ which Ctrl+V reads the clipboard from.
   a refusal's red cell naming the event, the hook and its `hooks.json`
   (`~`-relative), every dim row a hook leaves naming its event;
   the two conversation-level additions are `StreamEvent::HookNote` → the
-  cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
-  verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
+  `HistoryItem::HookNote` (context-replayed verbatim, `/resume`-safe) and
+  the terminal `StreamEvent::PromptBlocked`. What the hooks at a turn's
+  edges say — a Stop hook's block, a stop, a hook that broke, a message, a
+  SessionStart/UserPromptSubmit hook's context — is the note's report, the
+  `● Ran 1 Stop hook` cell committed inline and expanded in Ctrl+O into each
+  hook that ran, how long it ran and its `hooks.json`; it changes nothing
+  the model reads, and a silent run leaves no cell (`docs/hooks.md` *The
+  hook-run cell*).
 - **herdr panes** (`docs/herdr.md`): run inside the herdr multiplexer, the
   app reports its own state to herdr's local socket — `working` while a turn
   or a subagent runs (a settled one with something queued for it included),

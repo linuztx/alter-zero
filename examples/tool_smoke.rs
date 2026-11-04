@@ -119,7 +119,7 @@ fn main() {
             }
             // A hook-injected conversation entry / a blocked prompt
             // (docs/hooks.md): the harness just logs them.
-            StreamEvent::HookNote { label, text } => {
+            StreamEvent::HookNote { label, text, .. } => {
                 println!("\n\x1b[90m[{label}] {text}\x1b[0m");
             }
             StreamEvent::PromptBlocked { reason } => {
