@@ -1166,8 +1166,7 @@ fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
     let app = App::new();
     let area = Rect::new(0, 0, 60, 12);
     let mut buf = Buffer::empty(area);
-    let lines = context_lines(&app, 60);
-    render_context_view(area, &mut buf, &app, &lines);
+    render_context_view(area, &mut buf, &app, &context_body(&app, 60));
     let (x, y) = overlay_cursor_seat(&buf);
     let hint = " q/esc/ctrl+d to quit   tab for classifier context";
     assert_eq!(

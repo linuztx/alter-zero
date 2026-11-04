@@ -155,9 +155,10 @@ keys "$S146" C-d
 context="$(wait_pane 5 "$S146" -F "C O N T E X T")" ||
 	fail "Ctrl+D did not open the context view"
 dump "the Ctrl+D context" "$context"
-# The page wraps at its width under a two-space indent: join the rows back up
+# The page word-wraps at its width under the ⎿ gutter: flatten every run of
+# whitespace — the row breaks and the gutter's indent alike — to one space
 # before looking for a sentence.
-context_flat="$(printf '%s' "$context" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  //g')"
+context_flat="$(printf '%s' "$context" | tr '\n' ' ' | tr -s ' ')"
 expect_has "$context_flat" -F "[system] Your last response was empty: it had no reply and no tool call." \
 	"the derived context does not carry the prompt the model read"
 keys "$S146" C-d

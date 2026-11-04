@@ -2,13 +2,14 @@
 //! auto mode's classifier reads before every command and MCP call, under
 //! the rubric it judges by. Its sibling page answers *what does the model
 //! see*; this one answers *what does the reviewer see*. Same chrome, the
-//! same `system prompt:` / `user:` tags over the same verbatim text — only
-//! the lines differ, so this module is just the body builder and
-//! [`super::render_context_view`] paints either page. See
-//! `docs/permissions.md`.
+//! same role chips over the same verbatim text hung on the same `⎿` gutter
+//! (the sibling page's own builders) — only the entries differ, so this
+//! module is just the body builder and [`super::render_context_view`]
+//! paints either page. See `docs/permissions.md`.
 
+use super::context_view::{DebugBody, body_width, dim_rows, push_entry, text_rows};
 use super::theme::*;
-use super::wrap::{cols, ellipsize, wrap_verbatim};
+use super::wrap::{cols, ellipsize};
 use super::*;
 use crate::context::ContextRole;
 use crate::llm::classifier::ACTION_TO_REVIEW_HEADER;
@@ -113,97 +114,87 @@ pub(super) fn abridge_prompt(prompt: &str, peek: usize) -> Vec<PromptRow> {
     rows
 }
 
-/// A coloured `role:` tag — wrapped on narrow screens like its body.
-fn tag_lines(tag: &str, color: Color, width: u16) -> Vec<Line<'static>> {
-    wrap_verbatim(tag, width)
-        .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(color))))
-        .collect()
-}
-
 /// The classifier page's body: the mode note, then the request the next
-/// verdict is judged in — the classifier's **system prompt** under the
-/// sibling page's amber tag, abridged to its structure (`abridge_prompt`:
-/// headings whole, opening paragraphs cut at `CLASSIFIER_PROMPT_PEEK_COLS`,
-/// the rest counted into dim `… +N lines` rows), then the rendered task
-/// context under a `user:` tag exactly as
-/// [`crate::llm::classifier::ClassifierContext::render`] built it — wrapped
-/// **verbatim** (never the markdown renderer: the `##` headers and the `> `
-/// quoting are the block's own structure, and the whole point is showing the
-/// unformatted text the classifier is sent) — closed by the
-/// `## Action to review` header over a dim placeholder, since the action is
-/// the one part of the message that is only known when a verdict is asked.
-/// No prompt section when none was injected (the dummy keeps no
-/// classifier), and a dim placeholder in the block's place when nothing has
-/// been recorded — or when the backend keeps no log at all (the dummy, whose
-/// offline auto-mode demo answers from a pure heuristic instead).
+/// verdict is judged in, as the sibling page shows a request — each message
+/// on its role chip over a body hung on the `⎿` gutter. First the
+/// classifier's **system prompt**, abridged to its structure
+/// (`abridge_prompt`: headings whole, opening paragraphs cut at
+/// `CLASSIFIER_PROMPT_PEEK_COLS`, the rest counted into dim `… +N lines`
+/// rows) and saying so on its header; then the rendered task context as the
+/// `USER` message exactly as
+/// [`crate::llm::classifier::ClassifierContext::render`] built it — never
+/// the markdown renderer: the `##` headers and the `> ` quoting are the
+/// block's own structure, and the whole point is showing the unformatted
+/// text the classifier is sent — closed by the `## Action to review` header
+/// over a dim placeholder, since the action is the one part of the message
+/// that is only known when a verdict is asked. No prompt entry when none
+/// was injected (the dummy keeps no classifier), and a dim placeholder in
+/// the block's place when nothing has been recorded — or when the backend
+/// keeps no log at all (the dummy, whose offline auto-mode demo answers
+/// from a pure heuristic instead). No summary on the bottom rule: an
+/// abridged prompt's size is not what is sent.
 #[must_use]
-pub fn classifier_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+pub fn classifier_body(app: &App, width: u16) -> DebugBody {
+    let mut body = DebugBody::default();
     if width == 0 {
-        return Vec::new();
+        return body;
     }
-    let dim = Style::new().fg(tool_dim_color());
-    // Keep room for a wide glyph; an indent must never consume the entire
-    // width, since wrap_verbatim treats zero as "do not wrap".
-    let indent = if usize::from(width) >= cols(CONTEXT_INDENT) + 2 {
-        CONTEXT_INDENT
-    } else {
-        ""
-    };
-    let text_width = width - cols(indent) as u16;
-    let indented = |row: String| Line::from(format!("{indent}{row}"));
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for row in wrap_verbatim(mode_note(app.permission_mode()), width) {
-        lines.push(Line::from(Span::styled(row, dim)));
-    }
-    lines.push(Line::default());
+    body.lines.extend(
+        dim_rows(mode_note(app.permission_mode()), width)
+            .into_iter()
+            .map(Line::from),
+    );
+    body.lines.push(Line::default());
+    let text_width = body_width(width);
+    let mut index = 0;
     if let Some(prompt) = app
         .classifier_system_prompt()
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
     {
-        lines.extend(tag_lines(
-            CONTEXT_SYSTEM_PROMPT_TAG,
-            context_system_color(),
-            width,
-        ));
+        index += 1;
+        let mut rows = Vec::new();
         for row in abridge_prompt(prompt, CLASSIFIER_PROMPT_PEEK_COLS) {
             match row {
-                PromptRow::Blank => lines.push(Line::default()),
-                PromptRow::Text(text) => {
-                    lines.extend(wrap_verbatim(&text, text_width).into_iter().map(indented));
-                }
-                PromptRow::Elided(hidden) => {
-                    let marker = format!("{CLASSIFIER_PROMPT_MORE_PREFIX}+{hidden} lines");
-                    for row in wrap_verbatim(&marker, text_width) {
-                        lines.push(Line::from(Span::styled(format!("{indent}{row}"), dim)));
-                    }
-                }
+                PromptRow::Blank => rows.push(Vec::new()),
+                PromptRow::Text(text) => rows.extend(text_rows(&text, text_width)),
+                PromptRow::Elided(hidden) => rows.extend(dim_rows(
+                    &format!("{CLASSIFIER_PROMPT_MORE_PREFIX}+{hidden} lines"),
+                    text_width,
+                )),
             }
         }
-        lines.push(Line::default());
+        let facts = [
+            format!("{CONTEXT_INDEX_MARK}{index}"),
+            CLASSIFIER_PROMPT_META.to_string(),
+            CLASSIFIER_PROMPT_ABRIDGED.to_string(),
+        ];
+        push_entry(&mut body, ContextRole::System, &facts, rows, width);
     }
     let block = app.classifier_context().map(str::trim).unwrap_or_default();
     if block.is_empty() {
-        for row in wrap_verbatim(CLASSIFIER_VIEW_EMPTY, width) {
-            lines.push(Line::from(Span::styled(row, dim)));
-        }
-        return lines;
+        body.lines.extend(
+            dim_rows(CLASSIFIER_VIEW_EMPTY, width)
+                .into_iter()
+                .map(Line::from),
+        );
+        return body;
     }
-    lines.extend(tag_lines(
-        &format!("{}:", ContextRole::User.wire_name()),
-        context_user_color(),
-        width,
-    ));
-    lines.extend(wrap_verbatim(block, text_width).into_iter().map(indented));
-    lines.push(Line::default());
-    lines.extend(
-        wrap_verbatim(ACTION_TO_REVIEW_HEADER, text_width)
-            .into_iter()
-            .map(indented),
-    );
-    for row in wrap_verbatim(CLASSIFIER_ACTION_PLACEHOLDER, text_width) {
-        lines.push(Line::from(Span::styled(format!("{indent}{row}"), dim)));
-    }
-    lines
+    index += 1;
+    let mut rows = text_rows(block, text_width);
+    rows.push(Vec::new());
+    rows.extend(text_rows(ACTION_TO_REVIEW_HEADER, text_width));
+    rows.extend(dim_rows(CLASSIFIER_ACTION_PLACEHOLDER, text_width));
+    let facts = [
+        format!("{CONTEXT_INDEX_MARK}{index}"),
+        CLASSIFIER_CONTEXT_META.to_string(),
+    ];
+    push_entry(&mut body, ContextRole::User, &facts, rows, width);
+    body
+}
+
+/// [`classifier_body`]'s rows alone.
+#[must_use]
+pub fn classifier_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    classifier_body(app, width).lines
 }

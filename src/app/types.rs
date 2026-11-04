@@ -197,6 +197,22 @@ impl DebugPage {
     }
 }
 
+/// Which way a ←/→ press in the Ctrl+D view steps between the page's
+/// entries (`docs/context.md`). The key records only the direction: where
+/// the neighbouring entry starts is a fact about the rendered page — its
+/// width, its wrapping — so the draw resolves it
+/// ([`App::resolve_debug_jump`]).
+///
+/// [`App::resolve_debug_jump`]: crate::app::App::resolve_debug_jump
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryJump {
+    /// ← — back to the start of the entry at the window's top, or to the
+    /// one before it when the window already starts there.
+    Previous,
+    /// → — on to the start of the next entry.
+    Next,
+}
+
 /// The session context shown in the footer under the input box: the backend's
 /// model name and the (display-ready, home-relativized) working directory.
 /// Plain strings — `main.rs` formats them at the I/O boundary

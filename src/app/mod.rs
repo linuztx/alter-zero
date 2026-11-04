@@ -80,8 +80,8 @@ pub use self::commands::{
     CommandEffect, CommandMenu, HELP_BUSY_NOTICE, INIT_BUSY_NOTICE, INIT_PROMPT,
     RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
 };
-pub(crate) use self::compact::estimate_messages_tokens;
 pub use self::compact::{COMPACT_VERB, Compaction};
+pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
@@ -135,7 +135,7 @@ pub use self::turn::{
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
-    DebugPage, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+    DebugPage, EntryJump, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
 };
 pub use self::usage::{
     USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
@@ -395,6 +395,12 @@ pub struct App {
     /// exactly like [`tool_follow`](Self::tool_follow) — so a page left open
     /// while the agent works keeps the newest actions in sight as they land.
     pub classifier_follow: bool,
+    /// A ←/→ step between the showing Ctrl+D page's entries, waiting for the
+    /// draw to resolve it against the page as built
+    /// ([`resolve_debug_jump`](Self::resolve_debug_jump), `docs/context.md`).
+    /// Tab and a close drop it, so a step never lands on a page it was not
+    /// pressed on.
+    pub debug_jump: Option<EntryJump>,
     /// The auto mode classifier's **rendered task context** — the block the
     /// next verdict will read, injected per draw at the boundary from the
     /// live backend log (`ReplySource::classifier_context`), the

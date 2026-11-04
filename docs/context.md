@@ -248,9 +248,10 @@ submitted pastes are deliberately kept in the session's paste folder
 ## The Ctrl+D context-debug view
 
 A third alternate-screen overlay, `View::ContextDebug`, with the Ctrl+O
-pager's exact chrome: the slash-tiled `/ C O N T E X T` title row, a
-scrolling body with vi-style `~` filler, the `─` separator carrying the
-scroll percentage, and two dim key-hint rows (`↑/↓`, pgup/pgdn, home/end;
+pager's chrome: the slash-tiled `/ C O N T E X T` title row, a scrolling
+body with vi-style `~` filler, the `─` separator carrying the scroll
+percentage (and, on its left end, the window's summary), and two dim
+key-hint rows (`↑/↓`, `←/→` between messages, pgup/pgdn, home/end;
 q/esc/ctrl+d close). It opens with **Ctrl+D** from the conversation — mid-turn
 too, like Ctrl+O — and is inert where Ctrl+O is inert (the overlays share the
 alt screen and never stack: Ctrl+D does nothing under the pager or the
@@ -258,21 +259,33 @@ alt screen and never stack: Ctrl+D does nothing under the pager or the
 (`App::debug_scroll`/`debug_follow`, settled per-draw like the pager's), so
 flipping between overlays never clobbers the transcript's place.
 
-The body (`ui::context_lines`) is the raw context window:
+The body (`ui::context_body`, its rows alone `ui::context_lines`) is the raw
+context window, one entry per message the request carries:
 
 ```
-system prompt:                        (amber tag — the backend's prompt)
-  # System prompt · You are Alter Zero an autonomous agent harness … …
-  ## Environment · Date … OS … User … CWD …                (docs/environment.md)
-user:                                 (blue tag — context_user_color(), the one
+/ C O N T E X T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+ SYSTEM  #1 · ≈1.8k tokens            (amber chip — the backend's prompt)
+  ⎿  # System prompt
+     You are Alter Zero, an autonomous agent harness …
+     ## Environment · Date … OS … User … CWD …           (docs/environment.md)
+
+ USER  #2 · ≈40 tokens · 1 image      (blue chip — context_user_color(), the one
                                        blue the running bullet left behind)
-  [Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png] what's in this picture?
-  image: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png    (dim attachment row)
-assistant:                            (green tag)
-  Let me look at the file.
-  → read({"path":"src/main.rs"})      (purple — the native tool call)
-tool:                                 (purple tag — the tool result)
-  fn main() { … }
+  ⎿  [Image #1: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png] what's in
+     this picture?
+     image: /home/me/.alter-zero/image-cache/773c1c6cb321/1.png  (dim attachment)
+
+ ASSISTANT  #3 · ≈25 tokens · 1 tool call                       (green chip)
+  ⎿  Let me look at the file.
+     → read({"path":"src/main.rs"})  call_1      (the arrow and name purple,
+                                                  bold; the call's id dim)
+
+ TOOL  #4 · read · call_1 · ≈310 tokens   (purple chip — names the call it answers)
+  ⎿  1 fn main() { … }
+
+─ 4 messages · ≈2.2k tokens ─────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   ←/→ prev/next message   pgup/pgdn to page   home/end to jump
+ q/esc/ctrl+d to quit   tab for classifier context
 ```
 
 — the system prompt first (injected at the boundary via
@@ -280,11 +293,77 @@ tool:                                 (purple tag — the tool result)
 on every `/model` switch; the dummy has none — the real backend's is the
 persona, then the runtime **environment context** of date/os/user/cwd:
 persona → environment, `docs/environment.md`), then every derived context
-message: a coloured `role:` tag over its text wrapped **verbatim**
-(`wrap_verbatim`, never the markdown renderer — the whole point is the
-unformatted wire content), an assistant entry's native tool calls as purple
-`→ name(arguments)` rows, attachment paths dim beneath. Image placeholders, the
-raw tool-call JSON, and the tool results appear raw here and only here. While the
+message. Each entry has two parts:
+
+- **The header — a role chip and its facts.** The wire role upper-case
+  (`SYSTEM`, `USER`, `ASSISTANT`, `TOOL`) on a fill of the role's hue under
+  the theme's on-accent ink, bold — the agent label's and the ask
+  countdown's dress (`context_chip_fg`). The lower-case `user:` tags this
+  replaced read as a word of the text under them, and on a page of raw text
+  the header is the row the eye hunts for. Beside the chip, dim: the entry's
+  `#n` place in the request, the **call a result answers** — its tool,
+  resolved through its `tool_call_id` from the calls above it, then that id,
+  which the call's own row ends on, so a parallel batch's results pair with
+  their calls by eye (a bare result used to say nothing of which call it
+  belonged to) — a **token estimate** of its size marked `≈` like the
+  `/context` page's, and how many tool calls or pictures it carries. The
+  estimate is the footer gauge's own rule for one message
+  (`app::message_tokens`, which `estimate_messages_tokens` sums): the text, a
+  flat charge per picture, each call's name and arguments — so the entries,
+  and the bottom rule's total, add up to what the gauge reads offline. A
+  header is always one row, cut with `…` at the width.
+- **The body, hung on the tool cell's `⎿` gutter** (`TOOL_RESULT_PREFIX`,
+  through `file_cell::gutter_row_spans`): the corner on the first row, every
+  other row aligned under it. The text is **word-wrapped with its own
+  spacing kept** (`wrap_output`, never the markdown renderer — the whole
+  point is the unformatted wire content; the hard mid-word break it replaced
+  turned `scripted` into `a s` / `cripted`), its tabs expanded, its trailing
+  blank lines dropped (a model's `…\n\n` before a tool call stacked empty
+  rows between the text and the call it introduces), and the
+  `<system-reminder>` markers dimmed so the injected block reads apart from
+  the message it leads. An assistant entry's native tool calls follow as
+  `→ name(arguments)` rows — the arrow and the name purple and bold, the
+  arguments in the body's ink, word-wrapped hanging under the `→ name` lead
+  (the tool header's rule; a terminal too narrow for the lead wraps the whole
+  call verbatim), closed by the call's dim id beside its last row, or on a
+  row of its own where the two do not fit — and attachment paths dim beneath, wrapped verbatim since a
+  path has no spaces worth breaking at. An entry with nothing in it says
+  `(empty)`: an empty result still went over the wire. Below the gutter's
+  width plus room for one wide glyph, the gutter gives its columns back.
+
+Image placeholders, the raw tool-call JSON, and the tool results appear raw
+here and only here.
+
+**Finding your way.** A window is a few dozen messages over thousands of
+rows, so the view carries three aids, all fed by `DebugBody::headers` — the
+row each entry's header sits on, built beside the rows:
+
+- **←/→ step between messages**, opening the previous or next entry at the
+  top of the body. The key records only the direction (`App::debug_jump`, an
+  `EntryJump`): where the neighbouring entry starts is a fact about the page
+  as built — its width, its wrapping — so the draw resolves it against the
+  rows it is about to paint (`App::resolve_debug_jump`, before the scroll
+  settle), never against a previous frame's. ← from inside an entry opens
+  that entry's own head first, the way a paragraph motion does; past the
+  last entry → is the end and before the first ← is the top; the window's
+  top row is the page's current end while it tail-follows, so a page that
+  grew since its last draw is stepped from its new bottom; and a step that
+  lands within the last screenful re-engages the tail-follow, as End does.
+  Tab and a close drop a step still pending, so it never lands on a page it
+  was not pressed on. They are the keys the transcript pager's backtrack
+  uses for the previous and next message, meaning the same thing here.
+- **The entry the window opens inside is pinned** over the top row while its
+  own header is scrolled off (`pinned_header`): deep in a long system prompt
+  or tool result the top row still says whose text it is. Not on the header
+  row itself (it is already on top), not once only the entry's spacer would
+  sit under the pin (a header stacked on the next one), and not in a body
+  shorter than `CONTEXT_PIN_MIN_ROWS`, where the pin would cost the text it
+  names.
+- **The bottom rule counts the window**: `5 messages · ≈1.2k tokens` set into
+  its left end (`transcript::labeled_separator`), the percentage keeping its
+  place — left out whole when the rule cannot hold both.
+
+While the
 view is up the loop keeps draining stream events (their commits queue on the
 viewport, invariant 4) and the tail-follow keeps the newest entries in view;
 closing flushes the queued commits and repaints the live region exactly like a
@@ -297,16 +376,17 @@ when its segment lands in history.
 ### The window is cached (`ui::ContextCache`)
 
 Deriving the window (`context_messages_full` over the whole history) and
-wrapping every entry verbatim is **O(conversation)** — and the view redraws on
+wrapping every entry is **O(conversation)** — and the view redraws on
 every animation frame while a turn runs (the loop's 32 ms status re-arm), plus
 once per scroll key. Rebuilt per frame, a big context — a loaded skill's whole
 rendered body rides the window — pegged the event loop and starved the scroll
 keys: the reported "Ctrl+D freezes the TUI" bug, worst exactly when the user
 opens the view to read what a long skill injected. So the loop owns a
 `ui::ContextCache` (the `TranscriptCache`'s little sibling, `docs/
-tool-view-performance.md`): `draw_context_view` asks it for the line count
-(the scroll clamp, `tool_view_max_scroll_for` — the pager formula, shared) and
-then the lines, and the cache rebuilds **only when its signature changes** —
+tool-view-performance.md`): `draw_context_view` asks it for the built page
+(the scroll clamp, `tool_view_max_scroll_for` — the pager formula, shared, and
+the ←/→ step resolve against the same build the render paints), and the cache
+rebuilds **only when its signature changes** —
 history generation + length, the width, the viewed agent (id + its own
 transcript length), and the leading fragments' lengths (system/agent prompt,
 the `AGENTS.md` instructions section, the listing sections, a viewed agent's
@@ -317,10 +397,17 @@ the rows); a streamed chunk doesn't invalidate it at all (the window shows
 finished items only). No incremental prefix is needed — unlike the
 transcript, the window only changes at item boundaries, never per chunk.
 
+The headers' token estimates put every text through the tokenizer, which on
+a long conversation is the most expensive part of a build — so the cache
+keeps a `context_usage::CountMemo` (the `/context` page's own) across
+rebuilds, and across a close too, being counts and never text: a rebuild for
+one new message tokenizes that message and serves every other count from the
+memo (`context_cache_counts_only_what_is_new`).
+
 Inside an **agent session view** (`docs/agent-tool.md`) the same overlay
 debugs the *viewed agent's* context instead: the body derives from that
-agent's own transcript through the same mapping, and the `system prompt:`
-block shows the prompt a subagent is **actually sent** — the main prompt with
+agent's own transcript through the same mapping, and the `SYSTEM` entry
+shows the prompt a subagent is **actually sent** — the main prompt with
 the subagent note appended (`prompts/subagent.md`), surfaced as
 `ReplySource::agent_system_prompt()` and injected beside the main one
 (`App::set_agent_system_prompt`) — with no AGENTS.md section, because
@@ -328,7 +415,14 @@ subagent conversations start fresh without one (`llm::backend`'s
 `run_agent_calls`), and with the agent's own briefing — the skills section
 wrapped alone, exactly as the launch sent it — taken verbatim in front of
 its transcript (`context_messages_behind`, `docs/subagents.md`). So the
-note's presence is verifiable right where the user looks for it.
+note's presence is verifiable right where the user looks for it. And the
+title says whose window it is — `C O N T E X T · explore agent · Fetch the
+weather`, the agent named the way its roster row names it — since nothing
+else on the page tells the lead's window from an agent's. `overlay_header`
+cuts that title by display columns rather than characters (a description is
+whatever the model wrote, CJK included, and a cut at `width` characters is
+up to twice the row wide) and starts its slash tiling with a blank, so the
+tiling never glues a `/` onto a title ending on the other parity.
 
 ## Also fixed while wiring: the default system prompt was dead
 

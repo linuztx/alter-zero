@@ -669,43 +669,44 @@ of the Ctrl+D view** — Tab flips between them:
 / C L A S S I F I E R / / / / / / / / / / / / / / / / / / / / / / / / / / /
 Auto mode — the classifier reads this before each command or MCP call.
 
-system prompt:
-  You are the safety classifier for an autonomous AI coding agent in auto
-  mode: it runs shell commands and MCP tool calls without asking the user,
-  and you decide — one action at a time — whether the action runs or is blocked.
-  … +6 lines
+ SYSTEM  #1 · classifier prompt · abridged
+  ⎿  You are the safety classifier for an autonomous AI coding agent in auto
+     mode: it runs shell commands and MCP tool calls without asking the user,
+     and you decide — one action at a time — whether the action runs or is
+     blocked.
+     … +6 lines
 
-  ## Shell commands
-  Allow ordinary, project-scoped development work: reading, searching and
-  listing files; `git` work in the working directory; building, testing, lin…
-  … +8 lines
+     ## Shell commands
+     Allow ordinary, project-scoped development work: reading, searching and
+     listing files; `git` work in the working directory; building, testing, lin…
+     … +8 lines
 
-  ## MCP tool calls
-  For a tool exposed by an MCP server — named `server - tool`, with the
-  server's description and the call's arguments:
-  … +8 lines
+     ## MCP tool calls
+     For a tool exposed by an MCP server — named `server - tool`, with the
+     server's description and the call's arguments:
+     … +8 lines
 
-  ## Output Format
-  If the action should be blocked:
-  <block>yes</block><reason>one short sentence</reason>
-  … +4 lines
+     ## Output Format
+     If the action should be blocked:
+     <block>yes</block><reason>one short sentence</reason>
+     … +4 lines
 
-user:
-  ## Task context
-  User requests (oldest first; the last is the current task):
-  > set up the project
-  > now clean up the build output
+ USER  #2 · task context
+  ⎿  ## Task context
+     User requests (oldest first; the last is the current task):
+     > set up the project
+     > now clean up the build output
 
-  Recent actions (oldest first):
-  - Read(/home/user/proj/Makefile)
-  - Bash(make)
-  - Bash(sudo rm -rf /var/log) — denied, not run
+     Recent actions (oldest first):
+     - Read(/home/user/proj/Makefile)
+     - Bash(make)
+     - Bash(sudo rm -rf /var/log) — denied, not run
 
-  ## Action to review
-  (the command or MCP call being judged — filled in when a verdict is asked)
-~
-──────────────────────────────────────────────────────────── 100% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     ## Action to review
+     (the command or MCP call being judged — filled in when a verdict is asked)
+
+──────────────────────────────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   ←/→ prev/next message   pgup/pgdn to page   home/end to jump
  q/esc/ctrl+d to quit   tab for llm context
 ```
 
@@ -713,15 +714,21 @@ Pairing them under one key is the point: both answer *what is this turn
 actually sending* — one the model's own context window, the other its
 reviewer's — so they share the chrome (`ui::render_context_view` paints
 either; only the title, the scroll offset and the direction of the Tab hint
-differ) and differ only in the body `ui::classifier_lines` /
-`ui::context_lines` build. The page follows these rules:
+differ) and differ only in the body `ui::classifier_body` /
+`ui::context_body` build — out of the same entry builders, so each message
+opens on the same role chip over the same `⎿` gutter, and ←/→ step between
+the two here as between the sibling's dozens (`docs/context.md`). The page
+follows these rules:
 
 - **The rubric, abridged.** The block is only half of what the reviewer
   sees — the other half is the system prompt it judges by
   (`prompts/classifier.md`), and a reader who cannot see it can tell *that*
   a command was blocked but not against what. So the page draws the request
-  the way its sibling does: the amber `system prompt:` tag over the prompt,
-  then the block under a `user:` tag, closed by the `## Action to review`
+  the way its sibling does: the prompt as an amber `SYSTEM` entry — its
+  header saying `classifier prompt · abridged` where the sibling's
+  estimates the entry's size, since an abridged prompt's size is not what
+  is sent — then the block as a `USER` entry headed `task context`, closed
+  by the `## Action to review`
   header over a dim placeholder for the one part of the message that is only
   known when a verdict is asked (the header is one constant,
   `classifier::ACTION_TO_REVIEW_HEADER`, shared with `classifier_prompt`, so
@@ -802,7 +809,7 @@ onto it, the tool closures append, and the boundary reads it out. The dummy
 backend keeps no log — its offline auto-mode demo answers from the pure
 `permission::auto_verdict` heuristic, and injects no prompt either — so the
 page shows its dim `No classifier context yet` placeholder there, under the
-same mode note and with no `system prompt:` section above it: the page never
+same mode note and with no `SYSTEM` entry above it: the page never
 invents a rubric a backend does not send.
 
 A **subagent** keeps its own context (seeded from its launch prompt), which
@@ -1103,7 +1110,7 @@ explains itself with a toast instead of pretending to toggle anything, and
   `llm/agent.rs` — a noted approval emits `ToolStart → ToolNote → ToolEnd`
   and still runs the call.
 - `ui/tests/classifier_view.rs` — the Ctrl+D classifier page: the mode note
-  per mode, the block verbatim under its `user:` tag, the system prompt
+  per mode, the block verbatim as its `USER` entry, the system prompt
   abridged above it (`abridge_prompt` keeps headings and cut opening
   paragraphs and counts the rest — the real prompt abridging to its four
   sections with every content line either shown or counted), the

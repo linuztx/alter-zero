@@ -130,6 +130,126 @@ fn settle_debug_scroll_caps_a_stale_offset_and_repins_follow() {
 }
 
 #[test]
+fn left_and_right_queue_a_step_between_entries() {
+    // The key only says which way: where the neighbouring entry starts is a
+    // fact about the rendered page — its width, its wrapping — so the draw
+    // resolves it (`docs/context.md`).
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
+    assert_eq!(app.debug_jump, Some(EntryJump::Previous));
+    assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
+    assert_eq!(
+        app.debug_jump,
+        Some(EntryJump::Next),
+        "the newest press wins"
+    );
+}
+
+#[test]
+fn a_step_lands_on_the_neighbouring_entrys_header() {
+    // The page's entries start on these rows, and the window's top row is
+    // the scroll offset: ← goes to the header above the top row — the start
+    // of the entry being read, else the one before it — and → to the next
+    // header below it.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.settle_debug_scroll(40); // tail-following: the top row is 40
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 30, "the last entry's header");
+    assert!(!app.debug_follow, "a step unpins the tail");
+    assert_eq!(app.debug_jump, None, "the step is spent");
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 14);
+    // In the middle of an entry, ← goes back to its own header first.
+    app.debug_scroll = 9;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 6);
+    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 14);
+}
+
+#[test]
+fn a_tail_following_page_steps_from_its_current_end() {
+    // A page that grew since its last draw is still read from its bottom
+    // while it follows, so ← measures from the new end, not the stale one.
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.settle_debug_scroll(10);
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&[0, 12, 18], 20);
+    assert_eq!(app.debug_scroll, 18);
+}
+
+#[test]
+fn a_step_past_either_end_stops_at_the_page_edge() {
+    let rows = [2, 10, 25];
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 1;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&rows, 20);
+    assert_eq!(app.debug_scroll, 0, "nothing above: the top");
+    // The last entries share the last page, so a header the window cannot
+    // put at its top lands on the end — and the end re-engages tail-follow.
+    app.debug_scroll = 10;
+    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_jump(&rows, 20);
+    app.settle_debug_scroll(20);
+    assert_eq!(app.debug_scroll, 20);
+    assert!(app.debug_follow, "the end re-engages tail-follow");
+    app.debug_follow = false;
+    app.debug_scroll = 25;
+    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_jump(&rows, 30);
+    app.settle_debug_scroll(30);
+    assert_eq!(app.debug_scroll, 30, "nothing below: the end");
+}
+
+#[test]
+fn nothing_pending_resolves_to_nothing() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 7;
+    app.resolve_debug_jump(&[0, 3], 20);
+    assert_eq!(app.debug_scroll, 7);
+    assert!(!app.debug_follow);
+}
+
+#[test]
+fn steps_move_whichever_page_is_showing() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    app.classifier_follow = false;
+    app.classifier_scroll = 5;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&[0, 3], 9);
+    assert_eq!(app.classifier_scroll, 3);
+    assert_eq!(app.debug_scroll, 0, "the LLM page was left alone");
+}
+
+#[test]
+fn a_pending_step_never_carries_over_to_another_page_or_open() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.debug_jump, None, "Tab drops it");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(ctrl('d')); // close
+    app.on_key(ctrl('d')); // reopen
+    assert_eq!(app.debug_jump, None, "a close drops it");
+}
+
+#[test]
 fn ctrl_o_opens_the_tool_view_even_while_streaming() {
     let mut app = App::new();
     app.begin_stream();

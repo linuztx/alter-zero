@@ -176,6 +176,19 @@ impl App {
             // the prompt's Tab (its amend field) and this one never contend.
             KeyCode::Tab | KeyCode::BackTab => {
                 self.debug_page = self.debug_page.flipped();
+                // A step was pressed on the page just left behind.
+                self.debug_jump = None;
+                Action::None
+            }
+            // ←/→ step between the page's entries (`docs/context.md`) — the
+            // key knows only the direction; the draw, which has the built
+            // page, resolves where that is (`resolve_debug_jump`).
+            KeyCode::Left => {
+                self.debug_jump = Some(EntryJump::Previous);
+                Action::None
+            }
+            KeyCode::Right => {
+                self.debug_jump = Some(EntryJump::Next);
                 Action::None
             }
             KeyCode::Up => {
@@ -246,6 +259,8 @@ impl App {
         // across opens, so Ctrl+D comes back to whichever you were reading.
         self.classifier_scroll = 0;
         self.classifier_follow = self.view == View::ContextDebug;
+        // A step pressed before a close never lands on the next open.
+        self.debug_jump = None;
     }
 
     /// Whether the draw tick should **re-arm** the next animation frame — the
@@ -300,6 +315,41 @@ impl App {
         } else {
             self.debug_scroll.min(max)
         };
+    }
+
+    /// Resolve a pending ←/→ step ([`debug_jump`](Self::debug_jump)) on the
+    /// Ctrl+D page showing, against the rows its entries start on (`rows`,
+    /// ascending) and the page's scroll ceiling (`max`) — the draw's call,
+    /// made with the page as built and before its `settle_*_scroll`
+    /// (`docs/context.md`). A context window is a few dozen messages over
+    /// thousands of rows; this opens the previous or next one at the top.
+    ///
+    /// The window's top row is the scroll offset — `max` while the page
+    /// tail-follows, since a page that grew since its last draw is still
+    /// read from its bottom. ← lands on the last entry starting above that
+    /// row (the start of the entry being read, or the one before it when
+    /// the window already starts there), the top with none; → on the first
+    /// starting below it, past the end with none — where the settle pins it
+    /// and re-engages tail-follow, as it does for a header the last page
+    /// shares. A step anywhere else unpins the tail.
+    pub fn resolve_debug_jump(&mut self, rows: &[usize], max: usize) {
+        let Some(jump) = self.debug_jump.take() else {
+            return;
+        };
+        let (scroll, follow) = self.debug_page_scroll();
+        let top = if *follow { max } else { (*scroll).min(max) };
+        *scroll = match jump {
+            EntryJump::Previous => rows
+                .iter()
+                .rev()
+                .find(|&&row| row < top)
+                .map_or(0, |&row| row),
+            EntryJump::Next => rows
+                .iter()
+                .find(|&&row| row > top)
+                .map_or(usize::MAX, |&row| row),
+        };
+        *follow = false;
     }
 
     /// Settle the **classifier page's** scroll for a draw, exactly like

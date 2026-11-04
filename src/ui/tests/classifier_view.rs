@@ -6,7 +6,7 @@ use crate::permission::PermissionMode;
 use crate::ui::classifier_view::{PromptRow, abridge_prompt};
 use crate::ui::theme::{
     CLASSIFIER_ACTION_PLACEHOLDER, CLASSIFIER_PROMPT_PEEK_COLS, CLASSIFIER_VIEW_EMPTY,
-    CONTEXT_SYSTEM_PROMPT_TAG,
+    CLASSIFIER_VIEW_NOTE_INACTIVE,
 };
 
 /// The rendered rows of the view's body, trimmed for comparison.
@@ -17,12 +17,30 @@ fn rows(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// A body row's text without its `⎿` corner or the indent under it.
+fn body(row: &str) -> Option<&str> {
+    row.strip_prefix("  ⎿  ")
+        .or_else(|| row.strip_prefix("     "))
+}
+
+/// Whether some body row reads exactly `text`.
+fn shows(texts: &[String], text: &str) -> bool {
+    texts.iter().any(|t| body(t) == Some(text))
+}
+
+/// Where the entry whose chip reads `label` opens.
+fn chip_at(texts: &[String], label: &str) -> Option<usize> {
+    texts
+        .iter()
+        .position(|t| t.starts_with(&format!(" {label} ")))
+}
+
 #[test]
 fn the_injected_block_shows_verbatim_under_an_auto_mode_note() {
     // What the classifier reads, shown exactly as it is sent — never the
     // markdown renderer, so the `##` headers and the `> ` quoting stay —
-    // under the `user:` tag its sibling page gives a user message, since
-    // that is what the block is.
+    // as the USER entry its sibling page gives a user message, since that is
+    // what the block is.
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Auto));
     app.set_classifier_context(Some(
@@ -34,13 +52,77 @@ fn the_injected_block_shows_verbatim_under_an_auto_mode_note() {
         texts.iter().any(|t| t.contains("Auto mode")),
         "the note says the log is live: {texts:?}"
     );
-    assert!(texts.iter().any(|t| t == "user:"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "  ## Task context"), "{texts:?}");
-    assert!(
-        texts.iter().any(|t| t == "  > Improve the project"),
+    assert!(chip_at(&texts, "USER").is_some(), "{texts:?}");
+    assert!(shows(&texts, "## Task context"), "{texts:?}");
+    assert!(shows(&texts, "> Improve the project"), "{texts:?}");
+    assert!(shows(&texts, "- Read(/p/a.rs)"), "{texts:?}");
+}
+
+#[test]
+fn the_page_opens_each_message_on_its_role_chip() {
+    // The sibling page's entries, so the two read as one view: the rubric
+    // on a SYSTEM chip that says it is abridged, the task context on a USER
+    // chip — and the rows ←/→ step between.
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Auto));
+    app.set_classifier_system_prompt(Some(shaped_prompt()));
+    app.set_classifier_context(Some("## Task context\n- Read(/p/a.rs)".to_string()));
+    let page = classifier_body(&app, 80);
+    let texts: Vec<String> = page
+        .lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let system = chip_at(&texts, "SYSTEM").expect("the rubric's entry");
+    let user = chip_at(&texts, "USER").expect("the task context's entry");
+    assert_eq!(
+        texts[system], " SYSTEM  #1 · classifier prompt · abridged",
         "{texts:?}"
     );
-    assert!(texts.iter().any(|t| t == "  - Read(/p/a.rs)"), "{texts:?}");
+    assert_eq!(texts[user], " USER  #2 · task context", "{texts:?}");
+    assert_eq!(page.headers, vec![system, user]);
+    assert_eq!(
+        page.summary, None,
+        "an abridged prompt's size is not what is sent"
+    );
+}
+
+#[test]
+fn the_pages_own_sentences_break_between_words() {
+    // The mode note and the placeholders are prose; a narrow terminal used
+    // to cut them mid-word (`… (` / `shift+tab …`, `fill` / ` it.`).
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
+    for (context, sentences) in [
+        (
+            None,
+            vec![CLASSIFIER_VIEW_NOTE_INACTIVE, CLASSIFIER_VIEW_EMPTY],
+        ),
+        (
+            Some("## Task context".to_string()),
+            vec![CLASSIFIER_VIEW_NOTE_INACTIVE, CLASSIFIER_ACTION_PLACEHOLDER],
+        ),
+    ] {
+        app.set_classifier_context(context);
+        let words: Vec<String> = classifier_lines(&app, 50)
+            .iter()
+            .flat_map(|l| {
+                let text = plain(l);
+                let text = body(&text).map_or(text.clone(), str::to_string);
+                text.split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for sentence in sentences {
+            for word in sentence.split_whitespace() {
+                assert!(
+                    words.iter().any(|w| w == word),
+                    "{word:?} of {sentence:?} survives whole: {words:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -139,42 +221,29 @@ fn the_system_prompt_leads_the_page_abridged_under_its_own_tag() {
     app.set_classifier_system_prompt(Some(shaped_prompt()));
     app.set_classifier_context(Some("## Task context\n- Read(/p/a.rs)".to_string()));
     let texts = rows(&app);
-    let tag_at = texts
-        .iter()
-        .position(|t| t == CONTEXT_SYSTEM_PROMPT_TAG)
-        .expect("the system prompt tag leads");
-    let user_at = texts
-        .iter()
-        .position(|t| t == "user:")
-        .expect("the task context follows as the user message");
+    let tag_at = chip_at(&texts, "SYSTEM").expect("the system prompt leads");
+    let user_at = chip_at(&texts, "USER").expect("the task context follows as the user message");
     assert!(tag_at < user_at, "prompt before context: {texts:?}");
-    // Every heading survives whole, indented under the tag.
-    for heading in [
-        "  ## First section",
-        "  ## Second section",
-        "  ## Output Format",
-    ] {
-        assert!(texts.iter().any(|t| t == heading), "{heading}: {texts:?}");
+    // Every heading survives whole, hung on the entry's gutter.
+    for heading in ["## First section", "## Second section", "## Output Format"] {
+        assert!(shows(&texts, heading), "{heading}: {texts:?}");
     }
     // A long opening paragraph is cut and says so — the wrapped rows of the
     // cut line reassemble to its head closed with `…`, never the whole
     // paragraph — and the section's remaining lines are counted, not shown.
-    let joined: String = texts
-        .iter()
-        .map(|t| t.strip_prefix("  ").unwrap_or(t))
-        .collect();
+    let joined: String = texts.iter().map(|t| body(t).unwrap_or(t)).collect();
     assert!(
         joined.contains("Opening line of the first section. detail"),
         "the opener shows: {texts:?}"
     );
     let opener_at = texts
         .iter()
-        .position(|t| t.starts_with("  Opening line of the first section."))
+        .position(|t| body(t).is_some_and(|b| b.starts_with("Opening line of the first section.")))
         .unwrap();
     let marker_at = opener_at
         + texts[opener_at..]
             .iter()
-            .position(|t| t == "  … +3 lines")
+            .position(|t| body(t) == Some("… +3 lines"))
             .expect("the section's fold follows its opener");
     assert!(
         texts[opener_at..marker_at].iter().any(|t| t.ends_with('…')),
@@ -187,24 +256,17 @@ fn the_system_prompt_leads_the_page_abridged_under_its_own_tag() {
     assert!(!texts.iter().any(|t| t.contains("- one")), "{texts:?}");
     // Three sections fold lines — the preamble's three, the first section's
     // three, the output format's two — each behind its own counted row.
-    assert_eq!(
-        texts.iter().filter(|t| *t == "  … +3 lines").count(),
-        2,
-        "{texts:?}"
-    );
-    assert_eq!(
-        texts.iter().filter(|t| *t == "  … +2 lines").count(),
-        1,
-        "{texts:?}"
-    );
+    let folds = |marker: &str| texts.iter().filter(|t| body(t) == Some(marker)).count();
+    assert_eq!(folds("… +3 lines"), 2, "{texts:?}");
+    assert_eq!(folds("… +2 lines"), 1, "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains("More preamble")),
         "{texts:?}"
     );
     // …while a short section shows its opener with nothing to fold.
-    assert!(texts.iter().any(|t| t == "  Short opener."), "{texts:?}");
-    // The block itself is untouched under its tag.
-    assert!(texts.iter().any(|t| t == "  - Read(/p/a.rs)"), "{texts:?}");
+    assert!(shows(&texts, "Short opener."), "{texts:?}");
+    // The block itself is untouched in its own entry.
+    assert!(shows(&texts, "- Read(/p/a.rs)"), "{texts:?}");
 }
 
 #[test]
@@ -218,44 +280,43 @@ fn the_user_message_closes_on_the_action_slot() {
     app.set_classifier_system_prompt(Some(shaped_prompt()));
     app.set_classifier_context(Some("## Task context\n- Read(/p/a.rs)".to_string()));
     let texts = rows(&app);
-    let block_at = texts.iter().position(|t| t == "  - Read(/p/a.rs)").unwrap();
+    let block_at = texts
+        .iter()
+        .position(|t| body(t) == Some("- Read(/p/a.rs)"))
+        .unwrap();
     let header_at = texts
         .iter()
-        .position(|t| t == &format!("  {ACTION_TO_REVIEW_HEADER}"))
+        .position(|t| body(t) == Some(ACTION_TO_REVIEW_HEADER))
         .expect("the action header closes the user message");
     assert!(block_at < header_at, "{texts:?}");
     assert_eq!(texts[header_at - 1], "", "a blank divides them: {texts:?}");
     assert_eq!(
-        texts[header_at + 1],
-        format!("  {CLASSIFIER_ACTION_PLACEHOLDER}"),
+        body(&texts[header_at + 1]),
+        Some(CLASSIFIER_ACTION_PLACEHOLDER),
         "{texts:?}"
     );
-    // The last thing on the page — nothing trails the placeholder.
-    assert_eq!(texts.len(), header_at + 2, "{texts:?}");
+    // The last thing on the page — only the entry's spacer trails the
+    // placeholder.
+    assert_eq!(texts[header_at + 2], "", "{texts:?}");
+    assert_eq!(texts.len(), header_at + 3, "{texts:?}");
 }
 
 #[test]
 fn no_prompt_injected_shows_no_prompt_section() {
     // The dummy keeps no classifier at all (its auto-mode demo answers from a
     // heuristic), so it injects no prompt — and the page must not invent
-    // one: no tag, straight from the note to the placeholder.
+    // one: no SYSTEM entry, straight from the note to the placeholder.
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Auto));
     let texts = rows(&app);
-    assert!(
-        !texts.iter().any(|t| t == CONTEXT_SYSTEM_PROMPT_TAG),
-        "{texts:?}"
-    );
+    assert!(chip_at(&texts, "SYSTEM").is_none(), "{texts:?}");
     assert!(
         texts.iter().any(|t| t == CLASSIFIER_VIEW_EMPTY),
         "{texts:?}"
     );
     // A blank prompt reads as none.
     app.set_classifier_system_prompt(Some("  \n".to_string()));
-    assert!(
-        !rows(&app).iter().any(|t| t == CONTEXT_SYSTEM_PROMPT_TAG),
-        "{texts:?}"
-    );
+    assert!(chip_at(&rows(&app), "SYSTEM").is_none(), "{texts:?}");
 }
 
 #[test]
@@ -266,16 +327,13 @@ fn a_prompt_without_a_context_still_shows_above_the_placeholder() {
     app.set_permission_mode(Some(PermissionMode::Auto));
     app.set_classifier_system_prompt(Some("## Only section\n\nA rule.".to_string()));
     let texts = rows(&app);
-    let tag_at = texts
-        .iter()
-        .position(|t| t == CONTEXT_SYSTEM_PROMPT_TAG)
-        .expect("the prompt shows");
+    let tag_at = chip_at(&texts, "SYSTEM").expect("the prompt shows");
     let empty_at = texts
         .iter()
         .position(|t| t == CLASSIFIER_VIEW_EMPTY)
         .expect("the placeholder stands in for the block");
     assert!(tag_at < empty_at, "{texts:?}");
-    assert!(!texts.iter().any(|t| t == "user:"), "{texts:?}");
+    assert!(chip_at(&texts, "USER").is_none(), "{texts:?}");
 }
 
 #[test]
