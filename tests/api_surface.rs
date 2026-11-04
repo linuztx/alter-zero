@@ -37,6 +37,7 @@ use alter_zero::app::{
     CommandMenu,
     Compaction,
     ContextUsagePage,
+    EntryJump,
     ContextUsageRow,
     UsagePage,
     UsageSection,

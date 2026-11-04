@@ -303,13 +303,13 @@ impl Session<'_> {
     }
 
     /// Render the Ctrl+D context-debug view onto the alternate screen — the
-    /// transcript pager's raw-context sibling: settle the scroll against the
-    /// current screen, then paint. The window comes from the loop-owned
-    /// [`ui::ContextCache`] — the view redraws every animation frame while a
-    /// turn runs, and rebuilding the O(conversation) derivation per frame
-    /// starved the scroll keys on a big context (the "Ctrl+D freezes" bug) —
-    /// so the count feeding the clamp and the render share one build. See
-    /// `docs/context.md`.
+    /// transcript pager's raw-context sibling: resolve a pending ←/→ step and
+    /// settle the scroll against the current screen, then paint. The page
+    /// comes from the loop-owned [`ui::ContextCache`] — the view redraws every
+    /// animation frame while a turn runs, and rebuilding the O(conversation)
+    /// derivation per frame starved the scroll keys on a big context (the
+    /// "Ctrl+D freezes" bug) — so the clamp, the step and the render share
+    /// one build. See `docs/context.md`.
     pub(crate) fn draw_context_view(&mut self) -> io::Result<()> {
         // Tab's other page is a different body under the same chrome, and it
         // is built fresh from the backend rather than served from the cache
@@ -318,14 +318,12 @@ impl Session<'_> {
             return self.draw_classifier_page();
         }
         let screen = self.term.screen();
-        let max = ui::tool_view_max_scroll_for(
-            self.context.line_count(&self.app, screen.width),
-            screen.height,
-        );
-        self.app.settle_debug_scroll(max);
         let body = self.context.body(&self.app, screen.width);
-        // ←/→ step between the entries of the page as drawn.
-        self.app.set_debug_headers(&body.headers);
+        let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
+        // A ←/→ press lands against the page as built — its width, its
+        // wrapping — before the settle clamps it.
+        self.app.resolve_debug_jump(&body.headers, max);
+        self.app.settle_debug_scroll(max);
         let app = &self.app;
         self.term
             .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, body))
@@ -359,8 +357,8 @@ impl Session<'_> {
         let screen = self.term.screen();
         let body = ui::classifier_body(&self.app, screen.width);
         let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
+        self.app.resolve_debug_jump(&body.headers, max);
         self.app.settle_classifier_scroll(max);
-        self.app.set_debug_headers(&body.headers);
         let app = &self.app;
         self.term
             .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, &body))

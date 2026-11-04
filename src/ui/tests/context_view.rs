@@ -25,6 +25,18 @@ fn estimate(tokens: usize) -> String {
     }
 }
 
+/// The id of the first tool call `app`'s window carries — synthetic
+/// (`call_N`) for a record that never had one, the provider's own otherwise.
+fn first_call_id(app: &App) -> String {
+    crate::context::context_messages(&app.history)
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .next()
+        .expect("a tool call")
+        .id
+        .clone()
+}
+
 /// A body row's text without its `⎿` corner or the indent under it.
 fn body_text(row: &str) -> Option<&str> {
     row.strip_prefix("  ⎿  ")
@@ -36,7 +48,9 @@ fn every_entry_opens_on_a_role_chip_over_a_body_hung_on_the_gutter() {
     // The request, entry by entry: a role chip that stands out from the
     // text, the text hung on the tool cell's `⎿` gutter, a blank between
     // entries. The system prompt leads, then the conversation in wire order.
-    let texts = texts(&context_fixture(), 80);
+    let app = context_fixture();
+    let id = first_call_id(&app);
+    let texts = texts(&app, 80);
     assert!(texts[0].starts_with(" SYSTEM  #1"), "{texts:?}");
     assert_eq!(texts[1], "  ⎿  be nice", "{texts:?}");
     assert_eq!(texts[2], "", "{texts:?}");
@@ -45,8 +59,13 @@ fn every_entry_opens_on_a_role_chip_over_a_body_hung_on_the_gutter() {
     assert!(texts[6].starts_with(" ASSISTANT  #3"), "{texts:?}");
     assert_eq!(texts[7], "  ⎿  let me check", "{texts:?}");
     // The tool call is the native request in its raw wire form — not the old
-    // `[tool …]` bracket, and not the TUI's bullet rendering.
-    assert_eq!(texts[8], r#"     → read({"path":"f"})"#, "{texts:?}");
+    // `[tool …]` bracket, and not the TUI's bullet rendering — closed by the
+    // id its result answers to.
+    assert_eq!(
+        texts[8],
+        format!(r#"     → read({{"path":"f"}})  {id}"#),
+        "{texts:?}"
+    );
     assert!(!texts.iter().any(|t| t.contains("[tool")), "{texts:?}");
     // The result rides its own entry, in full, every line aligned under the
     // corner.
@@ -91,8 +110,11 @@ fn a_header_numbers_its_entry_and_estimates_its_size() {
     // what it costs — the question a raw context window is opened to answer
     // ("what is filling it?"). An assistant entry's calls ride the same
     // message, so their names and arguments count toward it, and the TOOL
-    // header names the call it answers, which the bare result never did.
-    let texts = texts(&context_fixture(), 80);
+    // header names the call it answers — the tool, then the call's id —
+    // which the bare result never did.
+    let app = context_fixture();
+    let id = first_call_id(&app);
+    let texts = texts(&app, 80);
     let count = crate::tokenizer::count;
     assert_eq!(
         texts[0],
@@ -112,15 +134,20 @@ fn a_header_numbers_its_entry_and_estimates_its_size() {
     );
     assert_eq!(
         texts[10],
-        format!(" TOOL  #4 · read · {}", estimate(count("L1\nL2\nL3")))
+        format!(
+            " TOOL  #4 · read · {id} · {}",
+            estimate(count("L1\nL2\nL3"))
+        )
     );
 }
 
 #[test]
-fn a_tool_call_row_lifts_the_tool_name_over_its_raw_arguments() {
-    let lines = context_lines(&context_fixture(), 80);
+fn a_tool_call_row_lifts_the_tool_name_and_closes_on_its_id() {
+    let app = context_fixture();
+    let id = first_call_id(&app);
+    let lines = context_lines(&app, 80);
     let call = &lines[8];
-    assert_eq!(plain(call), r#"     → read({"path":"f"})"#);
+    assert_eq!(plain(call), format!(r#"     → read({{"path":"f"}})  {id}"#));
     let name = call
         .spans
         .iter()
@@ -140,6 +167,26 @@ fn a_tool_call_row_lifts_the_tool_name_over_its_raw_arguments() {
         Some(context_text_color()),
         "the arguments read in the body's own ink"
     );
+    // The id the TOOL entry answering it names too, so a parallel batch's
+    // results pair with their calls by eye — dim, since it is bookkeeping.
+    let tail = call.spans.last().expect("an id span");
+    assert_eq!(tail.content, format!("  {id}"));
+    assert_eq!(tail.style.fg, Some(tool_dim_color()));
+}
+
+#[test]
+fn a_call_id_with_no_room_beside_its_call_takes_a_row_of_its_own() {
+    let app = context_fixture();
+    let id = first_call_id(&app);
+    // 25 columns of body: the call's 20 fit, the id beside them does not.
+    let texts = texts(&app, 30);
+    let call = texts
+        .iter()
+        .position(|t| t.contains("→ read("))
+        .unwrap_or_else(|| panic!("{texts:?}"));
+    assert_eq!(texts[call], r#"     → read({"path":"f"})"#, "{texts:?}");
+    assert_eq!(texts[call + 1], format!("     {id}"), "{texts:?}");
+    assert!(texts.iter().all(|t| cols(t) <= 30), "{texts:?}");
 }
 
 #[test]
@@ -178,12 +225,20 @@ fn a_tool_calls_arguments_wrap_between_words_under_its_name() {
     app.start_tool("Bash", "echo", Some(arguments));
     app.end_tool("ok", true);
     app.finish_stream();
-    let rows: Vec<String> = texts(&app, 40)
+    let id = first_call_id(&app);
+    let mut rows: Vec<String> = texts(&app, 40)
         .into_iter()
         .skip_while(|t| !t.contains("→ bash("))
         .take_while(|t| !t.is_empty())
         .collect();
     assert!(rows.len() > 1, "it wrapped: {rows:?}");
+    assert!(rows.iter().all(|t| cols(t) <= 40), "{rows:?}");
+    // The id closes the call, beside its last row or on a row of its own.
+    let last = rows.pop().expect("a last row");
+    match last.strip_suffix(&format!("  {id}")) {
+        Some(rest) => rows.push(rest.to_string()),
+        None => assert_eq!(last, format!("     {id}"), "{rows:?}"),
+    }
     let first = rows[0]
         .strip_prefix("  ⎿  → bash")
         .unwrap_or_else(|| panic!("the lead opens the call: {rows:?}"));
@@ -195,19 +250,28 @@ fn a_tool_calls_arguments_wrap_between_words_under_its_name() {
         format!("({arguments})"),
         "every row is whole words: {rows:?}"
     );
-    assert!(rows.iter().all(|t| cols(t) <= 40), "{rows:?}");
 }
 
 #[test]
-fn a_header_counts_a_users_images() {
+fn a_header_counts_a_users_images_and_charges_for_them() {
+    // The estimate is the footer gauge's own rule for one message
+    // (`app::message_tokens`): the pictures cost their flat charge each,
+    // which a count of the text alone would leave out.
     let mut app = App::new();
     app.record_user_message_with_images(
         "[Image #1] and [Image #2]",
         vec!["/tmp/a.png".into(), "/tmp/b.png".into()],
     );
-    let texts = texts(&app, 80);
+    let message = &crate::context::context_messages(&app.history)[0];
+    let tokens = crate::app::message_tokens(message, &mut crate::tokenizer::count);
     assert!(
-        texts[0].starts_with(" USER  #1 · ") && texts[0].ends_with(" · 2 images"),
+        tokens > crate::tokenizer::count(&message.text),
+        "the pictures are charged"
+    );
+    let texts = texts(&app, 80);
+    assert_eq!(
+        texts[0],
+        format!(" USER  #1 · {} · 2 images", estimate(tokens)),
         "{texts:?}"
     );
 }
@@ -447,19 +511,23 @@ fn the_body_marks_the_row_every_entry_header_sits_on() {
 }
 
 #[test]
-fn the_summary_counts_the_messages_and_their_tokens() {
-    let body = context_body(&context_fixture(), 80);
-    let count = crate::tokenizer::count;
-    let total = count("be nice")
-        + count("hello")
-        + count("let me check")
-        + count("read")
-        + count(r#"{"path":"f"}"#)
-        + count("L1\nL2\nL3")
-        + count("all done");
+fn the_summary_adds_up_to_the_footer_gauges_estimate() {
+    // The entries' estimates follow the gauge's rule, so the page's total is
+    // the very number the footer gauge reads offline — the view and the
+    // footer never disagree about one window.
+    let mut app = context_fixture();
+    app.set_user_instructions(Some("guide".to_string()));
+    app.record_user_message_with_images("[Image #1] look", vec!["/tmp/a.png".into()]);
+    let gauge = crate::tokenizer::count("be nice")
+        + crate::app::estimate_messages_tokens(&crate::context::context_messages_full(
+            app.user_instructions.as_deref(),
+            app.listings.as_deref(),
+            &app.history,
+        ));
+    let body = context_body(&app, 80);
     assert_eq!(
         body.summary.as_deref(),
-        Some(format!("5 messages · {}", estimate(total)).as_str())
+        Some(format!("6 messages · {}", estimate(gauge)).as_str())
     );
 }
 
@@ -665,6 +733,58 @@ fn an_agent_session_view_shows_the_subagents_own_system_prompt() {
         !texts.iter().any(|t| t.contains("AGENTS.md")),
         "subagents get no AGENTS.md fragment: {texts:?}"
     );
+}
+
+#[test]
+fn an_agent_session_views_title_names_the_agent() {
+    // Nothing else on the page says whose window this is, and the lead's and
+    // an agent's look alike; the title names the agent the way its roster
+    // row does — its type, then the task.
+    let mut app = context_fixture();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw weather", false)]);
+    let mut buf = buffer(80, 12);
+    render_context_view(buf.area, &mut buf, &app, &context_body(&app, 80));
+    assert!(
+        row(&buf, 0, 80).starts_with("/ C O N T E X T / "),
+        "the lead's window names no agent: {:?}",
+        row(&buf, 0, 80)
+    );
+    app.open_agent_view("a1");
+    let mut buf = buffer(80, 12);
+    render_context_view(buf.area, &mut buf, &app, &context_body(&app, 80));
+    assert!(
+        row(&buf, 0, 80)
+            .starts_with("/ C O N T E X T · general-purpose agent · Fetch Warsaw weather "),
+        "{:?}",
+        row(&buf, 0, 80)
+    );
+}
+
+#[test]
+fn a_wide_title_is_cut_by_columns_not_characters() {
+    // An agent's description is whatever the model wrote — CJK included —
+    // and a title cut at `width` *characters* is twice the row wide.
+    let header = crate::ui::transcript::overlay_header("天气预报天气预报天气预报", 9);
+    assert!(
+        cols(&plain(&header)) <= 9,
+        "the title fits its row: {:?}",
+        plain(&header)
+    );
+}
+
+#[test]
+fn the_tiling_never_glues_a_slash_onto_a_title() {
+    // Every spaced-caps title ends on the same parity, which hid that the
+    // tiling followed the absolute column: an agent's description can end
+    // on either, and its last letter then wore a `/`.
+    for title in ["C O N T E X T", "C O N T E X T · explore agent · Even"] {
+        let header = plain(&crate::ui::transcript::overlay_header(title, 60));
+        let rest = header
+            .strip_prefix(&format!("/ {title}"))
+            .unwrap_or_else(|| panic!("{header:?}"));
+        assert!(rest.starts_with(" /"), "{title:?}: {header:?}");
+    }
 }
 
 #[test]

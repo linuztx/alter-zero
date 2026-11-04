@@ -682,12 +682,22 @@ fn tool_view_header(width: u16) -> Line<'static> {
 
 /// A full-screen overlay's title row: the slash tiling with the spaced-caps
 /// `title` overlaid from the left edge, all dim — shared by the transcript
-/// pager and the `/resume` picker.
+/// pager, the `/resume` picker and both Ctrl+D pages.
 pub(super) fn overlay_header(title: &str, width: u16) -> Line<'static> {
-    let title = format!("/ {title}");
-    let mut text: String = title.chars().take(width as usize).collect();
-    for col in cols(&text)..width as usize {
-        text.push(if col.is_multiple_of(2) { '/' } else { ' ' });
+    // Cut by display columns, not characters: the Ctrl+D title can carry an
+    // agent's description, whatever the model wrote — CJK included — and a
+    // cut at `width` characters is up to twice the row wide.
+    let mut text = super::wrap::truncate_cols(&format!("/ {title}"), width as usize);
+    // The tiling opens with a blank after the title, so it never glues a `/`
+    // onto the title's last character — an agent's description can end on
+    // either parity, where every spaced-caps title ends on the same one.
+    let start = cols(&text);
+    for col in start..width as usize {
+        text.push(if (col - start).is_multiple_of(2) {
+            ' '
+        } else {
+            '/'
+        });
     }
     Line::from(Span::styled(text, Style::new().fg(tool_dim_color())))
 }

@@ -75,8 +75,11 @@ fn the_page_opens_each_message_on_its_role_chip() {
         .collect();
     let system = chip_at(&texts, "SYSTEM").expect("the rubric's entry");
     let user = chip_at(&texts, "USER").expect("the task context's entry");
-    assert_eq!(texts[system], " SYSTEM  #1 · abridged", "{texts:?}");
-    assert_eq!(texts[user], " USER  #2", "{texts:?}");
+    assert_eq!(
+        texts[system], " SYSTEM  #1 · classifier prompt · abridged",
+        "{texts:?}"
+    );
+    assert_eq!(texts[user], " USER  #2 · task context", "{texts:?}");
     assert_eq!(page.headers, vec![system, user]);
     assert_eq!(
         page.summary, None,

@@ -669,7 +669,7 @@ of the Ctrl+D view** — Tab flips between them:
 / C L A S S I F I E R / / / / / / / / / / / / / / / / / / / / / / / / / / /
 Auto mode — the classifier reads this before each command or MCP call.
 
- SYSTEM  #1 · abridged
+ SYSTEM  #1 · classifier prompt · abridged
   ⎿  You are the safety classifier for an autonomous AI coding agent in auto
      mode: it runs shell commands and MCP tool calls without asking the user,
      and you decide — one action at a time — whether the action runs or is
@@ -691,7 +691,7 @@ Auto mode — the classifier reads this before each command or MCP call.
      <block>yes</block><reason>one short sentence</reason>
      … +4 lines
 
- USER  #2
+ USER  #2 · task context
   ⎿  ## Task context
      User requests (oldest first; the last is the current task):
      > set up the project
@@ -725,9 +725,10 @@ follows these rules:
   (`prompts/classifier.md`), and a reader who cannot see it can tell *that*
   a command was blocked but not against what. So the page draws the request
   the way its sibling does: the prompt as an amber `SYSTEM` entry — its
-  header saying `abridged` where the sibling's estimates the entry's size,
-  since an abridged prompt's size is not what is sent — then the block as
-  a `USER` entry, closed by the `## Action to review`
+  header saying `classifier prompt · abridged` where the sibling's
+  estimates the entry's size, since an abridged prompt's size is not what
+  is sent — then the block as a `USER` entry headed `task context`, closed
+  by the `## Action to review`
   header over a dim placeholder for the one part of the message that is only
   known when a verdict is asked (the header is one constant,
   `classifier::ACTION_TO_REVIEW_HEADER`, shared with `classifier_prompt`, so

@@ -8,8 +8,8 @@ smoke_begin
 # LLM context window on the alternate screen: each entry on its role chip
 # (` USER `, ` ASSISTANT `, ` TOOL `) over its text hung on the `⎿` gutter,
 # the conversation verbatim and tool calls in the provider-native form (an
-# assistant `→ name(args)` request + a TOOL result entry naming the call it
-# answers, the shape a real backend sends), the bottom rule counting the
+# assistant `→ name(args)` request closed by its call id + a TOOL result
+# entry naming that call, the shape a real backend sends), the bottom rule counting the
 # messages, → stepping to the next one, q returning to the conversation. The
 # demo's calls are one parallel batch, so they share one assistant entry and
 # their TOOL results sit below its arguments (docs/prompt-caching.md) — past
@@ -55,7 +55,8 @@ expect_has "$ctxdebug_pane" -E "^ USER  #1 · " "the context view is missing the
 expect_has "$ctxdebug_pane" -E "^  ⎿  hello there" "the user message is not hung on the ⎿ gutter"
 expect_has "$ctxdebug_pane" -F "hello there" "the context view is missing the user message's raw text"
 expect_has "$ctxdebug_pane" -F 'read({"path":"about.py"})' "the context view is missing the native tool call (→ read(...))"
-expect_has "$ctxdebug_pages" -E "^ TOOL  #3 · read · " "the TOOL result entry is missing, or does not name the call it answers"
+expect_has "$ctxdebug_pages" -E "^ TOOL  #3 · read · call_0 · " "the TOOL result entry is missing, or does not name the call it answers"
+expect_has "$ctxdebug_pane" -E 'read\(\{"path":"about\.py"\}\)  call_0$' "the read call does not close on the id its result names"
 expect_has "$ctxdebug_pane" -E "^─ [0-9]+ messages · ≈[0-9.k]+ tokens ─" "the bottom rule does not count the messages"
 expect_has "$ctxdebug_pane" -F "←/→ prev/next message" "the key hints do not teach the message step"
 expect_has "$ctxdebug_step1" -E "^ ASSISTANT  #2 · " "→ did not open the next message at the top (got: $ctxdebug_step1)"

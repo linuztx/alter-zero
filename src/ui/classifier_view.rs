@@ -166,6 +166,7 @@ pub fn classifier_body(app: &App, width: u16) -> DebugBody {
         }
         let facts = [
             format!("{CONTEXT_INDEX_MARK}{index}"),
+            CLASSIFIER_PROMPT_META.to_string(),
             CLASSIFIER_PROMPT_ABRIDGED.to_string(),
         ];
         push_entry(&mut body, ContextRole::System, &facts, rows, width);
@@ -184,7 +185,10 @@ pub fn classifier_body(app: &App, width: u16) -> DebugBody {
     rows.push(Vec::new());
     rows.extend(text_rows(ACTION_TO_REVIEW_HEADER, text_width));
     rows.extend(dim_rows(CLASSIFIER_ACTION_PLACEHOLDER, text_width));
-    let facts = [format!("{CONTEXT_INDEX_MARK}{index}")];
+    let facts = [
+        format!("{CONTEXT_INDEX_MARK}{index}"),
+        CLASSIFIER_CONTEXT_META.to_string(),
+    ];
     push_entry(&mut body, ContextRole::User, &facts, rows, width);
     body
 }

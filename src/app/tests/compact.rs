@@ -487,3 +487,41 @@ fn clear_conversation_resets_the_context_gauge() {
     app.clear_conversation();
     assert_eq!(app.context_used(), 0);
 }
+
+#[test]
+fn message_tokens_is_the_gauges_rule_one_message_at_a_time() {
+    // The Ctrl+D view labels every entry with its own estimate
+    // (`docs/context.md`); summed, they must be exactly what the gauge
+    // reads, or the view and the footer would disagree about one window.
+    let mut app = App::new();
+    app.record_user_message_with_images(
+        "[Image #1] look",
+        vec![std::path::PathBuf::from("/tmp/a.png")],
+    );
+    app.begin_stream();
+    app.push_chunk("let me check");
+    app.flush_streaming_segment();
+    app.start_tool("Read", "f", None);
+    app.end_tool("L1\nL2", true);
+    app.finish_stream();
+    let messages = crate::context::context_messages(&app.history);
+    let summed: usize = messages
+        .iter()
+        .map(|message| message_tokens(message, &mut count_tokens))
+        .sum();
+    assert_eq!(summed, estimate_messages_tokens(&messages));
+    // It counts with the counter it is handed: the text, each picture's
+    // flat charge, and every call's name and arguments.
+    let bytes = |message: &crate::context::ContextMessage| {
+        message_tokens(message, &mut |text: &str| text.len())
+    };
+    assert_eq!(
+        bytes(&messages[0]),
+        messages[0].text.len() + crate::app::types::IMAGE_INPUT_TOKENS
+    );
+    let call = &messages[1].tool_calls[0];
+    assert_eq!(
+        bytes(&messages[1]),
+        messages[1].text.len() + call.name.len() + call.arguments.len()
+    );
+}

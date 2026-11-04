@@ -224,18 +224,29 @@ pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
 /// never disagree about what a message costs (`docs/agent-context-gauge.md`).
 #[must_use]
 pub(crate) fn estimate_messages_tokens(messages: &[crate::context::ContextMessage]) -> usize {
+    let mut count = count_tokens;
     messages
         .iter()
-        .map(|message| {
-            count_tokens(&message.text)
-                + message.images.len() * IMAGE_INPUT_TOKENS
-                + message
-                    .tool_calls
-                    .iter()
-                    .map(|call| count_tokens(&call.name) + count_tokens(&call.arguments))
-                    .sum::<usize>()
-        })
+        .map(|message| message_tokens(message, &mut count))
         .sum()
+}
+
+/// [`estimate_messages_tokens`]' rule for **one** message, counting with
+/// `count`: its text, a flat `IMAGE_INPUT_TOKENS` per attachment, and each
+/// tool call's name and arguments. The Ctrl+D view labels every entry with
+/// it (`docs/context.md`), handing in a memoized counter so a rebuild
+/// tokenizes only what is new — and since the gauge sums the very same rule,
+/// the entries add up to what the footer reads.
+pub(crate) fn message_tokens(
+    message: &crate::context::ContextMessage,
+    count: &mut dyn FnMut(&str) -> usize,
+) -> usize {
+    let calls: usize = message
+        .tool_calls
+        .iter()
+        .map(|call| count(&call.name) + count(&call.arguments))
+        .sum();
+    count(&message.text) + message.images.len() * IMAGE_INPUT_TOKENS + calls
 }
 
 /// A `/compact` marker's payload: the model-written handoff summary the

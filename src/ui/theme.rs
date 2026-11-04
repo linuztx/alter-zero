@@ -849,6 +849,15 @@ pub(super) const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 /// The view's spaced-caps title, overlaid on the slash tiling.
 pub(super) const CONTEXT_VIEW_TITLE: &str = "C O N T E X T";
 
+/// Inside an agent session view the title goes on to name whose window it
+/// is — `C O N T E X T · explore agent · Fetch the weather` — the type
+/// before [`CONTEXT_VIEW_AGENT_SUFFIX`], then the task, the roster's own
+/// naming. Nothing else on the page tells the lead's window from an agent's.
+pub(super) const CONTEXT_VIEW_AGENT_SEPARATOR: &str = " · ";
+
+/// See [`CONTEXT_VIEW_AGENT_SEPARATOR`].
+pub(super) const CONTEXT_VIEW_AGENT_SUFFIX: &str = " agent";
+
 /// First key-hint row — the pager's ([`TOOL_VIEW_HINT_KEYS`]) with the
 /// message step added, since a window of a few dozen entries is thousands
 /// of rows and ←/→ open the previous or next one at the top.
@@ -956,6 +965,11 @@ pub(super) const CLASSIFIER_PROMPT_MORE_PREFIX: &str = "… ";
 /// sibling page's says what an entry costs.
 pub(super) const CLASSIFIER_PROMPT_ABRIDGED: &str = "abridged";
 
+/// The classifier page's header facts naming what each entry holds — the
+/// rubric every verdict is judged by, and the bounded task context it reads.
+pub(super) const CLASSIFIER_PROMPT_META: &str = "classifier prompt";
+pub(super) const CLASSIFIER_CONTEXT_META: &str = "task context";
+
 /// The dim placeholder under the `## Action to review` header that closes
 /// the page's `user:` message: the request's real shape ends on the one
 /// action being judged, which is only known when a verdict is asked.
@@ -968,6 +982,10 @@ pub(super) const CONTEXT_IMAGE_LABEL: &str = "image: ";
 /// The prefix of a native tool-call row under an assistant entry —
 /// `→ name(arguments)`, the model's request in the raw wire form.
 pub(super) const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
+
+/// Between a tool call's closing `)` and its dim id — the id its `TOOL`
+/// entry names too, so a parallel batch's results pair with their calls.
+pub(super) const CONTEXT_CALL_ID_GAP: &str = "  ";
 
 /// A role chip's ink — `on_accent`, the pair the agent session view's label
 /// and the ask countdown already stand on ([`agent_view_label_fg`]), over

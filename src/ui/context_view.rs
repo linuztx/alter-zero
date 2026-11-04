@@ -7,7 +7,7 @@ use super::assistant::expand_code_tabs;
 use super::file_cell::gutter_row_spans;
 use super::theme::*;
 use super::transcript::{labeled_separator, overlay_header};
-use super::wrap::{clamp_spans, cols, wrap_output, wrap_output_hanging, wrap_verbatim};
+use super::wrap::{clamp_spans, cols, spans_cols, wrap_output, wrap_output_hanging, wrap_verbatim};
 use super::*;
 use crate::context::{ContextRole, ContextToolCall};
 use crate::context_usage::CountMemo;
@@ -177,13 +177,42 @@ fn image_rows(path: &std::path::Path, width: u16) -> Vec<Vec<Span<'static>>> {
 
 /// A native tool call's rows: the raw `→ name(arguments)` wire form, the
 /// arrow and the name lifted in the tool hue, bold, over the arguments in
-/// the body's ink. The arguments word-wrap like the text above them — they
-/// carry a command or a file's contents as often as not — **hanging** under
-/// the `→ name` lead ([`wrap_output_hanging`], the tool header's rule: a
-/// first word too wide for the lead's row but not for a whole one opens the
-/// next row, the lead standing alone). A terminal too narrow for the lead
-/// itself wraps the whole call verbatim instead.
+/// the body's ink, closed by the call's dim id ([`with_call_id`]). The
+/// arguments word-wrap like the text above them — they carry a command or a
+/// file's contents as often as not — **hanging** under the `→ name` lead
+/// ([`wrap_output_hanging`], the tool header's rule: a first word too wide
+/// for the lead's row but not for a whole one opens the next row, the lead
+/// standing alone). A terminal too narrow for the lead itself wraps the
+/// whole call verbatim instead.
 fn call_rows(call: &ContextToolCall, width: u16) -> Vec<Vec<Span<'static>>> {
+    with_call_id(request_rows(call, width), &call.id, width)
+}
+
+/// `rows` closed by the call's `id`, dim — the id its `TOOL` entry names
+/// too, so a parallel batch's results pair with their calls by eye: beside
+/// the last row where the two fit, else on a row (or rows) of its own.
+fn with_call_id(
+    mut rows: Vec<Vec<Span<'static>>>,
+    id: &str,
+    width: u16,
+) -> Vec<Vec<Span<'static>>> {
+    if id.is_empty() {
+        return rows;
+    }
+    let dim = Style::new().fg(tool_dim_color());
+    let beside = format!("{CONTEXT_CALL_ID_GAP}{id}");
+    let fits = |row: &Vec<Span<'static>>| {
+        width == 0 || spans_cols(row) + cols(&beside) <= usize::from(width)
+    };
+    match rows.last_mut() {
+        Some(last) if fits(last) => last.push(Span::styled(beside, dim)),
+        _ => rows.extend(dim_rows(id, width)),
+    }
+    rows
+}
+
+/// The `→ name(arguments)` request's own rows, before the id closes them.
+fn request_rows(call: &ContextToolCall, width: u16) -> Vec<Vec<Span<'static>>> {
     let head = format!("{CONTEXT_TOOL_CALL_PREFIX}{}", call.name);
     let name = Style::new()
         .fg(context_tool_color())
@@ -263,7 +292,7 @@ fn token_estimate(tokens: usize) -> String {
 /// See `docs/context.md`.
 #[must_use]
 pub fn context_body(app: &App, width: u16) -> DebugBody {
-    build_context_body(app, width, &mut crate::tokenizer::count)
+    build_context_body(app, width, &mut crate::app::count_tokens)
 }
 
 /// [`context_body`]'s rows alone.
@@ -306,6 +335,7 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
             app.system_prompt.as_ref(),
         ),
     };
+    // Empty texts count nothing, so a memo is never asked about one.
     let mut tokens_of = |text: &str| if text.is_empty() { 0 } else { count(text) };
     let text_width = body_width(width);
     let mut body = DebugBody::default();
@@ -332,10 +362,12 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
     }
     for message in &messages {
         index += 1;
-        let mut tokens = tokens_of(&message.text);
+        // The footer gauge's own rule for one message — its text, a flat
+        // charge per picture, each call's name and arguments — so the
+        // entries add up to what the gauge reads.
+        let tokens = crate::app::message_tokens(message, &mut tokens_of);
         let mut rows = text_rows(&message.text, text_width);
         for call in &message.tool_calls {
-            tokens += tokens_of(&call.name) + tokens_of(&call.arguments);
             call_names.insert(call.id.as_str(), call.name.as_str());
             rows.extend(call_rows(call, text_width));
         }
@@ -344,12 +376,12 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
         }
         total += tokens;
         let mut facts = vec![format!("{CONTEXT_INDEX_MARK}{index}")];
-        if let Some(tool) = message
-            .tool_call_id
-            .as_deref()
-            .and_then(|id| call_names.get(id))
-        {
-            facts.push((*tool).to_string());
+        if let Some(id) = message.tool_call_id.as_deref() {
+            // The call it answers: the tool, then the id the call row ends on.
+            if let Some(tool) = call_names.get(id) {
+                facts.push((*tool).to_string());
+            }
+            facts.push(id.to_string());
         }
         if tokens > 0 {
             facts.push(token_estimate(tokens));
@@ -487,7 +519,7 @@ impl ContextCache {
         let tokenize = |text: &str| {
             #[cfg(test)]
             misses.set(misses.get() + 1);
-            crate::tokenizer::count(text)
+            crate::app::count_tokens(text)
         };
         let memo = &mut self.memo;
         self.body = build_context_body(app, width, &mut |text| memo.count(text, &tokenize));
@@ -539,6 +571,23 @@ fn pinned_header(headers: &[usize], total: usize, scroll: usize, rows: usize) ->
     (current < scroll && scroll + 2 < end).then_some(current)
 }
 
+/// The title row's text: the page's spaced caps, then — inside an agent
+/// session view — whose window it is, the way the roster names an agent
+/// (`explore agent · Fetch the weather`). Nothing else on the page says it,
+/// and the lead's window and an agent's look alike.
+fn view_title(app: &App, title: &str) -> String {
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match app.viewed_agent() {
+        Some(run) => format!(
+            "{title}{CONTEXT_VIEW_AGENT_SEPARATOR}{}{CONTEXT_VIEW_AGENT_SUFFIX}\
+             {CONTEXT_VIEW_AGENT_SEPARATOR}{}",
+            flat(&run.agent_type),
+            flat(&run.description),
+        ),
+        None => title.to_string(),
+    }
+}
+
 /// Render the full-screen Ctrl+D view — the transcript pager's chrome over
 /// whichever page is showing, windowed by that page's own scroll offset
 /// (clamped) with `~` filler past the end, the entry the window opens inside
@@ -564,12 +613,15 @@ pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, body: &Debug
     ])
     .areas(area);
 
-    let title = if classifier {
-        CLASSIFIER_VIEW_TITLE
-    } else {
-        CONTEXT_VIEW_TITLE
-    };
-    Paragraph::new(overlay_header(title, area.width)).render(title_area, buf);
+    let title = view_title(
+        app,
+        if classifier {
+            CLASSIFIER_VIEW_TITLE
+        } else {
+            CONTEXT_VIEW_TITLE
+        },
+    );
+    Paragraph::new(overlay_header(&title, area.width)).render(title_area, buf);
 
     let lines = &body.lines;
     let rows = body_area.height as usize;

@@ -277,9 +277,10 @@ context window, one entry per message the request carries:
 
  ASSISTANT  #3 · ≈25 tokens · 1 tool call                       (green chip)
   ⎿  Let me look at the file.
-     → read({"path":"src/main.rs"})   (the arrow and name purple, bold)
+     → read({"path":"src/main.rs"})  call_1      (the arrow and name purple,
+                                                  bold; the call's id dim)
 
- TOOL  #4 · read · ≈310 tokens        (purple chip — names the call it answers)
+ TOOL  #4 · read · call_1 · ≈310 tokens   (purple chip — names the call it answers)
   ⎿  1 fn main() { … }
 
 ─ 4 messages · ≈2.2k tokens ─────────────────────────────────────────── 100% ─
@@ -300,13 +301,17 @@ message. Each entry has two parts:
   countdown's dress (`context_chip_fg`). The lower-case `user:` tags this
   replaced read as a word of the text under them, and on a page of raw text
   the header is the row the eye hunts for. Beside the chip, dim: the entry's
-  `#n` place in the request, the **tool a result answers** (resolved through
-  its `tool_call_id` from the calls above it — a bare result used to say
-  nothing of which call it belonged to), a **tokenizer estimate** of its size
-  marked `≈` like the `/context` page's (an assistant entry's calls ride the
-  same message, so their names and arguments count toward it), and how many
-  tool calls or pictures it carries. A header is always one row, cut with
-  `…` at the width.
+  `#n` place in the request, the **call a result answers** — its tool,
+  resolved through its `tool_call_id` from the calls above it, then that id,
+  which the call's own row ends on, so a parallel batch's results pair with
+  their calls by eye (a bare result used to say nothing of which call it
+  belonged to) — a **token estimate** of its size marked `≈` like the
+  `/context` page's, and how many tool calls or pictures it carries. The
+  estimate is the footer gauge's own rule for one message
+  (`app::message_tokens`, which `estimate_messages_tokens` sums): the text, a
+  flat charge per picture, each call's name and arguments — so the entries,
+  and the bottom rule's total, add up to what the gauge reads offline. A
+  header is always one row, cut with `…` at the width.
 - **The body, hung on the tool cell's `⎿` gutter** (`TOOL_RESULT_PREFIX`,
   through `file_cell::gutter_row_spans`): the corner on the first row, every
   other row aligned under it. The text is **word-wrapped with its own
@@ -320,7 +325,8 @@ message. Each entry has two parts:
   `→ name(arguments)` rows — the arrow and the name purple and bold, the
   arguments in the body's ink, word-wrapped hanging under the `→ name` lead
   (the tool header's rule; a terminal too narrow for the lead wraps the whole
-  call verbatim) — and attachment paths dim beneath, wrapped verbatim since a
+  call verbatim), closed by the call's dim id beside its last row, or on a
+  row of its own where the two do not fit — and attachment paths dim beneath, wrapped verbatim since a
   path has no spaces worth breaking at. An entry with nothing in it says
   `(empty)`: an empty result still went over the wire. Below the gutter's
   width plus room for one wide glyph, the gutter gives its columns back.
@@ -333,14 +339,19 @@ rows, so the view carries three aids, all fed by `DebugBody::headers` — the
 row each entry's header sits on, built beside the rows:
 
 - **←/→ step between messages**, opening the previous or next entry at the
-  top of the body (`App::step_debug_entry`): ← from inside an entry opens
-  that entry's own head first, the way a paragraph motion does; past the last
-  entry → is End and before the first ← is Home; stepping back leaves the
-  tail-follow. The rows are injected per draw (`App::set_debug_headers`,
-  beside the scroll settle) and forgotten on Tab and on a close, so a key
-  pressed before the page's first draw does nothing rather than jump by the
-  other page's rows. They are the keys the transcript pager's backtrack uses
-  for the previous and next message, meaning the same thing here.
+  top of the body. The key records only the direction (`App::debug_jump`, an
+  `EntryJump`): where the neighbouring entry starts is a fact about the page
+  as built — its width, its wrapping — so the draw resolves it against the
+  rows it is about to paint (`App::resolve_debug_jump`, before the scroll
+  settle), never against a previous frame's. ← from inside an entry opens
+  that entry's own head first, the way a paragraph motion does; past the
+  last entry → is the end and before the first ← is the top; the window's
+  top row is the page's current end while it tail-follows, so a page that
+  grew since its last draw is stepped from its new bottom; and a step that
+  lands within the last screenful re-engages the tail-follow, as End does.
+  Tab and a close drop a step still pending, so it never lands on a page it
+  was not pressed on. They are the keys the transcript pager's backtrack
+  uses for the previous and next message, meaning the same thing here.
 - **The entry the window opens inside is pinned** over the top row while its
   own header is scrolled off (`pinned_header`): deep in a long system prompt
   or tool result the top row still says whose text it is. Not on the header
@@ -372,9 +383,10 @@ rendered body rides the window — pegged the event loop and starved the scroll
 keys: the reported "Ctrl+D freezes the TUI" bug, worst exactly when the user
 opens the view to read what a long skill injected. So the loop owns a
 `ui::ContextCache` (the `TranscriptCache`'s little sibling, `docs/
-tool-view-performance.md`): `draw_context_view` asks it for the line count
-(the scroll clamp, `tool_view_max_scroll_for` — the pager formula, shared) and
-then the built body, and the cache rebuilds **only when its signature changes** —
+tool-view-performance.md`): `draw_context_view` asks it for the built page
+(the scroll clamp, `tool_view_max_scroll_for` — the pager formula, shared, and
+the ←/→ step resolve against the same build the render paints), and the cache
+rebuilds **only when its signature changes** —
 history generation + length, the width, the viewed agent (id + its own
 transcript length), and the leading fragments' lengths (system/agent prompt,
 the `AGENTS.md` instructions section, the listing sections, a viewed agent's
@@ -403,7 +415,14 @@ subagent conversations start fresh without one (`llm::backend`'s
 `run_agent_calls`), and with the agent's own briefing — the skills section
 wrapped alone, exactly as the launch sent it — taken verbatim in front of
 its transcript (`context_messages_behind`, `docs/subagents.md`). So the
-note's presence is verifiable right where the user looks for it.
+note's presence is verifiable right where the user looks for it. And the
+title says whose window it is — `C O N T E X T · explore agent · Fetch the
+weather`, the agent named the way its roster row names it — since nothing
+else on the page tells the lead's window from an agent's. `overlay_header`
+cuts that title by display columns rather than characters (a description is
+whatever the model wrote, CJK included, and a cut at `width` characters is
+up to twice the row wide) and starts its slash tiling with a blank, so the
+tiling never glues a `/` onto a title ending on the other parity.
 
 ## Also fixed while wiring: the default system prompt was dead
 

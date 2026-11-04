@@ -130,112 +130,123 @@ fn settle_debug_scroll_caps_a_stale_offset_and_repins_follow() {
 }
 
 #[test]
-fn left_and_right_step_between_the_entries_of_the_page_on_screen() {
-    // A context window is thousands of rows of a few dozen messages; ←/→
-    // open the previous and next one at the top of the page (`docs/context.md`).
+fn left_and_right_queue_a_step_between_entries() {
+    // The key only says which way: where the neighbouring entry starts is a
+    // fact about the rendered page — its width, its wrapping — so the draw
+    // resolves it (`docs/context.md`).
     let mut app = App::new();
     app.on_key(ctrl('d'));
-    app.set_debug_headers(&[0, 4, 9, 15]);
-    app.debug_follow = false;
-    app.debug_scroll = 6; // inside the second entry
+    assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
+    assert_eq!(app.debug_jump, Some(EntryJump::Previous));
     assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
-    assert_eq!(app.debug_scroll, 9, "→ opens the next entry");
-    app.on_key(key(KeyCode::Right));
-    assert_eq!(app.debug_scroll, 15);
-    app.on_key(key(KeyCode::Left));
-    assert_eq!(app.debug_scroll, 9, "← the one before");
-    app.debug_scroll = 11; // inside the third entry
-    app.on_key(key(KeyCode::Left));
     assert_eq!(
-        app.debug_scroll, 9,
-        "← from inside an entry opens that entry's own head first"
+        app.debug_jump,
+        Some(EntryJump::Next),
+        "the newest press wins"
     );
 }
 
 #[test]
-fn stepping_back_leaves_the_tail_follow() {
+fn a_step_lands_on_the_neighbouring_entrys_header() {
+    // The page's entries start on these rows, and the window's top row is
+    // the scroll offset: ← goes to the header above the top row — the start
+    // of the entry being read, else the one before it — and → to the next
+    // header below it.
+    let rows = [0, 6, 14, 30];
     let mut app = App::new();
     app.on_key(ctrl('d'));
-    app.set_debug_headers(&[0, 4, 9]);
-    app.settle_debug_scroll(12);
-    assert!(app.debug_follow, "the view opens pinned to the bottom");
+    app.settle_debug_scroll(40); // tail-following: the top row is 40
     app.on_key(key(KeyCode::Left));
-    assert_eq!(app.debug_scroll, 9);
-    assert!(
-        !app.debug_follow,
-        "or the next draw would snap it back to the bottom"
-    );
-}
-
-#[test]
-fn past_the_last_entry_right_goes_to_the_end_and_before_the_first_left_to_the_top() {
-    let mut app = App::new();
-    app.on_key(ctrl('d'));
-    app.set_debug_headers(&[2, 8]);
-    app.debug_follow = false;
-    app.debug_scroll = 8;
-    app.on_key(key(KeyCode::Right));
-    assert_eq!(app.debug_scroll, usize::MAX, "End: the draw settles it");
-    app.debug_scroll = 1;
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 30, "the last entry's header");
+    assert!(!app.debug_follow, "a step unpins the tail");
+    assert_eq!(app.debug_jump, None, "the step is spent");
     app.on_key(key(KeyCode::Left));
-    assert_eq!(app.debug_scroll, 0, "Home");
-}
-
-#[test]
-fn a_page_not_yet_drawn_ignores_the_jump_keys() {
-    // The entry rows come from the page's last draw; with none yet there is
-    // nothing to step between, and guessing would jump the page.
-    let mut app = App::new();
-    app.on_key(ctrl('d'));
-    app.debug_follow = false;
-    app.debug_scroll = 5;
-    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 14);
+    // In the middle of an entry, ← goes back to its own header first.
+    app.debug_scroll = 9;
     app.on_key(key(KeyCode::Left));
-    assert_eq!(app.debug_scroll, 5);
-}
-
-#[test]
-fn tab_forgets_the_entry_rows_of_the_page_it_leaves() {
-    // The two pages have different rows; until the classifier page is drawn
-    // the context page's rows would send ←/→ to the wrong places.
-    let mut app = App::new();
-    app.on_key(ctrl('d'));
-    app.set_debug_headers(&[0, 4]);
-    app.on_key(key(KeyCode::Tab));
-    app.classifier_follow = false;
-    app.classifier_scroll = 2;
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 6);
     app.on_key(key(KeyCode::Right));
-    assert_eq!(app.classifier_scroll, 2);
+    app.resolve_debug_jump(&rows, 40);
+    assert_eq!(app.debug_scroll, 14);
 }
 
 #[test]
-fn the_jump_keys_move_the_classifier_pages_own_scroll() {
+fn a_tail_following_page_steps_from_its_current_end() {
+    // A page that grew since its last draw is still read from its bottom
+    // while it follows, so ← measures from the new end, not the stale one.
     let mut app = App::new();
     app.on_key(ctrl('d'));
-    app.on_key(key(KeyCode::Tab));
-    app.set_debug_headers(&[2, 6]);
-    app.classifier_follow = false;
-    app.classifier_scroll = 0;
-    app.debug_scroll = 3;
-    app.on_key(key(KeyCode::Right));
-    assert_eq!(app.classifier_scroll, 2);
-    assert_eq!(app.debug_scroll, 3, "the other page keeps its place");
+    app.settle_debug_scroll(10);
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&[0, 12, 18], 20);
+    assert_eq!(app.debug_scroll, 18);
 }
 
 #[test]
-fn closing_the_view_forgets_its_entry_rows() {
+fn a_step_past_either_end_stops_at_the_page_edge() {
+    let rows = [2, 10, 25];
     let mut app = App::new();
-    app.on_key(ctrl('d'));
-    app.set_debug_headers(&[0, 4]);
-    app.on_key(ctrl('d'));
     app.on_key(ctrl('d'));
     app.debug_follow = false;
     app.debug_scroll = 1;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&rows, 20);
+    assert_eq!(app.debug_scroll, 0, "nothing above: the top");
+    // The last entries share the last page, so a header the window cannot
+    // put at its top lands on the end — and the end re-engages tail-follow.
+    app.debug_scroll = 10;
     app.on_key(key(KeyCode::Right));
-    assert_eq!(
-        app.debug_scroll, 1,
-        "a reopened view waits for its own first draw"
-    );
+    app.resolve_debug_jump(&rows, 20);
+    app.settle_debug_scroll(20);
+    assert_eq!(app.debug_scroll, 20);
+    assert!(app.debug_follow, "the end re-engages tail-follow");
+    app.debug_follow = false;
+    app.debug_scroll = 25;
+    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_jump(&rows, 30);
+    app.settle_debug_scroll(30);
+    assert_eq!(app.debug_scroll, 30, "nothing below: the end");
+}
+
+#[test]
+fn nothing_pending_resolves_to_nothing() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 7;
+    app.resolve_debug_jump(&[0, 3], 20);
+    assert_eq!(app.debug_scroll, 7);
+    assert!(!app.debug_follow);
+}
+
+#[test]
+fn steps_move_whichever_page_is_showing() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Tab));
+    app.classifier_follow = false;
+    app.classifier_scroll = 5;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_debug_jump(&[0, 3], 9);
+    assert_eq!(app.classifier_scroll, 3);
+    assert_eq!(app.debug_scroll, 0, "the LLM page was left alone");
+}
+
+#[test]
+fn a_pending_step_never_carries_over_to_another_page_or_open() {
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.debug_jump, None, "Tab drops it");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(ctrl('d')); // close
+    app.on_key(ctrl('d')); // reopen
+    assert_eq!(app.debug_jump, None, "a close drops it");
 }
 
 #[test]

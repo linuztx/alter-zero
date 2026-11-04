@@ -18,12 +18,16 @@ release heading when a version is cut.
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and
   its text sits under a `⎿` gutter, wrapped between words instead of in the
-  middle of them. A tool result names the call it answers, and blank lines a
-  reply ended on no longer pad the space before its tool calls. **←/→** jump
-  to the previous or next message, the message you are scrolled into keeps
-  its label on the top row, and the bottom rule shows how many messages the
-  window holds and roughly how many tokens they add up to. Tab's page, with
-  what the auto-mode classifier reads, has the same look.
+  middle of them. A tool result names the call it answers, by tool and by
+  call id, and each tool call ends on its id, so a batch's results pair up
+  with their calls. Blank lines a reply ended on no longer pad the space
+  before its tool calls. **←/→** jump to the previous or next message, the
+  message you are scrolled into keeps its label on the top row, and the
+  bottom rule shows how many messages the window holds and roughly how many
+  tokens they add up to — the same estimate the footer's context gauge
+  shows. Inside a subagent's session view, the title names the agent whose
+  context you are reading. Tab's page, with what the auto-mode classifier
+  reads, has the same look.
 
 ## [0.18.0] - 2026-11-03
 
