@@ -50,6 +50,6 @@ pub use self::payload::{
 };
 pub use self::report::{HookReport, HookSaid, RanHook};
 pub use self::verdict::{
-    HOOK_OUTPUT_MAX_BYTES, HookBlock, HookOrigin, HookOutcome, HookPermission, HookRun, NO_REASON,
-    ParsedHook, merge, parse_run, truncate_output,
+    HOOK_LABEL_MAX_CHARS, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookOrigin, HookOutcome,
+    HookPermission, HookRun, NO_REASON, ParsedHook, hook_label, merge, parse_run, truncate_output,
 };

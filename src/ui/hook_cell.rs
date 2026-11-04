@@ -7,6 +7,8 @@
 //! ([`gutter_row`]) — and the output fold (`docs/long-lines.md`). What it says
 //! is the [`HookReport`] the runner built; nothing here decides a word of it.
 
+use std::borrow::Cow;
+
 use crate::hooks::{HookReport, HookSaid};
 
 use super::assistant::expand_code_tabs;
@@ -18,7 +20,7 @@ use super::*;
 /// One row of the cell's body before it wraps: its words and the colour they
 /// wear.
 struct Row<'a> {
-    text: &'a str,
+    text: Cow<'a, str>,
     color: Color,
 }
 
@@ -27,6 +29,12 @@ impl<'a> Row<'a> {
     /// are what the hook said — context is dim, being the model's and not
     /// the user's, and a hook that broke is red.
     fn said(said: &'a HookSaid) -> Self {
+        Self::reading(said, Cow::Borrowed(said.row()))
+    }
+
+    /// `said`'s row in other words — the ones it reads in under its own
+    /// hook's line ([`crate::hooks::RanHook::row_under`]) — in its colour.
+    fn reading(said: &HookSaid, text: Cow<'a, str>) -> Self {
         let color = match said {
             HookSaid::Stopped(_) | HookSaid::Feedback(_) | HookSaid::Message(_) => {
                 tool_output_color()
@@ -34,16 +42,13 @@ impl<'a> Row<'a> {
             HookSaid::Context { .. } => tool_dim_color(),
             HookSaid::Error(_) => tool_fail_color(),
         };
-        Self {
-            text: said.row(),
-            color,
-        }
+        Self { text, color }
     }
 
     /// A configuration problem's row — red, like a hook that broke.
     fn warning(text: &'a str) -> Self {
         Self {
-            text,
+            text: Cow::Borrowed(text),
             color: tool_fail_color(),
         }
     }
@@ -52,7 +57,7 @@ impl<'a> Row<'a> {
     /// corner, the rest hanging under its text — tabs spaced out, as a
     /// tool's output is, since a tab paints as nothing.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        wrap_output(&expand_code_tabs(self.text), width)
+        wrap_output(&expand_code_tabs(&self.text), width)
             .into_iter()
             .enumerate()
             .map(|(i, text)| gutter_row(i, text, Some(self.color)))
@@ -179,7 +184,9 @@ pub fn hook_report_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> 
 /// The **expanded** cell, in the Ctrl+O transcript: every hook that ran, in
 /// order — its command and how long it ran, the `hooks.json` it is
 /// configured in — then what that hook said, a context row followed by the
-/// text it added; then the configuration's problems. Never folded.
+/// text it added and an error row without the name the line above gives
+/// ([`crate::hooks::RanHook::row_under`]); then the configuration's
+/// problems. Never folded.
 pub(super) fn hook_report_full_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> {
     let wrap = body_width(width);
     let dim = Some(tool_dim_color());
@@ -196,7 +203,7 @@ pub(super) fn hook_report_full_lines(report: &HookReport, width: u16) -> Vec<Lin
                 .map(|(i, text)| gutter_row(i, text, dim)),
         );
         for said in &hook.said {
-            lines.extend(Row::said(said).lines(wrap));
+            lines.extend(Row::reading(said, hook.row_under(said)).lines(wrap));
             if let HookSaid::Context { text, .. } = said {
                 lines.extend(
                     wrap_output(&expand_code_tabs(text), wrap)

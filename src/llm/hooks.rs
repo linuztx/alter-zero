@@ -29,11 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::frontmatter::truncate_chars;
 use crate::hooks::{
     CommandHook, HOOK_OUTPUT_MAX_BYTES, HookBlock, HookContext, HookEvent, HookOrigin, HookOutcome,
     HookPermission, HookReport, HookRun, HookSaid, HooksFile, NO_REASON, ParsedHook, RanHook,
-    merge, parse_run, truncate_output,
+    hook_label, merge, parse_run, truncate_output,
 };
 use crate::stream::CancelToken;
 use crate::subprocess;
@@ -1179,13 +1178,9 @@ fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
     }
 }
 
-/// How much of a hook's command names it to the model: room for a script's
-/// path and its flags, not for an inline program.
-const HOOK_LABEL_MAX_CHARS: usize = 80;
-
 /// The lines a decision names its handler on, each newline first: `Hook:
-/// {command}` — the command's first line, cut to [`HOOK_LABEL_MAX_CHARS`]
-/// with `…` marking what was dropped — then `Config: {path}`, the
+/// {command}` — the command's label ([`hook_label`]: its first line, cut,
+/// with `…` marking what was dropped) — then `Config: {path}`, the
 /// `hooks.json` it is configured in, named from `home` when one is given
 /// ([`shown_file`] — the cell's form) and absolute otherwise (the model's);
 /// empty when no handler is known. The command is what the user wrote, so
@@ -1199,25 +1194,13 @@ fn hook_lines(origin: Option<&HookOrigin>, home: Option<&Path>) -> String {
     let mut lines = String::new();
     if !origin.command.trim().is_empty() {
         lines.push_str("\nHook: ");
-        lines.push_str(&command_label(&origin.command));
+        lines.push_str(&hook_label(&origin.command));
     }
     if let Some(file) = &origin.file {
         lines.push_str("\nConfig: ");
         lines.push_str(&shown_file(file, home));
     }
     lines
-}
-
-/// A hook's command as it is named — on a refusal's `Hook:` line, to the
-/// model, on the hook-run cell: the first line, cut to
-/// [`HOOK_LABEL_MAX_CHARS`] with `…` marking what was dropped, since an
-/// inline program is not a name.
-fn command_label(command: &str) -> String {
-    let command = command.trim();
-    match command.split_once('\n') {
-        Some((first, _)) => truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS),
-        None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
-    }
 }
 
 /// `file` as the screen names a config file: `~`-relative under `home`
@@ -1272,19 +1255,6 @@ fn feedback_line(event: &str, reason: &str) -> String {
 /// [`NO_REASON`] when the hook gave none.
 fn stopped_note(event: &str, reason: Option<&str>) -> String {
     format!("Stopped by {event} hook: {}", reason.unwrap_or(NO_REASON))
-}
-
-/// The hook-run cell's red row for a hook that broke — `Stop hook error:
-/// failed (exit 1): …`, Claude Code's row — from the warning the parse wrote
-/// for `command` (`hook ./check.sh failed (exit 1): …`), less the lead
-/// naming the hook: the row says what went wrong, and the expanded cell
-/// sets it under the hook's own command, so an inline program is not
-/// printed twice.
-fn hook_error_note(event: &str, command: &str, warning: &str) -> String {
-    let detail = warning
-        .strip_prefix(&format!("hook {command} "))
-        .unwrap_or(warning);
-    format!("{event} hook error: {detail}")
 }
 
 /// Whether `event`'s hooks decide if the agent goes on: a block is feedback
@@ -1360,14 +1330,10 @@ pub fn hook_report(
                 said.push(HookSaid::Message(message.clone()));
             }
             if let Some(warning) = &parsed.warning {
-                said.push(HookSaid::Error(hook_error_note(
-                    name,
-                    &run.command,
-                    warning,
-                )));
+                said.push(HookSaid::error(name, warning));
             }
             RanHook {
-                command: command_label(&run.command),
+                command: hook_label(&run.command),
                 config: run.file.as_deref().map(|file| shown_file(file, home)),
                 millis: u64::try_from(run.elapsed.as_millis()).unwrap_or(u64::MAX),
                 said,
@@ -2064,7 +2030,11 @@ mod tests {
         // An inline program is cut, and `…` says so.
         let long = named(&format!("python3 -c '{}'", "x".repeat(200)));
         let label = long.strip_prefix("Hook: ").expect("labelled");
-        assert_eq!(label.chars().count(), HOOK_LABEL_MAX_CHARS, "{label}");
+        assert_eq!(
+            label.chars().count(),
+            crate::hooks::HOOK_LABEL_MAX_CHARS,
+            "{label}"
+        );
         assert!(label.ends_with('…'), "{label}");
         // Only a multi-line command's first line names it.
         assert_eq!(named("set -e\n./check.sh"), "Hook: set -e…");
@@ -2164,15 +2134,28 @@ mod tests {
     #[test]
     fn a_hook_that_broke_is_an_error_row_saying_what_broke_not_a_dropped_warning() {
         // The row says what went wrong, Claude Code's `Stop hook error:`
-        // row; which hook it was is the expanded cell's, where the row sits
-        // under the hook's command — so an inline program is not repeated
-        // into the row.
+        // row, and which hook it was: the collapsed cell lists its rows
+        // without their hooks, so a cell of several hooks would otherwise
+        // leave the one that broke to Ctrl+O. The hook goes by its label —
+        // an inline program's first line, never the whole of it — and the
+        // expanded cell, which sets the row under that hook, does not say it
+        // twice (`RanHook::row_under`).
         let inline = "echo 'notifier offline' >&2; exit 1";
         let failed = ran(
             HookEvent::Stop,
             HookRun {
                 stderr: "notifier offline".into(),
                 ..run_of(inline, Some(1))
+            },
+        );
+        let program = ran(
+            HookEvent::Stop,
+            HookRun {
+                stderr: "no network".into(),
+                ..run_of(
+                    "set -e\ncurl -fsS https://example.test/ping\nexit 1",
+                    Some(1),
+                )
             },
         );
         let missing = ran(
@@ -2189,17 +2172,24 @@ mod tests {
                 ..run_of("./json.sh", Some(0))
             },
         );
-        let report =
-            hook_report(HookEvent::Stop, &[failed, missing, garbled], &[], None).expect("reported");
+        let report = hook_report(
+            HookEvent::Stop,
+            &[failed, missing, garbled, program],
+            &[],
+            None,
+        )
+        .expect("reported");
         assert_eq!(
             rows(&report),
             vec![
-                "Stop hook error: failed (exit 1): notifier offline",
-                "Stop hook error: did not run: timed out after 60s",
-                "Stop hook error: printed invalid JSON: {oops",
+                "Stop hook error: echo 'notifier offline' >&2; exit 1 failed (exit 1): notifier offline",
+                "Stop hook error: ./slow.sh did not run: timed out after 60s",
+                "Stop hook error: ./json.sh printed invalid JSON: {oops",
+                "Stop hook error: set -e… failed (exit 1): no network",
             ]
         );
-        assert_eq!(report.hooks[0].command, inline, "the hook is named once");
+        assert_eq!(report.hooks[0].command, inline);
+        assert_eq!(report.hooks[3].command, "set -e…");
         assert!(report.failed());
     }
 

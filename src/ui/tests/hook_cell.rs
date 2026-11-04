@@ -223,6 +223,50 @@ fn a_hook_that_broke_is_a_red_row_and_turns_the_bullet_red() {
 }
 
 #[test]
+fn a_broken_hook_is_named_on_its_row_but_not_twice_under_its_own_line() {
+    // Collapsed, the rows stand without their hooks, so an error row says
+    // which hook broke; expanded, it sits under that hook's line, which says
+    // it already.
+    let report = stop(vec![
+        ran(
+            "./notify.sh",
+            9,
+            vec![HookSaid::error(
+                "Stop",
+                "hook ./notify.sh failed (exit 1): offline",
+            )],
+        ),
+        check_git(vec![HookSaid::Feedback(FEEDBACK.into())]),
+    ]);
+    assert_eq!(
+        texts(&hook_report_lines(&report, 80)),
+        vec![
+            "● Ran 2 Stop hooks (ctrl+o to expand)",
+            "  ⎿  Stop hook feedback: There are uncommitted Git changes.",
+            "  ⎿  Stop hook error: ./notify.sh failed (exit 1): offline",
+        ]
+    );
+    let full = hook_report_full_lines(&report, 80);
+    assert_eq!(
+        texts(&full),
+        vec![
+            "● Ran 2 Stop hooks",
+            "  ⎿  ./notify.sh (9ms)",
+            "     Config: ~/.alter-zero/hooks.json",
+            "  ⎿  Stop hook error: failed (exit 1): offline",
+            "  ⎿  bash \"$HOME/.alter-zero/hooks/check-git.sh\" (412ms)",
+            "     Config: ~/.alter-zero/hooks.json",
+            "  ⎿  Stop hook feedback: There are uncommitted Git changes.",
+        ]
+    );
+    assert_eq!(
+        style_of(&full[3], "Stop hook error").fg,
+        Some(tool_fail_color()),
+        "still red under its hook"
+    );
+}
+
+#[test]
 fn context_is_a_dim_row_and_a_config_problem_a_red_one_after_the_hooks() {
     let report = HookReport {
         event: "SessionStart".to_string(),

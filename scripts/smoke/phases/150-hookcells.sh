@@ -13,13 +13,14 @@ smoke_begin
 #     context are cells under the prompt that read them;
 #   - a Stop hook that blocks is a `● Ran 2 Stop hooks` cell under the
 #     reply, the feedback the agent continues on right under its header and
-#     a sibling that broke as a red error row — and the round it bought
-#     follows the cell;
+#     a sibling that broke as a red error row naming it — and the round it
+#     bought follows the cell;
 #   - the second firing, where only the broken sibling speaks, is a cell of
 #     its own before the turn's end;
 #   - the model reads the feedback and the context, and none of what was
 #     the user's alone (the message, the errors);
-#   - Ctrl+O lists both Stop hooks that ran, each with how long it ran;
+#   - Ctrl+O lists both Stop hooks that ran, each with how long it ran, the
+#     error row under the broken one without its name a second time;
 #   - a turn that ends on an error shows its StopFailure hook's cell above
 #     the red error;
 #   - a /compact shows its PreCompact and PostCompact hooks' cells above the
@@ -119,9 +120,10 @@ expect_has "$(hc_under "$hc_pane" "● Ran 1 UserPromptSubmit hook (ctrl+o to ex
 hc_stop="$(printf '%s\n' "$hc_pane" | awk 'index($0, "● Ran 2 Stop hooks (ctrl+o to expand)") {for (i = 0; i < 2 && (getline line) > 0; i++) print line; exit}')"
 expect_has "$(printf '%s\n' "$hc_stop" | sed -n 1p)" -F "⎿  Stop hook feedback: smoke150 run the tests first" \
 	"the Stop hook's block left no feedback row under its cell (saw: $hc_stop)"
-# The error row says what broke — the hook's own command is Ctrl+O's.
-expect_has "$(printf '%s\n' "$hc_stop" | sed -n 2p)" -F "⎿  Stop hook error: failed (exit 1): smoke150 notifier offline" \
-	"the broken Stop hook left no error row, or its row repeats the command (saw: $hc_stop)"
+# The error row says what broke and which hook it was: collapsed, the rows
+# stand without their hooks.
+expect_has "$(printf '%s\n' "$hc_stop" | sed -n 2p)" -F "⎿  Stop hook error: echo 'smoke150 notifier offline' >&2; exit 1 failed (exit 1): smoke150 notifier offline" \
+	"the broken Stop hook left no error row naming it (saw: $hc_stop)"
 # The order the turn ran in: the answer, the block's cell, the round it
 # bought, the second firing's cell (only the error this time), the receipt.
 hc_order="$(printf '%s\n' "$hc_pane" | grep -n -E "Answer 1\.|Answer 2\.|● Ran 2 Stop hooks|$SUMMARY_RE" | cut -d: -f2- | sed -E 's/^● //; s/ \(ctrl\+o to expand\)//; s/ for [0-9].*//')"
@@ -147,12 +149,16 @@ keys "$S150" Home
 sleep 0.3
 hc_overlay="$(tmux capture-pane -t "$S150" -p)"
 dump "the Ctrl+O transcript" "$hc_overlay"
-hc_expanded="$(printf '%s\n' "$hc_overlay" | awk '/● Ran 2 Stop hooks *$/ {for (i = 0; i < 6 && (getline line) > 0; i++) print line; exit}')"
+hc_expanded="$(printf '%s\n' "$hc_overlay" | awk '/● Ran 2 Stop hooks *$/ {for (i = 0; i < 8 && (getline line) > 0; i++) print line; exit}')"
 expect_has "$(printf '%s\n' "$hc_expanded" | sed -n 1p)" -E "⎿  \[ -f .*stop150\.blocked \] && exit 0.* \([0-9.]+m?s\)" \
 	"the expanded cell lost the blocking hook or its time (saw: $hc_expanded)"
 expect_has "$(printf '%s\n' "$hc_expanded" | sed -n 2p)" -F "Config: " "the expanded cell lost the hook's hooks.json (saw: $hc_expanded)"
 expect_has "$hc_expanded" -E "⎿  echo 'smoke150 notifier offline' >&2; exit 1 \([0-9.]+m?s\)" \
 	"the expanded cell lost the broken hook or its time (saw: $hc_expanded)"
+# Under the broken hook's own line, its error row does not name it again.
+expect_has "$hc_expanded" -F "⎿  Stop hook error: failed (exit 1): smoke150 notifier offline" \
+	"the expanded cell lost the broken hook's error row (saw: $hc_expanded)"
+expect_lacks "$hc_expanded" -F "Stop hook error: echo" "the expanded cell names the broken hook twice (saw: $hc_expanded)"
 keys "$S150" q
 sleep 0.3
 
@@ -162,7 +168,8 @@ submit "$S150" "smoke150 fail"
 hc_failed="$(wait_settled 30 "$S150" -S -200 -- -F "smoke150 refused")" || fail "the refused turn never ended"
 dump "the refused turn" "$hc_failed"
 expect_has "$(hc_under "$hc_failed" "● Ran 1 StopFailure hook (ctrl+o to expand)")" -F \
-	"⎿  StopFailure hook error: failed (exit 1): smoke150 pager unreachable" "the StopFailure hook's error left no cell"
+	"⎿  StopFailure hook error: echo 'smoke150 pager unreachable' >&2; exit 1 failed (exit 1): smoke150 pager unreachable" \
+	"the StopFailure hook's error left no cell naming it"
 hc_failure_order="$(printf '%s\n' "$hc_failed" | grep -n -E "● Ran 1 StopFailure hook|smoke150 refused" | cut -d: -f1 | tr '\n' ' ')"
 read -r hc_cell_at hc_error_at _ <<<"$hc_failure_order"
 [ -n "$hc_cell_at" ] && [ -n "$hc_error_at" ] && [ "$hc_cell_at" -lt "$hc_error_at" ] ||

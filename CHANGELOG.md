@@ -19,18 +19,18 @@ release heading when a version is cut.
   that failed, answered `continue: false` or returned a `systemMessage` was
   silently dropped. Each now leaves a `● Ran 1 Stop hook` cell under the
   reply: the feedback the agent continues on, the reason a hook stopped it,
-  its message, and `Stop hook error: …` in red for a hook that broke, folded
-  like a tool's output. **Ctrl+O** expands the cell into every hook that ran,
-  how long it took and the `hooks.json` it is configured in. SessionStart and
-  UserPromptSubmit hooks get the same cell under your prompt when they add
-  context or say something, PreCompact and PostCompact hooks above
-  `Context compacted`, StopFailure hooks above a failed turn's error, and a
-  subagent's SubagentStop hooks on its own transcript. A PreToolUse hook
-  that rewrites a call's arguments now says so on the call, under a dim
-  `Rewritten by PreToolUse hook` row, where the cell used to show the
-  hook's version as if the agent had asked for it. What the agent reads is
-  unchanged, and a hook that runs silently still leaves nothing
-  (`docs/hooks.md`).
+  its message, and `Stop hook error: …` in red for a hook that broke, naming
+  the hook, folded like a tool's output. **Ctrl+O** expands the cell into
+  every hook that ran, how long it took and the `hooks.json` it is
+  configured in. SessionStart and UserPromptSubmit hooks get the same cell
+  under your prompt when they add context or say something, PreCompact and
+  PostCompact hooks above `Context compacted`, StopFailure hooks above a
+  failed turn's error, and a subagent's SubagentStop hooks on its own
+  transcript. A PreToolUse hook that rewrites a call's arguments now says so
+  on the call, under a dim `Rewritten by PreToolUse hook` row, where the
+  cell used to show the hook's version as if the agent had asked for it.
+  What the agent reads is unchanged, and a hook that runs silently still
+  leaves nothing (`docs/hooks.md`).
 
 ### Changed
 
@@ -48,6 +48,14 @@ release heading when a version is cut.
   shows. Inside a subagent's session view, the title names the agent whose
   context you are reading. Tab's page, with what the auto-mode classifier
   reads, has the same look.
+
+### Fixed
+
+- **A broken hook is named by the first line of its command.** When a hook
+  written as a multi-line inline script failed, timed out or printed
+  invalid JSON, the dim row it left under a tool call held the whole
+  script. A hook is now named by its command's first line, cut at 80
+  characters, there and on the hook-run cell (`docs/hooks.md`).
 
 ## [0.18.0] - 2026-11-03
 

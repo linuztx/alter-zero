@@ -7,6 +7,16 @@
 //! when the report is built and kept as they were shown, so a `/resume`
 //! replays the record rather than today's wording — the refusal cell's rule.
 
+use std::borrow::Cow;
+
+/// The word every runner warning about a hook opens on, before its label:
+/// `hook ./check.sh failed (exit 1): …`.
+const HOOK_WARNING_LEAD: &str = "hook ";
+
+/// What joins a broken hook's event to what went wrong: `Stop hook error:
+/// …`.
+const ERROR_ROW_INFIX: &str = " hook error: ";
+
 /// One event's hooks, as their cell shows them. Built only when the hooks
 /// said something: a silent run leaves no report and no cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +67,19 @@ pub enum HookSaid {
 }
 
 impl HookSaid {
+    /// A broken hook's row — `Stop hook error: ./check.sh failed (exit 1):
+    /// …`, Claude Code's `Stop hook error:` row naming the hook — from the
+    /// warning the parse wrote about it. Every runner warning opens `hook
+    /// {label} …` (`hooks::hook_label`), so that word goes and the label
+    /// stays: the collapsed cell lists rows without their hooks, so the row
+    /// is where it says which one broke. A warning of any other shape reads
+    /// as written behind the event.
+    #[must_use]
+    pub fn error(event: &str, warning: &str) -> Self {
+        let what = warning.strip_prefix(HOOK_WARNING_LEAD).unwrap_or(warning);
+        Self::Error(format!("{event}{ERROR_ROW_INFIX}{what}"))
+    }
+
     /// The row's words.
     #[must_use]
     pub fn row(&self) -> &str {
@@ -87,6 +110,27 @@ impl HookSaid {
             Self::Message(_) => 3,
             Self::Error(_) => 4,
         }
+    }
+}
+
+impl RanHook {
+    /// `said`'s row as it reads under this hook's own line in the expanded
+    /// cell: an error row naming this hook drops the name, which the line
+    /// above it gives — `Stop hook error: failed (exit 1): …` under
+    /// `./check.sh (12ms)` — so it is not said twice. Every other row, and an
+    /// error row naming some other hook, reads as recorded.
+    #[must_use]
+    pub fn row_under<'a>(&self, said: &'a HookSaid) -> Cow<'a, str> {
+        let row = said.row();
+        if said.is_error()
+            && let Some((event, named)) = row.split_once(ERROR_ROW_INFIX)
+            && let Some(what) = named
+                .strip_prefix(self.command.as_str())
+                .and_then(|rest| rest.strip_prefix(' '))
+        {
+            return Cow::Owned(format!("{event}{ERROR_ROW_INFIX}{what}"));
+        }
+        Cow::Borrowed(row)
     }
 }
 
@@ -276,5 +320,39 @@ mod tests {
         assert_eq!(HookReport::joined(None, Some(queued.clone())), Some(queued));
         assert_eq!(HookReport::joined(Some(fired.clone()), None), Some(fired));
         assert_eq!(HookReport::joined(None, None), None);
+    }
+
+    #[test]
+    fn a_broken_hooks_row_names_it_except_under_its_own_line() {
+        // Every runner warning opens `hook {label} …` (`hooks::hook_label`),
+        // so the row keeps the label and drops only the word: the collapsed
+        // cell lists rows without their hooks, so the row is where it says
+        // which hook broke.
+        let said = HookSaid::error("Stop", "hook ./check.sh failed (exit 1): boom");
+        assert_eq!(
+            said.row(),
+            "Stop hook error: ./check.sh failed (exit 1): boom"
+        );
+        assert!(said.is_error());
+        // Under the hook's own line in the expanded cell the label is said
+        // already, so the row there is what went wrong.
+        let hook = ran("./check.sh", vec![said.clone()]);
+        assert_eq!(
+            hook.row_under(&said),
+            "Stop hook error: failed (exit 1): boom"
+        );
+        // A row about some other hook, or one a label only begins (`./check`
+        // is not `./check.sh`), reads as recorded — as does every other kind.
+        let other = HookSaid::error("Stop", "hook ./other.sh did not run: timed out");
+        assert_eq!(hook.row_under(&other), other.row());
+        let prefix = ran("./check", Vec::new());
+        assert_eq!(prefix.row_under(&said), said.row());
+        let feedback = HookSaid::Feedback("Stop hook feedback: ./check.sh is red".into());
+        assert_eq!(hook.row_under(&feedback), feedback.row());
+        // A warning that names no hook reads as written behind the event.
+        assert_eq!(
+            HookSaid::error("Stop", "a warning of some other shape").row(),
+            "Stop hook error: a warning of some other shape"
+        );
     }
 }

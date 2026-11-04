@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use super::event::HookEvent;
+use crate::frontmatter::truncate_chars;
 
 /// How much of a handler's stdout/stderr is kept. codex spills an oversized
 /// `additionalContext` to a file and hands the model a preview; we cap and
@@ -173,6 +174,26 @@ pub fn truncate_output(text: &str) -> String {
     format!("{}\n… (hook output truncated)", &text[..end])
 }
 
+/// How much of a hook's command names it: room for a script's path and its
+/// flags, not for an inline program.
+pub const HOOK_LABEL_MAX_CHARS: usize = 80;
+
+/// The name a hook goes by wherever it is spoken of — a refusal's `Hook:`
+/// line, every warning about it (the dim row a tool call's hook leaves), the
+/// hook-run cell's line for it and its error row: its command's first line,
+/// cut to [`HOOK_LABEL_MAX_CHARS`] with `…` marking what was dropped. The
+/// command is what the user wrote, so for a script it *is* the hook's path;
+/// an inline program is not a name, and the whole of one would fill the row
+/// it is named on.
+#[must_use]
+pub fn hook_label(command: &str) -> String {
+    let command = command.trim();
+    match command.split_once('\n') {
+        Some((first, _)) => truncate_chars(&format!("{}…", first.trim_end()), HOOK_LABEL_MAX_CHARS),
+        None => truncate_chars(command, HOOK_LABEL_MAX_CHARS),
+    }
+}
+
 /// Stands in when a hook refuses but says nothing about why — the cell and
 /// the model both need *something*. It is read after `Blocked by PreToolUse
 /// hook:` (or its own event's), so it says only what is missing.
@@ -213,7 +234,10 @@ fn parse_answer(run: &HookRun, event: HookEvent) -> ParsedHook {
     if run.exit_code.is_none() || run.error.is_some() {
         let why = run.error.as_deref().unwrap_or("no exit status");
         return ParsedHook {
-            warning: Some(format!("hook {} did not run: {why}", run.command)),
+            warning: Some(format!(
+                "hook {} did not run: {why}",
+                hook_label(&run.command)
+            )),
             ..ParsedHook::default()
         };
     }
@@ -238,7 +262,7 @@ fn parse_answer(run: &HookRun, event: HookEvent) -> ParsedHook {
         return ParsedHook {
             warning: Some(format!(
                 "hook {} failed (exit {code}): {}",
-                run.command,
+                hook_label(&run.command),
                 truncate_output(detail)
             )),
             ..ParsedHook::default()
@@ -265,7 +289,7 @@ fn parse_answer(run: &HookRun, event: HookEvent) -> ParsedHook {
         return ParsedHook {
             warning: Some(format!(
                 "hook {} printed invalid JSON: {}",
-                run.command,
+                hook_label(&run.command),
                 truncate_output(stdout)
             )),
             ..ParsedHook::default()
@@ -295,7 +319,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
             // more likely a script bug than a policy.
             None => warnings.push(format!(
                 "hook {} returned decision \"block\" with no reason — ignored",
-                run.command
+                hook_label(&run.command)
             )),
         },
         Some("approve") => parsed.permission = Some(HookPermission::Allow),
@@ -333,7 +357,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
             }
             other => warnings.push(format!(
                 "hook {} returned unknown permissionDecision {other:?} — ignored",
-                run.command
+                hook_label(&run.command)
             )),
         }
         if parsed.permission.is_some() {
@@ -347,7 +371,7 @@ fn parse_verdict(value: &Value, run: &HookRun, event: HookEvent) -> ParsedHook {
         // tool, so it is refused rather than applied.
         _ => warnings.push(format!(
             "hook {} returned a non-object updatedInput — ignored",
-            run.command
+            hook_label(&run.command)
         )),
     }
 
@@ -573,6 +597,59 @@ mod tests {
         assert_eq!(parsed.block_reason, None);
         let warning = parsed.warning.expect("a failing hook is reported");
         assert!(warning.contains("command not found"), "{warning}");
+    }
+
+    #[test]
+    fn a_warning_names_its_hook_by_the_label_never_the_whole_program() {
+        // An inline program is not a name: its first line, cut to the
+        // budget, is what every warning about it says — the whole of a
+        // twelve-line launcher used to fill the dim row a tool call's hook
+        // left, and the hook-run cell's error row names its hook by the
+        // same label.
+        let program = format!("set -e\n{}\nexit 1", "x".repeat(300));
+        let long = format!("python3 -c '{}'", "y".repeat(200));
+        for (command, label) in [
+            (program.as_str(), "set -e…".to_string()),
+            (long.as_str(), hook_label(&long)),
+        ] {
+            let of = |stdout: &str, exit_code: Option<i32>| HookRun {
+                command: command.into(),
+                exit_code,
+                stdout: stdout.into(),
+                ..HookRun::default()
+            };
+            let runs = [
+                HookRun {
+                    stderr: "boom".into(),
+                    ..of("", Some(1))
+                },
+                HookRun {
+                    error: Some("timed out after 60s".into()),
+                    ..of("", None)
+                },
+                of("{not json", Some(0)),
+                of(r#"{"decision":"block"}"#, Some(0)),
+                of(
+                    r#"{"hookSpecificOutput":{"permissionDecision":"maybe"}}"#,
+                    Some(0),
+                ),
+                of(r#"{"hookSpecificOutput":{"updatedInput":"x"}}"#, Some(0)),
+            ];
+            for run in runs {
+                let warning = parse_run(&run, HookEvent::PreToolUse)
+                    .warning
+                    .unwrap_or_else(|| panic!("a warning: {run:?}"));
+                assert!(warning.starts_with(&format!("hook {label} ")), "{warning}");
+                assert!(!warning.contains('\n'), "{warning}");
+            }
+        }
+        // The label: the command's first line within the budget, `…`
+        // marking what was dropped; a short one reads as written.
+        assert_eq!(hook_label("  ./guard.sh --strict  "), "./guard.sh --strict");
+        assert_eq!(hook_label("set -e\n./check.sh"), "set -e…");
+        let cut = hook_label(&long);
+        assert_eq!(cut.chars().count(), HOOK_LABEL_MAX_CHARS, "{cut}");
+        assert!(cut.ends_with('…'), "{cut}");
     }
 
     #[test]

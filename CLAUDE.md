@@ -2297,7 +2297,10 @@ run and parsed answer — is the **hook-run cell**: `● Ran 1 Stop hook (ctrl+o
 to expand)` over what took effect, most consequential first — `Stopped by
 Stop hook: …`, the `Stop hook feedback: …` the agent continues on (never
 "error": that red row is kept for a hook that broke, `Stop hook error:
-failed (exit 1): …`, the hook's own command left to Ctrl+O), `Context added
+./check.sh failed (exit 1): …`, naming it by `hooks::hook_label` — its
+command's first line cut at 80 characters, the name every warning and the
+tool cells' dim rows give a hook too — and dropping the name under that
+hook's own line in Ctrl+O, `RanHook::row_under`), `Context added
 by … hook`, a `systemMessage` verbatim — folded like a tool cell's output,
 committed under the reply / the prompt / above `Context compacted` / above a
 failed turn's red error for `Stop`, `SubagentStop` (on the agent's own

@@ -483,8 +483,12 @@ the record is what the screen showed.
 **The dim rows name only the event.** They are one line under a call, joined
 by ` · ` when several things are said, where a command and a path would
 crowd out the rest; the hook behind a `Flagged by` row is named where the
-model reads its feedback (Ctrl+D). A warning about a broken hook (`hook
-./lint.sh failed (exit 1): …`) already names its command.
+model reads its feedback (Ctrl+D). A warning about a broken hook names it by
+its **label** — the command's first line, cut at 80 characters with `…`
+marking the cut (`hooks::hook_label`, the `Hook:` line's own name for it) — so
+`hook ./lint.sh failed (exit 1): …` names a script by its path, while an
+inline launcher of a dozen lines is `hook set -e… failed (exit 1): …` rather
+than the whole program poured into a one-line row.
 
 A refusal folds like the cell's other output (`docs/long-lines.md`): a reason
 of a row or two leaves the whole refusal inline, while a longer one keeps its
@@ -547,7 +551,7 @@ row, most consequential first:
 | `Stop hook feedback: {reason}`          | the block the agent keeps going on — the first line of what the model reads |
 | `Context added by {event} hook`         | `additionalContext`, or the plain stdout that is context for that event |
 | `{systemMessage}`                       | a line the hook addressed to the user, verbatim                |
-| `{event} hook error: {what broke}`      | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: failed (exit 1): {stderr}` |
+| `{event} hook error: {hook} {what broke}` | it could not run, timed out, exited non-zero (not `2`), printed invalid JSON — red: `Stop hook error: ./check.sh failed (exit 1): {stderr}` |
 | `hooks.json: …`                         | a config problem on the way: a matcher that is no regex, a handler skipped — red |
 
 Each row opens its own `⎿` and wraps under its own text, and the rows fold
@@ -561,10 +565,14 @@ as `Stop hook error:`. It is not an error: the hook did its job, and its words
 are what the agent acts on next. So the row says *feedback* — the word the
 model reads it under — and *error* is kept for a hook that broke, in red, so a
 guard doing its work and a guard that crashed cannot be mistaken for each
-other at a glance. An error row says what went wrong and not which hook: the
-warning the parse wrote (`hook ./check.sh failed (exit 1): …`) loses the lead
-that names the hook, which the expanded cell shows the row under — an inline
-program's whole text, repeated into the row, buried what broke.
+other at a glance. An error row says what went wrong **and which hook**: the
+warning the parse wrote (`hook ./check.sh failed (exit 1): …`) loses only its
+first word (`HookSaid::error`). The collapsed cell lists its rows without
+their hooks, so a cell of several hooks would otherwise leave the one that
+broke to Ctrl+O; and since the hook goes by its label, an inline program
+costs the row its first line, never its whole text. Expanded, where the row
+sits under that hook's own line, it drops the name again
+(`RanHook::row_under`) rather than say it twice.
 
 **Only what took effect.** The rows are the outcome, not every word printed:
 the feedback row is the first block's, the one the agent continues on (a
@@ -581,8 +589,9 @@ broke when it was the user who stopped the turn.
 first line, cut at 80 characters — the `Hook:` line's label), how long it ran,
 and the `hooks.json` it is configured in (`~`-relative, the refusal cell's
 rule); then the rows that hook said, a context row followed by the text it
-added. A silent hook beside a talkative one is listed too — the header counts
-every hook that ran.
+added and an error row without the name the line above it gives. A silent
+hook beside a talkative one is listed too — the header counts every hook that
+ran.
 
 **The bullet** is green when every hook ran cleanly — a block is a hook
 working — and red when any row is an error.
@@ -895,7 +904,8 @@ the hook-run cell through the real runner and a stub provider: a
 `SessionStart` hook's message and a `UserPromptSubmit` hook's context as
 cells under the prompt, a `Stop` hook that blocks once beside one that
 always breaks — the feedback leading the first cell and the error row
-saying what broke, not the hook's command; the round it bought; the second
+saying what broke and which hook, the expansion not naming it twice; the
+round it bought; the second
 firing a cell of the error alone — the model reading the feedback and the
 context and none of what was the user's alone, Ctrl+O listing both hooks
 with their times, and a refused turn's `StopFailure` hook's cell above the
