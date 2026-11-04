@@ -45,15 +45,15 @@ Use the same tools for cybersecurity research, technical investigation, and ever
 
 ## Why Alter Zero
 
-Alter Zero is an open-source AI coding agent written in Rust. It works directly in your project: reading files, making edits, running commands, and checking results while you follow along in your terminal. Coding is its focus, with the flexibility to investigate security issues, explore unfamiliar systems, and automate tasks using your existing tools.
+Alter Zero is an open-source AI coding agent written in Rust, inspired by Claude Code and Codex CLI. It works directly in your project: reading files, making edits, running commands, and checking results while you follow along in your terminal. Coding is its focus, with the flexibility to investigate security issues, explore unfamiliar systems, and automate tasks using your existing tools.
 
 | What you get | Why it matters |
 | --- | --- |
 | **Work you can follow** | Live command output, readable diffs, and a task checklist make progress easy to inspect. |
 | **Control over execution** | Choose a permission mode, review proposed changes, and steer the agent while it works. |
-| **Your choice of model** | Connect with a supported subscription or API key, or run local models with Ollama or LM Studio. |
+| **Your choice of model** | Connect with a supported subscription or API key, run local models with Ollama or LM Studio, or add an OpenAI-compatible provider. |
 | **Room to extend** | Add specialist subagents, reusable skills, lifecycle hooks, and MCP servers to fit your workflow. |
-| **A native terminal experience** | A single Rust binary with persistent sessions, inline images, and keyboard-driven controls. |
+| **A native terminal experience** | A single Rust binary designed with a small memory footprint, persistent sessions, inline images, and keyboard-driven controls. |
 
 ## Quick start
 
@@ -211,11 +211,13 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
 - **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook, yours or a project's, and any new project MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
+- **Credentials by placeholder.** Store a credential with `/secrets` and the agent can use its placeholder without seeing the value. See [how secrets are stored and used](docs/secrets.md).
 
 ### Give the agent the right tools
 
 - **Subagents.** Delegate focused work to agents with their own context, model, and tool access. Built-in `general-purpose` and `explore` agents are editable, and you can open a running agent's session to chat, send follow-up work, or stop it — while the main agent does the same by each agent's id: checks its progress, sends a finished agent a follow-up with its context intact, or stops it.
-- **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `web-search` searches the web through Exa, Parallel, Tavily and Jina Reader with no key; `jina-reader` reads public webpages and PDFs through Jina Reader; `yt-dlp` guides media downloads with the separately installed CLI; `flaredantic` guides public localhost tunnels with the external `flare` CLI.
+- **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `web-search` searches the web through Exa, Parallel, Tavily and Jina Reader with no key; `jina-reader` reads public webpages and PDFs through Jina Reader; `yt-dlp` guides media downloads with the separately installed CLI.
+- **Public tunnels.** The built-in `flaredantic` skill guides you through exposing a local service via Cloudflare, Microsoft Dev Tunnels, or Serveo using the separately installed `flare` CLI. A tunnel makes the service publicly reachable; review what you expose.
 - **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
 - **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.
 
