@@ -281,8 +281,8 @@ Worked for 8s · ≈24.3k tokens (8k cached)
   differ only in the estimated share each hands it, and the loop commits both
   through `Session::commit_turn_summary`.
 - **Tokens** are the status line's tally at the moment of the Esc: the
-  provider's usage frames for the rounds that finished, plus the tokenizer's
-  count of the round the Esc cut short. A provider sends a round's `usage`
+  provider's usage frames for the rounds that finished, plus the token
+  estimate of the round the Esc cut short. A provider sends a round's `usage`
   frame when the round ends, so an abandoned round never reports one, and its
   share can only be the estimate. The tally is read **before** the interrupt
   resolves the calls in flight: the `Interrupted by user` answers it charges
@@ -290,7 +290,7 @@ Worked for 8s · ≈24.3k tokens (8k cached)
 - **`≈` marks any estimated share.** `docs/prompt-caching.md` promises that a
   receipt's number is the provider's own, never a guess, and the record keeps
   the two apart to hold to that: `TurnSummary::tokens` is still only what
-  frames reported, and `TurnSummary::estimated` is the tokenizer's count on
+  frames reported, and `TurnSummary::estimated` is the token estimate on
   top. `ui::summary_lines` folds them into one total and marks it with the
   `/context` page's `≈` (`SUMMARY_ESTIMATE_MARK`) whenever the estimate is
   non-zero. Esc during a lone tool call, after the round's frame snapped the

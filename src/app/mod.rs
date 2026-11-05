@@ -281,7 +281,7 @@ pub struct App {
     /// `input + output` (the provider's own accounting of the re-sent context
     /// plus the reply that joins the next request), or — when no usage arrived
     /// (the dummy) or the history just mutated (a compaction, a `/clear`, a
-    /// backtrack, a `/resume`) — the tokenizer estimate over the derived
+    /// backtrack, a `/resume`) — the token estimate over the derived
     /// context ([`estimate_context_tokens`](Self::estimate_context_tokens)).
     context_used: u64,
     /// One auto-compact attempt per user turn (codex's per-turn semantics):

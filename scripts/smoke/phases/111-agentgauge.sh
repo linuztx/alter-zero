@@ -12,7 +12,7 @@ smoke_begin
 # one background subagent whose round plays on the agent channel with no usage
 # frame (the dummy scripts none), so: the view opens on a TRUE ZERO (nothing
 # has counted the agent's context yet — never the lead's number), and once the
-# agent settles the gauge is the tokenizer estimate over ITS transcript, a
+# agent settles the gauge is the token estimate over ITS transcript, a
 # non-zero count that differs from the main footer's.
 S111="${S}_agentgauge"
 # A short `~/work` cwd, so the footer's gauge tail fits (see work_dir).

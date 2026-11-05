@@ -115,7 +115,7 @@ fn a_header_numbers_its_entry_and_estimates_its_size() {
     let app = context_fixture();
     let id = first_call_id(&app);
     let texts = texts(&app, 80);
-    let count = crate::tokenizer::count;
+    let count = crate::app::count_tokens;
     assert_eq!(
         texts[0],
         format!(" SYSTEM  #1 · {}", estimate(count("be nice")))
@@ -263,9 +263,9 @@ fn a_header_counts_a_users_images_and_charges_for_them() {
         vec!["/tmp/a.png".into(), "/tmp/b.png".into()],
     );
     let message = &crate::context::context_messages(&app.history)[0];
-    let tokens = crate::app::message_tokens(message, &mut crate::tokenizer::count);
+    let tokens = crate::app::message_tokens(message, &mut crate::app::count_tokens);
     assert!(
-        tokens > crate::tokenizer::count(&message.text),
+        tokens > crate::app::count_tokens(&message.text),
         "the pictures are charged"
     );
     let texts = texts(&app, 80);
@@ -518,7 +518,7 @@ fn the_summary_adds_up_to_the_footer_gauges_estimate() {
     let mut app = context_fixture();
     app.set_user_instructions(Some("guide".to_string()));
     app.record_user_message_with_images("[Image #1] look", vec!["/tmp/a.png".into()]);
-    let gauge = crate::tokenizer::count("be nice")
+    let gauge = crate::app::count_tokens("be nice")
         + crate::app::estimate_messages_tokens(&crate::context::context_messages_full(
             app.user_instructions.as_deref(),
             app.listings.as_deref(),
@@ -892,7 +892,7 @@ fn context_cache_rebuilds_on_new_history_a_width_change_and_a_rewind() {
 
 #[test]
 fn context_cache_counts_only_what_is_new() {
-    // The header estimates put every entry through the tokenizer; the cache
+    // The header estimates put every entry through the estimator; the cache
     // keeps what it counted, so a rebuild for one new message counts that
     // message rather than the whole conversation again.
     let mut app = context_fixture();

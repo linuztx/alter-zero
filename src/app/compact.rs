@@ -142,7 +142,7 @@ impl App {
         self.context_used
     }
 
-    /// Estimate the current context size with the tokenizer: the system
+    /// Estimate the current context size: the system
     /// prompt, plus every derived context message's text (the AGENTS.md
     /// instructions among them — they ride every request), tool calls, and a
     /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
@@ -173,7 +173,7 @@ impl App {
         u64::try_from(total).unwrap_or(u64::MAX)
     }
 
-    /// Re-seat the gauge on the tokenizer estimate (the last usage frame no
+    /// Re-seat the gauge on the token estimate (the last usage frame no
     /// longer describes the derived context).
     pub(super) fn refresh_context_used(&mut self) {
         self.context_used = self.estimate_context_tokens();
@@ -215,7 +215,7 @@ pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
     window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
 }
 
-/// The tokenizer estimate of a derived context: every message's text, a flat
+/// The token estimate of a derived context: every message's text, a flat
 /// `IMAGE_INPUT_TOKENS` per attachment, and each tool call's name and
 /// arguments. The one counting rule behind both context gauges — the main
 /// session's (`App::estimate_context_tokens`, which adds the system prompt

@@ -267,7 +267,7 @@ fn counted(n: usize, noun: &str) -> String {
     }
 }
 
-/// A token estimate as a header fact: `≈1.2k tokens` — the tokenizer's
+/// A token estimate as a header fact: `≈1.2k tokens` — the estimator's
 /// count, marked an estimate the way the `/context` page marks its own.
 fn token_estimate(tokens: usize) -> String {
     let noun = if tokens == 1 { "token" } else { "tokens" };
@@ -285,7 +285,7 @@ fn token_estimate(tokens: usize) -> String {
 ///
 /// Each entry opens on its role chip over the facts a raw window is opened
 /// to find — its place in the request, the tool a result answers, a
-/// tokenizer estimate of its size, its calls and pictures — then its text
+/// token estimate of its size, its calls and pictures — then its text
 /// hung on the `⎿` gutter, any native tool calls as `→ name(arguments)` rows
 /// and attachment paths dim beneath. The bottom rule's summary counts the
 /// messages and their estimate. A dim placeholder when there is nothing yet.
@@ -437,7 +437,7 @@ pub struct ContextCache {
     /// unchanged conversation is a cache hit, not a rebuild.
     #[cfg(test)]
     pub(super) builds: usize,
-    /// Test-only: how many texts went through the tokenizer, so a test can
+    /// Test-only: how many texts went through the estimator, so a test can
     /// prove a rebuild counts only what is new.
     #[cfg(test)]
     pub(super) counted: usize,

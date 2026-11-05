@@ -1761,7 +1761,7 @@ pub(super) const CONTEXT_USAGE_TITLE: &str = "Context usage";
 /// The dim key hint — the page's whole grammar.
 pub(super) const CONTEXT_USAGE_HINT: &str = "↑↓ select  ctrl+d raw context  esc close";
 
-/// Marks the subtitle's total as the tokenizer's estimate — the categories
+/// Marks the subtitle's total as the token estimate — the categories
 /// are counted app-side, the usage rows are the provider's own.
 pub(super) const CONTEXT_USAGE_ESTIMATE_MARK: &str = "≈";
 
@@ -2404,7 +2404,7 @@ pub(super) fn status_done_color() -> Color {
     tool_dim_color()
 }
 
-/// Marks a summary's token total as partly the tokenizer's count: an
+/// Marks a summary's token total as partly the token estimate: an
 /// interrupted turn's receipt, whose cut round never reported its usage
 /// (`docs/interrupt.md`). The `/context` page's mark for a count it made
 /// itself, so a bare number on a receipt is always the provider's own.

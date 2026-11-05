@@ -165,7 +165,7 @@ pub struct TurnSummary {
     /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
     pub tokens: usize,
     /// Tokens the turn's live tally counted on top of [`tokens`](Self::tokens)
-    /// that no usage frame ever reported — the tokenizer's share. Only an
+    /// that no usage frame ever reported — the estimated share. Only an
     /// **interrupted** turn has any: a provider reports a round's usage when
     /// the round ends, so the round the Esc cut short never does
     /// (`docs/interrupt.md`). Folded into the receipt's total, which is then
@@ -280,7 +280,7 @@ impl App {
     /// Fold one provider usage report (the round's final `usage` frame,
     /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
     /// billed total and its cached share, and **snap the live tally to the
-    /// accumulated real number** — replacing the tiktoken estimate ticked so
+    /// accumulated real number** — replacing the token estimate ticked so
     /// far, which never saw the system prompt or the re-sent context. Later
     /// estimates (the next round's stream) tick on top of the snapped base,
     /// and that round's own usage frame snaps again — so the tally is always
@@ -291,7 +291,7 @@ impl App {
             return;
         }
         // One frame ends one round: this is where the round's `Thought for
-        // …` cells trade their tokenizer estimate for the provider's own
+        // …` cells trade their token estimate for the provider's own
         // `reasoning_tokens` (docs/thinking-stream.md).
         self.snap_round_reasoning(usage.reasoning);
         // The `/context` page's Last request and Since launch rows

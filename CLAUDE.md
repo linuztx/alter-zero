@@ -531,7 +531,7 @@ each contributor writes, and `context::context_messages` split into your
 messages, shell commands, app notices, replies, tool calls, tool results,
 images and the compaction summary — the user-role text by **origin**, noted
 as the derivation lands it (`context::context_messages_with_origins`) —
-every count the tokenizer's estimate, marked `≈`, while the usage rows under
+every count the token estimate, marked `≈`, while the usage rows under
 it are the provider's own frames (`App::last_usage`, dropped with the
 conversation a `/clear`, `/resume`, rewind or compaction replaces; the
 `UsageLedger` since launch, subagents included, a viewed agent's own inside
@@ -974,7 +974,7 @@ of assistant text before it (invariant 4's "flush before you interleave",
 gated on the display), so the header sits under the same blank spacer the
 settled cell will instead of butting against the paragraph that was
 streaming, and the paragraph's withheld last line lands with it — and the
-cell's tokenizer estimate is **snapped** to the provider's own
+cell's token estimate is **snapped** to the provider's own
 `completion_tokens_details.reasoning_tokens` — `TokenUsage::reasoning` — when
 the round's usage frame lands, split by weight across a round's several
 phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
@@ -2722,7 +2722,7 @@ marker: the 20k-approx-token budget of recent user texts + the
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
-gauge (usage-frame fed, tokenizer-estimated offline; **inside an agent
+gauge (usage-frame fed, estimated offline; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
@@ -4020,9 +4020,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`↑`) at turn start, so the status reads `↑ N tokens` until your first chunk.
   The loop and
   rendering treat chunks and tool output as opaque text, and count the status
-  tokens app-side with a real `tiktoken` `o200k_base` tokenizer via the
-  `app::count_tokens` → `tokenizer::count` seam — exact for OpenAI models,
-  close for the rest — **as the live estimate between usage frames**: a real
+  tokens app-side via the `app::count_tokens` → `token_estimate::estimate`
+  seam — a provider-agnostic estimate, one pass with no vocabulary, within a
+  few percent of the current tokenizers on English and code
+  (`docs/token-estimate.md`) — **as the live estimate between usage frames**: a real
   backend forwards each round's final `usage` frame as `StreamEvent::Usage`
   and `App::apply_usage` snaps the tally to the provider's own accounting
   (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`), and every

@@ -8,7 +8,7 @@
 //! provider bills them, cache **reads** on turn 2 where it reports them, and
 //! — for a provider that reports neither — that the usage frame still lands
 //! whole, so the app's tally is the provider's number rather than the
-//! tokenizer's guess.
+//! token estimate.
 //!
 //! All `#[ignore]`d so `cargo test` stays offline and deterministic. Run on
 //! purpose with real credentials, never committed — read from the

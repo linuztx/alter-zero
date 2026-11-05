@@ -97,16 +97,15 @@ real backend's own latency plays the same role.
   generates** (its streamed `name`/`arguments` fragments — counted like reasoning
   so the tally keeps ticking *while the model produces the call*, before it runs),
   and tool output), counted
-  app-side by a real `o200k_base` byte-pair tokenizer (the count seam is
-  `app::count_tokens` → [`tokenizer::count`] — the crate's own compact,
-  count-only store over tiktoken's vocabulary, proven count-identical to
-  `tiktoken-rs` by differential tests and an order of magnitude lighter in
-  memory; see `docs/tokenizer.md`). Exact for
-  current OpenAI models and close for the other models the providers serve. Each
-  input/chunk/tool-output is tokenized as it arrives and **added** to the tally
-  (`↑`/`↓` per source); a token straddling a chunk boundary can nudge the live
-  total a hair above a whole-buffer re-encode — fine for a status estimate, and
-  it keeps counting O(text), non-blocking. It is **never reset** mid-turn.
+  app-side by a provider-agnostic estimate (the count seam is
+  `app::count_tokens` → `token_estimate::estimate` — one pass over the text
+  with no vocabulary, within a few percent of the current tokenizers on
+  English and code; see `docs/token-estimate.md`), until the round's usage
+  frame replaces it with the provider's own count. Each
+  input/chunk/tool-output is estimated as it arrives and **added** to the tally
+  (`↑`/`↓` per source); word-sized pieces add up to exactly what their whole
+  estimates, and a piece cut mid-word costs a token of its own — fine for a
+  status estimate, and it keeps counting O(text), non-blocking. It is **never reset** mid-turn.
   Omitted only while it is 0 — which, now that the input is counted up front, is
   just the very first frame before `count_user_input` runs. **A real backend's
   round-end usage frame snaps the tally to the provider's own accounting**
@@ -237,7 +236,7 @@ transcript (stamp-free there — only user messages display a timestamp):
   `verb` is the status's `done_verb`, the past tense of the verb the line last
   wore. Its token fields are the receipt (`docs/prompt-caching.md`): `tokens`
   what the usage frames reported, `cached`/`cache_write` their cache halves,
-  and `estimated` the tokenizer's share no frame reported — non-zero only for
+  and `estimated` the estimated share no frame reported — non-zero only for
   an interrupted turn, whose total then reads `≈` (`docs/interrupt.md`).
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
   (the seconds humanized by `format_elapsed` — `Worked for 20s`,

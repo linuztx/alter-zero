@@ -88,9 +88,9 @@ fn a_streaming_write_holds_what_its_cell_shows_not_the_whole_file() {
     let mut buf = Buffer::empty(area);
     let mut app = App::new();
 
-    // A small write through the same path first: the tokenizer's tables and
-    // the highlighter's grammars load once per process, on first use, and
-    // every highlighted cell paid that before this preview existed.
+    // A small write through the same path first: the highlighter's grammars
+    // load once per process, on first use, and every highlighted cell paid
+    // that before this preview existed.
     app.begin_stream();
     stream_write(
         &mut app,

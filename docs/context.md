@@ -397,7 +397,7 @@ the rows); a streamed chunk doesn't invalidate it at all (the window shows
 finished items only). No incremental prefix is needed — unlike the
 transcript, the window only changes at item boundaries, never per chunk.
 
-The headers' token estimates put every text through the tokenizer, which on
+The headers' token estimates put every text through the estimator, which on
 a long conversation is the most expensive part of a build — so the cache
 keeps a `context_usage::CountMemo` (the `/context` page's own) across
 rebuilds, and across a close too, being counts and never text: a rebuild for

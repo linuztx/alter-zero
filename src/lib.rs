@@ -123,8 +123,9 @@
 //! - [`tips`]        — the spinner tips: the catalog, when a turn's tip
 //!   appears and moves on, and the per-user `tips.json` holding the **Show
 //!   tips** switch and where the walk left off (pure; see `docs/tips.md`).
-//! - [`tokenizer`]   — accurate token counting for the status tally (tiktoken
-//!   `o200k_base`, ranks embedded; the count seam behind `app::count_tokens`).
+//! - [`token_estimate`] — provider-agnostic token estimates and their
+//!   calibration from the providers' own usage reports (pure; see
+//!   `docs/token-estimate.md`).
 //! - [`trust`]       — what the user trusted to run: the hooks of their own
 //!   and their projects' `hooks.json` and each project's MCP servers — the
 //!   `trust.json` format, a hook's identity, new-or-changed classification,
@@ -188,7 +189,7 @@ pub mod telemetry;
 pub mod term;
 pub mod textarea;
 pub mod tips;
-pub mod tokenizer;
+pub mod token_estimate;
 pub mod trust;
 pub mod ui;
 pub mod update;

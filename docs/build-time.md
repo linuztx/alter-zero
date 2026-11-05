@@ -56,7 +56,7 @@ from the report):
 | `image` + codecs (`image` alone 27.8) | 44 | the Ctrl+V paste, the inline pictures |
 | the Wayland stack: `wayland-protocols` (13.0, every protocol generated through `wayland-scanner`), `wl-clipboard-rs`, `tree_magic_mini`, … | 44 | `clipboard::linux`, arboard's `wayland-data-control` |
 | `moxcms` (24.3) + `pxfm` (16.9) | 41 | colour management, a hard dependency of `image` ≥ 0.25.7 |
-| regex engines: `regex-automata` (19.6), `regex-syntax`, `aho-corasick`, `fancy-regex` | 41 | the tokenizer's o200k pattern, the hook matchers |
+| regex engines: `regex-automata` (19.6), `regex-syntax`, `aho-corasick`, `fancy-regex` | 41 | the hook matchers — and, when measured, the old tokenizer's o200k pattern (`fancy-regex` left with it, `docs/token-estimate.md`) |
 | the sixel quantiser: `quantette`, `palette`, `wide`, `rand 0.10`, `bytemuck_derive` + `syn 3`, … | 34 | `ratatui-image` → `icy_sixel`, unconditionally |
 | `toml` + `toml_edit` + `winnow` | 16 | `providers.toml` |
 | `x11rb-protocol` (11.6) + `x11rb` | 14 | the X11 clipboard |
@@ -243,10 +243,11 @@ app needs, so they are documented here rather than trimmed:
 - **TLS (46 s CPU)** — the crate's pure-Rust stance (`reqwest` with
   `rustls-tls`); `native-tls` would be cheaper to compile and bring a
   system OpenSSL.
-- **The regex engines (41 s CPU)** — the tokenizer's o200k split pattern
-  needs `fancy-regex` with the full Unicode tables (`\p{L}`, `\p{N}`), and
-  every `unicode-*` feature is a table `regex-automata` compiles; `regex`
-  itself is a thin wrapper over the same engine.
+- **The regex engines (41 s CPU, measured)** — the hook matchers' `regex`
+  is a thin wrapper over `regex-automata`, and every `unicode-*` feature is a
+  table it compiles. The measurement also carried `fancy-regex`, for the
+  tokenizer's o200k split pattern, which left the build with the tokenizer
+  (`docs/token-estimate.md`), so the family now costs less than it reads.
 - **`x11rb-protocol` (12 s)** — the core X11 protocol as generated code;
   no extension feature is on.
 - **`onig_sys` (10 s, a C build)** — the deliberate oniguruma choice
@@ -264,7 +265,7 @@ crate, so its front end — ~16 s of the 44 — serialises on one core while
 the other three idle, and even an incremental rebuild re-runs the whole
 crate's parse, metadata and link (the ~5 s floor below). A **workspace
 split** would let the front ends of independent modules run side by side
-and let an edit recompile only its own crate: `tokenizer`, `markdown` +
+and let an edit recompile only its own crate: `token_estimate`, `markdown` +
 `highlight`, `textarea`, `file_search`, `session` + `history` and the
 `llm` wire formats are each reachable only through `crate::` paths that
 `tests/api_surface.rs` locks, so each is a candidate leaf. It is a design

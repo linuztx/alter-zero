@@ -15,7 +15,7 @@ working:
 2. **Real usage accounting** — the request asks for the provider's final
    `usage` frame (`stream_options: {"include_usage": true}` on the chat wire;
    the other three wires report it unasked), and the app's token tally snaps
-   to it instead of trusting the app-side `tiktoken` estimate, which never
+   to it instead of trusting the app-side token estimate, which never
    saw the system prompt, the re-sent context, or the cache discount. The
    committed turn summary then reads `Done for 12s · 8.2k tokens (8k cached)`
    — or, on the turn that *primed* the cache, `(8k written)` — the visible
@@ -34,11 +34,11 @@ provider, by `tests/live_caching.rs` (the table at the end).
 
 | number | where it comes from |
 | --- | --- |
-| the status line's `↓ N tokens` **between** usage frames | the app-side `o200k_base` estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — exact for OpenAI models, close for the rest |
+| the status line's `↓ N tokens` **between** usage frames | the app-side token estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — `docs/token-estimate.md` |
 | the tally **at every round boundary**, the `Done … · N tokens` receipt, its `(N cached · N written)` | the provider's own usage frame — never estimated; a provider that reports none (the dummy, a shim that drops usage) leaves the receipt bare rather than guessing |
 | an **interrupted** turn's receipt, `Worked for 8s · ≈24.3k tokens` | the tally the status line showed as Esc landed: the frames of the rounds that finished, plus the estimate for the round the Esc cut short, which never sends its frame — the total marked `≈` whenever that estimate is in it, the cache halves still the frames' own (`docs/interrupt.md`) |
 | the footer's context gauge after a round | real: the last round's `input + output` |
-| the gauge after a history mutation (`/clear`, backtrack, `/resume`, compaction) or with no frame yet | the tokenizer estimate of the derived context, until the next frame |
+| the gauge after a history mutation (`/clear`, backtrack, `/resume`, compaction) or with no frame yet | the token estimate of the derived context, until the next frame |
 | the `Thought for … · N tokens` cell | snapped to the provider's `reasoning_tokens` when the frame carries one (OpenAI, OpenRouter, the Responses wire); the estimate where none does (Anthropic folds thinking into `output_tokens`, Ollama reports none) |
 | a subagent's roster tally and its own receipt | the same rule over its own frames (`docs/agent-context-gauge.md`) |
 
@@ -276,7 +276,7 @@ TurnSummary { tokens, cached, cache_write }
   - **Ollama** (`ollama.rs`): the final frame's `prompt_eval_count` /
     `eval_count`, the whole prompt on a cache hit too; the API has no cache
     accounting at all, so the cached share is honestly zero.
-- **Snap, don't add**: the tiktoken estimate keeps ticking live between
+- **Snap, don't add**: the token estimate keeps ticking live between
   frames (chunks, reasoning, tool output — unchanged), but each round's usage
   frame **replaces** the tally with the accumulated real total
   (`App::apply_usage`). So the status is always "everything billed so far,

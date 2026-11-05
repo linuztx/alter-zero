@@ -111,7 +111,7 @@ fn live_usage_frame_reaches_the_app() {
     // The real-usage pipeline end to end (docs/prompt-caching.md): the
     // payload asks for `stream_options.include_usage`, the provider's final
     // frame is parsed, and the backend forwards it as StreamEvent::Usage —
-    // the numbers the app snaps its tally to instead of the tiktoken
+    // the numbers the app snaps its tally to instead of the token
     // estimate.
     let context = vec![ContextMessage::new(
         ContextRole::User,
@@ -1123,7 +1123,7 @@ fn live_usage_reports_the_reasoning_token_count() {
     // The thinking stream's token count (docs/thinking-stream.md): the round's
     // final usage frame carries `completion_tokens_details.reasoning_tokens`,
     // which is what the committed `✻ Thought for … · … tokens` cell snaps its
-    // tokenizer estimate to. Asserted against the live wire because the field
+    // token estimate to. Asserted against the live wire because the field
     // is a provider detail, not something the unit tests can prove is really
     // sent.
     let prompt = "What is 17*23? Think it through.";
@@ -1164,7 +1164,7 @@ fn live_thought_cell_snaps_to_the_providers_reasoning_tokens() {
     // The whole thinking-stream chain over a real stream
     // (docs/thinking-stream.md): the reasoning deltas fill the live buffer,
     // `ThinkingEnd` collapses it into a `HistoryItem::Reasoning` carrying the
-    // tokenizer ESTIMATE, and the round's usage frame then snaps that cell to
+    // token ESTIMATE, and the round's usage frame then snaps that cell to
     // the provider's own `reasoning_tokens`. Driven by replaying the events
     // into a real `App` exactly as `tui::stream` does, so nothing about the
     // wire is mocked.

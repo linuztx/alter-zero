@@ -293,7 +293,7 @@ again (`docs/agent-tools.md` *A resume is news when it starts*).
   mode stays off — a leading bang is literal chat text. **The footer's model
   and gauge segments are the viewed agent's too** (`docs/agent-context-gauge.md`):
   its own context size — `AgentRun::context_used`, the last usage frame's
-  `input + output` by the main gauge's rule, the tokenizer estimate over its
+  `input + output` by the main gauge's rule, the token estimate over its
   transcript when a settle saw no frame — against the window of the model it
   runs on, and that model's name when its definition pins one
   (`App::context_gauge` / `App::viewed_agent_model`, fed by

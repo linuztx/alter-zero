@@ -10,7 +10,7 @@ smoke_begin
 # strip clears, and the turn's receipt — the summary a finished turn ends on,
 # "Worked for Ns · ≈N tokens" — commits UNDER the notice (docs/interrupt.md,
 # "The receipt an interrupted turn keeps"). The dummy reports no usage, so the
-# whole tally is the tokenizer's and the total wears the `≈` mark. The app
+# whole tally is estimated and the total wears the `≈` mark. The app
 # keeps running — a follow-up message must stream and finish normally, its
 # own summary the second on screen. Esc when idle now arms the Esc-Esc
 # backtrack once user messages exist (Phase 30; quitting is Ctrl+C — Phase 4).

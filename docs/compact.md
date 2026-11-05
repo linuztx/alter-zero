@@ -51,7 +51,7 @@ emits, in place of everything before it:
    **middle-truncated** to the remaining budget (codex's
    `truncate_middle_with_token_budget` — head + `…{n} tokens truncated…` +
    tail), then the selection is re-reversed to chronological order. Tokens are
-   codex's `bytes/4` approximation (`approx_token_count`), not the tiktoken
+   codex's `bytes/4` approximation (`approx_token_count`), not the app's token
    seam — the walk runs at every turn start and must be O(len);
 2. the **bridge**: `{SUMMARY_PREFIX}\n{summary}` as a user message (an empty
    summary becomes `(no summary available)`, codex's fallback — which a live
@@ -155,7 +155,7 @@ the same threshold — **90% of the model's context window**
   room a big paste or a long tool output just cost. `used` is the last
   usage frame's `input + output` — the provider's own accounting of the
   re-sent context plus the reply that joins the next request — kept honest
-  across mutations by a tokenizer re-estimate: after a compaction (codex's
+  across mutations by a token re-estimate: after a compaction (codex's
   `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
   at the end of any turn that saw no usage frame (the dummy).
 - **A subagent's session view gauges that agent, not the lead**
@@ -250,5 +250,5 @@ fully streamed.
   prevent). Retry the command after trimming by hand (`/clear`, backtrack).
 - Codex's post-compact "Heads up: Long threads and multiple compactions…"
   warning cell is not ported — the marker cell is the whole record.
-- The bridge re-tokenizes as `bytes/4`, not the real tokenizer — same
+- The bridge re-tokenizes as `bytes/4`, not the app's token estimate — same
   approximation codex uses for the budget.

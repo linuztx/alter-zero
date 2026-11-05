@@ -157,12 +157,13 @@ tests. Arch Linux ARM carries the same `libgcc` split, `oniguruma 6.9.10` and
 what Arch's `ripgrep`, `fd` and `git-delta` do — with three decisions on top.
 
 **Not `--release`.** Testing in the release profile looks as if it would
-reuse `build()`'s dependencies. Measured, it does not: the test build adds
-the `tiktoken-rs` dev-dependency, which changes feature resolution, and Cargo
-recompiled every dependency anyway (9m 39s, against 10m 23s for the dev
-profile). It also re-links `target/release/alter-zero` after `build()` made
-it. The bytes came out identical, but the package should ship `build()`'s
-binary by construction rather than by luck, and the dev profile builds into
+reuse `build()`'s dependencies; when it was measured, it did not — the test
+build then added a dev-dependency (`tiktoken-rs`, since removed with the
+tokenizer it checked), which changed feature resolution, and Cargo recompiled
+every dependency anyway (9m 39s, against 10m 23s for the dev profile). It
+would also re-link `target/release/alter-zero` after `build()` made it. The
+bytes came out identical, but the package should ship `build()`'s binary by
+construction rather than by luck, and the dev profile builds into
 `target/debug`, never touching it.
 
 **No debug info.** With makepkg's `debug` option, `RUSTFLAGS` carries

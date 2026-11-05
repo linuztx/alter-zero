@@ -129,22 +129,22 @@ impl HookNote {
     }
 }
 
-/// The number of tokens in `text`, via the real `tiktoken` `o200k_base`
-/// tokenizer ([`crate::tokenizer::count`]) — the single seam every status-line
-/// tally funnels through (input, reply, reasoning, and tool output). Exact for
-/// current OpenAI models and a close approximation for the other models the
-/// configured providers serve; the running total still accumulates faithfully
-/// as text and tool output arrive. See `docs/status-indicator.md`.
+/// About how many tokens `text` is — [`crate::token_estimate::estimate`],
+/// the provider-agnostic estimate — the single seam every status-line tally
+/// funnels through (input, reply, reasoning, and tool output) and every
+/// context estimate counts with. A live figure between the provider's usage
+/// frames, which replace it with the provider's own accounting and teach the
+/// context figures its tokenizer (`docs/token-estimate.md`).
 #[must_use]
 pub(crate) fn count_tokens(text: &str) -> usize {
-    crate::tokenizer::count(text)
+    crate::token_estimate::estimate(text)
 }
 
-/// A flat token estimate charged per Ctrl+V-attached image
-/// ([`App::count_input_images`]). The protocol carries no real usage and an
-/// image has no text to size, so this is a demo stand-in for a vision model's
-/// per-image cost. See `docs/image-paste.md`.
-pub(super) const IMAGE_INPUT_TOKENS: usize = 256;
+/// What one Ctrl+V-attached or replayed image is estimated at
+/// ([`crate::token_estimate::IMAGE_TOKENS`]) — a stand-in the provider's
+/// calibration corrects like the rest of a request. See
+/// `docs/image-paste.md`.
+pub(super) const IMAGE_INPUT_TOKENS: usize = crate::token_estimate::IMAGE_TOKENS;
 
 /// Which screen is showing. The conversation is the inline TUI; the tool-output
 /// view is a separate full-screen overlay listing every tool call's full output

@@ -555,7 +555,7 @@ fn an_interrupted_turn_hands_back_its_receipt() {
     assert_eq!(summary.tokens, 0, "no usage frame reported anything");
     assert_eq!(
         summary.estimated, tally,
-        "the line's whole tally, every token of it the tokenizer's"
+        "the line's whole tally, every token of it estimated"
     );
     assert!(!app.turn_active(), "the live status still clears");
 }
@@ -926,7 +926,7 @@ fn apply_usage_tracks_the_context_size_from_the_usage_frame() {
 
 #[test]
 fn a_turn_with_no_usage_frame_estimates_the_context_at_turn_end() {
-    // The dummy sends no usage — the tokenizer estimate stands in so the
+    // The dummy sends no usage — the token estimate stands in so the
     // gauge (and the auto trigger) still work offline.
     let mut app = App::new();
     app.record_user_message("hello there");

@@ -324,7 +324,7 @@ wires. `ChatAccumulator` folds it:
   (85 both times for a repeated request), so the gauge can trust it — unlike
   Anthropic's uncached remainder (`docs/claude.md`). No cache or reasoning
   breakdown exists, so those stay 0 and the `Thought for …` cell keeps its
-  tokenizer estimate.
+  token estimate.
 - **An in-band `{"error": …}` line** (a 200 that fails mid-stream) fails the
   turn; a non-2xx status arrives from the transport as an ordinary API error
   and is explained below.

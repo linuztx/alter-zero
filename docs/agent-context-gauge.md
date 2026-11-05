@@ -47,7 +47,7 @@ Three small pieces, each the main session's own rule one level down:
   main gauge's exact rule (`App::apply_usage`): the last usage frame's
   `input + output`, **replaced** per frame rather than accumulated. A turn that
   settles having seen no frame (the offline dummy scripts none on the agent
-  channel; a provider may omit usage) falls back to the tokenizer estimate over
+  channel; a provider may omit usage) falls back to the token estimate over
   the agent's own derived transcript — `App::take_turn_summary`'s rule —
   through the one shared counting function, `app::estimate_messages_tokens`,
   so the lead's estimate and an agent's can never disagree about what a

@@ -54,7 +54,7 @@ pub struct ContextUsagePage {
     chosen: bool,
     /// Every text's count from the last pass, so a re-count tokenizes only
     /// what is new — a long conversation's whole window through the
-    /// tokenizer again stalled a frame on each commit of a busy turn.
+    /// estimator again stalled a frame on each commit of a busy turn.
     memo: CountMemo,
 }
 

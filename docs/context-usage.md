@@ -216,9 +216,10 @@ A share is a whole percent that never claims all or none it is not: a
 
 ## Estimated and reported
 
-The categories are counted with the app's tokenizer — `o200k_base`, the seam
-every live tally goes through (`docs/tokenizer.md`): exact for OpenAI models,
-close for the rest, and blind to what a provider adds on its own side (a chat
+The categories are counted with the app's token estimate — the seam every
+live tally goes through (`docs/token-estimate.md`): within a few percent of
+every current tokenizer on English and code, and blind to what a provider adds
+on its own side (a chat
 template's framing, an image's real cost, its own rendering of a tool
 schema). A request's real size is the provider's to say, and it says it once
 per round. So the page shows both, and labels which is which: the breakdown
@@ -244,7 +245,7 @@ length, and a hash of the system prompt, the reminder inputs and the tool
 set — so it never counts per frame, only on a change. And a re-count reads
 each text's tokens from the page's **memo** (`context_usage::CountMemo`):
 every text the last pass counted is known by its length and hash, so only
-what is new goes through the tokenizer, and whatever a pass no longer
+what is new goes through the estimator, and whatever a pass no longer
 counts is forgotten, which bounds the memo to two windows' entries. That is
 what keeps a busy turn smooth under an open page: measured on a 288k-token
 conversation, a whole-window count takes 45 ms and the re-count after a

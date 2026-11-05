@@ -229,7 +229,7 @@ pub struct AgentRun {
     /// last one's whole context, so summing frames is the billed tally,
     /// [`tokens`](Self::tokens), not the context). A turn that settles having
     /// seen no frame (the offline dummy, a provider that omits usage) falls
-    /// back to the tokenizer estimate over its own transcript
+    /// back to the token estimate over its own transcript
     /// (`estimate_context_tokens`). Zero until the first of either lands,
     /// where the main gauge starts too.
     context_used: u64,
@@ -347,7 +347,7 @@ pub struct AgentRun {
     reasoning: Option<String>,
     /// Where this round's settled thinking cells landed in
     /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
-    /// frame can snap their tokenizer estimates to the provider's
+    /// frame can snap their token estimates to the provider's
     /// `reasoning_tokens` (`app::reasoning::snap_reasoning_tokens`). Cleared by
     /// each frame — one frame ends one round.
     round_reasoning: Vec<usize>,
@@ -818,7 +818,7 @@ impl AgentRun {
             }
             StreamEvent::Usage(usage) => {
                 // One frame ends one round: this is where the round's
-                // `Thought for …` cells trade their tokenizer estimate for
+                // `Thought for …` cells trade their token estimate for
                 // the provider's own `reasoning_tokens`, the main session's
                 // snap over this agent's transcript
                 // (`docs/thinking-stream.md`).
@@ -848,7 +848,7 @@ impl AgentRun {
                 self.drafts.clear();
                 self.status = AgentStatus::Done;
                 // No usage frame this turn (the dummy, a provider that omits
-                // them): the tokenizer estimate over this transcript stands
+                // them): the token estimate over this transcript stands
                 // in for the gauge — `App::take_turn_summary`'s rule
                 // (`docs/agent-context-gauge.md`).
                 if self.turn_usage_tokens == 0 {
@@ -1003,7 +1003,7 @@ impl AgentRun {
         self.context_used
     }
 
-    /// The tokenizer estimate of this agent's context: its own transcript
+    /// The token estimate of this agent's context: its own transcript
     /// derived exactly as a request would be
     /// ([`crate::context::context_messages`]), counted by the rule the main
     /// gauge counts with (`app::estimate_messages_tokens`) — and a **true
@@ -3981,7 +3981,7 @@ mod tests {
     #[test]
     fn a_settle_without_a_usage_frame_estimates_the_context_from_the_transcript() {
         // The offline dummy scripts no usage frames on the agent channel, so
-        // — the main session's `take_turn_summary` rule — the tokenizer
+        // — the main session's `take_turn_summary` rule — the token
         // estimate over the agent's own derived context stands in at the
         // settle, and the gauge still moves offline.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "Get Warsaw weather", false);
@@ -5172,7 +5172,7 @@ mod tests {
 
     #[test]
     fn the_rounds_usage_frame_snaps_the_thought_to_the_providers_count() {
-        // The main session's snap (docs/thinking-stream.md): the tokenizer
+        // The main session's snap (docs/thinking-stream.md): the token
         // estimate gives way to `completion_tokens_details.reasoning_tokens`.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.begin_reasoning();

@@ -37,6 +37,20 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Token counts are estimated for every provider, not tokenized for one.**
+  The token figures the app works out itself — the status line's tally
+  between the provider's reports, the context gauge, the `/context` page and
+  Ctrl+D's sizes — came from a copy of OpenAI's `o200k_base` tokenizer,
+  exact for OpenAI's models only: other providers' vocabularies count the
+  same text differently, by up to three times outside English. They now come
+  from a lightweight estimate made for any
+  provider, within a few percent of the current tokenizers on English, code
+  and tool output and between them elsewhere, several times faster to work
+  out. The binary is 1.6 MB smaller, nothing is built in the background at
+  startup, and the app holds a few megabytes less memory. What a provider
+  reports still replaces the estimate as it arrives
+  (`docs/token-estimate.md`).
+
 - **The `/` command palette marks the highlighted command with `→`.** The
   palette showed which command Enter runs by colour alone, which a
   monochrome terminal or a plain screen capture cannot show. The highlighted

@@ -34,7 +34,7 @@ pub struct Reasoning {
     /// clock) — the cell's `Thought for {…}` clause, humanized by
     /// [`format_elapsed`].
     pub secs: u64,
-    /// What the phase cost: the tokenizer estimate at first, **snapped** to
+    /// What the phase cost: the token estimate at first, **snapped** to
     /// the provider's `completion_tokens_details.reasoning_tokens` when the
     /// round's usage frame arrives ([`App::apply_usage`]). 0 hides the clause.
     pub tokens: usize,
@@ -126,7 +126,7 @@ impl App {
         self.round_reasoning.clear();
     }
 
-    /// Replace this round's reasoning cells' tokenizer estimates with the
+    /// Replace this round's reasoning cells' token estimates with the
     /// provider's own `completion_tokens_details.reasoning_tokens`, split over
     /// them by weight ([`distribute`]). Called from
     /// [`apply_usage`](App::apply_usage) — one usage frame ends one round, so
@@ -140,7 +140,7 @@ impl App {
     }
 }
 
-/// Replace the tokenizer estimates of the [`HistoryItem::Reasoning`] cells at
+/// Replace the token estimates of the [`HistoryItem::Reasoning`] cells at
 /// `targets` with the provider's own `reasoning_tokens`, split over them by
 /// weight ([`distribute`]).
 ///
