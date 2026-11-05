@@ -515,7 +515,9 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
     );
     assert_eq!(setting_rows(&texts, &labels), 3, "three rows: {texts:#?}");
     assert!(
-        texts.iter().any(|t| t == "  ↓ 17 more below"),
+        texts
+            .iter()
+            .any(|t| *t == format!("  ↓ {} more below", SettingKey::ALL.len() - 3)),
         "the rest named under them: {texts:#?}"
     );
     assert!(
@@ -523,7 +525,9 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
         "{texts:#?}"
     );
     assert!(
-        !texts.iter().any(|t| t.contains("(1/20)")),
+        !texts
+            .iter()
+            .any(|t| t.contains(&format!("(1/{})", SettingKey::ALL.len()))),
         "no counter: {texts:#?}"
     );
     assert!(
@@ -545,7 +549,11 @@ fn the_compact_settings_page_is_the_familys_short_page() {
     assert!(texts[3].starts_with("→ Hide thinking"), "{texts:#?}");
     assert!(texts[4].starts_with("  Verbose output"), "{texts:#?}");
     assert!(texts[5].starts_with("  Show images"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 17 more below", "{texts:#?}");
+    assert_eq!(
+        texts[6],
+        format!("  ↓ {} more below", SettingKey::ALL.len() - 3),
+        "{texts:#?}"
+    );
     assert_eq!(texts[7], format!("  {SETTINGS_HINT}"), "{texts:#?}");
     assert!(is_rule(&texts[8]), "{texts:#?}");
 }
@@ -559,7 +567,11 @@ fn the_compact_settings_window_keeps_the_selection_in_its_middle() {
     assert!(texts[3].starts_with("  Tools"), "{texts:#?}");
     assert!(texts[4].starts_with("→ Permission mode"), "{texts:#?}");
     assert!(texts[5].starts_with("  Checkpoints"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 11 more below", "{texts:#?}");
+    assert_eq!(
+        texts[6],
+        format!("  ↓ {} more below", SettingKey::ALL.len() - 9),
+        "{texts:#?}"
+    );
 }
 
 #[test]
@@ -624,7 +636,8 @@ fn a_long_settings_description_is_cut_to_one_row_before_the_list_shrinks() {
 fn the_whole_settings_page_returns_once_it_fits() {
     let app = settings_app();
     let whole = u16::try_from(page_at(&app, 78, TALL).len()).expect("rows");
-    let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains("(1/20)"));
+    let counter = format!("(1/{})", SettingKey::ALL.len());
+    let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains(&counter));
     assert!(
         has_counter(&page_at(&app, 78, whole)),
         "whole at its own height"

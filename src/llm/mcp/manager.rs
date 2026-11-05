@@ -4094,6 +4094,31 @@ done
         manager.shutdown();
     }
 
+    /// A sign-in ends in a connect, and nothing connects while MCP is off:
+    /// turning it off abandons a sign-in already running — quietly, the
+    /// redirect it was waiting for landing nowhere.
+    #[test]
+    fn turning_mcp_off_abandons_a_sign_in_in_flight() {
+        let base = spawn_signin_server();
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, mut rx) = signin_manager(&base, &dir.path().join("mcp-auth.json"));
+        manager.authenticate("srv");
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        manager.set_active(false);
+        let state = crate::llm::mcp::redirect_param(&url, "state").unwrap();
+        manager.submit_auth_paste(&format!(
+            "http://localhost:1/callback?code=c&state={}",
+            crate::llm::mcp::url_encode(&state)
+        ));
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(500), auth_done),
+            None,
+            "the abandoned sign-in still finished"
+        );
+        assert_eq!(status_of(&manager, "srv"), McpServerStatus::Off);
+        manager.shutdown();
+    }
+
     #[test]
     fn config_errors_surface_for_the_toast() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
