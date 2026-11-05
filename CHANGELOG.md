@@ -34,6 +34,18 @@ release heading when a version is cut.
   version as if the agent had asked for it. What the agent reads is
   unchanged, and a hook that runs silently still leaves nothing
   (`docs/hooks.md`).
+- **`/settings` has an MCP row that turns every MCP server off at once.**
+  Set it to `false` and no server from `~/.alter-zero/mcp.json` or a
+  project's `.mcp.json` is started or connected, so the agent gets none of
+  their tools; set it back to `true` and they connect again. Each server's
+  own switch in `/mcp` is left alone, so a server you disabled there is
+  still disabled when MCP comes back, and the choice is saved for the
+  directory, like **Hooks**. While MCP is off, `/mcp` still lists every
+  server under a note pointing to `/settings`, the ones it is holding
+  marked `◯ off`, and the startup review stops asking about a project's
+  new servers until MCP is back on. `ALTER_ZERO_MCP=0` now sets the row
+  for one run instead of hiding MCP altogether, so `/mcp` still opens and
+  MCP can be turned back on without a restart (`docs/mcp.md`).
 
 ### Changed
 

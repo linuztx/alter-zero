@@ -194,12 +194,16 @@ pub(crate) struct ModelSession {
     /// [`Self::skills_offered`] need a rebuild. Re-deriving both sides would
     /// make them equal by construction and rebuild either never or always.
     skills_attached: bool,
-    /// The session's MCP manager (`docs/mcp.md`) — `None` when the feature is
-    /// off. Re-attached on every rebuild like the registries above; the
+    /// The session's MCP manager (`docs/mcp.md`). Re-attached on every
+    /// rebuild like the registries above while `mcp_enabled` holds; the
     /// tracked `mcp_fingerprint` is the *last build's* offered wire-name set,
     /// so [`Self::refresh_mcp`] rebuilds only when a connection change
     /// actually flipped what the request carries.
     mcp: Option<alter_zero::llm::mcp::McpManager>,
+    /// Whether the MCP servers' tools are offered at all — the `/settings`
+    /// **MCP** knob, read by every rebuild so a mid-session switch sticks
+    /// (`skills_enabled`'s twin).
+    mcp_enabled: bool,
     mcp_fingerprint: Vec<String>,
     /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
     /// rebuild like the registries above. Held as the *setup* rather than a
@@ -320,6 +324,14 @@ impl ModelSession {
         // spell means turning the row back on needs no rescan.
         let skills_enabled = settings.skills;
         let skills = skills.clone();
+        // The **MCP** knob: off, the manager is never attached — its servers
+        // are held off anyway (`McpManager::set_active`), and the tool set
+        // must not wait for their events to say so (docs/mcp.md).
+        let mcp_enabled = settings.mcp;
+        // Held whatever the knob says, so turning it back on needs nothing
+        // the session does not already have.
+        let mcp_handle = mcp.cloned();
+        let mcp = mcp.filter(|_| mcp_enabled);
         let subagents = subagents.clone();
         let system_prompt = config::system_prompt(cwd, scratchpad);
         // The runtime half alone, for an agent definition whose body replaces
@@ -557,7 +569,8 @@ impl ModelSession {
             mcp_fingerprint: mcp
                 .map(alter_zero::llm::mcp::McpManager::fingerprint)
                 .unwrap_or_default(),
-            mcp: mcp.cloned(),
+            mcp: mcp_handle,
+            mcp_enabled,
             hooks,
             fetch_cancel: None,
             probe_pending: probe.is_some(),
@@ -854,11 +867,7 @@ impl ModelSession {
         // built — `set_tools`, a `/model` switch and a skill toggle all land
         // on it, and any of them can change the verdict.
         self.skills_attached = self.skills_offered();
-        self.mcp_fingerprint = self
-            .mcp
-            .as_ref()
-            .map(alter_zero::llm::mcp::McpManager::fingerprint)
-            .unwrap_or_default();
+        self.mcp_fingerprint = self.mcp_fingerprint_now();
         self.backend = Box::new(session_backend(
             cfg,
             self.system_prompt.clone(),
@@ -874,7 +883,7 @@ impl ModelSession {
             &self.tasks,
             self.skills_enabled.then_some(&self.skills),
             &self.subagents,
-            self.mcp.as_ref(),
+            self.mcp_offered(),
             self.hooks.as_ref(),
         ));
     }
@@ -1116,10 +1125,31 @@ impl ModelSession {
     /// actually changed (`refresh_skills`'s exact posture, fingerprinted
     /// because the set is a list rather than a bool).
     pub(crate) fn refresh_mcp(&mut self) {
-        let Some(manager) = &self.mcp else { return };
-        if manager.fingerprint() != self.mcp_fingerprint {
+        if self.mcp_fingerprint_now() != self.mcp_fingerprint {
             self.rebuild_current();
         }
+    }
+
+    /// The `/settings` **MCP** knob: whether the servers' tools are offered
+    /// from here on (`docs/mcp.md`). The manager stops or connects the
+    /// servers themselves; this is the request's half, rebuilt at once so
+    /// the next turn cannot carry a tool from a server that is gone.
+    pub(crate) fn set_mcp(&mut self, enabled: bool) {
+        self.mcp_enabled = enabled;
+        self.rebuild_current();
+    }
+
+    /// The manager a build attaches — none while the **MCP** knob is off.
+    fn mcp_offered(&self) -> Option<&alter_zero::llm::mcp::McpManager> {
+        self.mcp.as_ref().filter(|_| self.mcp_enabled)
+    }
+
+    /// The offered tool set a build right now would carry, as
+    /// [`Self::refresh_mcp`] compares it.
+    fn mcp_fingerprint_now(&self) -> Vec<String> {
+        self.mcp_offered()
+            .map(alter_zero::llm::mcp::McpManager::fingerprint)
+            .unwrap_or_default()
     }
 
     /// The `/settings` **Error retry** knob: how many times a failed request
@@ -1931,12 +1961,13 @@ impl Session<'_> {
         // The connected MCP servers' own instructions (docs/mcp.md), after
         // the secrets: servers connect after the first frame and come and
         // go, and only what follows a changed section re-renders into the
-        // prompt cache. Gated on Tools, as their tools are.
-        let mcp_instructions = match &self.mcp {
-            Some(manager) if self.app.settings().tools => {
-                alter_zero::mcp::instructions_section(&manager.instructions(&|_| true))
-            }
-            _ => String::new(),
+        // prompt cache. Gated on Tools and the **MCP** row, as their tools
+        // are.
+        let settings = self.app.settings();
+        let mcp_instructions = if settings.tools && settings.mcp_active() {
+            alter_zero::mcp::instructions_section(&self.mcp.instructions(&|_| true))
+        } else {
+            String::new()
         };
         let listings = alter_zero::reminder::join_sections(&[
             &alter_zero::subagents::listing_sections(&skills, &agents),

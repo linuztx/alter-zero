@@ -124,13 +124,58 @@ an empty file), the file's own permissions kept (owner-only for a new one,
 since its headers and `env` can hold tokens), and a symlink followed to the
 file it names, so a dotfiles manager's link stays a link.
 
+### The `/settings` **MCP** row — every server off at once
+
+A server's **disabled** state is that one server's, kept per project in the
+user file; the `/settings` **MCP** row is the whole feature, kept per
+directory in `settings.json` (`"mcp": false`, `docs/settings.md`). Two
+places on purpose: turning MCP off and back on never rewrites a per-server
+choice, so a server disabled in `/mcp` is still disabled when MCP comes
+back, and every other server comes back exactly as it was.
+
+Off means what `ALTER_ZERO_MCP=0` always meant — no connections, no tools:
+
+- **Every server that would run is held at `◯ off`**
+  (`McpServerStatus::Off`, `McpManager::set_active`). Its live connection is
+  dropped (a stdio child stopped the usual way), a sign-in in flight is
+  abandoned — it would end in a connect — and every connect is refused while
+  off, whoever asks: the startup connects, a Reconnect, an Enable, a
+  review's approval, a call's restart. A server off on its own
+  (`◯ disabled`) or waiting for the review (`⚠ awaiting review`) keeps that
+  status, its own answer for when MCP comes back.
+- **The model is offered nothing.** The backend is rebuilt without the
+  manager (`ModelSession::set_mcp` — a subagent launched from it inherits
+  none), and the servers' instructions leave the `<system-reminder>`. A
+  turn — or a background subagent — built before the switch still holds the
+  manager; a call it makes to one of the servers' tools resolves red with
+  `… is not available: MCP is off for this session`, rather than as an
+  unknown tool that sends its model looking for a server that failed.
+- **`/mcp` still opens.** Every server is listed under a red `MCP is off
+  for this session — turn it on in /settings` note; an off server's page
+  repeats it and offers only **Disable**, since whether it runs once MCP is
+  back on is still decided here, recorded where it always was (the user
+  file, or `trust.json` for a project's server).
+- **The startup review asks nothing** about servers while off — nothing
+  would run — and turning the row on opens its servers page for any project
+  server still waiting (`docs/config-review.md`), the `/settings` **Hooks**
+  row's rule.
+
+On connects every server the switch was holding. A session with no server
+declared reports the row unavailable — there is nothing to switch — and a
+`mcp.json` entry that won't parse is still reported at startup, the
+`hooks.json` posture. `ALTER_ZERO_MCP` seeds the row for one run, never
+saved, as `ALTER_ZERO_HOOKS` seeds **Hooks**. It used to keep the manager
+from being built at all, so `/mcp` could only explain itself in a toast and
+nothing inside the session could turn MCP back on. `smoke.sh` Phase 152
+drives the row against a scripted stdio server.
+
 The **user** file can be edited from the command line — `alter-zero mcp add
 {name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before
 the TUI boots like `--continue`/`--resume`; see `docs/mcp-cli.md`.
 
-Env knobs: `ALTER_ZERO_MCP` (falsy = the whole feature off: no connections,
-no tools, `/mcp` explains via toast), `ALTER_ZERO_MCP_FILE` (replaces the
-*user* file path; the project files are still discovered),
+Env knobs: `ALTER_ZERO_MCP` (seeds the `/settings` **MCP** row for the run,
+never saved — falsy is the whole feature off, above), `ALTER_ZERO_MCP_FILE`
+(replaces the *user* file path; the project files are still discovered),
 `ALTER_ZERO_PROJECT_CONFIG` (falsy = no project files at all — the project
 layer's own kill switch, shared with hooks, and the smoke suite's
 hermeticity mechanism; `docs/project-config.md`),
@@ -270,7 +315,7 @@ in **`src/llm/mcp/`**.
 - `mcp::status` — what the UI consumes: `McpServerSnapshot { name, scope,
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
-  `Disabled`), the status glyph/label mapping — `glyph()` and `label()` kept
+  `Disabled`/`AwaitingReview`/`Off`), the status glyph/label mapping — `glyph()` and `label()` kept
   **separate** on both `McpServerStatus` and `McpAuthState` so a renderer can
   colour the glyph by state without splitting a string it didn't build, with
   `status_line()` composing the list row's `✔ connected · 3 tools` (the tool
@@ -1068,7 +1113,8 @@ mid-turn (the strip stays above it). Pages:
    under dim scope headings that name the config file
    (`Project MCPs ({root}/.mcp.json)`, `User MCPs (~/.alter-zero/mcp.json)`),
    each row `{name} · {glyph} {status}` (`✔ connected · 3 tools`,
-   `△ needs authentication`, `◯ disabled`, `✘ failed`). The ` · `
+   `△ needs authentication`, `◯ disabled`, `✘ failed`, and `◯ off` under a
+   red note while the `/settings` **MCP** row is off). The ` · `
    separators are **chrome, not status**, so they stay dim at every state
    (`MCP_ROW_SEPARATOR`) and only the glyph carries the state colour —
    riding it along with the glyph painted a connected row's first `·` green
@@ -1085,7 +1131,7 @@ mid-turn (the strip stays above it). Pages:
    `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
    `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
-   `Enable`. When a fresh snapshot changes the list under the user the
+   `Enable`; off with the whole feature → `Disable`. When a fresh snapshot changes the list under the user the
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first

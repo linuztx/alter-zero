@@ -224,6 +224,14 @@ Two consequences at the boundary:
   since it was only ever raised when the user had asked for checkpoints; a
   directory that turned them on still hears why it did not get them.
 
+**MCP**, a later row, is on by default for the hooks' reason: a declared
+server is the user's own configuration, and a project's servers wait for
+the startup review. A directory that should run none opts out with one
+cycle, recorded as `"mcp": false` — the switch for every server at once,
+while each server's own on/off stays in `mcp.json` and `trust.json`
+(`docs/mcp.md` *The `/settings` MCP row*). `ALTER_ZERO_MCP` seeds it for a
+run the way `ALTER_ZERO_HOOKS` seeds **Hooks**.
+
 ## What is *not* per directory
 
 - **`.env`** — a key is the user's, not a project's; `/login` is unchanged.

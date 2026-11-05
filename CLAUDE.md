@@ -2732,12 +2732,19 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-nineteen rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
+**MCP** — every server off at once while each one's own `/mcp` switch
+stays put: `McpManager::set_active` holds them at `◯ off` and refuses
+every connect, the backend is rebuilt without the manager, `/mcp` still
+lists them under a red note, the startup review asks about no project
+server until the row is back on, and `ALTER_ZERO_MCP` seeds it for a run
+where it used to keep the manager from existing at all, `docs/mcp.md`
+*The `/settings` MCP row*, `smoke.sh` Phase 152 —,
 **Skills**, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop

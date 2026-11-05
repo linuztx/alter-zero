@@ -78,6 +78,11 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     };
     match &server.status {
         McpServerStatus::Disabled => vec![A::Enable],
+        // MCP is off for the session (`/settings`): nothing connects
+        // whoever asks, so there is nothing to sign into or reconnect — but
+        // whether this server runs once MCP is back on is still the user's
+        // to decide here.
+        McpServerStatus::Off => vec![A::Disable],
         McpServerStatus::NeedsAuth => {
             let mut out = Vec::new();
             out.push(A::Authenticate);

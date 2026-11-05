@@ -1308,6 +1308,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(on) = env_flag_set("ALTER_ZERO_HOOKS") {
         settings.hooks = on;
     }
+    // `ALTER_ZERO_MCP` seeds the **MCP** row the same way — falsy, every
+    // server listed and none run, for this run only (docs/mcp.md). It used
+    // to keep the manager from existing at all, so `/mcp` could only explain
+    // itself in a toast and nothing in-session could turn MCP back on.
+    if let Some(on) = env_flag_set("ALTER_ZERO_MCP") {
+        settings.mcp = on;
+    }
     // Checkpoints keep their own (identical) pure predicate, so the one
     // grammar stays in the module that owns the feature.
     if let Ok(value) = std::env::var("ALTER_ZERO_CHECKPOINTS") {
@@ -1490,13 +1497,6 @@ pub(crate) fn prompt_context(cwd: &Path, scratchpad: Option<&Path>) -> Option<St
         ),
         None => environment,
     })
-}
-
-/// Is the MCP feature on? On by default; a falsy `ALTER_ZERO_MCP` turns the
-/// whole thing off — no connections, no tools, `/mcp` explains via toast
-/// (`docs/mcp.md`).
-pub(crate) fn mcp_enabled() -> bool {
-    env_flag("ALTER_ZERO_MCP")
 }
 
 /// The **user** MCP config file: `ALTER_ZERO_MCP_FILE` (what makes a smoke

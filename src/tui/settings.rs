@@ -193,6 +193,9 @@ impl Session<'_> {
             // trusted ones run and the untrusted ones be asked about
             // (`docs/config-review.md`).
             hooks: !self.trust.configured_hooks().is_empty(),
+            // Nothing to switch when no server is declared anywhere — the
+            // user's `mcp.json` or the project's (`docs/mcp.md`).
+            mcp: self.mcp.has_servers(),
             // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
             skills: !self.skill_registry.is_empty(),
             // Whether this terminal can draw a picture (`docs/images.md`).
@@ -286,6 +289,22 @@ impl Session<'_> {
                 // (`docs/config-review.md`).
                 if settings.hooks_active() {
                     self.open_hooks_review();
+                }
+            }
+            // The whole feature (docs/mcp.md): the manager stops every
+            // server — or connects what it held — leaving each one's own
+            // on/off in `/mcp` as it is; the backend is rebuilt without (or
+            // with) the manager, and the servers' instructions leave (or
+            // rejoin) the reminder. Turned on over project servers that wait
+            // for the review, ask now rather than at the next launch
+            // (`docs/config-review.md`).
+            SettingKey::Mcp => {
+                let on = settings.mcp_active();
+                self.mcp.set_active(on);
+                self.models.set_mcp(on);
+                self.sync_listings();
+                if on {
+                    self.open_servers_review();
                 }
             }
             // The tool rides the backend build and the listing rides the

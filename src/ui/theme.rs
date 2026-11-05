@@ -2182,6 +2182,10 @@ pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select
 /// The empty list names both config files — "why isn't my server here?" is
 /// its only question (the skills empty-state posture).
 pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
+/// The note on the `/mcp` list — and on an off server's page — while the
+/// `/settings` **MCP** row is off (`docs/mcp.md`): the `/hooks` menu's
+/// disabled-note rule, red because no listed server is running.
+pub(super) const MCP_SESSION_OFF: &str = "MCP is off for this session — turn it on in /settings";
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
 

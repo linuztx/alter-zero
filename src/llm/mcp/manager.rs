@@ -313,6 +313,9 @@ impl ServerState {
 }
 
 struct Inner {
+    /// Whether the whole feature is on — the `/settings` **MCP** row
+    /// ([`McpManager::set_active`]). Off, nothing connects, whoever asks.
+    active: bool,
     servers: Vec<ServerState>,
     errors: Vec<String>,
     disabled: std::collections::BTreeSet<String>,
@@ -411,6 +414,7 @@ impl McpManager {
             .collect();
         Self {
             inner: Arc::new(Mutex::new(Inner {
+                active: true,
                 servers,
                 errors: sources.errors,
                 disabled: sources.disabled,
@@ -460,6 +464,58 @@ impl McpManager {
         !self.lock().servers.is_empty()
     }
 
+    /// Is the whole feature on — the `/settings` **MCP** row
+    /// ([`Self::set_active`])?
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.lock().active
+    }
+
+    /// Turn the whole feature off or on — the `/settings` **MCP** row
+    /// (`docs/mcp.md`).
+    ///
+    /// Off drops every live connection (a stdio child is stopped with it),
+    /// abandons a sign-in in flight — it would end in a connect — and holds
+    /// every server that would otherwise run at [`McpServerStatus::Off`], so
+    /// no tool is offered and nothing connects, whoever asks: a Reconnect,
+    /// an Enable, an approval, a restart. Each server's own on/off is left
+    /// exactly as it is — the user file's disabled set and the review's
+    /// decisions (a server off on its own, or awaiting the review, keeps
+    /// that status) — and nothing is persisted here: the row's own
+    /// `settings.json` entry is the boundary's to write. On connects every
+    /// server off was holding.
+    pub fn set_active(&self, active: bool) {
+        let connect: Vec<String> = {
+            let mut inner = self.lock();
+            if inner.active == active {
+                return;
+            }
+            inner.active = active;
+            if !active && let Some(flow) = inner.auth_flow.take() {
+                flow.cancel.cancel();
+            }
+            let mut connect = Vec::new();
+            for server in &mut inner.servers {
+                if active {
+                    if server.status == McpServerStatus::Off {
+                        connect.push(server.entry.name.clone());
+                    }
+                } else if !matches!(
+                    server.status,
+                    McpServerStatus::Disabled | McpServerStatus::AwaitingReview
+                ) {
+                    server.drop_connection();
+                    server.status = McpServerStatus::Off;
+                }
+            }
+            connect
+        };
+        self.notify(McpEvent::Changed);
+        for name in connect {
+            self.spawn_connect(&name);
+        }
+    }
+
     /// Kick off the startup connects — one worker thread per enabled server.
     /// Returns at once; completions report on the event channel.
     pub fn start_connections(&self) {
@@ -483,6 +539,7 @@ impl McpManager {
             if inner.held.contains_key(name) {
                 return;
             }
+            let active = inner.active;
             let (auth_path, cwd, timeout) = (
                 inner.auth_path.clone(),
                 (inner.cwd.clone(), inner.detach_helper.clone()),
@@ -491,6 +548,14 @@ impl McpManager {
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
             };
+            // MCP is off for the session: whoever asked — a Reconnect, an
+            // Enable, an approval, a sign-in's end, a restart — the server
+            // waits for it to come back on (`set_active`).
+            if !active {
+                server.drop_connection();
+                server.status = McpServerStatus::Off;
+                return;
+            }
             if let Some(problem) = server.blocked() {
                 server.status = McpServerStatus::Failed(problem);
                 return;
@@ -1193,6 +1258,16 @@ impl McpManager {
         let Some((server_name, raw_tool, transport, server_url, auth_path, timeout, generation)) =
             lookup
         else {
+            // A turn — or a background subagent — built before the
+            // `/settings` **MCP** row went off still holds this manager: its
+            // model is told why the tool went, not sent to look for a server
+            // that failed.
+            if !self.is_active() {
+                return ToolOutcome::error(format!(
+                    "{} is not available: MCP is off for this session (turned off in /settings)",
+                    call.name
+                ));
+            }
             return ToolOutcome::error(format!(
                 "unknown MCP tool: {} (run /mcp to see the connected servers)",
                 call.name
@@ -3093,6 +3168,148 @@ done
         assert!(manager.tool_specs().is_empty());
     }
 
+    /// The status `name` reads in the manager's snapshot right now.
+    fn status_of(manager: &McpManager, name: &str) -> McpServerStatus {
+        manager
+            .snapshot()
+            .into_iter()
+            .find(|server| server.name == name)
+            .expect("declared")
+            .status
+    }
+
+    /// The `/settings` **MCP** row (`docs/mcp.md`): off stops every server
+    /// and offers nothing — while each server's own on/off, the user file's
+    /// disabled set, stays exactly as it was — and on connects what off was
+    /// holding.
+    #[test]
+    fn turning_mcp_off_stops_every_server_and_on_connects_them_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_file = dir.path().join("mcp.json");
+        let contents = "{\"mcpServers\": {}}\n";
+        std::fs::write(&user_file, contents).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix"), stdio_entry("own")],
+                disabled: ["own".to_string()].into(),
+                project: "/proj".to_string(),
+                user_file: Some(user_file.clone()),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        assert!(manager.is_active());
+        assert!(manager.has_tools());
+
+        manager.set_active(false);
+        assert!(!manager.is_active());
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        assert_eq!(
+            status_of(&manager, "own"),
+            McpServerStatus::Disabled,
+            "a server turned off on its own stays its own"
+        );
+        assert!(!manager.has_tools());
+        assert!(manager.tool_specs().is_empty());
+        assert!(manager.fingerprint().is_empty());
+        assert!(manager.instructions(&|_| true).is_empty());
+        assert!(
+            manager.snapshot()[0].identity.is_none(),
+            "the connection's facts went with it"
+        );
+        // A call from a turn — or a background subagent — built before the
+        // switch resolves recoverably, and tells its model why the tool went
+        // rather than sending it to look for a server that failed.
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__fix__echo".to_string(),
+            arguments: r#"{"text":"hi"}"#.to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(!outcome.ok);
+        assert!(
+            outcome.output.contains("MCP is off for this session"),
+            "{}",
+            outcome.output
+        );
+        // Nothing was persisted on the way: no server's own state moved.
+        assert_eq!(std::fs::read_to_string(&user_file).unwrap(), contents);
+
+        manager.set_active(true);
+        assert!(manager.is_active());
+        wait_connected(&manager, "fix");
+        assert_eq!(status_of(&manager, "own"), McpServerStatus::Disabled);
+        assert!(manager.has_tools());
+        assert_eq!(std::fs::read_to_string(&user_file).unwrap(), contents);
+        manager.shutdown();
+    }
+
+    /// Off means off whoever asks: the startup connects, a Reconnect and an
+    /// Enable each leave the server `◯ off` and unlaunched, until MCP is on.
+    #[test]
+    fn nothing_connects_while_mcp_is_off_whoever_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![one_launch_entry("fix", dir.path())],
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.set_active(false);
+        manager.start_connections();
+        manager.reconnect("fix");
+        manager.set_disabled("fix", true).expect("nothing to save");
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Disabled);
+        manager.set_disabled("fix", false).expect("nothing to save");
+        // A beat for any wrongly-spawned connect to land before we look.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        assert!(
+            !dir.path().join("launched").exists(),
+            "a server was launched while MCP was off"
+        );
+        manager.set_active(true);
+        wait_connected(&manager, "fix");
+        assert!(dir.path().join("launched").exists());
+        manager.shutdown();
+    }
+
+    /// A server the startup review holds is the review's, MCP on or off: off
+    /// never relabels it, on never launches it, and an approval given while
+    /// off waits for MCP rather than launching (`docs/config-review.md`).
+    #[test]
+    fn the_review_keeps_its_servers_while_mcp_is_off() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                held: [("fix".to_string(), McpHold::Review)].into(),
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.set_active(false);
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::AwaitingReview);
+        assert_eq!(manager.awaiting_review(), vec!["fix".to_string()]);
+        manager.set_active(true);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::AwaitingReview);
+        manager.set_active(false);
+        manager.set_approved("fix", true);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        manager.set_active(true);
+        wait_connected(&manager, "fix");
+        manager.shutdown();
+    }
+
     /// How the refresh fixtures' token endpoint answers a refresh grant.
     #[derive(Clone, Copy)]
     enum TokenMode {
@@ -3767,6 +3984,31 @@ done
             next_event(&mut rx, Duration::from_millis(500), auth_done),
             None
         );
+        manager.shutdown();
+    }
+
+    /// A sign-in ends in a connect, and nothing connects while MCP is off:
+    /// turning it off abandons the flow with the rest — quietly, its
+    /// redirect landing nowhere.
+    #[test]
+    fn turning_mcp_off_abandons_a_sign_in_in_flight() {
+        let base = spawn_signin_server();
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, mut rx) = signin_manager(&base, &dir.path().join("mcp-auth.json"));
+        manager.authenticate("srv");
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        manager.set_active(false);
+        let state = crate::llm::mcp::redirect_param(&url, "state").unwrap();
+        manager.submit_auth_paste(&format!(
+            "http://localhost:1/callback?code=c&state={}",
+            crate::llm::mcp::url_encode(&state)
+        ));
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(500), auth_done),
+            None,
+            "the abandoned sign-in still finished"
+        );
+        assert_eq!(status_of(&manager, "srv"), McpServerStatus::Off);
         manager.shutdown();
     }
 

@@ -7,9 +7,10 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP,
-    mcp_description_color, mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color,
-    model_meta_color, tool_fail_color, tool_ok_color,
+    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_SESSION_OFF,
+    MCP_TOOL_FIELD_GAP, error_color, mcp_description_color, mcp_detail_label_color,
+    mcp_detail_state_color, mcp_detail_value_color, model_meta_color, tool_fail_color,
+    tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -98,6 +99,65 @@ fn an_empty_list_names_the_config_files() {
     let all = texts(&app).join("\n");
     assert!(all.contains("No MCP servers configured"));
     assert!(all.contains(".mcp.json"));
+}
+
+#[test]
+fn the_list_says_mcp_is_off_while_the_settings_row_is() {
+    // The `/settings` **MCP** row off (docs/mcp.md): the servers stay listed
+    // — each one's own on/off is still the user's to change here — under a
+    // red note naming the one place that turns them all back on.
+    let mut app = App::new();
+    app.settings_mut().mcp = false;
+    app.open_mcp_menu(vec![
+        snapshot("deepwiki", McpScope::User, McpServerStatus::Off),
+        snapshot("github", McpScope::User, McpServerStatus::Disabled),
+    ]);
+    let lines = mcp_view_lines(&app, 100);
+    let note = lines
+        .iter()
+        .find(|line| plain(line).contains(MCP_SESSION_OFF))
+        .expect("the note");
+    assert!(
+        note.spans
+            .iter()
+            .any(|span| span.style.fg == Some(error_color())),
+        "red, like the /hooks note: {note:?}"
+    );
+    let all = texts(&app).join("\n");
+    assert!(all.contains("deepwiki · ◯ off"), "{all}");
+    assert!(all.contains("github · ◯ disabled"), "{all}");
+    // With the row on there is nothing to explain…
+    assert!(
+        !texts(&mcp_app())
+            .iter()
+            .any(|l| l.contains(MCP_SESSION_OFF))
+    );
+    // …and with nothing configured the placeholder answers instead.
+    let mut empty = App::new();
+    empty.settings_mut().mcp = false;
+    empty.open_mcp_menu(vec![]);
+    assert!(!texts(&empty).iter().any(|l| l.contains(MCP_SESSION_OFF)));
+}
+
+#[test]
+fn an_off_servers_page_says_why_and_offers_only_disable() {
+    let mut app = App::new();
+    app.settings_mut().mcp = false;
+    app.open_mcp_menu(vec![snapshot(
+        "deepwiki",
+        McpScope::User,
+        McpServerStatus::Off,
+    )]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Deepwiki MCP Server"), "{all}");
+    assert!(all.contains("◯ off"), "{all}");
+    assert!(all.contains(MCP_SESSION_OFF), "the page says why: {all}");
+    assert!(all.contains("❯ 1. Disable"), "{all}");
+    assert!(
+        !all.contains("Reconnect"),
+        "nothing connects while off: {all}"
+    );
 }
 
 #[test]

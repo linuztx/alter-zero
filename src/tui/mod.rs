@@ -336,8 +336,10 @@ pub(crate) struct Session<'t> {
     secrets: alter_zero::secrets::SecretRegistry,
     /// The MCP servers (`docs/mcp.md`): every declared server's live
     /// connection state, the tool specs the backend folds in, and the OAuth
-    /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.
-    mcp: Option<alter_zero::llm::mcp::McpManager>,
+    /// flows. Built whatever the `/settings` **MCP** row says — off, it lists
+    /// every server and runs none (`McpManager::set_active`), so `/mcp` still
+    /// shows them and the row can turn them all back on.
+    mcp: alter_zero::llm::mcp::McpManager,
     /// What the startup review decides over (`docs/config-review.md`):
     /// `trust.json`, the user's hooks file and the project's `.alter-zero`
     /// layer, read once at bootstrap — every review answer and `/hooks` or

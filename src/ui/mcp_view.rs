@@ -85,7 +85,9 @@ fn status_color(status: &McpServerStatus) -> Color {
         // project server waiting for the startup review also is.
         McpServerStatus::NeedsAuth | McpServerStatus::AwaitingReview => ask_warning_color(),
         McpServerStatus::Failed(_) => tool_fail_color(),
-        McpServerStatus::Pending | McpServerStatus::Disabled => model_meta_color(),
+        McpServerStatus::Pending | McpServerStatus::Disabled | McpServerStatus::Off => {
+            model_meta_color()
+        }
     }
 }
 
@@ -147,14 +149,27 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
 
 /// The list page: the title + count over the scope-grouped rows (dim
 /// headings naming each scope's config file), windowed around the selection
-/// with `↑ N more above` / `↓ N more below` markers.
-fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
+/// with `↑ N more above` / `↓ N more below` markers. With `mcp_on` false —
+/// the `/settings` **MCP** row off — a red note under the count says why no
+/// listed server runs and where they all turn back on.
+fn list_lines(menu: &McpMenu, mcp_on: bool, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         title_line(MCP_TITLE, width),
         dim_line(&count_noun(menu.servers.len(), "server"), width),
         Line::default(),
     ];
+    // Never over an empty list: with nothing declared the row is
+    // unavailable, and the placeholder answers the only question there is.
+    // Wrapped, not clipped — the tail is the actionable half.
+    if !mcp_on && !menu.servers.is_empty() {
+        lines.extend(wrapped(
+            MCP_SESSION_OFF,
+            Style::new().fg(error_color()),
+            width,
+        ));
+        lines.push(Line::default());
+    }
     if menu.servers.is_empty() {
         lines.push(dim_line(MCP_NONE_FOUND, width));
         // Wrapped: the paths are the instruction, and the clip used to eat
@@ -475,6 +490,16 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
             width,
         ));
     }
+    // Off with the whole feature: the page says so, and names the one place
+    // that turns it back on — this server's own actions cannot.
+    if server.status == McpServerStatus::Off {
+        lines.push(Line::default());
+        lines.extend(wrapped(
+            MCP_SESSION_OFF,
+            Style::new().fg(error_color()),
+            width,
+        ));
+    }
     // The tools set aside at connect, by name and with the reason — the one
     // place "why can't the model see this tool?" is answered.
     if !server.excluded.is_empty() {
@@ -724,11 +749,14 @@ pub fn mcp_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.mcp_menu else {
         return Vec::new();
     };
+    // Read off the session's own settings rather than kept on the menu, so
+    // the note can never disagree with the `/settings` row.
+    let mcp_on = app.settings().mcp_active();
     match &menu.page {
-        McpPage::List => list_lines(menu, width),
+        McpPage::List => list_lines(menu, mcp_on, width),
         page => {
             let Some(server) = menu.current_server() else {
-                return list_lines(menu, width);
+                return list_lines(menu, mcp_on, width);
             };
             match page {
                 McpPage::Server => server_lines(menu, server, width),

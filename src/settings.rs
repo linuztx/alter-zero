@@ -83,6 +83,10 @@ pub enum SettingKey {
     ProjectDocs,
     /// Run the user's `hooks.json` lifecycle hooks (`docs/hooks.md`).
     Hooks,
+    /// Connect the configured MCP servers and offer their tools to the model
+    /// (`docs/mcp.md`) — the whole feature at once, beside each server's own
+    /// on/off in `/mcp`.
+    Mcp,
     /// Offer the `skill` tool and inject the skill listing (`docs/skills.md`).
     Skills,
     /// The sampling temperature every request carries.
@@ -119,6 +123,7 @@ impl SettingKey {
         Self::AutoCompact,
         Self::ProjectDocs,
         Self::Hooks,
+        Self::Mcp,
         Self::Skills,
         Self::Temperature,
         Self::MaxToolCalls,
@@ -144,6 +149,7 @@ impl SettingKey {
             Self::AutoCompact => "Auto compact",
             Self::ProjectDocs => "Project docs",
             Self::Hooks => "Hooks",
+            Self::Mcp => "MCP",
             Self::Skills => "Skills",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
@@ -188,6 +194,9 @@ impl SettingKey {
             Self::Hooks => {
                 "Run the lifecycle hooks in ~/.alter-zero/hooks.json around tool calls and turns"
             }
+            Self::Mcp => {
+                "Connect the MCP servers in ~/.alter-zero/mcp.json and .mcp.json and offer them to the model"
+            }
             Self::Skills => {
                 "Offer the model the SKILL.md skills found in .claude/skills and ~/.alter-zero/skills"
             }
@@ -226,6 +235,10 @@ pub struct SettingAvailability {
     /// (`docs/hooks.md`). Without one the row reports `false (unavailable)`
     /// rather than offering a toggle that can never do anything.
     pub hooks: bool,
+    /// Whether **any** MCP server is declared — in the user's `mcp.json` or
+    /// the project's (`docs/mcp.md`). With none the row reports `false
+    /// (unavailable)` rather than offering a toggle over an empty list.
+    pub mcp: bool,
     /// Whether **any** skill loaded (`docs/skills.md`). With none the row
     /// reports `false (unavailable)` rather than offering a toggle over an
     /// empty set.
@@ -252,6 +265,7 @@ impl Default for SettingAvailability {
         Self {
             checkpoints: true,
             hooks: true,
+            mcp: true,
             skills: true,
             images: true,
             telemetry: true,
@@ -321,6 +335,14 @@ pub struct SessionSettings {
     /// unavailable either way).
     #[serde(skip_serializing_if = "is_true")]
     pub hooks: bool,
+    /// Connect the MCP servers and offer their tools (default `true` — a
+    /// project's servers still wait for the startup review,
+    /// `docs/config-review.md`; a directory turning MCP off is what its entry
+    /// records, every server's own on/off in `/mcp` left as it is, and a
+    /// session with no server declared reports the row unavailable either
+    /// way).
+    #[serde(skip_serializing_if = "is_true")]
+    pub mcp: bool,
     /// Offer the `skill` tool and the listing (default `true` — a session
     /// that found no skills has nothing to offer anyway, and the row reports
     /// itself unavailable there).
@@ -377,6 +399,7 @@ impl Default for SessionSettings {
             auto_compact: true,
             project_docs: true,
             hooks: true,
+            mcp: true,
             skills: true,
             temperature: None,
             max_tool_calls: 0,
@@ -419,6 +442,14 @@ impl SessionSettings {
     #[must_use]
     pub const fn hooks_active(&self) -> bool {
         self.hooks && self.availability.hooks
+    }
+
+    /// Whether MCP servers actually run: the knob **and** whether any is
+    /// declared ([`hooks_active`](Self::hooks_active)'s twin,
+    /// `docs/mcp.md`).
+    #[must_use]
+    pub const fn mcp_active(&self) -> bool {
+        self.mcp && self.availability.mcp
     }
 
     /// Whether skills are actually offered: the knob **and** whether any
@@ -477,6 +508,7 @@ impl SessionSettings {
         match key {
             SettingKey::Checkpoints => self.availability.checkpoints,
             SettingKey::Hooks => self.availability.hooks,
+            SettingKey::Mcp => self.availability.mcp,
             SettingKey::Skills => self.availability.skills,
             // The two display rows need a terminal that can draw; the payload
             // row does not (`docs/images.md`).
@@ -513,6 +545,7 @@ impl SessionSettings {
             SettingKey::AutoCompact => bool_text(self.auto_compact),
             SettingKey::ProjectDocs => bool_text(self.project_docs),
             SettingKey::Hooks => bool_text(self.hooks_active()),
+            SettingKey::Mcp => bool_text(self.mcp_active()),
             SettingKey::Skills => bool_text(self.skills_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
@@ -551,6 +584,7 @@ impl SessionSettings {
             SettingKey::AutoCompact => self.auto_compact = !self.auto_compact,
             SettingKey::ProjectDocs => self.project_docs = !self.project_docs,
             SettingKey::Hooks => self.hooks = !self.hooks,
+            SettingKey::Mcp => self.mcp = !self.mcp,
             SettingKey::Skills => self.skills = !self.skills,
             SettingKey::Temperature => {
                 self.temperature = next_temperature(self.temperature);
@@ -590,6 +624,7 @@ impl SessionSettings {
             SettingKey::AutoCompact => self.auto_compact = live.auto_compact,
             SettingKey::ProjectDocs => self.project_docs = live.project_docs,
             SettingKey::Hooks => self.hooks = live.hooks,
+            SettingKey::Mcp => self.mcp = live.mcp,
             SettingKey::Skills => self.skills = live.skills,
             SettingKey::Temperature => self.temperature = live.temperature,
             SettingKey::MaxToolCalls => self.max_tool_calls = live.max_tool_calls,

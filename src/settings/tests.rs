@@ -74,6 +74,89 @@ fn hooks_are_on_until_a_directory_turns_them_off() {
 }
 
 #[test]
+fn mcp_is_on_until_a_directory_turns_it_off() {
+    // Every configured server connects by default — a project's once the
+    // startup review enables it (docs/config-review.md). Turning MCP off is
+    // what the directory's entry records, each server's own on/off in `/mcp`
+    // left alone, and the default stays off the wire (docs/mcp.md).
+    let s = SessionSettings::default();
+    assert!(s.mcp, "MCP is on by default");
+    assert!(s.mcp_active());
+    assert_eq!(s.value_text(SettingKey::Mcp, MANUAL), "true");
+    assert_eq!(s.to_json().trim(), "{}");
+    let mut off = s;
+    assert!(off.cycle(SettingKey::Mcp));
+    assert!(!off.mcp_active());
+    assert_eq!(off.value_text(SettingKey::Mcp, MANUAL), "false");
+    let json = off.to_json();
+    assert!(json.contains("\"mcp\": false"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), off);
+}
+
+#[test]
+fn the_mcp_row_sits_between_hooks_and_skills() {
+    // The three ways a session is extended from outside it, read together.
+    let at = |key| SettingKey::ALL.iter().position(|k| *k == key).unwrap();
+    assert_eq!(at(SettingKey::Mcp), at(SettingKey::Hooks) + 1);
+    assert_eq!(at(SettingKey::Skills), at(SettingKey::Mcp) + 1);
+    assert_eq!(SettingKey::Mcp.label(), "MCP");
+    assert!(
+        SettingKey::Mcp.description().contains("MCP servers"),
+        "the description says what is connected: {}",
+        SettingKey::Mcp.description()
+    );
+}
+
+#[test]
+fn an_mcp_row_with_no_server_configured_is_unavailable() {
+    // Nothing in any mcp.json: a toggle there could never do anything, so
+    // the row says so (the Hooks rule) — and the stored preference survives
+    // for a directory that does declare servers.
+    let mut s = SessionSettings {
+        availability: SettingAvailability {
+            checkpoints: true,
+            hooks: true,
+            mcp: false,
+            skills: true,
+            images: true,
+            telemetry: true,
+            update_check: true,
+        },
+        ..SessionSettings::default()
+    };
+    assert!(s.mcp, "the preference survives");
+    assert!(!s.mcp_active(), "nothing to connect");
+    assert!(!s.is_available(SettingKey::Mcp, MANUAL));
+    assert_eq!(
+        s.value_text(SettingKey::Mcp, MANUAL),
+        format!("false{UNAVAILABLE_SUFFIX}"),
+        "the effective value, not the stored one"
+    );
+    assert!(!s.cycle(SettingKey::Mcp), "unavailable rows refuse");
+    assert!(s.mcp, "…and leave the value alone");
+}
+
+#[test]
+fn the_mcp_row_persists_per_directory_and_its_override_never_sticks() {
+    // An `ALTER_ZERO_MCP=0` run rides the live blob only: cycling another
+    // row must not write it, cycling this one does.
+    let live = SessionSettings {
+        mcp: false,
+        error_retry: 10,
+        ..SessionSettings::default()
+    };
+    let mut file = SettingsFile::default();
+    file.record_value("/a", SettingKey::ErrorRetry, &live);
+    assert!(file.settings_for("/a").mcp, "the override did not stick");
+    file.record_value("/a", SettingKey::Mcp, &live);
+    assert!(!file.settings_for("/a").mcp, "cycling the row records it");
+    assert!(
+        file.settings_for("/b").mcp,
+        "another directory keeps the default"
+    );
+}
+
+#[test]
 fn checkpoints_are_off_until_a_directory_turns_them_on() {
     // A whole-cwd `git add -A` before the first frame, so a directory opts
     // in rather than out (docs/per-directory-state.md). Turning them on is
@@ -140,6 +223,7 @@ fn booleans_cycle_between_true_and_false() {
         SettingKey::Checkpoints,
         SettingKey::AutoCompact,
         SettingKey::ProjectDocs,
+        SettingKey::Mcp,
     ] {
         let seen = cycle_values(SessionSettings::default(), key, 2);
         assert_eq!(seen[0], seen[2], "{key:?} returns to where it started");
@@ -273,6 +357,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            mcp: true,
             skills: true,
             images: true,
             telemetry: true,
@@ -296,6 +381,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            mcp: true,
             skills: true,
             images: true,
             telemetry: true,
@@ -424,6 +510,7 @@ fn availability_is_never_persisted() {
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            mcp: true,
             skills: true,
             images: true,
             telemetry: true,
@@ -450,6 +537,7 @@ fn skills_are_not_offered_with_tools_off() {
         availability: SettingAvailability {
             checkpoints: true,
             hooks: true,
+            mcp: true,
             skills: true,
             images: true,
             telemetry: true,

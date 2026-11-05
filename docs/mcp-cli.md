@@ -174,7 +174,8 @@ persist. A missing file reads as `{}`; the write is
 `llm::mcp::write_config_file` — the parent created (owner-only) on first
 use, a temp file synced and renamed into place so a failed write leaves the
 old file whole, the file's permissions kept (owner-only for a new one) and
-a symlink followed to the file it names — and its error is surfaced. `ALTER_ZERO_MCP=0` does not gate the CLI —
+a symlink followed to the file it names — and its error is surfaced.
+Neither `ALTER_ZERO_MCP=0` nor the `/settings` **MCP** row gates the CLI —
 it edits a file, launches nothing; the feature switch keeps governing the
 TUI.
 

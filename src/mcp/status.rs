@@ -25,6 +25,11 @@ pub enum McpServerStatus {
     /// Declared by the project and waiting for the startup review's answer
     /// (`docs/config-review.md`) — never launched until enabled there.
     AwaitingReview,
+    /// MCP is off for the whole session — the `/settings` **MCP** row
+    /// (`docs/mcp.md`): a server that would otherwise run, never connected
+    /// until MCP is turned back on. Not [`Self::Disabled`], which is this
+    /// one server's own off and outlives the switch.
+    Off,
 }
 
 impl McpServerStatus {
@@ -33,7 +38,7 @@ impl McpServerStatus {
     #[must_use]
     pub const fn glyph(&self) -> &'static str {
         match self {
-            Self::Pending | Self::Disabled => "◯",
+            Self::Pending | Self::Disabled | Self::Off => "◯",
             Self::Connected => "✔",
             Self::NeedsAuth => "△",
             Self::Failed(_) => "✘",
@@ -52,6 +57,7 @@ impl McpServerStatus {
             Self::Failed(_) => "failed",
             Self::Disabled => "disabled",
             Self::AwaitingReview => "awaiting review",
+            Self::Off => "off",
         }
     }
 }
@@ -327,6 +333,11 @@ mod tests {
             snapshot(McpServerStatus::AwaitingReview, 0).status_line(),
             "⚠ awaiting review"
         );
+        // The `/settings` **MCP** row off (`docs/mcp.md`): a server that
+        // would run, held because the whole feature is — the same quiet
+        // circle as a server turned off on its own, a different word, so
+        // the two read apart in one list.
+        assert_eq!(snapshot(McpServerStatus::Off, 0).status_line(), "◯ off");
     }
 
     #[test]

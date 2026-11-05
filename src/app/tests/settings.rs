@@ -158,6 +158,25 @@ fn the_permission_row_routes_through_the_shift_tab_path() {
 }
 
 #[test]
+fn the_mcp_row_hands_its_cycle_to_the_boundary() {
+    // One search away, and a cycle the boundary applies — every server
+    // stopped or connected again, the tool set rebuilt (docs/mcp.md) — while
+    // the menu stays open on the row showing its new value.
+    let mut app = settings_app();
+    type_query(&mut app, "mcp");
+    assert_eq!(labels(&app), vec!["MCP"]);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::SettingChanged(SettingKey::Mcp)
+    );
+    assert!(!app.settings().mcp, "the value moved");
+    assert_eq!(
+        app.highlighted_setting().map(|r| r.value),
+        Some("false".to_string())
+    );
+}
+
+#[test]
 fn cycling_an_unavailable_setting_explains_itself_instead() {
     // The host can't run checkpoints — the row says `(unavailable)` and the
     // press raises a toast rather than silently doing nothing.
@@ -167,6 +186,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
     app.set_setting_availability(SettingAvailability {
         checkpoints: false,
         hooks: true,
+        mcp: true,
         skills: true,
         images: true,
         telemetry: true,
