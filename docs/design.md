@@ -143,7 +143,8 @@ which Ctrl+V reads the clipboard from.
   `● Searching for 1 pattern, reading 2 files, listing 1 directory… (ctrl+o
   to expand)` live, its bullet blinking for as long as the group is open,
   between calls too, then one dim bullet-less `Searched for 1 pattern, read 2
-  files, listed 1 directory (ctrl+o to expand)` line once something that is
+  files, listed 1 directory (ctrl+o to expand)` line, inset two columns where
+  the live line's text was, once something that is
   not a read arrives — a call of another kind, reply text, an error, the
   turn's end. The group is derived from the history (`app::group_run`), so
   every rebuild paints the same line; Ctrl+O keeps every call whole
@@ -260,16 +261,22 @@ which Ctrl+V reads the clipboard from.
   descriptions line up in a column (names padded to `MENU_DESC_COL`), **wrap**
   onto continuation rows indented to that same column when the terminal is too
   narrow for them (nothing the palette says is ever silently cut; the
-  descriptions themselves stay concise and product-name-free, ≤ 55 columns, so
+  descriptions themselves stay concise and product-name-free, ≤ 53 columns, so
   the standard 80-column terminal shows one row per command), the cap acting as
   a **row budget** — where descriptions wrap, the window (`centered_window_rows`,
   the variable-height `centered_window`) shows fewer *whole* commands rather than
   growing under the box or clipping text, centering the highlight by *rows*: each
   whole entry joins whichever side of it holds fewer rows so far (above on a
   tie, `centered_window`'s middle row) until neither side's next entry fits — and
-  the selection is shown **by colour** — the whole highlighted row lights up cyan
-  (name *and* description the same colour, continuation rows included) while the
-  others are dimmed grey — **no caret/arrow**.
+  the selection wears the **`→ ` marker** the `@` and `$` pickers already did
+  (`MENU_MARKER`, every other row opening on `MENU_INDENT`, its width in spaces,
+  so the names share one column two in from the edge — the same column the
+  footer the band displaces starts at) **and** lights up cyan whole (name *and*
+  description the same colour, continuation rows included) while the others
+  are dimmed grey. The colour alone used to carry it, which a monochrome
+  terminal or a plain capture of the screen cannot see: the marker says which
+  row Enter runs in either. A miss's
+  `No matching commands` placeholder sits in the names' column too.
   **Tab/Enter run** the highlighted command; **Esc** dismisses the palette (instead
   of quitting) and stays dismissed within the same token (delete the `/` and retype
   to reopen). The box's top is unchanged when the palette opens — it's reserved
@@ -326,7 +333,9 @@ which Ctrl+V reads the clipboard from.
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
   the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
-  labels dim) listing `/`, `!`, `↑`, `ctrl+r`, `alt+enter`, `ctrl+o`, `esc`,
+  labels dim), inset two columns like the footer row whose slot it takes and
+  stacked one entry per row on a terminal too narrow for both columns whole,
+  listing `/`, `!`, `↑`, `ctrl+r`, `alt+enter`, `ctrl+o`, `esc`,
   `ctrl+c`, `alt+↑` (edit queue), `tab` (queue next turn), and `ctrl+v`
   (image paste);
   the `esc` entry reads `to interrupt` while a turn runs and `to quit` idle.
@@ -1198,9 +1207,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   too) and types into a non-empty draft; any other key closes it but still
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
   interrupt mid-turn (the turn is untouched); `?` is ignored in the tool view.
-- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open;
-  `shortcuts_lines` lists the bindings in two aligned columns (including
-  `alt+↑ to edit queue`), keys cyan and
+- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open
+  (one per row below the width two columns need);
+  `shortcuts_lines` lists the bindings in two aligned columns behind the
+  `MENU_INDENT` inset (including `alt+↑ to edit queue`), keys cyan and
   labels dim, the `esc` entry flipping `to quit`/`to interrupt` with the turn;
   `live_height` grows by the band; `render_live` paints it below the box;
   `cursor_position` stays put when it opens.
@@ -1261,8 +1271,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   **command palette** — `centered_window_rows` keeps the
   selection centered, `menu_rows` reserves the band (0 closed, capped, 1 for no
   matches), `command_menu_lines` lists the matches in aligned columns and
-  **highlights the whole selected row in one cyan colour** (name and description
-  alike, vs dimmed grey, no caret; placeholder when empty), and `render_live` draws
+  **marks the selected row with the `→` marker and lights it whole in one cyan
+  colour** (name and description alike, vs dimmed grey; an inset placeholder
+  when empty), and `render_live` draws
   it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
   preview + gap + status + gap strip only while streaming, the palette band

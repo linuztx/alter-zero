@@ -1075,12 +1075,19 @@ fn assistant_lines_keeps_interior_blank_lines() {
 
 #[test]
 fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
-    // Two commands, the second highlighted. The selected row's name AND
-    // description share the highlight colour (consistency); the other row
-    // shares the dim colour. No caret/arrow.
+    // Two commands, the second highlighted. The selected row's marker, name
+    // AND description share the highlight colour (consistency); the other
+    // row shares the dim colour. The marker is the pickers' `→`, never the
+    // composer's `❯`.
     let lines = command_menu_lines(&palette("/", 1), 60);
-    let name_fg = |l: &Line| l.spans[0].style.fg; // spans = [name, pad, desc]
-    let desc_fg = |l: &Line| l.spans[2].style.fg;
+    let marker_fg = |l: &Line| l.spans[0].style.fg; // spans = [marker, name, pad, desc]
+    let name_fg = |l: &Line| l.spans[1].style.fg;
+    let desc_fg = |l: &Line| l.spans[3].style.fg;
+    assert_eq!(
+        marker_fg(&lines[1]),
+        name_fg(&lines[1]),
+        "selected marker matches its name colour"
+    );
     assert_eq!(
         name_fg(&lines[1]),
         Some(menu_selected_color()),

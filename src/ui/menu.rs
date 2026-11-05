@@ -102,14 +102,26 @@ pub(super) fn centered_window_rows(
     }
 }
 
-/// One palette entry's rows: `/name` padded out to [`MENU_DESC_COL`] columns,
-/// then its description **word-wrapped** to the room past that column — a
-/// description wider than the terminal continues on rows indented to the same
-/// column instead of being silently cut (nothing the palette says is lost at a
-/// narrow width). The selection is shown by **colour** — the selected entry
-/// lights up whole in cyan, continuation rows included (name bold), the others
-/// are dimmed grey. No caret, no background bar. A width with no description
-/// room at all degrades to the name alone.
+/// A band's lone placeholder row — `No matching commands`, `Searching…` —
+/// dim, and inset by [`MENU_INDENT`] so it says so in the column the names
+/// would have filled rather than in the marker's gutter.
+fn placeholder_line(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(MENU_INDENT),
+        Span::styled(text.to_string(), Style::new().fg(menu_dim_color())),
+    ])
+}
+
+/// One palette entry's rows: the [`MENU_MARKER`] on the selected entry (the
+/// others open on [`MENU_INDENT`], its width in spaces, so every name starts in
+/// one column), `/name` padded out to [`MENU_DESC_COL`], then its description
+/// **word-wrapped** to the room past that column — a description wider than the
+/// terminal continues on rows indented to the same column instead of being
+/// silently cut (nothing the palette says is lost at a narrow width). The
+/// selected entry also lights up whole in cyan, continuation rows included
+/// (name bold), the others dimmed grey — the marker saying which row Enter
+/// runs where the colour cannot. No background bar. A width with no
+/// description room at all degrades to the marker and the name alone.
 fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'static>> {
     let name = format!("/{}", cmd.name);
     // Name and description share one colour per entry, for consistency.
@@ -124,21 +136,30 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
         Style::new().fg(color)
     };
     let desc_style = Style::new().fg(color);
+    let marker = if selected { MENU_MARKER } else { MENU_INDENT };
+    let marker_span = Span::styled(marker, desc_style);
     // Pad the name out to the description column so descriptions line up.
-    let pad = " ".repeat(MENU_DESC_COL.saturating_sub(cols(&name)).max(1));
+    let pad = " ".repeat(
+        MENU_DESC_COL
+            .saturating_sub(cols(marker) + cols(&name))
+            .max(1),
+    );
     let desc_width = (width as usize).saturating_sub(MENU_DESC_COL);
     if desc_width == 0 {
-        // Too narrow for a description column at all: the name alone (the
-        // file picker's marker-and-name degradation), `…`-cut to the width
-        // — codex's popup ellipsizes the name the same way (`/statuslin…`).
-        return vec![Line::from(Span::styled(
-            super::wrap::ellipsize(&name, (width as usize).max(1)),
-            name_style,
-        ))];
+        // Too narrow for a description column at all: the marker and the
+        // name (the file picker's marker-and-name degradation), `…`-cut to
+        // the room left — codex's popup ellipsizes the name the same way
+        // (`/statuslin…`).
+        let room = (width as usize).saturating_sub(cols(marker)).max(1);
+        return vec![Line::from(vec![
+            marker_span,
+            Span::styled(super::wrap::ellipsize(&name, room), name_style),
+        ])];
     }
     let mut rows = wrap_text(&cmd.description, desc_width as u16).into_iter();
     let first = rows.next().unwrap_or_default();
     let mut lines = vec![Line::from(vec![
+        marker_span,
         Span::styled(name, name_style),
         Span::raw(pad),
         Span::styled(first, desc_style),
@@ -174,10 +195,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let commands = app.commands();
     let matches = matching_commands(&commands, query);
     if matches.is_empty() {
-        return vec![Line::from(Span::styled(
-            MENU_NO_MATCH.to_string(),
-            Style::new().fg(menu_dim_color()),
-        ))];
+        return vec![placeholder_line(MENU_NO_MATCH)];
     }
     let max = MENU_MAX_ROWS as usize;
     let blocks: Vec<Vec<Line<'static>>> = matches
@@ -267,11 +285,7 @@ fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> 
     };
     let base = Style::new().fg(color);
     let matched = base.add_modifier(Modifier::BOLD);
-    let marker = if selected {
-        FILE_MENU_MARKER
-    } else {
-        FILE_MENU_INDENT
-    };
+    let marker = if selected { MENU_MARKER } else { MENU_INDENT };
     let mut spans = vec![Span::styled(marker, base)];
     let avail = (width as usize).saturating_sub(cols(marker));
     if avail < name_col + FILE_MENU_TYPE_WIDTH {
@@ -319,10 +333,7 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         } else {
             FILE_MENU_NO_MATCH
         };
-        return vec![Line::from(Span::styled(
-            text.to_string(),
-            Style::new().fg(menu_dim_color()),
-        ))];
+        return vec![placeholder_line(text)];
     }
     let max = FILE_MENU_MAX_ROWS as usize;
     let offset = menu_window(fs.matches.len(), fs.selected, max);
@@ -383,11 +394,7 @@ fn skill_menu_row(
     };
     let base = Style::new().fg(color);
     let matched = base.add_modifier(Modifier::BOLD);
-    let marker = if selected {
-        FILE_MENU_MARKER
-    } else {
-        FILE_MENU_INDENT
-    };
+    let marker = if selected { MENU_MARKER } else { MENU_INDENT };
     let mut spans = vec![Span::styled(marker, base)];
     let avail = (width as usize).saturating_sub(cols(marker));
     let name = truncate_cols(&m.name, avail);
@@ -420,10 +427,7 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     let matches = app.skill_matches();
     if matches.is_empty() {
-        return vec![Line::from(Span::styled(
-            SKILL_MENU_NO_MATCH.to_string(),
-            Style::new().fg(menu_dim_color()),
-        ))];
+        return vec![placeholder_line(SKILL_MENU_NO_MATCH)];
     }
     let selected = app
         .skill_picker
@@ -442,18 +446,20 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
-/// otherwise the entry list two-per-row (every entry — the `$` skill sigil
-/// included — is an ordinary grid slot). [`live_height`] adds this (via its
-/// band parameter); [`render_live`] paints exactly this many rows — the two
-/// must agree, like [`menu_rows`].
+/// How many rows the `?` shortcuts band occupies for `app` at `width`: 0 when
+/// closed, otherwise **the built line count** of [`shortcuts_lines`] — the
+/// entries two per row where `width` holds both columns whole (every entry,
+/// the `$` skill sigil included, an ordinary grid slot), one per row where it
+/// does not. [`live_height`] adds this (via its band parameter);
+/// [`render_live`] paints exactly this many rows — the two agree by
+/// construction, like [`menu_rows`].
 #[must_use]
-pub fn shortcuts_rows(app: &App) -> u16 {
-    if app.shortcuts_open {
-        SHORTCUTS.len().div_ceil(2) as u16
-    } else {
-        0
+pub fn shortcuts_rows(app: &App, width: u16) -> u16 {
+    if !app.shortcuts_open {
+        return 0;
     }
+    let lines = shortcuts_lines(app.turn_active(), app.has_backtrack_target(), width);
+    u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
 /// Total rows of the band below the input box: the slash-command palette, the
@@ -466,18 +472,23 @@ pub fn shortcuts_rows(app: &App) -> u16 {
 /// can never drift.
 #[must_use]
 pub fn band_rows(app: &App, width: u16) -> u16 {
-    menu_rows(app, width) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
+    menu_rows(app, width) + shortcuts_rows(app, width) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
-/// per row — the second column starting at `SHORTCUTS_COL` — with keys cyan
-/// and labels dim. The `esc` entry is three-way context-sensitive (codex's
-/// quit entry): ` to interrupt` while a turn is in flight, the
-/// `SHORTCUTS_BACKTRACK` `esc esc` edit hint when idle with a previous user
-/// message to edit, and ` to quit` only with nothing to backtrack to
-/// (docs/backtrack.md).
+/// per row, inset by `MENU_INDENT` — the band takes the footer's slot, so it
+/// starts where the footer does, in the column every band's names start at —
+/// with the second column `SHORTCUTS_COL` past the inset, keys cyan and labels
+/// dim. Where `width` cannot hold a row's second entry whole the band stacks
+/// into **one entry per row** instead, in the same reading order, each row
+/// still inset — taller, but never cut mid-word, which is what the paint's
+/// clip did to the second column on a narrow terminal (`docs/shortcuts.md`).
+/// The `esc` entry is three-way context-sensitive (codex's quit entry):
+/// ` to interrupt` while a turn is in flight, the `SHORTCUTS_BACKTRACK`
+/// `esc esc` edit hint when idle with a previous user message to edit, and
+/// ` to quit` only with nothing to backtrack to (docs/backtrack.md).
 #[must_use]
-pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
+pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool, width: u16) -> Vec<Line<'static>> {
     let entry = |key: &'static str, label: &'static str| {
         let (key, label) = if key == "esc" && turn_active {
             (key, " to interrupt")
@@ -491,20 +502,35 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
             Span::styled(label, Style::new().fg(shortcuts_text_color())),
         ]
     };
-    SHORTCUTS
+    let grid: Vec<Line<'static>> = SHORTCUTS
         .chunks(2)
         .map(|pair| {
             let [key, label] = entry(pair[0].0, pair[0].1);
-            let mut spans = vec![key, label];
+            // Pad from the *displayed* widths — a context swap can change the
+            // key text too (`esc` → `esc esc`).
+            let used = cols(key.content.as_ref()) + cols(label.content.as_ref());
+            let mut spans = vec![Span::raw(MENU_INDENT), key, label];
             if let Some(&(key2, label2)) = pair.get(1) {
-                // Pad from the *displayed* widths — a context swap can change
-                // the key text too (`esc` → `esc esc`).
-                let used = cols(spans[0].content.as_ref()) + cols(spans[1].content.as_ref());
                 spans.push(Span::raw(
                     " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
                 ));
                 spans.extend(entry(key2, label2));
             }
+            Line::from(spans)
+        })
+        .collect();
+    let fits = |line: &Line<'static>| {
+        let used: usize = line.spans.iter().map(|span| cols(&span.content)).sum();
+        used <= usize::from(width)
+    };
+    if grid.iter().all(fits) {
+        return grid;
+    }
+    SHORTCUTS
+        .iter()
+        .map(|&(key, label)| {
+            let mut spans = vec![Span::raw(MENU_INDENT)];
+            spans.extend(entry(key, label));
             Line::from(spans)
         })
         .collect()

@@ -161,10 +161,12 @@ Ctrl+R search, a recall) closes it beside `file_search`.
 The band shares the palette's slot: `band_rows += skill_menu_rows`.
 
 - `skill_menu_rows(app)` — 0 closed (cursor-left-the-mention included), one
-  placeholder row (`No matching skills`) on a miss, else the match count
+  placeholder row (`No matching skills`, inset to the names' column) on a
+  miss, else the match count
   capped at `SKILL_MENU_MAX_ROWS` (8; longer lists scroll).
 - `skill_menu_lines(app, width)` — one row per match, windowed
-  (`menu_window`): the `→` marker on the selection (the rest indent), the
+  (`menu_window`): the palette's `→` marker on the selection (the rest
+  indent), the
   name with the query's matched bytes **bolded** (`file_menu_highlight`
   reused at offset 0), then — past a name column sized to the widest
   visible name + `FILE_MENU_GAP` — the skill's own description, `…`-cut at

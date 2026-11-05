@@ -37,6 +37,28 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The `/` command palette marks the highlighted command with `→`.** The
+  palette showed which command Enter runs by colour alone, which a
+  monochrome terminal or a plain screen capture cannot show. The highlighted
+  row now opens on the `→` the `@` file picker and the `$` skill picker
+  already used, and every other row on two spaces, so the command names line
+  up in one column. A `No matching commands`, `No matching files` or
+  `No matching skills` row now sits in that same column.
+
+- **The `?` shortcuts list starts two columns in.** It sat flush against the
+  terminal's edge, the only thing below the input box that did. It now
+  starts where the footer line it replaces does, in line with the `/`
+  palette's command names. On a terminal too narrow for both columns (under
+  61 columns) it lists one shortcut per row, where it used to cut the second
+  column off mid-word.
+
+- **Finished thoughts, MCP calls and file reads keep their place.** The
+  one-line summary a step leaves once it is done (`Thought for 3s`,
+  `Called Deepwiki`, `Read 2 files, listed 1 directory`) jumped two columns
+  left of where the step had been shown while it ran. Each now starts two
+  columns in, where its text was beside the `●`, so only the bullet goes
+  away. The turn's closing `Worked for …` line is unchanged.
+
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and

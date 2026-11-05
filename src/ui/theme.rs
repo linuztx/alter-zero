@@ -216,6 +216,14 @@ pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
+/// The inset of a **settled** line — `  Thought for 3s`, `  Called Deepwiki`,
+/// `  Read 2 files` — the bullet-less one-liner a thinking phase, an MCP call
+/// or a read/search group leaves once it is done. It is the [`TOOL_BULLET`]'s
+/// width in spaces, so the text settles in the column its live `●` header's
+/// text sat in and only the bullet goes away. The turn summary (`Done for Ns`)
+/// is not one of them: it settles the status line, not a cell.
+pub(super) const SETTLED_INDENT: &str = "  ";
+
 /// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the
 /// header's `Ran 1 Stop hook` around the count and the event, and the
 /// expanded cell's file row under a hook's command — a refusal's `Config:`
@@ -2522,12 +2530,12 @@ pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
 
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare
-// command token. Each row is `/name` padded to a column, then its description. The
-// selection is shown **by colour**: the whole highlighted row lights up cyan — name
-// *and* description the same colour — while the others are dimmed grey (no
-// caret/arrow), Claude-Code style. Capped at `MENU_MAX_ROWS`; longer lists scroll
-// to keep the selection centered (`centered_window_rows`, the `/model` list's
-// rule). ---
+// command token. Each row is the `→ ` marker (on the selection) or its two-space
+// inset, `/name` padded to a column, then its description — the marker the `@`
+// and `$` pickers below share. The highlighted row also lights up cyan whole —
+// name *and* description the same colour — while the others are dimmed grey.
+// Capped at `MENU_MAX_ROWS`; longer lists scroll to keep the selection centered
+// (`centered_window_rows`, the `/model` list's rule). ---
 
 /// The most command rows shown at once; longer match lists scroll within this
 /// (`centered_window_rows` keeps the selection on the middle row, like the
@@ -2544,9 +2552,21 @@ pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
 /// centering the selection by rows.
 pub(super) const MENU_MAX_ROWS: u16 = 8;
 
-/// The column descriptions start at — names are padded out to here so the
-/// descriptions line up in a tidy column regardless of command-name length.
-pub(super) const MENU_DESC_COL: usize = 25;
+/// The column descriptions start at — the [`MENU_MARKER`] (or its inset) and
+/// the name are padded out to here so the descriptions line up in a tidy
+/// column regardless of command-name length. Two past the 25 it was before the
+/// rows wore the marker, so the name keeps the room it had; 80 columns still
+/// leave every description (≤ 53 columns) its own row.
+pub(super) const MENU_DESC_COL: usize = 27;
+
+/// The selected row's arrow marker, in every band below the box that lists
+/// something to pick — the palette, the `@` file picker, the `$` skill
+/// picker. Unselected rows open on [`MENU_INDENT`] instead.
+pub(super) const MENU_MARKER: &str = "→ ";
+
+/// The unselected rows' inset — the marker's width in spaces, so the names
+/// start at the same column on every row.
+pub(super) const MENU_INDENT: &str = "  ";
 
 /// Cyan — the **selected** row: its `/name` *and* description share this colour
 /// (for consistency); the name is additionally bold.
@@ -2565,9 +2585,10 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // --- The `@` file picker. A file list pinned **below the input box** (the
 // palette's slot — the bands never show together), opened by an `@token` under
 // the cursor — a port of codex's file-search popup. Each row is columned —
-// `→ name  parent/  …  File|Dir` — reusing the palette's cyan-selected /
-// dim-unselected colours, additionally **bolding the characters the query
-// matched** (from `FileMatch.indices`). See docs/file-search.md. ---
+// `→ name  parent/  …  File|Dir` — reusing the palette's `→` marker and its
+// cyan-selected / dim-unselected colours, additionally **bolding the
+// characters the query matched** (from `FileMatch.indices`). See
+// docs/file-search.md. ---
 
 /// The most file rows shown at once; longer match lists scroll to keep the
 /// selection visible (`menu_window`, which pins it to the edge it crossed).
@@ -2578,13 +2599,6 @@ pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";
 
 /// The picker's single placeholder row when the query matched nothing.
 pub(super) const FILE_MENU_NO_MATCH: &str = "No matching files";
-
-/// The selected row's arrow marker; unselected rows indent by its width.
-pub(super) const FILE_MENU_MARKER: &str = "→ ";
-
-/// The unselected rows' inset — the marker's width in spaces, so the name
-/// column starts at the same place on every row.
-pub(super) const FILE_MENU_INDENT: &str = "  ";
 
 /// Gap between the name column and the parent-dir column (the name column is
 /// the widest visible name plus this).
@@ -2607,8 +2621,8 @@ pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 // cursor sits in a usable `$mention`: one row per matching skill — the name
 // column (widest visible name + `FILE_MENU_GAP`, matched characters bolded)
 // then the skill's own description, `…`-cut at the width. It reuses the
-// palette's colours and the file picker's marker/indent — the selection lights
-// up cyan, the rest dim. See docs/skill-mentions.md. ---
+// palette's marker, inset and colours — the selection lights up cyan, the
+// rest dim. See docs/skill-mentions.md. ---
 
 /// The most skill rows shown at once; longer lists scroll to keep the
 /// selection visible (`menu_window`), like the file picker.
@@ -2621,7 +2635,10 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // input box** (the palette's slot — the two never show together), toggled by
 // `?` from an empty composer — a port of codex's footer shortcut overlay
 // (`footer.rs::shortcut_overlay_lines`): two aligned columns of
-// `{key} for {thing}` entries, keys cyan, labels dim. See docs/shortcuts.md. ---
+// `{key} for {thing}` entries, keys cyan, labels dim, inset by `MENU_INDENT`
+// like the footer row whose slot it takes (codex's overlay, a footer mode,
+// wears its footer's indent too) — one entry per row on a terminal too narrow
+// for both columns whole. See docs/shortcuts.md. ---
 
 /// The bindings listed in the band, as `(key, label)` pairs laid out two per
 /// row in declaration order. The `esc` entry is context-sensitive —
@@ -2647,14 +2664,17 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+w/u/k", " to kill text"),
 ];
 
-/// The display column where a row's second entry starts (the first entry is
-/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
+/// The column a row's second entry starts at, counted from the band's
+/// [`MENU_INDENT`] inset (the first entry is padded out to here, so on screen
+/// the second column sits at 32) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
 /// **widest** first-column variant keeps a readable gutter (the pairing once
 /// put a 27-column entry in the first column, which at the old 28 left a
 /// single space before its neighbour — one run-on line). The
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
-/// entry that needs it.
+/// entry that needs it. A terminal narrower than the inset, this column and a
+/// row's second entry together stacks the band into one entry per row
+/// ([`shortcuts_lines`]).
 ///
 /// Note that an entry added anywhere **reflows the pairing**, so a wide entry
 /// that had been safe in a second column can land in a first one — check this

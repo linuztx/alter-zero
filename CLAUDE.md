@@ -952,10 +952,15 @@ the open group outranking the block in `ui::live::preview_lines`) and whose
 line the thought then settles into unseen, Ctrl+O its only view
 (`docs/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
 away entirely and it **collapses** into one committed **bullet-less** two-tone
-`Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
-shape, because nothing is happening any more and what is left is a fact about
-the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
-`Done for Ns`'s exact dress, so the pair bracketing a turn reads as a pair);
+`  Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — one row like
+`summary_lines`, because nothing is happening any more and what is left is a
+fact about the turn — **dim throughout** (`reasoning_label_color()` =
+`status_done_color()`, `Done for Ns`'s dress, so the pair bracketing a turn
+reads as a pair), its text left in the column `Thinking…` streamed in behind
+the bullet's blank two columns (`ui::theme::SETTLED_INDENT`, which the settled
+MCP `  Called {server}` line and a read/search group's `  Read 2 files` line
+wear too — the turn summary, settling the status line rather than a cell,
+stays at the edge);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
 the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
@@ -1338,8 +1343,8 @@ batch produces during its hold and so jumps to the last: each value held
 `app::GROUP_HINT_HOLD` (the reference's 700 ms) and none skipped,
 `App::advance_group_hint` stepping it on the boundary's frame clock, a
 closed group resetting it (`docs/tool-groups.md` *The hint row*) — its
-bullet blinking for as long as the group is open, between calls too, then one dim bullet-less `Searched for 1
-pattern, read 2 files (ctrl+o to expand)` line once something that is not a
+bullet blinking for as long as the group is open, between calls too, then one dim bullet-less `  Searched for 1
+pattern, read 2 files (ctrl+o to expand)` line, its text where the live line's was, once something that is not a
 read arrives — reply text, a call of another kind, an error, the turn's end;
 the grouping is a property of the history (`app::group_run`, the parallel MCP
 run's pattern), the open group held by the commit path from
@@ -3039,7 +3044,9 @@ three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
-overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
+overlay, two dim columns of `{key} for {thing}` entries inset two columns like the
+footer row it displaces, stacked one entry per row on a terminal too narrow to
+hold both columns whole — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
@@ -3557,9 +3564,11 @@ Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
 `/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
-the highlighted command. Descriptions line up in a column, and the selection is
-shown **by colour** — the whole highlighted row lights up cyan (name *and*
-description the same colour) while the others are dimmed grey, no caret. A command
+the highlighted command. Descriptions line up in a column, and the selection
+wears the `@`/`$` pickers' **`→ ` marker** (`MENU_MARKER`; every other row opens
+on `MENU_INDENT`, its width in spaces, so the names share one column) and lights
+up cyan whole (name *and* description the same colour) while the others are
+dimmed grey; a miss's `No matching commands` sits in the names' column too. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
 message — **but mid-turn `/help` is rejected with a `Toast`** (its list would
@@ -3700,7 +3709,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status
   colours (`tool_waiting_color()` for a batch's not-yet-run `⎿ Waiting…` calls,
   `docs/parallel-tools.md`), the
-  `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
+  `⎿` peek prefix, the `(ctrl+o to expand)` hint, and `SETTLED_INDENT` — the
+  bullet's width of blank columns a settled thought, MCP `Called` line or
+  read/search group line opens on, so its text keeps the column its live
+  `●` header's text had), tool-view chrome
   (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
   cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
   glyph, so its own consts are the dim italic `reasoning_text_color()`/
@@ -3724,13 +3736,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `VERB_ROTATION` (30 s) by `App::set_status_times` and walked on across turns,
   the summary reading the past tense of the verb the line last wore;
   `docs/status-indicator.md`), the
-  slash-command palette (`MENU_*` — the `MENU_DESC_COL`
-  description column, the cyan/dimmed colours that light up the whole selected row
-  — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
+  slash-command palette (`MENU_*` — the `MENU_MARKER` `→ ` and its
+  `MENU_INDENT` two-space inset, which every band below the box that lists
+  something to pick opens its rows on (its placeholder rows on the inset), the
+  `MENU_DESC_COL` description column, the cyan/dimmed colours that light up the
+  whole selected row — name and description alike — and the `MENU_MAX_ROWS`
+  cap), the `@` file
   picker (`FILE_MENU_*` — it reuses the palette's `menu_selected_color()`/
   `menu_dim_color()`, additionally bolding the query-matched characters; the
-  columned row geometry is `FILE_MENU_MARKER`/`FILE_MENU_INDENT` (the selected
-  `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
+  columned row geometry is the palette's `MENU_MARKER`/`MENU_INDENT` (the
+  selected `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
   name + gap), `FILE_MENU_TYPE_WIDTH` with the `FILE_MENU_FILE_LABEL`/
   `FILE_MENU_DIR_LABEL` kind labels pinned at the right edge, and
   `FILE_MENU_ROOT_DIR` (`./`) for root-level parents, with a
@@ -3743,8 +3758,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   matched name characters the same way, the description column `…`-cut at the
   width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
   helpers — see `docs/skill-mentions.md`), the `?` shortcuts
-  band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the inline `/settings` menu (`SETTINGS_*` — it
+  band (`SHORTCUTS*` — the entry list, the second-entry column counted past
+  the band's `MENU_INDENT` inset, and the cyan key / dim label colours; the
+  band's height is `shortcuts_lines`' built line count, so a narrow
+  terminal's one-entry-per-row stack reserves its own rows), the
+  inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
   selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
   sized off the widest visible label) and its two-tone colouring

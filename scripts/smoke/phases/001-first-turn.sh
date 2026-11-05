@@ -187,15 +187,15 @@ printf '%s\n' "$palette_scrolled"
 # tail (/quit) leaves at the bottom. The edge-pinned window this replaced kept
 # the highlight on the bottom row the whole way, scrolling the list up with it
 # and showing nothing below it — /quit leaves under that window too, so only
-# the highlight's row tells the two apart. Captured with -e: the highlighted
-# row is the one whose `/name` is bold (the selection lights up cyan *and*
-# bolds the name; the other rows are dim).
+# the highlight's row tells the two apart. The highlighted row is the one the
+# `→ ` marker opens (the selection also lights up cyan and bolds its name; the
+# other rows open on the marker's two-space inset), so a plain capture shows
+# it.
 for _ in 1 2 3 4; do
 	tmux send-keys -t "$S" Up
 done
 sleep 0.3
-palette_recentered_raw="$(tmux capture-pane -t "$S" -p -e)"
-palette_recentered="$(printf '%s\n' "$palette_recentered_raw" | sed -E $'s/\x1b\\[[0-9;?]*[A-Za-z]//g')"
+palette_recentered="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (slash palette recentered, four up from /quit) ===="
 printf '%s\n' "$palette_recentered"
 
@@ -227,11 +227,14 @@ sleep 0.2
 # by COUNTING the rows, not by naming whichever command happens to sit on the
 # eighth: this line once pinned "/login, the 8th command", and `/fast`
 # (docs/fast-mode.md) landing before it broke a check about MENU_MAX_ROWS for
-# a reason that had nothing to do with MENU_MAX_ROWS. A palette row starts at
-# column 0 with its slash, which nothing else on screen does.
+# a reason that had nothing to do with MENU_MAX_ROWS. A palette row opens on
+# the `→ ` marker or its two-space inset, then its slash, its name and two or
+# more spaces before its description ($PALETTE_ENTRY) — a shape nothing else
+# on screen has, where the bare opening also matches the reply's wrapped prose.
 expect_has "$palette_open" -F "List the available commands" "typing '/' did not open the command palette (/help missing)"
+expect_has "$palette_open" -E '^→ /help +List the available commands' "the highlighted /help row does not open on the → marker"
 expect_has "$palette_open" -F "Clear the conversation" "the command palette did not list /clear"
-palette_rows="$(printf '%s\n' "$palette_open" | grep -c '^/' || true)"
+palette_rows="$(printf '%s\n' "$palette_open" | grep -cE "$PALETTE_ENTRY" || true)"
 if [ "$palette_rows" -ne 8 ]; then
 	fail "the command palette shows $palette_rows rows, not the 8 MENU_MAX_ROWS caps it at"
 fi
@@ -241,13 +244,11 @@ expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled 
 # Walking back up from /quit recenters: the window still holds its 8 rows, the
 # highlight rides the middle (5th) one with commands below it, and /quit — four
 # rows under the highlight — has scrolled out.
-recentered_rows="$(printf '%s\n' "$palette_recentered" | grep -c '^/' || true)"
+recentered_rows="$(printf '%s\n' "$palette_recentered" | grep -cE "$PALETTE_ENTRY" || true)"
 if [ "$recentered_rows" -ne 8 ]; then
 	fail "the recentered command palette shows $recentered_rows rows, not 8"
 fi
-highlight_row="$(printf '%s\n' "$palette_recentered_raw" | awk -v esc="$(printf '\033')" '
-	{ plain = $0; gsub(esc "\\[[0-9;?]*[A-Za-z]", "", plain) }
-	plain ~ /^\// { n++; if (index($0, esc "[1m") == 1) print n }')"
+highlight_row="$(printf '%s\n' "$palette_recentered" | grep -E "$PALETTE_ENTRY" | grep -n '^→ ' | cut -d: -f1)"
 if [ "$highlight_row" != 5 ]; then
 	fail "four ↑ from /quit left the palette highlight on row ${highlight_row:-none} of 8, not the middle (5th) row with commands below it"
 fi

@@ -134,8 +134,10 @@ A third band sharing the palette's slot below the box:
 `band = menu_rows + shortcuts_rows + file_menu_rows` (at most one is non-zero).
 
 - `file_menu_rows(app)` — 0 closed; one placeholder row for *Searching…* /
-  *No matching files*; else `matches.len().min(FILE_MENU_MAX_ROWS)` (at most
-  **8** rows; longer lists scroll).
+  *No matching files* (inset by `MENU_INDENT`, so it says so in the names'
+  column rather than the marker's gutter); else
+  `matches.len().min(FILE_MENU_MAX_ROWS)` (at most **8** rows; longer lists
+  scroll).
 - `file_menu_lines(app, width)` — one **columned** row per match, windowed
   (`menu_window`) to keep the selection visible:
 
@@ -146,8 +148,9 @@ A third band sharing the palette's slot below the box:
     next.svg    public/                                                   File
   ```
 
-  The selected row carries the `→` marker (`FILE_MENU_MARKER`; the rest indent
-  by its width) and lights up cyan (the palette's convention). The **name**
+  The selected row carries the `→` marker (`MENU_MARKER`, which the slash
+  palette and the `$` picker wear too; the rest open on `MENU_INDENT`, its
+  width in spaces) and lights up cyan (the palette's convention). The **name**
   column is the widest visible name + `FILE_MENU_GAP`; the **parent** column
   shows the entry's directory (`FILE_MENU_ROOT_DIR` `./` for root-level
   entries, deeper parents truncated so the row never overflows); the
