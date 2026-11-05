@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::ui::theme::{
-    FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_MAX_ROWS, SHORTCUTS, SHORTCUTS_COL,
-    SKILL_MENU_MAX_ROWS, menu_selected_color, shortcuts_key_color, shortcuts_text_color,
+    FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_INDENT, MENU_MARKER, MENU_MAX_ROWS, SHORTCUTS,
+    SHORTCUTS_COL, SKILL_MENU_MAX_ROWS, menu_selected_color, shortcuts_key_color,
+    shortcuts_text_color,
 };
 use crate::ui::wrap::cols;
 
@@ -56,18 +57,24 @@ fn centered_window_keeps_the_selection_centered() {
     assert_eq!(centered_window(5, 3, 0), 0, "zero window");
 }
 
-/// The palette rows that *start* a command (their first span is the `/name`),
-/// as plain text — a wrapped description's continuation rows are excluded, so
-/// a count of these is a count of the **commands** shown.
+/// A palette row's text after its marker — `/name    description` — or
+/// `None` for a row that starts no command (a wrapped description's
+/// continuation, a placeholder).
+fn command_text(row: &str) -> Option<&str> {
+    [MENU_MARKER, MENU_INDENT]
+        .iter()
+        .find_map(|marker| row.strip_prefix(marker))
+        .filter(|rest| rest.starts_with('/'))
+}
+
+/// The palette rows that *start* a command (the marker or its inset, then the
+/// `/name`), as plain text — a wrapped description's continuation rows are
+/// excluded, so a count of these is a count of the **commands** shown.
 fn command_rows(lines: &[Line<'_>]) -> Vec<String> {
     lines
         .iter()
-        .filter(|l| {
-            l.spans
-                .first()
-                .is_some_and(|s| s.content.as_ref().starts_with('/'))
-        })
         .map(|l| plain(l).trim_end().to_string())
+        .filter(|row| command_text(row).is_some())
         .collect()
 }
 
@@ -222,10 +229,10 @@ fn the_palette_wraps_a_long_description_instead_of_clipping() {
     // now word-wraps onto continuation rows indented to the description
     // column, so nothing is lost at narrow widths.
     let app = palette("/copy", 0);
-    let lines = command_menu_lines(&app, 40); // room for 15 desc columns
+    let lines = command_menu_lines(&app, 40); // room for 13 desc columns
     assert!(lines.len() > 1, "the description wrapped: {lines:?}");
     assert!(
-        plain(&lines[0]).starts_with("/copy"),
+        plain(&lines[0]).starts_with("→ /copy"),
         "{:?}",
         plain(&lines[0])
     );
@@ -369,30 +376,36 @@ fn the_palette_lists_the_active_models_speed_tiers_after_model() {
     ));
     let lines = command_menu_lines(&app, 100);
     let texts = command_rows(&lines);
+    let name = |t: &str| command_text(t).unwrap_or_default().to_string();
     let model = texts
         .iter()
-        .position(|t| t.starts_with("/model"))
+        .position(|t| name(t).starts_with("/model"))
         .expect("/model in the window");
     assert!(
-        texts[model + 1].starts_with("/fast")
+        name(&texts[model + 1]).starts_with("/fast")
             && texts[model + 1].ends_with("1.5x speed, increased usage"),
         "{texts:?}"
     );
     assert!(
-        texts[model + 2].starts_with("/ultrafast")
+        name(&texts[model + 2]).starts_with("/ultrafast")
             && texts[model + 2].ends_with("The fastest available responses."),
         "{texts:?}"
     );
-    // The description column lines up with the built-ins' (one row each).
-    let col = |t: &str| t.find("1.5x").or_else(|| t.find("The fastest")).unwrap();
+    // The description column lines up with the built-ins' (one row each),
+    // counted in display columns — the marker's `→` is one column but three
+    // bytes.
+    let col = |t: &str| {
+        let at = t.find("1.5x").or_else(|| t.find("The fastest")).unwrap();
+        cols(&t[..at])
+    };
     assert_eq!(col(&texts[model + 1]), col(&texts[model + 2]));
     assert_eq!(col(&texts[model + 1]), MENU_DESC_COL);
-    // /ultrafast (the second tier row) is selected and lit, the window
-    // having scrolled to keep it visible.
+    // /ultrafast (the second tier row) is selected — marked and lit — the
+    // window having scrolled to keep it visible.
     let ultra = lines
         .iter()
-        .find(|l| plain(l).starts_with("/ultrafast"))
-        .expect("the selected tier row is in the window");
+        .find(|l| plain(l).starts_with("→ /ultrafast"))
+        .expect("the selected tier row is in the window, marked");
     assert!(
         ultra
             .spans
@@ -405,26 +418,27 @@ fn the_palette_lists_the_active_models_speed_tiers_after_model() {
     app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
     let narrowed = command_rows(&command_menu_lines(&app, 100));
     assert_eq!(narrowed.len(), 1, "{narrowed:?}");
-    assert!(narrowed[0].starts_with("/ultrafast"), "{narrowed:?}");
+    assert!(narrowed[0].starts_with("→ /ultrafast"), "{narrowed:?}");
     // …and a model listing none shows none, the built-ins untouched.
     app.set_speed(None);
     app.input = TextArea::from_text("/");
     assert!(
         !command_rows(&command_menu_lines(&app, 100))
             .iter()
-            .any(|t| t.starts_with("/fast") || t.starts_with("/ultrafast")),
+            .any(|t| name(t).starts_with("/fast") || name(t).starts_with("/ultrafast")),
     );
 }
 
 #[test]
 fn a_degenerate_width_ellipsizes_the_command_name() {
     // Below the description column there is no room for descriptions at all;
-    // the name alone shows, `…`-cut to the width — codex's popup shape
-    // (`/statuslin…`) — instead of paint-clipping at the buffer edge.
+    // the marker and the name show, the name `…`-cut to what is left of the
+    // width — codex's popup shape (`/statuslin…`) — instead of paint-clipping
+    // at the buffer edge.
     let lines = command_menu_lines(&palette("/settings", 0), 7);
     let text = plain(&lines[0]);
+    assert_eq!(text, "→ /set…");
     assert!(cols(text.trim_end()) <= 7, "{text:?}");
-    assert!(text.trim_end().ends_with('…'), "{text:?}");
 }
 
 #[test]
@@ -462,20 +476,14 @@ fn command_menu_lines_lists_commands_with_descriptions() {
 
 #[test]
 fn command_menu_aligns_descriptions_in_a_column() {
-    // Names are padded so every description starts at the same column,
-    // regardless of command-name length; a wrapped description's
-    // continuation rows indent to that same column.
+    // The marker (or its inset) and the name are padded so every description
+    // starts at the same column, regardless of command-name length or which
+    // row is selected; a wrapped description's continuation rows indent to
+    // that same column. The description is each row's last span.
     let lines = command_menu_lines(&palette("/", 0), 60);
     for line in &lines {
-        let first = line.spans.first().expect("a non-empty row");
-        let before_desc: usize = if first.content.as_ref().starts_with('/') {
-            line.spans[..2]
-                .iter()
-                .map(|s| cols(s.content.as_ref()))
-                .sum()
-        } else {
-            cols(first.content.as_ref())
-        };
+        let (_desc, before) = line.spans.split_last().expect("a non-empty row");
+        let before_desc: usize = before.iter().map(|s| cols(s.content.as_ref())).sum();
         assert_eq!(
             before_desc,
             MENU_DESC_COL,
@@ -493,6 +501,74 @@ fn command_menu_shows_a_placeholder_when_nothing_matches() {
         .collect();
     assert_eq!(texts.len(), 1);
     assert!(texts[0].to_lowercase().contains("no matching"), "{texts:?}");
+}
+
+#[test]
+fn the_palette_marks_the_selection_with_an_arrow() {
+    // The `@` and `$` pickers' marker (docs/file-search.md): the highlighted
+    // command opens on `→ `, every other row on the marker's width of
+    // spaces, so the names share one column and the selection still reads
+    // where the cyan alone says nothing (a monochrome terminal, a capture).
+    let lines = command_menu_lines(&palette("/", 1), 80);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert!(texts[1].starts_with("→ /clear "), "{texts:?}");
+    for (i, text) in texts.iter().enumerate().filter(|&(i, _)| i != 1) {
+        assert!(text.starts_with("  /"), "row {i} is inset: {text:?}");
+    }
+    // The marker wears the row's colour, the name still bold beside it.
+    let [marker, name, ..] = lines[1].spans.as_slice() else {
+        panic!("marker, name, …: {:?}", lines[1].spans);
+    };
+    assert_eq!(marker.content, MENU_MARKER);
+    assert_eq!(marker.style.fg, Some(menu_selected_color()));
+    assert_eq!(name.content, "/clear");
+    assert!(name.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(lines[0].spans[0].content, MENU_INDENT);
+}
+
+#[test]
+fn the_palette_moves_the_arrow_with_the_selection() {
+    // Exactly one row wears the marker, and it is the highlighted one —
+    // the window scrolling under it never strands the arrow on another row.
+    let len = palette("/", 0).commands().len();
+    for selected in 0..len {
+        let lines = command_menu_lines(&palette("/", selected), 80);
+        let arrows: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| plain(l).starts_with(MENU_MARKER))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(arrows, [highlighted_row(&lines)], "selection {selected}");
+    }
+}
+
+#[test]
+fn a_placeholder_row_sits_in_the_bands_text_column() {
+    // Every band below the box draws its text from the marker's column:
+    // a miss says so where the names would have been, not in the marker's
+    // gutter (the `/model` pickers' `  No matching models` rule).
+    let commands = command_menu_lines(&palette("/zzz", 0), 60);
+    assert_eq!(
+        plain(&commands[0]),
+        format!("{MENU_INDENT}No matching commands")
+    );
+    let mut app = file_picker("zz", vec![], 0);
+    app.file_search.as_mut().expect("open").waiting = true;
+    assert_eq!(
+        plain(&file_menu_lines(&app, 60)[0]),
+        format!("{MENU_INDENT}Searching…")
+    );
+    app.file_search.as_mut().expect("open").waiting = false;
+    assert_eq!(
+        plain(&file_menu_lines(&app, 60)[0]),
+        format!("{MENU_INDENT}No matching files")
+    );
+    let skills = skill_menu_lines(&skill_app("$zzz", 0), 60);
+    assert_eq!(
+        plain(&skills[0]),
+        format!("{MENU_INDENT}No matching skills")
+    );
 }
 
 #[test]

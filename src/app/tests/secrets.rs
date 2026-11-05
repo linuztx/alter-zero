@@ -56,7 +56,7 @@ fn the_palette_lists_secrets_before_quit() {
         .find(|c| c.name == "secrets")
         .expect("/secrets is registered");
     assert_eq!(cmd.effect, CommandEffect::Secrets);
-    assert!(cmd.description.len() <= 55, "{}", cmd.description);
+    assert!(cmd.description.len() <= 53, "{}", cmd.description);
     assert_eq!(COMMANDS.last().map(|c| c.name.as_ref()), Some("quit"));
 }
 

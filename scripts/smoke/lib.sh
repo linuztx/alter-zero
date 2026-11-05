@@ -56,6 +56,12 @@ SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|C
 SUMMARY_TURN1="Worked for"
 SUMMARY_TURN2="Generated for"
 SUMMARY_TURN3="Pondered for"
+# The opening of a slash-palette row (an ERE, anchored): the selection's `→ `
+# marker or the two-space inset every other row wears (`MENU_MARKER` /
+# `MENU_INDENT`, docs/design.md), then the command's slash — so
+# "${PALETTE_ROW}fast" is the `/fast` row wherever the highlight sits, and a
+# count of "$PALETTE_ROW" lines is a count of the commands on screen.
+PALETTE_ROW='^(→ |  )/'
 # The dummy AI pauses before streaming (so the status indicator shows first) —
 # 3s by default. Every phase runs with a SHORT delay so the turns stream
 # promptly; the phases that want a visible pause set their own.

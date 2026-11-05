@@ -37,6 +37,14 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The `/` command palette marks the highlighted command with `→`.** The
+  palette showed which command Enter runs by colour alone, which a
+  monochrome terminal or a plain screen capture cannot show. The highlighted
+  row now opens on the `→` the `@` file picker and the `$` skill picker
+  already used, and every other row on two spaces, so the command names line
+  up in one column. A `No matching commands`, `No matching files` or
+  `No matching skills` row now sits in that same column.
+
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and

@@ -3557,9 +3557,11 @@ Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
 `/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
-the highlighted command. Descriptions line up in a column, and the selection is
-shown **by colour** — the whole highlighted row lights up cyan (name *and*
-description the same colour) while the others are dimmed grey, no caret. A command
+the highlighted command. Descriptions line up in a column, and the selection
+wears the `@`/`$` pickers' **`→ ` marker** (`MENU_MARKER`; every other row opens
+on `MENU_INDENT`, its width in spaces, so the names share one column) and lights
+up cyan whole (name *and* description the same colour) while the others are
+dimmed grey; a miss's `No matching commands` sits in the names' column too. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
 message — **but mid-turn `/help` is rejected with a `Toast`** (its list would
@@ -3724,13 +3726,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `VERB_ROTATION` (30 s) by `App::set_status_times` and walked on across turns,
   the summary reading the past tense of the verb the line last wore;
   `docs/status-indicator.md`), the
-  slash-command palette (`MENU_*` — the `MENU_DESC_COL`
-  description column, the cyan/dimmed colours that light up the whole selected row
-  — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
+  slash-command palette (`MENU_*` — the `MENU_MARKER` `→ ` and its
+  `MENU_INDENT` two-space inset, which every band below the box that lists
+  something to pick opens its rows on (its placeholder rows on the inset), the
+  `MENU_DESC_COL` description column, the cyan/dimmed colours that light up the
+  whole selected row — name and description alike — and the `MENU_MAX_ROWS`
+  cap), the `@` file
   picker (`FILE_MENU_*` — it reuses the palette's `menu_selected_color()`/
   `menu_dim_color()`, additionally bolding the query-matched characters; the
-  columned row geometry is `FILE_MENU_MARKER`/`FILE_MENU_INDENT` (the selected
-  `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
+  columned row geometry is the palette's `MENU_MARKER`/`MENU_INDENT` (the
+  selected `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
   name + gap), `FILE_MENU_TYPE_WIDTH` with the `FILE_MENU_FILE_LABEL`/
   `FILE_MENU_DIR_LABEL` kind labels pinned at the right edge, and
   `FILE_MENU_ROOT_DIR` (`./`) for root-level parents, with a

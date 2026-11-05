@@ -167,6 +167,12 @@ turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Worked`,
 the per-turn names to the verb table, so a verb added, dropped or reordered
 fails `cargo test` rather than a smoke run.
 
+A slash-palette row opens on the selection's `→ ` marker or the two-space
+inset every other row wears, so a phase finds one by `PALETTE_ROW`
+(`-E "${PALETTE_ROW}fast"` — the `/fast` row, highlighted or not) rather than
+by a bare `^/`, which no row starts with any more and which would leave a
+negative check passing whatever the palette showed.
+
 Every timeout is a **cap**: a wait returns the moment the state holds, so
 the suite runs at the app's speed on a fast machine and still passes on a
 slow one. The rule the old script stated for itself still holds — *poll for

@@ -32,7 +32,7 @@ sleep 0.4
 none_palette="$(tmux capture-pane -t "$S117" -p)"
 dump "the dummy's palette on /fast" "$none_palette"
 expect_has "$none_palette" -F "No matching commands" "the dummy's palette offered something for /fast"
-expect_lacks "$none_palette" -E '^/fast' "the palette lists a /fast row on a model that lists no tier"
+expect_lacks "$none_palette" -E "${PALETTE_ROW}fast" "the palette lists a /fast row on a model that lists no tier"
 expect_lacks "$none_palette" -F "increased usage" "the palette describes a tier the model never listed"
 keys "$S117" Enter
 sleep 0.6
@@ -168,18 +168,18 @@ type_text "$S117B" "/"
 tiers_palette=""
 for _ in $(seq 1 60); do
 	tiers_palette="$(tmux capture-pane -t "$S117B" -p)"
-	if printf '%s\n' "$tiers_palette" | grep -qE '^/fast +1\.5x speed, increased usage' &&
-		printf '%s\n' "$tiers_palette" | grep -qE '^/model '; then
+	if printf '%s\n' "$tiers_palette" | grep -qE "${PALETTE_ROW}fast +1\.5x speed, increased usage" &&
+		printf '%s\n' "$tiers_palette" | grep -qE "${PALETTE_ROW}model "; then
 		break
 	fi
 	keys "$S117B" Down
 	sleep 0.2
 done
 dump "the palette walked to the listed tiers" "$tiers_palette"
-expect_has "$tiers_palette" -E '^/model +Switch the active model' "the palette lost /model"
-expect_has "$tiers_palette" -E '^/fast +1\.5x speed, increased usage' "/fast is not a row wearing the record's description"
-model_row="$(printf '%s\n' "$tiers_palette" | grep -nE '^/model ' | cut -d: -f1)"
-fast_row="$(printf '%s\n' "$tiers_palette" | grep -nE '^/fast ' | cut -d: -f1)"
+expect_has "$tiers_palette" -E "${PALETTE_ROW}model +Switch the active model" "the palette lost /model"
+expect_has "$tiers_palette" -E "${PALETTE_ROW}fast +1\.5x speed, increased usage" "/fast is not a row wearing the record's description"
+model_row="$(printf '%s\n' "$tiers_palette" | grep -nE "${PALETTE_ROW}model " | cut -d: -f1)"
+fast_row="$(printf '%s\n' "$tiers_palette" | grep -nE "${PALETTE_ROW}fast " | cut -d: -f1)"
 if [ -z "$model_row" ] || [ -z "$fast_row" ] || [ "$fast_row" -ne $((model_row + 1)) ]; then
 	fail "/fast (row ${fast_row:-none}) does not sit right after /model (row ${model_row:-none})"
 fi
@@ -190,8 +190,8 @@ type_text "$S117B" "/ultra"
 sleep 0.4
 ultra_palette="$(tmux capture-pane -t "$S117B" -p)"
 dump "the palette on /ultra" "$ultra_palette"
-expect_has "$ultra_palette" -E '^/ultrafast +The fastest available responses\.' "/ultrafast is not a row wearing the record's description"
-expect_lacks "$ultra_palette" -E '^/fast' "/ultra matched /fast"
+expect_has "$ultra_palette" -E "${PALETTE_ROW}ultrafast +The fastest available responses\." "/ultrafast is not a row wearing the record's description"
+expect_lacks "$ultra_palette" -E "${PALETTE_ROW}fast" "/ultra matched /fast"
 
 # Running /ultrafast selects it: the toast repeats the record's own cost
 # statement and the footer wears the tier's name after the model's.
