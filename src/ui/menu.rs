@@ -474,12 +474,13 @@ pub fn band_rows(app: &App, width: u16) -> u16 {
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
-/// per row — the second column starting at `SHORTCUTS_COL` — with keys cyan
-/// and labels dim. The `esc` entry is three-way context-sensitive (codex's
-/// quit entry): ` to interrupt` while a turn is in flight, the
-/// `SHORTCUTS_BACKTRACK` `esc esc` edit hint when idle with a previous user
-/// message to edit, and ` to quit` only with nothing to backtrack to
-/// (docs/backtrack.md).
+/// per row, inset by `MENU_INDENT` — the band takes the footer's slot, so it
+/// starts where the footer does, in the column every band's names start at —
+/// with the second column `SHORTCUTS_COL` past the inset, keys cyan and labels
+/// dim. The `esc` entry is three-way context-sensitive (codex's quit entry):
+/// ` to interrupt` while a turn is in flight, the `SHORTCUTS_BACKTRACK`
+/// `esc esc` edit hint when idle with a previous user message to edit, and
+/// ` to quit` only with nothing to backtrack to (docs/backtrack.md).
 #[must_use]
 pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
     let entry = |key: &'static str, label: &'static str| {
@@ -499,11 +500,11 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
         .chunks(2)
         .map(|pair| {
             let [key, label] = entry(pair[0].0, pair[0].1);
-            let mut spans = vec![key, label];
+            // Pad from the *displayed* widths — a context swap can change the
+            // key text too (`esc` → `esc esc`).
+            let used = cols(key.content.as_ref()) + cols(label.content.as_ref());
+            let mut spans = vec![Span::raw(MENU_INDENT), key, label];
             if let Some(&(key2, label2)) = pair.get(1) {
-                // Pad from the *displayed* widths — a context swap can change
-                // the key text too (`esc` → `esc esc`).
-                let used = cols(spans[0].content.as_ref()) + cols(spans[1].content.as_ref());
                 spans.push(Span::raw(
                     " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
                 ));

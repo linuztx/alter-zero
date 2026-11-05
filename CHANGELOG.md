@@ -45,6 +45,11 @@ release heading when a version is cut.
   up in one column. A `No matching commands`, `No matching files` or
   `No matching skills` row now sits in that same column.
 
+- **The `?` shortcuts list starts two columns in.** It sat flush against the
+  terminal's edge, the only thing below the input box that did. It now
+  starts where the footer line it replaces does, in line with the `/`
+  palette's command names.
+
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and

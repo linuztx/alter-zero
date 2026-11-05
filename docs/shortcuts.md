@@ -65,18 +65,27 @@ rows (the cursor never moves when the band opens), and `main.rs`'s
 
 `shortcuts_lines(turn_active, can_backtrack)` lists this app's actual
 bindings, codex's phrasing and two-column layout, keys cyan and labels dim
-(`SHORTCUTS_*` consts):
+(`SHORTCUTS_*` consts), the whole grid inset two columns:
 
 ```
-/ for commands               ! for shell command
-↑ for input history          ctrl+r to search history
-shift+enter for newline      ctrl+o for tool output
-esc to quit                  ctrl+c to quit
-alt+↑ to edit queue          tab to queue next turn
-ctrl+v for image paste       ctrl+d for llm context
-ctrl+t to cycle thinking     shift+tab for permission mode
-$ for skills                 ctrl+w/u/k to kill text
+  / for commands                ! for shell command
+  ↑ for input history           ctrl+r to search history
+  shift+enter for newline       ctrl+o for tool output
+  esc to quit                   ctrl+c to quit
+  alt+↑ to edit queue           tab to queue next turn
+  ctrl+v for image paste        ctrl+d for llm context
+  ctrl+t to cycle thinking      shift+tab for permission mode
+  $ for skills                  ctrl+w/u/k to kill text
 ```
+
+The inset is `MENU_INDENT`, a blank span wearing no colour. The band takes
+the footer's slot, and the footer row is inset by the same two columns
+(`  {model} · {cwd}`), so the help opens where the line it replaces began —
+codex's overlay, one of its footer's modes, wears the footer's indent too. It is
+also the column every other band below the box starts its names in, after
+the palette's and the pickers' `→ ` marker, so whichever band is open, its
+text starts two in from the edge. The grid used to sit flush against the
+edge, the one thing below the box that did.
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
@@ -91,7 +100,8 @@ one — check `SHORTCUTS_COL` still leaves a gutter when adding one. The
 Ctrl+D view's classifier page has no entry of its own: Tab is discovered on
 the view's own hint row, `docs/permissions.md`.)
 
-The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
+The second column starts `SHORTCUTS_COL` (30) past the inset — column 32 on
+screen — sized so the **widest**
 first-column variant keeps a readable gutter (an earlier pairing put a
 27-column entry in the first column, which at the old column of 28 left a
 single space before its neighbour — the two entries read as one run-on line;
@@ -119,6 +129,13 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   not worth leaking boundary state into the core.
 - No `customize shortcuts with /keymap` trailer (we have no keymap), and the
   entries are this app's bindings, not codex's.
+- **The grid is fixed-width.** Its widest row needs 61 columns (the inset,
+  the 30-column first column and `shift+tab for permission mode`), and on a
+  narrower terminal the second column is cut at the edge. A
+  one-entry-per-row fallback would keep every entry whole, but it doubles the
+  band to 16 rows on exactly the narrow, short panes where a tall band
+  squeezes the composer and the streaming preview (`smoke.sh` Phase 99 drives
+  one at 51×24), so the band keeps its eight rows.
 
 ## Testing
 
@@ -127,8 +144,9 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   performs its action (typing, ↑ recall, `/` palette); Esc only dismisses —
   idle (no quit) and mid-turn (no interrupt, band closed, turn untouched);
   `?` is ignored in the tool view.
-- `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (7
-  rows for the current 14 entries); the lines list the bindings in
+- `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (8
+  rows for the current 16 entries); every row opens on the blank
+  `MENU_INDENT` inset (the footer's width), and the lines list the bindings in
   two aligned columns (keys cyan, labels dim) with a ≥ 2-column gutter between
   them in every context state (the esc swaps change the first column's width);
   the Esc entry flips between

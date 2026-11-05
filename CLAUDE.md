@@ -3039,7 +3039,8 @@ three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
-overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
+overlay, two dim columns of `{key} for {thing}` entries inset two columns like the
+footer row it displaces — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
@@ -3748,8 +3749,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   matched name characters the same way, the description column `…`-cut at the
   width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
   helpers — see `docs/skill-mentions.md`), the `?` shortcuts
-  band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the inline `/settings` menu (`SETTINGS_*` — it
+  band (`SHORTCUTS*` — the entry list, the second-entry column counted past
+  the band's `MENU_INDENT` inset, and the cyan key / dim label colours), the
+  inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
   selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
   sized off the widest visible label) and its two-tone colouring

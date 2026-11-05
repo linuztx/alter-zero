@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::ui::theme::{
-    FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_INDENT, MENU_MARKER, MENU_MAX_ROWS, SHORTCUTS,
-    SHORTCUTS_COL, SKILL_MENU_MAX_ROWS, menu_selected_color, shortcuts_key_color,
+    FILE_MENU_MAX_ROWS, FOOTER_INDENT, MENU_DESC_COL, MENU_INDENT, MENU_MARKER, MENU_MAX_ROWS,
+    SHORTCUTS, SHORTCUTS_COL, SKILL_MENU_MAX_ROWS, menu_selected_color, shortcuts_key_color,
     shortcuts_text_color,
 };
 use crate::ui::wrap::cols;
@@ -660,6 +660,36 @@ fn shortcuts_rows_is_zero_closed_and_counts_the_band_open() {
 }
 
 #[test]
+fn the_shortcuts_band_is_inset_to_the_bands_text_column() {
+    // The band takes the footer's slot, so its grid starts where the footer
+    // row does — two in from the edge, the column the palette's and the
+    // pickers' names start at after their marker — instead of flush against
+    // the edge. The inset is blank, wearing neither the key's colour nor the
+    // label's, and the second column keeps its place in the grid:
+    // SHORTCUTS_COL past the inset.
+    assert_eq!(cols(MENU_INDENT), cols(FOOTER_INDENT));
+    for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true)] {
+        for line in shortcuts_lines(turn_active, can_backtrack) {
+            let [inset, key, ..] = line.spans.as_slice() else {
+                panic!("an inset and an entry: {line:?}");
+            };
+            assert_eq!(inset.content, MENU_INDENT, "{:?}", plain(&line));
+            assert_eq!(inset.style, Style::default(), "{:?}", plain(&line));
+            assert!(!key.content.starts_with(' '), "{:?}", plain(&line));
+        }
+    }
+    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    assert!(texts[0].starts_with("  / for commands "), "{texts:?}");
+    assert!(texts[7].starts_with("  $ for skills "), "{texts:?}");
+    let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
+    assert_eq!(
+        col(&texts[0], "! for shell command"),
+        cols(MENU_INDENT) + SHORTCUTS_COL,
+        "{texts:?}"
+    );
+}
+
+#[test]
 fn shortcuts_band_advertises_ctrl_v_image_paste() {
     // The `?` overlay lists Ctrl+V image paste (docs/image-paste.md).
     let texts: Vec<String> = shortcuts_lines(false, false)
@@ -760,23 +790,24 @@ fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
 
 #[test]
 fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
-    // The second column starts at SHORTCUTS_COL in every context state, with
-    // at least two blank columns of gutter after the first entry — the esc
-    // entry swaps text per state (` to interrupt` mid-turn, the `esc esc`
-    // edit hint idle-with-target: the widest first-column variant, which
-    // used to squeeze the gutter to a single space and read as one run-on
-    // line). Adding a wide entry later must widen SHORTCUTS_COL with it.
+    // The second column starts SHORTCUTS_COL past the inset in every context
+    // state, with at least two blank columns of gutter after the first
+    // entry — the esc entry swaps text per state (` to interrupt` mid-turn,
+    // the `esc esc` edit hint idle-with-target: the widest first-column
+    // variant, which used to squeeze the gutter to a single space and read
+    // as one run-on line). Adding a wide entry later must widen
+    // SHORTCUTS_COL with it. spans = [inset, key, label, gutter, key, label].
     for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true), (true, true)]
     {
         for line in shortcuts_lines(turn_active, can_backtrack) {
-            if line.spans.len() < 4 {
+            if line.spans.len() < 5 {
                 continue; // a lone trailing entry has no second column
             }
-            let first: usize = line.spans[..2]
+            let first: usize = line.spans[1..3]
                 .iter()
                 .map(|s| cols(s.content.as_ref()))
                 .sum();
-            let gutter = cols(line.spans[2].content.as_ref());
+            let gutter = cols(line.spans[3].content.as_ref());
             assert!(
                 gutter >= 2,
                 "a {gutter}-space gutter after {:?} (turn_active={turn_active}, can_backtrack={can_backtrack})",
@@ -795,9 +826,14 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
 #[test]
 fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
     for line in shortcuts_lines(false, false) {
-        // spans = [key, label, pad, key, label] — keys cyan, labels dim.
-        assert_eq!(line.spans[0].style.fg, Some(shortcuts_key_color()));
-        assert_eq!(line.spans[1].style.fg, Some(shortcuts_text_color()));
+        // spans = [inset, key, label, pad, key, label] — keys cyan, labels
+        // dim, both columns.
+        assert_eq!(line.spans[1].style.fg, Some(shortcuts_key_color()));
+        assert_eq!(line.spans[2].style.fg, Some(shortcuts_text_color()));
+        if let [_, _, _, _, key2, label2] = line.spans.as_slice() {
+            assert_eq!(key2.style.fg, Some(shortcuts_key_color()));
+            assert_eq!(label2.style.fg, Some(shortcuts_text_color()));
+        }
     }
 }
 

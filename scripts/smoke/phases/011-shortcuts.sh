@@ -27,6 +27,10 @@ tmux kill-session -t "$S8" 2>/dev/null
 # Phase 11: the `?` shortcuts band (docs/shortcuts.md). "for commands" only
 # ever appears in the band, so it's a clean open/closed marker.
 expect_has "$band_open" -F "for commands" "'?' with an empty composer did not open the shortcuts band"
+# The grid starts two columns in, where the footer row it displaces starts,
+# and its second column keeps its place 30 columns past that.
+expect_has "$band_open" -E '^  / for commands {16}! for shell command$' "the shortcuts band is not inset two columns with its second column at 32"
+expect_lacks "$band_open" -E '^(/ for|\$ for|esc to)' "a shortcuts row still starts flush against the edge"
 expect_has "$band_open" -F "ctrl+c to quit" "the shortcuts band is missing its quit entry"
 expect_has "$band_open" -F "alt+↑ to edit queue" "the shortcuts band is missing the alt+↑ queue-edit entry"
 expect_lacks "$band_closed" -F "for commands" "a second '?' did not close the shortcuts band"

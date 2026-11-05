@@ -2627,7 +2627,9 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // input box** (the palette's slot — the two never show together), toggled by
 // `?` from an empty composer — a port of codex's footer shortcut overlay
 // (`footer.rs::shortcut_overlay_lines`): two aligned columns of
-// `{key} for {thing}` entries, keys cyan, labels dim. See docs/shortcuts.md. ---
+// `{key} for {thing}` entries, keys cyan, labels dim, inset by `MENU_INDENT`
+// like the footer row whose slot it takes (codex's overlay, a footer mode,
+// wears its footer's indent too). See docs/shortcuts.md. ---
 
 /// The bindings listed in the band, as `(key, label)` pairs laid out two per
 /// row in declaration order. The `esc` entry is context-sensitive —
@@ -2653,8 +2655,9 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+w/u/k", " to kill text"),
 ];
 
-/// The display column where a row's second entry starts (the first entry is
-/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
+/// The column a row's second entry starts at, counted from the band's
+/// [`MENU_INDENT`] inset (the first entry is padded out to here, so on screen
+/// the second column sits at 32) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
 /// **widest** first-column variant keeps a readable gutter (the pairing once
 /// put a 27-column entry in the first column, which at the old 28 left a
 /// single space before its neighbour — one run-on line). The
