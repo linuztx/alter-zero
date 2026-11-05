@@ -419,7 +419,7 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
     // …and one committed line when the run ends, with nothing else between.
     assert_eq!(
         committed,
-        vec!["Called Deepwiki 2 times (ctrl+o to expand)".to_string()],
+        vec!["  Called Deepwiki 2 times (ctrl+o to expand)".to_string()],
         "the parallel run commits once"
     );
     // The Ctrl+O story is still per call, with the model's own argument

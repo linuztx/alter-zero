@@ -143,7 +143,8 @@ which Ctrl+V reads the clipboard from.
   `● Searching for 1 pattern, reading 2 files, listing 1 directory… (ctrl+o
   to expand)` live, its bullet blinking for as long as the group is open,
   between calls too, then one dim bullet-less `Searched for 1 pattern, read 2
-  files, listed 1 directory (ctrl+o to expand)` line once something that is
+  files, listed 1 directory (ctrl+o to expand)` line, inset two columns where
+  the live line's text was, once something that is
   not a read arrives — a call of another kind, reply text, an error, the
   turn's end. The group is derived from the history (`app::group_run`), so
   every rebuild paints the same line; Ctrl+O keeps every call whole

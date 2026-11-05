@@ -50,6 +50,13 @@ release heading when a version is cut.
   starts where the footer line it replaces does, in line with the `/`
   palette's command names.
 
+- **Finished thoughts, MCP calls and file reads keep their place.** The
+  one-line summary a step leaves once it is done (`Thought for 3s`,
+  `Called Deepwiki`, `Read 2 files, listed 1 directory`) jumped two columns
+  left of where the step had been shown while it ran. Each now starts two
+  columns in, where its text was beside the `●`, so only the bullet goes
+  away. The turn's closing `Worked for …` line is unchanged.
+
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and

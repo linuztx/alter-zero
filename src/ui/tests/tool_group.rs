@@ -1,6 +1,6 @@
 //! The collapsed read/search group's two looks and where they show
 //! (`docs/tool-groups.md`): the live `● Reading 1 file…` cell over its `⎿`
-//! hint in the strip, the settled bullet-less `Read 1 file (ctrl+o to
+//! hint in the strip, the settled bullet-less `  Read 1 file (ctrl+o to
 //! expand)` line in scrollback, and a rebuild that agrees with both.
 
 use super::*;
@@ -49,15 +49,34 @@ fn a_settled_group_is_one_dim_bullet_less_line_in_the_references_clause_order() 
     let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
-        ["Searched for 1 pattern, read 1 file, listed 1 directory (ctrl+o to expand)"]
+        ["  Searched for 1 pattern, read 1 file, listed 1 directory (ctrl+o to expand)"]
     );
+    let (inset, rest) = lines[0].spans.split_first().expect("an inset");
+    assert_eq!(inset.content, "  ");
+    assert_eq!(inset.style, Style::default(), "a blank inset, no tone");
     assert!(
-        lines[0]
-            .spans
-            .iter()
+        rest.iter()
             .all(|span| span.style.fg == Some(reasoning_label_color())),
         "dim throughout, the settled thought's dress: {:?}",
         lines[0]
+    );
+}
+
+#[test]
+fn a_settled_group_keeps_the_column_its_live_line_used() {
+    // Only the bullet goes away when the group settles: `● Reading 1 file…`
+    // becomes `  Read 1 file`, its text in the column it was read in — the
+    // settled thought's rule, and the MCP line's (docs/tool-groups.md).
+    let app = holding_a_read("mathutil.py");
+    let col = |line: &Line, needle: &str| {
+        let text = plain(line);
+        cols(&text[..text.find(needle).expect("the clause")])
+    };
+    let live = live_group_lines(&app, 80, None, true);
+    let settled = tool_group_lines(&app.history, 80, &PathDisplay::VERBATIM);
+    assert_eq!(
+        col(&settled[0], "Read 1 file"),
+        col(&live[0], "Reading 1 file")
     );
 }
 
@@ -73,7 +92,7 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
     let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
-        ["Read 3 files, listed 2 directories (ctrl+o to expand)"]
+        ["  Read 3 files, listed 2 directories (ctrl+o to expand)"]
     );
     let count = lines[0]
         .spans
@@ -97,7 +116,7 @@ fn the_thoughts_a_group_held_leave_only_its_line() {
     let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
-        ["Read 1 file, listed 1 directory (ctrl+o to expand)"]
+        ["  Read 1 file, listed 1 directory (ctrl+o to expand)"]
     );
 }
 
@@ -123,10 +142,10 @@ fn only_a_thought_outside_the_group_keeps_its_line() {
             verbose,
         ))
         .into_iter()
-        .filter(|row| row.starts_with("Thought for"))
+        .filter(|row| row.trim_start().starts_with("Thought for"))
         .collect()
     };
-    assert_eq!(thoughts(false), ["Thought for 3s (ctrl+o to expand)"]);
+    assert_eq!(thoughts(false), ["  Thought for 3s (ctrl+o to expand)"]);
     assert_eq!(thoughts(true).len(), 3, "{:#?}", thoughts(true));
 }
 
@@ -134,8 +153,14 @@ fn only_a_thought_outside_the_group_keeps_its_line() {
 fn a_narrow_terminal_drops_the_hint_before_it_cuts_the_clauses() {
     let items = [ok("Read", "a.py"), ok("Bash", "ls -la")];
     let line = &tool_group_lines(&items, 34, &PathDisplay::VERBATIM)[0];
-    assert_eq!(plain(line), "Read 1 file, listed 1 directory");
+    assert_eq!(plain(line), "  Read 1 file, listed 1 directory");
+    // The inset is part of the width: 33 columns no longer hold the clauses
+    // whole beside it.
+    let line = &tool_group_lines(&items, 32, &PathDisplay::VERBATIM)[0];
+    assert!(cols(&plain(line)) <= 32, "{:?}", plain(line));
+    assert!(plain(line).ends_with('…'), "{:?}", plain(line));
     let line = &tool_group_lines(&items, 20, &PathDisplay::VERBATIM)[0];
+    assert!(plain(line).starts_with("  Read"), "{:?}", plain(line));
     assert!(cols(&plain(line)) <= 20, "{:?}", plain(line));
     assert!(plain(line).ends_with('…'), "{:?}", plain(line));
 }
@@ -155,7 +180,7 @@ fn the_conversation_collapses_a_run_of_reads_unless_verbose() {
         false,
     ));
     assert!(
-        collapsed.contains(&"Read 1 file, listed 1 directory (ctrl+o to expand)".to_string()),
+        collapsed.contains(&"  Read 1 file, listed 1 directory (ctrl+o to expand)".to_string()),
         "{collapsed:#?}"
     );
     assert!(
@@ -199,7 +224,7 @@ fn a_call_that_is_not_a_read_keeps_its_cell_between_two_groups() {
     ));
     assert_eq!(
         rows.iter()
-            .filter(|row| row.as_str() == "Read 1 file (ctrl+o to expand)")
+            .filter(|row| row.as_str() == "  Read 1 file (ctrl+o to expand)")
             .count(),
         2,
         "{rows:#?}"
@@ -521,7 +546,7 @@ fn scratchpad_edits_settle_as_made_with_the_lines_they_changed() {
     let lines = tool_group_lines(&items, 100, &PathDisplay::VERBATIM);
     assert_eq!(
         texts(&lines),
-        ["Made 2 scratchpad edits +57 -1 (ctrl+o to expand)"]
+        ["  Made 2 scratchpad edits +57 -1 (ctrl+o to expand)"]
     );
     let spans = &lines[0].spans;
     let span = |text: &str| {
@@ -552,13 +577,13 @@ fn a_scratchpad_edit_leads_the_reads_on_their_line() {
     ];
     assert_eq!(
         texts(&tool_group_lines(&items, 100, &PathDisplay::VERBATIM)),
-        ["Made 1 scratchpad edit +55, read 1 file (ctrl+o to expand)"]
+        ["  Made 1 scratchpad edit +55, read 1 file (ctrl+o to expand)"]
     );
     // An edit that changed nothing names no lines at all.
     let items = [edited("Write", &pad("guess.py"), "No changes to guess.py")];
     assert_eq!(
         texts(&tool_group_lines(&items, 100, &PathDisplay::VERBATIM)),
-        ["Made 1 scratchpad edit (ctrl+o to expand)"]
+        ["  Made 1 scratchpad edit (ctrl+o to expand)"]
     );
 }
 

@@ -22,7 +22,7 @@ while it runs, and once something that is not a read arrives:
 ```
 ● I'll get my bearings first.
 
-Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to expand)
+  Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to expand)
 
 ● Bash(python3 about.py)
   ⎿  alter-zero — an autonomous AI agent that lives in your terminal
@@ -152,13 +152,16 @@ enough for Ctrl+B keeps that hint too, hung off the group's cell.
 **Settled**, in scrollback, once the group closes:
 
 ```
-Read 1 file, listed 1 directory (ctrl+o to expand)
+  Read 1 file, listed 1 directory (ctrl+o to expand)
 ```
 
-Bullet-less, flush at the margin and dim throughout — the settled thought's
-dress (`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
+Bullet-less and dim throughout — the settled thought's dress
+(`docs/thinking-stream.md`, `  Thought for 4s · 1.2k tokens (ctrl+o to
 expand)`), since what is left is a fact about the turn rather than something
-happening. The counts stay bold.
+happening. The counts stay bold. The bullet's two columns are left blank
+(`SETTLED_INDENT`), so the clauses stay in the column the live line's text
+had — `● Reading 1 file…` settles into `  Read 1 file` with nothing but the
+bullet gone — and the line fits what is left of the width beside them.
 
 ## Which calls join a group
 
@@ -240,7 +243,7 @@ too, as a clause of its own, and so does this:
 while the model writes the file, and once the group closes:
 
 ```
-Made 2 scratchpad edits +26 -1 (ctrl+o to expand)
+  Made 2 scratchpad edits +26 -1 (ctrl+o to expand)
 ```
 
 - The clause is `Making`/`made` **N** `scratchpad edit(s)`, then the lines

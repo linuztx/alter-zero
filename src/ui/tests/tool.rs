@@ -2080,12 +2080,40 @@ fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
+        format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
     );
-    assert_eq!(lines[0].spans[0].style.fg, Some(reasoning_label_color()));
+    let [inset, label] = lines[0].spans.as_slice() else {
+        panic!("an inset and the dim label: {:?}", lines[0].spans);
+    };
+    assert_eq!(inset.style, Style::default(), "a blank inset, no tone");
+    assert_eq!(label.style.fg, Some(reasoning_label_color()));
     assert!(
         !plain(&lines[0]).contains("long json"),
         "the result stays out of inline scrollback"
+    );
+}
+
+#[test]
+fn a_resolved_mcp_line_keeps_the_column_its_calling_header_used() {
+    // `● Calling Deepwiki…` settles into `  Called Deepwiki`: the bullet
+    // goes, the text stays in its column — the settled thought's rule.
+    let col = |line: &Line, needle: &str| {
+        let text = plain(line);
+        cols(&text[..text.find(needle).expect("the verb")])
+    };
+    let running = tool_lines(
+        &mcp_tool(ToolStatus::Running, ""),
+        100,
+        &PathDisplay::VERBATIM,
+    );
+    let resolved = tool_lines(
+        &mcp_tool(ToolStatus::Ok, "done"),
+        100,
+        &PathDisplay::VERBATIM,
+    );
+    assert_eq!(
+        col(&resolved[0], MCP_CALLED_PREFIX),
+        col(&running[0], MCP_CALLING_PREFIX)
     );
 }
 
@@ -2105,7 +2133,7 @@ fn a_resolved_mcp_cell_stays_quiet_without_the_classifier_note() {
         .collect();
     assert_eq!(
         texts,
-        vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")],
+        vec![format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")],
         "the quiet line is the whole inline cell"
     );
     // The expanded transcript still closes with the note — the record that
@@ -2285,7 +2313,7 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
         .expect("a mixed batch's MCP cell is never held");
     assert_eq!(
         first.iter().map(plain).collect::<Vec<_>>(),
-        vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")]
+        vec![format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")]
     );
     app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
@@ -2344,7 +2372,9 @@ fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
             .collect();
     assert_eq!(
         run,
-        vec![format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")]
+        vec![format!(
+            "  {MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}"
+        )]
     );
     app.start_tool("Bash", "ls", None);
     app.end_tool("ok", true);
@@ -2383,7 +2413,7 @@ fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")
+        format!("  {MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")
     );
     // And the repaint from history agrees, line for line.
     let repaint = crate::ui::conversation_lines(&app.history, 100, &PathDisplay::VERBATIM, true);
@@ -2425,7 +2455,7 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     assert_eq!(
         rebuilt,
         vec![
-            format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}"),
+            format!("  {MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}"),
             String::new()
         ]
     );
@@ -2448,7 +2478,7 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
         texts[0],
-        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
+        format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
     );
     assert_eq!(texts[1], "");
     assert!(texts[2].starts_with("● Deepwiki - read_wiki_structure (MCP)("));
@@ -2547,7 +2577,7 @@ fn an_interrupted_mcp_run_flushes_its_held_line_ahead_of_the_resolved_calls() {
             .collect();
     assert_eq!(
         texts[0],
-        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}"),
+        format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}"),
         "{texts:?}"
     );
     assert_eq!(
@@ -2592,7 +2622,7 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
             .iter()
             .map(plain)
             .collect();
-    let called = format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}");
+    let called = format!("  {MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}");
     assert_eq!(
         repaint,
         vec![called.clone(), String::new(), called, String::new()]
