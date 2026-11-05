@@ -323,7 +323,7 @@ pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 // The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
 // shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
 // blinking like a running tool's, its label carrying the status line's
-// [`shimmer_base`] white sweep) over the chain-of-thought in the
+// white shimmer sweep) over the chain-of-thought in the
 // [`TOOL_RESULT_PREFIX`] `⎿` gutter — and then collapses into a **bullet-less**
 // `Thought for … · … tokens (ctrl+o to expand)` line: the [`summary_lines`]
 // shape *and* its dim, because a settled thought is turn meta, not a cell —
@@ -349,10 +349,9 @@ pub(super) const REASONING_RUNNING: &str = "Thinking…";
 /// [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus twice
 /// [`SHIMMER_PADDING`]).
 ///
-/// Deliberately *not* codex's grey [`shimmer_base`]: that makes the status
-/// verb read as grey text with a white wave, which is right for a metric and
-/// wrong for a header — at rest it is indistinguishable from the dim body
-/// under it. This near-white floor reads as **bold white**, with the wave a
+/// Deliberately *not* codex's grey: that makes a verb read as grey text with
+/// a white wave, which is right for a metric and wrong for a header — at rest
+/// it is indistinguishable from the dim body under it. This near-white floor reads as **bold white**, with the wave a
 /// brightening on top rather than the only thing making it visible — the one
 /// place in the feature that draws the eye, because it is the one place
 /// something is still happening.
@@ -1922,6 +1921,29 @@ pub(super) fn context_usage_full_color() -> Color {
     error_color()
 }
 
+/// How full a context window reads wherever its share is shown — the
+/// `/context` page's subtitle and the footer's gauge, one rule so the two can
+/// never disagree: `None` while there is room (the caller's own dim), amber
+/// ([`context_usage_warn_color`]) from [`CONTEXT_USAGE_WARN_SHARE`], red
+/// ([`context_usage_full_color`]) from the auto-compact `threshold` — or,
+/// with none, [`CONTEXT_USAGE_FULL_SHARE`]. An empty window has no share.
+pub(super) fn context_fill_color(used: u64, window: u64, threshold: Option<u64>) -> Option<Color> {
+    if window == 0 {
+        return None;
+    }
+    let fill = used as f64 / window as f64;
+    let full = threshold.map_or(CONTEXT_USAGE_FULL_SHARE, |threshold| {
+        threshold as f64 / window as f64
+    });
+    if fill >= full {
+        Some(context_usage_full_color())
+    } else if fill >= CONTEXT_USAGE_WARN_SHARE {
+        Some(context_usage_warn_color())
+    } else {
+        None
+    }
+}
+
 // --- the read-only /usage page (docs/usage.md). The /context page's frame
 // and meter language over every signed-in subscription: a section each, its
 // head naming the provider and plan, a bar per limit filling as it is spent
@@ -2235,9 +2257,10 @@ pub(super) fn timestamp_color() -> Color {
 // (a Larson-scanner sweep: a white head dragging a fading grey tail back and
 // forth between dim walls, one frame per `SPINNER_INTERVAL`), which is still
 // what the `SPINNER_*` consts just below describe. The working verb is picked
-// per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
-// bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
-// ported from openai/codex `tui/src/shimmer.rs`). The elapsed / thinking / done
+// per-turn (in `App`) and rests in the page titles' gradient
+// ([`status_verb_color`]) under a codex-style **shimmer**: a bright band
+// sweeps across it (see [`shimmer_spans`], ported from openai/codex
+// `tui/src/shimmer.rs`). The elapsed / thinking / done
 // times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
 // finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
 // `HistoryItem::Summary`). See docs/status-indicator.md. ---
@@ -2290,6 +2313,15 @@ pub(super) const SPINNER_SPAN_COUNT: usize = 8;
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
 pub(super) fn status_detail_color() -> Color {
     tool_dim_color()
+}
+
+/// The `Thinking for {m}` clause — the palette's purple, the one hue on the
+/// line that means *reasoning*: the footer's thinking mode wears it too
+/// ([`footer_qualifier_color`]), so the effort and the thinking it buys read
+/// as one fact. Apart from the dim metrics and the amber retry clause in
+/// every theme (`docs/status-indicator.md`).
+pub(super) fn status_thinking_color() -> Color {
+    palette().purple
 }
 
 /// Amber — the `retrying {n}/{max}` clause. A warning hue (One-Dark yellow),
@@ -2378,15 +2410,19 @@ pub(super) const STATUS_ROWS: u16 = 1;
 pub(super) const STATUS_GAP_ROWS: u16 = 1;
 
 // --- The verb's shimmer wave (ported from openai/codex `shimmer_spans`): each
-// char's colour blends from the white-grey base toward bright white by a
-// raised-cosine band that sweeps the text once per `SHIMMER_SWEEP`. The wave's
+// char's colour blends from its resting colour toward the bright text colour
+// by a raised-cosine band that sweeps the text once per `SHIMMER_SWEEP`. The wave's
 // phase derives from the boundary-supplied `TurnStatus::elapsed`, keeping the
 // renderer pure (codex reads a process clock instead). ---
 
-/// The white-grey base of the shimmering verb text (codex's truecolor fallback
-/// foreground) — dim enough that the bright band reads clearly.
-pub(super) fn shimmer_base() -> Color {
-    palette().shimmer_base
+/// The status verb's **resting** colour at display column `col` of its
+/// `total`-column text (`Working…`, a task's activeForm): the page titles'
+/// dress (`/mcp`, `/skills` — [`header_gradient_at`]), so the one word in
+/// motion on the line follows `/theme` the way the headlines do. Codex rests
+/// its verb on grey; the crest's sweep toward [`shimmer_highlight`] is
+/// unchanged over the gradient (`docs/status-indicator.md`).
+pub(super) fn status_verb_color(col: usize, total: usize) -> Color {
+    header_gradient_at(col, total)
 }
 
 /// The bright white the band's crest blends toward.
@@ -2714,6 +2750,47 @@ pub(super) fn footer_color() -> Color {
     tool_dim_color()
 }
 
+/// The model's name — the accent, codex's cyan model (its status line with
+/// theme colours on): what the session talks to is the row's first fact.
+/// The separators stay [`footer_color`], so the named things stand out from
+/// the punctuation between them (`docs/footer.md`).
+pub(super) fn footer_model_color() -> Color {
+    menu_selected_color()
+}
+
+/// The model's qualifiers beside its name — the Ctrl+T thinking mode and a
+/// selected speed tier (`medium fast`) — in the status line's thinking
+/// colour ([`status_thinking_color`]), one colour for what those keys turn.
+pub(super) fn footer_qualifier_color() -> Color {
+    status_thinking_color()
+}
+
+/// The working directory — green, codex's path colour. The banner's cwd row
+/// wears it too ([`header_cwd_color`]), so the path is one colour wherever
+/// the app names it.
+pub(super) fn footer_cwd_color() -> Color {
+    tool_ok_color()
+}
+
+/// The context gauge for `used` of a `window`-token window that compacts at
+/// `threshold` — the `/context` page's share rule ([`context_fill_color`]),
+/// resting on the row's dim while there is room.
+pub(super) fn footer_gauge_color(used: u64, window: u64, threshold: Option<u64>) -> Color {
+    context_fill_color(used, window, threshold).unwrap_or_else(footer_color)
+}
+
+/// The permission mode pinned at the row's right edge: `master` — every
+/// call runs unasked — in the error red, Claude Code's bypass-permissions
+/// dress, the one mode where colour is a safety signal; the modes that still
+/// ask anything stay dim with the rest of the row (`docs/permissions.md`).
+pub(super) fn footer_mode_color(mode: crate::permission::PermissionMode) -> Color {
+    use crate::permission::PermissionMode;
+    match mode {
+        PermissionMode::Master => error_color(),
+        PermissionMode::Manual | PermissionMode::Edit | PermissionMode::Auto => footer_color(),
+    }
+}
+
 /// The least gap kept between the footer's left chain and the permission
 /// mode pinned at the row's right edge — the mode's reservation is its own
 /// columns plus this, so the left content's `…` cut can never run into it
@@ -2842,9 +2919,28 @@ pub(super) fn header_gradient_end() -> Color {
     link_url_color()
 }
 
+/// The banner gradient at display column `col` of a `total`-column run:
+/// [`header_gradient_start`] at the first column, [`header_gradient_end`] at
+/// the last — the one wash the mascot, every page title and the status verb
+/// wear (`docs/header.md`).
+pub(super) fn header_gradient_at(col: usize, total: usize) -> Color {
+    let t = if total <= 1 {
+        0.0
+    } else {
+        col as f32 / (total - 1) as f32
+    };
+    lerp_color(header_gradient_start(), header_gradient_end(), t)
+}
+
 /// The version badge + hint-token colour — the cyan accent, so they pop.
 pub(super) fn header_accent_color() -> Color {
     inline_code_color()
+}
+
+/// The banner's cwd row — the footer's path colour ([`footer_cwd_color`]),
+/// so the path reads the same at both ends of the screen.
+pub(super) fn header_cwd_color() -> Color {
+    footer_cwd_color()
 }
 
 /// The tagline / cwd / separator colour — dim, like the footer.

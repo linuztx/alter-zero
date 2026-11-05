@@ -2,14 +2,15 @@
 //! (`docs/status-indicator.md`).
 
 use super::*;
-use crate::app::{OfflineInfo, Spinner};
+use crate::app::{OfflineInfo, Spinner, Theme};
 use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
+use crate::ui::palette::with_theme;
 use crate::ui::theme::{
     INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
-    header_gradient_start, shimmer_base, shimmer_highlight, spinner_bars_high,
-    spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
-    status_offline_color, status_retry_color, tool_diff_add_color, tool_diff_del_color,
+    header_gradient_start, shimmer_highlight, spinner_bars_high, spinner_pulse_bright,
+    spinner_tail_color, status_color, status_detail_color, status_done_color, status_offline_color,
+    status_retry_color, status_thinking_color, tool_diff_add_color, tool_diff_del_color,
     tool_dim_color, tool_pulse_dim,
 };
 
@@ -519,8 +520,9 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         Some(status_detail_color()),
         "dim right wall"
     );
-    // The verb renders one bold span per char (the shimmer), every char a
-    // blend between the base and the bright highlight, channel by channel.
+    // The verb renders one bold span per char (the shimmer); at elapsed 0
+    // the band is off the word, so every char rests in the page titles'
+    // dress — the banner gradient across the verb's own width.
     let verb = "Working…";
     let verb_spans = &line.spans[VERB_START..VERB_START + verb.chars().count()];
     assert_eq!(
@@ -531,16 +533,12 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         verb,
         "per-char verb spans"
     );
-    let base = rgb_of(shimmer_base());
-    let highlight = rgb_of(shimmer_highlight());
+    assert_eq!(
+        verb_spans.iter().map(|s| s.style.fg).collect::<Vec<_>>(),
+        title_dress_colours(verb),
+        "the verb rests in the title gradient"
+    );
     for span in verb_spans {
-        let (r, g, b) = span_rgb(span);
-        assert!(
-            (base.0..=highlight.0).contains(&r)
-                && (base.1..=highlight.1).contains(&g)
-                && (base.2..=highlight.2).contains(&b),
-            "between the base and the highlight, got ({r},{g},{b})"
-        );
         assert!(
             span.style.add_modifier.contains(Modifier::BOLD),
             "verb chars are bold"
@@ -577,10 +575,13 @@ fn every_verb_swap_happens_with_the_shimmer_band_off_the_word() {
             assert_eq!(status.verb, expected.working, "the verb at {elapsed:?}");
             let line = styled_status_line(status, None, Spinner::Comet, 200);
             let verb_cells = status.verb.chars().count() + 1; // + the `…`
-            for span in &line.spans[VERB_START..VERB_START + verb_cells] {
+            let rest = title_dress_colours(&format!("{}…", status.verb));
+            for (i, span) in line.spans[VERB_START..VERB_START + verb_cells]
+                .iter()
+                .enumerate()
+            {
                 assert_eq!(
-                    span.style.fg,
-                    Some(shimmer_base()),
+                    span.style.fg, rest[i],
                     "{:?} lit at {elapsed:?}: {span:?}",
                     status.verb
                 );
@@ -593,31 +594,110 @@ fn every_verb_swap_happens_with_the_shimmer_band_off_the_word() {
 fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
     // "Working…" is 8 chars → period = 8 + 2·10 = 28. The crest sits on
     // char 0 when pos = padding (10), i.e. elapsed = 10/28 · 2 s ≈ 715 ms:
-    // char 0 must then be brighter than char 7 (7 chars away — outside the
-    // band, so at the base colour).
+    // char 0 is then lifted off its resting colour toward the highlight,
+    // while char 7 (7 chars away — outside the band) sits exactly at rest.
+    let rest = title_dress_colours("Working…");
+    let toward_highlight = |fg: Option<Color>| {
+        let (r, g, b) = rgb_of(fg.expect("a coloured char"));
+        let (hr, hg, hb) = rgb_of(shimmer_highlight());
+        r.abs_diff(hr) as u32 + g.abs_diff(hg) as u32 + b.abs_diff(hb) as u32
+    };
     let mut at_crest = status(0, TokenArrow::Down, 0, None);
     at_crest.elapsed = Duration::from_millis(715);
     let crest_on_first = status_line(&at_crest, 200);
-    let first = span_rgb(&crest_on_first.spans[VERB_START]);
-    let last = span_rgb(&crest_on_first.spans[VERB_START + 7]);
+    let first = crest_on_first.spans[VERB_START].style.fg;
     assert!(
-        first.0 > last.0,
-        "the band's crest is brighter than off-band chars: {first:?} vs {last:?}"
+        toward_highlight(first) < toward_highlight(rest[0]),
+        "the crest lifts its char toward the highlight: {first:?} vs rest {:?}",
+        rest[0]
     );
     assert_eq!(
-        last.0,
-        rgb_of(shimmer_base()).0,
-        "off-band chars sit at the base"
+        crest_on_first.spans[VERB_START + 7].style.fg,
+        rest[7],
+        "off-band chars sit at their resting colour"
     );
 
-    // Half a sweep later the band has moved on: char 0 is no longer the peak.
+    // Half a sweep later the band has moved on: char 0 is back at rest.
     let mut moved_on = status(0, TokenArrow::Down, 0, None);
     moved_on.elapsed = Duration::from_millis(715 + 1000);
-    let first_later = span_rgb(&status_line(&moved_on, 200).spans[VERB_START]);
-    assert!(
-        first_later.0 < first.0,
-        "the wave moved off char 0 as time advanced: {first_later:?} vs {first:?}"
+    assert_eq!(
+        status_line(&moved_on, 200).spans[VERB_START].style.fg,
+        rest[0],
+        "the wave moved off char 0 as time advanced"
     );
+}
+
+#[test]
+fn the_status_verb_rests_in_the_page_titles_dress_in_every_theme() {
+    // docs/status-indicator.md: between crests — most of the sweep — the
+    // verb wears exactly what a `/mcp` or `/skills` title wears: bold, washed
+    // in the active theme's banner gradient across its own width, so it
+    // follows `/theme` the way the headlines do. A task's activeForm is the
+    // verb too, and wears the same dress over its own width.
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            for verb in ["Working", "Setting up project structure"] {
+                let line = styled_status_line(
+                    &status(0, TokenArrow::Down, 0, None),
+                    Some(verb),
+                    Spinner::Comet,
+                    200,
+                );
+                let text = format!("{verb}…");
+                let spans = &line.spans[VERB_START..VERB_START + text.chars().count()];
+                assert_eq!(
+                    spans.iter().map(|s| s.content.as_ref()).collect::<String>(),
+                    text
+                );
+                assert_eq!(
+                    spans.iter().map(|s| s.style.fg).collect::<Vec<_>>(),
+                    title_dress_colours(&text),
+                    "{theme:?}: {verb:?}"
+                );
+                assert!(
+                    spans
+                        .iter()
+                        .all(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+                    "{theme:?}: bold like a title"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn the_thinking_clause_wears_the_thinking_colour() {
+    // While the model thinks, the clause saying so is in colour — the
+    // palette's purple, which the footer's thinking mode wears too
+    // (docs/footer.md) — while every other metric stays dim.
+    let line = status_line(&status(150, TokenArrow::Down, 1, Some(4)), 200);
+    let clause = line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Thinking for"))
+        .expect("the thinking clause");
+    assert_eq!(clause.style.fg, Some(status_thinking_color()));
+    for span in line
+        .spans
+        .iter()
+        .filter(|s| s.content.contains("tokens") || s.content.contains("esc to interrupt"))
+    {
+        assert_eq!(span.style.fg, Some(status_detail_color()), "{span:?}");
+    }
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            assert_ne!(
+                status_thinking_color(),
+                status_detail_color(),
+                "{theme:?}: it stands out from the dim metrics"
+            );
+            assert_ne!(
+                status_thinking_color(),
+                status_retry_color(),
+                "{theme:?}: and never reads as the retry warning"
+            );
+        });
+    }
 }
 
 #[test]
@@ -763,6 +843,17 @@ fn span_rgb(span: &Span) -> (u8, u8, u8) {
     }
 }
 
+/// The colours a title in the pages' one dress wears, one per char of
+/// `text` — [`page_title_spans`](crate::ui::header::page_title_spans)' runs
+/// expanded — so the status verb can be held to the `/mcp` and `/skills`
+/// titles char by char.
+fn title_dress_colours(text: &str) -> Vec<Option<Color>> {
+    crate::ui::header::page_title_spans(text)
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |_| span.style.fg))
+        .collect()
+}
+
 /// The spinner contributes the first [`SPINNER_SPAN_COUNT`] spans of the
 /// status line; the shimmering verb's per-char spans start right after.
 const VERB_START: usize = SPINNER_SPAN_COUNT;
@@ -832,9 +923,8 @@ fn the_offline_verb_outranks_a_task_verb_and_shimmers_in_amber() {
         "the verb rests on the warning colour: {:?}",
         verb.iter().map(|s| s.style.fg).collect::<Vec<_>>()
     );
-    assert_ne!(
-        status_offline_color(),
-        shimmer_base(),
+    assert!(
+        !title_dress_colours("Waiting for internet…").contains(&Some(status_offline_color())),
         "the offline verb is told apart from an ordinary one by colour"
     );
     let clause = line

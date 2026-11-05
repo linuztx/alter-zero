@@ -130,7 +130,6 @@ fn one_dark_is_the_original_look_value_for_value() {
         assert_eq!(tool_diff_del_bg(), Color::Rgb(0x4A, 0x22, 0x1D));
         assert_eq!(tool_diff_add_mark_bg(), Color::Rgb(0x2E, 0x6F, 0x3E));
         assert_eq!(tool_diff_del_mark_bg(), Color::Rgb(0x8B, 0x2F, 0x27));
-        assert_eq!(shimmer_base(), Color::Rgb(0x88, 0x88, 0x88));
         assert_eq!(tool_pulse_dim(), Color::Rgb(0x4A, 0x4A, 0x4A));
         assert_eq!(tool_pulse_bright(), tool_dim_color());
         assert_eq!(header_gradient_start(), Color::Rgb(0x56, 0xB6, 0xC2));
@@ -161,7 +160,6 @@ fn the_ansi_theme_names_no_rgb_colour_anywhere() {
         p.diff_del_bg,
         p.diff_add_mark_bg,
         p.diff_del_mark_bg,
-        p.shimmer_base,
         p.pulse_dim,
     ];
     for color in every {

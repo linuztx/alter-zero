@@ -41,7 +41,7 @@ every other styling decision (`src/ui/palette.rs`), and the syntect half in
 `highlight::CodeTheme`, one variant per catalog entry, paired by position
 (`every_theme_pairs_its_chrome_with_its_own_code_theme` pins the pairing).
 
-## The palette: twenty-one roles
+## The palette: twenty roles
 
 A theme is a `Palette` — a table of colours by **role**. Every colour the
 chrome paints is one of these or derived from one:
@@ -50,20 +50,19 @@ chrome paints is one of these or derived from one:
 | --- | --- |
 | `text` | the reply text, the composer prompt, a tool's name/arguments/output, the shimmer's crest, the comet's head |
 | `text_muted` | an unselected model id, a settings value, the comet's mid-tail, the thinking header's shimmer floor |
-| `dim` | the `⎿` corners and placeholders, the footer, the hints, the counters, a waiting or running bullet (the one grey it blinks in), timestamps |
+| `dim` | the `⎿` corners and placeholders, the footer's separators and its gauge while there is room, the hints, the counters, a waiting or running bullet (the one grey it blinks in), timestamps |
 | `border` | the composer box's rules and every framed view's |
 | `user_fg` / `user_bg` | the `❯ …` user bubble (and a `!` command's header) — muted on purpose |
 | `selection_bg` | the `/resume` picker's selected row |
-| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip — and the gradient's near end (the banner, every page title) |
+| `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip, the footer's model name — and the gradient's near end (the banner, every page title, the status verb) |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
-| `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end |
-| `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well, a reply's blockquotes (codex's green) |
-| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode — and, mixed a third of the way to `dim`, an error toast |
-| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning |
-| `purple` | the context view's tool tag, the `/resume` toolbar's focus |
+| `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end (the banner, every page title, the status verb) |
+| `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well, the path in the footer and the banner, a reply's blockquotes (codex's green) |
+| `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode, the footer's `master` mode and a context gauge past the auto-compact threshold — and, mixed a third of the way to `dim`, an error toast |
+| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning, a context gauge past 75% (the footer's and `/context`'s) |
+| `purple` | the context view's tool tag, the `/resume` toolbar's focus — and *reasoning*: the status line's `Thinking for` clause and the footer's thinking mode and speed tier |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
 | `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`); a changed run's ink is held to 3:1 against them, lifted toward `text` where the code theme's colour won't read |
-| `shimmer_base` | the status verb's resting grey, under the sweep to `text` |
 | `pulse_dim` | the bottom of the `pulse` spinner style's breath |
 | `code` | the `highlight::CodeTheme` the code blocks and file cells are coloured with |
 
@@ -71,14 +70,20 @@ The **derivations** are the accessor functions in `ui/theme.rs`
 (`tool_ok_color()` is `success`, `menu_selected_color()` is `accent` — so
 is `agent_view_label_bg()`, the agent session view's composer chip, whose
 `agent_view_label_fg()` is `on_accent`,
-`header_gradient_start()`/`header_gradient_end()` are `accent` → `link`,
+`header_gradient_start()`/`header_gradient_end()` are `accent` → `link`
+and `header_gradient_at(col, total)` the wash between them that the mascot,
+every page title and the status verb's resting colour
+(`status_verb_color()`) all read, `status_thinking_color()` is `purple`,
+`footer_model_color()` is `accent` and `footer_cwd_color()` `success`,
 `shimmer_highlight()` is `text`, `tool_pulse_bright()` is `dim`,
 `toast_error_color()` is `error` mixed a third of the way to `dim`
 (`docs/toast.md`), and so
 on): the roles are what `theme.rs` has always named, the palette is what
-each theme paints them with, so a new theme is one table of twenty-one
-values and nothing else. The Catppuccin flavours take the flavour's own
-roles (`text`/`subtext1` inks, `overlay1`/`overlay2` for the dim and the
+each theme paints them with, so a new theme is one table of twenty
+values and nothing else. (There were twenty-one until the status verb left
+codex's grey for the page titles' gradient, `docs/status-indicator.md`: its
+`shimmer_base` role had nothing left to paint.) The Catppuccin flavours take
+the flavour's own roles (`text`/`subtext1` inks, `overlay1`/`overlay2` for the dim and the
 rules, `surface0`/`surface1` grounds, `sky` for the accent, `blue` for the
 link, `mauve` for the purple) and Catppuccin's own DiffAdd/DiffDelete rule
 for the tints — the hue mixed 18% into `base` for a row, 42% for a mark
@@ -86,7 +91,10 @@ for the tints — the hue mixed 18% into `base` for a row, 42% for a mark
 is the chrome the TUI shipped with, every RGB it used to hard-code, with
 only the code changed — Atom's One Dark instead of the Catppuccin Mocha the
 blocks wore under it — so whoever liked the old look keeps it
-(`one_dark_is_the_original_look_value_for_value`).
+(`one_dark_is_the_original_look_value_for_value`). That is the palette's
+promise, not every later use of it: the status verb's gradient and the
+footer's colours read those same values in places the original chrome left
+grey (`docs/footer.md`).
 
 Two entries behave differently, and their descriptions say so, since the
 picker's description row is where a user learns why a theme looks wrong on

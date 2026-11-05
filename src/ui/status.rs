@@ -4,7 +4,7 @@
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
-use super::wrap::{blend_color, breath, clamp_spans, hop, lerp_color, ping_pong};
+use super::wrap::{blend_color, breath, clamp_spans, cols, hop, lerp_color, ping_pong};
 use super::*;
 
 use crate::app::Spinner;
@@ -21,18 +21,39 @@ use crate::app::Spinner;
 ///
 /// `base` is what the text reads as between crests, which is most of the
 /// sweep (the band is [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the
-/// text plus `2 × `[`SHIMMER_PADDING`]). The status verb passes codex's grey
-/// [`shimmer_base`], so it reads as *grey text with a white wave* — or the
+/// text plus `2 × `[`SHIMMER_PADDING`]). The status verb rests on the page
+/// titles' gradient instead ([`status_verb_shimmer_spans`]) — or on the
 /// warning [`status_offline_color`] while the connection is gone, *amber
 /// with a white glint* (`docs/offline.md`). The thinking stream's
 /// `Thinking…` (`docs/thinking-stream.md`) passes the near-white
-/// [`reasoning_shimmer_base`] instead, so it reads as *bold white with a
-/// brighter wave* — a header, not a metric. Same motion, different floor.
+/// [`reasoning_shimmer_base`], so it reads as *bold white with a brighter
+/// wave* — a header, not a metric. Same motion, different floor.
 ///
 /// **Live regions only**: every span carries a colour sampled from one frame
 /// of the wave, so committing these rows to scrollback would freeze the sweep
 /// mid-stride forever.
 pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> Vec<Span<'static>> {
+    shimmer_spans_over(text, elapsed, |_| base)
+}
+
+/// The status verb's shimmer: `text` resting in the page titles' dress —
+/// [`status_verb_color`], the banner gradient across the verb's own width,
+/// keyed by display column as a title's is — under the same sweep toward
+/// [`shimmer_highlight`] (`docs/status-indicator.md`).
+fn status_verb_shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
+    let total = cols(text);
+    shimmer_spans_over(text, elapsed, |col| status_verb_color(col, total))
+}
+
+/// [`shimmer_spans_from`] over a resting colour that may change along the
+/// text: `base(col)` for the char starting at display column `col`. The
+/// wave's motion is per char, as codex's is; only the floor it lifts each
+/// char off varies.
+fn shimmer_spans_over(
+    text: &str,
+    elapsed: Duration,
+    base: impl Fn(usize) -> Color,
+) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -41,6 +62,7 @@ pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> 
     let sweep = SHIMMER_SWEEP.as_secs_f32();
     let pos = ((elapsed.as_secs_f32() % sweep) / sweep * period as f32) as usize;
 
+    let mut col = 0;
     chars
         .iter()
         .enumerate()
@@ -52,11 +74,10 @@ pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> 
             } else {
                 0.0
             };
-            let color = blend_color(shimmer_highlight(), base, t * SHIMMER_MAX_BLEND);
-            Span::styled(
-                ch.to_string(),
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            )
+            let glyph = ch.to_string();
+            let color = blend_color(shimmer_highlight(), base(col), t * SHIMMER_MAX_BLEND);
+            col += cols(&glyph);
+            Span::styled(glyph, Style::new().fg(color).add_modifier(Modifier::BOLD))
         })
         .collect()
 }
@@ -354,9 +375,11 @@ pub fn format_token_count(tokens: usize) -> String {
 /// `Waiting for internet` while no connection can be made (`docs/offline.md`).
 ///
 /// It opens with the spinner (`spinner_spans`) and the verb
-/// text **shimmers** — a bright-white band sweeping its white-grey chars
-/// (`shimmer_spans`) — both animations phase-driven by the boundary-supplied
-/// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
+/// text **shimmers** — a bright band sweeping its chars, which rest in the
+/// page titles' gradient (`status_verb_shimmer_spans`) — both animations
+/// phase-driven by the boundary-supplied `elapsed`; the parenthesised
+/// metrics are dim, but for the amber retry/offline clause and the
+/// thinking clause in the thinking colour. The token clause is omitted
 /// while the tally is 0 (the "just submitted" state), and the thinking clause
 /// only while `thinking` is `Some`. Clamped to `width` with a dim `…`
 /// (`clamp_spans`): the line is one animated strip row by design
@@ -408,15 +431,19 @@ pub fn styled_status_line(
     // waiting is all the turn is doing — resting on the warning amber under
     // the same shimmer, so the state is told apart by colour as well as by
     // word (docs/offline.md).
-    let (verb_text, base) = match status.offline {
-        Some(_) => (OFFLINE_VERB, status_offline_color()),
-        None => (verb.unwrap_or(status.verb), shimmer_base()),
-    };
-    spans.extend(shimmer_spans_from(
-        &format!("{verb_text}{STATUS_ELLIPSIS}"),
-        status.elapsed,
-        base,
-    ));
+    // Otherwise the verb rests in the page titles' dress — the banner
+    // gradient across its own width — under the same sweep.
+    spans.extend(match status.offline {
+        Some(_) => shimmer_spans_from(
+            &format!("{OFFLINE_VERB}{STATUS_ELLIPSIS}"),
+            status.elapsed,
+            status_offline_color(),
+        ),
+        None => status_verb_shimmer_spans(
+            &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
+            status.elapsed,
+        ),
+    });
     // The parenthesised metrics are dim, except the retry clause, which carries
     // its own warning colour — so it is built as its own span between the
     // (dim) token and hint clauses.
@@ -451,10 +478,12 @@ pub fn styled_status_line(
             Style::new().fg(status_offline_color()),
         ));
     }
+    // The thinking clause wears the thinking colour — the footer's thinking
+    // mode wears it too — so what is happening reads apart from the counts.
     if let Some(thinking) = status.thinking {
         spans.push(Span::styled(
             format!(" · Thinking for {}", format_elapsed(thinking.as_secs())),
-            dim,
+            Style::new().fg(status_thinking_color()),
         ));
     }
     spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));

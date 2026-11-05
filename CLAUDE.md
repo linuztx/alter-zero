@@ -336,8 +336,8 @@ startup, so ↑/↓ recall *and* Ctrl+R span sessions) in
 running turn** at the next round boundary, main session and subagent session
 alike — in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the **startup banner** (the
-gradient mascot beside the bold `Alter Zero (v…)` title, the dim cwd, and the
-cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
+gradient mascot beside the bold `Alter Zero (v…)` title, the cwd in the
+footer's path green, and the cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/theme` picker's layout over the six-mascot catalog — the
 rows in the `/mcp` list's shape, a bold-name-over-dim-description caption,
@@ -459,7 +459,7 @@ pieces (`model_view::first_page_that_fits`, `compact_page`,
 before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
-**active theme's** `Palette` (`ui/palette.rs`, twenty-one roles per theme),
+**active theme's** `Palette` (`ui/palette.rs`, twenty roles per theme),
 the active theme a **thread-local** the boundary sets — at bootstrap before
 the banner is built, and on a switch (`tui::theme::Session::select_theme`:
 save `theme.json`, `ui::activate_theme`, toast, purge rebuild, which is
@@ -942,8 +942,9 @@ chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
 it means the same thing, blinking at the frame pulse beside a label carrying
 the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
-`Working…` wears but floored at the near-white `reasoning_shimmer_base()`, since
-codex's grey base is right for a metric and unreadable for a header) — over the
+`Working…` wears over the page titles' gradient, floored here at the near-white
+`reasoning_shimmer_base()`, since codex's grey base is unreadable for a
+header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
 tool's output there), tail-following its last `REASONING_PEEK_LINES` (3)
 wrapped rows — none of it while a collapsed read/search group is open,
@@ -3012,8 +3013,10 @@ style (`docs/spinner.md`; by default `gravity`, a ball hopping along a
 braille track, and before the catalog always the comet: a
 Larson-scanner sweep, a white head dragging a fading grey tail back and forth
 between dim walls), the verb text
-shimmering with a white sweep ported from
-codex's `shimmer_spans` and moving on to the next verb every 30 s; on finish a dim
+resting in the page titles' gradient (the `/mcp` and `/skills` headlines'
+dress) under a white sweep ported from
+codex's `shimmer_spans` and moving on to the next verb every 30 s, the
+`Thinking for` clause in the thinking purple; on finish a dim
 `{done verb} for {n}s` summary — the past tense of the verb the line wore last,
 `Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in
@@ -3161,7 +3164,11 @@ and its expiry is timed at the boundary (`Session::toast_deadline` +
 `Session::toast`, the timestamp pattern, cleared in the draw tick). See
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
-codex's footer status line, `{model} · {cwd}` dim and two-space inset
+codex's footer status line with its theme colours on, `{model} · {cwd}`
+two-space inset — the model in the accent, the Ctrl+T mode and a speed tier
+in the thinking purple, the cwd green, the gauge dim until it turns amber
+then red as the window fills, `master` red, the separators dim
+(`docs/footer.md` *Colour*)
 (`dummy_model_name · ~/repo      auto` — the Shift+Tab **permission mode**
 pinned flush at the row's right edge, `docs/permissions.md`, hidden when
 permissions are off; a reasoning-capable model carries its Ctrl+T
@@ -3690,7 +3697,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 - **All styling is centralized** in `ui/theme.rs` — the glyphs and geometry
   as `const`s, and every **colour** as an accessor function of the same name
   (`tool_ok_color()`, `menu_selected_color()`, …) that reads the **active
-  theme's** palette (`ui/palette.rs`, one `Palette` table of twenty-one
+  theme's** palette (`ui/palette.rs`, one `Palette` table of twenty
   roles per `/theme` entry; `docs/theme.md`). A new colour is a new role on
   `Palette` filled in every table plus its accessor; a new theme is one
   table; and a colour is never written as a literal `Color::Rgb` outside
@@ -3707,7 +3714,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `REASONING_TEXT_MODIFIER` the chain-of-thought renders in, the
   `REASONING_RUNNING`/`REASONING_DONE` labels, the near-white
   `reasoning_shimmer_base()` the live label's sweep rests at (codex's grey
-  `shimmer_base()` would read as dim), the `reasoning_label_color()` the settled
+  would read as dim), the `reasoning_label_color()` the settled
   line takes from `status_done_color()` on **both** surfaces, and the
   `REASONING_PEEK_LINES` (3) live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,

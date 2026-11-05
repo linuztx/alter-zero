@@ -2,12 +2,16 @@
 //! (`docs/footer.md`, `docs/toast.md`, `docs/queue.md`).
 
 use super::*;
+use crate::app::Theme;
 use crate::ui::footer::queued_builds;
 use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
+use crate::ui::palette::with_theme;
 use crate::ui::theme::{
-    FOOTER_INDENT, SEARCH_PROMPT, error_color, footer_color, footer_focus_bg, footer_focus_fg,
-    search_query_color, shell_mode_color, toast_color, toast_error_color,
+    FOOTER_INDENT, SEARCH_PROMPT, context_usage_full_color, context_usage_warn_color, error_color,
+    footer_color, footer_cwd_color, footer_focus_bg, footer_focus_fg, footer_model_color,
+    footer_qualifier_color, search_query_color, shell_mode_color, status_thinking_color,
+    toast_color, toast_error_color,
 };
 use crate::ui::wrap::cols;
 
@@ -85,7 +89,8 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     );
     assert!(text.ends_with("manual"), "{text}");
     assert_eq!(cols(&text), 120, "flush at the right edge: {text:?}");
-    // Dim like every other segment (codex's no-theme-colours status line).
+    // Manual asks before everything, so it needs no signal: dim, like the
+    // separators (only master is coloured — see below).
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
     assert_eq!(mode_span.style.fg, Some(footer_color()));
@@ -100,6 +105,29 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
         let text = plain(&footer_line(&app, 120));
         assert!(text.ends_with(label), "{text}");
         assert_eq!(cols(&text), 120);
+    }
+}
+
+#[test]
+fn only_master_mode_wears_a_colour_of_alarm() {
+    // docs/permissions.md: master runs every call unasked — the one mode
+    // where colour is a safety signal — so it alone wears the error red
+    // (Claude Code's bypass-permissions dress); the modes that still ask
+    // anything stay dim with the rest of the row.
+    use crate::permission::PermissionMode;
+    let mut app = App::new();
+    app.set_session_info("kimi-k3", "~/x");
+    for (mode, color) in [
+        (PermissionMode::Manual, footer_color()),
+        (PermissionMode::Edit, footer_color()),
+        (PermissionMode::Auto, footer_color()),
+        (PermissionMode::Master, error_color()),
+    ] {
+        app.set_permission_mode(Some(mode));
+        let line = footer_line(&app, 80);
+        let span = line.spans.last().expect("the mode span");
+        assert_eq!(span.content, mode.label());
+        assert_eq!(span.style.fg, Some(color), "{mode:?}");
     }
 }
 
@@ -186,6 +214,38 @@ fn the_footer_omits_the_gauge_without_a_window() {
 }
 
 #[test]
+fn the_footer_gauge_turns_amber_then_red_as_the_window_fills() {
+    // The `/context` page's share rule, shared (docs/context-usage.md): the
+    // gauge rests on the footer's dim while there is room, turns amber from
+    // 75% and red from the auto-compact threshold — so the footer itself
+    // says compaction is near.
+    for (input, color) in [
+        (10_000, footer_color()),
+        (80_000, context_usage_warn_color()),
+        (95_000, context_usage_full_color()),
+    ] {
+        let mut app = App::new();
+        app.set_session_info("some-model", "~/x");
+        app.set_context_window(Some(100_000));
+        app.begin_stream();
+        app.apply_usage(&crate::stream::TokenUsage {
+            input,
+            output: 0,
+            cached: 0,
+            cache_write: 0,
+            ..crate::stream::TokenUsage::default()
+        });
+        let line = footer_line(&app, 120);
+        let gauge = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('%'))
+            .expect("the gauge segment");
+        assert_eq!(gauge.style.fg, Some(color), "{input} of 100k: {gauge:?}");
+    }
+}
+
+#[test]
 fn an_agent_session_view_gauges_that_agents_own_context() {
     // The reported bug (docs/agent-context-gauge.md): inside a subagent's
     // session view the footer read `23.7k/1M` — the LEAD's context — under a
@@ -247,7 +307,13 @@ fn an_agent_pinned_to_another_model_names_it_in_its_views_footer() {
     app.start_agent_group(false, &[spec("a1", "Review the diff", false)]);
     app.set_agent_model(Some("deepseek-v3.2".to_string()));
     app.open_agent_view("a1");
-    let view = plain(&footer_line(&app, 120));
+    let view_line = footer_line(&app, 120);
+    assert_eq!(
+        view_line.spans[1].style.fg,
+        Some(footer_model_color()),
+        "the pinned model wears the model colour"
+    );
+    let view = plain(&view_line);
     assert!(view.starts_with("  deepseek-v3.2 · ~"), "{view}");
     assert!(
         !view.contains("medium"),
@@ -571,19 +637,23 @@ fn footer_rows_yields_to_an_open_band() {
 }
 
 #[test]
-fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
+fn footer_line_names_the_model_in_the_accent_and_the_cwd_in_green() {
     let line = footer_line(&with_session(), 60);
     assert_eq!(plain(&line), "  dummy_model_name · ~/alter-zero");
-    // spans = [indent, model, separator, cwd] — every segment dim (codex's
-    // no-theme-colours status line), the indent unstyled.
+    // spans = [indent, model, separator, cwd] — codex's status line with
+    // theme colours on: the model in the accent, the path in green, the
+    // separator dim, the indent unstyled (docs/footer.md).
     assert_eq!(line.spans[0].style.fg, None);
-    for span in &line.spans[1..] {
-        assert_eq!(
-            span.style.fg,
-            Some(footer_color()),
-            "dim: {:?}",
-            span.content
-        );
+    assert_eq!(line.spans[1].style.fg, Some(footer_model_color()));
+    assert_eq!(line.spans[2].style.fg, Some(footer_color()));
+    assert_eq!(line.spans[3].style.fg, Some(footer_cwd_color()));
+    // Every theme paints the two apart from each other and from the dim.
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            assert_ne!(footer_model_color(), footer_color(), "{theme:?}");
+            assert_ne!(footer_cwd_color(), footer_color(), "{theme:?}");
+            assert_ne!(footer_model_color(), footer_cwd_color(), "{theme:?}");
+        });
     }
 }
 
@@ -613,14 +683,16 @@ fn footer_line_shows_the_thinking_mode_beside_the_model() {
     )));
     let line = footer_line(&app, 60);
     assert_eq!(plain(&line), "  dummy_model_name medium · ~/alter-zero");
-    for span in &line.spans[1..] {
-        assert_eq!(
-            span.style.fg,
-            Some(footer_color()),
-            "dim: {:?}",
-            span.content
-        );
-    }
+    // The mode wears the status line's thinking colour, so the effort and
+    // the `Thinking for` clause it buys read as one fact.
+    let mode = line
+        .spans
+        .iter()
+        .find(|s| s.content == " medium")
+        .expect("the mode span");
+    assert_eq!(mode.style.fg, Some(footer_qualifier_color()));
+    assert_eq!(footer_qualifier_color(), status_thinking_color());
+    assert_eq!(line.spans[1].style.fg, Some(footer_model_color()));
     // Off is a mode too — the user must see thinking is disabled.
     app.thinking.as_mut().unwrap().mode = ThinkingMode::Off;
     assert_eq!(
@@ -943,7 +1015,7 @@ fn the_focused_footer_shell_count_lights_up_on_cyan() {
     assert_eq!(idle.style.bg, None, "unfocused it stays dim like the rest");
     assert_eq!(idle.style.fg, Some(footer_color()));
     // ↓ focuses the indicator: only that segment lights up — the model,
-    // cwd and gauge segments keep their text and their dim styling.
+    // cwd and gauge segments keep their text and their own styling.
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let focused = footer_line(&app, 80);
@@ -1069,13 +1141,15 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         plain(&line),
         "  dummy_model_name medium fast · ~/alter-zero"
     );
-    for span in &line.spans[1..] {
-        assert_eq!(
-            span.style.fg,
-            Some(footer_color()),
-            "dim: {:?}",
-            span.content
-        );
+    // Both qualifiers — what Ctrl+T and the tier's command turn — wear one
+    // colour beside the model's.
+    for word in [" medium", " fast"] {
+        let span = line
+            .spans
+            .iter()
+            .find(|s| s.content == word)
+            .expect("a qualifier span");
+        assert_eq!(span.style.fg, Some(footer_qualifier_color()), "{word:?}");
     }
     // Without a thinking mode the tier still follows the model name.
     app.set_thinking(None);

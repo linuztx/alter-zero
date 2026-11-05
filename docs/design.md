@@ -1222,8 +1222,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `stream`/`app`/`ui` (session footer): `DummyAi` reports its `model_name`;
   `App.session` defaults unset and `set_session_info` stores the strings;
   `footer_rows` 0 without session info / 1 with it / 0 when a band is open;
-  `footer_line` renders `  {model} · {cwd}` all-dim and truncates with `…` at
-  narrow widths; `display_cwd` maps home → `~`, under-home → `~/sub`
+  `footer_line` renders `  {model} · {cwd}` — the model in the accent, the
+  cwd green, the separator dim (`docs/footer.md` *Colour*) — and truncates
+  with `…` at narrow widths; `display_cwd` maps home → `~`, under-home → `~/sub`
   (component-wise), else absolute; `live_height` adds the row; `render_live`
   paints it on the last row (idle and mid-stream, never with the palette);
   the cursor stays put when it shows.
@@ -1251,9 +1252,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `gravity` ball hopping along its braille track, or the comet's white bold
   head with a fading grey tail between dim walls, which steps a frame per
   interval, reverses at the right wall (the tail
-  whipping around behind it), and loops; dim metrics; and a
-  per-char bold greyscale-white shimmering verb whose
-  crest outshines off-band chars and moves as `elapsed` advances), `summary_lines`
+  whipping around behind it), and loops; dim metrics but for the purple
+  `Thinking for` clause; and a per-char bold shimmering verb resting in the
+  page titles' gradient, whose crest lifts its char toward the text colour
+  and moves as `elapsed` advances), `summary_lines`
   is one dim bullet-less `"{verb} for
   Ns"` line, `render_live` stacks preview / gap / status / gap in the streaming
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`

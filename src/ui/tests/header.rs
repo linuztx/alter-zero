@@ -160,14 +160,25 @@ fn header_title_is_bold_name_over_dim_version() {
 }
 
 #[test]
-fn header_cwd_is_dim_and_hint_is_cyan() {
+fn header_cwd_wears_the_footers_path_colour_and_hint_is_cyan() {
+    // The path is one colour wherever the app names it — the banner's cwd
+    // row and the footer's cwd segment (docs/header.md, docs/footer.md).
     let lines = header_lines(&with_session(), 90);
     let cwd = lines[1]
         .spans
         .iter()
         .find(|s| s.content.contains("~/alter-zero"))
         .expect("the cwd span");
-    assert_eq!(cwd.style.fg, Some(crate::ui::theme::header_meta_color()));
+    assert_eq!(cwd.style.fg, Some(crate::ui::theme::header_cwd_color()));
+    assert_eq!(
+        crate::ui::theme::header_cwd_color(),
+        crate::ui::theme::footer_cwd_color()
+    );
+    assert_ne!(
+        crate::ui::theme::header_cwd_color(),
+        crate::ui::theme::header_meta_color(),
+        "the path stands out from the dim version beside the title"
+    );
     let hint = lines[2]
         .spans
         .iter()
