@@ -19,11 +19,11 @@ release heading when a version is cut.
   tools, without disabling the servers one by one in `/mcp`: each keeps its
   own enabled or disabled state, so turning the row back on reconnects
   exactly the servers that were enabled. The choice is saved per directory,
-  like **Hooks**. While MCP is off, `/mcp` still opens and says so, listing
-  each server as `◯ off`, and the startup review waits to ask about a
-  project's servers until MCP is turned back on. `ALTER_ZERO_MCP=0` now
-  starts a session with the row off for that run, where it used to remove
-  MCP until a restart (`docs/mcp.md`).
+  like **Hooks**. While MCP is off, `/mcp` still opens and says so, on the
+  list and on the page of each server it holds as `◯ off`, and the startup
+  review waits to ask about a project's servers until MCP is turned back
+  on. `ALTER_ZERO_MCP=0` now starts a session with the row off for that
+  run, where it used to remove MCP until a restart (`docs/mcp.md`).
 
 - **Hooks that run at a turn's edges now show what they did.** A Stop hook
   that made the agent keep going left no trace in the conversation, and one

@@ -178,10 +178,11 @@ collides with another) reports its reason again.
 with a red `MCP is off for this session — turn it on in /settings` under the
 list's count — read off the `/settings` row itself, never stored, and never
 over an empty list, whose placeholder is the answer there. The rows browse,
-and each server's own switch still moves: an `◯ off` server's page offers
-only **Disable**, and **Enable** on a disabled one leaves it `◯ off`, to
-connect once MCP is back on. No Reconnect and no sign-in, since neither
-could do anything.
+and each server's own switch still moves: an `◯ off` server's page repeats
+the note — its one action can't turn it back on, so the page says what
+will — and offers only **Disable**, and **Enable** on a disabled one leaves
+it `◯ off`, to connect once MCP is back on. No Reconnect and no sign-in,
+since neither could do anything.
 
 The row reads `false (unavailable)` when no server is declared anywhere (the
 **Skills** rule: nothing to connect). The startup review asks nothing about

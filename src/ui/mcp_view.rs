@@ -490,6 +490,17 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
             width,
         ));
     }
+    // Off with the whole session (the `/settings` **MCP** row): its one
+    // action is its own Disable, so the page says why it is not running and
+    // where that changes — the list's note, where the user is looking.
+    if server.status == McpServerStatus::Off {
+        lines.push(Line::default());
+        lines.extend(wrapped(
+            MCP_SESSION_OFF,
+            Style::new().fg(error_color()),
+            width,
+        ));
+    }
     // The tools set aside at connect, by name and with the reason — the one
     // place "why can't the model see this tool?" is answered.
     if !server.excluded.is_empty() {

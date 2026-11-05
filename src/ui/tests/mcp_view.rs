@@ -190,6 +190,39 @@ fn an_off_server_reads_dim_and_its_page_offers_its_own_switch() {
 }
 
 #[test]
+fn an_off_servers_page_says_why_it_is_off() {
+    // Its one action is its own Disable, so the page itself has to say why
+    // the server is not running and where that changes — the list's note,
+    // repeated where the user is looking. A server disabled on its own is
+    // off for its own reason, and its page does not claim the session's.
+    let mut app = mcp_off_app();
+    app.on_key(key(KeyCode::Enter)); // deepwiki, `◯ off`
+    let lines = mcp_view_lines(&app, 100);
+    let note = lines
+        .iter()
+        .find(|line| plain(line).contains(MCP_SESSION_OFF))
+        .unwrap_or_else(|| panic!("no note on the off server's page: {:#?}", texts(&app)));
+    let ink = note
+        .spans
+        .iter()
+        .find(|span| !span.content.trim().is_empty())
+        .and_then(|span| span.style.fg);
+    assert_eq!(ink, Some(error_color()), "red, like the list's note");
+    // Wrapped, not clipped: the tail is the actionable half.
+    let narrow = texts_at(&app, 30);
+    assert!(
+        squashed(&narrow).contains(&MCP_SESSION_OFF.replace(' ', "")),
+        "{narrow:#?}"
+    );
+    let mut disabled = mcp_off_app();
+    disabled.on_key(key(KeyCode::Down));
+    disabled.on_key(key(KeyCode::Enter)); // github, `◯ disabled`
+    let all = texts(&disabled).join("\n");
+    assert!(all.contains("◯ disabled"), "{all}");
+    assert!(!all.contains(MCP_SESSION_OFF), "{all}");
+}
+
+#[test]
 fn the_server_detail_shows_facts_and_actions() {
     let mut app = mcp_app();
     app.on_key(key(KeyCode::Enter)); // linear detail
@@ -622,9 +655,12 @@ fn every_page_hugs_its_frame() {
         app.mcp_menu.as_mut().unwrap().auth.submitted = submitted;
         app
     };
+    let mut off_page = mcp_off_app();
+    off_page.on_key(key(KeyCode::Enter));
     for (what, app) in [
         ("the server list", mcp_app()),
         ("the server list with MCP off", mcp_off_app()),
+        ("an off server's page", off_page),
         ("an empty list", empty),
         ("a server's detail", server),
         ("a failed server's detail", failed),

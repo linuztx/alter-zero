@@ -12,7 +12,8 @@ smoke_begin
 #   1. on by default — the server connects and its instructions ride Ctrl+D;
 #   2. cycled off — a `MCP: false` toast, the server STOPPED (its stdin
 #      closed), Ctrl+D without its instructions, /mcp open with the red
-#      off-note over a `◯ off` row whose only action is its own Disable, and
+#      off-note over a `◯ off` row whose page repeats the note and whose
+#      only action is its own Disable, and
 #      `"mcp": false` in this directory's settings.json entry;
 #   3. relaunched — still off, and nothing launched at startup;
 #   4. cycled back on — the server connects again;
@@ -104,6 +105,7 @@ off_detail="$(wait_pane 5 "$S152" -F "Fixture MCP Server")"
 dump "the server's page with MCP off" "$off_detail"
 expect_has "$off_detail" -F "◯ off" "the server page does not say the server is off"
 expect_has "$off_detail" -F "1. Disable" "the server page does not offer the server's own switch"
+expect_has "$off_detail" -F "MCP is off for this session — turn it on in /settings" "the off server's page does not say why it is off"
 expect_lacks "$off_detail" -F "Reconnect" "the server page offers a Reconnect while MCP is off"
 keys "$S152" Escape
 sleep 0.2
