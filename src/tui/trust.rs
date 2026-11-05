@@ -488,7 +488,7 @@ impl Session<'_> {
 
     /// The review's pages for what is new or changed: the hooks page while
     /// the session runs hooks, the servers page for the servers the manager
-    /// holds for it.
+    /// holds for it while MCP is on (the `/settings` **MCP** row).
     fn review_pages(&self, hooks: bool, servers: bool) -> Vec<ReviewPage> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut pages = Vec::new();
@@ -499,7 +499,7 @@ impl Session<'_> {
             pages.push(page);
         }
         if servers
-            && let Some(manager) = &self.mcp
+            && let Some(manager) = self.mcp.as_ref().filter(|manager| manager.is_active())
             && let Some(page) = self
                 .trust
                 .mcp_page(&manager.awaiting_review(), home.as_deref())
@@ -526,6 +526,13 @@ impl Session<'_> {
     /// over hooks that wait for trust.
     pub(crate) fn open_hooks_review(&mut self) {
         let pages = self.review_pages(true, false);
+        self.app.open_requested_review(pages);
+    }
+
+    /// Open the servers page alone — the `/settings` **MCP** row turned on
+    /// over project servers that wait for the review.
+    pub(crate) fn open_servers_review(&mut self) {
+        let pages = self.review_pages(false, true);
         self.app.open_requested_review(pages);
     }
 

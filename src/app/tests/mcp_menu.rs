@@ -123,6 +123,13 @@ fn server_actions_follow_the_state() {
         server_actions(&snapshot("g", McpServerStatus::Disabled, 0)),
         [A::Enable]
     );
+    // MCP is off for the session (`/settings` → MCP): nothing connects, so
+    // the one decision left is the server's own switch, for when MCP is back
+    // on — no Reconnect, and no sign-in for a server that cannot connect.
+    assert_eq!(
+        server_actions(&snapshot("o", McpServerStatus::Off, 0)),
+        [A::Disable]
+    );
     // A remote server that failed with no stored grant can now be logged
     // into from here; before, authenticating it was simply unreachable.
     assert_eq!(

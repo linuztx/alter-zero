@@ -1324,6 +1324,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(on) = env_flag_set("ALTER_ZERO_SKILLS") {
         settings.skills = on;
     }
+    // `ALTER_ZERO_MCP` seeds the **MCP** row the way `ALTER_ZERO_HOOKS`
+    // seeds Hooks — an override for this run, never saved (docs/mcp.md). A
+    // falsy value used to remove the manager outright; now the session
+    // starts with MCP off, which `/settings` can turn back on.
+    if let Some(on) = env_flag_set("ALTER_ZERO_MCP") {
+        settings.mcp = on;
+    }
     if let Some(t) = temperature() {
         settings.temperature = Some(t);
     }
@@ -1490,13 +1497,6 @@ pub(crate) fn prompt_context(cwd: &Path, scratchpad: Option<&Path>) -> Option<St
         ),
         None => environment,
     })
-}
-
-/// Is the MCP feature on? On by default; a falsy `ALTER_ZERO_MCP` turns the
-/// whole thing off — no connections, no tools, `/mcp` explains via toast
-/// (`docs/mcp.md`).
-pub(crate) fn mcp_enabled() -> bool {
-    env_flag("ALTER_ZERO_MCP")
 }
 
 /// The **user** MCP config file: `ALTER_ZERO_MCP_FILE` (what makes a smoke

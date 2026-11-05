@@ -168,6 +168,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
         checkpoints: false,
         hooks: true,
         skills: true,
+        mcp: true,
         images: true,
         telemetry: true,
         update_check: true,

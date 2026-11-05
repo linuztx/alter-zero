@@ -7,9 +7,10 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TOOL_FIELD_GAP,
-    mcp_description_color, mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color,
-    model_meta_color, tool_fail_color, tool_ok_color,
+    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_SESSION_OFF,
+    MCP_TOOL_FIELD_GAP, error_color, mcp_description_color, mcp_detail_label_color,
+    mcp_detail_state_color, mcp_detail_value_color, model_meta_color, tool_fail_color,
+    tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -98,6 +99,94 @@ fn an_empty_list_names_the_config_files() {
     let all = texts(&app).join("\n");
     assert!(all.contains("No MCP servers configured"));
     assert!(all.contains(".mcp.json"));
+}
+
+// --- MCP off for the session (the `/settings` **MCP** row, docs/mcp.md) ---
+
+/// `/mcp` opened while the `/settings` **MCP** row is off, over what the
+/// manager reports then: an enabled server `◯ off`, a disabled one still
+/// disabled.
+fn mcp_off_app() -> App {
+    let mut app = App::new();
+    app.settings_mut().mcp = false;
+    app.open_mcp_menu(vec![
+        snapshot("deepwiki", McpScope::User, McpServerStatus::Off),
+        snapshot("github", McpScope::User, McpServerStatus::Disabled),
+    ]);
+    app
+}
+
+#[test]
+fn the_list_says_when_mcp_is_off_for_the_session() {
+    // The `/hooks` and `/skills` rule: the rows still browse and toggle, but
+    // nothing here connects until the `/settings` row is back on — and the
+    // page says where that is, in red, straight under its count.
+    let app = mcp_off_app();
+    let lines = mcp_view_lines(&app, 100);
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    let note = rows
+        .iter()
+        .position(|row| row.contains(MCP_SESSION_OFF))
+        .unwrap_or_else(|| panic!("no off note: {rows:#?}"));
+    assert!(rows[note - 1].contains("2 servers"), "{rows:#?}");
+    let ink = lines[note]
+        .spans
+        .iter()
+        .find(|span| !span.content.trim().is_empty())
+        .and_then(|span| span.style.fg);
+    assert_eq!(ink, Some(error_color()), "red, like the hooks note");
+    let all = rows.join("\n");
+    assert!(all.contains("deepwiki · ◯ off"), "{all}");
+    assert!(all.contains("github · ◯ disabled"), "{all}");
+}
+
+#[test]
+fn the_off_note_wraps_rather_than_clipping_its_advice() {
+    // The tail — where MCP is turned back on — is the actionable half.
+    let rows = texts_at(&mcp_off_app(), 30);
+    assert!(
+        squashed(&rows).contains(&MCP_SESSION_OFF.replace(' ', "")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn no_off_note_while_mcp_is_on_or_over_an_empty_list() {
+    let on = texts(&mcp_app()).join("\n");
+    assert!(!on.contains(MCP_SESSION_OFF), "{on}");
+    // With nothing declared the row is unavailable and the placeholder
+    // answers instead — the `/skills` menu's rule.
+    let mut empty = App::new();
+    empty.settings_mut().mcp = false;
+    empty.open_mcp_menu(vec![]);
+    let all = texts(&empty).join("\n");
+    assert!(!all.contains(MCP_SESSION_OFF), "{all}");
+    assert!(all.contains("No MCP servers configured"), "{all}");
+}
+
+#[test]
+fn an_off_server_reads_dim_and_its_page_offers_its_own_switch() {
+    let mut app = mcp_off_app();
+    let lines = mcp_view_lines(&app, 78);
+    let row = lines
+        .iter()
+        .find(|line| plain(line).contains("deepwiki"))
+        .expect("the row");
+    let glyph = row
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref() == "◯")
+        .expect("the ◯ glyph span");
+    assert_eq!(
+        glyph.style.fg,
+        Some(model_meta_color()),
+        "inactive, not a problem"
+    );
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("◯ off"), "{all}");
+    assert!(all.contains("1. Disable"), "{all}");
+    assert!(!all.contains("Reconnect"), "{all}");
 }
 
 #[test]
@@ -535,6 +624,7 @@ fn every_page_hugs_its_frame() {
     };
     for (what, app) in [
         ("the server list", mcp_app()),
+        ("the server list with MCP off", mcp_off_app()),
         ("an empty list", empty),
         ("a server's detail", server),
         ("a failed server's detail", failed),

@@ -128,8 +128,9 @@ The **user** file can be edited from the command line — `alter-zero mcp add
 {name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before
 the TUI boots like `--continue`/`--resume`; see `docs/mcp-cli.md`.
 
-Env knobs: `ALTER_ZERO_MCP` (falsy = the whole feature off: no connections,
-no tools, `/mcp` explains via toast), `ALTER_ZERO_MCP_FILE` (replaces the
+Env knobs: `ALTER_ZERO_MCP` (seeds the `/settings` **MCP** row for the run,
+never saved — falsy starts the session with MCP off, *MCP off for the
+session* below), `ALTER_ZERO_MCP_FILE` (replaces the
 *user* file path; the project files are still discovered),
 `ALTER_ZERO_PROJECT_CONFIG` (falsy = no project files at all — the project
 layer's own kill switch, shared with hooks, and the smoke suite's
@@ -137,6 +138,65 @@ hermeticity mechanism; `docs/project-config.md`),
 `ALTER_ZERO_MCP_STARTUP_TIMEOUT_MS` (per-server initialize + tools/list
 budget, default 30 000 — both references' default),
 `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` (per `tools/call`, default 120 000).
+
+## MCP off for the session — the `/settings` **MCP** row
+
+Disabling a server in `/mcp` is a decision about *that server*, kept per
+project in the user file. The `/settings` **MCP** row is the switch above
+them all — `true` until a directory turns it off, the **Hooks** posture
+(`docs/settings.md`, `docs/per-directory-state.md`) — and turning it off never
+touches a server's own switch. That is the point of it: a session that wants
+no MCP right now must not have to disable five servers one by one, and then
+remember which five to enable again.
+
+Off means **off**, not hidden (`McpManager::set_active(false)`):
+
+- Every connection is dropped — a stdio child stopped the way a `/mcp`
+  Disable stops it, a connect still in flight superseded, a running sign-in
+  cancelled.
+- Nothing connects again, whoever asks. The startup kick, a Reconnect, an
+  Enable, the review's approval and a dead server's automatic restart all
+  land on `spawn_connect`, which refuses while MCP is off, so the guard sits
+  in one place rather than at every caller. A sign-in is refused with the
+  same reason.
+- The model is offered no `mcp__*` tool and the reminder carries no server
+  instructions: no server is `Connected`, so `tool_specs`, `instructions` and
+  the fingerprint the boundary rebuilds on are all empty. A call from a turn
+  that began with the tools offered is answered `MCP is off for this session
+  — ask the user to turn it on in /settings` rather than the generic
+  unknown-tool answer.
+- Each server that would have connected reads `◯ off`
+  (`McpServerStatus::Off`); one the user disabled stays `◯ disabled`, one
+  the startup review is holding stays `⚠ awaiting review`.
+
+On again (`set_active(true)`) is a fresh start, the startup kick's: every
+`◯ off` server connects — one that had failed or wanted a sign-in is asked
+again — and one that can never start (a `${VAR}` nobody set, a name that
+collides with another) reports its reason again.
+
+`/mcp` still opens while MCP is off, the `/hooks` and `/skills` menus' rule,
+with a red `MCP is off for this session — turn it on in /settings` under the
+list's count — read off the `/settings` row itself, never stored, and never
+over an empty list, whose placeholder is the answer there. The rows browse,
+and each server's own switch still moves: an `◯ off` server's page offers
+only **Disable**, and **Enable** on a disabled one leaves it `◯ off`, to
+connect once MCP is back on. No Reconnect and no sign-in, since neither
+could do anything.
+
+The row reads `false (unavailable)` when no server is declared anywhere (the
+**Skills** rule: nothing to connect). The startup review asks nothing about
+a project's servers while MCP is off — nothing could run — and turning the
+row on over servers that wait for it opens the review's servers page then,
+the **Hooks** row's rule (`docs/config-review.md`). A config problem the
+startup toast would have named is kept quiet while MCP is off and said when
+the row turns MCP on.
+
+`ALTER_ZERO_MCP` used to remove the manager outright, so `/mcp` could only
+explain itself in a toast and a restart was the only way back. The manager
+is built at every startup now — with the row off it launches nothing — so
+`/settings` turns MCP on without one. `smoke.sh` Phase 152 drives the row
+against a scripted stdio server that marks when it starts and when its stdin
+closes, so the phase sees the process stop and come back, not only the rows.
 
 ## The module split
 
@@ -270,7 +330,7 @@ in **`src/llm/mcp/`**.
 - `mcp::status` — what the UI consumes: `McpServerSnapshot { name, scope,
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
-  `Disabled`), the status glyph/label mapping — `glyph()` and `label()` kept
+  `Disabled`/`AwaitingReview`/`Off`), the status glyph/label mapping — `glyph()` and `label()` kept
   **separate** on both `McpServerStatus` and `McpAuthState` so a renderer can
   colour the glyph by state without splitting a string it didn't build, with
   `status_line()` composing the list row's `✔ connected · 3 tools` (the tool
@@ -1085,7 +1145,7 @@ mid-turn (the strip stays above it). Pages:
    `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
    `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
-   `Enable`. When a fresh snapshot changes the list under the user the
+   `Enable`; off (MCP off for the session, above) → `Disable`. When a fresh snapshot changes the list under the user the
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first

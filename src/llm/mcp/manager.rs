@@ -314,6 +314,10 @@ impl ServerState {
 
 struct Inner {
     servers: Vec<ServerState>,
+    /// Whether MCP runs at all this session — the `/settings` **MCP** row
+    /// (`docs/mcp.md`). Off, nothing connects whoever asks, and every
+    /// server the user hasn't switched off reads [`McpServerStatus::Off`].
+    active: bool,
     errors: Vec<String>,
     disabled: std::collections::BTreeSet<String>,
     held: BTreeMap<String, McpHold>,
@@ -412,6 +416,7 @@ impl McpManager {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 servers,
+                active: true,
                 errors: sources.errors,
                 disabled: sources.disabled,
                 held: sources.held,
@@ -475,12 +480,85 @@ impl McpManager {
         }
     }
 
+    /// Turn MCP on or off for the whole session — the `/settings` **MCP**
+    /// row (`docs/mcp.md`).
+    ///
+    /// Off stops every server — its connection dropped, a stdio child
+    /// stopped with it, a connect still in flight superseded — cancels a
+    /// sign-in, and marks each server [`McpServerStatus::Off`], so the model
+    /// is offered nothing and nothing connects again whoever asks. A server
+    /// the user switched off in `/mcp`, or one the startup review is holding,
+    /// keeps that state: the session switch never rewrites a server's own.
+    ///
+    /// On connects every server that was off — a fresh start, the startup
+    /// kick's, so one that had failed or wanted a sign-in is asked again —
+    /// and a server that can never start reports its reason again.
+    pub fn set_active(&self, active: bool) {
+        let cancelled = {
+            let mut inner = self.lock();
+            if inner.active == active {
+                return;
+            }
+            inner.active = active;
+            if active {
+                for server in &mut inner.servers {
+                    if server.status == McpServerStatus::Off {
+                        server.status = server
+                            .blocked()
+                            .map_or(McpServerStatus::Pending, McpServerStatus::Failed);
+                    }
+                }
+                None
+            } else {
+                for server in &mut inner.servers {
+                    if !matches!(
+                        server.status,
+                        McpServerStatus::Disabled | McpServerStatus::AwaitingReview
+                    ) {
+                        server.drop_connection();
+                        server.status = McpServerStatus::Off;
+                    }
+                }
+                inner.auth_flow.take()
+            }
+        };
+        if let Some(flow) = cancelled {
+            flow.cancel.cancel();
+        }
+        self.notify(McpEvent::Changed);
+        if active {
+            self.start_connections();
+        }
+    }
+
+    /// Does MCP run at all this session (the `/settings` **MCP** row)?
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.lock().active
+    }
+
     /// Connect (or re-connect) one server on a worker thread — never one the
-    /// review is holding, whoever asks.
+    /// review is holding, and nothing at all while MCP is off, whoever asks.
     fn spawn_connect(&self, name: &str) {
         let (config, auth_path, cwd, timeout, generation) = {
             let mut inner = self.lock();
             if inner.held.contains_key(name) {
+                return;
+            }
+            // MCP is off for the session: the server waits, off, for it to
+            // come back on — unless its own switch says off, which it keeps.
+            if !inner.active {
+                let status = if inner.disabled.contains(name) {
+                    McpServerStatus::Disabled
+                } else {
+                    McpServerStatus::Off
+                };
+                if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
+                    server.drop_connection();
+                    server.status = status;
+                }
+                drop(inner);
+                self.notify(McpEvent::Changed);
                 return;
             }
             let (auth_path, cwd, timeout) = (
@@ -885,6 +963,14 @@ impl McpManager {
     pub fn authenticate(&self, name: &str) {
         let (url, challenge, auth_path, open_browser, configured) = {
             let inner = self.lock();
+            if !inner.active {
+                self.notify(McpEvent::AuthDone {
+                    server: name.to_string(),
+                    ok: false,
+                    detail: "MCP is off for this session — turn it on in /settings".to_string(),
+                });
+                return;
+            }
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
             };
@@ -1173,6 +1259,13 @@ impl McpManager {
     pub fn call_tool(&self, call: &ToolCallRequest, cancel: &CancelToken) -> ToolOutcome {
         let lookup = {
             let inner = self.lock();
+            // A turn that began with the tools offered can still call one
+            // after MCP was switched off under it.
+            if !inner.active {
+                return ToolOutcome::error(
+                    "MCP is off for this session — ask the user to turn it on in /settings",
+                );
+            }
             inner.servers.iter().find_map(|server| {
                 let raw_tool = server
                     .offered()
@@ -3072,6 +3165,237 @@ done
         let written = std::fs::read_to_string(&user_file).unwrap();
         assert!(crate::mcp::parse_disabled(&written, "/proj").is_empty());
         wait_connected(&manager, "fix");
+        manager.shutdown();
+    }
+
+    /// A modern stdio server (discover = 1, tools/list = 2, with
+    /// instructions) that touches `marker` once its stdin closes — the
+    /// observable half of being stopped rather than merely hidden.
+    fn closing_stdio_entry(name: &str, marker: &std::path::Path) -> McpServerEntry {
+        let discover = r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1.0"}},"instructions":"Echo only."}}"#;
+        let tools = r#"{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"echo","description":"Echo.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}"#;
+        let script = format!(
+            "printf '%s\\n' '{discover}'; printf '%s\\n' '{tools}'; while IFS= read -r line; do :; done; : > '{}'",
+            marker.display()
+        );
+        McpServerEntry {
+            name: name.to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }
+    }
+
+    fn status_of(manager: &McpManager, name: &str) -> McpServerStatus {
+        manager
+            .snapshot()
+            .into_iter()
+            .find(|s| s.name == name)
+            .expect("declared")
+            .status
+    }
+
+    /// Turning MCP off for the session (`/settings` → **MCP**,
+    /// `docs/mcp.md`) stops every server — its stdin closed, not merely
+    /// hidden — and offers the model nothing; turning it back on connects
+    /// it again.
+    #[test]
+    fn turning_mcp_off_stops_every_server_and_on_connects_them_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("stopped");
+        let (manager, _rx) = manager_with(vec![closing_stdio_entry("fix", &marker)]);
+        assert!(manager.is_active(), "on by default");
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        assert!(manager.has_tools());
+        assert!(!manager.instructions(&|_| true).is_empty());
+
+        manager.set_active(false);
+        assert!(!manager.is_active());
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Off);
+        assert!(snapshot[0].identity.is_none(), "the live facts went too");
+        assert!(snapshot[0].tools.is_empty());
+        assert!(manager.tool_specs().is_empty());
+        assert!(manager.fingerprint().is_empty());
+        assert!(manager.instructions(&|_| true).is_empty());
+        assert!(!manager.has_tools());
+        // Stopped, not hidden: the server saw its stdin close.
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(marker.exists(), "the server was never stopped");
+
+        manager.set_active(true);
+        assert!(manager.is_active());
+        wait_connected(&manager, "fix");
+        assert!(manager.has_tools());
+        manager.shutdown();
+    }
+
+    /// While MCP is off nothing connects, whoever asks — the startup kick, a
+    /// Reconnect, an Enable — while each server's own switch still moves: an
+    /// enabled server waits, `◯ off`, for MCP to come back on.
+    #[test]
+    fn while_mcp_is_off_nothing_connects_and_each_switch_still_moves() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("fix")]);
+        manager.set_active(false);
+        manager.start_connections();
+        manager.reconnect("fix");
+        // A beat for any wrongly-spawned connect to land before we look.
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        assert!(!manager.has_tools());
+        manager.set_disabled("fix", true).expect("no file to save");
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Disabled);
+        manager.set_disabled("fix", false).expect("no file to save");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        manager.set_active(true);
+        wait_connected(&manager, "fix");
+        manager.shutdown();
+    }
+
+    /// The session switch never rewrites a server's own: one disabled in
+    /// `/mcp` stays disabled through MCP going off and on, one waiting for
+    /// the startup review keeps waiting, and only the enabled one returns.
+    #[test]
+    fn each_server_keeps_its_own_switch_through_mcp_off_and_on() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("on"), stdio_entry("off"), stdio_entry("asked")],
+                disabled: ["off".to_string()].into(),
+                held: [("asked".to_string(), McpHold::Review)].into(),
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "on");
+        manager.set_active(false);
+        assert_eq!(status_of(&manager, "on"), McpServerStatus::Off);
+        assert_eq!(status_of(&manager, "off"), McpServerStatus::Disabled);
+        assert_eq!(
+            status_of(&manager, "asked"),
+            McpServerStatus::AwaitingReview
+        );
+        assert!(
+            manager.is_user_disabled("off"),
+            "its own switch is untouched"
+        );
+        manager.set_active(true);
+        wait_connected(&manager, "on");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "off"), McpServerStatus::Disabled);
+        assert_eq!(
+            status_of(&manager, "asked"),
+            McpServerStatus::AwaitingReview
+        );
+        manager.shutdown();
+    }
+
+    /// A project server enabled in the review while MCP is off is released
+    /// from the review, and waits for MCP rather than launching.
+    #[test]
+    fn a_server_approved_while_mcp_is_off_connects_once_it_is_on() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                held: [("fix".to_string(), McpHold::Review)].into(),
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.set_active(false);
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::AwaitingReview);
+        manager.set_approved("fix", true);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        assert!(manager.awaiting_review().is_empty());
+        manager.set_active(true);
+        wait_connected(&manager, "fix");
+        manager.shutdown();
+    }
+
+    /// A server that can never start (here, a `${VAR}` nobody set) has
+    /// nothing to report while MCP is off, and its reason is back once MCP
+    /// is on again.
+    #[test]
+    fn a_server_that_cannot_start_reads_off_until_mcp_is_on_again() {
+        let mut entry = stdio_entry("fix");
+        entry.config = McpServerConfig::Stdio {
+            command: "${ALTER_ZERO_TEST_MCP_OFF_NEVER_SET}".to_string(),
+            args: Vec::new(),
+            env: Default::default(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
+        assert!(matches!(
+            status_of(&manager, "fix"),
+            McpServerStatus::Failed(_)
+        ));
+        manager.set_active(false);
+        assert_eq!(status_of(&manager, "fix"), McpServerStatus::Off);
+        manager.set_active(true);
+        match status_of(&manager, "fix") {
+            McpServerStatus::Failed(reason) => {
+                assert!(
+                    reason.contains("ALTER_ZERO_TEST_MCP_OFF_NEVER_SET"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected the reason back, got {other:?}"),
+        }
+    }
+
+    /// A call that reaches the manager while MCP is off — a turn that began
+    /// with the tools offered — says where MCP is turned back on, rather
+    /// than the generic unknown-tool answer.
+    #[test]
+    fn a_call_while_mcp_is_off_says_where_to_turn_it_on() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("fix")]);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        manager.set_active(false);
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__fix__echo".to_string(),
+            arguments: r#"{"text":"hi"}"#.to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("MCP is off"), "{}", outcome.output);
+        assert!(outcome.output.contains("/settings"), "{}", outcome.output);
+        manager.shutdown();
+    }
+
+    /// No sign-in starts while MCP is off: the answer comes back at once,
+    /// naming where MCP is turned on, and no browser is opened.
+    #[test]
+    fn signing_in_while_mcp_is_off_is_refused_with_the_reason() {
+        let (manager, mut rx) =
+            manager_with(vec![http_entry("remote", "http://127.0.0.1:9/mcp", None)]);
+        manager.set_active(false);
+        while rx.try_recv().is_ok() {}
+        manager.authenticate("remote");
+        match rx.try_recv() {
+            Ok(McpEvent::AuthDone { server, ok, detail }) => {
+                assert_eq!(server, "remote");
+                assert!(!ok);
+                assert!(detail.contains("/settings"), "{detail}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
         manager.shutdown();
     }
 

@@ -249,7 +249,8 @@ The two action rows and the hint stay on every rung.
   is recorded and takes effect at once (the backend rebuild carries the new
   set; a running turn finishes on the old one).
 - **`/settings` Hooks** turned on with hooks waiting for trust opens the hooks
-  page of the review.
+  page of the review; **`/settings` MCP** turned on with project servers
+  waiting for an answer opens the servers page (`docs/mcp.md`).
 - **`/mcp`** Enable on a declined project server records it enabled and
   connects it; Disable on a project server records it disabled. A project
   server disabled through `/mcp` before this design (the user file's
@@ -260,7 +261,8 @@ The two action rows and the hint stay on every rung.
 
 - `ALTER_ZERO_HOOKS=0`, or **Hooks** off for the directory: no hooks page —
   nothing would run.
-- `ALTER_ZERO_MCP=0`: no MCP page.
+- **MCP** off for the directory, or `ALTER_ZERO_MCP=0` for the run: no MCP
+  page — nothing would run. Turning the row on asks then.
 - `ALTER_ZERO_PROJECT_CONFIG=0`: no project layer at all; the user's own hooks
   are still reviewed. The smoke suite sets it in its base environment, and the
   phases that load a `hooks.json` answer the hooks page first.

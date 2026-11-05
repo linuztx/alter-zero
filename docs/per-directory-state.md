@@ -211,6 +211,13 @@ no hook runs until the user trusts it (`docs/config-review.md`). A directory tha
 flipped back with its default (`is_true`), or an opt-out would never reach
 the file and the next launch would turn the hooks on again.
 
+**MCP takes the same posture** (`docs/mcp.md`): on by default, each server
+still connecting only once it is enabled — a project's in the startup
+review — and a directory that wants none of them opting out with one cycle,
+recorded as `"mcp": false`, which leaves every server's own `/mcp` switch as
+it was. `ALTER_ZERO_MCP` seeds the row for a run the way `ALTER_ZERO_HOOKS`
+seeds Hooks, and is never saved.
+
 Two consequences at the boundary:
 
 - **`ALTER_ZERO_HOOKS` seeds the Hooks row** (`apply_setting_overrides`, the

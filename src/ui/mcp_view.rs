@@ -85,7 +85,9 @@ fn status_color(status: &McpServerStatus) -> Color {
         // project server waiting for the startup review also is.
         McpServerStatus::NeedsAuth | McpServerStatus::AwaitingReview => ask_warning_color(),
         McpServerStatus::Failed(_) => tool_fail_color(),
-        McpServerStatus::Pending | McpServerStatus::Disabled => model_meta_color(),
+        McpServerStatus::Pending | McpServerStatus::Disabled | McpServerStatus::Off => {
+            model_meta_color()
+        }
     }
 }
 
@@ -147,14 +149,27 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
 
 /// The list page: the title + count over the scope-grouped rows (dim
 /// headings naming each scope's config file), windowed around the selection
-/// with `↑ N more above` / `↓ N more below` markers.
-fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
+/// with `↑ N more above` / `↓ N more below` markers. With MCP off for the
+/// session (`mcp_on` false — the `/settings` **MCP** row) a red note under
+/// the count says so and where to turn it back on: the rows still browse
+/// and toggle, but nothing connects — the `/hooks` and `/skills` rule. Never
+/// over an empty list, whose placeholder is the answer there.
+fn list_lines(menu: &McpMenu, mcp_on: bool, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         model_rule(width),
         title_line(MCP_TITLE, width),
         dim_line(&count_noun(menu.servers.len(), "server"), width),
-        Line::default(),
     ];
+    if !mcp_on && !menu.servers.is_empty() {
+        // Wrapped, not clipped: the tail ("turn it on in /settings") is the
+        // actionable half.
+        lines.extend(wrapped(
+            MCP_SESSION_OFF,
+            Style::new().fg(error_color()),
+            width,
+        ));
+    }
+    lines.push(Line::default());
     if menu.servers.is_empty() {
         lines.push(dim_line(MCP_NONE_FOUND, width));
         // Wrapped: the paths are the instruction, and the clip used to eat
@@ -724,11 +739,13 @@ pub fn mcp_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.mcp_menu else {
         return Vec::new();
     };
+    // Derived, never stored: the `/settings` **MCP** row the session runs.
+    let mcp_on = app.settings().mcp_active();
     match &menu.page {
-        McpPage::List => list_lines(menu, width),
+        McpPage::List => list_lines(menu, mcp_on, width),
         page => {
             let Some(server) = menu.current_server() else {
-                return list_lines(menu, width);
+                return list_lines(menu, mcp_on, width);
             };
             match page {
                 McpPage::Server => server_lines(menu, server, width),
