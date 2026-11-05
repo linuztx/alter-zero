@@ -3174,7 +3174,8 @@ and its expiry is timed at the boundary (`Session::toast_deadline` +
 codex's footer status line with its theme colours on, `{model} · {cwd}`
 two-space inset — the model in the accent, the Ctrl+T mode and a speed tier
 in the thinking purple, the cwd green, the gauge dim until it turns amber
-then red as the window fills, `master` red, the separators dim
+then red as the window fills, the permission mode warming with its autonomy
+(`manual` dim, `edit` blue, `auto` amber, `master` red), the separators dim
 (`docs/footer.md` *Colour*)
 (`dummy_model_name · ~/repo      auto` — the Shift+Tab **permission mode**
 pinned flush at the row's right edge, `docs/permissions.md`, hidden when
