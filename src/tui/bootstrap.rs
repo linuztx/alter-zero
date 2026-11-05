@@ -1022,11 +1022,20 @@ impl<'t> Session<'t> {
             .flatten()
     }
 
-    /// The loop-bottom bookkeeping, run after every event: the auto-compact check,
-    /// the abandoned-permission release, the three on-disk mirrors (the
-    /// rollout, the input history, the tip walk's position), the herdr pane's
-    /// state, the transcript pre-render, and the detached-thread sweep.
+    /// The loop-bottom bookkeeping, run after every event: the context gauge's
+    /// re-read, the auto-compact check, the abandoned-permission release, the
+    /// three on-disk mirrors (the rollout, the input history, the tip walk's
+    /// position), the herdr pane's state, the transcript pre-render, and the
+    /// detached-thread sweep.
     pub(crate) fn after_iteration(&mut self) {
+        // The context gauge (docs/token-estimate.md): whatever this iteration
+        // added to the history — a message sent, a tool's output — shows on
+        // the footer now, at its calibrated estimate on top of the last usage
+        // report, rather than when the next request is counted. Two integer
+        // compares when the history did not move (every streamed chunk), and
+        // an estimate of only what joined when it did. Before the auto-compact
+        // check, which reads it.
+        self.app.sync_context_used();
         // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
         // start the summarization turn on our own at this idle boundary — the loop
         // bottom sees every turn end and gauge change. `should_auto_compact`

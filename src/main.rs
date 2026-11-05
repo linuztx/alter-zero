@@ -53,12 +53,6 @@ fn main() -> io::Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn tui_main(startup: Startup) -> io::Result<()> {
-    // Build the o200k_base token counter (a one-time vocabulary scan + hash
-    // table + split-regex compile, docs/tokenizer.md) off the interactive
-    // path, concurrently with terminal init, so the first turn's
-    // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
-    // or the terminal (invariant 1 safe), and `tokenizer::warm` is idempotent.
-    std::thread::spawn(alter_zero::tokenizer::warm);
     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
     let result = tui::event_loop::run(&mut term, startup).await;
     // Always restore the terminal (raw mode off, cursor below the box), even if

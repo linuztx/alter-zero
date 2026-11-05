@@ -3288,7 +3288,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
     #[test]
     fn usage_without_the_reasoning_detail_reports_none_of_it() {
         // A non-reasoning model (or a provider that omits the detail) reports
-        // 0, which keeps the cell's tokenizer estimate.
+        // 0, which keeps the cell's token estimate.
         let (out, _deltas) = drain_queued(vec![
             Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":13,"completion_tokens":2,"total_tokens":15}}
 "#

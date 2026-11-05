@@ -1123,7 +1123,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `interrupt_turn` keeps the partial, resolves every call in flight as failed
   (a batch's running call and each waiting sibling, in order), records the
   notice, hands back the turn's receipt for the loop to record under it (its
-  tokenizer share kept apart as `estimated`), and is a no-op when idle.
+  estimated share kept apart as `estimated`), and is a no-op when idle.
 - `app` (tools & view): `start_tool`/`end_tool` move a tool through running →
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty
@@ -1143,8 +1143,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   *adds* its output to the tally and flips the arrow `↑` without resetting, and
   resuming text flips it back `↓`; `set_status_times` writes the boundary
   durations (no-op when idle); `end_turn` records a `Summary` and clears the status;
-  `fail_stream` clears it with no summary; `count_tokens` (→ `tokenizer::count`,
-  the real `tiktoken` `o200k_base` count) grows with length.
+  `fail_stream` clears it with no summary; `count_tokens` (→ `tokens::estimate`,
+  the vocabulary-free estimate, `docs/token-estimate.md`) grows with length.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens
@@ -1601,9 +1601,11 @@ stream for their own reasons).
   message); assistant/tool/summary items record a stamp but never display it. The
   inline conversation has none, and there is no per-token/relative time. See
   `docs/timestamps.md`.
-- The status indicator's token counts are an app-side **estimate** (≈ chars/4), not
-  real model usage — the dummy has no tokenizer; a real `ReplySource` could report
-  exact counts later. The status verbs walk deterministically (a cursor moved
+- The status indicator's token counts are an app-side **estimate** between usage
+  frames (vocabulary-free, `docs/token-estimate.md`); each round's usage frame
+  snaps the tally to the provider's own count, and the dummy reports none. The
+  context gauge's estimated share is calibrated by those frames, so it is only
+  as good as the estimate before the second one. The status verbs walk deterministically (a cursor moved
   every 30 s of a turn and at each turn start), not at random, and the summary
   is the past tense of the verb the line wore. See `docs/status-indicator.md`.
 - `!` shell commands (`docs/shell-command.md`) run under `sh -c` with **no

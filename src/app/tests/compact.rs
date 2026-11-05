@@ -525,3 +525,145 @@ fn message_tokens_is_the_gauges_rule_one_message_at_a_time() {
         messages[1].text.len() + call.name.len() + call.arguments.len()
     );
 }
+
+// --- the gauge's usage-anchored reading (docs/token-estimate.md) ---
+
+/// The estimate of `texts` as user messages, each counted alone — what a
+/// tail of plain messages adds to the gauge.
+fn estimate_of(texts: &[&str]) -> u64 {
+    texts.iter().map(|text| count_tokens(text) as u64).sum()
+}
+
+#[test]
+fn a_usage_frame_reads_the_providers_count_of_the_request() {
+    // The frame's `input` is the request's whole context, counted by the
+    // provider — tool schemas and framing the estimate never sees
+    // included. The reply its `output` reports is not context until it is
+    // recorded (and its reasoning never is).
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 200));
+    assert_eq!(app.context_used(), 5_000);
+}
+
+#[test]
+fn what_joins_after_a_frame_adds_its_estimate_to_the_providers_count() {
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 200));
+    let reply = "a reply of several words, which the next request re-sends";
+    app.push_chunk(reply);
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(app.context_used(), 5_000 + estimate_of(&[reply]));
+    // A message sent next moves the gauge before its request does.
+    app.record_user_message("and a follow-up question");
+    app.sync_context_used();
+    assert_eq!(
+        app.context_used(),
+        5_000 + estimate_of(&[reply, "and a follow-up question"])
+    );
+}
+
+#[test]
+fn a_message_moves_the_gauge_before_any_frame_has_counted() {
+    // Offline (the dummy reports no usage) the estimate is the whole
+    // reading, and a long paste shows at once.
+    let mut app = App::new();
+    app.record_user_message("first");
+    app.sync_context_used();
+    let before = app.context_used();
+    assert!(before > 0);
+    let paste = "a long paste of many words ".repeat(50);
+    app.record_user_message(&paste);
+    app.sync_context_used();
+    assert_eq!(app.context_used(), before + estimate_of(&[&paste]));
+}
+
+#[test]
+fn a_compaction_keeps_what_the_provider_counted_beyond_the_estimate() {
+    // 3k of the provider's count is what the estimate cannot see (tool
+    // schemas, a template's framing): it rides the request after a
+    // compaction just as before, so the marker's `after` and the gauge
+    // keep it — where they used to drop to the bare estimate.
+    let mut app = App::new();
+    app.record_user_message(&"an early request with a lot of detail ".repeat(40));
+    app.begin_stream();
+    let (estimate, _) = app.estimate_context();
+    app.apply_usage(&usage_of(estimate + 3_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    app.begin_compact(false);
+    app.push_chunk("the gist");
+    let compaction = app.finish_compact(0).expect("a marker");
+    let (compacted, _) = app.estimate_context();
+    assert_eq!(compaction.before, estimate + 3_000);
+    assert_eq!(compaction.after, compacted + 3_000);
+    assert_eq!(app.context_used(), compacted + 3_000);
+}
+
+#[test]
+fn a_compaction_turns_frame_neither_reads_nor_teaches() {
+    // The summarizer's request is shaped unlike the conversation's — no
+    // tools, the compact prompt — so its count measures neither.
+    let mut app = App::new();
+    app.record_user_message("hello there");
+    app.begin_stream();
+    app.apply_usage(&usage_of(4_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    app.begin_compact(false);
+    app.apply_usage(&usage_of(900, 100));
+    assert_eq!(app.context_used(), 4_000);
+    assert_eq!(app.context_calibration().ratio_permille(), 1000);
+}
+
+/// Two frames whose change the provider counts at three halves of the
+/// estimate — the second request carrying `added` more than the first.
+fn calibrated_at_three_halves(app: &mut App, added: &str) -> u64 {
+    app.record_user_message("hello");
+    app.begin_stream();
+    let (first, _) = app.estimate_context();
+    app.apply_usage(&usage_of(first + 1_000, 0));
+    app.record_user_message(added);
+    let (second, _) = app.estimate_context();
+    let counted = first + 1_000 + (second - first) * 3 / 2;
+    app.apply_usage(&usage_of(counted, 0));
+    counted
+}
+
+#[test]
+fn consecutive_frames_calibrate_what_later_estimates_add() {
+    let mut app = App::new();
+    let counted = calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    let ratio = app.context_calibration().ratio_permille();
+    assert!((1_499..=1_500).contains(&ratio), "{ratio}");
+    let later = "other ".repeat(600);
+    app.record_user_message(&later);
+    app.sync_context_used();
+    assert_eq!(
+        app.context_used(),
+        counted + app.context_calibration().correct(estimate_of(&[&later]))
+    );
+}
+
+#[test]
+fn a_model_switch_starts_the_calibration_over() {
+    // Another model counts in another tokenizer.
+    let mut app = App::new();
+    app.set_session_info("first-model", "~");
+    let counted = calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    app.set_session_info("first-model", "~/elsewhere");
+    assert!(
+        app.context_calibration().ratio_permille() > 1_000,
+        "the same model keeps it"
+    );
+    app.set_session_info("second-model", "~");
+    assert_eq!(app.context_calibration().ratio_permille(), 1000);
+    let later = "other ".repeat(600);
+    app.record_user_message(&later);
+    app.sync_context_used();
+    assert_eq!(app.context_used(), counted + estimate_of(&[&later]));
+}

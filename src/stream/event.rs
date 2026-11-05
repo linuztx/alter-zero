@@ -100,7 +100,7 @@ pub struct AgentCallDone {
 
 /// Real token usage reported by the provider for one completed request round
 /// — the final `usage` frame of an OpenAI-compatible stream (asked for via
-/// `stream_options.include_usage`). Unlike the app-side tiktoken estimate it
+/// `stream_options.include_usage`). Unlike the app-side estimate it
 /// counts **everything** the request billed — system prompt, full context,
 /// reasoning — and carries the prompt-cache detail. The loop folds it into
 /// the live tally via [`crate::app::App::apply_usage`]. See
@@ -122,7 +122,7 @@ pub struct TokenUsage {
     pub cache_write: u64,
     /// Output tokens the round spent **thinking** (a subset of `output`):
     /// `completion_tokens_details.reasoning_tokens`. The committed
-    /// `Thought for …` cell snaps its tokenizer estimate to this
+    /// `Thought for …` cell snaps its token estimate to this
     /// ([`crate::app::App::apply_usage`]); 0 when the provider reports no such
     /// detail, which keeps the estimate. See `docs/thinking-stream.md`.
     pub reasoning: u64,

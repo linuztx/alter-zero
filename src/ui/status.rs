@@ -495,7 +495,7 @@ pub fn styled_status_line(
 /// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
 /// running` suffix when either applies (`docs/background.md`,
 /// `docs/prompt-caching.md`); an interrupted turn's total carries the
-/// tokenizer's share too, marked `≈` (`docs/interrupt.md`). Shown inline (it
+/// estimate's share too, marked `≈` (`docs/interrupt.md`). Shown inline (it
 /// flows into scrollback) and in the transcript like any other
 /// [`HistoryItem`]. **Word-wrapped** to
 /// `width`: the full chain runs past 60 columns and the rows are permanent

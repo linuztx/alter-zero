@@ -218,8 +218,8 @@ clock-free.
 
 ### The token count
 
-The status tally counts reasoning with the app-side tokenizer
-(`App::push_thinking` → `tokenizer::count`), and that estimate is what the cell
+The status tally counts reasoning with the app-side estimate
+(`App::push_thinking` → `tokens::estimate`), and that estimate is what the cell
 is built with, because `ThinkingEnd` fires long before the round's usage frame.
 When that frame arrives the app **snaps** the cell to the provider's real
 number — exactly what `App::apply_usage` already does to the live tally
@@ -326,7 +326,7 @@ Two `#[ignore]`d live tests in `tests/live_openrouter.rs` pin the provider end
   really does carry `completion_tokens_details.reasoning_tokens`;
 - `live_thought_cell_snaps_to_the_providers_reasoning_tokens` — replays a real
   stream's events into a real `App` and asserts the recorded cell traded its
-  tokenizer estimate for the provider's count (observed: a 164-token estimate
+  token estimate for the provider's count (observed: a 164-token estimate
   snapping to the reported 89 — the two accountings genuinely differ, which is
   the whole reason to prefer the provider's).
 
@@ -341,6 +341,6 @@ Two `#[ignore]`d live tests in `tests/live_openrouter.rs` pin the provider end
   interleaves reasoning and text across a round commits one cell per burst.
   That is faithful to what happened, but a chatty interleaver produces several
   short cells.
-- The scrollback row keeps the tokenizer estimate when the provider's count
+- The scrollback row keeps the token estimate when the provider's count
   arrives later (see above). Only the row already printed; every re-render is
   corrected.

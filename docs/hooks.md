@@ -123,9 +123,10 @@ Both references share one implementation, and so do we
 
 The original design proposed warn-and-skipping real regexes to avoid taking a
 `regex` dependency. That turned out to be a cost that barely exists: `regex`
-is a thin wrapper over the `regex-automata` engine that `fancy-regex` (a
-direct dependency, for the status-line tally's split pattern —
-docs/tokenizer.md) already pulls into every build. Since `^Bash$` is a common
+is a thin wrapper over the `regex-automata` engine, which `fancy-regex` (the
+token counter's split pattern, since replaced by a vocabulary-free estimate —
+`docs/token-estimate.md`) already pulled into every build, and `regex` is now
+the crate's one regex engine. Since `^Bash$` is a common
 matcher in real Claude Code configs, silently skipping it would be a footgun
 with no offsetting saving, and we compile it instead. A matcher that fails to
 compile is warned about and skipped.

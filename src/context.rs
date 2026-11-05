@@ -36,7 +36,7 @@ pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
 /// Codex's `APPROX_BYTES_PER_TOKEN` — the byte↔token heuristic the budget
-/// uses (not the real tokenizer: the walk runs at every turn start and must
+/// uses (not the app's token estimate: the walk runs at every turn start and must
 /// stay O(len); codex budgets with the same approximation).
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 

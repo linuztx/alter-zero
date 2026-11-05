@@ -9,9 +9,9 @@ times the body it read, and none of it came back.
 
 ## The measurement
 
-Two probes, both `/proc/self/status` (the same method `docs/tokenizer.md`
-used — `VmRSS` for what is resident now, `VmHWM` for the peak a transient
-spike leaves behind):
+Two probes, both `/proc/self/status` (the same method that measured the old
+`o200k_base` token counter's 45.5 MB, `docs/token-estimate.md` — `VmRSS` for
+what is resident now, `VmHWM` for the peak a transient spike leaves behind):
 
 - **`cargo run --release --example mem_probe [body.json]`** — what one
   `/v1/models` parse costs the process (a synthetic OpenRouter-shaped body is
@@ -638,8 +638,8 @@ the same allocator variation described above; they do not predict an exact
 RSS for a live model's task-manager implementation.
 
 This is a deterministic replay of the allocation paths, not the output of a
-particular live model. Fixed costs such as the grammar database, tokenizer
-and HTTP/TLS state remain, and raw conversation history still grows as work
+particular live model. Fixed costs such as the grammar database and
+HTTP/TLS state remain, and raw conversation history still grows as work
 is recorded. A single item's temporary expanded rows and the allocator's
 retained pages can also affect RSS, so the reduction varies with the session.
 

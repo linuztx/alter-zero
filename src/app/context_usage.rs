@@ -52,9 +52,9 @@ pub struct ContextUsagePage {
     /// the tool set the boundary hands over right after can change which
     /// category that is.
     chosen: bool,
-    /// Every text's count from the last pass, so a re-count tokenizes only
+    /// Every text's count from the last pass, so a re-count estimates only
     /// what is new — a long conversation's whole window through the
-    /// tokenizer again stalled a frame on each commit of a busy turn.
+    /// counter again stalled a frame on each commit of a busy turn.
     memo: CountMemo,
 }
 
@@ -221,7 +221,13 @@ impl App {
     /// the last pass counted it, so only what is new is tokenized.
     fn count_context_window(&self, memo: &mut CountMemo) -> Breakdown {
         let memo = RefCell::new(memo);
-        let count = |text: &str| memo.borrow_mut().count(text, &count_tokens);
+        // In the provider's tokens, as the footer's gauge reads: what its
+        // usage reports taught about its tokens against the estimate
+        // (docs/token-estimate.md) — applied outside the memo, which keeps
+        // the estimate's own counts, so a new lesson re-tokenizes nothing.
+        let calibration = self.context_calibration();
+        let count =
+            |text: &str| calibration.correct_count(memo.borrow_mut().count(text, &count_tokens));
         let breakdown = match self.viewed_agent() {
             Some(run) => {
                 let (messages, origins) =
@@ -274,6 +280,9 @@ impl App {
     fn context_usage_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.tool_definitions_revision.hash(&mut hasher);
+        self.context_calibration()
+            .ratio_permille()
+            .hash(&mut hasher);
         match self.viewed_agent() {
             Some(run) => {
                 run.id.hash(&mut hasher);

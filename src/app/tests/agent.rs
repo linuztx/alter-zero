@@ -671,11 +671,12 @@ fn last_assistant_text_follows_the_viewed_agent() {
 #[test]
 fn the_context_gauge_follows_the_viewed_agent() {
     // The footer's gauge describes the conversation ON SCREEN
-    // (docs/agent-context-gauge.md): the main session's `input + output`
-    // while the main view is up, the viewed agent's own once its session view
-    // opens — each against its own window.
+    // (docs/agent-context-gauge.md): the main session's reading while the
+    // main view is up, the viewed agent's own once its session view opens —
+    // each against its own window, each its last frame's `input`.
     let mut app = App::new();
     app.set_context_window(Some(1_000_000));
+    app.record_user_message("hello");
     app.begin_stream();
     app.apply_usage(&usage_of(23_000, 700));
     app.start_agent_group(false, &agent_specs(false));
@@ -683,16 +684,16 @@ fn the_context_gauge_follows_the_viewed_agent() {
         "a1",
         &crate::stream::StreamEvent::Usage(usage_of(64_000, 900)),
     );
-    assert_eq!(app.context_gauge(), Some((23_700, 1_000_000)));
+    assert_eq!(app.context_gauge(), Some((23_000, 1_000_000)));
     app.set_agent_context_window(Some(1_000_000));
     app.open_agent_view("a1");
     assert_eq!(
         app.context_gauge(),
-        Some((64_900, 1_000_000)),
+        Some((64_000, 1_000_000)),
         "the agent's own, not the lead's"
     );
     app.close_agent_view();
-    assert_eq!(app.context_gauge(), Some((23_700, 1_000_000)));
+    assert_eq!(app.context_gauge(), Some((23_000, 1_000_000)));
 }
 
 #[test]

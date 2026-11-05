@@ -140,7 +140,7 @@ another turn's clock would be a lie.
   exactly as before (the `ALTER_ZERO_SHOW_THINKING` posture,
   `docs/thinking-stream.md`).
 - `round_reasoning: Vec<usize>` — where this round's cells landed, so the
-  agent's own `Usage` frame snaps their tokenizer estimates to the provider's
+  agent's own `Usage` frame snaps their token estimates to the provider's
   `reasoning_tokens`. The distribute-by-weight helper is now the shared pure
   `app::reasoning::snap_reasoning_tokens`, called by `App` and `AgentRun`
   alike rather than copied.

@@ -44,10 +44,12 @@ holds, and the two diverge more with every round.
 Three small pieces, each the main session's own rule one level down:
 
 - **`AgentRun::context_used`** (`agents.rs`) — the agent's context size by the
-  main gauge's exact rule (`App::apply_usage`): the last usage frame's
-  `input + output`, **replaced** per frame rather than accumulated. A turn that
+  main gauge's exact rule (`App::apply_usage`, `docs/token-estimate.md`): the
+  last usage frame's `input`, **replaced** per frame rather than accumulated,
+  plus the calibrated estimate of what joined after it, re-read at every
+  settle (the agent's own `tokens::ContextMeter`). A turn that
   settles having seen no frame (the offline dummy scripts none on the agent
-  channel; a provider may omit usage) falls back to the tokenizer estimate over
+  channel; a provider may omit usage) stands on the estimate over
   the agent's own derived transcript — `App::take_turn_summary`'s rule —
   through the one shared counting function, `app::estimate_messages_tokens`,
   so the lead's estimate and an agent's can never disagree about what a
@@ -81,10 +83,11 @@ Three small pieces, each the main session's own rule one level down:
 
 ## Testing
 
-- `agents`: usage frames seat `context_used` at `input + output` and a later
-  frame replaces it while `tokens` keeps accumulating; a `StreamDone` that saw
-  a frame keeps the frame's number; a settle with no frame estimates from the
-  transcript through `estimate_messages_tokens`.
+- `agents`: usage frames seat `context_used` at the frame's `input` and a
+  later frame replaces it while `tokens` keeps accumulating; a `StreamDone`
+  that saw a frame keeps the frame's number plus the estimate of the reply; a
+  settle with no frame estimates from the transcript through
+  `estimate_messages_tokens`.
 - `app`: `context_gauge` follows the viewed agent and comes back to the lead's
   pair on close; a viewed agent with no known window has no gauge;
   `viewed_agent_model` answers only inside a view.

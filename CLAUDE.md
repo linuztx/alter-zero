@@ -250,7 +250,7 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -531,7 +531,9 @@ each contributor writes, and `context::context_messages` split into your
 messages, shell commands, app notices, replies, tool calls, tool results,
 images and the compaction summary — the user-role text by **origin**, noted
 as the derivation lands it (`context::context_messages_with_origins`) —
-every count the tokenizer's estimate, marked `≈`, while the usage rows under
+every count the token estimate put in the provider's tokens by what its
+usage frames taught (`tokens::Calibration`, `docs/token-estimate.md`),
+marked `≈`, while the usage rows under
 it are the provider's own frames (`App::last_usage`, dropped with the
 conversation a `/clear`, `/resume`, rewind or compaction replaces; the
 `UsageLedger` since launch, subagents included, a viewed agent's own inside
@@ -974,7 +976,7 @@ of assistant text before it (invariant 4's "flush before you interleave",
 gated on the display), so the header sits under the same blank spacer the
 settled cell will instead of butting against the paragraph that was
 streaming, and the paragraph's withheld last line lands with it — and the
-cell's tokenizer estimate is **snapped** to the provider's own
+cell's token estimate is **snapped** to the provider's own
 `completion_tokens_details.reasoning_tokens` — `TokenUsage::reasoning` — when
 the round's usage frame lands, split by weight across a round's several
 phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
@@ -1627,8 +1629,9 @@ palette, `?` band, Ctrl+R, the `@` picker, **Ctrl+O showing the agent's own
 transcript** and **Ctrl+D its derived context** (`!` shell mode stays
 literal chat text), **and the footer's model and gauge segments describing
 that agent** — its own context size (`AgentRun::context_used`, the last
-usage frame's `input + output`, the transcript estimate when a settle saw no
-frame) against the window of the model it runs on, the pinned model named
+usage frame's `input` plus the estimate of what joined after it, the
+transcript estimate when a settle saw no frame) against the window of the
+model it runs on, the pinned model named
 when its definition pins one (`App::context_gauge`,
 `docs/agent-context-gauge.md`) — and the agent's turns **end like the main session's**:
 each settle records the dim `Done for 59s · 6.1k tokens (2.8k cached)`
@@ -2207,9 +2210,9 @@ format + `select`, which dedups by command and warns rather than failing on a
 handler type or event name we don't model; `matcher` — both references'
 non-regex fast path for `bash|write`, exact-equality so `bash` never matches
 `bashoutput`, else a real regex (cheap: `regex` is a thin wrapper over the
-`regex-automata` engine `fancy-regex` already puts in every build, so
-warn-and-skipping `^Bash$` would have been a footgun with no offsetting
-saving); `event`; `payload`; `verdict`; `overview` — the display tree the
+`regex-automata` engine and the crate's one regex engine — syntect runs on
+oniguruma — so warn-and-skipping `^Bash$` would have been a footgun with no
+offsetting saving); `event`; `payload`; `verdict`; `overview` — the display tree the
 read-only `/hooks` menu browses), taking a handler's stdout **as a
 string** so every rule is unit-testable with no process anywhere. The boundary
 is **`src/llm/hooks.rs`**: the `HookSink` trait — *one trait object with
@@ -2722,7 +2725,12 @@ marker: the 20k-approx-token budget of recent user texts + the
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
-gauge (usage-frame fed, tokenizer-estimated offline; **inside an agent
+gauge (the last usage frame's `input` plus the calibrated estimate of what
+joined since, read at the loop bottom so a paste or a tool's output shows
+before the next request; a compaction, rewind or `/resume` moves that count
+by the estimate of the change, keeping the tool schemas the estimate never
+sees; the estimate alone offline — `tokens::ContextMeter`,
+`docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
@@ -4020,9 +4028,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`↑`) at turn start, so the status reads `↑ N tokens` until your first chunk.
   The loop and
   rendering treat chunks and tool output as opaque text, and count the status
-  tokens app-side with a real `tiktoken` `o200k_base` tokenizer via the
-  `app::count_tokens` → `tokenizer::count` seam — exact for OpenAI models,
-  close for the rest — **as the live estimate between usage frames**: a real
+  tokens app-side with a vocabulary-free, provider-agnostic estimate via the
+  `app::count_tokens` → `tokens::estimate` seam (`docs/token-estimate.md`:
+  one pass pricing the pieces every modern tokenizer splits text into,
+  within a few percent of a real encoder, nothing loaded or resident) —
+  **as the live estimate between usage frames**: a real
   backend forwards each round's final `usage` frame as `StreamEvent::Usage`
   and `App::apply_usage` snaps the tally to the provider's own accounting
   (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`), and every

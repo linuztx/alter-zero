@@ -129,15 +129,15 @@ impl HookNote {
     }
 }
 
-/// The number of tokens in `text`, via the real `tiktoken` `o200k_base`
-/// tokenizer ([`crate::tokenizer::count`]) — the single seam every status-line
-/// tally funnels through (input, reply, reasoning, and tool output). Exact for
-/// current OpenAI models and a close approximation for the other models the
-/// configured providers serve; the running total still accumulates faithfully
-/// as text and tool output arrive. See `docs/status-indicator.md`.
+/// The number of tokens `text` is estimated to cost
+/// ([`crate::tokens::estimate`]) — the single seam every app-side count
+/// funnels through: the status-line tally (input, reply, reasoning, tool
+/// output) and every context estimate. Provider-agnostic and vocabulary-free;
+/// a provider's usage report snaps the tally to its own count, and its
+/// reports calibrate the context estimates (`docs/token-estimate.md`).
 #[must_use]
 pub(crate) fn count_tokens(text: &str) -> usize {
-    crate::tokenizer::count(text)
+    crate::tokens::estimate(text)
 }
 
 /// A flat token estimate charged per Ctrl+V-attached image

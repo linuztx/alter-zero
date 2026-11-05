@@ -165,7 +165,7 @@ pub struct TurnSummary {
     /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
     pub tokens: usize,
     /// Tokens the turn's live tally counted on top of [`tokens`](Self::tokens)
-    /// that no usage frame ever reported — the tokenizer's share. Only an
+    /// that no usage frame ever reported — the app's estimate. Only an
     /// **interrupted** turn has any: a provider reports a round's usage when
     /// the round ends, so the round the Esc cut short never does
     /// (`docs/interrupt.md`). Folded into the receipt's total, which is then
@@ -280,8 +280,8 @@ impl App {
     /// Fold one provider usage report (the round's final `usage` frame,
     /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
     /// billed total and its cached share, and **snap the live tally to the
-    /// accumulated real number** — replacing the tiktoken estimate ticked so
-    /// far, which never saw the system prompt or the re-sent context. Later
+    /// accumulated real number** — replacing the estimate ticked so far,
+    /// which never saw the system prompt or the re-sent context. Later
     /// estimates (the next round's stream) tick on top of the snapped base,
     /// and that round's own usage frame snaps again — so the tally is always
     /// "everything billed so far, plus the current round's live estimate".
@@ -291,7 +291,7 @@ impl App {
             return;
         }
         // One frame ends one round: this is where the round's `Thought for
-        // …` cells trade their tokenizer estimate for the provider's own
+        // …` cells trade their token estimate for the provider's own
         // `reasoning_tokens` (docs/thinking-stream.md).
         self.snap_round_reasoning(usage.reasoning);
         // The `/context` page's Last request and Since launch rows
@@ -304,10 +304,20 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens = self.turn_usage_tokens;
         }
-        // The round's `input` is the whole re-sent context and its `output`
-        // joins the next round's — their sum is the live context gauge
-        // (docs/compact.md), authoritative until a history mutation stales it.
-        self.context_used = usage.input.saturating_add(usage.output);
+        // The round's `input` is the provider's own count of the request's
+        // whole context: the base the gauge reads from, the estimate of what
+        // joins after it added on top, and — against the last report — a
+        // lesson in how this provider counts (docs/token-estimate.md). A
+        // compaction's request is the summarizer's, shaped unlike the
+        // conversation's (no tools, the compact prompt): it measures neither.
+        if !self.is_compacting() {
+            let (estimate, images) = self.estimate_context();
+            self.context_meter.measured(usage.input, estimate, images);
+            let now = self.history_signature();
+            self.context_base_at = Some(now);
+            self.context_synced = Some(now);
+            self.context_used = self.context_meter.reading(estimate);
+        }
     }
     /// Record that a failed request is being retried, so the status line shows
     /// `retrying {attempt}/{max}` while the backend reconnects. The 1-based

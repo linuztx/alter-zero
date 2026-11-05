@@ -277,13 +277,30 @@ pub struct App {
     /// `{used}/{window} ({pct}%)` gauge and the auto-compact trigger; `None`
     /// hides both. See `docs/compact.md`.
     context_window: Option<u64>,
-    /// The current context size in tokens: the last usage frame's
-    /// `input + output` (the provider's own accounting of the re-sent context
-    /// plus the reply that joins the next request), or — when no usage arrived
-    /// (the dummy) or the history just mutated (a compaction, a `/clear`, a
-    /// backtrack, a `/resume`) — the tokenizer estimate over the derived
-    /// context ([`estimate_context_tokens`](Self::estimate_context_tokens)).
+    /// The current context size in tokens, kept in the provider's own count
+    /// (`docs/token-estimate.md`): the last usage frame's `input` — the
+    /// provider's count of the request's whole context — plus the calibrated
+    /// estimate of everything that joined the conversation since; after a
+    /// history mutation that frame no longer describes (a compaction, a
+    /// backtrack, a `/resume`), that count moved by the calibrated estimate
+    /// of the change; the estimate alone when no frame ever arrived (the
+    /// dummy). [`context_meter`](Self::context_meter) keeps it.
     context_used: u64,
+    /// What the provider's usage reports say about this conversation's
+    /// context: the base [`context_used`](Self::context_used) reads from, and
+    /// the calibration the reports taught (`docs/token-estimate.md`).
+    context_meter: crate::tokens::ContextMeter,
+    /// Where in the history the meter's base was taken — its
+    /// `(generation, length)` — so a reading estimates only what joined
+    /// after it; `None` before any.
+    context_base_at: Option<(u64, usize)>,
+    /// The `(generation, length)` of the history
+    /// [`context_used`](Self::context_used) last read, so the loop-bottom
+    /// sync re-reads only when it moved.
+    context_synced: Option<(u64, usize)>,
+    /// Each text's estimate, remembered from the last whole-context estimate
+    /// so the next one — a usage report's — counts only what is new.
+    context_memo: crate::context_usage::CountMemo,
     /// One auto-compact attempt per user turn (codex's per-turn semantics):
     /// set when a compact turn ends **any** way — landed, interrupted, or
     /// failed — and cleared when the next real turn begins, so a compaction
@@ -995,8 +1012,18 @@ impl App {
     }
 
     pub fn set_session_info(&mut self, model: impl Into<String>, cwd: impl Into<String>) {
+        let model = model.into();
+        // Another model counts in another tokenizer: what the reports taught
+        // about the last one's no longer holds (docs/token-estimate.md).
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.model != model)
+        {
+            self.context_meter.model_changed();
+        }
         self.session = Some(SessionInfo {
-            model: model.into(),
+            model,
             cwd: cwd.into(),
         });
     }

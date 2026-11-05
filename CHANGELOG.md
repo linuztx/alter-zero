@@ -37,6 +37,29 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The context gauge follows the conversation between replies, and learns
+  how your provider counts.** The footer's `{used}/{window}` only moved when
+  the provider reported a request, so a large paste or a long tool output
+  showed up a whole request late. It now grows the moment either is added.
+  It starts from the provider's own count of the last request and adds an
+  estimate of what joined since. Each report also teaches the estimate how
+  the model's tokenizer compares, so the added share is counted in that
+  model's tokens. After a compaction or a rewind the gauge keeps the tokens
+  every request carries but the estimate cannot see, such as tool
+  schemas. A compaction's `before → after` used to drop them, which made it
+  look like it saved more than it did. The `/context` page and the Ctrl+D
+  view count in the same calibrated tokens, so they read like the footer
+  (`docs/token-estimate.md`).
+
+- **Token counts no longer ship OpenAI's vocabulary.** The status line's
+  tally and every context estimate counted with OpenAI's `o200k_base`
+  encoding, which was exact for OpenAI models only and meant a 1.6 MB
+  vocabulary in the binary, about 5 MB of memory once loaded, and a thread
+  at startup to load it. A vocabulary-free estimate replaces it. It lands
+  within a few percent of the real encoder on code, prose, JSON and shell
+  output and is equally at home with every provider, which then corrects it
+  with its own reports. The binary is smaller and the startup thread is gone.
+
 - **The `/` command palette marks the highlighted command with `→`.** The
   palette showed which command Enter runs by colour alone, which a
   monochrome terminal or a plain screen capture cannot show. The highlighted

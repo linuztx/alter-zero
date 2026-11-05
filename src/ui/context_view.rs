@@ -267,8 +267,8 @@ fn counted(n: usize, noun: &str) -> String {
     }
 }
 
-/// A token estimate as a header fact: `≈1.2k tokens` — the tokenizer's
-/// count, marked an estimate the way the `/context` page marks its own.
+/// A token estimate as a header fact: `≈1.2k tokens` — the app's estimate
+/// in the provider's tokens, marked the way the `/context` page marks its own.
 fn token_estimate(tokens: usize) -> String {
     let noun = if tokens == 1 { "token" } else { "tokens" };
     format!(
@@ -285,14 +285,17 @@ fn token_estimate(tokens: usize) -> String {
 ///
 /// Each entry opens on its role chip over the facts a raw window is opened
 /// to find — its place in the request, the tool a result answers, a
-/// tokenizer estimate of its size, its calls and pictures — then its text
+/// token estimate of its size, its calls and pictures — then its text
 /// hung on the `⎿` gutter, any native tool calls as `→ name(arguments)` rows
 /// and attachment paths dim beneath. The bottom rule's summary counts the
 /// messages and their estimate. A dim placeholder when there is nothing yet.
 /// See `docs/context.md`.
 #[must_use]
 pub fn context_body(app: &App, width: u16) -> DebugBody {
-    build_context_body(app, width, &mut crate::app::count_tokens)
+    let calibration = app.context_calibration();
+    build_context_body(app, width, &mut |text| {
+        calibration.correct_count(crate::app::count_tokens(text))
+    })
 }
 
 /// [`context_body`]'s rows alone.
@@ -437,7 +440,7 @@ pub struct ContextCache {
     /// unchanged conversation is a cache hit, not a rebuild.
     #[cfg(test)]
     pub(super) builds: usize,
-    /// Test-only: how many texts went through the tokenizer, so a test can
+    /// Test-only: how many texts went through the estimator, so a test can
     /// prove a rebuild counts only what is new.
     #[cfg(test)]
     pub(super) counted: usize,
@@ -466,6 +469,9 @@ struct ContextSig {
     instructions_len: Option<usize>,
     listings_len: Option<usize>,
     agent_reminder_len: Option<usize>,
+    /// The ratio the estimates are corrected by — a new usage report's
+    /// lesson recounts the window (`docs/token-estimate.md`).
+    calibration: u64,
 }
 
 impl ContextSig {
@@ -484,6 +490,7 @@ impl ContextSig {
             instructions_len: app.user_instructions.as_ref().map(String::len),
             listings_len: app.listings.as_ref().map(String::len),
             agent_reminder_len: app.agent_system_reminder.as_ref().map(String::len),
+            calibration: app.context_calibration().ratio_permille(),
         }
     }
 }
@@ -521,8 +528,13 @@ impl ContextCache {
             misses.set(misses.get() + 1);
             crate::app::count_tokens(text)
         };
+        // In the provider's tokens, outside the memo of the estimate's own
+        // counts (docs/token-estimate.md).
+        let calibration = app.context_calibration();
         let memo = &mut self.memo;
-        self.body = build_context_body(app, width, &mut |text| memo.count(text, &tokenize));
+        self.body = build_context_body(app, width, &mut |text| {
+            calibration.correct_count(memo.count(text, &tokenize))
+        });
         memo.finish_pass();
         self.sig = Some(sig);
         #[cfg(test)]
