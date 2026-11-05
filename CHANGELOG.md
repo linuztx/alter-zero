@@ -59,6 +59,20 @@ release heading when a version is cut.
   columns in, where its text was beside the `●`, so only the bullet goes
   away. The turn's closing `Worked for …` line is unchanged.
 
+- **The status line and the footer now wear the theme's colours.** The
+  status verb (`Working…`, or a task's `Setting up project structure…`)
+  rests in the same gradient as the `/mcp` and `/skills` titles, with the
+  shimmer still sweeping over it, and `Thinking for 4s` is purple while the
+  model thinks. In the footer the model name is in the accent, the thinking
+  mode and a speed tier (`medium fast`) in the same purple as `Thinking for`,
+  and the working directory in green, which the banner's path now matches.
+  The context gauge stays dim until the window is 75% full, then turns
+  amber, and red at the auto-compact threshold, the same rule the `/context`
+  page uses. `master` permission mode is red, since it runs everything
+  without asking; the other modes stay dim. Every colour comes from the
+  active `/theme`, and messages, replies and tool cells are unchanged
+  (`docs/footer.md`, `docs/status-indicator.md`).
+
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
   label with its place in the request and a rough token count beside it, and

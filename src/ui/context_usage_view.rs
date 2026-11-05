@@ -261,24 +261,11 @@ fn fill_spans(gauge: &Gauge<'_>) -> Vec<Span<'static>> {
     spans
 }
 
-/// The subtitle share's colour for a `window`-token window.
+/// The subtitle share's colour for a `window`-token window — the one fill
+/// rule the footer's gauge reads too ([`context_fill_color`]), resting on
+/// the subtitle's dim.
 fn fill_color(gauge: &Gauge<'_>, window: u64) -> Color {
-    if window == 0 {
-        return model_meta_color();
-    }
-    let fill = gauge.total as f64 / window as f64;
-    let full = gauge
-        .threshold
-        .map_or(CONTEXT_USAGE_FULL_SHARE, |threshold| {
-            threshold as f64 / window as f64
-        });
-    if fill >= full {
-        context_usage_full_color()
-    } else if fill >= CONTEXT_USAGE_WARN_SHARE {
-        context_usage_warn_color()
-    } else {
-        model_meta_color()
-    }
+    context_fill_color(gauge.total, window, gauge.threshold).unwrap_or_else(model_meta_color)
 }
 
 /// Split `cells` among `sizes`, each by its **own** share — its fraction of

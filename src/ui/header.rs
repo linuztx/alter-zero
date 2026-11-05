@@ -3,7 +3,7 @@
 
 use super::inline::{inline_spans, wrap_inline};
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
+use super::wrap::{clamp_spans, cols, wrap_text};
 use super::*;
 
 use crate::app::Mascot;
@@ -18,12 +18,7 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
     let mut col = 0usize;
     let mut run: Option<(Color, String)> = None;
     for g in text.graphemes(true) {
-        let t = if total <= 1 {
-            0.0
-        } else {
-            col as f32 / (total - 1) as f32
-        };
-        let color = lerp_color(header_gradient_start(), header_gradient_end(), t);
+        let color = header_gradient_at(col, total);
         match &mut run {
             Some((c, s)) if *c == color => s.push_str(g),
             _ => {
@@ -64,8 +59,8 @@ pub(super) fn page_title_line(text: &str, width: u16) -> Line<'static> {
 }
 
 /// The metadata column beside the mascot, one span-row each: the bold name +
-/// dim `(v…)` version, the dim cwd (only with session info), and the cyan
-/// command hint.
+/// dim `(v…)` version, the cwd in the footer's path colour (only with
+/// session info), and the cyan command hint.
 fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
     let accent = Style::new().fg(header_accent_color());
     let dim = Style::new().fg(header_meta_color());
@@ -74,7 +69,10 @@ fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
         Span::styled(format!(" (v{})", env!("CARGO_PKG_VERSION")), dim),
     ]];
     if let Some(session) = &app.session {
-        rows.push(vec![Span::styled(session.cwd.clone(), dim)]);
+        rows.push(vec![Span::styled(
+            session.cwd.clone(),
+            Style::new().fg(header_cwd_color()),
+        )]);
     }
     let mut hint: Vec<Span<'static>> = Vec::new();
     for (i, token) in HEADER_HINT.iter().enumerate() {

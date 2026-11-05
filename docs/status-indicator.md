@@ -79,8 +79,9 @@ real backend's own latency plays the same role.
   `VERB_ROTATION` (30 s)** of the turn's elapsed; the committed summary opens
   with the past tense of whichever verb the line wore last. Deterministic — no
   RNG, testable like `dummy_response`. See *The verb: rotation and the
-  summary* below. The white verb text carries a white **shimmer wave**
-  (below).
+  summary* below. The verb rests in the **page titles' dress** — the
+  `/mcp` and `/skills` headlines' bold banner gradient, washed across the
+  verb's own width — and a bright **shimmer wave** sweeps it (below).
 - **elapsed** — time since the turn was submitted, **humanized** by the pure
   `ui::format_elapsed(secs)`: bare seconds under a minute (`0s`, `45s` — the
   live seconds keep ticking so a running timer never looks frozen), `{m}m {s}s`
@@ -119,8 +120,9 @@ real backend's own latency plays the same role.
   So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`
   on the first chunk, and back to `↑` after each tool; the count keeps growing
   either way.
-- **retrying {a}/{max}** — shown in **amber** (`status_retry_color()`, the only
-  non-dim clause) *only while a failed request is being retried*: the
+- **retrying {a}/{max}** — shown in **amber** (`status_retry_color()`, the
+  caution colour it shares only with the offline clause that takes its slot)
+  *only while a failed request is being retried*: the
   connection/send failed (or a transient `429`/`5xx` came back) before any
   content streamed, or the connection was lost mid-reply and the round is
   starting over, its partial withdrawn — so the real backend is reconnecting
@@ -129,6 +131,11 @@ real backend's own latency plays the same role.
   request recovered). The dummy never retries.
 - **Thinking for {m}** — shown *only while actively thinking* (the `{m}`
   humanized by `format_elapsed` like the elapsed); dropped once thinking ends.
+  It wears the palette's **purple** (`status_thinking_color()`), the hue that
+  means *reasoning* on this screen: the footer's thinking mode wears it too
+  (`docs/footer.md`), so the effort and the thinking it buys read as one fact.
+  Every theme keeps it apart from the dim metrics and the amber retry clause
+  (`the_thinking_clause_wears_the_thinking_colour`).
 - **esc to interrupt** — the closing clause, always present while the line
   shows: codex's discoverability hint for the Esc interrupt
   (`docs/interrupt.md`). An interrupted turn commits the red `Conversation
@@ -382,10 +389,19 @@ The verb (`Working…`) renders one **bold span per char**, colours from
 - a raised-cosine brightness band (`t = ½(1 + cos(π·dist/5))`, half-width 5
   chars) sweeps the text once per **2 s**, with 10 chars of off-text padding on
   each side so it slides on and off the ends;
-- each char blends from the theme's `shimmer_base` (One Dark's white-grey
-  `#888888`) toward its `text` colour (`#FFFFFF` there) by `t · 0.9` —
-  `docs/theme.md`; white text, noticeably brighter at the
-  crest;
+- each char blends from its **resting colour** toward the theme's `text`
+  colour by `t · 0.9`. Codex rests the verb on grey (`#888888`), which this
+  line wore until the verb took the page titles' dress: now each char rests
+  on `status_verb_color(col, total)` — the banner gradient
+  (`header_gradient_at`, the one wash the mascot and every page title wear)
+  at the char's display column across the verb's own width, the same keying
+  `page_title_spans` uses, so between crests (most of the sweep) the verb is
+  char-for-char what a `/mcp` or `/skills` title looks like, in whichever
+  theme is active (`the_status_verb_rests_in_the_page_titles_dress_in_every_theme`).
+  The crest still lifts each char toward the text colour, so the wave reads
+  as a glint passing over coloured text. A task's activeForm is the verb too
+  and wears the same dress; the offline verb keeps its warning amber
+  (`docs/offline.md`), told apart from an ordinary verb by colour;
 - codex reads a process-start clock inside the renderer; our port stays **pure**
   by deriving the phase from the boundary-supplied `TurnStatus::elapsed`
   (sub-second resolution), so tests pin the wave at exact phases;
@@ -512,9 +528,10 @@ ahead of the round's batch.
   the spinner's comet head is white bold with a monotonically fading tail
   between dim walls, steps a frame per interval, reverses at the right wall
   (the tail whipping around behind it), and loops after a full cycle; the verb
-  per-char greyscale-white bold spans, the metrics
-  dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
-  advances; every verb swap happens with the band off the word — the
+  per-char bold spans resting in the page titles' gradient in every theme, the
+  metrics dim and the thinking clause purple; the wave's crest lifts its char
+  toward the highlight, off-band chars sit at rest, and the crest moves as
+  `elapsed` advances; every verb swap happens with the band off the word — the
   outgoing verb's last frame, the swap and the next frame, at every swap down
   the table (the rotation is a whole number of sweeps); the `/spinner`
   preview walks the verbs like a

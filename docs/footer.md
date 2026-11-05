@@ -1,6 +1,6 @@
 # The session-context footer under the input box
 
-Port of openai/codex's footer **status line**: a single dim row pinned directly
+Port of openai/codex's footer **status line**: a single row pinned directly
 below the input box's bottom rule, giving ambient session context —
 
 ```
@@ -77,10 +77,11 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   band-replaces-footer swap is decided; `live_height` adds it,
   [`render_live`]/`cursor_position` pass it, so reserve and paint can't drift.
 - `footer_line(app, width) -> Line` — `FOOTER_INDENT` (two spaces, codex's
-  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, every span dim
-  (`footer_color()`/`FOOTER_SEPARATOR`); the content is truncated with a
-  trailing `…` when it overflows the width (codex's
-  `truncate_line_with_ellipsis_if_overflow`). Two later segments append to the
+  `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, each segment in its own colour
+  and the ` · ` separators dim (`footer_color()`/`FOOTER_SEPARATOR`; see
+  *Colour* below); the content is truncated with a trailing `…` when it
+  overflows the width (codex's `truncate_line_with_ellipsis_if_overflow`),
+  each cut segment keeping its colour. Two later segments append to the
   same dim ` · ` chain when they apply — the **context gauge**
   `{used}/{window} ({pct}%)` whenever the model's context window is known
   (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
@@ -109,7 +110,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   That last segment is the one **focusable** one: ↓ from an idle composer
   lights it on the palette cyan (`footer_focus_bg()`/`footer_focus_fg()`) and
   Enter opens the ↓ manager band, Claude-Code-style. Only that span's style
-  changes — the row keeps every other segment, dim as ever — and the
+  changes — the row keeps every other segment in its own colour — and the
   truncation path carries the style through, so a narrow width cuts the lit
   segment without losing the highlight (see `docs/background.md`).
 - `display_cwd(path, home) -> String` — codex's `format_directory_display`
@@ -120,6 +121,40 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   layout grows a fourth area `[strip, input, band, footer]` at the very
   bottom, so the box's top — and the cursor — stay put whether or not the
   footer (or the band that replaces it) is showing.
+
+### Colour
+
+Codex's status line with its theme colours on — *cyan model, green path* —
+read off the active `/theme` palette, so the row follows every theme the way
+the banner does (`docs/theme.md`). Colour marks what the row **names**; the
+punctuation between the names stays dim:
+
+```
+  gpt-6.1-terra medium fast · ~/Codes/rust/alter-zero · 0/475k (0.0%)       master
+```
+
+- **model** — `footer_model_color()`, the accent: what the session talks to
+  is the row's first fact. A subagent's pinned model wears it too.
+- **thinking mode and speed tier** — `footer_qualifier_color()`, the status
+  line's thinking purple (`status_thinking_color()`), one colour for what
+  Ctrl+T and a tier's command turn; the `Thinking for Ns` clause above the
+  box wears the same hue, so the effort and the thinking it buys read as one
+  fact (`docs/status-indicator.md`).
+- **cwd** — `footer_cwd_color()`, the success green, codex's path colour; the
+  banner's cwd row wears it too (`header_cwd_color()`, `docs/header.md`), so
+  the path is one colour wherever the app names it.
+- **context gauge** — `footer_gauge_color(used, window, threshold)`: the
+  `/context` page's share rule, shared rather than copied
+  (`context_fill_color`, which that page's subtitle calls too): dim while
+  there is room, amber from 75%, red from the auto-compact threshold that
+  page reads for the conversation on screen (`App::context_usage_threshold`,
+  90% with none). A gauge in colour is a gauge saying compaction is near.
+- **permission mode** — `footer_mode_color(mode)`: `master`, which asks
+  nothing, in the error red (Claude Code's bypass-permissions dress), the one
+  mode where colour is a safety signal; `manual`, `edit` and `auto` still ask
+  something and stay dim.
+- the ` · ` separators, the `…` cut and an unfocused shell count stay
+  `footer_color()`.
 
 ### Wiring (`main.rs`, the I/O boundary)
 
@@ -132,8 +167,9 @@ reseat, resizes) already accounts for the row.
 ## Known divergences from codex
 
 - **Not configurable.** Codex's `/statusline` lets users pick items (branch,
-  context %, …) and theme colours; ours is the fixed default pair — model +
-  cwd — in the all-dim no-colour style. More items later are new spans in
+  context %, …) and turn its theme colours off; ours is the fixed default
+  pair — model + cwd — always in theme colour (*Colour* above), painted from
+  the active `/theme` palette. More items later are new spans in
   `footer_line`.
 - **Fewer footer modes.** Codex multiplexes quit reminders, Esc hints, and
   queue hints through the same row; our slot has exactly four occupants — the
@@ -155,9 +191,13 @@ reseat, resizes) already accounts for the row.
 - `ui`: `footer_rows` is 0 without session info / 1 with it / 0 when a band is
   open — and 1 whenever a Ctrl+R search is open or shell mode is on, session
   info or not (see `docs/history-search.md` / `docs/shell-command.md`, which
-  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}` all-dim with the dim
-  separator; a ↓-focused shell count lights up on cyan while every other
-  segment keeps its text and dim styling; it truncates with `…` at narrow
+  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}`
+  with the model in the accent, the cwd green and the separator dim, every
+  theme painting the two apart from each other and from the dim; the thinking
+  mode and a speed tier wear the thinking colour; the gauge turns amber from
+  75% and red from the threshold; only `master` is coloured at the right edge;
+  a ↓-focused shell count lights up on cyan while every other segment keeps
+  its text and its own styling; it truncates with `…` at narrow
   widths; `display_cwd` maps home →
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last

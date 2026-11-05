@@ -395,7 +395,10 @@ The session has a **permission posture**, `permission::PermissionMode`, pinned
 flush at the footer's **right edge** (`{model} · {cwd}      auto` — its own
 zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
 can never eat it; `docs/footer.md`) and **cycled** with **Shift+Tab** from the
-composer, one step per press in increasing autonomy:
+composer, one step per press in increasing autonomy. The label is dim, except
+`master`'s, which wears the error red — Claude Code's bypass-permissions dress
+(`footer_mode_color`): the one posture that asks nothing is the one whose
+colour is a safety signal:
 
 - **manual** — every `write`/`edit` and every `bash` command asks, as above.
   The most cautious posture, and the one a mode that can't be read degrades

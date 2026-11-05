@@ -266,18 +266,21 @@ pub fn backtrack_hint_line() -> Line<'static> {
 }
 
 /// The footer's single line: the `FOOTER_INDENT`, then `{model} · {cwd}` —
-/// every segment dim (codex's no-theme-colours status line, the separator dim
-/// like its ` · `) — cut with a trailing `…` when it overflows `width`
-/// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
-/// model carries its thinking mode right beside the name (`{model} {mode}`,
-/// Ctrl+T cycles it — `docs/reasoning.md`). Empty when no session info has
-/// been injected.
+/// codex's status line with theme colours on: the model in the accent, the
+/// path in green, the ` · ` separators dim (`docs/footer.md`) — cut with a
+/// trailing `…` when it overflows `width` (codex's
+/// `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable model
+/// carries its thinking mode right beside the name (`{model} {mode}`, Ctrl+T
+/// cycles it — `docs/reasoning.md`), in the status line's thinking colour.
+/// Empty when no session info has been injected.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
         return Line::default();
     };
     let dim = Style::new().fg(footer_color());
+    let model_style = Style::new().fg(footer_model_color());
+    let qualifier = Style::new().fg(footer_qualifier_color());
     // The permission mode is pinned flush at the row's RIGHT edge — its own
     // zone, like the transcript separator's right-aligned percentage, not
     // another ` · ` segment — so however long the model/cwd/gauge chain
@@ -285,32 +288,36 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // the one segment with a safety meaning (docs/permissions.md). Its
     // columns (plus a gap) come off the chain's budget up front. Absent
     // while permissions are disabled: nothing asks, and a mode would be a
-    // lie.
-    let mode = app.permission_mode().map(|mode| mode.label());
-    let reserved = mode.map_or(0, |label| cols(label) + FOOTER_MODE_GAP);
+    // lie. Only `master` — which asks nothing — wears a colour of alarm
+    // (`footer_mode_color`).
+    let mode = app.permission_mode();
+    let reserved = mode.map_or(0, |mode| cols(mode.label()) + FOOTER_MODE_GAP);
     // The model segment names the conversation on screen: inside a subagent's
     // session view, a type pinned to another model shows that model — and no
     // thinking mode, which the launch dropped along with the session's model
     // (`docs/subagents.md`) — while an inheriting type keeps the session's
     // pair (`docs/agent-context-gauge.md`).
     let mut segments = match app.viewed_agent_model() {
-        Some(pinned) => vec![Span::styled(pinned.to_string(), dim)],
+        Some(pinned) => vec![Span::styled(pinned.to_string(), model_style)],
         None => {
-            let mut model = vec![Span::styled(session.model.clone(), dim)];
+            let mut model = vec![Span::styled(session.model.clone(), model_style)];
             if let Some(thinking) = &app.thinking {
-                model.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
+                model.push(Span::styled(
+                    format!(" {}", thinking.mode.label()),
+                    qualifier,
+                ));
             }
             // The selected speed tier follows the thinking mode — `fast` —
             // and standard shows nothing (docs/fast-mode.md).
             if let Some(tier) = app.speed.as_ref().and_then(|speed| speed.selected()) {
-                model.push(Span::styled(format!(" {}", tier.label()), dim));
+                model.push(Span::styled(format!(" {}", tier.label()), qualifier));
             }
             model
         }
     };
     segments.extend([
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
-        Span::styled(session.cwd.clone(), dim),
+        Span::styled(session.cwd.clone(), Style::new().fg(footer_cwd_color())),
     ]);
     // The context gauge — `{used}/{window} ({pct}%)` (e.g. `1.3k/160k
     // (0.8%)`) — whenever the window of the conversation ON SCREEN is known,
@@ -319,7 +326,10 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // session view — that agent's own context against its model's window
     // (`App::context_gauge`, docs/agent-context-gauge.md; reading the lead's
     // pair there was the reported bug). Both counts are humanized by the
-    // status line's token formatter; the share keeps one decimal.
+    // status line's token formatter; the share keeps one decimal. It rests
+    // dim and turns amber, then red, as the window fills — the `/context`
+    // page's rule (`footer_gauge_color`), against the threshold that page
+    // reads for the conversation on screen.
     if let Some((used, window)) = app.context_gauge() {
         #[allow(clippy::cast_precision_loss)] // display only — one decimal
         let pct = used as f64 * 100.0 / window as f64;
@@ -330,7 +340,11 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
                 format_token_count(usize::try_from(used).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(window).unwrap_or(usize::MAX))
             ),
-            dim,
+            Style::new().fg(footer_gauge_color(
+                used,
+                window,
+                app.context_usage_threshold(),
+            )),
         ));
     }
     // Running background shells append a `· {n} shell(s)` count — the ↓
@@ -373,15 +387,19 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     }
     // Seat the mode flush against the right edge: pad the gap the reservation
-    // held back (at least [`FOOTER_MODE_GAP`]), then the label, dim like the
-    // rest of the row.
-    if let Some(label) = mode {
+    // held back (at least [`FOOTER_MODE_GAP`]), then the label in its own
+    // colour — dim, or `master`'s red.
+    if let Some(mode) = mode {
+        let label = mode.label();
         let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
         let pad = (width as usize).saturating_sub(used + cols(label));
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
-        spans.push(Span::styled(label.to_string(), dim));
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::new().fg(footer_mode_color(mode)),
+        ));
     }
     Line::from(spans)
 }

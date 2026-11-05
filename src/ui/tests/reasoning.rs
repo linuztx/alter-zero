@@ -8,7 +8,7 @@ use crate::ui::live::preview_lines;
 use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
 use crate::ui::theme::{
     SHIMMER_SWEEP, TOOL_BULLET, TOOL_PULSE_PERIOD, reasoning_label_color, reasoning_shimmer_base,
-    shimmer_base, shimmer_highlight,
+    reasoning_text_color, shimmer_highlight,
 };
 use crate::ui::wrap::cols;
 
@@ -350,8 +350,8 @@ fn the_live_label_rests_at_bold_white_not_codexs_grey() {
         "the wave rests at the near-white floor: {resting:?}"
     );
     assert!(
-        !resting.contains(&shimmer_base()),
-        "and never at codex's grey: {resting:?}"
+        !resting.contains(&reasoning_text_color()),
+        "and never at the dim the thought under it wears: {resting:?}"
     );
     let brightest = resting
         .iter()

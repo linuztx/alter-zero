@@ -26,8 +26,7 @@ use crate::highlight::CodeTheme;
 /// of these or derived from one (the accessor functions in [`super::theme`]
 /// hold the derivations — a link's blue is also the list marker's and the
 /// banner gradient's far end; the running bullet blinks in `dim`), so a
-/// new theme is one table of twenty-one values and nothing
-/// else.
+/// new theme is one table of twenty values and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Palette {
     /// The reply text, the composer prompt, a tool's name and arguments and
@@ -51,8 +50,9 @@ pub(super) struct Palette {
     pub selection_bg: Color,
     /// The brand accent: what every picker selects with, the system bullet,
     /// inline code, the banner hint, a permission prompt's title, the Ctrl+R
-    /// query, the agent session view's composer label chip — and the
-    /// gradient's near end.
+    /// query, the agent session view's composer label chip, the footer's
+    /// model name — and the gradient's near end (the banner, every page
+    /// title, the status verb).
     pub accent: Color,
     /// Ink over an `accent` fill (the ↓-focused footer chip, the current
     /// ask-question chip, the agent session view's composer label).
@@ -61,16 +61,19 @@ pub(super) struct Palette {
     /// context view's user tag — and the gradient's far end.
     pub link: Color,
     /// Success: the finished tool bullet, a diff's `+`, the active model's
-    /// ✓, a completed task, a background notice that went well — and a
-    /// reply's blockquotes, codex's green.
+    /// ✓, a completed task, a background notice that went well, the path in
+    /// the footer and the banner — and a reply's blockquotes, codex's green.
     pub success: Color,
     /// Failure: the error bullet, a failed tool, a diff's `-`, the `!` shell
-    /// mode's red — and, mixed toward `dim`, an error toast.
+    /// mode's red, the footer's `master` mode and a context gauge past the
+    /// auto-compact threshold — and, mixed toward `dim`, an error toast.
     pub error: Color,
     /// Caution: the `retrying n/m` clause, the context view's system tag,
-    /// the ask review's unanswered warning.
+    /// the ask review's unanswered warning, a context gauge past 75%.
     pub warning: Color,
-    /// The context view's tool tag and the `/resume` toolbar's focus.
+    /// The context view's tool tag, the `/resume` toolbar's focus — and
+    /// *reasoning*: the status line's `Thinking for` clause and the footer's
+    /// thinking mode.
     pub purple: Color,
     /// The numbered diff rows' ground — an added row, a removed row, and
     /// the brighter marks under the characters that actually changed
@@ -79,8 +82,6 @@ pub(super) struct Palette {
     pub diff_del_bg: Color,
     pub diff_add_mark_bg: Color,
     pub diff_del_mark_bg: Color,
-    /// The status verb's resting grey, under the shimmer's sweep to `text`.
-    pub shimmer_base: Color,
     /// The bottom of the `pulse` spinner style's breath (its top is the
     /// text colour; the running tool bullet itself blinks in `dim`,
     /// `docs/tool-pulse.md`).
@@ -116,7 +117,6 @@ const MOCHA: Palette = Palette {
     diff_del_bg: Color::Rgb(0x44, 0x32, 0x44),
     diff_add_mark_bg: Color::Rgb(0x57, 0x71, 0x5E),
     diff_del_mark_bg: Color::Rgb(0x77, 0x4C, 0x61),
-    shimmer_base: Color::Rgb(0x7F, 0x84, 0x9C),
     pulse_dim: Color::Rgb(0x58, 0x5B, 0x70),
     code: CodeTheme::CatppuccinMocha,
 };
@@ -141,7 +141,6 @@ const MACCHIATO: Palette = Palette {
     diff_del_bg: Color::Rgb(0x48, 0x38, 0x4B),
     diff_add_mark_bg: Color::Rgb(0x5B, 0x72, 0x60),
     diff_del_mark_bg: Color::Rgb(0x78, 0x4F, 0x61),
-    shimmer_base: Color::Rgb(0x80, 0x87, 0xA2),
     pulse_dim: Color::Rgb(0x5B, 0x60, 0x78),
     code: CodeTheme::CatppuccinMacchiato,
 };
@@ -166,7 +165,6 @@ const FRAPPE: Palette = Palette {
     diff_del_bg: Color::Rgb(0x51, 0x42, 0x51),
     diff_add_mark_bg: Color::Rgb(0x62, 0x76, 0x62),
     diff_del_mark_bg: Color::Rgb(0x7D, 0x55, 0x60),
-    shimmer_base: Color::Rgb(0x83, 0x8B, 0xA7),
     pulse_dim: Color::Rgb(0x62, 0x68, 0x80),
     code: CodeTheme::CatppuccinFrappe,
 };
@@ -194,7 +192,6 @@ const LATTE: Palette = Palette {
     diff_del_bg: Color::Rgb(0xEA, 0xC8, 0xD3),
     diff_add_mark_bg: Color::Rgb(0xA6, 0xCF, 0xA0),
     diff_del_mark_bg: Color::Rgb(0xE3, 0x92, 0xA6),
-    shimmer_base: Color::Rgb(0x8C, 0x8F, 0xA1),
     pulse_dim: Color::Rgb(0xAC, 0xB0, 0xBE),
     code: CodeTheme::CatppuccinLatte,
 };
@@ -224,7 +221,6 @@ const ONE_DARK: Palette = Palette {
     diff_del_bg: Color::Rgb(0x4A, 0x22, 0x1D),
     diff_add_mark_bg: Color::Rgb(0x2E, 0x6F, 0x3E),
     diff_del_mark_bg: Color::Rgb(0x8B, 0x2F, 0x27),
-    shimmer_base: Color::Rgb(0x88, 0x88, 0x88),
     pulse_dim: Color::Rgb(0x4A, 0x4A, 0x4A),
     code: CodeTheme::OneDark,
 };
@@ -250,7 +246,6 @@ const DRACULA: Palette = Palette {
     diff_del_bg: Color::Rgb(0x4F, 0x32, 0x3C),
     diff_add_mark_bg: Color::Rgb(0x39, 0x81, 0x53),
     diff_del_mark_bg: Color::Rgb(0x82, 0x3C, 0x43),
-    shimmer_base: Color::Rgb(0x62, 0x72, 0xA4),
     pulse_dim: Color::Rgb(0x44, 0x47, 0x5A),
     code: CodeTheme::Dracula,
 };
@@ -276,7 +271,6 @@ const NORD: Palette = Palette {
     diff_del_bg: Color::Rgb(0x48, 0x3C, 0x48),
     diff_add_mark_bg: Color::Rgb(0x5F, 0x6E, 0x60),
     diff_del_mark_bg: Color::Rgb(0x6B, 0x47, 0x52),
-    shimmer_base: Color::Rgb(0x7B, 0x88, 0xA1),
     pulse_dim: Color::Rgb(0x4C, 0x56, 0x6A),
     code: CodeTheme::Nord,
 };
@@ -302,7 +296,6 @@ const GRUVBOX: Palette = Palette {
     diff_del_bg: Color::Rgb(0x4E, 0x2E, 0x2A),
     diff_add_mark_bg: Color::Rgb(0x64, 0x66, 0x27),
     diff_del_mark_bg: Color::Rgb(0x81, 0x36, 0x2D),
-    shimmer_base: Color::Rgb(0x92, 0x83, 0x74),
     pulse_dim: Color::Rgb(0x66, 0x5C, 0x54),
     code: CodeTheme::GruvboxDark,
 };
@@ -330,7 +323,6 @@ const SOLARIZED: Palette = Palette {
     diff_del_bg: Color::Rgb(0x37, 0x2D, 0x34),
     diff_add_mark_bg: Color::Rgb(0x42, 0x62, 0x1B),
     diff_del_mark_bg: Color::Rgb(0x6E, 0x2E, 0x32),
-    shimmer_base: Color::Rgb(0x58, 0x6E, 0x75),
     pulse_dim: Color::Rgb(0x3F, 0x5A, 0x60),
     code: CodeTheme::SolarizedDark,
 };
@@ -357,7 +349,6 @@ const MONOKAI: Palette = Palette {
     diff_del_bg: Color::Rgb(0x4D, 0x28, 0x30),
     diff_add_mark_bg: Color::Rgb(0x5C, 0x76, 0x27),
     diff_del_mark_bg: Color::Rgb(0x7F, 0x27, 0x44),
-    shimmer_base: Color::Rgb(0x75, 0x71, 0x5E),
     pulse_dim: Color::Rgb(0x49, 0x48, 0x3E),
     code: CodeTheme::Monokai,
 };
@@ -392,7 +383,6 @@ const ANSI: Palette = Palette {
     diff_del_bg: Color::Reset,
     diff_add_mark_bg: Color::DarkGray,
     diff_del_mark_bg: Color::DarkGray,
-    shimmer_base: Color::DarkGray,
     pulse_dim: Color::DarkGray,
     code: CodeTheme::Ansi,
 };

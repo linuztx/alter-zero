@@ -23,8 +23,11 @@ as the conversation grows — exactly like Claude Code's welcome banner.
   rule is drawn (see *Why borderless* below).
 - **Title** — `Alter Zero` **bold**, then `(v{CARGO_PKG_VERSION})` dim.
 - **cwd** — the same `~`-relative display string the footer uses
-  (`App::session.cwd`, produced by `ui::display_cwd` at the boundary), dim.
-  Skipped when no session info is injected.
+  (`App::session.cwd`, produced by `ui::display_cwd` at the boundary), in the
+  footer's path colour too — the theme's success green
+  (`header_cwd_color()` is `footer_cwd_color()`, `docs/footer.md`), so the
+  path is one colour at both ends of the screen. Skipped when no session info
+  is injected.
 - **Hint** — bare command tokens (`/login`, `/model`, `/resume`) in the cyan
   accent, three-space separated (dim separators).
 
@@ -139,7 +142,7 @@ kept clear of the strings other phases key on (`for commands`,
   trailing pad on meta-less rows); the metadata block seats lower beside a
   taller mascot (every mascot's session-less banner puts its two rows at
   1–2, art alone above); it follows `App::mascot`; the title is bold-name + dim-version,
-  the cwd dim, the hint in the accent; the art carries the accent → link gradient; a
+  the cwd in the footer's path colour, the hint in the accent; the art carries the accent → link gradient; a
   very narrow width falls back to the text badge and never exceeds the
   width; a session-less `App` still renders art + version (no cwd row); the
   banner contains none of the smoke-reserved strings at any width for any

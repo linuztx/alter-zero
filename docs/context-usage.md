@@ -65,7 +65,10 @@ fill: `{model} · ≈{total} of {window} tokens ({pct}%)`, every count through
 `ui::format_token_count` — the footer's and the receipt's humanizer. The `≈`
 is deliberate (*Estimated and reported*, below). The share turns amber past
 75% and red past the auto-compact threshold, the one colour on the line, so
-a window about to compact says so before anything is read. With no window
+a window about to compact says so before anything is read. The rule is one
+function, `ui::theme::context_fill_color`, which the footer's gauge calls
+too (`docs/footer.md`), so the two can never disagree about how full the
+window is. With no window
 known the line reads `{model} · ≈{total} tokens · window unknown` and every
 percentage on the page is a share of the total instead.
 
