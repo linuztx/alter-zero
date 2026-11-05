@@ -207,7 +207,9 @@ impl App {
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
-        // The usage accumulators are per-turn (docs/prompt-caching.md).
+        // The usage accumulators are per-turn (docs/prompt-caching.md), and
+        // no request of this one is out yet (docs/token-estimate.md).
+        self.request_estimate = None;
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;

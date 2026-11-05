@@ -277,6 +277,22 @@ impl App {
         &self.tool_drafts
     }
 
+    /// A round's request is about to go out
+    /// ([`crate::stream::StreamEvent::RequestEstimate`]): the gauge reads its
+    /// estimate — in the provider's tokens once a frame has taught them —
+    /// until the round's usage frame lands, and that frame is compared with
+    /// it ([`apply_usage`](App::apply_usage)). `tools` is the tool schemas'
+    /// share, which re-estimates count from here on; a `/compact` request,
+    /// sent without tools, leaves the share the conversation's requests
+    /// carry. See `docs/token-estimate.md`.
+    pub fn apply_request_estimate(&mut self, input: u64, tools: u64) {
+        self.request_estimate = Some(input);
+        if !self.is_compacting() {
+            self.request_tools_estimate = tools;
+        }
+        self.context_used = self.token_calibration.apply(input);
+    }
+
     /// Fold one provider usage report (the round's final `usage` frame,
     /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
     /// billed total and its cached share, and **snap the live tally to the
@@ -289,6 +305,12 @@ impl App {
     pub fn apply_usage(&mut self, usage: &crate::stream::TokenUsage) {
         if self.status.is_none() {
             return;
+        }
+        // The request this frame answers was estimated as it went out: the
+        // two together are how this provider counts, and every estimate
+        // after this one is scaled to match (docs/token-estimate.md).
+        if let Some(estimate) = self.request_estimate.take() {
+            self.token_calibration.observe(estimate, usage.input);
         }
         // One frame ends one round: this is where the round's `Thought for
         // …` cells trade their token estimate for the provider's own

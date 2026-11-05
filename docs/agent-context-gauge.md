@@ -45,16 +45,20 @@ Three small pieces, each the main session's own rule one level down:
 
 - **`AgentRun::context_used`** (`agents.rs`) — the agent's context size by the
   main gauge's exact rule (`App::apply_usage`): the last usage frame's
-  `input + output`, **replaced** per frame rather than accumulated. A turn that
-  settles having seen no frame (the offline dummy scripts none on the agent
-  channel; a provider may omit usage) falls back to the token estimate over
-  the agent's own derived transcript — `App::take_turn_summary`'s rule —
+  `input + output`, **replaced** per frame rather than accumulated, and while
+  a request is out, the estimate its backend announced as it went
+  (`StreamEvent::RequestEstimate`). Each frame teaches the run its own
+  `Calibration` — a definition may pin another model — and every estimate
+  after it is scaled by it (`docs/token-estimate.md`). A turn that settles
+  having seen no frame (the offline dummy scripts none on the agent channel;
+  a provider may omit usage) falls back to an estimate: the last request's,
+  plus the reply that ended the run, when one was announced — it carried the
+  system prompt, the briefing and the tool schemas the transcript does not —
+  else the agent's own derived transcript's, `App::take_turn_summary`'s rule,
   through the one shared counting function, `app::estimate_messages_tokens`,
   so the lead's estimate and an agent's can never disagree about what a
   message costs. Zero until the first of either lands, which is where the main
-  gauge starts too. The estimate deliberately leaves out the agent's system
-  prompt and briefing (the run knows neither; the view's Ctrl+D shows them) —
-  it is only the stand-in for the frame a live provider sends every round.
+  gauge starts too.
 - **`App::context_gauge()`** — the footer's one question, `(used, window)` for
   the conversation **on screen**: the viewed agent's `context_used` against
   `App::agent_context_window` inside a session view, the main pair otherwise,
@@ -84,7 +88,9 @@ Three small pieces, each the main session's own rule one level down:
 - `agents`: usage frames seat `context_used` at `input + output` and a later
   frame replaces it while `tokens` keeps accumulating; a `StreamDone` that saw
   a frame keeps the frame's number; a settle with no frame estimates from the
-  transcript through `estimate_messages_tokens`.
+  transcript through `estimate_messages_tokens`, or builds on the last
+  announced request when there was one; an announced request moves the gauge
+  before its frame, and the frame calibrates the next one.
 - `app`: `context_gauge` follows the viewed agent and comes back to the lead's
   pair on close; a viewed agent with no known window has no gauge;
   `viewed_agent_model` answers only inside a view.

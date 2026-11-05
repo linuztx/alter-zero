@@ -279,11 +279,29 @@ pub struct App {
     context_window: Option<u64>,
     /// The current context size in tokens: the last usage frame's
     /// `input + output` (the provider's own accounting of the re-sent context
-    /// plus the reply that joins the next request), or — when no usage arrived
-    /// (the dummy) or the history just mutated (a compaction, a `/clear`, a
-    /// backtrack, a `/resume`) — the token estimate over the derived
-    /// context ([`estimate_context_tokens`](Self::estimate_context_tokens)).
+    /// plus the reply that joins the next request); while a request is out,
+    /// its announced estimate ([`App::apply_request_estimate`]); and — when
+    /// no usage arrived (the dummy) or the history just mutated (a
+    /// compaction, a `/clear`, a backtrack, a `/resume`) — the token
+    /// estimate over the derived context
+    /// ([`estimate_context_tokens`](Self::estimate_context_tokens)). Every
+    /// estimate is scaled by [`token_calibration`](Self::token_calibration),
+    /// so it reads in the provider's tokens once a frame has taught them.
     context_used: u64,
+    /// How the provider counts relative to the estimate, learned from its
+    /// usage frames ([`crate::token_estimate::Calibration`]): the gauge's
+    /// estimates, the `/context` page's and Ctrl+D's are scaled by it. Starts
+    /// over when another model answers ([`App::set_session_info`]). See
+    /// `docs/token-estimate.md`.
+    token_calibration: crate::token_estimate::Calibration,
+    /// The estimate of the request in flight, announced before it went out
+    /// ([`App::apply_request_estimate`]) and taken by its usage frame to
+    /// calibrate against.
+    request_estimate: Option<u64>,
+    /// The tool schemas' share of the conversation's last request — what a
+    /// re-estimate counts for them, `App` never seeing the schemas
+    /// themselves. A `/compact` request, sent without tools, leaves it.
+    request_tools_estimate: u64,
     /// One auto-compact attempt per user turn (codex's per-turn semantics):
     /// set when a compact turn ends **any** way — landed, interrupted, or
     /// failed — and cleared when the next real turn begins, so a compaction
@@ -995,8 +1013,18 @@ impl App {
     }
 
     pub fn set_session_info(&mut self, model: impl Into<String>, cwd: impl Into<String>) {
+        let model = model.into();
+        // The calibration measured the model that answered; another one's
+        // tokenizer is unknown until it reports (docs/token-estimate.md).
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.model != model)
+        {
+            self.token_calibration = crate::token_estimate::Calibration::NEUTRAL;
+        }
         self.session = Some(SessionInfo {
-            model: model.into(),
+            model,
             cwd: cwd.into(),
         });
     }

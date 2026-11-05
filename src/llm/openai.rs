@@ -127,6 +127,9 @@ pub struct OpenAiClient {
     /// The Chat Completions `tools` array (empty → no tools, `tool_choice`
     /// omitted). Set via [`OpenAiClient::with_tools`].
     tools: Vec<serde_json::Value>,
+    /// What [`tools`](Self::tools) adds to every request, estimated once
+    /// when the set is attached ([`OpenAiClient::tools_estimate`]).
+    tools_estimate: u64,
 }
 
 impl OpenAiClient {
@@ -135,6 +138,7 @@ impl OpenAiClient {
         Self {
             cfg,
             tools: Vec::new(),
+            tools_estimate: 0,
         }
     }
 
@@ -143,8 +147,22 @@ impl OpenAiClient {
     /// tool-free.
     #[must_use]
     pub fn with_tools(mut self, tools: Vec<serde_json::Value>) -> Self {
+        self.tools_estimate = tools
+            .iter()
+            .map(|spec| crate::token_estimate::estimate(&spec.to_string()) as u64)
+            .sum();
         self.tools = tools;
         self
+    }
+
+    /// About how many tokens the tool schemas add to every request this
+    /// client sends — each spec as the client serializes it. A wire that
+    /// frames tools its own way (Anthropic, Responses, Ollama) carries the
+    /// same names, descriptions and parameters, a few tokens either side,
+    /// which the provider's calibration absorbs (`docs/token-estimate.md`).
+    #[must_use]
+    pub const fn tools_estimate(&self) -> u64 {
+        self.tools_estimate
     }
 
     /// Point this client at a different **model** on the same provider — an
@@ -2663,6 +2681,24 @@ data: [DONE]
             .map(|piece| piece.index)
             .collect();
         assert_eq!(slots, [0, 1]);
+    }
+
+    #[test]
+    fn the_client_knows_what_its_tool_schemas_cost() {
+        // Every request carries them, so their estimate is worked out once,
+        // when the set is attached, not per round (docs/token-estimate.md).
+        let specs = crate::llm::tools::tool_specs();
+        let expected: u64 = specs
+            .iter()
+            .map(|spec| crate::token_estimate::estimate(&spec.to_string()) as u64)
+            .sum();
+        let client = OpenAiClient::new(ModelConfig::fallback()).with_tools(specs);
+        assert!(expected > 1_000, "the built-in set is thousands of tokens");
+        assert_eq!(client.tools_estimate(), expected);
+        assert_eq!(
+            OpenAiClient::new(ModelConfig::fallback()).tools_estimate(),
+            0
+        );
     }
 
     #[test]

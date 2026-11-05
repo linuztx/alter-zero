@@ -309,9 +309,11 @@ message. Each entry has two parts:
   `/context` page's, and how many tool calls or pictures it carries. The
   estimate is the footer gauge's own rule for one message
   (`app::message_tokens`, which `estimate_messages_tokens` sums): the text, a
-  flat charge per picture, each call's name and arguments — so the entries,
-  and the bottom rule's total, add up to what the gauge reads offline. A
-  header is always one row, cut with `…` at the width.
+  flat charge per picture, each call's name and arguments — in the gauge's
+  units, scaled once a frame has taught them (`docs/token-estimate.md`) — so
+  the entries, and the bottom rule's total, add up to what the gauge reads
+  offline but for the tool schemas, which no entry shows. A header is always
+  one row, cut with `…` at the width.
 - **The body, hung on the tool cell's `⎿` gutter** (`TOOL_RESULT_PREFIX`,
   through `file_cell::gutter_row_spans`): the corner on the first row, every
   other row aligned under it. The text is **word-wrapped with its own

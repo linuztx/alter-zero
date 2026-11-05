@@ -45,6 +45,8 @@ impl App {
         self.compact_buffer = Some(String::new());
         self.compact_auto = auto;
         self.compact_before = self.context_used;
+        // No request is out yet (docs/token-estimate.md).
+        self.request_estimate = None;
         self.stream_preview_rows = 1;
         // Per-turn usage accumulators reset with every turn machinery start.
         self.turn_usage_tokens = 0;
@@ -143,9 +145,10 @@ impl App {
     }
 
     /// Estimate the current context size: the system
-    /// prompt, plus every derived context message's text (the AGENTS.md
-    /// instructions among them — they ride every request), tool calls, and a
-    /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
+    /// prompt, the tool schemas' share of the last request, plus every
+    /// derived context message's text (the AGENTS.md instructions among
+    /// them — they ride every request), tool calls, and a flat
+    /// [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
     /// usage frames — and the only measure right after a history mutation
     /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
     ///
@@ -170,13 +173,27 @@ impl App {
                 self.listings.as_deref(),
                 &self.history,
             ));
-        u64::try_from(total).unwrap_or(u64::MAX)
+        // The tool schemas ride every request too; the last one said what
+        // they cost (docs/token-estimate.md).
+        u64::try_from(total)
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.request_tools_estimate)
     }
 
     /// Re-seat the gauge on the token estimate (the last usage frame no
-    /// longer describes the derived context).
+    /// longer describes the derived context), in the provider's tokens once
+    /// a frame has taught them — so the gauge does not drop to the bare
+    /// estimate and jump back at the next frame (docs/token-estimate.md).
     pub(super) fn refresh_context_used(&mut self) {
-        self.context_used = self.estimate_context_tokens();
+        self.context_used = self.token_calibration.apply(self.estimate_context_tokens());
+    }
+
+    /// How the session's provider counts relative to the estimate, learned
+    /// from its usage frames — what every context estimate the main session
+    /// shows is scaled by. See `docs/token-estimate.md`.
+    #[must_use]
+    pub const fn token_calibration(&self) -> crate::token_estimate::Calibration {
+        self.token_calibration
     }
 
     /// Whether the loop should start an **auto-compact** turn at the next idle

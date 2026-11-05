@@ -233,6 +233,17 @@ pub struct AgentRun {
     /// (`estimate_context_tokens`). Zero until the first of either lands,
     /// where the main gauge starts too.
     context_used: u64,
+    /// How its provider counts relative to the estimate, learned from its
+    /// own usage frames — the main session's
+    /// [`token_calibration`](crate::app::App::token_calibration), one per
+    /// run, since a definition may pin another model
+    /// (`docs/token-estimate.md`).
+    calibration: crate::token_estimate::Calibration,
+    /// The estimate of its request in flight, announced before it went out
+    /// ([`StreamEvent::RequestEstimate`]): the gauge until the round's frame
+    /// lands, which takes it to calibrate against — and, when no frame ever
+    /// does, what a settle builds the gauge on.
+    request_estimate: Option<u64>,
     /// Its newest usage frame — what its session view's `/context` page
     /// reports as the **Last request** (`docs/context-usage.md`).
     pub last_usage: Option<crate::stream::TokenUsage>,
@@ -430,6 +441,8 @@ impl AgentRun {
             turn_usage_cached: 0,
             turn_usage_cache_write: 0,
             context_used: 0,
+            calibration: crate::token_estimate::Calibration::NEUTRAL,
+            request_estimate: None,
             last_usage: None,
             usage: crate::context_usage::UsageLedger::default(),
             runtime: Duration::ZERO,
@@ -826,6 +839,12 @@ impl AgentRun {
                 crate::app::snap_reasoning_tokens(&mut self.history, &targets, usage.reasoning);
                 self.usage_tokens += usage.total();
                 self.tokens = self.usage_tokens;
+                // The request this frame answers was estimated as it went
+                // out: together they are how this agent's provider counts
+                // (docs/token-estimate.md).
+                if let Some(estimate) = self.request_estimate.take() {
+                    self.calibration.observe(estimate, usage.input);
+                }
                 // Its session view's `/context` page (docs/context-usage.md).
                 self.last_usage = Some(*usage);
                 self.usage.record(usage);
@@ -848,11 +867,24 @@ impl AgentRun {
                 self.drafts.clear();
                 self.status = AgentStatus::Done;
                 // No usage frame this turn (the dummy, a provider that omits
-                // them): the token estimate over this transcript stands
-                // in for the gauge — `App::take_turn_summary`'s rule
-                // (`docs/agent-context-gauge.md`).
+                // them): an estimate stands in for the gauge —
+                // `App::take_turn_summary`'s rule
+                // (`docs/agent-context-gauge.md`). The last request's, when
+                // one was announced, since it carried the system prompt, the
+                // briefing and the tool schemas the transcript does not, plus
+                // the reply that ended the run; else the transcript's own.
+                // Either in the provider's tokens (docs/token-estimate.md).
                 if self.turn_usage_tokens == 0 {
-                    self.context_used = self.estimate_context_tokens();
+                    let estimate = match self.request_estimate {
+                        Some(request) => request.saturating_add(
+                            self.result
+                                .as_deref()
+                                .map_or(0, crate::token_estimate::estimate)
+                                as u64,
+                        ),
+                        None => self.estimate_context_tokens(),
+                    };
+                    self.context_used = self.calibration.apply(estimate);
                 }
                 // The turn's dim receipt, the main turn-end's exact shape
                 // (`Done for 59s · 6.1k tokens (2.8k cached)`): the agent
@@ -986,6 +1018,13 @@ impl AgentRun {
             // The round's calls are all made: nothing more of them streams
             // (docs/write-streaming.md).
             StreamEvent::RoundCalls(_) => self.drafts.seal(),
+            // Its request is going out: the gauge shows what it carries, in
+            // the provider's tokens once a frame has taught them, until the
+            // round's own frame says (docs/token-estimate.md).
+            StreamEvent::RequestEstimate { input, .. } => {
+                self.request_estimate = Some(*input);
+                self.context_used = self.calibration.apply(*input);
+            }
             StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
@@ -1001,6 +1040,14 @@ impl AgentRun {
     #[must_use]
     pub const fn context_used(&self) -> u64 {
         self.context_used
+    }
+
+    /// How its provider counts relative to the estimate, learned from its
+    /// own usage frames — what its session view's context estimates are
+    /// scaled by (`docs/token-estimate.md`).
+    #[must_use]
+    pub const fn calibration(&self) -> crate::token_estimate::Calibration {
+        self.calibration
     }
 
     /// The token estimate of this agent's context: its own transcript
@@ -1215,6 +1262,7 @@ impl AgentRun {
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;
+        self.request_estimate = None;
         self.round_reasoning.clear();
         self.user_messages.clear();
         self.drafts.clear();
@@ -3976,6 +4024,59 @@ mod tests {
         run.apply(&chunk("done"));
         run.apply(&StreamEvent::StreamDone);
         assert_eq!(run.context_used(), 6_300, "the provider's count stands");
+    }
+
+    #[test]
+    fn an_agents_request_estimate_moves_its_gauge_and_its_frames_calibrate_it() {
+        // The main session's rule over the agent's own requests
+        // (docs/token-estimate.md): the announced estimate is the gauge until
+        // the frame lands, the frame teaches the ratio, and the next request
+        // reads in the provider's tokens.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::RequestEstimate {
+            input: 8_000,
+            tools: 3_000,
+        });
+        assert_eq!(
+            run.context_used(),
+            8_000,
+            "no frame yet: the estimate as it is"
+        );
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: 10_000,
+            output: 400,
+            ..TokenUsage::default()
+        }));
+        assert_eq!(run.context_used(), 10_400, "the frame's own count stands");
+        assert_eq!(run.calibration().per_mille(), 1_250);
+        run.apply(&StreamEvent::RequestEstimate {
+            input: 8_800,
+            tools: 3_000,
+        });
+        assert_eq!(
+            run.context_used(),
+            11_000,
+            "the growth, in the provider's tokens"
+        );
+    }
+
+    #[test]
+    fn a_frameless_settle_keeps_the_last_requests_estimate_and_adds_the_reply() {
+        // A provider that sends no usage: the request's estimate carried the
+        // system prompt, the briefing and the tool schemas the transcript
+        // does not hold, so the settle builds on it rather than dropping to
+        // the transcript's share.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::RequestEstimate {
+            input: 8_000,
+            tools: 3_000,
+        });
+        run.apply(&chunk("It is 12°C and cloudy in Warsaw."));
+        run.apply(&StreamEvent::StreamDone);
+        assert_eq!(
+            run.context_used(),
+            8_000 + crate::token_estimate::estimate("It is 12°C and cloudy in Warsaw.") as u64
+        );
     }
 
     #[test]

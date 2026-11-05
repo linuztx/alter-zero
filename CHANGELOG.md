@@ -51,6 +51,20 @@ release heading when a version is cut.
   reports still replaces the estimate as it arrives
   (`docs/token-estimate.md`).
 
+- **The context gauge moves as each request goes out, and counts in your
+  provider's tokens.** The footer's gauge moved only when a reply's usage
+  report arrived, and whatever redrew it in between — a rewind, `/resume`,
+  `/compact`, a provider that sends no usage report — fell back to an
+  estimate that left out the tool definitions every request carries and knew
+  nothing of the provider's tokenizer, so it could read thousands of tokens
+  low and jump when the next report landed. Each request is now estimated as
+  it is sent, so a pasted file or a long tool result shows its cost while the
+  model is still working. Each usage report then teaches how that provider
+  counts against the estimate, and every later figure — the gauge, the
+  `/context` breakdown, Ctrl+D's sizes, a subagent's gauge — is scaled to
+  match. Switching models starts that correction over
+  (`docs/token-estimate.md`).
+
 - **The `/` command palette marks the highlighted command with `→`.** The
   palette showed which command Enter runs by colour alone, which a
   monochrome terminal or a plain screen capture cannot show. The highlighted

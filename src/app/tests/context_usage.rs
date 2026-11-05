@@ -555,3 +555,25 @@ fn a_subagents_frames_feed_its_own_ledger_and_the_sessions() {
         "the lead's own last request is its own"
     );
 }
+
+#[test]
+fn once_a_frame_has_spoken_the_window_reads_in_the_providers_tokens() {
+    // The breakdown keeps its proportions and is scaled by the ratio the last
+    // frame taught — the footer gauge's own units (docs/token-estimate.md).
+    let mut app = session();
+    app.open_context_usage();
+    let bare = app.context_usage.as_ref().unwrap().breakdown.total();
+    let bare_tools = tokens(&app, Category::SystemTools);
+    app.begin_stream();
+    app.apply_request_estimate(1_000, 0);
+    app.apply_usage(&TokenUsage {
+        input: 2_000,
+        ..TokenUsage::default()
+    });
+    app.refresh_context_usage();
+    assert_eq!(tokens(&app, Category::SystemTools), bare_tools * 2);
+    assert_eq!(
+        app.context_usage.as_ref().unwrap().breakdown.total(),
+        bare * 2
+    );
+}

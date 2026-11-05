@@ -157,7 +157,15 @@ the same threshold — **90% of the model's context window**
   re-sent context plus the reply that joins the next request — kept honest
   across mutations by a token re-estimate: after a compaction (codex's
   `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
-  at the end of any turn that saw no usage frame (the dummy).
+  at the end of any turn that saw no usage frame (the dummy). Each request
+  moves it **before** its frame lands, too: the backend announces the
+  request's estimate as it goes out (`StreamEvent::RequestEstimate`), so a
+  big paste or a long tool result shows its cost while the model works. Every
+  estimate — that one and the re-estimates, which count the tool schemas the
+  last request carried — is scaled by the ratio the last frame taught
+  (`docs/token-estimate.md`), so the gauge reads in the provider's tokens
+  rather than dropping to the bare estimate and jumping back at the next
+  frame.
 - **A subagent's session view gauges that agent, not the lead**
   (`docs/agent-context-gauge.md`): `App::context_gauge` — the footer's one
   question — answers with the viewed agent's own `input + output`

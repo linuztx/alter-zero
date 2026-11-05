@@ -224,11 +224,16 @@ template's framing, an image's real cost, its own rendering of a tool
 schema). A request's real size is the provider's to say, and it says it once
 per round. So the page shows both, and labels which is which: the breakdown
 and the bar are estimates (the `≈`), the usage section is the provider's
-accounting. The footer's gauge is the provider's number after a round
-(`docs/compact.md`), so the two can differ by the overhead the estimate
-cannot see — and the page's total, unlike the gauge, counts the system
-prompt, the tools and the reminder even before the first message, because
-they are what the first request will cost.
+accounting. Once a frame has spoken, every estimate is scaled by the ratio of
+that provider's count to the estimate of the same request
+(`docs/token-estimate.md` *Corrected by every provider's report*): the
+categories keep their proportions and the total reads in the provider's
+tokens — the footer gauge's units, the viewed agent's own inside its session
+view. The two can still differ by what the estimate cannot see coming (the
+reply that joins the next request, a schema a provider renders its own way),
+and the page's total, unlike the gauge, counts the system prompt, the tools
+and the reminder even before the first message, because they are what the
+first request will cost.
 
 ## Live
 

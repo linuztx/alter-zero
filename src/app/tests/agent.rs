@@ -1865,3 +1865,33 @@ fn a_resume_notice_says_the_agent_works_again_and_quotes_the_user() {
         "Agent \"Build the frontend\" was resumed by user"
     );
 }
+
+#[test]
+fn an_agent_session_view_estimates_in_the_viewed_agents_tokens() {
+    // Each run learns its own provider's ratio (docs/token-estimate.md); the
+    // conversation on screen decides which one its context views use.
+    let mut app = App::new();
+    app.begin_stream();
+    app.apply_request_estimate(1_000, 0);
+    app.apply_usage(&usage_of(1_500, 0));
+    app.start_agent_group(false, &agent_specs(false));
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::RequestEstimate {
+            input: 1_000,
+            tools: 0,
+        },
+    );
+    app.apply_agent_event("a1", &StreamEvent::Usage(usage_of(2_000, 0)));
+    assert_eq!(
+        app.context_calibration().per_mille(),
+        1_500,
+        "the main session's"
+    );
+    app.open_agent_view("a1");
+    assert_eq!(
+        app.context_calibration().per_mille(),
+        2_000,
+        "the viewed agent's"
+    );
+}

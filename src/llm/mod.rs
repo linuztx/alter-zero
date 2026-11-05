@@ -255,6 +255,34 @@ impl ChatMessage {
     pub fn assistant(c: impl Into<String>) -> Self {
         Self::new("assistant", c)
     }
+
+    /// About how many tokens this message adds to a request
+    /// ([`crate::token_estimate::estimate`]): its text, a flat
+    /// [`IMAGE_TOKENS`](crate::token_estimate::IMAGE_TOKENS) per picture —
+    /// never its base64 — and each replayed call's name and arguments. The
+    /// app's own derivation counts by the same rule (`app::message_tokens`),
+    /// so the estimate a round announces and the one the app re-derives
+    /// agree (`docs/token-estimate.md`).
+    #[must_use]
+    pub fn estimated_tokens(&self) -> u64 {
+        use crate::token_estimate::{IMAGE_TOKENS, estimate};
+        let content = match &self.content {
+            MessageContent::Text(text) => estimate(text),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text, .. } => estimate(text),
+                    ContentPart::ImageUrl { .. } => IMAGE_TOKENS,
+                })
+                .sum(),
+        };
+        let calls: usize = self
+            .tool_calls
+            .iter()
+            .map(|call| estimate(&call.function.name) + estimate(&call.function.arguments))
+            .sum();
+        u64::try_from(content + calls).unwrap_or(u64::MAX)
+    }
 }
 
 /// A failure talking to a provider. [`std::fmt::Display`] gives the user-facing
@@ -503,6 +531,50 @@ fn extra_root_certificates() -> Vec<reqwest::Certificate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_is_estimated_as_the_request_carries_it() {
+        // Its text, a flat charge per picture, and each replayed call's name
+        // and arguments — `app::message_tokens`' rule, so the estimate the
+        // backend announces and the one the app re-derives agree
+        // (docs/token-estimate.md).
+        use crate::token_estimate::{IMAGE_TOKENS, estimate};
+        let text = ChatMessage::user("look at the failing test");
+        assert_eq!(
+            text.estimated_tokens(),
+            estimate("look at the failing test") as u64
+        );
+        let parts = ChatMessage::with_parts(
+            "user",
+            vec![
+                ContentPart::text("[Image #1] this one"),
+                ContentPart::image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUg"),
+            ],
+        );
+        assert_eq!(
+            parts.estimated_tokens(),
+            (estimate("[Image #1] this one") + IMAGE_TOKENS) as u64,
+            "a picture is its flat charge, never its base64"
+        );
+        let call = ChatMessage::assistant_tool_calls(
+            "Running it.",
+            vec![ToolCallSpec::function(
+                "call_1",
+                "bash",
+                r#"{"command":"cargo test"}"#,
+            )],
+        );
+        assert_eq!(
+            call.estimated_tokens(),
+            (estimate("Running it.") + estimate("bash") + estimate(r#"{"command":"cargo test"}"#))
+                as u64
+        );
+        let result = ChatMessage::tool_result("call_1", "test result: ok");
+        assert_eq!(
+            result.estimated_tokens(),
+            estimate("test result: ok") as u64
+        );
+    }
 
     #[test]
     fn message_constructors_set_role() {

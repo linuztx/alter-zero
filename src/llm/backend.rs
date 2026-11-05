@@ -2026,6 +2026,19 @@ fn stream_round(
     cancel: &CancelToken,
     max_retries: u32,
 ) -> RoundOutcome {
+    // What the request is about to cost, as the estimate sees it: the gauge's
+    // figure until the round's usage frame lands, and what that frame is
+    // compared with to calibrate every estimate after it. Once per round —
+    // a retry re-sends the same request (docs/token-estimate.md).
+    let tools = client.tools_estimate();
+    let input = messages
+        .iter()
+        .map(ChatMessage::estimated_tokens)
+        .sum::<u64>();
+    let _ = tx.send(StreamEvent::RequestEstimate {
+        input: input.saturating_add(tools),
+        tools,
+    });
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
@@ -3328,6 +3341,46 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
     }
 
     #[test]
+    fn a_round_announces_what_its_request_will_cost_before_it_streams() {
+        // Every message as the wire carries it, plus the tool schemas: the
+        // gauge's figure until the round's usage frame lands, and the
+        // estimate that frame is then compared with (docs/token-estimate.md).
+        let port = sse_server(vec![SseAnswer {
+            frames: vec![
+                delta_frame("content", "Hello."),
+                serde_json::json!({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                })
+                .to_string(),
+            ],
+            cut: false,
+        }]);
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = Some("not-a-real-key".into());
+        let client = OpenAiClient::new(cfg).with_tools(tools::tool_specs());
+        let messages = [
+            ChatMessage::system("You are a careful coding agent."),
+            ChatMessage::user("Why does the build fail?"),
+        ];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = stream_round(&client, &messages, &tx, &CancelToken::new(), MAX_RETRIES);
+        assert!(matches!(outcome, RoundOutcome::Complete { .. }));
+        let tools = client.tools_estimate();
+        let input = messages
+            .iter()
+            .map(ChatMessage::estimated_tokens)
+            .sum::<u64>()
+            + tools;
+        assert!(tools > 0);
+        assert_eq!(
+            rx.try_recv().ok(),
+            Some(StreamEvent::RequestEstimate { input, tools }),
+            "the announcement leads the round"
+        );
+    }
+
+    #[test]
     fn a_round_the_server_stops_at_its_output_cap_comes_back_cut_off() {
         let port = sse_server(vec![SseAnswer {
             frames: vec![
@@ -3363,6 +3416,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         assert_eq!(
             events,
             vec![
+                StreamEvent::RequestEstimate { input: 1, tools: 0 },
                 StreamEvent::ThinkingStart,
                 StreamEvent::ThinkingChunk("Weighing it".into()),
                 StreamEvent::ThinkingEnd,
@@ -3417,6 +3471,8 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         assert_eq!(
             events,
             vec![
+                // Announced once: the retry re-sends the same request.
+                StreamEvent::RequestEstimate { input: 1, tools: 0 },
                 StreamEvent::ThinkingStart,
                 StreamEvent::ThinkingChunk("Weighing it".into()),
                 StreamEvent::Retrying {

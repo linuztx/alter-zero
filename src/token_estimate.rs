@@ -17,11 +17,18 @@
 //! `o200k_base` and `cl100k_base` over code, prose, tool output and fourteen
 //! languages, it lands within a few percent of both on English, code and
 //! tool output, and between the two (nearer the newer, denser one) where they
-//! disagree. What a provider reports in its usage frames replaces it.
+//! disagree.
+//!
+//! What it cannot know is which tokenizer the next request will meet. That is
+//! [`Calibration`]'s job: every request is estimated before it is sent, the
+//! provider's usage frame says what it actually counted, and the ratio of the
+//! two scales every estimate after it — so once a provider has spoken, the
+//! app's figures are in that provider's tokens.
 
 /// What one image attachment is estimated at. An image has no text to size
 /// and every provider prices one differently (by tiles, by pixels, flat), so
-/// this is a stand-in.
+/// this is a stand-in that [`Calibration`] corrects like any other share of
+/// a request.
 pub const IMAGE_TOKENS: usize = 256;
 
 /// Estimates are summed in thousandths of a token, so a word part's quarter
@@ -437,6 +444,85 @@ pub fn estimate(text: &str) -> usize {
         .max(1)
 }
 
+/// The smallest request whose report teaches anything: below it the
+/// provider's per-message framing outweighs the text.
+const MIN_ESTIMATE_TO_LEARN: u64 = 256;
+
+/// The ratios a report may teach, per thousand: a provider's tokenizer runs
+/// within a factor of four of the estimate either way, so a report outside
+/// that is a usage frame gone wrong (a cached-only count, a session total)
+/// and is ignored.
+const PLAUSIBLE_PER_MILLE: std::ops::RangeInclusive<u64> = 250..=4000;
+
+/// How far a provider's token counts run from [`estimate`]'s, learned from
+/// the usage frames it reports (`docs/token-estimate.md`).
+///
+/// Before each request the backend estimates everything it is about to send;
+/// the round's usage frame then says what the provider counted for it. Their
+/// ratio is the provider's tokenizer — and its chat framing, and what it
+/// charges for an image — relative to the estimate, and [`apply`] carries it
+/// to every later estimate. The newest report replaces the last rather than
+/// averaging with it: every request carries the whole conversation before
+/// it, so the newest ratio is the one measured over the context as it is now,
+/// and scaling the next request's estimate by it is exactly the last reported
+/// count plus the estimated growth since, in the provider's tokens.
+///
+/// [`apply`]: Self::apply
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Calibration {
+    /// Provider tokens per thousand estimated tokens.
+    per_mille: u64,
+}
+
+impl Calibration {
+    /// No correction: estimates stand as they are.
+    pub const NEUTRAL: Self = Self { per_mille: 1000 };
+
+    /// Learn from one request: `estimated` is what [`estimate`] made of
+    /// everything it carried, `reported` the input tokens the provider's
+    /// usage frame counted for it. A request too small to say anything, or a
+    /// report no tokenizer could produce, changes nothing.
+    pub fn observe(&mut self, estimated: u64, reported: u64) {
+        if estimated < MIN_ESTIMATE_TO_LEARN {
+            return;
+        }
+        let per_mille = u128::from(reported) * 1000 / u128::from(estimated);
+        if let Ok(per_mille) = u64::try_from(per_mille)
+            && PLAUSIBLE_PER_MILLE.contains(&per_mille)
+        {
+            self.per_mille = per_mille;
+        }
+    }
+
+    /// `estimated`, in the provider's tokens: scaled by the last report's
+    /// ratio, unchanged before any.
+    #[must_use]
+    pub fn apply(&self, estimated: u64) -> u64 {
+        let scaled = (u128::from(estimated) * u128::from(self.per_mille) + 500) / 1000;
+        u64::try_from(scaled).unwrap_or(u64::MAX)
+    }
+
+    /// [`apply`](Self::apply) for a count — the views count in `usize`.
+    #[must_use]
+    pub fn apply_count(&self, estimated: usize) -> usize {
+        let scaled = self.apply(u64::try_from(estimated).unwrap_or(u64::MAX));
+        usize::try_from(scaled).unwrap_or(usize::MAX)
+    }
+
+    /// Provider tokens per thousand estimated ones — 1000 until a report
+    /// says otherwise.
+    #[must_use]
+    pub const fn per_mille(&self) -> u64 {
+        self.per_mille
+    }
+}
+
+impl Default for Calibration {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,5 +877,64 @@ mod tests {
             (0.9..=1.1).contains(&ratio),
             "{estimated} against {reference} ({ratio:.3})"
         );
+    }
+
+    #[test]
+    fn a_fresh_calibration_leaves_estimates_alone() {
+        assert_eq!(Calibration::default().apply(1234), 1234);
+        assert_eq!(Calibration::default().per_mille(), 1000);
+    }
+
+    #[test]
+    fn a_report_teaches_the_providers_ratio() {
+        let mut calibration = Calibration::default();
+        calibration.observe(1_000, 1_250);
+        assert_eq!(calibration.per_mille(), 1250);
+        assert_eq!(calibration.apply(2_000), 2_500);
+    }
+
+    #[test]
+    fn the_newest_report_replaces_the_last() {
+        // Each request carries every one before it: the newest ratio is the
+        // one that describes the conversation now.
+        let mut calibration = Calibration::default();
+        calibration.observe(1_000, 1_250);
+        calibration.observe(1_000, 800);
+        assert_eq!(calibration.apply(1_000), 800);
+    }
+
+    #[test]
+    fn a_report_on_a_tiny_request_teaches_nothing() {
+        // Framing tokens dominate a few-token request; its ratio says
+        // nothing about the tokenizer.
+        let mut calibration = Calibration::default();
+        calibration.observe(10, 30);
+        assert_eq!(calibration, Calibration::NEUTRAL);
+    }
+
+    #[test]
+    fn an_implausible_report_is_ignored() {
+        // A usage frame a shim got wrong (a cached-only count, a session
+        // total) must not skew every estimate after it.
+        let mut calibration = Calibration::default();
+        calibration.observe(10_000, 1_250);
+        calibration.observe(10_000, 1_000_000);
+        calibration.observe(10_000, 0);
+        assert_eq!(calibration, Calibration::NEUTRAL);
+    }
+
+    #[test]
+    fn a_count_scales_like_a_total() {
+        let mut calibration = Calibration::default();
+        calibration.observe(1_000, 1_250);
+        assert_eq!(calibration.apply_count(1_000), 1_250);
+        assert_eq!(Calibration::NEUTRAL.apply_count(7), 7);
+    }
+
+    #[test]
+    fn applying_saturates_rather_than_overflowing() {
+        let mut calibration = Calibration::default();
+        calibration.observe(1_000, 2_000);
+        assert_eq!(calibration.apply(u64::MAX), u64::MAX);
     }
 }

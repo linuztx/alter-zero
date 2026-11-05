@@ -525,3 +525,134 @@ fn message_tokens_is_the_gauges_rule_one_message_at_a_time() {
         messages[1].text.len() + call.name.len() + call.arguments.len()
     );
 }
+
+// --- the gauge before a frame, and in the provider's tokens after one
+// (docs/token-estimate.md) ---
+
+#[test]
+fn a_request_estimate_moves_the_gauge_before_its_frame_lands() {
+    // A pasted file or a long tool result shows its cost while the model is
+    // still working, not when the round's usage frame arrives.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_request_estimate(4_200, 1_500);
+    assert_eq!(
+        app.context_used(),
+        4_200,
+        "no frame yet: the estimate as it is"
+    );
+}
+
+#[test]
+fn a_usage_frame_teaches_the_next_request_the_providers_tokens() {
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_request_estimate(4_000, 1_000);
+    app.apply_usage(&usage_of(5_000, 200));
+    assert_eq!(app.context_used(), 5_200, "the frame's own count stands");
+    assert_eq!(app.token_calibration().per_mille(), 1_250);
+    // The next round's request is 800 estimated tokens bigger: the gauge
+    // reads the last reported count plus that growth, in the provider's
+    // tokens — never a jump back down to the bare estimate.
+    app.apply_request_estimate(4_800, 1_000);
+    assert_eq!(app.context_used(), 6_000);
+}
+
+#[test]
+fn a_frame_without_an_estimate_before_it_teaches_nothing() {
+    // The dummy, or a backend predating the announcement: the frame still
+    // sets the gauge, but there is nothing to compare it with.
+    let mut app = App::new();
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 200));
+    assert_eq!(app.context_used(), 5_200);
+    assert_eq!(
+        app.token_calibration(),
+        crate::token_estimate::Calibration::NEUTRAL
+    );
+}
+
+#[test]
+fn a_re_estimate_reads_in_the_providers_tokens() {
+    // What a rewind, a `/resume`, a compaction or a frameless turn end
+    // does: the derived context estimated again — scaled by the ratio the
+    // last frame taught, so the gauge does not drop to the bare estimate
+    // and jump back at the next frame.
+    let mut app = App::new();
+    app.record_user_message("explain the failing test in detail, please");
+    app.refresh_context_used();
+    let bare = app.context_used();
+    assert!(bare > 0);
+    app.begin_stream();
+    app.apply_request_estimate(1_000, 0);
+    app.apply_usage(&usage_of(2_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    app.refresh_context_used();
+    assert_eq!(app.context_used(), bare * 2);
+}
+
+#[test]
+fn a_re_estimate_counts_the_tool_schemas_the_last_request_carried() {
+    // Every request carries them and the provider counts them; a
+    // re-estimate that left them out read thousands of tokens low until
+    // the next frame.
+    let mut app = App::new();
+    app.record_user_message("hello there");
+    app.refresh_context_used();
+    let without = app.context_used();
+    app.begin_stream();
+    app.apply_request_estimate(900, 600);
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(
+        app.context_used(),
+        without + 600,
+        "a frameless turn end re-estimates"
+    );
+}
+
+#[test]
+fn the_summarizers_tool_free_request_does_not_forget_the_tool_schemas() {
+    // The `/compact` request is sent without tools; the conversation's next
+    // request will carry them again, so the compacted gauge counts them.
+    let compacted_after = |tools: u64| {
+        let mut app = App::new();
+        app.record_user_message("hello there");
+        app.begin_stream();
+        app.apply_request_estimate(900 + tools, tools);
+        app.push_chunk("hi");
+        app.finish_stream();
+        app.end_turn(1);
+        app.begin_compact(false);
+        app.apply_request_estimate(800, 0);
+        app.push_chunk("the summary");
+        app.finish_compact(1).expect("a compaction landed").after
+    };
+    assert_eq!(compacted_after(600) - compacted_after(0), 600);
+}
+
+#[test]
+fn switching_models_starts_the_calibration_over() {
+    // The ratio measured one model's tokenizer; another model's is unknown
+    // until it reports.
+    let mut app = App::new();
+    app.set_session_info("model-a", "~/repo");
+    app.begin_stream();
+    app.apply_request_estimate(1_000, 0);
+    app.apply_usage(&usage_of(1_500, 0));
+    assert_eq!(app.token_calibration().per_mille(), 1_500);
+    app.set_session_info("model-a", "~/repo");
+    assert_eq!(
+        app.token_calibration().per_mille(),
+        1_500,
+        "a rebuild on the same model keeps what it learned"
+    );
+    app.set_session_info("model-b", "~/repo");
+    assert_eq!(
+        app.token_calibration(),
+        crate::token_estimate::Calibration::NEUTRAL
+    );
+}

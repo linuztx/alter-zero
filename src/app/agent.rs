@@ -1020,6 +1020,22 @@ impl App {
         }
     }
 
+    /// How the provider of the conversation on screen counts relative to
+    /// the estimate — the viewed agent's own inside its session view
+    /// ([`AgentRun::calibration`]), the main session's
+    /// ([`token_calibration`](App::token_calibration)) otherwise: what the
+    /// `/context` page's breakdown and Ctrl+D's entry sizes are scaled by,
+    /// the footer gauge's units (`docs/token-estimate.md`).
+    ///
+    /// [`AgentRun::calibration`]: crate::agents::AgentRun::calibration
+    #[must_use]
+    pub fn context_calibration(&self) -> crate::token_estimate::Calibration {
+        match self.viewed_agent() {
+            Some(run) => run.calibration(),
+            None => self.token_calibration(),
+        }
+    }
+
     /// Enter an agent's session view (the roster selection's Enter) — and the
     /// pick the next ↓ comes back to (`agent_selection_start`).
     pub fn open_agent_view(&mut self, id: &str) {

@@ -450,6 +450,16 @@ pub enum StreamEvent {
     /// streamed content clears it; nothing commits. Only a real backend sends
     /// it (`llm::retry`). See `docs/offline.md`.
     Offline { host: String, attempts: u32 },
+    /// What the request about to go out is estimated to carry
+    /// ([`crate::token_estimate::estimate`]): `input` for everything it
+    /// sends — the system prompt, the tool schemas, every message — and
+    /// `tools` for the schemas' share of it. Sent once per round, before the
+    /// request (a retry re-sends the same one), by a real backend only. The
+    /// gauge reads it until the round's [`Usage`](Self::Usage) frame lands,
+    /// and that frame is then compared with it to calibrate every later
+    /// estimate ([`crate::token_estimate::Calibration`]). See
+    /// `docs/token-estimate.md`.
+    RequestEstimate { input: u64, tools: u64 },
     /// The provider's real token usage for one completed request round (the
     /// final usage frame of the stream — sent once per round by a real
     /// backend, so an agentic turn reports one per tool round). The loop
@@ -520,6 +530,7 @@ impl StreamEvent {
             | Self::AgentGroupDone { .. }
             | Self::Retrying { .. }
             | Self::Offline { .. }
+            | Self::RequestEstimate { .. }
             | Self::Usage(_)
             | Self::Permission(_)
             | Self::AskUser(_)

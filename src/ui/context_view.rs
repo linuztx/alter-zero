@@ -337,6 +337,9 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
     };
     // Empty texts count nothing, so a memo is never asked about one.
     let mut tokens_of = |text: &str| if text.is_empty() { 0 } else { count(text) };
+    // Every size reads in the provider's tokens once a frame has taught
+    // them — the footer gauge's units (docs/token-estimate.md).
+    let calibration = app.context_calibration();
     let text_width = body_width(width);
     let mut body = DebugBody::default();
     let mut total = 0;
@@ -346,7 +349,7 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
     let mut call_names: HashMap<&str, &str> = HashMap::new();
     if let Some(prompt) = system_prompt {
         index += 1;
-        let tokens = tokens_of(prompt);
+        let tokens = calibration.apply_count(tokens_of(prompt));
         total += tokens;
         let mut facts = vec![format!("{CONTEXT_INDEX_MARK}{index}")];
         if tokens > 0 {
@@ -363,9 +366,10 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
     for message in &messages {
         index += 1;
         // The footer gauge's own rule for one message — its text, a flat
-        // charge per picture, each call's name and arguments — so the
-        // entries add up to what the gauge reads.
-        let tokens = crate::app::message_tokens(message, &mut tokens_of);
+        // charge per picture, each call's name and arguments — in its units,
+        // so the entries add up to what the gauge's estimate reads but for
+        // the tool schemas, which no entry shows.
+        let tokens = calibration.apply_count(crate::app::message_tokens(message, &mut tokens_of));
         let mut rows = text_rows(&message.text, text_width);
         for call in &message.tool_calls {
             call_names.insert(call.id.as_str(), call.name.as_str());
@@ -466,6 +470,9 @@ struct ContextSig {
     instructions_len: Option<usize>,
     listings_len: Option<usize>,
     agent_reminder_len: Option<usize>,
+    /// The ratio the sizes are scaled by — a new frame can move it with
+    /// nothing else in the window changing (`docs/token-estimate.md`).
+    calibration: u64,
 }
 
 impl ContextSig {
@@ -484,6 +491,7 @@ impl ContextSig {
             instructions_len: app.user_instructions.as_ref().map(String::len),
             listings_len: app.listings.as_ref().map(String::len),
             agent_reminder_len: app.agent_system_reminder.as_ref().map(String::len),
+            calibration: app.context_calibration().per_mille(),
         }
     }
 }

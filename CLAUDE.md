@@ -2722,7 +2722,11 @@ marker: the 20k-approx-token budget of recent user texts + the
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
-gauge (usage-frame fed, estimated offline; **inside an agent
+gauge (usage-frame fed; before a round's frame, the estimate the backend
+announced as the request went out — `StreamEvent::RequestEstimate` — and every
+estimate, re-estimates after a rewind or compaction included, scaled by the
+`token_estimate::Calibration` ratio the last frame taught, so it reads in the
+provider's tokens, `docs/token-estimate.md`; estimated offline; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
@@ -4026,7 +4030,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`docs/token-estimate.md`) — **as the live estimate between usage frames**: a real
   backend forwards each round's final `usage` frame as `StreamEvent::Usage`
   and `App::apply_usage` snaps the tally to the provider's own accounting
-  (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`), and every
+  (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`) — and,
+  before each request, `stream_round` announces its estimate
+  (`StreamEvent::RequestEstimate { input, tools }`: everything sent, and the
+  tool schemas' share), which moves the context gauge before the frame and
+  gives the frame something to calibrate every later context estimate
+  against (`token_estimate::Calibration`, `docs/token-estimate.md`) — and every
   request is shaped for **prompt caching** — `llm::cache`'s `cache_control`
   breakpoints on the models that need them (OpenRouter's `~vendor/…-latest`
   aliases included), a per-session `prompt_cache_key` (+ OpenRouter

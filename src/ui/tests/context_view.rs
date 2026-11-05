@@ -513,8 +513,8 @@ fn the_body_marks_the_row_every_entry_header_sits_on() {
 #[test]
 fn the_summary_adds_up_to_the_footer_gauges_estimate() {
     // The entries' estimates follow the gauge's rule, so the page's total is
-    // the very number the footer gauge reads offline — the view and the
-    // footer never disagree about one window.
+    // the very number the footer gauge reads offline with no tool schemas
+    // sent yet — the view and the footer never disagree about one window.
     let mut app = context_fixture();
     app.set_user_instructions(Some("guide".to_string()));
     app.record_user_message_with_images("[Image #1] look", vec!["/tmp/a.png".into()]);
@@ -1026,4 +1026,49 @@ fn the_context_cache_rebuilds_when_the_theme_changes() {
         "rebuilt in Dracula's palette, nothing left of Mocha's"
     );
     assert_eq!(cache.builds, 2, "the switch cost one rebuild");
+}
+
+/// Teach `app` a provider that counts twice what the estimate does: one
+/// round announced at 1,000 and reported at 2,000, adding nothing to the
+/// window but its turn summary.
+fn calibrate_twofold(app: &mut App) {
+    app.begin_stream();
+    app.apply_request_estimate(1_000, 0);
+    app.apply_usage(&crate::stream::TokenUsage {
+        input: 2_000,
+        ..crate::stream::TokenUsage::default()
+    });
+    app.finish_stream();
+    app.end_turn(1);
+}
+
+#[test]
+fn entry_sizes_read_in_the_providers_tokens_once_a_frame_has_spoken() {
+    // Ctrl+D's sizes are context estimates like the gauge's, scaled by the
+    // same ratio (docs/token-estimate.md).
+    let mut app = context_fixture();
+    calibrate_twofold(&mut app);
+    let texts = texts(&app, 80);
+    assert_eq!(
+        texts[0],
+        format!(
+            " SYSTEM  #1 · {}",
+            estimate(2 * crate::app::count_tokens("be nice"))
+        )
+    );
+}
+
+#[test]
+fn the_context_cache_rebuilds_when_the_calibration_moves() {
+    let mut app = context_fixture();
+    let mut cache = ContextCache::new();
+    let before = cache.body(&app, 80).summary.clone();
+    calibrate_twofold(&mut app);
+    let after = cache.body(&app, 80).clone();
+    assert_ne!(after.summary, before, "the totals moved with the ratio");
+    assert_eq!(
+        after,
+        context_body(&app, 80),
+        "the cache serves a fresh build"
+    );
 }

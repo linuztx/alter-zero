@@ -220,8 +220,14 @@ impl App {
     /// briefing and its transcript. Each text's count comes from `memo` when
     /// the last pass counted it, so only what is new is tokenized.
     fn count_context_window(&self, memo: &mut CountMemo) -> Breakdown {
+        // In the provider's tokens once a frame has taught them — the
+        // footer gauge's units (docs/token-estimate.md). The memo keeps the
+        // bare counts, so a new ratio rescales without re-estimating.
+        let calibration = self.context_calibration();
         let memo = RefCell::new(memo);
-        let count = |text: &str| memo.borrow_mut().count(text, &count_tokens);
+        let count =
+            |text: &str| calibration.apply_count(memo.borrow_mut().count(text, &count_tokens));
+        let image_tokens = calibration.apply_count(IMAGE_INPUT_TOKENS);
         let breakdown = match self.viewed_agent() {
             Some(run) => {
                 let (messages, origins) =
@@ -234,7 +240,7 @@ impl App {
                         instructions: None,
                         messages: &messages,
                         origins: &origins,
-                        image_tokens: IMAGE_INPUT_TOKENS,
+                        image_tokens,
                     },
                     &count,
                 )
@@ -256,7 +262,7 @@ impl App {
                         instructions: self.user_instructions.as_deref(),
                         messages: &messages,
                         origins: &origins,
-                        image_tokens: IMAGE_INPUT_TOKENS,
+                        image_tokens,
                     },
                     &count,
                 )
@@ -274,6 +280,7 @@ impl App {
     fn context_usage_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.tool_definitions_revision.hash(&mut hasher);
+        self.context_calibration().per_mille().hash(&mut hasher);
         match self.viewed_agent() {
             Some(run) => {
                 run.id.hash(&mut hasher);

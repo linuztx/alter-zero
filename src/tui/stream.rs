@@ -507,6 +507,14 @@ impl Session<'_> {
                 self.app.set_offline(&host, attempts);
                 false
             }
+            StreamEvent::RequestEstimate { input, tools } => {
+                // A round's request is going out: the gauge shows what it
+                // carries — in the provider's tokens once a frame has taught
+                // them — until the round's own frame says
+                // (docs/token-estimate.md). Live-only, like the frame.
+                self.app.apply_request_estimate(input, tools);
+                false
+            }
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache
