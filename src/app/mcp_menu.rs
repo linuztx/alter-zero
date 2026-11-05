@@ -114,6 +114,10 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
         // here: the review on screen is where it is answered
         // (`docs/config-review.md`).
         McpServerStatus::AwaitingReview => Vec::new(),
+        // MCP is off for the session (`/settings`): nothing connects, so
+        // the one decision left is the server's own switch — whether it
+        // runs once MCP is back on (`docs/mcp.md`).
+        McpServerStatus::Off => vec![A::Disable],
     }
 }
 

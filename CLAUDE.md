@@ -2732,13 +2732,19 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-nineteen rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
-**Skills**, **Temperature**,
+**Skills**, **MCP** — the session-wide switch over the `/mcp` servers, on
+until a directory turns it off: off stops every server
+(`McpManager::set_active`, each `◯ off`, nothing connecting whoever asks)
+while each keeps its own `/mcp` on/off, so on brings back exactly the ones
+that were enabled; `/mcp` still opens under a red off-note, the review's
+servers page waits until MCP is on, and `ALTER_ZERO_MCP` seeds the row
+instead of removing the manager, `docs/mcp.md` —, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a

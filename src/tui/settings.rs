@@ -195,6 +195,8 @@ impl Session<'_> {
             hooks: !self.trust.configured_hooks().is_empty(),
             // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
             skills: !self.skill_registry.is_empty(),
+            // …nor when no MCP server is declared anywhere (`docs/mcp.md`).
+            mcp: self.mcp.has_servers(),
             // Whether this terminal can draw a picture (`docs/images.md`).
             images: self.term.image_capability().0,
             // Nowhere to keep an install id without a config home — and
@@ -295,6 +297,9 @@ impl Session<'_> {
                 self.models.set_skills(settings.skills_active());
                 self.sync_listings();
             }
+            // Off stops every server and withdraws their tools; on connects
+            // the ones the user has enabled in `/mcp` (docs/mcp.md).
+            SettingKey::Mcp => self.apply_mcp_setting(settings.mcp_active()),
             // The picture geometry: republish the policy, drop the encoded
             // pictures, and rebuild so the committed ones change with it.
             SettingKey::ShowImages | SettingKey::ImageWidth => {
@@ -352,6 +357,11 @@ impl Session<'_> {
         }
         let value = settings.value_text(key, self.app.permission_mode());
         self.toast(format!("{}: {value}", key.label()), ToastKind::Info);
+        // Turned on, a config problem MCP kept quiet about while it was off
+        // is said now — after the row's own toast, which it outranks.
+        if key == SettingKey::Mcp && settings.mcp_active() {
+            self.report_mcp_errors();
+        }
         // After the toast, so the rebuilt frame already carries it (the
         // `/mascot` switch's ordering).
         if rebuild {

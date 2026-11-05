@@ -2182,6 +2182,11 @@ pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select
 /// The empty list names both config files — "why isn't my server here?" is
 /// its only question (the skills empty-state posture).
 pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
+/// The note under the list's count when MCP is off for the whole session
+/// (the `/settings` **MCP** row): the rows still browse and toggle, but no
+/// server connects until that row is back on — the `/hooks` and `/skills`
+/// menus' disabled-note rule, red like the hooks one.
+pub(super) const MCP_SESSION_OFF: &str = "MCP is off for this session — turn it on in /settings";
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
 

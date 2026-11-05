@@ -290,11 +290,6 @@ impl<'t> Session<'t> {
             super::trust::load_project_layer(&cwd),
         );
 
-        // The MCP servers (docs/mcp.md): the config files parsed and merged
-        // (a project's servers held until the review enables them), the
-        // manager built over them, and every enabled server's connect kicked
-        // off on worker threads — never blocking the first frame. The event
-        // channel is a select! source like the background shells'.
         // The telemetry ping's report channel (docs/telemetry.md) — its own
         // `select!` source, because the worker outlives nothing but must
         // never write the file itself.
@@ -302,15 +297,6 @@ impl<'t> Session<'t> {
             tokio::sync::mpsc::unbounded_channel::<alter_zero::telemetry::Delivery>();
         // The update check's report channel (docs/update.md), the same shape.
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mcp_manager = config::mcp_enabled().then(|| {
-            let manager = alter_zero::llm::mcp::McpManager::new(
-                mcp_tx,
-                super::mcp::load_mcp_sources(&cwd, &trust),
-            );
-            manager.start_connections();
-            manager
-        });
 
         // The `/settings` knobs (docs/settings.md), per working directory
         // (docs/per-directory-state.md): this directory's saved entry — else
@@ -336,6 +322,25 @@ impl<'t> Session<'t> {
         settings.tips = tips_file.enabled;
         app.seed_tips(tips_file.next);
         let settings = config::apply_setting_overrides(settings);
+
+        // The MCP servers (docs/mcp.md): the config files parsed and merged
+        // (a project's servers held until the review enables them) and the
+        // manager built over them — always, so the `/settings` **MCP** row
+        // can turn it on mid-session. Then every enabled server's connect is
+        // kicked off on worker threads, never blocking the first frame — or,
+        // with the row off in this directory (or `ALTER_ZERO_MCP` falsy for
+        // the run), nothing connects at all. The event channel is a select!
+        // source like the background shells'.
+        let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mcp_manager = alter_zero::llm::mcp::McpManager::new(
+            mcp_tx,
+            super::mcp::load_mcp_sources(&cwd, &trust),
+        );
+        if settings.mcp {
+            mcp_manager.start_connections();
+        } else {
+            mcp_manager.set_active(false);
+        }
 
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
@@ -406,7 +411,7 @@ impl<'t> Session<'t> {
             &task_registry,
             &skill_registry,
             &subagents,
-            mcp_manager.as_ref(),
+            Some(&mcp_manager),
             &settings,
             hook_setup,
         );
@@ -1002,9 +1007,7 @@ impl<'t> Session<'t> {
         // Tear down the MCP connections (docs/mcp.md): drops every transport
         // — killing the stdio children synchronously — and cancels a running
         // auth flow, so quitting can't orphan a server process.
-        if let Some(mcp) = &self.mcp {
-            mcp.shutdown();
-        }
+        self.mcp.shutdown();
         // Hand the herdr pane back (docs/herdr.md) — last, once nothing of
         // the session is left running: the release replaces any report not
         // yet written, and the wait for it is bounded, so a wedged socket

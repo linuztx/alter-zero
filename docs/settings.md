@@ -23,7 +23,7 @@ per change.
   Permission mode         auto
   ...
   Max tool calls          0
-  (1/19)
+  (1/20)
 
   Hide the model's chain-of-thought…
 
@@ -33,7 +33,7 @@ per change.
 
 ## The settings
 
-Nineteen rows, each one a knob the running session actually reads. Every value
+Twenty rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -52,6 +52,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
 | **Hooks** | **`true`** / `false` | Whether the lifecycle hooks the user trusted run — the user's `~/.alter-zero/hooks.json` and a project's — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **On until a directory turns it off** (`docs/per-directory-state.md`); each hook runs once it is trusted in the startup review (`docs/config-review.md`); seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
+| **MCP** | **`true`** / `false` | Whether the MCP servers connect and the model is offered their tools and instructions (`docs/mcp.md` *MCP off for the session*). **On until a directory turns it off**, the Hooks posture. Off stops every server, and each keeps its own `/mcp` enabled or disabled state, so turning the row back on brings back exactly the servers that were enabled; `/mcp` still opens and says MCP is off. Seeded from `ALTER_ZERO_MCP`; **unavailable** when no server is declared in the user's `mcp.json` or a project's. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
 | **Ask timeout** | `5m` / **`10m`** / `20m` / `30m` / `1h` / `never` | How long an `AskUserQuestion` question waits on an **idle** user before it resolves unanswered and the agent keeps working on its own judgment (`docs/ask.md`) — any key press or paste starts the wait over, and the modal's closing rule counts it down. `never` stops the clock. Seeded from `ALTER_ZERO_ASK_TIMEOUT_SECS` (seconds, `0` = never), whose odd values still read whole (`1m 30s`). Read where it is used: the draw tick reads it on every reading of the idle clock, so a new value applies to a wait already running and `never` stops it at once. |
@@ -262,6 +263,14 @@ docs`.
     context (so the row re-renders `App::skill_listing`). Flipping it off
     leaves the discovered set in memory, so flipping it back on costs no
     rescan (`docs/skills.md`).
+  - **MCP** switches the session's MCP manager (`McpManager::set_active`,
+    `Session::apply_mcp_setting`). Off drops every connection — each stdio
+    server stopped — and withdraws the servers' tools and instructions at
+    once: the next turn's backend is rebuilt without them and the reminder
+    re-rendered. On connects every server enabled in `/mcp`, the backend
+    gaining each one's tools as its connect lands, opens the review's servers
+    page over project servers waiting for it, and names a config problem the
+    startup kept quiet about (`docs/mcp.md`).
   - **Verbose output** purge-rebuilds the conversation, the **Show images**
     rule: every committed read and search changes shape — a cell per call, or
     one collapsed line — and the rebuild repaints them from history. Turning
@@ -344,7 +353,8 @@ Precedence at startup is the same rule the rest of the app follows — **the
 environment wins**: an explicitly set `ALTER_ZERO_*` variable overrides the saved
 value for that one setting (`tui::config::apply_setting_overrides` — including
 `ALTER_ZERO_HOOKS`, which seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
-seeds **Tools**). Anything neither set nor saved takes its default.
+seeds **Tools**, and `ALTER_ZERO_MCP`, which seeds **MCP** the same way).
+Anything neither set nor saved takes its default.
 
 And, as with `ALTER_ZERO_MODEL`, the environment **never sticks**. A save is a
 read-modify-write over the file itself: the directory's entry is re-read (else
@@ -366,7 +376,10 @@ each hook — the user's or a project's — runs once it is trusted in the
 startup review (`docs/config-review.md`); a directory opts out with one cycle,
 recorded as `"hooks": false`. `ALTER_ZERO_HOOKS` / `ALTER_ZERO_CHECKPOINTS`
 seed either for a run without saving anything — which is how `smoke.sh`'s
-hooks and checkpoint phases get them.
+hooks and checkpoint phases get them. **MCP** follows Hooks: on, each server
+still connecting only once it is enabled (a project's in the startup
+review), and a directory that wants none of them opts out with one cycle,
+recorded as `"mcp": false`.
 
 ## Testing
 
@@ -378,4 +391,7 @@ checks the toast and the collapsed composer; Phase 109 drives the per-directory
 half (a knob cycled in one directory, the defaults in the next, both against
 one config home); Phase 139 opens it on a 12-row terminal and walks its compact
 page; Phase 146 cycles **Verbose output** over a collapsed read/search group
-and checks the rebuild unfolds it (`docs/tool-groups.md`).
+and checks the rebuild unfolds it (`docs/tool-groups.md`); Phase 152 cycles
+**MCP** off and on against a scripted server and checks it stops, stays off
+across a relaunch, connects again, and that `ALTER_ZERO_MCP=0` is never saved
+(`docs/mcp.md`).

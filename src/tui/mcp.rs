@@ -138,26 +138,34 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
 
 impl Session<'_> {
     /// `/mcp`: open the manager over the live snapshot — the
-    /// `open_skills_menu` injection seam. Without a manager
-    /// (`ALTER_ZERO_MCP` off) the command explains via toast instead.
+    /// `open_skills_menu` injection seam. It opens with MCP off too (the
+    /// `/settings` **MCP** row), the `/hooks` and `/skills` rule: the list
+    /// says so, and each server's own switch still moves.
     pub(crate) fn open_mcp_menu(&mut self) {
-        let Some(manager) = &self.mcp else {
-            self.toast(
-                "MCP is disabled (ALTER_ZERO_MCP). Unset it to manage servers.",
-                ToastKind::Info,
-            );
-            return;
-        };
-        let snapshot = manager.snapshot();
+        let snapshot = self.mcp.snapshot();
         self.app.open_mcp_menu(snapshot);
+    }
+
+    /// The `/settings` **MCP** row (`docs/mcp.md`): connect every enabled
+    /// server, or stop them all — each keeps its own `/mcp` switch either
+    /// way. The offered tools and the servers' instructions follow at once
+    /// (`refresh_mcp` rebuilds the next turn's backend when the set moved;
+    /// servers that connect later rebuild it as their events land), and
+    /// turned on over project servers that wait for the startup review, the
+    /// review asks now — the **Hooks** row's rule (`docs/config-review.md`).
+    pub(crate) fn apply_mcp_setting(&mut self, on: bool) {
+        self.mcp.set_active(on);
+        self.models.refresh_mcp();
+        self.sync_listings();
+        if on {
+            self.open_servers_review();
+        }
     }
 
     /// Apply one `/mcp` operation against the live manager. Connection work
     /// runs on the manager's worker threads — nothing here blocks the loop.
     pub(crate) fn apply_mcp_op(&mut self, op: McpOp) {
-        let Some(manager) = self.mcp.clone() else {
-            return;
-        };
+        let manager = self.mcp.clone();
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
@@ -232,9 +240,7 @@ impl Session<'_> {
                 self.toast(text, kind);
             }
         }
-        if let Some(manager) = &self.mcp {
-            self.app.update_mcp_snapshot(manager.snapshot());
-        }
+        self.app.update_mcp_snapshot(self.mcp.snapshot());
         // The offered tool set may have flipped (a server connected, failed,
         // was disabled) — re-attach the backend only when it really did (the
         // `refresh_skills` pattern) — and with it the servers' instructions
@@ -244,12 +250,16 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
-    /// Say once, at startup, that an `mcp.json` entry could not be parsed —
-    /// the hooks-file rule: a server that vanishes must never do it quietly
-    /// (`docs/mcp.md`).
+    /// Say that an `mcp.json` entry could not be parsed — at startup, and
+    /// again when the `/settings` **MCP** row turns MCP on — the hooks-file
+    /// rule: a server that vanishes must never do it quietly
+    /// (`docs/mcp.md`). Nothing while MCP is off, when no server is meant to
+    /// run.
     pub(crate) fn report_mcp_errors(&mut self) {
-        let Some(manager) = &self.mcp else { return };
-        let errors = manager.config_errors();
+        if !self.mcp.is_active() {
+            return;
+        }
+        let errors = self.mcp.config_errors();
         if let Some(first) = errors.first() {
             let extra = errors.len().saturating_sub(1);
             let text = if extra > 0 {
