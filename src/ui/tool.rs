@@ -912,9 +912,9 @@ fn ask_cell_lines(
 ///   batch collapses to [`mcp_batch_lines`]).
 /// - **Resolved ok**: the bullet-less dim
 ///   `  Called {server} (ctrl+o to expand)` line — the settled thinking line's
-///   exact shape ([`reasoning_label_color`], [`SETTLED_INDENT`]), because
-///   what is left is a fact about the turn; the result text never reaches
-///   inline scrollback.
+///   dress ([`reasoning_label_color`]), because what is left is a fact about
+///   the turn, two columns in ([`SETTLED_INDENT`]) where the thought's sits at
+///   the edge; the result text never reaches inline scrollback.
 /// - **Failed / everything else**: `None` — the loud generic red cell (a
 ///   failure must not whisper).
 fn mcp_cell_lines(

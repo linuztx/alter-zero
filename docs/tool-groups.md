@@ -156,9 +156,10 @@ enough for Ctrl+B keeps that hint too, hung off the group's cell.
 ```
 
 Bullet-less and dim throughout — the settled thought's dress
-(`docs/thinking-stream.md`, `  Thought for 4s · 1.2k tokens (ctrl+o to
+(`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
 expand)`), since what is left is a fact about the turn rather than something
-happening. The counts stay bold. The bullet's two columns are left blank
+happening. The counts stay bold. Unlike the thought, which settles at the edge
+with the turn summary, the bullet's two columns are left blank
 (`SETTLED_INDENT`), so the clauses stay in the column the live line's text
 had — `● Reading 1 file…` settles into `  Read 1 file` with nothing but the
 bullet gone — and the line fits what is left of the width beside them.

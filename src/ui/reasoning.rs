@@ -5,13 +5,13 @@
 //! While a phase runs it wears the **tool cell's shape** — a `● Thinking…`
 //! header over the chain-of-thought in the `⎿` gutter — because that is what
 //! it is: something working, with output under it. When it settles the shape
-//! goes away: the committed line is bullet-less
-//! (`  Thought for 3s · 228 tokens (ctrl+o to expand)`), one dim row like
-//! [`summary_lines`](super::summary_lines), because a finished thought is
-//! turn meta rather than a cell — dim on both surfaces, `Done for Ns`'s
-//! dress — its text left in the column the `Thinking…` label streamed in.
-//! The weight and the motion live in the block above, which is where
-//! something is still happening.
+//! goes away entirely: the committed line is bullet-less
+//! (`Thought for 3s · 228 tokens (ctrl+o to expand)`), the
+//! [`summary_lines`](super::summary_lines) shape, because a finished thought
+//! is turn meta rather than a cell — dim on both surfaces, `Done for Ns`'s
+//! exact dress, at the edge where that line settles. The weight and the
+//! motion live in the block above, which is where something is still
+//! happening.
 //!
 //! Nothing here ever renders the chain-of-thought into a *committed* row —
 //! [`reasoning_lines`] (the one renderer scrollback and the resize repaint
@@ -76,16 +76,13 @@ fn thought_label(reasoning: &Reasoning) -> String {
     format!("{REASONING_DONE}{}", format_elapsed(reasoning.secs))
 }
 
-/// The settled line: dim, the same on both surfaces, behind the blank
-/// [`SETTLED_INDENT`] — the bullet's width, so `Thought for` settles in the
-/// column `Thinking…` streamed in. A finished thought is a footnote about work
-/// already done — the weight belongs to the live block, which is where
-/// something is still happening.
+/// The settled line: dim, the same on both surfaces, and at the edge like the
+/// turn summary. A finished thought is a footnote about the turn rather than a
+/// cell, so unlike the settled MCP and read/search group lines it does not keep
+/// its live header's [`SETTLED_INDENT`] — the weight belongs to the live block,
+/// which is where something is still happening.
 fn settled_line(text: String) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(SETTLED_INDENT),
-        Span::styled(text, Style::new().fg(reasoning_label_color())),
-    ])
+    Line::from(Span::styled(text, Style::new().fg(reasoning_label_color())))
 }
 
 /// See [`thought_label`] — `" · 1.5k tokens"`, or empty when unknown.
@@ -97,15 +94,14 @@ fn thought_metrics(reasoning: &Reasoning) -> String {
 }
 
 /// The settled thinking phase as **committed** lines: one dim, **bullet-less**
-/// `  Thought for {elapsed} · {n} tokens (ctrl+o to expand)` — one row, like
-/// [`summary_lines`] (`width` is unused, kept for the uniform `*_lines`
+/// `Thought for {elapsed} · {n} tokens (ctrl+o to expand)` — the
+/// [`summary_lines`] shape (`width` is unused, kept for the uniform `*_lines`
 /// signature).
 ///
-/// No bullet, and dim throughout — `Done for Ns`'s dress. The `● Thinking…`
-/// header meant *something is happening*, and nothing is any more; what is
-/// left is a fact about the turn, so it settles into the transcript rather
-/// than competing with the reply it sits above — in the column its label
-/// streamed in, the bullet's two columns left blank (`SETTLED_INDENT`). The
+/// No bullet, no inset, and dim throughout — `Done for Ns`'s exact dress. The
+/// `● Thinking…` header meant *something is happening*, and nothing is any
+/// more; what is left is a fact about the turn, so it settles into the
+/// transcript rather than competing with the reply it sits above. The
 /// `EXPAND_HINT` says where the thought itself went, the same promise a capped
 /// tool peek makes.
 #[must_use]
@@ -119,8 +115,7 @@ pub fn reasoning_lines(reasoning: &Reasoning, _width: u16) -> Vec<Line<'static>>
 
 /// The Ctrl+O transcript's expanded cell: the same dim settled line — minus
 /// the `(ctrl+o to expand)` hint, since this *is* the expansion — over the
-/// whole chain-of-thought in the `⎿` gutter, whose corner sits under the
-/// label the way a tool cell's sits under its name.
+/// whole chain-of-thought in the `⎿` gutter.
 pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![settled_line(format!(
         "{}{}",

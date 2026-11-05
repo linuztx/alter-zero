@@ -953,15 +953,13 @@ the open group outranking the block in `ui::live::preview_lines`) and whose
 line the thought then settles into unseen, Ctrl+O its only view
 (`docs/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
 away entirely and it **collapses** into one committed **bullet-less** two-tone
-`  Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — one row like
-`summary_lines`, because nothing is happening any more and what is left is a
-fact about the turn — **dim throughout** (`reasoning_label_color()` =
-`status_done_color()`, `Done for Ns`'s dress, so the pair bracketing a turn
-reads as a pair), its text left in the column `Thinking…` streamed in behind
-the bullet's blank two columns (`ui::theme::SETTLED_INDENT`, which the settled
-MCP `  Called {server}` line and a read/search group's `  Read 2 files` line
-wear too — the turn summary, settling the status line rather than a cell,
-stays at the edge);
+`Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
+shape, because nothing is happening any more and what is left is a fact about
+the turn — **dim throughout** (`reasoning_label_color()` = `status_done_color()`,
+`Done for Ns`'s exact dress, so the pair bracketing a turn reads as a pair),
+both **at the edge** — unlike the settled MCP `  Called {server}` line and a
+read/search group's `  Read 2 files` line, which keep their live text's column
+behind the bullet's two blank columns (`ui::theme::SETTLED_INDENT`);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
 the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
@@ -3717,9 +3715,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   colours (`tool_waiting_color()` for a batch's not-yet-run `⎿ Waiting…` calls,
   `docs/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint, and `SETTLED_INDENT` — the
-  bullet's width of blank columns a settled thought, MCP `Called` line or
-  read/search group line opens on, so its text keeps the column its live
-  `●` header's text had), tool-view chrome
+  bullet's width of blank columns a settled MCP `Called` line or read/search
+  group line opens on, so its text keeps the column its live `●` header's text
+  had, while a settled thought stays at the edge with the turn summary),
+  tool-view chrome
   (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
   cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
   glyph, so its own consts are the dim italic `reasoning_text_color()`/

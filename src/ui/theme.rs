@@ -216,12 +216,12 @@ pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
-/// The inset of a **settled** line — `  Thought for 3s`, `  Called Deepwiki`,
-/// `  Read 2 files` — the bullet-less one-liner a thinking phase, an MCP call
-/// or a read/search group leaves once it is done. It is the [`TOOL_BULLET`]'s
-/// width in spaces, so the text settles in the column its live `●` header's
-/// text sat in and only the bullet goes away. The turn summary (`Done for Ns`)
-/// is not one of them: it settles the status line, not a cell.
+/// The inset of a **settled** line — `  Called Deepwiki`, `  Read 2 files` —
+/// the bullet-less one-liner an MCP call or a read/search group leaves once it
+/// is done. It is the [`TOOL_BULLET`]'s width in spaces, so the text settles in
+/// the column its live `●` header's text sat in and only the bullet goes away.
+/// A settled thought (`Thought for 3s`) and the turn summary (`Done for Ns`)
+/// do not wear it: both are footnotes about the turn and sit at the edge.
 pub(super) const SETTLED_INDENT: &str = "  ";
 
 /// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the

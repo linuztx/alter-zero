@@ -145,10 +145,10 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_has "$verbose" -F "$cell" "Verbose output did not give $cell its own cell back"
 done
 expect_lacks "$verbose" -F "$GROUP146" "Verbose output left the collapsed line on screen"
-expect_eq "$(grep -cE "^  Thought for [0-9]+s" <<<"$verbose")" "2" \
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$verbose")" "2" \
 	"Verbose output lost a thought"
 # …each back in its place: the first between the listing and the search.
-first_thought="$(grep -nE "^  Thought for [0-9]+s" <<<"$verbose" | head -1 | cut -d: -f1)"
+first_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$verbose" | head -1 | cut -d: -f1)"
 search_cell="$(grep -nF "Bash(grep -rn 'card()' .)" <<<"$verbose" | tail -1 | cut -d: -f1)"
 if [ -z "$first_thought" ] || [ -z "$search_cell" ] || [ "$first_thought" -ge "$search_cell" ]; then
 	fail "Verbose output did not put the thought between the rounds back above the search (rows ${first_thought:-none}, ${search_cell:-none})"

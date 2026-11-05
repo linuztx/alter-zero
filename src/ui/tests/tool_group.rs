@@ -145,7 +145,7 @@ fn only_a_thought_outside_the_group_keeps_its_line() {
         .filter(|row| row.trim_start().starts_with("Thought for"))
         .collect()
     };
-    assert_eq!(thoughts(false), ["  Thought for 3s (ctrl+o to expand)"]);
+    assert_eq!(thoughts(false), ["Thought for 3s (ctrl+o to expand)"]);
     assert_eq!(thoughts(true).len(), 3, "{:#?}", thoughts(true));
 }
 
