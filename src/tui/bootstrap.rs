@@ -341,7 +341,6 @@ impl<'t> Session<'t> {
         } else {
             mcp_manager.set_active(false);
         }
-        let mcp_manager = Some(mcp_manager);
 
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
@@ -412,7 +411,7 @@ impl<'t> Session<'t> {
             &task_registry,
             &skill_registry,
             &subagents,
-            mcp_manager.as_ref(),
+            Some(&mcp_manager),
             &settings,
             hook_setup,
         );
@@ -1008,9 +1007,7 @@ impl<'t> Session<'t> {
         // Tear down the MCP connections (docs/mcp.md): drops every transport
         // — killing the stdio children synchronously — and cancels a running
         // auth flow, so quitting can't orphan a server process.
-        if let Some(mcp) = &self.mcp {
-            mcp.shutdown();
-        }
+        self.mcp.shutdown();
         // Hand the herdr pane back (docs/herdr.md) — last, once nothing of
         // the session is left running: the release replaces any report not
         // yet written, and the wait for it is bounded, so a wedged socket

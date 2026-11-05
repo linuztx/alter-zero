@@ -142,10 +142,7 @@ impl Session<'_> {
     /// `/settings` **MCP** row), the `/hooks` and `/skills` rule: the list
     /// says so, and each server's own switch still moves.
     pub(crate) fn open_mcp_menu(&mut self) {
-        let Some(manager) = &self.mcp else {
-            return;
-        };
-        let snapshot = manager.snapshot();
+        let snapshot = self.mcp.snapshot();
         self.app.open_mcp_menu(snapshot);
     }
 
@@ -157,10 +154,7 @@ impl Session<'_> {
     /// turned on over project servers that wait for the startup review, the
     /// review asks now — the **Hooks** row's rule (`docs/config-review.md`).
     pub(crate) fn apply_mcp_setting(&mut self, on: bool) {
-        let Some(manager) = self.mcp.clone() else {
-            return;
-        };
-        manager.set_active(on);
+        self.mcp.set_active(on);
         self.models.refresh_mcp();
         self.sync_listings();
         if on {
@@ -171,9 +165,7 @@ impl Session<'_> {
     /// Apply one `/mcp` operation against the live manager. Connection work
     /// runs on the manager's worker threads — nothing here blocks the loop.
     pub(crate) fn apply_mcp_op(&mut self, op: McpOp) {
-        let Some(manager) = self.mcp.clone() else {
-            return;
-        };
+        let manager = self.mcp.clone();
         match op {
             McpOp::Reconnect { server } => manager.reconnect(&server),
             McpOp::SetDisabled { server, disabled } => {
@@ -248,9 +240,7 @@ impl Session<'_> {
                 self.toast(text, kind);
             }
         }
-        if let Some(manager) = &self.mcp {
-            self.app.update_mcp_snapshot(manager.snapshot());
-        }
+        self.app.update_mcp_snapshot(self.mcp.snapshot());
         // The offered tool set may have flipped (a server connected, failed,
         // was disabled) — re-attach the backend only when it really did (the
         // `refresh_skills` pattern) — and with it the servers' instructions
@@ -266,11 +256,10 @@ impl Session<'_> {
     /// (`docs/mcp.md`). Nothing while MCP is off, when no server is meant to
     /// run.
     pub(crate) fn report_mcp_errors(&mut self) {
-        let Some(manager) = &self.mcp else { return };
-        if !manager.is_active() {
+        if !self.mcp.is_active() {
             return;
         }
-        let errors = manager.config_errors();
+        let errors = self.mcp.config_errors();
         if let Some(first) = errors.first() {
             let extra = errors.len().saturating_sub(1);
             let text = if extra > 0 {

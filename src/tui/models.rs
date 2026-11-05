@@ -1932,11 +1932,10 @@ impl Session<'_> {
         // the secrets: servers connect after the first frame and come and
         // go, and only what follows a changed section re-renders into the
         // prompt cache. Gated on Tools, as their tools are.
-        let mcp_instructions = match &self.mcp {
-            Some(manager) if self.app.settings().tools => {
-                alter_zero::mcp::instructions_section(&manager.instructions(&|_| true))
-            }
-            _ => String::new(),
+        let mcp_instructions = if self.app.settings().tools {
+            alter_zero::mcp::instructions_section(&self.mcp.instructions(&|_| true))
+        } else {
+            String::new()
         };
         let listings = alter_zero::reminder::join_sections(&[
             &alter_zero::subagents::listing_sections(&skills, &agents),

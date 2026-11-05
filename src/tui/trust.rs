@@ -499,10 +499,10 @@ impl Session<'_> {
             pages.push(page);
         }
         if servers
-            && let Some(manager) = self.mcp.as_ref().filter(|manager| manager.is_active())
+            && self.mcp.is_active()
             && let Some(page) = self
                 .trust
-                .mcp_page(&manager.awaiting_review(), home.as_deref())
+                .mcp_page(&self.mcp.awaiting_review(), home.as_deref())
         {
             pages.push(page);
         }
@@ -593,10 +593,8 @@ impl Session<'_> {
             })
             .collect();
         let result = self.trust.record_servers(&decisions);
-        if let Some(manager) = &self.mcp {
-            for (_, name, enabled) in &decisions {
-                manager.set_approved(name, *enabled);
-            }
+        for (_, name, enabled) in &decisions {
+            self.mcp.set_approved(name, *enabled);
         }
         result
     }
@@ -634,9 +632,7 @@ impl Session<'_> {
     /// `false` when `name` is not a project server the session knows, so
     /// the caller applies the user file's toggle instead.
     pub(crate) fn set_project_server(&mut self, name: &str, enabled: bool) -> bool {
-        let Some(manager) = self.mcp.clone() else {
-            return false;
-        };
+        let manager = self.mcp.clone();
         let project = manager
             .snapshot()
             .iter()

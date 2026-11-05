@@ -196,10 +196,7 @@ impl Session<'_> {
             // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
             skills: !self.skill_registry.is_empty(),
             // …nor when no MCP server is declared anywhere (`docs/mcp.md`).
-            mcp: self
-                .mcp
-                .as_ref()
-                .is_some_and(alter_zero::llm::mcp::McpManager::has_servers),
+            mcp: self.mcp.has_servers(),
             // Whether this terminal can draw a picture (`docs/images.md`).
             images: self.term.image_capability().0,
             // Nowhere to keep an install id without a config home — and
