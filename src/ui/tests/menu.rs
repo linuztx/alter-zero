@@ -650,10 +650,10 @@ fn cursor_stays_in_the_box_when_the_palette_opens() {
 #[test]
 fn shortcuts_rows_is_zero_closed_and_counts_the_band_open() {
     let mut app = App::new();
-    assert_eq!(shortcuts_rows(&app), 0);
+    assert_eq!(shortcuts_rows(&app, 80), 0);
     app.shortcuts_open = true;
     assert_eq!(
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 80),
         SHORTCUTS.len().div_ceil(2) as u16,
         "two entries per row — the $ entry is an ordinary grid slot"
     );
@@ -669,7 +669,7 @@ fn the_shortcuts_band_is_inset_to_the_bands_text_column() {
     // SHORTCUTS_COL past the inset.
     assert_eq!(cols(MENU_INDENT), cols(FOOTER_INDENT));
     for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true)] {
-        for line in shortcuts_lines(turn_active, can_backtrack) {
+        for line in shortcuts_lines(turn_active, can_backtrack, 80) {
             let [inset, key, ..] = line.spans.as_slice() else {
                 panic!("an inset and an entry: {line:?}");
             };
@@ -678,7 +678,10 @@ fn the_shortcuts_band_is_inset_to_the_bands_text_column() {
             assert!(!key.content.starts_with(' '), "{:?}", plain(&line));
         }
     }
-    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(texts[0].starts_with("  / for commands "), "{texts:?}");
     assert!(texts[7].starts_with("  $ for skills "), "{texts:?}");
     let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
@@ -690,9 +693,81 @@ fn the_shortcuts_band_is_inset_to_the_bands_text_column() {
 }
 
 #[test]
+fn a_narrow_terminal_stacks_the_shortcuts_in_one_column() {
+    // Two columns need the second column's start plus its widest entry. A
+    // terminal narrower than that used to cut the second column mid-word
+    // (`shift+tab for perm`); there the band lists one entry per row
+    // instead, in the grid's reading order, each row still inset — taller,
+    // but nothing on it cut.
+    let grid = shortcuts_lines(false, false, 200);
+    let needs = grid
+        .iter()
+        .map(|l| cols(plain(l).trim_end()))
+        .max()
+        .expect("a band row");
+    let needs = u16::try_from(needs).expect("a terminal width");
+    assert_eq!(needs, 61, "the inset, the 30-column grid, the widest entry");
+    assert_eq!(
+        shortcuts_lines(false, false, needs).len(),
+        SHORTCUTS.len().div_ceil(2),
+        "both columns fit at exactly the width they need"
+    );
+    let narrow = shortcuts_lines(false, false, needs - 1);
+    let texts: Vec<String> = narrow.iter().map(plain).collect();
+    let expected: Vec<String> = SHORTCUTS
+        .iter()
+        .map(|(key, label)| format!("{MENU_INDENT}{key}{label}"))
+        .collect();
+    assert_eq!(texts, expected, "one entry per row, in order");
+    // The context swaps ride the stacked band too.
+    let busy: Vec<String> = shortcuts_lines(true, false, needs - 1)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        busy.contains(&format!("{MENU_INDENT}esc to interrupt")),
+        "{busy:#?}"
+    );
+    // The reserved rows are the painted rows at both widths.
+    let mut app = App::new();
+    app.shortcuts_open = true;
+    assert_eq!(
+        usize::from(shortcuts_rows(&app, needs - 1)),
+        SHORTCUTS.len()
+    );
+    assert_eq!(
+        usize::from(shortcuts_rows(&app, needs)),
+        SHORTCUTS.len().div_ceil(2)
+    );
+}
+
+#[test]
+fn render_live_paints_the_stacked_band_on_a_narrow_terminal() {
+    // The region reserves the stacked band's rows, and the paint builds the
+    // band at the same width — so the last entry lands on the last row.
+    let mut app = App::new();
+    app.shortcuts_open = true;
+    let band = shortcuts_rows(&app, 40);
+    assert_eq!(usize::from(band), SHORTCUTS.len(), "stacked at 40 columns");
+    let h = live_height(&app.input, 40, 30, false, 0, 0, 0, 0, band, 0, 0);
+    let mut buf = buffer(40, h);
+    render_live(buf.area, &mut buf, &app);
+    assert_eq!(
+        row(&buf, h - 1, 40).trim_end(),
+        "  ctrl+w/u/k to kill text",
+        "the last entry on the last region row"
+    );
+    assert_eq!(
+        row(&buf, h - band, 40).trim_end(),
+        "  / for commands",
+        "the first entry on the band's first row"
+    );
+}
+
+#[test]
 fn shortcuts_band_advertises_ctrl_v_image_paste() {
     // The `?` overlay lists Ctrl+V image paste (docs/image-paste.md).
-    let texts: Vec<String> = shortcuts_lines(false, false)
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -704,7 +779,7 @@ fn shortcuts_band_advertises_ctrl_v_image_paste() {
 
 #[test]
 fn shortcuts_lines_list_the_bindings_in_two_columns() {
-    let texts: Vec<String> = shortcuts_lines(false, false)
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -745,7 +820,7 @@ fn shortcuts_lines_list_the_alt_up_queue_edit_binding() {
     // Alt+Up (pull the last queued batch back into the composer,
     // docs/queue.md) is discoverable in the `?` band like every other
     // binding.
-    let all: String = shortcuts_lines(false, false)
+    let all: String = shortcuts_lines(false, false, 80)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -758,7 +833,7 @@ fn shortcuts_lines_list_the_rebound_session_keys() {
     // Ctrl+T (cycle the thinking mode, docs/reasoning.md), Shift+Tab (the
     // permission mode, docs/permissions.md) and the terminal editing keys
     // are discoverable in the `?` band like every other binding.
-    let all: String = shortcuts_lines(false, false)
+    let all: String = shortcuts_lines(false, false, 80)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -772,11 +847,11 @@ fn shortcuts_lines_list_the_rebound_session_keys() {
 fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
     // codex's quit entry is context-sensitive: "to interrupt" while a task
     // runs. Our Esc entry flips the same way.
-    let idle: Vec<String> = shortcuts_lines(false, false)
+    let idle: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l))
         .collect();
-    let busy: Vec<String> = shortcuts_lines(true, false)
+    let busy: Vec<String> = shortcuts_lines(true, false, 80)
         .iter()
         .map(|l| plain(l))
         .collect();
@@ -799,7 +874,7 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
     // SHORTCUTS_COL with it. spans = [inset, key, label, gutter, key, label].
     for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true), (true, true)]
     {
-        for line in shortcuts_lines(turn_active, can_backtrack) {
+        for line in shortcuts_lines(turn_active, can_backtrack, 80) {
             if line.spans.len() < 5 {
                 continue; // a lone trailing entry has no second column
             }
@@ -825,7 +900,7 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
 
 #[test]
 fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
-    for line in shortcuts_lines(false, false) {
+    for line in shortcuts_lines(false, false, 80) {
         // spans = [inset, key, label, pad, key, label] — keys cyan, labels
         // dim, both columns.
         assert_eq!(line.spans[1].style.fg, Some(shortcuts_key_color()));
@@ -851,11 +926,11 @@ fn live_height_adds_the_shortcuts_band() {
         0,
         0,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 40),
         0,
         0,
     );
-    assert_eq!(open, closed + shortcuts_rows(&app));
+    assert_eq!(open, closed + shortcuts_rows(&app, 40));
 }
 
 #[test]
@@ -864,26 +939,26 @@ fn render_live_draws_the_shortcuts_band_below_the_box() {
     app.shortcuts_open = true;
     let h = live_height(
         &app.input,
-        60,
+        80,
         24,
         false,
         0,
         0,
         0,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 80),
         0,
         0,
     );
-    let mut buf = buffer(60, h);
+    let mut buf = buffer(80, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)
-        .map(|y| row(&buf, y, 60))
+        .map(|y| row(&buf, y, 80))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(all.contains("/ for commands"), "band rendered: {all:?}");
+    assert!(all.contains("  / for commands"), "band rendered: {all:?}");
     assert!(
-        row(&buf, h - 1, 60).contains("$ for skills"),
+        row(&buf, h - 1, 80).starts_with("  $ for skills"),
         "the last band row sits on the last region row"
     );
 }
@@ -912,7 +987,7 @@ fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
             0,
             0,
             0,
-            shortcuts_rows(&app),
+            shortcuts_rows(&app, 40),
             0,
             0,
         ),
@@ -939,7 +1014,7 @@ fn the_queue_and_the_shortcuts_band_show_in_their_own_slots() {
         0,
         q,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 40),
         0,
         0,
     );
@@ -995,7 +1070,10 @@ fn the_palette_replaces_the_footer() {
 
 #[test]
 fn the_shortcuts_band_lists_ctrl_r() {
-    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         texts.iter().any(|t| t.contains("ctrl+r to search history")),
         "band lists the search binding: {texts:?}"
@@ -1004,7 +1082,10 @@ fn the_shortcuts_band_lists_ctrl_r() {
 
 #[test]
 fn the_shortcuts_band_lists_the_bang() {
-    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         texts.iter().any(|t| t.contains("! for shell command")),
         "band lists the shell binding: {texts:?}"
@@ -1344,11 +1425,14 @@ fn cursor_stays_in_the_box_when_the_file_picker_opens() {
 fn shortcuts_esc_entry_is_three_way_context_sensitive() {
     // Interrupt while a turn runs (as before); the Esc-Esc edit hint when
     // idle with a previous user message; quit only with nothing to edit.
-    let idle: String = shortcuts_lines(false, false).iter().map(plain).collect();
+    let idle: String = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(idle.contains("esc to quit"), "{idle:?}");
-    let busy: String = shortcuts_lines(true, true).iter().map(plain).collect();
+    let busy: String = shortcuts_lines(true, true, 80).iter().map(plain).collect();
     assert!(busy.contains("esc to interrupt"), "{busy:?}");
-    let target: String = shortcuts_lines(false, true).iter().map(plain).collect();
+    let target: String = shortcuts_lines(false, true, 80).iter().map(plain).collect();
     assert!(target.contains("esc esc to edit previous"), "{target:?}");
     assert!(!target.contains("esc to quit"), "{target:?}");
 }
@@ -1371,7 +1455,7 @@ fn the_skill_entry_is_an_ordinary_grid_slot() {
     // third-column special case (the band is one two-column grid at every
     // width):
     //   $ for skills                  ctrl+w/u/k to kill text
-    let lines = shortcuts_lines(false, false);
+    let lines = shortcuts_lines(false, false, 80);
     assert_eq!(lines.len(), SHORTCUTS.len().div_ceil(2), "no extra row");
     let last = plain(lines.last().expect("a band row"));
     assert!(

@@ -2637,7 +2637,8 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // (`footer.rs::shortcut_overlay_lines`): two aligned columns of
 // `{key} for {thing}` entries, keys cyan, labels dim, inset by `MENU_INDENT`
 // like the footer row whose slot it takes (codex's overlay, a footer mode,
-// wears its footer's indent too). See docs/shortcuts.md. ---
+// wears its footer's indent too) — one entry per row on a terminal too narrow
+// for both columns whole. See docs/shortcuts.md. ---
 
 /// The bindings listed in the band, as `(key, label)` pairs laid out two per
 /// row in declaration order. The `esc` entry is context-sensitive —
@@ -2671,7 +2672,9 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 /// single space before its neighbour — one run-on line). The
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
-/// entry that needs it.
+/// entry that needs it. A terminal narrower than the inset, this column and a
+/// row's second entry together stacks the band into one entry per row
+/// ([`shortcuts_lines`]).
 ///
 /// Note that an entry added anywhere **reflows the pairing**, so a wide entry
 /// that had been safe in a second column can land in a first one — check this

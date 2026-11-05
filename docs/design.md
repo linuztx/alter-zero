@@ -333,7 +333,8 @@ which Ctrl+V reads the clipboard from.
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
   the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
-  labels dim), inset two columns like the footer row whose slot it takes,
+  labels dim), inset two columns like the footer row whose slot it takes and
+  stacked one entry per row on a terminal too narrow for both columns whole,
   listing `/`, `!`, `↑`, `ctrl+r`, `alt+enter`, `ctrl+o`, `esc`,
   `ctrl+c`, `alt+↑` (edit queue), `tab` (queue next turn), and `ctrl+v`
   (image paste);
@@ -1206,7 +1207,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   too) and types into a non-empty draft; any other key closes it but still
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
   interrupt mid-turn (the turn is untouched); `?` is ignored in the tool view.
-- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open;
+- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open
+  (one per row below the width two columns need);
   `shortcuts_lines` lists the bindings in two aligned columns behind the
   `MENU_INDENT` inset (including `alt+↑ to edit queue`), keys cyan and
   labels dim, the `esc` entry flipping `to quit`/`to interrupt` with the turn;

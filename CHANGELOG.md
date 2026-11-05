@@ -48,7 +48,9 @@ release heading when a version is cut.
 - **The `?` shortcuts list starts two columns in.** It sat flush against the
   terminal's edge, the only thing below the input box that did. It now
   starts where the footer line it replaces does, in line with the `/`
-  palette's command names.
+  palette's command names. On a terminal too narrow for both columns (under
+  61 columns) it lists one shortcut per row, where it used to cut the second
+  column off mid-word.
 
 - **Finished thoughts, MCP calls and file reads keep their place.** The
   one-line summary a step leaves once it is done (`Thought for 3s`,

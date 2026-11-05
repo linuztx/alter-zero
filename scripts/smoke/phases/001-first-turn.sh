@@ -228,11 +228,13 @@ sleep 0.2
 # eighth: this line once pinned "/login, the 8th command", and `/fast`
 # (docs/fast-mode.md) landing before it broke a check about MENU_MAX_ROWS for
 # a reason that had nothing to do with MENU_MAX_ROWS. A palette row opens on
-# the `→ ` marker or its two-space inset and then its slash ($PALETTE_ROW),
-# which nothing else on screen does.
+# the `→ ` marker or its two-space inset, then its slash, its name and two or
+# more spaces before its description ($PALETTE_ENTRY) — a shape nothing else
+# on screen has, where the bare opening also matches the reply's wrapped prose.
 expect_has "$palette_open" -F "List the available commands" "typing '/' did not open the command palette (/help missing)"
+expect_has "$palette_open" -E '^→ /help +List the available commands' "the highlighted /help row does not open on the → marker"
 expect_has "$palette_open" -F "Clear the conversation" "the command palette did not list /clear"
-palette_rows="$(printf '%s\n' "$palette_open" | grep -cE "$PALETTE_ROW" || true)"
+palette_rows="$(printf '%s\n' "$palette_open" | grep -cE "$PALETTE_ENTRY" || true)"
 if [ "$palette_rows" -ne 8 ]; then
 	fail "the command palette shows $palette_rows rows, not the 8 MENU_MAX_ROWS caps it at"
 fi
@@ -242,11 +244,11 @@ expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled 
 # Walking back up from /quit recenters: the window still holds its 8 rows, the
 # highlight rides the middle (5th) one with commands below it, and /quit — four
 # rows under the highlight — has scrolled out.
-recentered_rows="$(printf '%s\n' "$palette_recentered" | grep -cE "$PALETTE_ROW" || true)"
+recentered_rows="$(printf '%s\n' "$palette_recentered" | grep -cE "$PALETTE_ENTRY" || true)"
 if [ "$recentered_rows" -ne 8 ]; then
 	fail "the recentered command palette shows $recentered_rows rows, not 8"
 fi
-highlight_row="$(printf '%s\n' "$palette_recentered" | grep -E "$PALETTE_ROW" | grep -n '^→ ' | cut -d: -f1)"
+highlight_row="$(printf '%s\n' "$palette_recentered" | grep -E "$PALETTE_ENTRY" | grep -n '^→ ' | cut -d: -f1)"
 if [ "$highlight_row" != 5 ]; then
 	fail "four ↑ from /quit left the palette highlight on row ${highlight_row:-none} of 8, not the middle (5th) row with commands below it"
 fi

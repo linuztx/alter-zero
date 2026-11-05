@@ -446,18 +446,20 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
-/// otherwise the entry list two-per-row (every entry — the `$` skill sigil
-/// included — is an ordinary grid slot). [`live_height`] adds this (via its
-/// band parameter); [`render_live`] paints exactly this many rows — the two
-/// must agree, like [`menu_rows`].
+/// How many rows the `?` shortcuts band occupies for `app` at `width`: 0 when
+/// closed, otherwise **the built line count** of [`shortcuts_lines`] — the
+/// entries two per row where `width` holds both columns whole (every entry,
+/// the `$` skill sigil included, an ordinary grid slot), one per row where it
+/// does not. [`live_height`] adds this (via its band parameter);
+/// [`render_live`] paints exactly this many rows — the two agree by
+/// construction, like [`menu_rows`].
 #[must_use]
-pub fn shortcuts_rows(app: &App) -> u16 {
-    if app.shortcuts_open {
-        SHORTCUTS.len().div_ceil(2) as u16
-    } else {
-        0
+pub fn shortcuts_rows(app: &App, width: u16) -> u16 {
+    if !app.shortcuts_open {
+        return 0;
     }
+    let lines = shortcuts_lines(app.turn_active(), app.has_backtrack_target(), width);
+    u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
 /// Total rows of the band below the input box: the slash-command palette, the
@@ -470,19 +472,23 @@ pub fn shortcuts_rows(app: &App) -> u16 {
 /// can never drift.
 #[must_use]
 pub fn band_rows(app: &App, width: u16) -> u16 {
-    menu_rows(app, width) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
+    menu_rows(app, width) + shortcuts_rows(app, width) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
 /// per row, inset by `MENU_INDENT` — the band takes the footer's slot, so it
 /// starts where the footer does, in the column every band's names start at —
 /// with the second column `SHORTCUTS_COL` past the inset, keys cyan and labels
-/// dim. The `esc` entry is three-way context-sensitive (codex's quit entry):
+/// dim. Where `width` cannot hold a row's second entry whole the band stacks
+/// into **one entry per row** instead, in the same reading order, each row
+/// still inset — taller, but never cut mid-word, which is what the paint's
+/// clip did to the second column on a narrow terminal (`docs/shortcuts.md`).
+/// The `esc` entry is three-way context-sensitive (codex's quit entry):
 /// ` to interrupt` while a turn is in flight, the `SHORTCUTS_BACKTRACK`
 /// `esc esc` edit hint when idle with a previous user message to edit, and
 /// ` to quit` only with nothing to backtrack to (docs/backtrack.md).
 #[must_use]
-pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
+pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool, width: u16) -> Vec<Line<'static>> {
     let entry = |key: &'static str, label: &'static str| {
         let (key, label) = if key == "esc" && turn_active {
             (key, " to interrupt")
@@ -496,7 +502,7 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
             Span::styled(label, Style::new().fg(shortcuts_text_color())),
         ]
     };
-    SHORTCUTS
+    let grid: Vec<Line<'static>> = SHORTCUTS
         .chunks(2)
         .map(|pair| {
             let [key, label] = entry(pair[0].0, pair[0].1);
@@ -510,6 +516,21 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
                 ));
                 spans.extend(entry(key2, label2));
             }
+            Line::from(spans)
+        })
+        .collect();
+    let fits = |line: &Line<'static>| {
+        let used: usize = line.spans.iter().map(|span| cols(&span.content)).sum();
+        used <= usize::from(width)
+    };
+    if grid.iter().all(fits) {
+        return grid;
+    }
+    SHORTCUTS
+        .iter()
+        .map(|&(key, label)| {
+            let mut spans = vec![Span::raw(MENU_INDENT)];
+            spans.extend(entry(key, label));
             Line::from(spans)
         })
         .collect()

@@ -58,12 +58,13 @@ that creates either state closes the other.
 
 The band reuses the palette's slot — the reserved rows **below the input
 box** (codex's footer sits below its composer too). `live_layout`'s third
-band is now `menu_rows(app) + shortcuts_rows(app)` (one is always 0);
+band is now `menu_rows(app, width) + shortcuts_rows(app, width)` (one is
+always 0);
 `render_live` paints whichever is open, `cursor_position` reserves the same
 rows (the cursor never moves when the band opens), and `main.rs`'s
 `live_region_height` passes the same sum to `ui::live_height`.
 
-`shortcuts_lines(turn_active, can_backtrack)` lists this app's actual
+`shortcuts_lines(turn_active, can_backtrack, width)` lists this app's actual
 bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 (`SHORTCUTS_*` consts), the whole grid inset two columns:
 
@@ -93,8 +94,8 @@ out two per row in declaration order, so the band is
 `$` skill-mention sigil (`docs/skill-mentions.md`) is an ordinary entry in
 that grid — the last row's first column, beside the kill keys. It rode the
 first row as a third column for a while; the special case is retired, so
-the band is one two-column grid at every width and `shortcuts_rows` is
-plain `div_ceil`. Note that adding an entry **reflows every pairing after
+the band is one two-column grid wherever both columns fit. Note that adding
+an entry **reflows every pairing after
 it**, so a wide entry that was safe in a second column can land in a first
 one — check `SHORTCUTS_COL` still leaves a gutter when adding one. The
 Ctrl+D view's classifier page has no entry of its own: Tab is discovered on
@@ -110,6 +111,33 @@ the esc context swaps reach 24 the same way). The
 ≥ 2-column gutter and the shared column across every `(turn_active,
 can_backtrack)` state; an entry added later that grows past it must widen
 `SHORTCUTS_COL` with it (the test fails until it does).
+
+**On a terminal too narrow for both columns the band stacks into one.** Two
+columns need the inset, `SHORTCUTS_COL` and the widest second-column entry —
+61 columns today (`shift+tab for permission mode` from column 32) — and below
+that the paint's clip used to cut the second column mid-word
+(`shift+tab for perm` at 50 columns, six of eight rows cut at 51), on the
+band whose whole job is to be read. So `shortcuts_lines` measures every grid
+row against `width` and, when any would be cut, lists one entry per row in
+the same reading order instead, each still inset:
+
+```
+  / for commands
+  ! for shell command
+  ↑ for input history
+  ctrl+r to search history
+  …
+```
+
+The band is taller there (16 rows), which is the price of saying every
+binding whole; it is a transient overlay any key dismisses. `shortcuts_rows`
+is the built line count — the palette's height-is-the-line-count rule
+(`docs/view-flow.md`) — so the reserved rows and the painted rows agree at
+every width. The band takes its rows ahead of the streaming strip (the
+composer's floor is the only thing `live_layout` holds back first), so on a
+51×24 pane with a reply streaming, the composer, its rules and the status
+line all stay on screen while the reply's preview yields the rows the band
+needs until the band closes (`smoke.sh` Phase 99).
 
 The Esc entry is three-way context-sensitive (codex's quit entry): `esc to
 interrupt` while a turn is in flight, `esc esc to edit previous`
@@ -129,13 +157,13 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   not worth leaking boundary state into the core.
 - No `customize shortcuts with /keymap` trailer (we have no keymap), and the
   entries are this app's bindings, not codex's.
-- **The grid is fixed-width.** Its widest row needs 61 columns (the inset,
-  the 30-column first column and `shift+tab for permission mode`), and on a
-  narrower terminal the second column is cut at the edge. A
-  one-entry-per-row fallback would keep every entry whole, but it doubles the
-  band to 16 rows on exactly the narrow, short panes where a tall band
-  squeezes the composer and the streaming preview (`smoke.sh` Phase 99 drives
-  one at 51×24), so the band keeps its eight rows.
+- **A terminal both narrow and short cuts the stacked band at the bottom.**
+  The band's height is decided by the width alone, so where fewer than its 16
+  rows are left under the composer (a terminal under 61 columns *and* under
+  about 19 rows) the last entries do not show — at 50×16 the final three.
+  Choosing the layout by the height too would make the reserved rows depend
+  on a size the paint does not see the same way, and the case is rare: a
+  terminal that narrow is usually a split pane on a taller screen.
 
 ## Testing
 
@@ -145,7 +173,9 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   idle (no quit) and mid-turn (no interrupt, band closed, turn untouched);
   `?` is ignored in the tool view.
 - `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (8
-  rows for the current 16 entries); every row opens on the blank
+  rows for the current 16 entries) wherever both columns fit, and
+  `SHORTCUTS.len()` one column narrower — two columns at exactly 61, one
+  entry per row, in order, at 60; every row opens on the blank
   `MENU_INDENT` inset (the footer's width), and the lines list the bindings in
   two aligned columns (keys cyan, labels dim) with a ≥ 2-column gutter between
   them in every context state (the esc swaps change the first column's width);
@@ -154,5 +184,6 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   `render_live` paints it below the box and `cursor_position` stays put when
   it opens.
 - `src/tui/` (smoke, Phase 11): `?` shows the band (`for commands` visible),
-  `?` again hides it, and typing a draft containing `?` ends up in the input
-  box untouched.
+  inset two columns with its second column at 32, `?` again hides it, typing
+  a draft containing `?` ends up in the input box untouched, and on a
+  50-column pane the band lists one entry per row, every entry whole.

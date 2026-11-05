@@ -59,9 +59,14 @@ SUMMARY_TURN3="Pondered for"
 # The opening of a slash-palette row (an ERE, anchored): the selection's `→ `
 # marker or the two-space inset every other row wears (`MENU_MARKER` /
 # `MENU_INDENT`, docs/design.md), then the command's slash — so
-# "${PALETTE_ROW}fast" is the `/fast` row wherever the highlight sits, and a
-# count of "$PALETTE_ROW" lines is a count of the commands on screen.
+# "${PALETTE_ROW}fast" is the `/fast` row wherever the highlight sits.
 PALETTE_ROW='^(→ |  )/'
+# A whole palette row, for counting the commands on screen: that opening, a
+# command name, then two or more spaces before its description — a shape
+# nothing else on screen has, where the bare opening also matches a reply's
+# wrapped prose (`  /model picks the model to run.` keeps one space) and
+# would count it as a command.
+PALETTE_ENTRY="${PALETTE_ROW}[a-z0-9-]+ {2,}[^ /]"
 # The dummy AI pauses before streaming (so the status indicator shows first) —
 # 3s by default. Every phase runs with a SHORT delay so the turns stream
 # promptly; the phases that want a visible pause set their own.

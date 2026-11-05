@@ -40,3 +40,17 @@ expect_lacks "$band_open" -F "dummy_model_name" "the session footer is still sho
 expect_has "$band_closed" -F "dummy_model_name ·" "the session footer did not return after the shortcuts band closed"
 expect_has "$band_typed" -F "❯ really?" "'?' inside a draft was not typed as a literal character"
 expect_lacks "$band_typed" -F "for commands" "typing a draft ending in '?' re-opened the shortcuts band"
+
+# On a terminal too narrow for both columns (under 61) the band lists one
+# entry per row, every entry whole, where the second column used to be cut
+# mid-word at the edge (`shift+tab for perm`). Tall enough for all sixteen.
+S8N="${S}_shortcuts_narrow"
+launch "$S8N" 50 30
+tmux send-keys -t "$S8N" -l "?"
+band_narrow="$(wait_pane 3 "$S8N" -F "kill text")"
+dump "the shortcuts band on a 50-column pane" "$band_narrow"
+tmux kill-session -t "$S8N" 2>/dev/null
+for entry in '/ for commands' '! for shell command' 'shift\+tab for permission mode' 'ctrl\+w/u/k to kill text'; do
+	expect_has "$band_narrow" -E "^  ${entry}\$" "the narrow band does not list '$entry' whole on a row of its own"
+done
+expect_lacks "$band_narrow" -E 'for commands +!' "the narrow band kept two columns and cut the second at the edge"

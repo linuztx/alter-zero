@@ -306,7 +306,8 @@ pub(super) fn text_field_width(cells: u16) -> u16 {
 /// ([`toast_rows`], 0 or 1), two framing rules, one row per wrapped input line —
 /// so the box **grows** as the message wraps — the band below it (`band_rows`:
 /// the command palette's [`menu_rows`] plus the shortcuts band's
-/// [`shortcuts_rows`], 0 when both are closed), and the session-context footer
+/// [`shortcuts_rows`] — both sized by `width` — 0 when both are closed), and
+/// the session-context footer
 /// under that (`footer_rows`: [`footer_rows`], 0 when a band displaces it) —
 /// clamped to the terminal height (after which the box scrolls internally; see
 /// [`render_live`]).
