@@ -153,7 +153,7 @@ launch -c "$AG_WORK" "$S148" 110 36 "env NO_PROXY=127.0.0.1,localhost no_proxy=1
 # The row, by name; one flow is listed, so Enter opens the browser page.
 submit "$S148" "/login"
 sleep 0.5
-keys "$S148" Enter # Use a subscription
+keys "$S148" Enter # Sign in with an account
 subs="$(wait_pane 5 "$S148" -F "Google Antigravity")"
 dump "the subscription list" "$subs"
 expect_has "$subs" -F "Google Antigravity · ◯ unconfigured" "the subscription list did not offer the Antigravity sign-in"

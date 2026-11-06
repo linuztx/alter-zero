@@ -1,14 +1,15 @@
-# Local models — `/login` → **Use a local model**
+# Local models — `/login` → **Sign in with a local model**
 
-`/login` has three ways in. **Use a subscription** signs in to an account,
-**Use an API key** pastes a provider's key, and **Use a local model**
-connects a model server the user runs: Ollama, LM Studio, or a keyless server
-described in their own `providers.toml`. A local server needs no key. What it
+`/login` has three ways in, under its `Select authentication method:` title.
+**Sign in with an account** signs in to a subscription, **Sign in with an API
+key** pastes a provider's key, and **Sign in with a local model** connects a
+model server the user runs: Ollama, LM Studio, or a keyless server described
+in their own `providers.toml`. A local server needs no key. What it
 needs is an **address**, and the page asking for it **tests the connection
 before it saves anything**.
 
 ```
-/login → Use a local model → LM Studio → Enter        (the address in force)
+/login → Sign in with a local model → LM Studio → Enter        (the address in force)
                                        → type gpu-box:1234, Enter
 ```
 
@@ -25,9 +26,9 @@ own key for how a provider authenticates (`docs/llm.md`):
 
 | `auth` | list | the row asks for |
 | --- | --- | --- |
-| `github_copilot`, `chatgpt_codex`, `anthropic_console`, `cline_account` | Use a subscription | a sign-in (`docs/copilot.md` and siblings) |
-| `api_key` (the default) | Use an API key | a key, masked |
-| `optional_key` | Use a local model | an address, tested |
+| `github_copilot`, `chatgpt_codex`, `anthropic_console`, `cline_account` | Sign in with an account | a sign-in (`docs/copilot.md` and siblings) |
+| `api_key` (the default) | Sign in with an API key | a key, masked |
+| `optional_key` | Sign in with a local model | an address, tested |
 
 `optional_key` already meant "a server that needs no credential, though a
 stored one still rides as a bearer" (`docs/ollama.md`). That is what a local
@@ -337,7 +338,7 @@ rather than built, so its shape is agreed before any code exists:
    `ServerCertVerifier` used only for pinned hosts. Verification is never
    turned off. A changed certificate (re-issued, or a man in the middle)
    fails the pin and asks again, showing both fingerprints.
-3. **Scope.** Only addresses entered under **Use a local model**, never a
+3. **Scope.** Only addresses entered under **Sign in with a local model**, never a
    hosted provider: a cloud API presenting an untrusted certificate is an
    attack to refuse, not a prompt to answer.
 4. **Why it is not built yet.** It needs a second TLS verifier path into the
@@ -354,12 +355,12 @@ rather than built, so its shape is agreed before any code exists:
   instead of adding a provider, since a block naming a shipped id changes
   only the keys it sets. The shipped block's `api_base_env` makes it
   configured by being pointed at rather than by the block, so connect it once:
-  `/login` → Use a local model → LM Studio → Enter tests the address your
+  `/login` → Sign in with a local model → LM Studio → Enter tests the address your
   block names and saves it. Or delete the block, since the shipped one is
   what it described.
 - **A local Ollama connected before** keeps working: its `OLLAMA_HOST` is
-  read as it always was. It is found under Use a local model now, not under
-  Use an API key.
+  read as it always was. It is found under Sign in with a local model now, not under
+  Sign in with an API key.
 
 ## Where the code is
 

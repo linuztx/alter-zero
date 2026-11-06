@@ -113,7 +113,8 @@ The cursor seats count from that edge: a picker's `❯` search line is the
 page's row 1 on a page with room for it — found in the built page
 (`view_prompt_row`) rather than pinned, since a short terminal's rungs move
 it (*Below the compact page*) — a `/login` page's first content row is row
-1 (`DEVICE_CURSOR_ROW`), and a permission prompt's
+1 (`DEVICE_CURSOR_ROW`), or, on its two questions, the title found in the
+built page (a short terminal's rungs drop the rule above it), and a permission prompt's
 options sit `PERMISSION_TAIL_ROWS` — gap, hint, rule — above the region's
 bottom. The `/mcp` auth page's `URL >` field is **found** in the page the
 paint builds rather than counted from the bottom, since the notes under it
@@ -169,7 +170,9 @@ hardware cursor, which cannot sit on a scrollback row, clamped onto a theme
 or a setting at the body's top — and two rows shorter the highlighted row
 went with it. So the search-line pickers (`/theme`, `/skills`, `/settings`,
 `/mascot`, `/spinner`, `/model` and `/login`'s lists) don't stop at the
-compact page. It is the first of eight rungs (`model_view::compact_page`),
+compact page — nor do `/login`'s two titled questions (its root and the
+sign-in method choice), which have no search line and keep their title in
+its place. It is the first of eight rungs (`model_view::compact_page`),
 each a row shorter than the last but where the overflow pair goes, which is
 two rows at once:
 
@@ -198,7 +201,8 @@ blank `↓` slot that would hug its bottom rule.
 The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
 (`docs/skills.md`), `/settings` (`docs/settings.md`), `/mascot`
 (`docs/mascot.md`), `/spinner` (`docs/spinner.md`), `/model` and `/login`'s
-lists (`docs/llm.md`), the `/secrets` list (`docs/secrets.md`), and
+lists and its two titled questions, the title in the search line's place
+(`docs/llm.md`), the `/secrets` list (`docs/secrets.md`), and
 `/donate`, whose list is of boxes rather than rows, so it collapses before
 it windows — an accordion first, the addresses the highlight is not on
 folded to their label rows while the highlighted one keeps its box, then

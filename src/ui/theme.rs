@@ -1207,6 +1207,10 @@ pub(super) const LOGIN_CONFIGURED_LABEL: &str = " configured";
 pub(super) const LOGIN_UNCONFIGURED_MARK: &str = "◯";
 pub(super) const LOGIN_UNCONFIGURED_LABEL: &str = " unconfigured";
 
+/// The method step's title — the root asks its question in words, in the
+/// pages' title dress, over its three ways in (`docs/llm.md`).
+pub(super) const LOGIN_METHOD_TITLE: &str = "Select authentication method:";
+
 /// The dim hint under the method step (the root: Esc closes).
 pub(super) const LOGIN_METHOD_HINT: &str = "↑↓ navigate  enter select  escape/ctrl+c cancel";
 
@@ -1222,17 +1226,14 @@ pub(super) const LOGIN_LOCAL_HINT: &str = "↑↓ navigate  enter connect  esc b
 /// The list placeholder when the local server filter matches nothing.
 pub(super) const LOGIN_NO_LOCAL_MATCH: &str = "No matching servers";
 
-/// The list placeholder when the method filter matches nothing.
-pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
-
 /// The list placeholder when the subscription filter matches nothing.
 pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
 
 // --- The sign-in method choice (docs/chatgpt.md). A subscription offering two
 // ways in — ChatGPT Codex's browser flow, or a device code for a headless
-// machine — asks which before opening a page: a cyan title naming the
-// subscription over two rows in the root's own dress, and no filter, since a
-// question with two answers is not searched. ---
+// machine — asks which before opening a page: the root's own shape, a title
+// naming the subscription over two rows, and no filter, since a question with
+// two answers is not searched. ---
 
 /// The choice's title, around the subscription's name:
 /// `Select ChatGPT Codex login method:`.
@@ -1981,8 +1982,8 @@ pub(super) const USAGE_LOADING: &str = "Loading usage…";
 
 /// The page with no subscription signed in — advice, in `/model`'s accent.
 pub(super) const USAGE_NO_SUBSCRIPTION: &str = "No subscription is signed in — run /login and \
-     choose Use a subscription to see its plan limits here. An API key bills per token and has \
-     no plan to measure.";
+     choose Sign in with an account to see its plan limits here. An API key bills per token and \
+     has no plan to measure.";
 
 /// The tag on the subscription the session is running on.
 pub(super) const USAGE_IN_USE: &str = "in use";

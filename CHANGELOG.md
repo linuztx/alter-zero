@@ -48,6 +48,20 @@ release heading when a version is cut.
 
 ### Changed
 
+- **`/login` opens on a question, not a search box.** Its first page used to
+  put a `❯` filter over three rows, a search line with nothing worth
+  searching. It now asks `Select authentication method:` and offers **Sign in
+  with an account**, **Sign in with an API key** and **Sign in with a local
+  model**, renamed from *Use a subscription*, *Use an API key* and *Use a
+  local model*. There is no filter or counter to type into: the arrow keys
+  move, Enter picks and Esc closes, and the cursor stays hidden. The
+  messages that send you to one of these rows now use the new names. The
+  lists one step further in keep their filter. On a short terminal the page
+  sheds rows instead of scrolling away, and keeps the title, the highlighted
+  row and the hint on screen. ChatGPT Codex's `Select … login method:` page
+  now does the same, where it used to scroll its title and rows out of view
+  (`docs/llm.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

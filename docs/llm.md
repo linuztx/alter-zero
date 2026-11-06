@@ -190,7 +190,7 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
 | `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
-| `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Use a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
+| `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Sign in with a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
@@ -437,12 +437,27 @@ counter / model-name, the `→` marker, the `✓` active mark, the cyan
 `/login` collects a provider API key and saves it to `.env` so it persists across
 runs — the "onboarding" the user asked for. Like `/model` it is **inline**
 (`App::key_onboarding: Option<KeyOnboarding>`, not a `View`), replacing the composer
-in place; unlike it, it is a multi-step flow, rooted at three ways in — **Use a
-subscription**, **Use an API key**, **Use a local model** — whose lists partition
-the provider table by `auth` (a sign-in, a pasted key, a key that is optional).
-The API-key half is below; the subscription half is its own bullet, and the
-local half — a server's address, **tested before it is saved** — is
-`docs/local-models.md`.
+in place; unlike it, it is a multi-step flow, rooted at three ways in — **Sign
+in with an account**, **Sign in with an API key**, **Sign in with a local
+model** — whose lists partition the provider table by `auth` (a subscription's
+sign-in, a pasted key, a key that is optional). The API-key half is below; the
+subscription half is its own bullet, and the local half — a server's address,
+**tested before it is saved** — is `docs/local-models.md`.
+
+**The root — how do you sign in?** (a titled question, not a list;
+`KeyStep::Method`):
+
+```
+────────────────────────────────────────────────
+  Select authentication method:                          (the pages' title dress)
+
+→ Sign in with an account                                (selected '→' — the subscriptions)
+  Sign in with an API key                                (the API-key providers)
+  Sign in with a local model                             (the local servers)
+
+  ↑↓ navigate  enter select  escape/ctrl+c cancel        (dim hint)
+────────────────────────────────────────────────
+```
 
 **Step 1 — pick a provider** (a filterable list, headerless like `/model`;
 `KeyStep::Provider`):
@@ -485,14 +500,28 @@ local half — a server's address, **tested before it is saved** — is
   provider-step hint names. The save confirmation is a transient toast
   (`Saved {ENV} — run /model to use {provider}`), not a committed message. See
   `docs/toast.md`.
-- **The four list steps** (method, subscription, provider, local) share one grammar:
+- **The three list steps** (subscription, provider, local) share one grammar:
   type-to-filter (id/name substring), `↑/↓` move wrapping at the ends,
   PgUp/PgDn/Home/End jump, `Enter` activates the highlighted row (on the
   provider step, its index is pinned so the filter can't reorder it out from
-  under you), `Esc` clears the filter then steps *back* — the method step,
-  being the root, closes instead — and `Ctrl+C` closes from anywhere. Every
-  step change resets the shared filter and selection, so a list always opens at
-  the top with a clean query.
+  under you), `Esc` clears the filter then steps *back* to the root, and
+  `Ctrl+C` closes from anywhere. Every step change resets the shared filter
+  and selection, so a list always opens at the top with a clean query.
+- **The root is a question, not a list** (updated 2026-11-06). It used to
+  open on a `❯` filter over its three rows, a search line for a page with
+  nothing to search; now it asks in words — a `Select authentication method:`
+  title in the pages' title dress (`LOGIN_METHOD_TITLE`) over the three ways
+  in, with no filter and no `(n/total)` counter — the shape of the sign-in
+  method choice a two-way subscription asks (`docs/chatgpt.md`), and the two
+  share one builder (`login_view::question_page_lines`) and one key grammar
+  (`App::on_key_login_question`): `↑/↓` wrap, Home/End jump, `Enter` takes
+  the highlighted row, `Esc` closes the flow (the choice steps back to the
+  subscription list instead), `Ctrl+C` closes, and typing or a paste does
+  nothing at all, since there is no field to take it. The hardware cursor
+  hides — the device page's rule, so a kitty cursor trail never streaks
+  across the rows on ↑/↓ — and its seat parks on the title. Each row reads
+  `Sign in with …`, one verb for the three answers to one question; the
+  subscription list's rows are each an account's sign-in.
 - **Every row says whether it is configured** — `{name} · ✔ configured` when a
   key or token already resolves, `{name} · ◯ unconfigured` when none does
   (`login_row`, `LOGIN_CONFIGURED` / `LOGIN_UNCONFIGURED`). Both halves are
@@ -503,21 +532,20 @@ local half — a server's address, **tested before it is saved** — is
   hunts for down a column of names — while its word, the `◯`, and the ` · `
   ahead of them stay dim: a status is a fact about a row rather than an alert,
   and colouring the whole tail made a list of facts read as a column of them.
-  The method root's three rows carry no status at all (`status: None`) — they
-  are the question, not something that can be configured.
+  The root's three rows carry no status at all (`status: None`) — they answer
+  its question rather than name something that can be configured.
 - **No list carries a title** (updated 2026-09-03). The subscription and
-  provider steps used to repeat the method row that opened them as a cyan
-  heading (`Use a subscription` / `Use an API key`); it said nothing the rows
-  and the hint below them don't, and it cost every row two lines of a region
-  already sharing the terminal with a running turn. All the lists are one
-  shape now — the rule, then the `❯` filter straight under it — and the root
-  never had one: there its rows *are* the question. The method step is
-  also the one list with no `(n/total)` counter.
-- **The remaining titles wear the pages' one title dress** — bold, washed in
-  the active theme's banner gradient (`ui::header::page_title_line`,
-  `docs/theme.md`) — the sign-in page's `Sign in to {provider}` and the key
-  step's `Enter your {provider} API key`, so the flow's headings read as one
-  with every other page's.
+  provider steps used to repeat the root row that opened them as a cyan
+  heading; it said nothing the rows and the hint below them don't, and it cost
+  every row two lines of a region already sharing the terminal with a running
+  turn. All the lists are one shape now — the rule, then the `❯` filter
+  straight under it. The titles are the questions' and the pages': the root's
+  `Select authentication method:`, the sign-in method choice's.
+- **Every title wears the pages' one title dress** — bold, washed in the
+  active theme's banner gradient (`ui::header::page_title_line`,
+  `docs/theme.md`) — the root's question, the sign-in page's `Sign in to
+  {provider}` and the key step's `Enter your {provider} API key`, so the
+  flow's headings read as one with every other page's.
 - **The subscription half** (`KeyStep::Subscription` → `KeyStep::Device`,
   with `KeyStep::SigninMethod` between them for a row that offers two ways
   in) is a provider sign-in rather than a secret to paste — GitHub Copilot's
@@ -562,19 +590,23 @@ local half — a server's address, **tested before it is saved** — is
   back out of the page the paint just built (`view_prompt_row`, the
   `menu_marker_seat` rule) instead of a `LOGIN_KEY_INPUT_ROW` that could
   drift from it.
-- The four list steps (the method root, the subscriptions, the providers, the
-  local servers) share one page builder, and on a terminal too short for it they build the
+- The three list steps (the subscriptions, the providers, the local servers)
+  share one page builder, and on a terminal too short for it they build the
   family's **compact** page (`docs/view-flow.md`): the filter, three rows
   between the reserved overflow slots and the key hint, the counter and the
   `Keys are saved to` note yielding. The provider list is fifteen rows with
   the built-in catalog, and bottom-anchoring it on twelve flowed the filter
-  and the highlighted provider into scrollback; the root's two rows are the
-  same page either way. On a terminal shorter still the compact page sheds
-  what is left one row at a time and never its filter line (`docs/view-flow.md`
-  *Below the compact page*), a filter matching nothing putting its
-  placeholder in the list's place. The key step, the sign-in pages and the
-  local server page keep their one shape — their field or their wait sits at
-  the bottom, which the anchor already keeps on screen.
+  and the highlighted provider into scrollback. On a terminal shorter still
+  the compact page sheds what is left one row at a time and never its filter
+  line (`docs/view-flow.md` *Below the compact page*), a filter matching
+  nothing putting its placeholder in the list's place. The two questions —
+  the root and the sign-in method choice — walk the same ladder with their
+  **title in the search line's place**: the gaps go, then the top rule, the
+  rows down to the highlighted one, the bottom rule and the hint, the title
+  staying on every rung, so neither flows its question into scrollback (the
+  choice used to). The key step, the sign-in pages and the local server page
+  keep their one shape — their field or their wait sits at the bottom, which
+  the anchor already keeps on screen.
 - On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a

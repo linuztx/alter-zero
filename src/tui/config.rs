@@ -251,7 +251,7 @@ pub(crate) fn session_cache_key() -> &'static str {
 /// A subscription provider is excluded — it is signed in to, not keyed, and
 /// listing it beside the others would offer a key field for a flow that has
 /// none — and so is a server whose key is optional: it is pointed at, under
-/// **Use a local model** ([`local_choices`]). See `docs/llm.md`,
+/// **Sign in with a local model** ([`local_choices`]). See `docs/llm.md`,
 /// `docs/copilot.md` and `docs/local-models.md`.
 pub(crate) fn provider_choices(
     providers: &ProvidersFile,

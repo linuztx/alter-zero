@@ -415,7 +415,8 @@ which Ctrl+V reads the clipboard from.
   visible while you browse (the ↓ manager band's geometry —
   `ui::layout`'s `strip_above_rows`/`view_split`; `docs/llm.md`).
 - **`/login` onboarding** (`docs/llm.md`). A second **inline** flow, rooted at
-  three ways in: a subscription sign-in, an API key — pick a provider
+  three ways in, asked as a titled question with no filter (`Select
+  authentication method:`): an account's sign-in, an API key — pick a provider
   (headerless list), then paste its key (masked, under an `Enter your … API
   key` title) — or a **local model** server, whose address is **tested before
   it is saved**: the page lists the server's models the way `/model` will, a

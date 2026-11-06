@@ -489,7 +489,19 @@ pub(super) fn assert_sheds_to_its_search_line(
     hint: &str,
 ) {
     let search = format!("  ❯ {query}");
-    let search = search.trim_end();
+    assert_sheds_to_line(page, search.trim_end(), highlighted, hint);
+}
+
+/// [`assert_sheds_to_its_search_line`] for a page whose ladder keeps another
+/// row in the search line's place — `kept`, as a plain trailing-trimmed row:
+/// a titled question with nothing to search, like `/login`'s root and its
+/// sign-in method choice, keeps its title (`docs/llm.md`).
+pub(super) fn assert_sheds_to_line(
+    page: impl Fn(u16) -> Vec<String>,
+    kept: &str,
+    highlighted: &str,
+    hint: &str,
+) {
     for height in 1..=30_u16 {
         let texts: Vec<String> = page(height)
             .iter()
@@ -500,8 +512,8 @@ pub(super) fn assert_sheds_to_its_search_line(
             "{height} rows: the page fits: {texts:#?}"
         );
         assert!(
-            texts.iter().any(|t| t == search),
-            "{height} rows: the search line {search:?} stays: {texts:#?}"
+            texts.iter().any(|t| t == kept),
+            "{height} rows: {kept:?} stays: {texts:#?}"
         );
         if height >= 2 {
             assert!(

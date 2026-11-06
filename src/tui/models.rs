@@ -1538,8 +1538,8 @@ impl ModelSession {
     }
 
     /// The signed-in subscriptions the `/usage` page reads (`docs/usage.md`):
-    /// every provider `/login` lists under *Use a subscription* whose stored
-    /// credential resolves, by name, each with the config its read resolves
+    /// every provider `/login` lists under *Sign in with an account* whose
+    /// stored credential resolves, by name, each with the config its read resolves
     /// its credential through, its own usage page — and whether it is the
     /// one the session is running on, which the dummy never is.
     pub(crate) fn usage_targets(&self) -> Vec<(UsageTarget, ModelConfig)> {

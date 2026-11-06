@@ -24,7 +24,8 @@ pub const USAGE_REFRESH_SECS: i64 = 60;
 
 /// The toast `/usage` raises with no subscription signed in — nothing to
 /// show, so no page (the `/export` and `/compact` empty rule).
-pub const USAGE_EMPTY_NOTICE: &str = "No subscription signed in — use /login → Use a subscription";
+pub const USAGE_EMPTY_NOTICE: &str =
+    "No subscription signed in — use /login → Sign in with an account";
 
 /// A subscription the page reads, as the boundary found it: the provider's
 /// id and name, whether it is the one the session is running on, and its

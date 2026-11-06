@@ -8,10 +8,11 @@ step that asks the prior question first, and a second half behind it.
 
 ```
 /login
-  ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
-  │                    ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
-  │                    └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
-  └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  ├─ Sign in with an account ──► GitHub Copilot ──► device code ──► (approved)
+  │                         ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
+  │                         └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
+  ├─ Sign in with an API key ──► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  └─ Sign in with a local model ──► LM Studio / Ollama / … ──► test the address  docs/local-models.md
 ```
 
 Both halves end in the **same place**: a secret in `~/.alter-zero/.env` under
@@ -33,18 +34,22 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-  ❯
+  Select authentication method:
 
-→ Use a subscription
-  Use an API key
+→ Sign in with an account
+  Sign in with an API key
+  Sign in with a local model
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-No title — the two rows *are* the question — and no `(1/2)` counter, which
-would say nothing they don't. Type-to-filter works here like every list step
-(one grammar for all three), and Esc closes: this is the root.
+A question, not a list (updated 2026-11-06): a title says what is asked, and
+there is no `❯` filter and no `(1/3)` counter, since three ways in are not a
+list to search. Typing does nothing, the hardware cursor hides, and Esc
+closes: this is the root. It is the sign-in method choice's shape
+(`docs/chatgpt.md`) — the two share one builder — and it used to open on a
+`❯` filter over its rows, a search line with nothing to search (`docs/llm.md`).
 
 ### `KeyStep::Subscription`
 
@@ -70,10 +75,10 @@ apart from each other. The `description` still steers the type-to-search and
 now introduces a *keyed* provider on the key step (`docs/llm.md`); it is
 simply not what a list row is for.
 
-No title either (updated 2026-09-03). This page used to open on a cyan
-`Use a subscription` heading — the row that opened it, repeated — which said
-nothing the hint under the list doesn't and pushed every row two lines down.
-All three lists open straight onto their filter now.
+No title (updated 2026-09-03). This page used to open on a cyan heading —
+the root row that opened it, repeated — which said nothing the hint under
+the list doesn't and pushed every row two lines down. All three lists open
+straight onto their filter now.
 
 ### `KeyStep::Device`
 

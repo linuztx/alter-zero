@@ -393,12 +393,18 @@ fn backspace_pops_the_model_query() {
 }
 
 #[test]
-fn esc_on_the_provider_step_clears_the_query_then_closes() {
-    let mut app = login_app();
+fn esc_on_the_provider_step_clears_the_query_then_steps_back() {
+    // The provider list is one step below the root: a first Esc clears its
+    // filter, a second steps back to the root, and only the root's Esc
+    // closes the flow.
+    let mut app = provider_app();
     type_chars(&mut app, "open");
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
-    assert!(app.key_onboarding.as_ref().unwrap().query.is_empty());
-    assert!(app.key_onboarding.is_some(), "first Esc only clears");
+    let onboarding = app.key_onboarding.as_ref().expect("first Esc only clears");
+    assert!(onboarding.query.is_empty());
+    assert_eq!(onboarding.step, KeyStep::Provider);
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Method);
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
     assert!(app.key_onboarding.is_none());
 }
