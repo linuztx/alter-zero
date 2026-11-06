@@ -283,7 +283,7 @@ fn summary_lines_append_the_real_token_usage() {
 #[test]
 fn summary_lines_mark_an_estimated_share_with_approx() {
     // An interrupted turn's receipt (docs/interrupt.md): the round the Esc cut
-    // never reported its usage, so its share is the tokenizer's count. The
+    // never reported its usage, so its share is the app's estimate. The
     // line shows one total, marked the way the /context page marks a count it
     // made itself, so a bare number on a receipt is always the provider's.
     let mut summary = TurnSummary {

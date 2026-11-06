@@ -222,17 +222,23 @@ pub struct AgentRun {
     turn_usage_cache_write: u64,
     /// Its **context size** in tokens — the footer gauge's numerator while
     /// its session view is on screen (`docs/agent-context-gauge.md`), by the
-    /// main session's exact rule ([`crate::app::App::context_used`]): the
-    /// last usage frame's `input + output` — the provider's own accounting of
-    /// the re-sent context plus the reply that joins the next request — which
-    /// each frame **replaces** (the next round's `input` already carries the
-    /// last one's whole context, so summing frames is the billed tally,
-    /// [`tokens`](Self::tokens), not the context). A turn that settles having
-    /// seen no frame (the offline dummy, a provider that omits usage) falls
-    /// back to the tokenizer estimate over its own transcript
-    /// (`estimate_context_tokens`). Zero until the first of either lands,
-    /// where the main gauge starts too.
+    /// main session's exact rule ([`crate::app::App::context_used`],
+    /// `docs/token-estimate.md`): the last usage frame's `input` — the
+    /// provider's own count of the re-sent context — which each frame
+    /// **replaces** (the next round's `input` already carries the last one's
+    /// whole context, so summing frames is the billed tally,
+    /// [`tokens`](Self::tokens), not the context), plus the calibrated
+    /// estimate of what joined after it, read again at every settle. A turn
+    /// that settles having seen no frame (the offline dummy, a provider that
+    /// omits usage) stands on the estimate over its own transcript
+    /// (`estimate_context`). Zero until the first of either lands, where the
+    /// main gauge starts too.
     context_used: u64,
+    /// What its usage reports say about its context — the base
+    /// [`context_used`](Self::context_used) reads from and the calibration
+    /// they taught, the main session's [`crate::tokens::ContextMeter`] one
+    /// level down.
+    context_meter: crate::tokens::ContextMeter,
     /// Its newest usage frame — what its session view's `/context` page
     /// reports as the **Last request** (`docs/context-usage.md`).
     pub last_usage: Option<crate::stream::TokenUsage>,
@@ -347,7 +353,7 @@ pub struct AgentRun {
     reasoning: Option<String>,
     /// Where this round's settled thinking cells landed in
     /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
-    /// frame can snap their tokenizer estimates to the provider's
+    /// frame can snap their token estimates to the provider's
     /// `reasoning_tokens` (`app::reasoning::snap_reasoning_tokens`). Cleared by
     /// each frame — one frame ends one round.
     round_reasoning: Vec<usize>,
@@ -430,6 +436,7 @@ impl AgentRun {
             turn_usage_cached: 0,
             turn_usage_cache_write: 0,
             context_used: 0,
+            context_meter: crate::tokens::ContextMeter::default(),
             last_usage: None,
             usage: crate::context_usage::UsageLedger::default(),
             runtime: Duration::ZERO,
@@ -818,7 +825,7 @@ impl AgentRun {
             }
             StreamEvent::Usage(usage) => {
                 // One frame ends one round: this is where the round's
-                // `Thought for …` cells trade their tokenizer estimate for
+                // `Thought for …` cells trade their token estimate for
                 // the provider's own `reasoning_tokens`, the main session's
                 // snap over this agent's transcript
                 // (`docs/thinking-stream.md`).
@@ -832,11 +839,13 @@ impl AgentRun {
                 self.turn_usage_tokens += usage.total();
                 self.turn_usage_cached += usage.cached;
                 self.turn_usage_cache_write += usage.cache_write;
-                // The round's `input` is the whole re-sent context and its
-                // `output` joins the next round's — their sum is this agent's
-                // context size, the main session's `apply_usage` rule
-                // (`docs/agent-context-gauge.md`).
-                self.context_used = usage.input.saturating_add(usage.output);
+                // The round's `input` is the provider's count of the whole
+                // re-sent context — this agent's context size, and its
+                // meter's base — the main session's `apply_usage` rule
+                // (`docs/agent-context-gauge.md`, `docs/token-estimate.md`).
+                let (estimate, images) = self.estimate_context();
+                self.context_meter.measured(usage.input, estimate, images);
+                self.context_used = self.context_meter.reading(estimate);
             }
             StreamEvent::StreamDone => {
                 // A phase still open when the round ended keeps what streamed
@@ -847,13 +856,15 @@ impl AgentRun {
                 self.tool_queue.clear();
                 self.drafts.clear();
                 self.status = AgentStatus::Done;
-                // No usage frame this turn (the dummy, a provider that omits
-                // them): the tokenizer estimate over this transcript stands
-                // in for the gauge — `App::take_turn_summary`'s rule
+                // The gauge folds in what joined after the last usage frame —
+                // the reply — or, with no frame this turn (the dummy, a
+                // provider that omits them), stands on the estimate over this
+                // transcript: `App::take_turn_summary`'s rule
                 // (`docs/agent-context-gauge.md`).
-                if self.turn_usage_tokens == 0 {
-                    self.context_used = self.estimate_context_tokens();
-                }
+                self.context_used = match self.estimate_context() {
+                    (0, _) => 0,
+                    (estimate, _) => self.context_meter.reading(estimate),
+                };
                 // The turn's dim receipt, the main turn-end's exact shape
                 // (`Done for 59s · 6.1k tokens (2.8k cached)`): the agent
                 // session view commits it and every rebuild/Ctrl+O renders it
@@ -1003,21 +1014,30 @@ impl AgentRun {
         self.context_used
     }
 
-    /// The tokenizer estimate of this agent's context: its own transcript
-    /// derived exactly as a request would be
+    /// The estimate of this agent's context, and the pictures in it: its own
+    /// transcript derived exactly as a request would be
     /// ([`crate::context::context_messages`]), counted by the rule the main
     /// gauge counts with (`app::estimate_messages_tokens`) — and a **true
     /// zero** for a transcript that derives nothing, the main estimate's
     /// empty-conversation rule. The agent's system prompt and briefing are
     /// not in it: this type knows neither (they are the launch's, shown by
-    /// the view's Ctrl+D), and the estimate is only the stand-in for the
-    /// frame a live provider sends every round.
-    fn estimate_context_tokens(&self) -> u64 {
+    /// the view's Ctrl+D) — the provider's count of them rides the meter's
+    /// base, which only the change since is estimated against.
+    fn estimate_context(&self) -> (u64, usize) {
         if !crate::context::derives_conversation(&self.history) {
-            return 0;
+            return (0, 0);
         }
         let messages = crate::context::context_messages(&self.history);
-        u64::try_from(crate::app::estimate_messages_tokens(&messages)).unwrap_or(u64::MAX)
+        let tokens = crate::app::estimate_messages_tokens(&messages);
+        let images = messages.iter().map(|message| message.images.len()).sum();
+        (u64::try_from(tokens).unwrap_or(u64::MAX), images)
+    }
+
+    /// What its usage reports taught about its provider's tokens against the
+    /// estimate — what its session view's `/context` and Ctrl+D count in.
+    #[must_use]
+    pub const fn context_calibration(&self) -> crate::tokens::Calibration {
+        self.context_meter.calibration()
     }
 
     /// Locally settle the agent as user-stopped (`x`, Esc on its foreground
@@ -3945,11 +3965,10 @@ mod tests {
     #[test]
     fn usage_frames_seat_the_runs_context_size_and_a_later_frame_replaces_it() {
         // The agent's own context gauge (docs/agent-context-gauge.md): the
-        // round's `input` is the whole re-sent context and its `output` joins
-        // the next round's — their sum is the context size, the main
-        // session's `apply_usage` rule. Unlike the billed tally it does NOT
-        // accumulate: the next frame's `input` already carries everything
-        // the previous one did.
+        // round's `input` is the whole re-sent context — the context size,
+        // the main session's `apply_usage` rule. Unlike the billed tally it
+        // does NOT accumulate: the next frame's `input` already carries
+        // everything the previous one did.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert_eq!(
             run.context_used(),
@@ -3961,27 +3980,32 @@ mod tests {
             output: 200,
             ..TokenUsage::default()
         }));
-        assert_eq!(run.context_used(), 5_200);
+        assert_eq!(run.context_used(), 5_000);
         run.apply(&StreamEvent::Usage(TokenUsage {
             input: 6_000,
             output: 300,
             ..TokenUsage::default()
         }));
-        assert_eq!(run.context_used(), 6_300, "replaced, not summed");
+        assert_eq!(run.context_used(), 6_000, "replaced, not summed");
         assert_eq!(
             run.tokens, 11_500,
             "while the billed tally keeps accumulating"
         );
-        // A turn that saw a frame settles on the frame, never on an estimate.
+        // A turn that saw a frame settles on the provider's count, plus the
+        // estimate of what joined the context after it — the reply.
         run.apply(&chunk("done"));
         run.apply(&StreamEvent::StreamDone);
-        assert_eq!(run.context_used(), 6_300, "the provider's count stands");
+        assert_eq!(
+            run.context_used(),
+            6_000 + crate::app::count_tokens("done") as u64,
+            "the provider's count stands under the reply"
+        );
     }
 
     #[test]
     fn a_settle_without_a_usage_frame_estimates_the_context_from_the_transcript() {
         // The offline dummy scripts no usage frames on the agent channel, so
-        // — the main session's `take_turn_summary` rule — the tokenizer
+        // — the main session's `take_turn_summary` rule — the token
         // estimate over the agent's own derived context stands in at the
         // settle, and the gauge still moves offline.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "Get Warsaw weather", false);
@@ -5172,7 +5196,7 @@ mod tests {
 
     #[test]
     fn the_rounds_usage_frame_snaps_the_thought_to_the_providers_count() {
-        // The main session's snap (docs/thinking-stream.md): the tokenizer
+        // The main session's snap (docs/thinking-stream.md): the token
         // estimate gives way to `completion_tokens_details.reasoning_tokens`.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.begin_reasoning();

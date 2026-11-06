@@ -555,3 +555,48 @@ fn a_subagents_frames_feed_its_own_ledger_and_the_sessions() {
         "the lead's own last request is its own"
     );
 }
+
+// ===== counted in the provider's tokens (docs/token-estimate.md) =====
+
+/// Teach `app` that its provider counts the conversation's growth at three
+/// halves of the estimate: two usage frames around `added`.
+fn teach_three_halves(app: &mut App, added: &str) {
+    app.begin_stream();
+    let (first, _) = app.estimate_context();
+    app.apply_usage(&usage_of(first + 1_000, 0));
+    app.record_user_message(added);
+    let (second, _) = app.estimate_context();
+    app.apply_usage(&usage_of(first + 1_000 + (second - first) * 3 / 2, 0));
+}
+
+#[test]
+fn the_page_counts_in_what_the_providers_reports_taught() {
+    // Its total then reads like the footer's gauge, which is kept in the
+    // provider's own count.
+    let mut app = session();
+    teach_three_halves(&mut app, &"word ".repeat(600));
+    let calibration = app.context_calibration();
+    assert!(calibration.ratio_permille() > 1_400, "{calibration:?}");
+    app.open_context_usage();
+    let raw = |size| count_tokens(&"x".repeat(size)) as u64;
+    assert_eq!(
+        tokens(&app, Category::SystemTools) as u64,
+        calibration.correct(raw(4_000)) + calibration.correct(raw(2_000))
+    );
+}
+
+#[test]
+fn a_lesson_from_the_provider_recounts_the_open_page() {
+    // Nothing in the window moved — how it is counted did.
+    let mut app = session();
+    app.begin_stream();
+    let (first, _) = app.estimate_context();
+    app.apply_usage(&usage_of(first + 1_000, 0));
+    app.record_user_message(&"word ".repeat(600));
+    app.open_context_usage();
+    let before = tokens(&app, Category::SystemTools);
+    let (second, _) = app.estimate_context();
+    app.apply_usage(&usage_of(first + 1_000 + (second - first) * 3 / 2, 0));
+    app.refresh_context_usage();
+    assert!(tokens(&app, Category::SystemTools) > before);
+}

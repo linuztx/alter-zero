@@ -127,7 +127,7 @@ fn a_thought_mid_reply_slots_after_the_text_before_it() {
 
 #[test]
 fn usage_snaps_the_rounds_thought_to_the_provider_count() {
-    // The cell is built from the tokenizer estimate (ThinkingEnd fires long
+    // The cell is built from the token estimate (ThinkingEnd fires long
     // before the usage frame); the frame's `reasoning_tokens` replaces it.
     let mut app = App::new();
     app.begin_stream();

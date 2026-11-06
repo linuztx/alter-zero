@@ -107,9 +107,8 @@ url = "2"
 # Hook matchers (docs/hooks.md). Both Claude Code and codex take a non-regex
 # fast path for `Bash`-style names and compile anything else as a regex; we
 # match that contract — warn-and-skipping real regexes would silently break
-# any hooks file either reference accepts. Cheap in practice: `regex` is a
-# thin wrapper over `regex-automata`, which `fancy-regex` below already pulls
-# into every build.
+# any hooks file either reference accepts. It is the crate's one regex engine
+# (syntect's grammars run on oniguruma, below), compiled once per matcher.
 regex = "1"
 # The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
 # wrapper that severs a shell child from the TUI's controlling terminal, so a
@@ -135,16 +134,6 @@ rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"
 # `arrayvec` and `memchr`).
 vt100 = "0.16"
 vte = "0.15"
-# Real token counting for the status-line tally (`tokenizer` module): the
-# o200k_base split pattern's `(?i:…)` groups and `(?!\S)` lookahead need a
-# backtracking engine — the same one `tiktoken-rs` uses for it. The vocabulary
-# itself ships embedded in the crate (`assets/o200k_base.cbpe`), so counting is
-# offline and deterministic — no runtime fetch. The counter is the crate's own
-# compact store because `tiktoken-rs`'s `CoreBPE` costs 45.5 MB resident (three
-# heap copies of all ~200k tokens + 128 thread-local regex clones) versus ~4 MB
-# for the same counts — see docs/tokenizer.md; `tiktoken-rs` remains below as
-# the dev-dependency the differential tests prove parity against.
-fancy-regex = "0.17"
 # Grammar-accurate syntax highlighting for fenced code blocks (`highlight`
 # module, docs/markdown.md) — a port of codex's stack. `two-face` bundles ~250
 # TextMate grammars + 32 themes; `syntect` is the highlighting engine. We use the
@@ -194,16 +183,6 @@ ratatui-image = { version = "11.0.6", default-features = false, features = ["cro
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
 wl-clipboard-rs = "0.9"
-
-[dev-dependencies]
-# The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):
-# the shipped counter is the compact in-house o200k_base store (~4 MB resident;
-# docs/tokenizer.md), and every change to it is proven against tiktoken-rs's
-# CoreBPE — rank-by-rank over the whole embedded vocabulary and count-by-count
-# over a broad corpus — which is exactly the implementation the compact store
-# replaced (its CoreBPE holds three heap copies of all ~200k tokens plus 128
-# thread-local regex clones: 45.5 MB measured, the bulk of the old startup RSS).
-tiktoken-rs = "0.12.0"
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress off CI either (`.github/workflows/ci.yml` runs the same gate;

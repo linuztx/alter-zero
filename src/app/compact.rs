@@ -106,8 +106,10 @@ impl App {
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
-        // The gauge drops to the compacted derivation's estimate (codex's
-        // recompute_token_usage) — the marker records the shrink.
+        // The gauge drops by the estimate of what the summary replaced
+        // (codex's recompute_token_usage) — what the provider counts beyond
+        // the estimate, its framing and its own rendering of the tool
+        // schemas, stays — and the marker records the shrink.
         self.refresh_context_used();
         // The newest frame is the summarizer's request, which described the
         // conversation the marker just replaced (`docs/context-usage.md`).
@@ -142,12 +144,15 @@ impl App {
         self.context_used
     }
 
-    /// Estimate the current context size with the tokenizer: the system
-    /// prompt, plus every derived context message's text (the AGENTS.md
-    /// instructions among them — they ride every request), tool calls, and a
-    /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
-    /// usage frames — and the only measure right after a history mutation
-    /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
+    /// Estimate the whole context the next request carries, and the
+    /// pictures in it: the system prompt and the tool schemas, plus every
+    /// derived context message (the `<system-reminder>` among them — the
+    /// AGENTS.md instructions ride every request) — its text, a flat
+    /// [`IMAGE_INPUT_TOKENS`] per attachment, its tool calls. Each text's
+    /// count is remembered, so the re-estimate every usage report asks for
+    /// counts only what is new. A usage report's count is set beside it, and
+    /// a history the report no longer describes (compaction, `/clear`,
+    /// backtrack, `/resume`) is re-read from it (`docs/token-estimate.md`).
     ///
     /// **An empty conversation estimates zero.** The system prompt and the
     /// standing instructions do ride the next request, but a *booted* session
@@ -159,24 +164,100 @@ impl App {
     /// and `/clear` lands exactly where a fresh session starts. The predicate
     /// is the one `/compact` uses for `Nothing to compact`, so the two never
     /// disagree about whether anything is there.
-    #[must_use]
-    fn estimate_context_tokens(&self) -> u64 {
+    pub(super) fn estimate_context(&mut self) -> (u64, usize) {
         if !crate::context::derives_conversation(&self.history) {
-            return 0;
+            return (0, 0);
         }
-        let total = self.system_prompt.as_deref().map_or(0, count_tokens)
-            + estimate_messages_tokens(&crate::context::context_messages_full(
-                self.user_instructions.as_deref(),
-                self.listings.as_deref(),
-                &self.history,
-            ));
-        u64::try_from(total).unwrap_or(u64::MAX)
+        let messages = crate::context::context_messages_full(
+            self.user_instructions.as_deref(),
+            self.listings.as_deref(),
+            &self.history,
+        );
+        let memo = &mut self.context_memo;
+        let mut count = |text: &str| memo.count(text, &count_tokens);
+        let prompt = self.system_prompt.as_deref().map_or(0, &mut count);
+        let total: usize = prompt
+            + messages
+                .iter()
+                .map(|message| message_tokens(message, &mut count))
+                .sum::<usize>();
+        memo.finish_pass();
+        let images = messages.iter().map(|message| message.images.len()).sum();
+        let total = u64::try_from(total)
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.tools_estimate);
+        (total, images)
     }
 
-    /// Re-seat the gauge on the tokenizer estimate (the last usage frame no
-    /// longer describes the derived context).
+    /// The history's identity for the gauge: committed items are immutable,
+    /// and every change but an append bumps the generation.
+    pub(super) fn history_signature(&self) -> (u64, usize) {
+        (self.history_generation, self.history.len())
+    }
+
+    /// Re-read the gauge for the history as it stands (the
+    /// [`context_used`](Self::context_used) field doc): zero for a
+    /// conversation that derives nothing; the meter's base plus the
+    /// calibrated estimate of what joined since, when the history only grew
+    /// past it; otherwise — the history moved under the base — the whole
+    /// context re-estimated, the base moved by the change, and the result
+    /// taken as the new base (`docs/token-estimate.md`).
     pub(super) fn refresh_context_used(&mut self) {
-        self.context_used = self.estimate_context_tokens();
+        let now = self.history_signature();
+        self.context_synced = Some(now);
+        if !crate::context::derives_conversation(&self.history) {
+            self.context_used = 0;
+            return;
+        }
+        if let Some(joined) = self.history_since_base() {
+            let added = estimate_messages_tokens(&crate::context::context_messages(joined));
+            self.context_used = self
+                .context_meter
+                .reading_after(u64::try_from(added).unwrap_or(u64::MAX));
+            return;
+        }
+        let (estimate, _) = self.estimate_context();
+        self.context_meter.rebase(estimate);
+        self.context_base_at = Some(now);
+        self.context_used = self.context_meter.reading(estimate);
+    }
+
+    /// What joined the history after the meter's base, when it only grew
+    /// since: the same generation, and no compaction among it — a compaction
+    /// replaces everything before it in the derived context.
+    fn history_since_base(&self) -> Option<&[HistoryItem]> {
+        let (generation, length) = self.context_base_at?;
+        if generation != self.history_generation {
+            return None;
+        }
+        let joined = self.history.get(length..)?;
+        (!joined
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_))))
+        .then_some(joined)
+    }
+
+    /// Re-read the gauge when the history moved since it was last read — the
+    /// loop bottom's call, so what joins between usage reports (a message
+    /// sent, a tool's output) shows before the next request is counted. Two
+    /// integer compares when nothing moved.
+    pub fn sync_context_used(&mut self) {
+        if self.context_synced != Some(self.history_signature()) {
+            self.refresh_context_used();
+        }
+    }
+
+    /// What the provider's usage reports have taught about its tokens
+    /// against the estimate, for the conversation **on screen** — the viewed
+    /// agent's inside its session view, the main session's otherwise. The
+    /// `/context` page and the Ctrl+D view count in it
+    /// (`docs/token-estimate.md`).
+    #[must_use]
+    pub fn context_calibration(&self) -> crate::tokens::Calibration {
+        match self.viewed_agent() {
+            Some(run) => run.context_calibration(),
+            None => self.context_meter.calibration(),
+        }
     }
 
     /// Whether the loop should start an **auto-compact** turn at the next idle
@@ -215,10 +296,10 @@ pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
     window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
 }
 
-/// The tokenizer estimate of a derived context: every message's text, a flat
+/// The estimate of a derived context: every message's text, a flat
 /// `IMAGE_INPUT_TOKENS` per attachment, and each tool call's name and
 /// arguments. The one counting rule behind both context gauges — the main
-/// session's (`App::estimate_context_tokens`, which adds the system prompt
+/// session's (`App::estimate_context`, which adds the system prompt
 /// and hands in the fragments-led derivation) and a subagent's
 /// ([`crate::agents::AgentRun`], over its own transcript) — so the two can
 /// never disagree about what a message costs (`docs/agent-context-gauge.md`).

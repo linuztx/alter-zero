@@ -51,8 +51,8 @@ emits, in place of everything before it:
    **middle-truncated** to the remaining budget (codex's
    `truncate_middle_with_token_budget` — head + `…{n} tokens truncated…` +
    tail), then the selection is re-reversed to chronological order. Tokens are
-   codex's `bytes/4` approximation (`approx_token_count`), not the tiktoken
-   seam — the walk runs at every turn start and must be O(len);
+   codex's `bytes/4` approximation (`approx_token_count`), not the
+   estimator's seam — the walk runs at every turn start and must be O(len);
 2. the **bridge**: `{SUMMARY_PREFIX}\n{summary}` as a user message (an empty
    summary becomes `(no summary available)`, codex's fallback — which a live
    compaction no longer reaches: the summarization turn runs on the agent
@@ -152,15 +152,20 @@ the same threshold — **90% of the model's context window**
   counts humanized by the summary's token formatter, the share one decimal).
   Showing the raw size beside the share is the divergence from codex, which
   prints the percentage alone: the absolute number is what tells you how much
-  room a big paste or a long tool output just cost. `used` is the last
-  usage frame's `input + output` — the provider's own accounting of the
-  re-sent context plus the reply that joins the next request — kept honest
-  across mutations by a tokenizer re-estimate: after a compaction (codex's
-  `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
-  at the end of any turn that saw no usage frame (the dummy).
+  room a big paste or a long tool output just cost. `used` is kept in the
+  provider's own count (`docs/token-estimate.md`): the last usage frame's
+  `input` — its count of the re-sent context, tool schemas and framing
+  included — plus the calibrated estimate of everything that joined since
+  (the reply, a tool's output, the next message, read at the loop bottom
+  so it shows before the next request), and across a mutation that count
+  moved by the calibrated estimate of the change: after a compaction
+  (codex's `recompute_token_usage`), a backtrack, a `/resume`, a `/clear`
+  (→ 0 until the next message). A session that never sees a usage frame
+  (the dummy) reads the estimate alone, the tool schemas' among it, which
+  is also what the first request reads before its frame lands.
 - **A subagent's session view gauges that agent, not the lead**
   (`docs/agent-context-gauge.md`): `App::context_gauge` — the footer's one
-  question — answers with the viewed agent's own `input + output`
+  question — answers with the viewed agent's own context
   (`AgentRun::context_used`, the same rule, estimated from its transcript when
   a settle saw no frame) against the window of the model it runs on, while
   `context_used`/`context_window` stay the trigger's inputs: auto-compact is a
@@ -188,7 +193,9 @@ the same threshold — **90% of the model's context window**
 
 The marker cell's shrink clause (`· {before} → {after} tokens`) appears on
 manual compactions too — `before` is the gauge when the compaction began,
-`after` the fresh estimate of the compacted derivation; both persist in the
+`after` the gauge once the marker landed — the last count moved by the
+estimate of what the summary replaced, so the tool schemas and framing that
+ride every request stay in it (`docs/token-estimate.md`); both persist in the
 rollout (old files parse with the clause hidden). A ` · {elapsed}` clause
 follows the shrink (before the ` · auto` tag): how long the summarization
 turn ran — the boundary's turn clock passed into `finish_compact`,
@@ -250,5 +257,5 @@ fully streamed.
   prevent). Retry the command after trimming by hand (`/clear`, backtrack).
 - Codex's post-compact "Heads up: Long threads and multiple compactions…"
   warning cell is not ported — the marker cell is the whole record.
-- The bridge re-tokenizes as `bytes/4`, not the real tokenizer — same
+- The bridge re-tokenizes as `bytes/4`, not the app's token estimate — same
   approximation codex uses for the budget.

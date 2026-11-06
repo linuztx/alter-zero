@@ -205,7 +205,7 @@ does not leave — on every wire format, and for any top-level field, a kwarg's
 included. `model` and `stream` are never taken out, since a body without them
 is no request to make, and listing either is said. Dropping `stream_options`
 can cost the exact token count: a server that then sends no usage frame
-leaves the tally on the tokenizer's estimate.
+leaves the tally on the app's estimate.
 
 ## What `/model` reads from the listing
 

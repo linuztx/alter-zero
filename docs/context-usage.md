@@ -216,18 +216,23 @@ A share is a whole percent that never claims all or none it is not: a
 
 ## Estimated and reported
 
-The categories are counted with the app's tokenizer — `o200k_base`, the seam
-every live tally goes through (`docs/tokenizer.md`): exact for OpenAI models,
-close for the rest, and blind to what a provider adds on its own side (a chat
-template's framing, an image's real cost, its own rendering of a tool
-schema). A request's real size is the provider's to say, and it says it once
-per round. So the page shows both, and labels which is which: the breakdown
-and the bar are estimates (the `≈`), the usage section is the provider's
-accounting. The footer's gauge is the provider's number after a round
-(`docs/compact.md`), so the two can differ by the overhead the estimate
-cannot see — and the page's total, unlike the gauge, counts the system
-prompt, the tools and the reminder even before the first message, because
-they are what the first request will cost.
+The categories are counted with the app's token estimate, the seam every live
+tally goes through (`docs/token-estimate.md`): vocabulary-free, within a few
+percent of the common encoders on code and English, and blind to what a
+provider adds on its own side (a chat template's framing, an image's real
+cost, its own rendering of a tool schema). A request's real size is the
+provider's to say, and it says it once per round — and each time, it teaches
+the estimate how this provider's tokenizer counts this session's text. Every
+count on the page is put through that lesson (`Calibration::correct`, applied
+outside the page's memo, and part of its signature so a new lesson recounts
+it), so the page speaks the provider's tokens as the footer's gauge does. The
+two still show which is which: the breakdown and the bar are estimates (the
+`≈`), the usage section is the provider's accounting. The footer's gauge is
+the provider's count of the last request plus the estimate of what joined
+since (`docs/compact.md`), so the two can differ by the overhead the estimate
+cannot see — and the page's total, unlike the gauge, counts the system prompt,
+the tools and the reminder even before the first message, because they are
+what the first request will cost.
 
 ## Live
 
@@ -244,7 +249,7 @@ length, and a hash of the system prompt, the reminder inputs and the tool
 set — so it never counts per frame, only on a change. And a re-count reads
 each text's tokens from the page's **memo** (`context_usage::CountMemo`):
 every text the last pass counted is known by its length and hash, so only
-what is new goes through the tokenizer, and whatever a pass no longer
+what is new goes through the estimator, and whatever a pass no longer
 counts is forgotten, which bounds the memo to two windows' entries. That is
 what keeps a busy turn smooth under an open page: measured on a 288k-token
 conversation, a whole-window count takes 45 ms and the re-count after a

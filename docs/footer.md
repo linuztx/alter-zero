@@ -102,7 +102,8 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   **Inside a subagent's session view the model and gauge segments describe
   that agent** (`docs/agent-context-gauge.md`): the gauge is the viewed
   agent's own context — `AgentRun::context_used`, the last usage frame's
-  `input + output`, the transcript estimate when a settle saw no frame —
+  `input` plus the estimate of what joined after it, the transcript estimate
+  when a settle saw no frame (`docs/token-estimate.md`) —
   against the window of the model it runs on (`App::context_gauge`), and a
   type whose definition pins another model names it in place of the session's,
   mode-less (`App::viewed_agent_model`); the lead's pair is back with the main

@@ -178,7 +178,7 @@ fn the_footer_shows_the_context_gauge_when_the_window_is_known() {
     app.set_context_window(Some(300_000));
     app.begin_stream();
     app.apply_usage(&crate::stream::TokenUsage {
-        input: 17_900,
+        input: 18_000,
         output: 100,
         cached: 0,
         cache_write: 0,
@@ -216,7 +216,7 @@ fn the_footer_gauge_shows_a_small_context_bare() {
     app.set_context_window(Some(160_000));
     app.begin_stream();
     app.apply_usage(&crate::stream::TokenUsage {
-        input: 800,
+        input: 842,
         output: 42,
         cached: 0,
         cache_write: 0,
@@ -271,13 +271,13 @@ fn an_agent_session_view_gauges_that_agents_own_context() {
     // The reported bug (docs/agent-context-gauge.md): inside a subagent's
     // session view the footer read `23.7k/1M` — the LEAD's context — under a
     // roster row saying the agent itself was at 64.9k. The gauge follows the
-    // screen: the viewed agent's own `input + output`, against its window.
+    // screen: the viewed agent's own context, against its window.
     let mut app = App::new();
     app.set_session_info("kimi-k3", "~");
     app.set_context_window(Some(1_000_000));
     app.begin_stream();
     app.apply_usage(&crate::stream::TokenUsage {
-        input: 23_000,
+        input: 23_700,
         output: 700,
         ..crate::stream::TokenUsage::default()
     });
@@ -288,7 +288,7 @@ fn an_agent_session_view_gauges_that_agents_own_context() {
     app.apply_agent_event(
         "a1",
         &crate::stream::StreamEvent::Usage(crate::stream::TokenUsage {
-            input: 64_000,
+            input: 64_900,
             output: 900,
             ..crate::stream::TokenUsage::default()
         }),

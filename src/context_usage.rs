@@ -243,9 +243,9 @@ impl Breakdown {
 }
 
 /// Token counts remembered by text, so re-counting a window that mostly did
-/// not change tokenizes only what is new. The page re-counts the whole
+/// not change estimates only what is new. The page re-counts the whole
 /// window each time the conversation moves, and putting a long
-/// conversation's every message through the tokenizer again would stall a
+/// conversation's every message through the counter again would stall a
 /// frame on each commit of a busy turn. A text is known by its length and
 /// hash for as long as the passes keep counting it:
 /// [`finish_pass`](Self::finish_pass) forgets whatever the pass it closes

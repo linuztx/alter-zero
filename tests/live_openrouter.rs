@@ -111,7 +111,7 @@ fn live_usage_frame_reaches_the_app() {
     // The real-usage pipeline end to end (docs/prompt-caching.md): the
     // payload asks for `stream_options.include_usage`, the provider's final
     // frame is parsed, and the backend forwards it as StreamEvent::Usage —
-    // the numbers the app snaps its tally to instead of the tiktoken
+    // the numbers the app snaps its tally to instead of its own
     // estimate.
     let context = vec![ContextMessage::new(
         ContextRole::User,

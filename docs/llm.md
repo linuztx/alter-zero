@@ -598,7 +598,7 @@ Retheme there.
   final `usage` block is not surfaced through `StreamEvent`.~~ **Fixed**: every
   request asks for `stream_options.include_usage`, the final usage frame rides
   `StreamEvent::Usage`, and the live tally snaps to the provider's own
-  accounting (the tiktoken estimate still ticks between frames). Requests are
+  accounting (the app-side estimate still ticks between frames). Requests are
   also shaped for **prompt caching** — explicit `cache_control` breakpoints
   where needed, cache-affinity keys everywhere — see `docs/prompt-caching.md`.
 - Switching models mid-session does not rewrite the already-recorded `/resume`

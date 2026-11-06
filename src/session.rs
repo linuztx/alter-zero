@@ -305,7 +305,7 @@ struct TaskEntryRecord {
 
 /// A [`Reasoning`] on disk (`docs/thinking-stream.md`). `tokens` is whatever
 /// the cell settled on — the provider's `reasoning_tokens` when its usage
-/// frame arrived, else the tokenizer estimate — and `serde(default)`s to 0
+/// frame arrived, else the token estimate — and `serde(default)`s to 0
 /// (unknown), which hides the cell's clause.
 ///
 /// [`Reasoning`]: crate::app::Reasoning

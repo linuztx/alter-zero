@@ -555,7 +555,7 @@ fn an_interrupted_turn_hands_back_its_receipt() {
     assert_eq!(summary.tokens, 0, "no usage frame reported anything");
     assert_eq!(
         summary.estimated, tally,
-        "the line's whole tally, every token of it the tokenizer's"
+        "the line's whole tally, every token of it the app's estimate"
     );
     assert!(!app.turn_active(), "the live status still clears");
 }
@@ -916,18 +916,20 @@ fn init_mid_turn_is_rejected_with_a_toast() {
 
 #[test]
 fn apply_usage_tracks_the_context_size_from_the_usage_frame() {
-    // The round's `input` is the whole re-sent context; `output` joins the
-    // next round's context — their sum is the live gauge value.
+    // The round's `input` is the whole re-sent context, counted by the
+    // provider — the gauge's reading until something joins it
+    // (docs/token-estimate.md).
     let mut app = App::new();
+    app.record_user_message("hello");
     app.begin_stream();
     app.apply_usage(&usage_of(5_000, 200));
-    assert_eq!(app.context_used(), 5_200);
+    assert_eq!(app.context_used(), 5_000);
 }
 
 #[test]
 fn a_turn_with_no_usage_frame_estimates_the_context_at_turn_end() {
-    // The dummy sends no usage — the tokenizer estimate stands in so the
-    // gauge (and the auto trigger) still work offline.
+    // The dummy sends no usage — the estimate stands in so the gauge (and
+    // the auto trigger) still work offline.
     let mut app = App::new();
     app.record_user_message("hello there");
     app.begin_stream();

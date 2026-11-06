@@ -363,12 +363,11 @@ impl App {
     /// committed cell is its own record (`docs/shell-command.md`).
     pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
         let status = self.status.take()?;
-        // No usage frame arrived this turn (the dummy, or a provider that
-        // omits them): the tokenizer estimate stands in for the context gauge
-        // so it — and the auto-compact trigger — still work (docs/compact.md).
-        if self.turn_usage_tokens == 0 {
-            self.refresh_context_used();
-        }
+        // The gauge folds in what joined after the turn's last usage frame —
+        // the reply above all — or, when none arrived (the dummy, a provider
+        // that omits them), stands on the estimate, so it and the
+        // auto-compact trigger work either way (docs/token-estimate.md).
+        self.refresh_context_used();
         if status.shell {
             return None;
         }
@@ -382,7 +381,7 @@ impl App {
     /// [`take_turn_summary`](App::take_turn_summary) for a finished turn and
     /// [`interrupt_turn`](App::interrupt_turn) for a kept interrupt, so the
     /// two differ only in the `estimated` share each hands it: nothing for a
-    /// finished turn, the tokenizer's count of the round the Esc cut short
+    /// finished turn, the estimate of the round the Esc cut short
     /// for an interrupted one (`docs/interrupt.md`).
     fn turn_summary(
         &self,
@@ -704,7 +703,7 @@ impl App {
     /// ([`turn_summary`](App::turn_summary)), over the tally the status line
     /// shows as the Esc lands. The usage frames' share stays
     /// [`TurnSummary::tokens`]; the rest, the round the Esc cut short, never
-    /// reports, so it is the tokenizer's count, [`TurnSummary::estimated`].
+    /// reports, so it is the app's estimate, [`TurnSummary::estimated`].
     /// `None` for a `!` shell or a `/compact` turn, whose cells are their own
     /// records. Built, never recorded: the boundary records it once the
     /// completions held during the turn have settled above it

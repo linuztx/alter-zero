@@ -52,9 +52,9 @@ pub struct ContextUsagePage {
     /// the tool set the boundary hands over right after can change which
     /// category that is.
     chosen: bool,
-    /// Every text's count from the last pass, so a re-count tokenizes only
+    /// Every text's count from the last pass, so a re-count estimates only
     /// what is new — a long conversation's whole window through the
-    /// tokenizer again stalled a frame on each commit of a busy turn.
+    /// counter again stalled a frame on each commit of a busy turn.
     memo: CountMemo,
 }
 
@@ -177,13 +177,23 @@ impl App {
     }
 
     /// Inject the tools the main session's next request offers (from
-    /// `ReplySource::tool_definitions`, pulled at the loop bottom while the
-    /// page is open). The same set in a new handle is no change, so the
-    /// boundary can pull freely; a different one moves the page's signature.
+    /// `ReplySource::tool_definitions`, pulled at every loop bottom). The
+    /// same set in a new handle is no change, so the boundary can pull
+    /// freely; a different one moves the page's signature, and the context
+    /// gauge re-reads the whole context with the new set's estimate in it —
+    /// every request carries the schemas, the first one included
+    /// (`docs/token-estimate.md`).
     pub fn set_tool_definitions(&mut self, tools: Arc<[ToolDefinition]>) {
         if !Arc::ptr_eq(&self.tool_definitions, &tools) && *self.tool_definitions != *tools {
+            self.tools_estimate = tools
+                .iter()
+                .map(|tool| u64::try_from(count_tokens(&tool.schema)).unwrap_or(u64::MAX))
+                .fold(0, u64::saturating_add);
             self.tool_definitions = tools;
             self.tool_definitions_revision += 1;
+            // The last report's base carried the old set: estimate it all.
+            self.context_base_at = None;
+            self.context_synced = None;
         }
     }
 
@@ -221,7 +231,13 @@ impl App {
     /// the last pass counted it, so only what is new is tokenized.
     fn count_context_window(&self, memo: &mut CountMemo) -> Breakdown {
         let memo = RefCell::new(memo);
-        let count = |text: &str| memo.borrow_mut().count(text, &count_tokens);
+        // In the provider's tokens, as the footer's gauge reads: what its
+        // usage reports taught about its tokens against the estimate
+        // (docs/token-estimate.md) — applied outside the memo, which keeps
+        // the estimate's own counts, so a new lesson re-tokenizes nothing.
+        let calibration = self.context_calibration();
+        let count =
+            |text: &str| calibration.correct_count(memo.borrow_mut().count(text, &count_tokens));
         let breakdown = match self.viewed_agent() {
             Some(run) => {
                 let (messages, origins) =
@@ -274,6 +290,9 @@ impl App {
     fn context_usage_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.tool_definitions_revision.hash(&mut hasher);
+        self.context_calibration()
+            .ratio_permille()
+            .hash(&mut hasher);
         match self.viewed_agent() {
             Some(run) => {
                 run.id.hash(&mut hasher);

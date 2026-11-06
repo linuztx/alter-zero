@@ -115,7 +115,7 @@ fn a_header_numbers_its_entry_and_estimates_its_size() {
     let app = context_fixture();
     let id = first_call_id(&app);
     let texts = texts(&app, 80);
-    let count = crate::tokenizer::count;
+    let count = crate::tokens::estimate;
     assert_eq!(
         texts[0],
         format!(" SYSTEM  #1 · {}", estimate(count("be nice")))
@@ -263,9 +263,9 @@ fn a_header_counts_a_users_images_and_charges_for_them() {
         vec!["/tmp/a.png".into(), "/tmp/b.png".into()],
     );
     let message = &crate::context::context_messages(&app.history)[0];
-    let tokens = crate::app::message_tokens(message, &mut crate::tokenizer::count);
+    let tokens = crate::app::message_tokens(message, &mut crate::tokens::estimate);
     assert!(
-        tokens > crate::tokenizer::count(&message.text),
+        tokens > crate::tokens::estimate(&message.text),
         "the pictures are charged"
     );
     let texts = texts(&app, 80);
@@ -518,7 +518,7 @@ fn the_summary_adds_up_to_the_footer_gauges_estimate() {
     let mut app = context_fixture();
     app.set_user_instructions(Some("guide".to_string()));
     app.record_user_message_with_images("[Image #1] look", vec!["/tmp/a.png".into()]);
-    let gauge = crate::tokenizer::count("be nice")
+    let gauge = crate::tokens::estimate("be nice")
         + crate::app::estimate_messages_tokens(&crate::context::context_messages_full(
             app.user_instructions.as_deref(),
             app.listings.as_deref(),
@@ -892,7 +892,7 @@ fn context_cache_rebuilds_on_new_history_a_width_change_and_a_rewind() {
 
 #[test]
 fn context_cache_counts_only_what_is_new() {
-    // The header estimates put every entry through the tokenizer; the cache
+    // The header estimates put every entry through the estimator; the cache
     // keeps what it counted, so a rebuild for one new message counts that
     // message rather than the whole conversation again.
     let mut app = context_fixture();
@@ -1026,4 +1026,62 @@ fn the_context_cache_rebuilds_when_the_theme_changes() {
         "rebuilt in Dracula's palette, nothing left of Mocha's"
     );
     assert_eq!(cache.builds, 2, "the switch cost one rebuild");
+}
+
+/// The whole context `app` sends, estimated the way its gauge estimates it.
+fn whole_estimate(app: &App) -> u64 {
+    let prompt = crate::tokens::estimate(app.system_prompt.as_deref().unwrap_or_default());
+    let messages = crate::app::estimate_messages_tokens(&crate::context::context_messages_full(
+        app.user_instructions.as_deref(),
+        app.listings.as_deref(),
+        &app.history,
+    ));
+    (prompt + messages) as u64
+}
+
+/// A usage frame counting `input` tokens.
+fn frame(input: u64) -> crate::stream::TokenUsage {
+    crate::stream::TokenUsage {
+        input,
+        ..crate::stream::TokenUsage::default()
+    }
+}
+
+#[test]
+fn the_estimates_count_in_what_the_providers_reports_taught() {
+    // Two usage reports that counted the conversation's growth at three
+    // halves of the estimate: the view's figures follow, so they and the
+    // footer's gauge speak the provider's tokens (docs/token-estimate.md).
+    let mut app = context_fixture();
+    app.begin_stream();
+    let first = whole_estimate(&app);
+    app.apply_usage(&frame(first + 1_000));
+    app.record_user_message(&"word ".repeat(600));
+    let second = whole_estimate(&app);
+    app.apply_usage(&frame(first + 1_000 + (second - first) * 3 / 2));
+    let calibration = app.context_calibration();
+    assert!(calibration.ratio_permille() > 1_400, "{calibration:?}");
+    let hello = calibration.correct(crate::tokens::estimate("hello") as u64);
+    let texts = texts(&app, 80);
+    assert_eq!(
+        texts[3],
+        format!(" USER  #2 · {}", estimate(hello as usize))
+    );
+    // The cached view rebuilds on a lesson alone.
+    let mut cache = ContextCache::new();
+    let mut fresh = context_fixture();
+    let before = cache.body(&fresh, 80).summary.clone();
+    fresh.begin_stream();
+    let first = whole_estimate(&fresh);
+    fresh.apply_usage(&frame(first + 1_000));
+    assert_eq!(
+        cache.body(&fresh, 80).summary,
+        before,
+        "nothing to learn from yet"
+    );
+    fresh.record_user_message(&"word ".repeat(600));
+    let after_message = cache.body(&fresh, 80).summary.clone();
+    let second = whole_estimate(&fresh);
+    fresh.apply_usage(&frame(first + 1_000 + (second - first) * 3 / 2));
+    assert_ne!(cache.body(&fresh, 80).summary, after_message);
 }
