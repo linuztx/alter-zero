@@ -1104,6 +1104,7 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
         "scripts/live_smoke.sh",
         "scripts/cursor_hide_check.sh",
         "scripts/paste_mem.sh",
+        "scripts/turn_mem.sh",
     ]
     .into_iter()
     .map(|script| (script, "SUMMARY_RE='".to_string(), verbs.clone()))

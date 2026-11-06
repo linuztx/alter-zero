@@ -1091,6 +1091,7 @@ fn the_smoke_scripts_summary_patterns_match_the_drawn_summary() {
         "scripts/live_smoke.sh",
         "scripts/cursor_hide_check.sh",
         "scripts/paste_mem.sh",
+        "scripts/turn_mem.sh",
     ] {
         let pattern = assigned(&read(script), "SUMMARY_RE");
         let anchored = regex::Regex::new(&format!("^{pattern}")).expect("an ERE regex reads too");

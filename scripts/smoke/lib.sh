@@ -47,8 +47,8 @@ HEADER_MARK="Alter Zero"
 # that runs past 30s ends on a later verb than it opened on, so no single
 # verb is safe there. A phase that tells turns apart names that turn's verb
 # instead (SUMMARY_TURN1…3, below). The same line lives in
-# `scripts/live_smoke.sh`, `cursor_hide_check.sh` and `paste_mem.sh`;
-# `app::tests::turn` pins all four copies to the table, and
+# `scripts/live_smoke.sh`, `cursor_hide_check.sh`, `paste_mem.sh` and
+# `turn_mem.sh`; `app::tests::turn` pins all five copies to the table, and
 # `ui::tests::status` to the row `summary_lines` draws.
 SUMMARY_RE='✦ (Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 # The summary each of a launch's first three turns ends on, for the phases

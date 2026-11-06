@@ -53,6 +53,11 @@ fi
 
 CFG="$(mktemp -d)"
 S="turn_mem_$$"
+# A committed turn summary, whichever verb the turn ended on: turn i is the
+# i-th summary row (the same line as scripts/smoke/lib.sh; `app::tests::turn`
+# pins every copy to `STATUS_VERBS`, `ui::tests::status` to the drawn row,
+# `✦ ` mark first).
+SUMMARY_RE='✦ (Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
 	[ -n "${OWNER_PID:-}" ] && kill "$OWNER_PID" 2>/dev/null
@@ -80,9 +85,9 @@ maps() {
 	# large blocks), and of everything else (the binary, libraries, files).
 	awk '/^[0-9a-f]+-[0-9a-f]+ /{name=$6; if(name=="")name="[anon]"} /^Rss:/{ if(name=="[heap]")h+=$2; else if(name=="[anon]")a+=$2; else o+=$2 } END{printf "heap %6.1f MB  anon %6.1f MB  other %6.1f MB", h/1024, a/1024, o/1024}' /proc/"$APP"/smaps
 }
-# The turn-end summary is `{verb} for {n}s[ · …]`, the verb picked per turn.
+# The turns that have settled: the summary rows in the pane and its scrollback.
 turns_done() {
-	tmux capture-pane -t "$S" -p -S -2000 | grep -cE "^[A-Z][a-z]+( [a-z]+)? for [0-9]+s( ·.*)?$"
+	tmux capture-pane -t "$S" -p -S -2000 | grep -cE "^$SUMMARY_RE"
 }
 wait_turn() {
 	local want="$1"
