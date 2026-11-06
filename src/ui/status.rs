@@ -490,8 +490,9 @@ pub fn styled_status_line(
     clamp_spans(spans, width as usize)
 }
 
-/// The committed turn summary: dim, bullet-less `"{verb} for {elapsed}"`
-/// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
+/// The committed turn summary: dim `"✦ {verb} for {elapsed}"` (the seconds
+/// humanized by [`format_elapsed`] — `✦ Done for 20s`, `✦ Done for 1m 30s`),
+/// opening on the `SUMMARY_MARK` — the line's own dim, never a message's `●`
 /// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
 /// running` suffix when either applies (`docs/background.md`,
 /// `docs/prompt-caching.md`); an interrupted turn's total carries the
@@ -501,7 +502,8 @@ pub fn styled_status_line(
 /// `width`: the full chain runs past 60 columns and the rows are permanent
 /// scrollback, so a narrow terminal keeps the whole receipt instead of
 /// paint-clipping its tail (the old `_width` was ignored on a "the line
-/// never wraps" premise the token clause outgrew).
+/// never wraps" premise the token clause outgrew). The words wrap beside the
+/// mark and a wrapped row hangs under them, the way a bulleted cell's does.
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
@@ -542,9 +544,14 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
             summary.shells
         ));
     }
-    wrap_text(&text, width)
+    let dim = Style::new().fg(status_done_color());
+    wrap_text(&text, width.saturating_sub(BULLET_WIDTH).max(1))
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(status_done_color()))))
+        .enumerate()
+        .map(|(i, row)| {
+            let lead = if i == 0 { SUMMARY_MARK } else { INDENT };
+            Line::from(vec![Span::styled(lead, dim), Span::styled(row, dim)])
+        })
         .collect()
 }
 

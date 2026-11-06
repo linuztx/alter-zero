@@ -95,7 +95,18 @@ release heading when a version is cut.
   `Called Deepwiki`, `Read 2 files, listed 1 directory`) jumped two columns
   left of where the step had been shown while it ran. Each now starts two
   columns in, where its text was beside the `●`, so only the bullet goes
-  away. The turn's closing `Worked for …` line is unchanged.
+  away. The turn's closing line keeps the edge for its new `✦` mark.
+
+- **Every turn's closing line opens on `✦`.** The dim line a turn ends on
+  (`✦ Generated for 3s · 11.6k tokens (11.5k cached)`) now starts with a
+  star, so the end of each turn is easy to spot when you scroll back. The
+  star is as dim as the rest of the line, its words start in the same
+  column as the replies and tool calls above it, and a line too long for
+  the terminal wraps under its words. Every closing line wears it: a
+  finished turn's, an interrupted turn's under `Conversation interrupted`,
+  a subagent's in its session view, the ones in the Ctrl+O transcript and
+  `/export`, and those of a session you resume
+  (`docs/status-indicator.md`).
 
 - **The status line and the footer now wear the theme's colours.** The
   status verb (`Working…`, or a task's `Setting up project structure…`)

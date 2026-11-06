@@ -26,7 +26,7 @@ message, then the dim stamp alone on its own line, flush to the right edge:
 ● Read(src/main.rs)
   fn main() -> io::Result<()> {
   …
-Done for 3s
+✦ Done for 3s
 ```
 
 ## Why this shape

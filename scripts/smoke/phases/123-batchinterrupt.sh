@@ -74,7 +74,9 @@ expect_eq "${calls:-0}" 3 "Ctrl+D does not carry every call of the interrupted b
 answers=$(printf '%s\n' "$context" | grep -cF "Interrupted by user")
 expect_eq "${answers:-0}" 3 "Ctrl+D does not answer every interrupted call"
 expect_has "$context" -F "[error] Conversation interrupted" "Ctrl+D lost the interrupt notice"
-expect_lacks "$context" -E "$SUMMARY_RE" "the receipt reached the model's context — a summary is chrome"
+# The words alone: Ctrl+D draws no summary row, so a leaked receipt would be
+# its text without the row's mark.
+expect_lacks "$context" -E "${SUMMARY_RE#✦ }" "the receipt reached the model's context — a summary is chrome"
 
 # The rebuild agrees with the live commit: every cell, each exactly once — no
 # record duplicated, nothing the purge left behind.

@@ -7,11 +7,11 @@ use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::palette::with_theme;
 use crate::ui::theme::{
-    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
-    header_gradient_start, shimmer_highlight, spinner_bars_high, spinner_pulse_bright,
-    spinner_tail_color, status_color, status_detail_color, status_done_color, status_offline_color,
-    status_retry_color, status_thinking_color, tool_diff_add_color, tool_diff_del_color,
-    tool_dim_color, tool_pulse_dim,
+    BULLET_WIDTH, INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, SUMMARY_MARK, ai_color,
+    header_gradient_end, header_gradient_start, shimmer_highlight, spinner_bars_high,
+    spinner_pulse_bright, spinner_tail_color, status_color, status_detail_color, status_done_color,
+    status_offline_color, status_retry_color, status_thinking_color, tool_diff_add_color,
+    tool_diff_del_color, tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -196,7 +196,7 @@ fn summary_humanizes_a_long_turn() {
         cached: 0,
         cache_write: 0,
     };
-    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 1h 1m");
+    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "✦ Done for 1h 1m");
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn summary_lines_append_the_real_token_usage() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (8.1k cached)"
+        "✦ Done for 12s · 8.2k tokens (8.1k cached)"
     );
     // The turn that *primed* the cache says so too: an explicit-caching
     // provider bills that write at a premium, and a receipt reading just
@@ -257,25 +257,25 @@ fn summary_lines_append_the_real_token_usage() {
     summary.cache_write = 1_204;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (8.1k cached · 1.2k written)",
+        "✦ Done for 12s · 8.2k tokens (8.1k cached · 1.2k written)",
         "both halves when both apply"
     );
     summary.cached = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (1.2k written)",
+        "✦ Done for 12s · 8.2k tokens (1.2k written)",
         "a zero half is omitted"
     );
     summary.cache_write = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens",
+        "✦ Done for 12s · 8.2k tokens",
         "no parenthetical when nothing was cached or written"
     );
     summary.tokens = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s",
+        "✦ Done for 12s",
         "a usage-less turn (the dummy) keeps the bare summary"
     );
 }
@@ -298,21 +298,21 @@ fn summary_lines_mark_an_estimated_share_with_approx() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · ≈24.3k tokens (8k cached)",
+        "✦ Worked for 8s · ≈24.3k tokens (8k cached)",
         "the frames' tokens and the cut round's estimate, one marked total"
     );
     summary.tokens = 0;
     summary.cached = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · ≈4.3k tokens",
+        "✦ Worked for 8s · ≈4.3k tokens",
         "nothing reported (the offline demo): all of it estimated"
     );
     summary.tokens = 24_300;
     summary.estimated = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · 24.3k tokens",
+        "✦ Worked for 8s · 24.3k tokens",
         "nothing estimated reads bare"
     );
 }
@@ -701,7 +701,10 @@ fn the_thinking_clause_wears_the_thinking_colour() {
 }
 
 #[test]
-fn summary_lines_is_a_single_dim_bulletless_line() {
+fn summary_lines_is_one_dim_line_opening_on_the_sparkle() {
+    // A finished turn's receipt opens on a `✦` — the spinner it replaces,
+    // come to rest — worn in the line's own dim: still a footnote about work
+    // already done, never a heading, and never a message's `●`.
     let summary = TurnSummary {
         verb: "Done",
         secs: 20,
@@ -714,9 +717,30 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
     };
     let lines = summary_lines(&summary, 80);
     assert_eq!(lines.len(), 1, "one line");
-    assert_eq!(plain(&lines[0]), "Done for 20s");
-    assert!(!plain(&lines[0]).contains('●'), "no bullet");
-    assert_eq!(lines[0].spans[0].style.fg, Some(status_done_color()), "dim");
+    assert_eq!(plain(&lines[0]), "✦ Done for 20s");
+    assert!(!plain(&lines[0]).contains('●'), "no message bullet");
+    assert_eq!(
+        lines[0].spans[0].content, SUMMARY_MARK,
+        "the mark is its own span, ahead of the words"
+    );
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.fg == Some(status_done_color())),
+        "dim throughout, the mark included: {:?}",
+        lines[0]
+    );
+}
+
+#[test]
+fn the_summary_mark_is_a_bullet_wide() {
+    // `✦ ` spans the `● ` bullet's columns, so a receipt's words start in the
+    // column every cell's text starts in — and a settled `  Thought for` line's.
+    assert_eq!(
+        crate::ui::wrap::cols(SUMMARY_MARK),
+        usize::from(BULLET_WIDTH)
+    );
 }
 
 #[test]
@@ -740,7 +764,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
         .collect();
     assert!(texts.iter().any(|t| t == "● all done"));
     assert!(
-        texts.iter().any(|t| t == "Done for 7s"),
+        texts.iter().any(|t| t == "✦ Done for 7s"),
         "the summary flows inline: {texts:?}"
     );
 }
@@ -823,16 +847,16 @@ fn summary_lines_append_the_still_running_shell_count() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 22s · 3 shells still running"
+        "✦ Done for 22s · 3 shells still running"
     );
     summary.shells = 1;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 22s · 1 shell still running",
+        "✦ Done for 22s · 1 shell still running",
         "singular for one shell"
     );
     summary.shells = 0;
-    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 22s");
+    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "✦ Done for 22s");
 }
 
 /// The RGB triple of a span's foreground (panics on a non-RGB colour).
@@ -981,6 +1005,22 @@ fn the_turn_summary_wraps_to_the_width() {
     };
     let lines = summary_lines(&summary, 30);
     assert!(lines.len() > 1, "the summary wrapped: {lines:?}");
+    assert!(
+        plain(&lines[0]).starts_with("✦ Done for"),
+        "the first row opens on the mark: {:?}",
+        plain(&lines[0])
+    );
+    for line in &lines[1..] {
+        // A wrapped row hangs under the words, the way a bulleted cell's
+        // second row does — never under the mark, never flush at the edge.
+        assert!(
+            plain(line)
+                .strip_prefix(INDENT)
+                .is_some_and(|rest| !rest.starts_with(' ')),
+            "a wrapped row starts in the words' column: {:?}",
+            plain(line)
+        );
+    }
     for line in &lines {
         assert!(
             crate::ui::wrap::cols(plain(line).trim_end()) <= 30,
@@ -1003,9 +1043,76 @@ fn the_turn_summary_wraps_to_the_width() {
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(
-        all, "Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
+        all, "✦ Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
         "nothing lost, nothing reordered"
     );
+}
+
+#[test]
+fn the_smoke_scripts_summary_patterns_match_the_drawn_summary() {
+    // The smoke suite finds a settled turn by `^$SUMMARY_RE` — the row a
+    // summary *draws*, its mark included — and tells a launch's first three
+    // turns apart by `SUMMARY_TURN1`…`3`. Matching them against what
+    // `summary_lines` actually draws means a change to the row's opening fails
+    // `cargo test` rather than timing smoke phases out. (That the verbs follow
+    // the table is `app::tests::turn`'s to pin.)
+    let drawn = |verb: &'static str| {
+        let summary = TurnSummary {
+            verb,
+            secs: 12,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 0,
+            estimated: 0,
+            cached: 0,
+            cache_write: 0,
+        };
+        plain(&summary_lines(&summary, 80)[0])
+    };
+    let read = |script: &str| {
+        std::fs::read_to_string(format!("{}/{script}", env!("CARGO_MANIFEST_DIR")))
+            .expect("the script exists")
+    };
+    // The value a script assigns `name`, between its quotes.
+    let assigned = |text: &str, name: &str| -> String {
+        let prefix = format!("{name}=");
+        let line = text
+            .lines()
+            .map(str::trim_start)
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{name} is assigned"));
+        let mut value = line[prefix.len()..].chars();
+        let quote = value.next().expect("a quoted value");
+        assert!(quote == '\'' || quote == '"', "{name} is quoted: {line:?}");
+        value.take_while(|&c| c != quote).collect()
+    };
+    for script in [
+        "scripts/smoke/lib.sh",
+        "scripts/live_smoke.sh",
+        "scripts/cursor_hide_check.sh",
+        "scripts/paste_mem.sh",
+    ] {
+        let pattern = assigned(&read(script), "SUMMARY_RE");
+        let anchored = regex::Regex::new(&format!("^{pattern}")).expect("an ERE regex reads too");
+        for verb in STATUS_VERBS {
+            let row = drawn(verb.done);
+            assert!(
+                anchored.is_match(&row),
+                "{script}'s SUMMARY_RE={pattern:?} misses the drawn {row:?}"
+            );
+        }
+    }
+    let lib = read("scripts/smoke/lib.sh");
+    for (turn, verb) in STATUS_VERBS.iter().take(3).enumerate() {
+        let name = format!("SUMMARY_TURN{}", turn + 1);
+        let opening = assigned(&lib, &name);
+        let row = drawn(verb.done);
+        assert!(
+            row.starts_with(&format!("{opening} ")),
+            "{name}={opening:?} does not open turn {}'s {row:?}",
+            turn + 1
+        );
+    }
 }
 
 // ===== the spinner styles (docs/spinner.md) =====

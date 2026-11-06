@@ -220,8 +220,9 @@ pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// `  Read 2 files` — the bullet-less one-liner a thinking phase, an MCP call
 /// or a read/search group leaves once it is done. It is the [`TOOL_BULLET`]'s
 /// width in spaces, so the text settles in the column its live `●` header's
-/// text sat in and only the bullet goes away. The turn summary (`Done for Ns`)
-/// is not one of them: it settles the status line, not a cell.
+/// text sat in and only the bullet goes away. The turn summary (`✦ Done for
+/// Ns`) is not one of them: it settles the status line, not a cell, and opens
+/// on its own [`SUMMARY_MARK`] instead.
 pub(super) const SETTLED_INDENT: &str = "  ";
 
 /// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the
@@ -371,8 +372,9 @@ pub(super) fn reasoning_shimmer_base() -> Color {
 pub(super) const REASONING_DONE: &str = "Thought for ";
 
 /// The settled line's colour: [`status_done_color`], the dim the committed
-/// `Done for Ns` summary wears. The two are the same kind of line — turn meta,
-/// bullet-less, one row — and they bracket a turn, so they read as a pair.
+/// `✦ Done for Ns` summary wears. The two are the same kind of line — turn
+/// meta, never a message's `●`, one row — and they bracket a turn, so they read
+/// as a pair.
 ///
 /// One tone across the whole line and both surfaces: a settled thought is a
 /// footnote about work already done, not a heading. What is *happening* — the
@@ -2275,8 +2277,9 @@ pub(super) fn timestamp_color() -> Color {
 // sweeps across it (see [`shimmer_spans`], ported from openai/codex
 // `tui/src/shimmer.rs`). The elapsed / thinking / done
 // times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
-// finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
-// `HistoryItem::Summary`). See docs/status-indicator.md. ---
+// finish a dim `✦ {done verb} for {n}` summary commits to scrollback (a
+// `HistoryItem::Summary`, opening on [`SUMMARY_MARK`]). See
+// docs/status-indicator.md. ---
 
 /// White — the comet's head (matches the codex/Claude-Code white status text).
 pub(super) fn status_color() -> Color {
@@ -2408,6 +2411,14 @@ pub(super) const OFFLINE_ROW_TAIL: &str = " — trying again · ";
 pub(super) fn status_done_color() -> Color {
     tool_dim_color()
 }
+
+/// The mark a committed turn summary opens on — `✦ Worked for 12s` — at the
+/// edge where the status line's spinner ran, so every turn's receipt is
+/// found at a glance down the scrollback. A [`BULLET_WIDTH`] wide, so the
+/// receipt's words start in the column every cell's text does, and worn in
+/// [`status_done_color`] with the rest of the line: a footnote's marker, not
+/// a heading's (`docs/status-indicator.md`).
+pub(super) const SUMMARY_MARK: &str = "✦ ";
 
 /// Marks a summary's token total as partly the app's estimate: an
 /// interrupted turn's receipt, whose cut round never reported its usage

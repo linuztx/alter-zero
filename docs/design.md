@@ -79,9 +79,10 @@ which Ctrl+V reads the clipboard from.
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
-  finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
-  — the past tense of the verb the line wore last (`Worked for 12s`), the verb
-  moving on every 30 s of a turn (`docs/status-indicator.md`) —
+  finish the line is replaced by a dim, committed **`✦ {done verb} for Ns`**
+  summary — a dim `✦` mark, then the past tense of the verb the line wore last
+  (`✦ Worked for 12s`), the verb moving on every 30 s of a turn
+  (`docs/status-indicator.md`) —
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
   Time is impure, so — like

@@ -16,15 +16,15 @@ modelled on the spinner line in openai/codex and Claude Code.
 ```
 
 On finish the status line is replaced by a dim summary committed to scrollback,
-opening with the **past tense of the verb the line wore** — `Working…` ends as
-`Worked for …`:
+opening on a `✦` mark and the **past tense of the verb the line wore** —
+`Working…` ends as `✦ Worked for …`:
 
 ```
 > Hi
 ● Happy to help! …                 (the finished reply)
-Worked for 20s                     (NEW: committed turn summary)
+✦ Worked for 20s                   (NEW: committed turn summary)
 
-> Thanks                           (the next turn — "Worked for 20s" stays put)
+> Thanks                           (the next turn — "✦ Worked for 20s" stays put)
 ```
 
 The rest of the docs call that cell "the `Done for Ns` summary" — its name
@@ -48,8 +48,8 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
 | waiting for the network | `( ·•●  ) Waiting for internet… (2m 3s · ↑ 42 tokens · offline for 1m 10s · esc to interrupt)` — verb and clause amber, over a `⎿ ((·)) No connection to {host} — trying again · N attempts` row (`docs/offline.md`) |
-| finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
-| interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary over the tally the line last showed — `Worked for 8s · ≈24.3k tokens`, `≈` marking the share no usage frame reported (see `docs/interrupt.md`) |
+| finished (committed) | `✦ Worked for 20s` — the `✦` mark, then the past tense of the verb the line wore last |
+| interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary over the tally the line last showed — `✦ Worked for 8s · ≈24.3k tokens`, `≈` marking the share no usage frame reported (see `docs/interrupt.md`) |
 
 The turn opens with a **pre-stream pause** (the backend waits `STARTUP_DELAY`,
 3s, before its first chunk — so the indicator is visibly *working* before any
@@ -161,10 +161,11 @@ spinner/shimmer spans carry per-frame colours that must never reach
 scrollback — so the tail clauses (the amber retry warning, the thinking
 clause, the esc hint) give way visibly instead of paint-clipping at the
 buffer edge with no cue. The **committed summary wraps**
-(`summary_lines` word-wraps to its width): its token/cache/shell clauses are
-the turn's receipts in permanent scrollback, where extra rows cost nothing —
-the old single-line render was written before the usage-frame token clause
-outgrew it.
+(`summary_lines` word-wraps to its width beside its `✦` mark, a wrapped row
+hanging under the words the way a bulleted cell's does): its token/cache/shell
+clauses are the turn's receipts in permanent scrollback, where extra rows cost
+nothing — the old single-line render was written before the usage-frame token
+clause outgrew it.
 
 ## Where the impurity lives (boundary, not the pure core)
 
@@ -239,9 +240,9 @@ transcript (stamp-free there — only user messages display a timestamp):
   what the usage frames reported, `cached`/`cache_write` their cache halves,
   and `estimated` the estimate's share no frame reported — non-zero only for
   an interrupted turn, whose total then reads `≈` (`docs/interrupt.md`).
-- `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
-  (the seconds humanized by `format_elapsed` — `Worked for 20s`,
-  `Generated for 1m 30s`).
+- `ui::summary_lines` renders a single dim `"✦ {verb} for {elapsed}"` (the
+  seconds humanized by `format_elapsed` — `✦ Worked for 20s`,
+  `✦ Generated for 1m 30s`), opening on its mark (*The `✦` mark*, below).
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
@@ -252,6 +253,29 @@ transcript (stamp-free there — only user messages display a timestamp):
   only here), and the loop records and commits it through the same
   `Session::commit_turn_summary` (`docs/interrupt.md` *The receipt an
   interrupted turn keeps*).
+
+### The `✦` mark
+
+Every receipt opens on `✦ ` (`ui::theme::SUMMARY_MARK`), at the edge where
+the status line's spinner ran while the turn was live, so the end of each turn
+is found at a glance down a long scrollback — a main session's, an agent
+session view's, an interrupted turn's under its red notice alike, since they
+all come from the one `summary_lines`. Three choices keep it quiet:
+
+- **The line's own dim.** The mark wears `status_done_color()` with the rest
+  of the receipt. It marks a footnote about work already done, not a heading;
+  the live line is where the colour and the motion stay.
+- **Not a message bullet.** `●` means a message or a cell, and a receipt is
+  neither, so the eye never takes one for the reply it closes.
+- **A bullet wide.** `✦ ` spans the `● ` bullet's two columns
+  (`the_summary_mark_is_a_bullet_wide`), so the receipt's words start in the
+  column every cell's text — and a settled `  Thought for` line's — starts
+  in, and a wrapped receipt hangs under its words like a bulleted cell.
+
+The mark is drawn, never recorded: the rollout keeps the verb, the seconds and
+the counts, so a resumed session's receipts wear it too; Ctrl+O and `/export`
+show it, being built from the same rows; and the derived context, which never
+carries a summary, is unchanged.
 
 ## Strip geometry
 
@@ -332,7 +356,7 @@ turn runs, and the summary names the verb the line wore:
 ```
 ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (12s · ↓ 850 tokens · esc to interrupt)
 ⣤⣀⣀⣀⣀⣀⣀⣀ Generating… (41s · ↓ 3.2k tokens · esc to interrupt)     (30 s in: the next verb)
-Generated for 52s                                                    (the verb it wore last)
+✦ Generated for 52s                                                  (the verb it wore last)
 ```
 
 - **Every 30 seconds** (`VERB_ROTATION`). A quick answer keeps a single verb,
@@ -535,7 +559,8 @@ ahead of the round's batch.
   outgoing verb's last frame, the swap and the next frame, at every swap down
   the table (the rotation is a whole number of sweeps); the `/spinner`
   preview walks the verbs like a
-  first turn; `summary_lines` is one dim line; the strip stacks preview / gap /
+  first turn; `summary_lines` is one dim line opening on the `✦` mark, a
+  bullet wide, whose wrapped rows hang under its words; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.
 - `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd` with
   `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply;
@@ -546,12 +571,15 @@ ahead of the round's batch.
 - `src/tui/` (smoke): the live line shows `tokens` while streaming with a blank
   gap row between it and the box, and a committed summary after the turn
   settles. A phase that waits for *a* turn to settle matches
-  `scripts/smoke/lib.sh`'s `SUMMARY_RE` — every past tense in the table — or
+  `scripts/smoke/lib.sh`'s `SUMMARY_RE` — the `✦` mark, then every past tense
+  in the table — or
   counts summaries (`wait_summaries`/`count_summaries`), whatever verbs they
   wear, since a turn past 30 s ends on a later verb than it opened on; only
   the phases that tell turns apart on one screen name a turn's own verb
   (`SUMMARY_TURN1`…`3`). `the_smoke_scripts_summary_patterns_follow_the_verb_table`
-  pins all of them to `STATUS_VERBS` (`docs/smoke.md`). Phase 20 (longer startup delay): mid-pause the status shows
+  pins all of them to `STATUS_VERBS`, and
+  `the_smoke_scripts_summary_patterns_match_the_drawn_summary` to the row
+  `summary_lines` draws, its mark included (`docs/smoke.md`). Phase 20 (longer startup delay): mid-pause the status shows
   `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.
 
 ## …and on a terminal too short for it

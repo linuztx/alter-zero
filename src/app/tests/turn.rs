@@ -1094,30 +1094,35 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
     // opened on — and the phases that tell turns apart on one screen name
     // each turn's own verb. A verb added, dropped or reordered here but not
     // there would time a phase out, or settle it on the wrong turn, so every
-    // copy is pinned to the table.
+    // copy is pinned to the table. Each opens on the drawn row's lead — the
+    // summary's mark, which `ui::tests::status` matches against the row
+    // `summary_lines` draws — so only the verbs after it are the table's.
     let past: Vec<&str> = STATUS_VERBS.iter().map(|verb| verb.done).collect();
-    let pattern = format!("SUMMARY_RE='({}) for [0-9]'", past.join("|"));
-    let mut required: Vec<(&str, String)> = [
+    let verbs = format!("({}) for [0-9]'", past.join("|"));
+    let mut required: Vec<(&str, String, String)> = [
         "scripts/smoke/lib.sh",
         "scripts/live_smoke.sh",
         "scripts/cursor_hide_check.sh",
         "scripts/paste_mem.sh",
     ]
     .into_iter()
-    .map(|script| (script, pattern.clone()))
+    .map(|script| (script, "SUMMARY_RE='".to_string(), verbs.clone()))
     .collect();
     for (turn, done) in past.iter().take(3).enumerate() {
         required.push((
             "scripts/smoke/lib.sh",
-            format!("SUMMARY_TURN{}=\"{done} for\"", turn + 1),
+            format!("SUMMARY_TURN{}=\"", turn + 1),
+            format!("{done} for\""),
         ));
     }
-    for (script, line) in required {
+    for (script, opening, ending) in required {
         let path = format!("{}/{script}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).expect("the script exists");
         assert!(
-            text.lines().any(|candidate| candidate.trim_start() == line),
-            "{script} must define {line}"
+            text.lines()
+                .map(str::trim_start)
+                .any(|line| line.starts_with(&opening) && line.ends_with(&ending)),
+            "{script} must define {opening}…{ending}"
         );
     }
 }

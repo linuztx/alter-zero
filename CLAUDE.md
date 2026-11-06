@@ -963,7 +963,8 @@ reads as a pair), its text left in the column `Thinking…` streamed in behind
 the bullet's blank two columns (`ui::theme::SETTLED_INDENT`, which the settled
 MCP `  Called {server}` line and a read/search group's `  Read 2 files` line
 wear too — the turn summary, settling the status line rather than a cell,
-stays at the edge);
+opens on its own `✦` mark at the edge, a bullet wide, so its words share
+that column);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
 the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
@@ -3037,8 +3038,10 @@ resting in the page titles' gradient (the `/mcp` and `/skills` headlines'
 dress) under a white sweep ported from
 codex's `shimmer_spans` and moving on to the next verb every 30 s, the
 `Thinking for` clause in the thinking purple; on finish a dim
-`{done verb} for {n}s` summary — the past tense of the verb the line wore last,
-`Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
+`✦ {done verb} for {n}s` summary — the `✦` mark (`ui::theme::SUMMARY_MARK`,
+the line's own dim, a bullet wide so a wrapped receipt hangs under its words)
+then the past tense of the verb the line wore last,
+`Working…` → `✦ Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in
 flight as failed — a parallel batch's running call and each `⎿ Waiting…`
 sibling alike, every one keeping its red cell and its place in the next

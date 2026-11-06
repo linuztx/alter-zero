@@ -11,7 +11,7 @@ answer.** That rule ended turns on rounds that answered nothing:
 
   Thought for 3m 42s · 4.1k tokens (ctrl+o to expand)
 
-Conjured for 4m 33s · 95.3k tokens (60k cached · 3k written)
+✦ Conjured for 4m 33s · 95.3k tokens (60k cached · 3k written)
 
 ❯ continue
 ```

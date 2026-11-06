@@ -46,8 +46,9 @@ MODEL="${ALTER_ZERO_LIVE_MODEL:-openai/gpt-4o-mini}"
 S="alterzero_live_$$"
 # A committed turn summary, whichever verb the turn ended on: a live turn can
 # run past 30s and end on a later one (the same line as scripts/smoke/lib.sh;
-# `app::tests::turn` pins every copy to `STATUS_VERBS`).
-SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
+# `app::tests::turn` pins every copy to `STATUS_VERBS`, `ui::tests::status` to
+# the drawn row, `✦ ` mark first).
+SUMMARY_RE='✦ (Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 
 # Isolated config home so the run can't touch (or be steered by) the real
 # ~/.alter-zero; checkpoints/history/project-config off for hermeticity, the

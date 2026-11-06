@@ -46,6 +46,6 @@ tmux kill-session -t "$S4" 2>/dev/null
 if ! printf '%s' "$overlay_done" | grep -qE "$SUMMARY_RE"; then
 	fail "the turn never finished inside the Ctrl+O overlay (Phase 7 precondition not met — retune the timing)"
 else
-	expect_has "$post_quit" -E "$SUMMARY_RE" "after quitting (Ctrl+C) from the overlay, the committed 'Worked for Ns' summary was not restored to the screen — the quit path left the stale live status strip behind"
+	expect_has "$post_quit" -E "$SUMMARY_RE" "after quitting (Ctrl+C) from the overlay, the committed '✦ Worked for Ns' summary was not restored to the screen — the quit path left the stale live status strip behind"
 	expect_lacks "$post_quit" -F "esc to interrupt" "after quitting (Ctrl+C) from the overlay, the stale live status line ('… esc to interrupt') was still on screen instead of the settled conversation"
 fi

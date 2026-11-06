@@ -34,7 +34,7 @@ tmux kill-session -t "$S5" 2>/dev/null
 expect_has "$interrupted" -F "Conversation interrupted" "Esc mid-stream did not commit the 'Conversation interrupted' notice (did the app quit instead?)"
 expect_has "$interrupted" -F "Happy" "the partial reply was not kept on screen after the interrupt"
 expect_lacks "$interrupted" -F "esc to interrupt" "the live status line is still showing after the interrupt"
-expect_has "$interrupted" -E "^${SUMMARY_RE}[0-9]*s · ≈[0-9][0-9.]*k? tokens$" "the interrupted turn did not commit its receipt ('Worked for Ns · ≈N tokens', estimated with no usage reported)"
+expect_has "$interrupted" -E "^${SUMMARY_RE}[0-9]*s · ≈[0-9][0-9.]*k? tokens$" "the interrupted turn did not commit its receipt ('✦ Worked for Ns · ≈N tokens', estimated with no usage reported)"
 receipts=$(count_summaries "$interrupted")
 expect_eq "${receipts:-0}" 1 "the interrupted turn commits exactly one receipt"
 notice_row="$(printf '%s\n' "$interrupted" | grep -nF "Conversation interrupted" | head -1 | cut -d: -f1)"
