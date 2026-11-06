@@ -149,10 +149,16 @@ punctuation between the names stays dim:
   there is room, amber from 75%, red from the auto-compact threshold that
   page reads for the conversation on screen (`App::context_usage_threshold`,
   90% with none). A gauge in colour is a gauge saying compaction is near.
-- **permission mode** — `footer_mode_color(mode)`: `master`, which asks
-  nothing, in the error red (Claude Code's bypass-permissions dress), the one
-  mode where colour is a safety signal; `manual`, `edit` and `auto` still ask
-  something and stay dim.
+- **permission mode** — `footer_mode_color(mode)`, warming with what the
+  mode lets the agent do without asking: `manual`, which asks before
+  everything, stays dim; `edit` (file changes unasked) takes the link blue;
+  `auto` (the classifier approves commands) the caution amber; and `master`,
+  which asks nothing, the error red (Claude Code's bypass-permissions dress).
+  Four hues every theme paints apart, so the posture reads at a glance and the
+  riskiest one is the loudest. The alternatives were mocked first and lost
+  on the same row's own colours: a purple `edit` (Claude Code's accept-edits
+  colour) repeats the thinking mode's purple, a cyan one the model's accent,
+  and a green one the path's.
 - the ` · ` separators, the `…` cut and an unfocused shell count stay
   `footer_color()`.
 
@@ -195,7 +201,9 @@ reseat, resizes) already accounts for the row.
   with the model in the accent, the cwd green and the separator dim, every
   theme painting the two apart from each other and from the dim; the thinking
   mode and a speed tier wear the thinking colour; the gauge turns amber from
-  75% and red from the threshold; only `master` is coloured at the right edge;
+  75% and red from the threshold; the mode at the right edge is dim for
+  `manual`, blue for `edit`, amber for `auto` and red for `master`, four
+  colours apart in every theme;
   a ↓-focused shell count lights up on cyan while every other segment keeps
   its text and its own styling; it truncates with `…` at narrow
   widths; `display_cwd` maps home →

@@ -2804,15 +2804,19 @@ pub(super) fn footer_gauge_color(used: u64, window: u64, threshold: Option<u64>)
     context_fill_color(used, window, threshold).unwrap_or_else(footer_color)
 }
 
-/// The permission mode pinned at the row's right edge: `master` — every
-/// call runs unasked — in the error red, Claude Code's bypass-permissions
-/// dress, the one mode where colour is a safety signal; the modes that still
-/// ask anything stay dim with the rest of the row (`docs/permissions.md`).
+/// The permission mode pinned at the row's right edge, warming with what the
+/// mode lets the agent do unasked (`docs/permissions.md`): `manual` asks
+/// before everything and stays dim with the rest of the row, `edit` (file
+/// changes unasked) takes the link blue, `auto` (the classifier approves
+/// commands) the caution amber, and `master` (asks nothing) the error red,
+/// Claude Code's bypass-permissions dress. Four hues every theme paints apart.
 pub(super) fn footer_mode_color(mode: crate::permission::PermissionMode) -> Color {
     use crate::permission::PermissionMode;
     match mode {
+        PermissionMode::Manual => footer_color(),
+        PermissionMode::Edit => palette().link,
+        PermissionMode::Auto => palette().warning,
         PermissionMode::Master => error_color(),
-        PermissionMode::Manual | PermissionMode::Edit | PermissionMode::Auto => footer_color(),
     }
 }
 

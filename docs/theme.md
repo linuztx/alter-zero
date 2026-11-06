@@ -56,10 +56,10 @@ chrome paints is one of these or derived from one:
 | `selection_bg` | the `/resume` picker's selected row |
 | `accent` | what every picker selects with, the system bullet, inline code, the banner hint, a permission prompt's title, the Ctrl+R query, the ↓-focused footer chip's fill, the agent session view's composer label chip, the footer's model name — and the gradient's near end (the banner, every page title, the status verb) |
 | `on_accent` | ink over an `accent` fill (the footer chip, the current ask-question chip, the agent session view's composer label) |
-| `link` | a link's URL, an ordered list's marker, the context view's user tag — and the gradient's far end (the banner, every page title, the status verb) |
+| `link` | a link's URL, an ordered list's marker, the context view's user tag, the footer's `edit` mode — and the gradient's far end (the banner, every page title, the status verb) |
 | `success` | the finished tool bullet, a diff's `+`, the active model's ✓, a completed task, a background notice that went well, the path in the footer and the banner, a reply's blockquotes (codex's green) |
 | `error` | the error bullet, a failed tool, a diff's `-`, the `!` shell mode, the footer's `master` mode and a context gauge past the auto-compact threshold — and, mixed a third of the way to `dim`, an error toast |
-| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning, a context gauge past 75% (the footer's and `/context`'s) |
+| `warning` | the `retrying n/m` clause, the context view's system tag, the ask review's unanswered warning, a context gauge past 75% (the footer's and `/context`'s), the footer's `auto` mode |
 | `purple` | the context view's tool tag, the `/resume` toolbar's focus — and *reasoning*: the status line's `Thinking for` clause and the footer's thinking mode and speed tier |
 | `diff_add_bg` / `diff_del_bg` | an added / removed numbered row's ground |
 | `diff_add_mark_bg` / `diff_del_mark_bg` | the brighter marks under the characters that actually changed (`docs/inline-diff.md`); a changed run's ink is held to 3:1 against them, lifted toward `text` where the code theme's colour won't read |

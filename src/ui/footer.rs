@@ -288,8 +288,8 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // the one segment with a safety meaning (docs/permissions.md). Its
     // columns (plus a gap) come off the chain's budget up front. Absent
     // while permissions are disabled: nothing asks, and a mode would be a
-    // lie. Only `master` — which asks nothing — wears a colour of alarm
-    // (`footer_mode_color`).
+    // lie. Its colour warms with what the mode runs unasked — manual dim,
+    // edit blue, auto amber, master red (`footer_mode_color`).
     let mode = app.permission_mode();
     let reserved = mode.map_or(0, |mode| cols(mode.label()) + FOOTER_MODE_GAP);
     // The model segment names the conversation on screen: inside a subagent's
@@ -387,8 +387,8 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     }
     // Seat the mode flush against the right edge: pad the gap the reservation
-    // held back (at least [`FOOTER_MODE_GAP`]), then the label in its own
-    // colour — dim, or `master`'s red.
+    // held back (at least [`FOOTER_MODE_GAP`]), then the label in its
+    // mode's colour.
     if let Some(mode) = mode {
         let label = mode.label();
         let used: usize = spans.iter().map(|s| cols(&s.content)).sum();

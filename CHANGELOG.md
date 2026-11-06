@@ -79,9 +79,10 @@ release heading when a version is cut.
   and the working directory in green, which the banner's path now matches.
   The context gauge stays dim until the window is 75% full, then turns
   amber, and red at the auto-compact threshold, the same rule the `/context`
-  page uses. `master` permission mode is red, since it runs everything
-  without asking; the other modes stay dim. Every colour comes from the
-  active `/theme`, and messages, replies and tool cells are unchanged
+  page uses. The permission mode at the right edge warms with how much it
+  lets the agent do without asking: `manual` stays dim, `edit` is blue,
+  `auto` amber and `master` red. Every colour comes from the active
+  `/theme`, and messages, replies and tool cells are unchanged
   (`docs/footer.md`, `docs/status-indicator.md`).
 
 - **The Ctrl+D context view is easier to read and to move around in.** Each

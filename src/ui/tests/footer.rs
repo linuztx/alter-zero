@@ -6,12 +6,12 @@ use crate::app::Theme;
 use crate::ui::footer::queued_builds;
 use crate::ui::layout::live_layout;
 use crate::ui::layout::strip_rows;
-use crate::ui::palette::with_theme;
+use crate::ui::palette::{palette, with_theme};
 use crate::ui::theme::{
     FOOTER_INDENT, SEARCH_PROMPT, context_usage_full_color, context_usage_warn_color, error_color,
-    footer_color, footer_cwd_color, footer_focus_bg, footer_focus_fg, footer_model_color,
-    footer_qualifier_color, search_query_color, shell_mode_color, status_thinking_color,
-    toast_color, toast_error_color,
+    footer_color, footer_cwd_color, footer_focus_bg, footer_focus_fg, footer_mode_color,
+    footer_model_color, footer_qualifier_color, search_query_color, shell_mode_color,
+    status_thinking_color, toast_color, toast_error_color,
 };
 use crate::ui::wrap::cols;
 
@@ -109,18 +109,19 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
 }
 
 #[test]
-fn only_master_mode_wears_a_colour_of_alarm() {
-    // docs/permissions.md: master runs every call unasked — the one mode
-    // where colour is a safety signal — so it alone wears the error red
-    // (Claude Code's bypass-permissions dress); the modes that still ask
-    // anything stay dim with the rest of the row.
+fn each_permission_mode_warms_with_what_it_runs_unasked() {
+    // docs/permissions.md: the more a mode lets the agent do without asking,
+    // the warmer its label — manual (asks before everything) dim with the
+    // rest of the row, edit (file changes unasked) the theme's link blue,
+    // auto (the classifier approves commands) the caution amber, master
+    // (asks nothing) the error red, Claude Code's bypass-permissions dress.
     use crate::permission::PermissionMode;
     let mut app = App::new();
     app.set_session_info("kimi-k3", "~/x");
     for (mode, color) in [
         (PermissionMode::Manual, footer_color()),
-        (PermissionMode::Edit, footer_color()),
-        (PermissionMode::Auto, footer_color()),
+        (PermissionMode::Edit, palette().link),
+        (PermissionMode::Auto, palette().warning),
         (PermissionMode::Master, error_color()),
     ] {
         app.set_permission_mode(Some(mode));
@@ -128,6 +129,26 @@ fn only_master_mode_wears_a_colour_of_alarm() {
         let span = line.spans.last().expect("the mode span");
         assert_eq!(span.content, mode.label());
         assert_eq!(span.style.fg, Some(color), "{mode:?}");
+    }
+    // Every theme paints the four apart, so the mode reads at a glance.
+    let modes = [
+        PermissionMode::Manual,
+        PermissionMode::Edit,
+        PermissionMode::Auto,
+        PermissionMode::Master,
+    ];
+    for theme in Theme::ALL {
+        with_theme(theme, || {
+            for (i, a) in modes.iter().enumerate() {
+                for b in &modes[i + 1..] {
+                    assert_ne!(
+                        footer_mode_color(*a),
+                        footer_mode_color(*b),
+                        "{theme:?}: {a:?} and {b:?} share a colour"
+                    );
+                }
+            }
+        });
     }
 }
 

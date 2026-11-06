@@ -58,7 +58,8 @@ pub(super) struct Palette {
     /// ask-question chip, the agent session view's composer label).
     pub on_accent: Color,
     /// The secondary accent: a link's URL, an ordered list's marker, the
-    /// context view's user tag — and the gradient's far end.
+    /// context view's user tag, the footer's `edit` mode — and the
+    /// gradient's far end.
     pub link: Color,
     /// Success: the finished tool bullet, a diff's `+`, the active model's
     /// ✓, a completed task, a background notice that went well, the path in
@@ -69,7 +70,8 @@ pub(super) struct Palette {
     /// auto-compact threshold — and, mixed toward `dim`, an error toast.
     pub error: Color,
     /// Caution: the `retrying n/m` clause, the context view's system tag,
-    /// the ask review's unanswered warning, a context gauge past 75%.
+    /// the ask review's unanswered warning, a context gauge past 75%, the
+    /// footer's `auto` mode.
     pub warning: Color,
     /// The context view's tool tag, the `/resume` toolbar's focus — and
     /// *reasoning*: the status line's `Thinking for` clause and the footer's
