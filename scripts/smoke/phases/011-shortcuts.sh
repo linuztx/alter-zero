@@ -28,7 +28,7 @@ expect_has "$band_open" -F "for commands" "'?' with an empty composer did not op
 # (the sigils and history, editing and the running turn, the views, modes and
 # the way out), inset two columns like the footer row it displaces, the
 # columns three apart — which ends the widest row at column 80.
-expect_has "$band_open" -E '^  / for commands {13}shift\+enter for newline {3}ctrl\+o for tool output$' "the 80-column band's first row is not three columns, inset two, three apart"
+expect_has "$band_open" -E '^  / for commands {13}shift\+enter for newline {3}ctrl\+o for transcript$' "the 80-column band's first row is not three columns, inset two, three apart"
 expect_has "$band_open" -E '^  ↑ for input history {8}alt\+↑ to edit queue {7}esc to quit$' "the 80-column band does not read down its columns"
 expect_has "$band_open" -E '^  ctrl\+r to search history {3}ctrl\+b to background {6}ctrl\+c to quit$' "the 80-column band's sixth row is not its last three entries"
 expect_has "$band_open" -E '^  @ for file paths ' "the band does not list the @ file picker"

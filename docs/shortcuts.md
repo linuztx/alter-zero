@@ -90,7 +90,7 @@ reference card. It now **spends a wider terminal on columns, not rows**.
 80 columns, the classic default — three columns, six rows:
 
 ```
-  / for commands             shift+enter for newline   ctrl+o for tool output
+  / for commands             shift+enter for newline   ctrl+o for transcript
   ! for shell command        ctrl+v for image paste    ctrl+d for llm context
   @ for file paths           ctrl+w/u/k to kill text   ctrl+t to cycle thinking
   $ for skills               tab to queue next turn    shift+tab for permissions
@@ -103,7 +103,7 @@ reference card. It now **spends a wider terminal on columns, not rows**.
 ```
   / for commands           ctrl+r to search history      alt+↑ to edit queue         ctrl+t to cycle thinking
   ! for shell command      shift+enter for newline       ctrl+b to background        shift+tab for permissions
-  @ for file paths         ctrl+v for image paste        ctrl+o for tool output      esc to quit
+  @ for file paths         ctrl+v for image paste        ctrl+o for transcript       esc to quit
   $ for skills             ctrl+w/u/k to kill text       ctrl+d for llm context      ctrl+c to quit
   ↑ for input history      tab to queue next turn
 ```
@@ -116,7 +116,7 @@ keeps two columns of nine rows — 50 columns:
   / commands                 tab queue next turn
   ! shell command            alt+↑ edit queue
   @ file paths               ctrl+b background
-  $ skills                   ctrl+o tool output
+  $ skills                   ctrl+o transcript
   ↑ input history            ctrl+d llm context
   ctrl+r search history      ctrl+t cycle thinking
   shift+enter newline        shift+tab permissions
@@ -181,10 +181,13 @@ from 46, two columns from 53, three from 78, four from 98, five from 125, six
 from 149
 (`the_band_spends_a_wider_terminal_on_columns_not_rows` pins a width in each
 range). An entry is a column's width wherever it lands, so a long new entry
-can move them, and that test says where to look. One label was tightened for
-the 80-column layout: `shift+tab for permission mode` (29 columns) became
-`shift+tab for permissions` (25), which is what lets three columns fit at
-exactly 80 rather than from 82.
+can move them, and that test says where to look. Two labels changed with the
+layout. `shift+tab for permission mode` (29 columns) became `shift+tab for
+permissions` (25), which is what lets three columns fit from 78, inside the
+classic 80, rather than only from 82. And `ctrl+o for tool output` became
+`ctrl+o for transcript`: Ctrl+O has opened the whole conversation's
+transcript (its title row says `T R A N S C R I P T`) since the pager port,
+and the band was the last place still naming the old tool-output view.
 
 `shortcuts_rows` is the built line count of the whole band — the palette's
 height-is-the-line-count rule (`docs/view-flow.md`) — so the reserved rows
@@ -259,7 +262,9 @@ backtrack to.
   column-major and an uneven split shortens the last columns; the columns hold
   still across every esc context state and keep at least a two-column gutter;
   the gutters widen with spare width (2 at the three-column breakpoint, 3 two
-  columns wider, 6 at 87, capped at 200); under 53 the terse wording keeps
+  columns wider, 6 at 87, capped at 200); at every width from 20 to 260,
+  reading down the columns left to right reads every binding exactly once,
+  in order; under 53 the terse wording keeps
   two columns (from 46, the esc swaps shortened too, every label leading with
   the connective it drops), and under 46 one entry per row, in order, in the
   full wording, falling back to the terse one only where the full one would

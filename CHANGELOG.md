@@ -97,8 +97,9 @@ release heading when a version is cut.
   too short for the whole list it shows what fits and ends on `… +N more`
   instead of silently dropping the last shortcuts. It starts two columns in,
   where the footer line it replaces does, and now also lists `@` for file
-  paths and `ctrl+b` for moving a running command to the background
-  (`docs/shortcuts.md`).
+  paths and `ctrl+b` for moving a running command to the background.
+  `ctrl+o` now reads `for transcript`, the view it opens, instead of
+  `for tool output` (`docs/shortcuts.md`).
 
 - **Finished thoughts, MCP calls and file reads keep their place.** The
   one-line summary a step leaves once it is done (`Thought for 3s`,

@@ -824,7 +824,7 @@ fn the_band_reads_down_each_column_in_the_bindings_order() {
         [
             "/ for commands",
             "shift+enter for newline",
-            "ctrl+o for tool output"
+            "ctrl+o for transcript"
         ]
     );
 }
@@ -838,6 +838,33 @@ fn an_uneven_split_shortens_the_last_columns() {
     let counts: Vec<usize> = lines.iter().map(|l| band_entries(l).len()).collect();
     assert_eq!(counts, [4, 4, 4, 4, 2]);
     assert_eq!(band_texts(&lines[4]), [entry_text(4), entry_text(9)]);
+}
+
+#[test]
+fn the_band_lists_every_binding_once_down_its_columns_at_every_width() {
+    // Whatever the layout — six columns or one, the full wording or the
+    // terse — reading the band down each column, left to right, reads
+    // SHORTCUTS once through: no binding dropped or doubled by a split that
+    // does not divide evenly, and none out of line with its column. The
+    // layout tests pin shapes at chosen widths; this pins the content at
+    // every width they sweep.
+    let keys: Vec<&str> = SHORTCUTS.iter().map(|&(key, _)| key).collect();
+    for width in BAND_WIDTHS {
+        // (the column an entry's key starts in, its row, the key)
+        let mut cells: Vec<(usize, usize, String)> = Vec::new();
+        for (row, line) in band(false, false, width).iter().enumerate() {
+            let mut col = 0;
+            for span in &line.spans {
+                if span.style.fg == Some(shortcuts_key_color()) {
+                    cells.push((col, row, span.content.to_string()));
+                }
+                col += cols(&span.content);
+            }
+        }
+        cells.sort();
+        let read: Vec<&str> = cells.iter().map(|(_, _, key)| key.as_str()).collect();
+        assert_eq!(read, keys, "at {width} columns");
+    }
 }
 
 #[test]
@@ -1064,7 +1091,7 @@ fn the_band_lists_every_binding_the_composer_answers() {
         "tab to queue next turn",
         "alt+↑ to edit queue",
         "ctrl+b to background",
-        "ctrl+o for tool output",
+        "ctrl+o for transcript",
         "ctrl+d for llm context",
         "ctrl+t to cycle thinking",
         "shift+tab for permissions",

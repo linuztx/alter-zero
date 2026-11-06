@@ -2715,7 +2715,7 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("tab", " to queue next turn"),
     ("alt+↑", " to edit queue"),
     ("ctrl+b", " to background"),
-    ("ctrl+o", " for tool output"),
+    ("ctrl+o", " for transcript"),
     ("ctrl+d", " for llm context"),
     ("ctrl+t", " to cycle thinking"),
     ("shift+tab", " for permissions"),
