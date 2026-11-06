@@ -421,6 +421,10 @@ going with the **handoff text** as the tool result — the user-moved preamble
 over the launch facts, see Protocol above), the `!` shell via its normal
 `ToolEnd`+`StreamDone` with the cell resolving to the backgrounded row.
 
+The `?` shortcuts band lists the key too, as `ctrl+b to background`
+(`docs/shortcuts.md`): the delayed hint names it only on a command that has
+already run for a while, and the band is where the keys are looked up.
+
 ### Interactive sessions
 
 A `bash` call runs in a pseudo-terminal and is a task of this same registry

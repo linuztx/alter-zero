@@ -999,6 +999,7 @@ pub fn render_live_with_preview(
             app.turn_active(),
             app.has_backtrack_target(),
             band_area.width,
+            band_area.height,
         ))
         .render(band_area, buf);
     } else if file_menu_rows(app) > 0 {

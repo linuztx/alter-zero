@@ -2675,59 +2675,90 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
 // input box** (the palette's slot — the two never show together), toggled by
 // `?` from an empty composer — a port of codex's footer shortcut overlay
-// (`footer.rs::shortcut_overlay_lines`): two aligned columns of
-// `{key} for {thing}` entries, keys cyan, labels dim, inset by `MENU_INDENT`
-// like the footer row whose slot it takes (codex's overlay, a footer mode,
-// wears its footer's indent too) — one entry per row on a terminal too narrow
-// for both columns whole. See docs/shortcuts.md. ---
+// (`footer.rs::shortcut_overlay_lines`): `{key} for {thing}` entries, keys
+// cyan, labels dim, inset by `MENU_INDENT` like the footer row whose slot it
+// takes (codex's overlay, a footer mode, wears its footer's indent too). The
+// entries run down **as many columns as the terminal holds whole** — up to
+// six on a wide one; two with each label's `for`/`to` dropped on a narrow
+// pane, then one — so a wider terminal spends its width on columns rather
+// than leaving the row empty and spending rows below the box. See
+// docs/shortcuts.md. ---
 
-/// The bindings listed in the band, as `(key, label)` pairs laid out two per
-/// row in declaration order. The `esc` entry is context-sensitive —
-/// [`shortcuts_lines`] swaps it for ` to interrupt` while a turn runs (codex's
-/// quit entry does the same) and for the [`SHORTCUTS_BACKTRACK`] edit hint
-/// when idle with a previous user message to edit (docs/backtrack.md).
+/// The bindings listed in the band, as `(key, label)` pairs **in reading
+/// order**: the band fills its columns top to bottom (column-major, like
+/// `ls`), so neighbours here are neighbours in a column. Grouped so that
+/// whatever the column count, each column reads as a run of related keys —
+/// the composer's sigils and history, then editing and the running turn,
+/// then the views, the modes and the way out (at three columns, the 80-column
+/// layout, those are exactly the three columns). The `esc` entry is
+/// context-sensitive — [`shortcuts_lines`] swaps it for
+/// [`SHORTCUTS_INTERRUPT`] while a turn runs (codex's quit entry does the
+/// same) and for the [`SHORTCUTS_BACKTRACK`] edit hint when idle with a
+/// previous user message to edit (docs/backtrack.md).
+///
+/// Every label leads with ` for ` or ` to `, which a pane too narrow for two
+/// columns in the full wording drops to keep two (`terse_label`). An entry is
+/// a column's width wherever it lands, so a long one widens whichever column
+/// the layout puts it in and can cost a column at the width it used to fit:
+/// `the_band_spends_a_wider_terminal_on_columns_not_rows` pins where the
+/// column counts change.
 pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("/", " for commands"),
     ("!", " for shell command"),
+    ("@", " for file paths"),
+    ("$", " for skills"),
     ("↑", " for input history"),
     ("ctrl+r", " to search history"),
     ("shift+enter", " for newline"),
-    ("ctrl+o", " for tool output"),
-    ("esc", " to quit"),
-    ("ctrl+c", " to quit"),
-    ("alt+↑", " to edit queue"),
-    ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
+    ("ctrl+w/u/k", " to kill text"),
+    ("tab", " to queue next turn"),
+    ("alt+↑", " to edit queue"),
+    ("ctrl+b", " to background"),
+    ("ctrl+o", " for tool output"),
     ("ctrl+d", " for llm context"),
     ("ctrl+t", " to cycle thinking"),
-    ("shift+tab", " for permission mode"),
-    ("$", " for skills"),
-    ("ctrl+w/u/k", " to kill text"),
+    ("shift+tab", " for permissions"),
+    ("esc", " to quit"),
+    ("ctrl+c", " to quit"),
 ];
 
-/// The column a row's second entry starts at, counted from the band's
-/// [`MENU_INDENT`] inset (the first entry is padded out to here, so on screen
-/// the second column sits at 32) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
-/// **widest** first-column variant keeps a readable gutter (the pairing once
-/// put a 27-column entry in the first column, which at the old 28 left a
-/// single space before its neighbour — one run-on line). The
-/// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
-/// ≥ 2-column gutter across every context state; widen this with any new
-/// entry that needs it. A terminal narrower than the inset, this column and a
-/// row's second entry together stacks the band into one entry per row
-/// ([`shortcuts_lines`]).
-///
-/// Note that an entry added anywhere **reflows the pairing**, so a wide entry
-/// that had been safe in a second column can land in a first one — check this
-/// still holds when adding one.
-pub(super) const SHORTCUTS_COL: usize = 30;
+/// The `esc` entry while a turn is in flight, where Esc interrupts it (see
+/// [`shortcuts_lines`]; the idle edit hint is [`SHORTCUTS_BACKTRACK`]).
+pub(super) const SHORTCUTS_INTERRUPT: (&str, &str) = ("esc", " to interrupt");
+
+/// The fewest rows the band packs its entries into, however wide the
+/// terminal: past three rows of six columns a wider terminal adds no more
+/// columns, since a two-row ribbon across an ultra-wide pane reads as a
+/// toolbar to scan rather than a list to read.
+pub(super) const SHORTCUTS_MIN_ROWS: usize = 3;
+
+/// The narrowest gap between two columns — a layout fits a width only with
+/// at least this many blank columns after each column's widest entry. Any
+/// fewer and two entries read as one run-on line, as they did when a fixed
+/// column once left a single space between them.
+pub(super) const SHORTCUTS_MIN_GUTTER: usize = 2;
+
+/// The widest gap between two columns. The width a layout does not need is
+/// shared out between its gaps, so the band reaches across the row rather
+/// than bunching at its left with the right side empty — but no further
+/// apart than this, or an ultra-wide terminal would scatter a three-row band
+/// across the screen.
+pub(super) const SHORTCUTS_MAX_GUTTER: usize = 6;
+
+/// What opens the dim last row of a band cut short by a terminal without
+/// the rows for it — `… +12 more`, the permission prompt's `… +N more
+/// waiting` idiom. A static overview has no window to scroll, so the row
+/// names what is hidden rather than pointing at it.
+pub(super) const SHORTCUTS_MORE_MARKER: &str = "…";
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) fn shortcuts_key_color() -> Color {
     menu_selected_color()
 }
 
-/// Dim grey — an entry's label (codex dims the whole overlay).
+/// Dim grey — an entry's label (codex dims the whole overlay), and the
+/// `… +N more` row of a band cut short.
 pub(super) fn shortcuts_text_color() -> Color {
     tool_dim_color()
 }

@@ -83,12 +83,22 @@ release heading when a version is cut.
   up in one column. A `No matching commands`, `No matching files` or
   `No matching skills` row now sits in that same column.
 
-- **The `?` shortcuts list starts two columns in.** It sat flush against the
-  terminal's edge, the only thing below the input box that did. It now
-  starts where the footer line it replaces does, in line with the `/`
-  palette's command names. On a terminal too narrow for both columns (under
-  61 columns) it lists one shortcut per row, where it used to cut the second
-  column off mid-word.
+- **The `?` shortcuts list fits itself to the terminal.** It was a fixed
+  two-column grid that left the right side of a wide terminal empty and took
+  eight rows under the input box. It now uses as many columns as the width
+  holds with every shortcut whole: three at 80 columns (six rows), four from
+  about 100, up to six on a wide screen (three rows). On a narrow pane it
+  keeps two columns by dropping the "for" and "to" from each shortcut
+  (`ctrl+r search history`), and lists one per row only when even that does
+  not fit, where it used to cut the second column off mid-word. Spare width
+  spreads the columns across the row, and the list
+  reads down each column: the input keys and history first, then editing and
+  the running turn, then the views, the modes and quitting. On a terminal
+  too short for the whole list it shows what fits and ends on `… +N more`
+  instead of silently dropping the last shortcuts. It starts two columns in,
+  where the footer line it replaces does, and now also lists `@` for file
+  paths and `ctrl+b` for moving a running command to the background
+  (`docs/shortcuts.md`).
 
 - **Finished thoughts, MCP calls and file reads keep their place.** The
   one-line summary a step leaves once it is done (`Thought for 3s`,
