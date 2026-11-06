@@ -12,11 +12,10 @@
 //!
 //! **Settled**, in scrollback once something that is not a read arrives —
 //! bullet-less and dim, the settled thought's dress, since what is left is a
-//! fact about the turn — its text where the live line's was, only the bullet
-//! gone:
+//! fact about the turn:
 //!
 //! ```text
-//!   Read 1 file, listed 1 directory (ctrl+o to expand)
+//! Read 1 file, listed 1 directory (ctrl+o to expand)
 //! ```
 //!
 //! Every call stays whole in the Ctrl+O transcript; this is only what the
@@ -158,9 +157,7 @@ fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'sta
 /// `items` (a [`crate::app::group_run`]), and nothing else. The thoughts the
 /// turn settled while the group was open are part of the run but show only
 /// in the Ctrl+O transcript, the line's `(ctrl+o to expand)` saying where
-/// (`docs/tool-groups.md` *Thoughts*). The line opens on the blank
-/// `SETTLED_INDENT`, so its clauses stay in the column the live line's
-/// bullet left them in, and it fits what is left of the width beside it.
+/// (`docs/tool-groups.md` *Thoughts*).
 #[must_use]
 pub fn tool_group_lines(
     items: &[HistoryItem],
@@ -173,10 +170,11 @@ pub fn tool_group_lines(
     });
     let counts = group_counts(members, paths);
     let style = Style::new().fg(reasoning_label_color());
-    let room = usize::from(width).saturating_sub(cols(SETTLED_INDENT));
-    let mut spans = vec![Span::raw(SETTLED_INDENT)];
-    spans.extend(fit(summary_spans(counts, false, style, style), style, room));
-    vec![Line::from(spans)]
+    vec![Line::from(fit(
+        summary_spans(counts, false, style, style),
+        style,
+        usize::from(width),
+    ))]
 }
 
 /// What the group's `⎿` row says a value is about.

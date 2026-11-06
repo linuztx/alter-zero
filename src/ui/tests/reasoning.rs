@@ -7,7 +7,7 @@ use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
 use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
 use crate::ui::theme::{
-    SHIMMER_SWEEP, TOOL_BULLET, TOOL_PULSE_PERIOD, reasoning_label_color, reasoning_shimmer_base,
+    SHIMMER_SWEEP, TOOL_PULSE_PERIOD, reasoning_label_color, reasoning_shimmer_base,
     reasoning_text_color, shimmer_highlight,
 };
 use crate::ui::wrap::cols;
@@ -29,7 +29,7 @@ fn the_collapsed_line_reads_thought_for_elapsed_tokens_and_the_expand_hint() {
     assert_eq!(lines.len(), 1, "one unwrapped line, like summary_lines");
     assert_eq!(
         plain(&lines[0]),
-        "  Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)"
+        "Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)"
     );
 }
 
@@ -38,38 +38,19 @@ fn the_collapsed_line_hides_an_unknown_token_count() {
     // A backend that reported no usage and estimated nothing (an old rollout)
     // keeps the bare shape rather than claiming `· 0 tokens`.
     let lines = reasoning_lines(&thought("…", 8, 0), 80);
-    assert_eq!(plain(&lines[0]), "  Thought for 8s (ctrl+o to expand)");
+    assert_eq!(plain(&lines[0]), "Thought for 8s (ctrl+o to expand)");
 }
 
 #[test]
 fn the_settled_line_carries_no_bullet() {
     // The `● Thinking…` header meant *something is happening*; nothing is any
-    // more, so what is left is a fact about the turn — the bullet goes, and
-    // its two columns stay blank.
+    // more, so what is left is a fact about the turn — `Done for Ns`'s shape.
     let lines = reasoning_lines(&thought("…", 3, 12), 80);
-    let text = plain(&lines[0]);
-    assert!(text.starts_with("  Thought for"), "no bullet: {text:?}");
-    assert!(!text.contains(TOOL_BULLET.trim()), "no bullet: {text:?}");
-}
-
-#[test]
-fn the_settled_line_keeps_the_column_its_header_streamed_in() {
-    // The text settles where `Thinking…` sat, under the bullet's inset: only
-    // the bullet goes away, so the eye that followed the live block finds
-    // the settled line in the same column, as with every tool cell's text.
-    let col = |line: &Line, needle: &str| {
-        let text = plain(line);
-        cols(&text[..text.find(needle).expect("the label")])
-    };
-    let live = live_reasoning_lines("weighing options", Duration::ZERO, 60);
-    let settled = reasoning_lines(&thought("weighing options", 3, 12), 60);
-    assert_eq!(col(&settled[0], "Thought"), col(&live[0], "Thinking"));
-    assert_eq!(col(&settled[0], "Thought"), cols(TOOL_BULLET));
-    // The Ctrl+O expansion wears it too, so its `⎿` body hangs under the
-    // label the way a tool cell's does under its name.
-    let full = reasoning_full_lines(&thought("weighing options", 3, 12), 60);
-    assert_eq!(col(&full[0], "Thought"), cols(TOOL_BULLET));
-    assert_eq!(col(&full[1], "⎿"), col(&full[0], "Thought"));
+    assert!(
+        plain(&lines[0]).starts_with("Thought for"),
+        "no bullet, no indent: {:?}",
+        plain(&lines[0])
+    );
 }
 
 #[test]
@@ -78,11 +59,9 @@ fn the_settled_line_is_dim_throughout() {
     // already done, so it settles into the transcript instead of competing
     // with the reply it sits above — the weight belongs to the live block.
     let lines = reasoning_lines(&thought("…", 3, 12), 80);
-    let [inset, span] = lines[0].spans.as_slice() else {
+    let [span] = lines[0].spans.as_slice() else {
         panic!("one tone across the whole row, got {:?}", lines[0].spans);
     };
-    assert_eq!(inset.content, "  ");
-    assert_eq!(inset.style, Style::default(), "a blank inset, no tone");
     assert_eq!(
         span.content,
         "Thought for 3s · 12 tokens (ctrl+o to expand)"
@@ -97,7 +76,7 @@ fn the_transcript_expands_the_whole_chain_of_thought() {
     let lines = reasoning_full_lines(&reasoning, 40);
     let text: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
-        text[0], "  Thought for 40s · 12 tokens",
+        text[0], "Thought for 40s · 12 tokens",
         "the expansion drops the hint — this IS the expansion: {text:?}"
     );
     assert_eq!(
@@ -125,7 +104,7 @@ fn the_expansion_drops_the_thoughts_blank_edges_but_keeps_its_paragraph_breaks()
     assert_eq!(
         text,
         [
-            "  Thought for 40s · 12 tokens",
+            "Thought for 40s · 12 tokens",
             "  ⎿  first thought",
             "",
             "     second thought",
@@ -179,10 +158,9 @@ fn the_transcript_label_is_the_same_dim_line_with_no_background() {
     // A thought looks like the same thing wherever you meet it: the settled
     // line wears exactly what the inline one wears, minus the expand hint.
     let lines = reasoning_full_lines(&thought("hm", 3, 12), 40);
-    let [inset, span] = lines[0].spans.as_slice() else {
-        panic!("an inset and one label span, got {:?}", lines[0].spans);
+    let [span] = lines[0].spans.as_slice() else {
+        panic!("one label span, got {:?}", lines[0].spans);
     };
-    assert_eq!(inset.content, "  ");
     assert_eq!(span.content, "Thought for 3s · 12 tokens");
     assert_eq!(span.style.fg, Some(reasoning_label_color()));
     assert!(!span.style.add_modifier.contains(Modifier::BOLD));
@@ -400,10 +378,10 @@ fn the_live_bullet_blinks_but_the_committed_one_never_does() {
         .to_string();
     assert_eq!(shown, "● ", "the live header shows its bullet");
     assert_eq!(hidden, "  ", "…and hides it half a period on");
-    let committed = &reasoning_lines(&thought("x", 1, 1), 60)[0];
-    assert_eq!(committed.spans[0].content, "  ", "a blank inset, no bullet");
     assert_eq!(
-        committed.spans[1].style.fg,
+        reasoning_lines(&thought("x", 1, 1), 60)[0].spans[0]
+            .style
+            .fg,
         Some(reasoning_label_color()),
         "the committed line is a fixed colour — no frame of the pulse or the \
          shimmer can be frozen into scrollback"
@@ -459,7 +437,7 @@ fn a_settled_thought_repaints_in_the_conversation_and_the_transcript() {
     assert!(
         inline
             .iter()
-            .any(|l| l == "  Thought for 7s · 2 tokens (ctrl+o to expand)"),
+            .any(|l| l == "Thought for 7s · 2 tokens (ctrl+o to expand)"),
         "collapsed inline: {inline:?}"
     );
     assert!(

@@ -911,10 +911,9 @@ fn ask_cell_lines(
 ///   batch siblings show (only a *mixed* batch renders these — an all-MCP
 ///   batch collapses to [`mcp_batch_lines`]).
 /// - **Resolved ok**: the bullet-less dim
-///   `  Called {server} (ctrl+o to expand)` line — the settled thinking line's
-///   exact shape ([`reasoning_label_color`], [`SETTLED_INDENT`]), because
-///   what is left is a fact about the turn; the result text never reaches
-///   inline scrollback.
+///   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
+///   exact shape ([`reasoning_label_color`]), because what is left is a fact
+///   about the turn; the result text never reaches inline scrollback.
 /// - **Failed / everything else**: `None` — the loud generic red cell (a
 ///   failure must not whisper).
 fn mcp_cell_lines(
@@ -943,22 +942,18 @@ fn mcp_cell_lines(
     }
 }
 
-/// The bullet-less dim `  Called deepwiki 2 times (ctrl+o to expand)` line a
+/// The bullet-less dim `Called deepwiki 2 times (ctrl+o to expand)` line a
 /// resolved MCP call — or a whole **parallel run** of them ([`mcp_run`]) —
 /// leaves in scrollback: the settled thinking line's shape, because what is
-/// left is a fact about the turn (`docs/mcp.md`). The blank
-/// [`SETTLED_INDENT`] keeps `Called` in the column `● Calling…` put its text.
+/// left is a fact about the turn (`docs/mcp.md`).
 pub(super) fn mcp_called_line(servers: &[&str]) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(SETTLED_INDENT),
-        Span::styled(
-            format!(
-                "{MCP_CALLED_PREFIX}{}{EXPAND_HINT}",
-                crate::mcp::batch_label(servers)
-            ),
-            Style::new().fg(reasoning_label_color()),
+    Line::from(Span::styled(
+        format!(
+            "{MCP_CALLED_PREFIX}{}{EXPAND_HINT}",
+            crate::mcp::batch_label(servers)
         ),
-    ])
+        Style::new().fg(reasoning_label_color()),
+    ))
 }
 
 /// The batch and server of a **collapsible** MCP cell: an MCP call that
