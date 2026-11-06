@@ -137,7 +137,9 @@ pub(crate) fn spawn_signin(
         // match honest.
         (AuthScheme::ApiKey | AuthScheme::OptionalKey, _) => {
             let _ = tx.send(DeviceEvent::Done(Err(
-                "this provider has no sign-in — paste its key under Use an API key".to_string(),
+                "this provider has no account to sign in to — paste its key under Sign in with \
+                 an API key"
+                    .to_string(),
             )));
         }
     }

@@ -1,7 +1,8 @@
 # Cline as a provider
 
-Reach the models behind the Cline extension and CLI two ways: `/login` → **Use
-an API key** → **Cline**, or `/login` → **Use a subscription** → **ClinePass**.
+Reach the models behind the Cline extension and CLI two ways: `/login` →
+**Sign in with an API key** → **Cline**, or `/login` → **Sign in with an
+account** → **ClinePass**.
 
 Two providers ship — one API, two ways in, each with the catalog it pays for:
 
@@ -17,10 +18,10 @@ images, and the thinking levels Ctrl+T cycles — from Cline's own catalog (see
 
 The sign-in is offered **once**, as ClinePass. It used to be offered twice, a
 `cline_account` row beside it running the very same flow and storing the very
-same token for the usage-billed catalog. But under *Use a subscription* the
-one subscription is ClinePass: usage-billed models bill credits, not a plan,
-and a key reaches them already. Two rows for one sign-in invited signing in
-twice, and the second row is where a routing bug hid (*Which flow runs*,
+same token for the usage-billed catalog. But under *Sign in with an account*
+the one subscription is ClinePass: usage-billed models bill credits, not a
+plan, and a key reaches them already. Two rows for one sign-in invited signing
+in twice, and the second row is where a routing bug hid (*Which flow runs*,
 below).
 
 ## What a provider file says
@@ -154,9 +155,9 @@ dashboard is
 When a window runs out the server says which (*You have reached your 5-hour
 Clinepass limit. Please try again later.*), and the advice names that window
 and points at the usage-billed models, which the key row reaches (`/login` →
-Use an API key → Cline). What each window has used, and when it resets, is
-the `/usage` page's ClinePass section — read off the dashboard's own
-`/api/v1/users/me/plan/usage-limits` (`docs/usage.md`).
+Sign in with an API key → Cline). What each window has used, and when it
+resets, is the `/usage` page's ClinePass section — read off the dashboard's
+own `/api/v1/users/me/plan/usage-limits` (`docs/usage.md`).
 
 **Free models are deliberately not listed here.** Cline runs rotating
 `cline-free/…` promotions, but its docs are explicit that free-model usage is
@@ -288,7 +289,7 @@ with whatever came back.
 | --- | --- |
 | `src/llm/cline.rs` | the client id and the four endpoints, the device-code/poll/register/refresh shapes and verdicts, the expiry and cache-lifetime rules, the `workos:` spelling, the advice for a sign-in and for a pasted key, the dead-token rule, and the ClinePass list's parse (pure); the code request, the cancel-aware poll, the registration, the cache, the rotation write-back, the two base overrides, and where the published list and the catalog are read from (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
-| `src/llm/config.rs` | `AuthScheme::ClineAccount` — the scheme that puts the row under *Use a subscription*, runs the device page and lists the plan's models |
+| `src/llm/config.rs` | `AuthScheme::ClineAccount` — the scheme that puts the row under *Sign in with an account*, runs the device page and lists the plan's models |
 | `src/tui/config.rs` | `signin_kinds` — the device page this row offers; the two base overrides |
 | `src/tui/workers.rs` | `spawn_cline_login` — the flow the device page runs; `spawn_signin` picks it by the row's auth scheme rather than its id |
 | `src/tui/models.rs` | the store path and the base overrides, handed in once at startup |

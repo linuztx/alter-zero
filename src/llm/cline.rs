@@ -704,7 +704,7 @@ fn plan_advice(body: &str) -> Option<String> {
         return Some(
             "ClinePass is for personal Cline accounts, and this is an organization account — \
              switch to your personal account at app.cline.bot, or use Cline's usage-billed \
-             models through an API key (/login → Use an API key → Cline)."
+             models through an API key (/login → Sign in with an API key → Cline)."
                 .to_string(),
         );
     }
@@ -723,7 +723,7 @@ fn plan_advice(body: &str) -> Option<String> {
         return Some(
             "this Cline account has no ClinePass subscription — subscribe at \
              app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
-             an API key (/login → Use an API key → Cline)."
+             an API key (/login → Sign in with an API key → Cline)."
                 .to_string(),
         );
     }

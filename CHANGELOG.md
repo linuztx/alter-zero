@@ -67,6 +67,16 @@ release heading when a version is cut.
   and `/spinner` before the preview. `/skills`' hint now reads `Type to
   search · Space to toggle · Esc to cancel` (`docs/view-flow.md`).
 
+- **`/login` opens on a question.** Its first page now reads
+  *Select sign-in method* over three answers, **Sign in with an account**,
+  **Sign in with an API key** and **Sign in with a local model**, which
+  replace *Use a subscription*, *Use an API key* and *Use a local model*.
+  The `❯` search line above them is gone, along with the `(1/3)` counter:
+  three rows have nothing to narrow. ↑/↓ and Enter pick an answer and Esc
+  closes, as before, and typing there no longer does anything. The lists
+  behind each answer still open on their search line, and every message
+  that pointed at the old rows names the new ones (`docs/llm.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

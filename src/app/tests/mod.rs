@@ -362,7 +362,7 @@ pub(super) fn sample_locals() -> Vec<LocalChoice> {
 /// Drive the flow to the local server list (the method step's third row).
 pub(super) fn local_app() -> App {
     let mut app = login_app();
-    app.on_key(key(KeyCode::Up)); // wraps to "Use a local model"
+    app.on_key(key(KeyCode::Up)); // wraps to "Sign in with a local model"
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Local);
     app
@@ -433,7 +433,7 @@ pub(super) fn login_app_with_chatgpt() -> App {
 /// Drive the flow to ChatGPT Codex's sign-in method choice.
 pub(super) fn signin_method_app() -> App {
     let mut app = login_app_with_chatgpt();
-    app.on_key(key(KeyCode::Enter)); // "Use a subscription"
+    app.on_key(key(KeyCode::Enter)); // "Sign in with an account"
     app.on_key(key(KeyCode::Down)); // ChatGPT Codex
     app.on_key(key(KeyCode::Enter));
     assert_eq!(
@@ -457,7 +457,7 @@ pub(super) fn login_app() -> App {
 /// Drive the flow to the API-key provider list (one step below the method).
 pub(super) fn provider_app() -> App {
     let mut app = login_app();
-    app.on_key(key(KeyCode::Down)); // "Use an API key"
+    app.on_key(key(KeyCode::Down)); // "Sign in with an API key"
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Provider);
     app
@@ -466,7 +466,7 @@ pub(super) fn provider_app() -> App {
 /// Drive the flow to the GitHub Copilot device page.
 pub(super) fn device_app() -> App {
     let mut app = login_app();
-    app.on_key(key(KeyCode::Enter)); // "Use a subscription"
+    app.on_key(key(KeyCode::Enter)); // "Sign in with an account"
     app.on_key(key(KeyCode::Enter)); // GitHub Copilot
     assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Device);
     app

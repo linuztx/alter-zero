@@ -598,9 +598,12 @@ ladder on a short terminal, folding every section but the highlighted one to
 its fullest limit, then the header into one title row, ending on one folded
 row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
 **`/login` sign-in fork** (the
-flow's root now asks *how* you sign in — **Use a subscription**, **Use an
-API key** or **Use a local model** — because GitHub Copilot is not a key you
-paste and a local server takes an address, not a key: the three lists
+flow's root asks *how* you sign in — a `Select sign-in method` question over
+**Sign in with an account**, **Sign in with an API key** and **Sign in with a
+local model**, with no `❯` filter and its hidden cursor on the title, the
+sign-in method choice's page (`login_view`'s question page) — because GitHub
+Copilot is not a key you paste and a local server takes an address, not a
+key: the three lists
 partition the providers by `auth`, and a local server's page **tests the
 address before saving it** — the `/model` listing run on the `/login`
 worker, the verdict worded by the pure `llm::local::verdict`, a 401 asking

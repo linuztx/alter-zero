@@ -8,10 +8,11 @@ step that asks the prior question first, and a second half behind it.
 
 ```
 /login
-  ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
-  │                    ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
-  │                    └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
-  └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  ├─ Sign in with an account ─────► GitHub Copilot ──► device code ──► (approved)
+  │                          ├─────► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
+  │                          └─────► Anthropic Console ──► browser ──► (approved)             docs/claude.md
+  ├─ Sign in with an API key ─────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  └─ Sign in with a local model ──► LM Studio / Ollama ──► an address, tested                 docs/local-models.md
 ```
 
 Both halves end in the **same place**: a secret in `~/.alter-zero/.env` under
@@ -33,18 +34,23 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-  ❯
+  Select sign-in method
 
-  → Use a subscription
-    Use an API key
+  → Sign in with an account
+    Sign in with an API key
+    Sign in with a local model
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-No title — the two rows *are* the question — and no `(1/2)` counter, which
-would say nothing they don't. Type-to-filter works here like every list step
-(one grammar for all three), and Esc closes: this is the root.
+A question with three answers, so it opens on the title that asks it, with
+no `❯` filter and no `(1/3)` counter: three rows have nothing to narrow, and
+a counter would say nothing they don't (updated 2026-11-06 — the rows read
+`Use a subscription` / `Use an API key` / `Use a local model` under a filter
+line before). Typing reaches nothing, the hardware cursor hides on the title,
+and Esc closes: this is the root. The sign-in method choice a two-way
+subscription opens (`docs/chatgpt.md`) is the same page.
 
 ### `KeyStep::Subscription`
 
@@ -71,9 +77,9 @@ now introduces a *keyed* provider on the key step (`docs/llm.md`); it is
 simply not what a list row is for.
 
 No title either (updated 2026-09-03). This page used to open on a cyan
-`Use a subscription` heading — the row that opened it, repeated — which said
-nothing the hint under the list doesn't and pushed every row two lines down.
-All three lists open straight onto their filter now.
+heading repeating the root row that opened it (then `Use a subscription`),
+which said nothing the hint under the list doesn't and pushed every row two
+lines down. All three lists open straight onto their filter now.
 
 ### `KeyStep::Device`
 

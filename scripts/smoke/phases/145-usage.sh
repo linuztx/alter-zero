@@ -343,7 +343,7 @@ tmux kill-session -t "$S145D" 2>/dev/null
 S145E="${S}_usageempty"
 launch -c "$U_DIR" "$S145E" 100 24 "env -u GITHUB_COPILOT_TOKEN -u CHATGPT_CODEX_REFRESH_TOKEN -u CLINE_ACCOUNT_REFRESH_TOKEN -u ANTHROPIC_CONSOLE_REFRESH_TOKEN -u OPENAI_CHATGPT_REFRESH_TOKEN $CFG_ENV_NOHIST $BIN_ABS"
 submit "$S145E" "/usage"
-empty="$(wait_pane 5 "$S145E" -F "No subscription signed in — use /login → Use a subscription")" ||
+empty="$(wait_pane 5 "$S145E" -F "No subscription signed in — use /login → Sign in with an account")" ||
 	fail "/usage with nothing signed in raised no toast"
 dump "nothing signed in" "$empty"
 expect_lacks "$empty" -F "Usage limits" "/usage opened a page with nothing on it"

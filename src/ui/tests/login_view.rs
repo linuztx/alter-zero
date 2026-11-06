@@ -422,27 +422,91 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
 // --- the method root and the subscription half (docs/copilot.md) ---
 
 #[test]
-fn the_method_step_offers_the_three_ways_in_with_no_counter() {
-    // The root question: rule(0) ❯(1) gap(2) rows(3,4,5) gap(6) hint(7)
-    // rule(8). No title — the rows *are* the question — and no `(1/3)`
-    // counter, which would say nothing they don't.
+fn the_method_step_is_a_titled_question_with_no_filter_and_no_counter() {
+    // The root asks how to sign in: rule(0) title(1) gap(2) rows(3,4,5)
+    // gap(6) hint(7) rule(8) — the sign-in method choice's shape. Three
+    // answers are a question rather than a list to search, so there is no
+    // `❯` filter, and no `(1/3)` counter, which would say nothing they don't.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    let texts: Vec<String> = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200)
+    let lines = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200);
+    let texts: Vec<String> = lines
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
     assert_eq!(texts.len(), 9, "{texts:?}");
-    assert!(texts[1].contains('❯'), "{texts:?}");
-    assert_eq!(texts[3], "  → Use a subscription", "{texts:?}");
-    assert_eq!(texts[4], "    Use an API key", "{texts:?}");
-    assert_eq!(texts[5], "    Use a local model", "{texts:?}");
-    assert!(texts[7].contains("↑↓ navigate"), "{texts:?}");
-    assert!(texts[7].contains("escape/ctrl+c cancel"), "{texts:?}");
+    assert!(is_rule(&texts[0]) && is_rule(&texts[8]), "{texts:?}");
+    assert_eq!(texts[1], "  Select sign-in method", "{texts:?}");
+    assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+    assert_eq!(texts[2], "", "{texts:?}");
+    assert_eq!(texts[3], "  → Sign in with an account", "{texts:?}");
+    assert_eq!(texts[4], "    Sign in with an API key", "{texts:?}");
+    assert_eq!(texts[5], "    Sign in with a local model", "{texts:?}");
+    assert_eq!(texts[6], "", "{texts:?}");
+    assert_eq!(
+        texts[7], "  ↑↓ navigate  enter select  escape/ctrl+c cancel",
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains('❯')),
+        "no filter on the root: {texts:?}"
+    );
     assert!(
         !texts.iter().any(|t| t.contains("(1/3)")),
         "no counter on the root: {texts:?}"
     );
+}
+
+#[test]
+fn the_method_root_hides_the_cursor_and_parks_it_on_the_title() {
+    // Nothing to type into — the sign-in method choice's rule: a kitty
+    // cursor trail would streak across the rows on every ↑/↓, so the caret
+    // hides and its seat parks on the title, off the rows.
+    let app = login_app();
+    assert!(!cursor_visible(&app), "a question, not a field");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200).len() as u16;
+    let (_, y) = cursor_position(Rect::new(0, 0, 70, rows), &app);
+    assert_eq!(y, 1, "the title row");
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_root_question_and_its_answer() {
+    // On a terminal too short for the root page it sheds rows the compact
+    // pages' way — the gaps (its blank overflow slots), the rules, the rows
+    // down to the highlighted one, the hint — and never its title, which
+    // says what the rows answer. The hidden cursor seats on that title.
+    let app = login_app();
+    for height in 1..=12_u16 {
+        let texts = login_page_at(&app, 70, height);
+        assert!(texts.len() <= usize::from(height), "{height}: {texts:#?}");
+        let title = texts
+            .iter()
+            .position(|t| t == "  Select sign-in method")
+            .unwrap_or_else(|| panic!("{height}: the title stays: {texts:#?}"));
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t == "  → Sign in with an account"),
+                "{height}: {texts:#?}"
+            );
+        }
+        if height >= 3 {
+            assert!(
+                texts.iter().any(|t| t.contains("enter select")),
+                "{height}: {texts:#?}"
+            );
+        }
+        assert!(
+            texts
+                .windows(2)
+                .all(|pair| !(pair[0].is_empty() && pair[1].is_empty())),
+            "{height}: two blank rows stack: {texts:#?}"
+        );
+        let area = Rect::new(0, 0, 70, u16::try_from(texts.len()).expect("rows"));
+        let (_, y) = cursor_position(area, &app);
+        assert_eq!(usize::from(y), title, "{height}: on the title: {texts:#?}");
+    }
 }
 
 #[test]
@@ -604,7 +668,10 @@ fn the_device_page_hides_the_hardware_cursor() {
     // across it on every countdown tick (the permission prompt's rule).
     let app = login_app_device();
     assert!(!cursor_visible(&app));
-    assert!(cursor_visible(&login_app()), "a list still has a filter");
+    assert!(
+        cursor_visible(&login_app_provider()),
+        "a list still has a filter"
+    );
 }
 
 #[test]
@@ -972,11 +1039,15 @@ fn a_subscription_row_says_whether_it_is_signed_in() {
 
 #[test]
 fn the_method_root_rows_carry_no_configured_status() {
-    // The two ways in are the *question*, not an answer: neither is a thing
-    // that can be configured, so neither wears a status.
+    // The ways in are the *question*, not an answer: none is a thing that
+    // can be configured, so none wears a status.
     let app = login_app();
     let onboarding = app.key_onboarding.as_ref().unwrap();
-    for name in ["Use a subscription", "Use an API key", "Use a local model"] {
+    for name in [
+        "Sign in with an account",
+        "Sign in with an API key",
+        "Sign in with a local model",
+    ] {
         let row = plain(&page_row(onboarding, 70, name));
         assert!(!row.contains("configured"), "{row:?}");
     }
@@ -1005,19 +1076,19 @@ fn the_two_list_steps_open_straight_onto_their_filter() {
             texts[1].contains('❯'),
             "the filter is the first content row: {texts:?}"
         );
-        for heading in ["Use a subscription", "Use an API key"] {
+        for heading in ["Sign in with an account", "Sign in with an API key"] {
             assert!(
                 !texts.iter().any(|t| t.contains(heading)),
                 "no {heading:?} heading: {texts:?}"
             );
         }
     }
-    // The root still asks its question — there its two rows *are* the answer
-    // set, not a heading over one.
+    // The root asks its question under a title of its own — there its rows
+    // *are* the answer set, not a heading over one, and there is no filter.
     let app = login_app();
     let texts = page_texts(app.key_onboarding.as_ref().unwrap(), 70);
-    assert!(texts[1].contains('❯'), "{texts:?}");
-    assert!(texts[3].contains("Use a subscription"), "{texts:?}");
+    assert_eq!(texts[1], "  Select sign-in method", "{texts:?}");
+    assert!(texts[3].contains("Sign in with an account"), "{texts:?}");
 }
 
 // --- the key step introduces the provider it is asking for (docs/llm.md) ---
@@ -1228,6 +1299,30 @@ fn the_method_choice_hides_the_cursor_and_parks_it_on_the_title() {
 }
 
 #[test]
+fn a_tiny_terminal_keeps_the_sign_in_method_title_and_its_answer() {
+    // The choice is the root's shape, so it sheds the root's way: never its
+    // title, the highlighted way in from two rows up, the cursor on the title.
+    let app = login_app_signin_method();
+    for height in 1..=10_u16 {
+        let texts = login_page_at(&app, 76, height);
+        assert!(texts.len() <= usize::from(height), "{height}: {texts:#?}");
+        let title = texts
+            .iter()
+            .position(|t| t == "  Select ChatGPT Codex login method:")
+            .unwrap_or_else(|| panic!("{height}: the title stays: {texts:#?}"));
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t == "  → Browser login (default)"),
+                "{height}: {texts:#?}"
+            );
+        }
+        let area = Rect::new(0, 0, 76, u16::try_from(texts.len()).expect("rows"));
+        let (_, y) = cursor_position(area, &app);
+        assert_eq!(usize::from(y), title, "{height}: on the title: {texts:#?}");
+    }
+}
+
+#[test]
 fn a_long_subscription_name_still_fits_the_method_title() {
     // The title names the row that opened it; a narrow terminal cuts it with
     // an ellipsis rather than spilling past the frame.
@@ -1339,16 +1434,6 @@ fn the_cursor_sits_on_the_compact_provider_filter() {
 
 #[test]
 fn a_tiny_terminal_keeps_the_login_filter_line() {
-    let app = login_app();
-    assert_sheds_to_its_search_line(
-        |height| login_page_at(&app, 70, height),
-        "",
-        "→ Use a subscription",
-        "enter select",
-    );
-    for height in 1..=10 {
-        assert_caret_on_search_line(&app, &login_page_at(&app, 70, height), 70, "");
-    }
     let app = seven_providers();
     assert_sheds_to_its_search_line(
         |height| login_page_at(&app, 70, height),
@@ -1387,7 +1472,7 @@ fn the_key_fields_caret_follows_the_bottom_anchor() {
     assert_eq!(usize::from(y), field - 2, "two rows skipped: {page:#?}");
 }
 
-// --- the local half: "Use a local model" (docs/local-models.md) ---
+// --- the local half: "Sign in with a local model" (docs/local-models.md) ---
 
 /// The `/login` flow on its local server list.
 fn login_app_local() -> App {
@@ -1454,7 +1539,9 @@ fn the_local_list_names_each_server_and_whether_it_is_pointed_at() {
     );
     // No heading repeating the root's row, like the other two lists.
     assert!(
-        !texts.iter().any(|t| t.contains("Use a local model")),
+        !texts
+            .iter()
+            .any(|t| t.contains("Sign in with a local model")),
         "{texts:?}"
     );
     assert_frame_hugs_content(

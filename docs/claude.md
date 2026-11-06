@@ -1,7 +1,8 @@
 # Anthropic as a provider
 
-Talk to Claude directly — `/login` → **Use an API key** → **Anthropic**, or
-`/login` → **Use a subscription** → **Anthropic Console**.
+Talk to Claude directly — `/login` → **Sign in with an API key** →
+**Anthropic**, or `/login` → **Sign in with an account** → **Anthropic
+Console**.
 
 Two providers ship, and they are the *same API* reached two ways:
 

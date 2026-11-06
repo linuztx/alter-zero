@@ -98,11 +98,11 @@ is never ambiguous.
 
 ## `/login` and launching on it
 
-`/login` → **Use an API key** → **Venice** → the key step introduces the
-provider with the file's description and links the key page, and Enter saves
-the key as `VENICE_API_KEY` in `~/.alter-zero/.env`. Venice issues two kinds
-of key; an **Inference Only** key is all the app needs (the Admin kind exists
-to manage keys programmatically). From the environment,
+`/login` → **Sign in with an API key** → **Venice** → the key step introduces
+the provider with the file's description and links the key page, and Enter
+saves the key as `VENICE_API_KEY` in `~/.alter-zero/.env`. Venice issues two
+kinds of key; an **Inference Only** key is all the app needs (the Admin kind
+exists to manage keys programmatically). From the environment,
 `ALTER_ZERO_PROVIDER=venice` with `VENICE_API_KEY` exported launches on it
 directly (`ALTER_ZERO_MODEL` names the model, else `/model` picks one).
 

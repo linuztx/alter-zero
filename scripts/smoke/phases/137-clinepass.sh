@@ -141,7 +141,7 @@ launch -c "$CC_WORK" "$S137" 100 32 "env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 A
 # Into the subscription half: Cline is ONE row there, ClinePass.
 submit "$S137" "/login"
 sleep 0.5
-keys "$S137" Enter # Use a subscription
+keys "$S137" Enter # Sign in with an account
 subs="$(wait_pane 5 "$S137" -F "ClinePass")"
 dump "the subscription list" "$subs"
 expect_has "$subs" -F "ClinePass · ◯ unconfigured" "the subscription list did not offer the ClinePass sign-in"

@@ -1,4 +1,4 @@
-//! Local model servers — the pure half of `/login`'s **Use a local model**
+//! Local model servers — the pure half of `/login`'s **Sign in with a local model**
 //! (`docs/local-models.md`): the address grammar a host typed into its field
 //! is read in, for a server that speaks chat completions (LM Studio, or a
 //! llama.cpp / vLLM a user described in their own file — Ollama's own

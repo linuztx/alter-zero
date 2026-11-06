@@ -1224,6 +1224,10 @@ pub(super) const LOGIN_CONFIGURED_LABEL: &str = " configured";
 pub(super) const LOGIN_UNCONFIGURED_MARK: &str = "◯";
 pub(super) const LOGIN_UNCONFIGURED_LABEL: &str = " unconfigured";
 
+/// The root's title — the question its three rows answer (`Sign in with an
+/// account`, `… an API key`, `… a local model`), in the pages' title dress.
+pub(super) const LOGIN_METHOD_TITLE: &str = "Select sign-in method";
+
 /// The dim hint under the method step (the root: Esc closes).
 pub(super) const LOGIN_METHOD_HINT: &str = "↑↓ navigate  enter select  escape/ctrl+c cancel";
 
@@ -1238,9 +1242,6 @@ pub(super) const LOGIN_LOCAL_HINT: &str = "↑↓ navigate  enter connect  esc b
 
 /// The list placeholder when the local server filter matches nothing.
 pub(super) const LOGIN_NO_LOCAL_MATCH: &str = "No matching servers";
-
-/// The list placeholder when the method filter matches nothing.
-pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
 
 /// The list placeholder when the subscription filter matches nothing.
 pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
@@ -2036,8 +2037,8 @@ pub(super) const USAGE_LOADING: &str = "Loading usage…";
 
 /// The page with no subscription signed in — advice, in `/model`'s accent.
 pub(super) const USAGE_NO_SUBSCRIPTION: &str = "No subscription is signed in — run /login and \
-     choose Use a subscription to see its plan limits here. An API key bills per token and has \
-     no plan to measure.";
+     choose Sign in with an account to see its plan limits here. An API key bills per token and \
+     has no plan to measure.";
 
 /// The tag on the subscription the session is running on.
 pub(super) const USAGE_IN_USE: &str = "in use";

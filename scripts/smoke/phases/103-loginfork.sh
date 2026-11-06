@@ -7,7 +7,8 @@ smoke_begin
 # the `/login` SIGN-IN FORK (docs/copilot.md). `/login` no
 # longer opens on the provider list — it asks how you sign in first, because
 # GitHub Copilot is a subscription rather than a key you paste. Walk the whole
-# tree in one session: the method root, down into the subscription list and
+# tree in one session: the method root (a titled question, no filter to type
+# into), down into the subscription list and
 # back, down into the API-key list and back, and out. The two lists must be
 # disjoint — a subscription offered a key field, or Copilot missing from the
 # subscriptions, is the bug this phase exists for — and Esc must step *back*
@@ -21,10 +22,19 @@ sleep 0.5
 login_root="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: /login opens on the method root ===="
 printf '%s\n' "$login_root"
-for want in "Use a subscription" "Use an API key" "escape/ctrl+c cancel"; do
+for want in "Select sign-in method" "Sign in with an account" "Sign in with an API key" \
+	"Sign in with a local model" "escape/ctrl+c cancel"; do
 	expect_has "$login_root" -F "$want" "the /login root did not show \"$want\""
 done
 expect_lacks "$login_root" -F "Keys are saved to" "the root opened straight onto the provider list"
+# The root is a question with three answers, not a list to search: no `❯`
+# filter line, and typing reaches nothing — every answer stays offered.
+expect_lacks "$login_root" -E '^  ❯' "the /login root still opens on a filter"
+tmux send-keys -t "$S103" -l "zz"
+sleep 0.3
+login_typed="$(tmux capture-pane -t "$S103" -p)"
+expect_has "$login_typed" -F "Sign in with a local model" "typing on the /login root filtered its answers"
+expect_lacks "$login_typed" -F "zz" "typing on the /login root reached a field"
 
 # Enter on the highlighted first row opens the subscription list.
 tmux send-keys -t "$S103" Enter
@@ -45,13 +55,13 @@ expect_lacks "$login_subs" -F "Sign in with your" "a row still trails its descri
 expect_has "$login_subs" -F "◯ unconfigured" "a subscription row does not report its configured status"
 # …and the list opens straight onto its filter: the heading that used to
 # repeat the row that opened it is gone.
-expect_lacks "$login_subs" -F "Use a subscription" "the subscription list still carries a heading"
+expect_lacks "$login_subs" -F "Sign in with an account" "the subscription list still carries a heading"
 
 # Esc steps BACK to the root, not out of the flow.
 tmux send-keys -t "$S103" Escape
 sleep 0.4
 login_back="$(tmux capture-pane -t "$S103" -p)"
-if ! printf '%s' "$login_back" | grep -qF "Use a subscription"; then
+if ! printf '%s' "$login_back" | grep -qF "Sign in with an account"; then
 	fail "Esc on the subscription list left the flow instead of stepping back"
 	printf '%s\n' "$login_back" >&2
 fi
@@ -75,7 +85,7 @@ expect_lacks "$login_keys" -F "GitHub Copilot" "a subscription provider was offe
 # pushed the names apart.
 expect_lacks "$login_keys" -F "_API_KEY]" "a provider row still trails its env var"
 expect_has "$login_keys" -F "◯ unconfigured" "a provider row does not report its configured status"
-expect_lacks "$login_keys" -F "Use an API key" "the provider list still carries a heading"
+expect_lacks "$login_keys" -F "Sign in with an API key" "the provider list still carries a heading"
 
 # Enter on the highlighted provider opens the key step — which introduces the
 # provider it is asking a secret for and links the page that secret is made
@@ -105,7 +115,7 @@ sleep 0.3
 tmux send-keys -t "$S103" Escape
 sleep 0.4
 login_closed="$(tmux capture-pane -t "$S103" -p)"
-if printf '%s' "$login_closed" | grep -qF "Use a subscription"; then
+if printf '%s' "$login_closed" | grep -qF "Sign in with an account"; then
 	fail "Esc on the root did not close the flow"
 	printf '%s\n' "$login_closed" >&2
 fi

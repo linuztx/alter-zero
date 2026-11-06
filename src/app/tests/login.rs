@@ -56,7 +56,7 @@ fn ctrl_c_closes_the_onboarding_not_the_app() {
     assert!(app.key_onboarding.is_none());
 }
 
-// --- the method step: "Use a subscription" / "Use an API key" (docs/copilot.md) ---
+// --- the method step: "Sign in with an account" / "… an API key" (docs/copilot.md) ---
 
 #[test]
 fn login_opens_on_the_method_step() {
@@ -67,7 +67,11 @@ fn login_opens_on_the_method_step() {
     assert_eq!(onboarding.step, KeyStep::Method);
     assert_eq!(
         onboarding.method_labels(),
-        vec!["Use a subscription", "Use an API key", "Use a local model"]
+        vec![
+            "Sign in with an account",
+            "Sign in with an API key",
+            "Sign in with a local model"
+        ]
     );
     assert_eq!(onboarding.providers.len(), 3);
     assert_eq!(app.view, View::Conversation, "inline, not an overlay");
@@ -76,7 +80,7 @@ fn login_opens_on_the_method_step() {
 #[test]
 fn enter_on_use_an_api_key_opens_the_provider_list() {
     let mut app = login_app();
-    // Row 1 is "Use an API key".
+    // Row 1 is "Sign in with an API key".
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     let onboarding = app.key_onboarding.as_ref().unwrap();
@@ -112,6 +116,30 @@ fn esc_on_the_method_step_closes_the_flow() {
     let mut app = login_app();
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
     assert!(app.key_onboarding.is_none());
+}
+
+#[test]
+fn the_method_step_has_no_filter_to_type_or_paste_into() {
+    // Three answers are a question, not a list to search: the page shows no
+    // `❯` filter, so a key typed or text pasted there must not hide rows
+    // behind a query nobody can see. Arrows still move and wrap, and Esc
+    // still closes at once — there is no query for it to clear first.
+    let mut app = login_app();
+    type_chars(&mut app, "key");
+    app.paste_into_key_onboarding("local");
+    let onboarding = app.key_onboarding.as_ref().expect("open");
+    assert!(onboarding.query.is_empty(), "nothing typed lands");
+    assert_eq!(onboarding.method_labels().len(), 3, "every way in stays");
+    assert_eq!(onboarding.selected, 0, "typing moved nothing");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.key_onboarding.as_ref().expect("open").selected,
+        2,
+        "↑ from the first wraps to the last"
+    );
+    app.on_key(key(KeyCode::Home));
+    assert_eq!(app.key_onboarding.as_ref().expect("open").selected, 0);
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
 }
 
 #[test]
@@ -380,7 +408,7 @@ fn the_countdown_is_injected_by_the_boundary_clock() {
     assert_eq!(device.remaining, Some(std::time::Duration::from_secs(851)));
 }
 
-// --- the local half: "Use a local model" (docs/local-models.md) ---
+// --- the local half: "Sign in with a local model" (docs/local-models.md) ---
 
 /// The test the boundary was asked to run for `host`, with `token`.
 fn test_of(host: &str, token: Option<&str>) -> ServerTest {
@@ -408,7 +436,7 @@ fn enter_tests(app: &mut App, provider: &str, host: &str, token: Option<&str>) -
 fn enter_on_use_a_local_model_opens_the_local_server_list() {
     let mut app = login_app();
     app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Down)); // "Use a local model"
+    app.on_key(key(KeyCode::Down)); // "Sign in with a local model"
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     let onboarding = app.key_onboarding.as_ref().unwrap();
     assert_eq!(onboarding.step, KeyStep::Local);
