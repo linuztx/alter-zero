@@ -117,17 +117,17 @@ columns over this catalog — the preview sits **beside** the list, the
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select spinner
+  How the status line shows that a turn is working
+
   ❯
 
     comet     (●•·   )      Gravity
-  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
+  → gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
     wave      ⠔⠉⠉⠑⠤⣀⣀⡠
     sparkle   ·             ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
     dots      ⠋
-    blocks    ▙
-    pulse     ●
-    bars      ▁
-    line      |
+  ↓ 4 more below
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────────
@@ -137,13 +137,17 @@ On a narrower one the same preview stacks under the list:
 
 ```
 ────────────────────────────────────────────────────────────
+  Select spinner
+  How the status line shows that a turn is working
+
   ❯
 
     comet     (●•·   )
-  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓
+  → gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓
     wave      ⠔⠉⠉⠑⠤⣀⣀⡠
-    …
-    line      |
+    sparkle   ·
+    dots      ⠋
+  ↓ 4 more below
 
   Gravity
   A ball hopping along the track, wall to wall
@@ -154,15 +158,19 @@ On a narrower one the same preview stacks under the list:
 ────────────────────────────────────────────────────────────
 ```
 
-Deliberately the `/theme` picker's layout — the same inline frame and `❯`
-type-to-search (matching names *and* descriptions, so `braille` finds
-`dots`), the rows in the **`/mcp` list's shape** (the accent `❯` and the
-bold name on the selection, every other row indented under it; dim `↑ N
-more above` / `↓ N more below` rows name whatever a window hides, in place of
-an `(n/total)` counter, though nine styles never window in the ten-row
-list), `/theme`'s caption over the preview (the style's name as a bold title
-over its description in the frame's dim), and a hint led by the navigation
-— plus the thing a spinner picker exists for: the page is **live**.
+Deliberately the `/theme` picker's layout — the same header (the `Select
+spinner` title over a dim line, which yields before the preview on a short
+terminal), the same inline frame and `❯` type-to-search (matching names
+*and* descriptions, so `braille` finds `dots`), the rows in the **`/mcp`
+list's shape** (the accent `→` and the bold name on the selection, under
+the search line's `❯`, every other row indented under it; dim `↑ N more
+above` / `↓ N more below` rows name whatever a window hides, in place of an
+`(n/total)` counter — the six-row list column `/theme` has, so five of the
+nine styles show at an end of the catalog and four in its middle,
+`model_view::fitted_window`), `/theme`'s caption over the preview (the
+style's name as a bold title over its description in the frame's dim), and
+a hint led by the navigation — plus the thing a spinner picker exists for:
+the page is **live**.
 
 - **Every row wears its own spinner.** The name column is sized to the
   widest name in the **whole catalog** plus `SPINNER_MENU_GAP` — never just
@@ -210,7 +218,8 @@ over its description in the frame's dim), and a hint led by the navigation
   exactly one row, so neither the selection nor the clock changes the page
   height — the `/settings` always-emit rule, pinned by
   `the_page_height_is_stable_across_selections_and_ticks`. Laid side by
-  side the page is fifteen rows against the stacked page's twenty.
+  side the page is fifteen rows against the stacked page's twenty — twelve
+  and seventeen without its header.
 
 A search that matches **nothing** collapses to its essentials — the
 placeholder (`No matching spinners`), one blank gap, the hint — because
@@ -232,12 +241,14 @@ only replaces the composer, and the streaming strip keeps its rows above it
 a switch changes, on the very next frame.
 
 On a terminal too short for the page (fifteen rows beside the list, twenty
-stacked) the picker builds the family's **compact** page instead
-(`docs/view-flow.md` *A page that sheds rows before it flows*): the live
-preview yields, caption and status line together, and three styles sit
-between the reserved overflow slots, each still wearing its own live
-spinner, so the search line, the highlighted style and the hint stay on
-screen where bottom-anchoring the whole page flowed them into scrollback.
+stacked) the header yields first — twelve rows still show the live sample
+beside the list — and on one too short for that the picker builds the
+family's **compact** page instead (`docs/view-flow.md` *A page that sheds
+rows before it flows*): the live preview yields, caption and status line
+together, and three styles sit between the reserved overflow slots, under
+the header while it fits, each still wearing its own live spinner, so the
+search line, the highlighted style and the hint stay on screen where
+bottom-anchoring the whole page flowed them into scrollback.
 The glyph column is sized off the whole catalog, not the three in view, so
 it holds still as the window scrolls. On a terminal shorter still the
 compact page sheds what is left one row at a time and never its search line

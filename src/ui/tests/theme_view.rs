@@ -3,6 +3,7 @@
 use super::*;
 use crate::app::Theme;
 use crate::ui::palette::{active_theme, palette_of};
+use crate::ui::theme::{THEME_DESCRIPTION, THEME_TITLE};
 use crate::ui::theme_view::{theme_menu_rows, theme_view_lines};
 use crate::ui::wrap::cols;
 
@@ -12,8 +13,9 @@ const WIDE: u16 = 100;
 const NARROW: u16 = 60;
 /// A terminal tall enough for the whole page at any of these widths.
 const TALL: u16 = 200;
-/// A terminal too short for the whole page at either width (the side-by-side
-/// page is twenty rows, the stacked one thirty-two).
+/// A terminal too short for the whole page at either width, with its header
+/// or without (the side-by-side page is twenty-one rows, eighteen without
+/// the header; the stacked one twenty-eight).
 const SHORT: u16 = 15;
 
 /// An app with session info and the picker open (the ordinary shape).
@@ -40,12 +42,12 @@ fn texts_at(app: &App, width: u16, height: u16) -> Vec<String> {
         .collect()
 }
 
-/// Whether `text` is the list row for `name`: past the indent and the `❯`
+/// Whether `text` is the list row for `name`: past the indent and the `→`
 /// marker it opens with the name (a caption or preview row mentioning the
 /// same word doesn't count).
 fn is_row_for(text: &str, name: &str) -> bool {
     let t = text.trim_start();
-    let t = t.strip_prefix("❯ ").unwrap_or(t);
+    let t = t.strip_prefix("→ ").unwrap_or(t);
     t.starts_with(name) && t[name.len()..].chars().next().is_none_or(|c| c == ' ')
 }
 
@@ -112,16 +114,25 @@ fn closed_builds_nothing() {
 #[test]
 fn the_page_is_framed_with_search_rows_preview_and_hint() {
     for width in [WIDE, NARROW] {
+        let lines = theme_view_lines(&open_app(), width, TALL);
         let texts = texts(&open_app(), width);
         let is_rule = |t: &String| !t.trim().is_empty() && t.trim().chars().all(|c| c == '─');
         assert!(is_rule(texts.first().expect("a top rule")), "top rule");
         assert!(is_rule(texts.last().expect("a bottom rule")), "bottom rule");
+        // The header straight under the top rule: the title in the pages'
+        // title dress over a dim line, then a gap and the search line.
+        assert_eq!(texts[1], format!("  {THEME_TITLE}"), "{texts:#?}");
+        assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+        assert_eq!(texts[2], format!("  {THEME_DESCRIPTION}"), "{texts:#?}");
+        assert_eq!(texts[3], "", "{texts:#?}");
         assert!(
-            texts[1].trim_start().starts_with('❯'),
-            "the ❯ search line sits straight under the top rule: {texts:#?}"
+            texts[usize::from(HEADED_SEARCH_ROW)]
+                .trim_start()
+                .starts_with('❯'),
+            "the ❯ search line under the header: {texts:#?}"
         );
         assert!(
-            row_for(&texts, "mocha").starts_with("  ❯ mocha"),
+            row_for(&texts, "mocha").starts_with("  → mocha"),
             "the open seats the marker on the default: {texts:#?}"
         );
         let title = texts
@@ -147,7 +158,7 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
 
 #[test]
 fn rows_wear_the_mcp_lists_marker_and_indent() {
-    // The /mcp list's shape: the selected row is the indent, the accent `❯`
+    // The /mcp list's shape: the selected row is the indent, the accent `→`
     // and the name; every other row keeps the marker's width blank, so the
     // names line up under it.
     let mut app = open_app();
@@ -156,7 +167,7 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
         let lines = theme_view_lines(&app, width, TALL);
         let texts: Vec<String> = lines.iter().map(plain).collect();
         assert!(
-            row_for(&texts, "frappe").starts_with("  ❯ frappe"),
+            row_for(&texts, "frappe").starts_with("  → frappe"),
             "{texts:#?}"
         );
         for name in ["mocha", "macchiato", "latte", "onedark"] {
@@ -168,7 +179,7 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
         let marker = line_for(&lines, "frappe")
             .spans
             .iter()
-            .find(|s| s.content == "❯ ")
+            .find(|s| s.content == "→ ")
             .expect("the marker span");
         assert_eq!(
             marker.style.fg,
@@ -180,10 +191,13 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
 
 #[test]
 fn the_overflow_rows_say_what_is_hidden() {
-    // Ten rows of eleven, in the /mcp list's shape: a gap under the search
-    // line, then a dim `↑ N more above` row only when rows are scrolled off
-    // the top, the rows, and a dim `↓ N more below` row only when rows are
-    // below — one of the two at any time, so the frame never moves.
+    // A six-row list column of eleven themes, in the /mcp list's shape: a
+    // gap under the search line, then a dim `↑ N more above` row only when
+    // rows are scrolled off the top, the rows, and a dim `↓ N more below`
+    // row only when rows are below. The column is six rows whatever is
+    // hidden — five themes and one overflow row at either end of the list,
+    // four between two in the middle — so the frame never moves.
+    let first = usize::from(HEADED_SEARCH_ROW) + 2;
     let mut app = open_app();
     for width in [WIDE, NARROW] {
         select(&mut app, 0);
@@ -191,16 +205,33 @@ fn the_overflow_rows_say_what_is_hidden() {
             .iter()
             .map(|t| t.trim_end().to_string())
             .collect();
-        assert_eq!(top[2], "", "the gap under the search line: {top:#?}");
-        assert_eq!(row_index(&top, "mocha"), 3, "no `↑` row: {top:#?}");
-        assert_eq!(row_index(&top, "monokai"), 12, "{top:#?}");
+        assert_eq!(
+            top[first - 1],
+            "",
+            "the gap under the search line: {top:#?}"
+        );
+        assert_eq!(row_index(&top, "mocha"), first, "no `↑` row: {top:#?}");
+        assert_eq!(row_index(&top, "onedark"), first + 4, "{top:#?}");
         assert!(
-            top[13].starts_with("  ↓ 1 more below"),
-            "the one theme below: {top:#?}"
+            top[first + 5].starts_with("  ↓ 6 more below"),
+            "the six themes below: {top:#?}"
         );
         assert!(
-            !top.iter().any(|t| is_row_for(t, "ansi")),
-            "ansi is scrolled off: {top:#?}"
+            !top.iter().any(|t| is_row_for(t, "dracula")),
+            "dracula is scrolled off: {top:#?}"
+        );
+
+        select(&mut app, 5); // dracula
+        let middle: Vec<String> = texts(&app, width)
+            .iter()
+            .map(|t| t.trim_end().to_string())
+            .collect();
+        assert!(middle[first].starts_with("  ↑ 3 more above"), "{middle:#?}");
+        assert_eq!(row_index(&middle, "latte"), first + 1, "{middle:#?}");
+        assert!(middle[first + 3].starts_with("  → dracula"), "{middle:#?}");
+        assert!(
+            middle[first + 5].starts_with("  ↓ 4 more below"),
+            "{middle:#?}"
         );
 
         select(&mut app, Theme::ALL.len() - 1);
@@ -208,14 +239,18 @@ fn the_overflow_rows_say_what_is_hidden() {
             .iter()
             .map(|t| t.trim_end().to_string())
             .collect();
-        assert_eq!(end[2], "", "the gap under the search line: {end:#?}");
-        assert!(
-            end[3].starts_with("  ↑ 1 more above"),
-            "the one theme above: {end:#?}"
+        assert_eq!(
+            end[first - 1],
+            "",
+            "the gap under the search line: {end:#?}"
         );
-        assert_eq!(row_index(&end, "macchiato"), 4, "{end:#?}");
         assert!(
-            end[13].starts_with("  ❯ ansi"),
+            end[first].starts_with("  ↑ 6 more above"),
+            "the six themes above: {end:#?}"
+        );
+        assert_eq!(row_index(&end, "nord"), first + 1, "{end:#?}");
+        assert!(
+            end[first + 5].starts_with("  → ansi"),
             "the selection on the last row: {end:#?}"
         );
         assert!(
@@ -247,8 +282,7 @@ fn stacked_the_list_is_set_off_from_the_caption_by_a_gap() {
             .unwrap_or_else(|| panic!("the caption: {texts:#?}"));
         assert_eq!(texts[caption - 1], "", "a gap over the caption: {texts:#?}");
         assert!(
-            is_row_for(&texts[caption - 2], "ansi")
-                || texts[caption - 2].starts_with("  ↓ 1 more below"),
+            is_row_for(&texts[caption - 2], "ansi") || texts[caption - 2].starts_with("  ↓ "),
             "the list (or its `↓` row) just above the gap: {texts:#?}"
         );
     }
@@ -269,7 +303,6 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
         ("macchiato", "The darkest flavour, and the default"),
         ("latte", "❯ Rename the greeting in greet.py"),
         ("onedark", "● Edit(greet.py)"),
-        ("monokai", "● Done — greet.py greets by name now:"),
     ] {
         let text = row_for(&texts, row);
         assert!(text.contains(piece), "{piece:?} beside {row}: {texts:#?}");
@@ -279,14 +312,26 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
             "{piece:?} on the preview column"
         );
     }
-    let code = texts
+    // The list column closes on its `↓` row beside the diff's head, and the
+    // sample runs on alone under it, on the same column.
+    let below = texts
         .iter()
-        .position(|t| t.contains("greet(\"Alter Zero\")"))
-        .expect("the sample's code line");
-    assert!(
-        texts[code - 1].trim_start().starts_with("↓ 1 more below"),
-        "the list closes just above the sample's last row: {texts:#?}"
-    );
+        .find(|t| t.trim_start().starts_with("↓ 6 more below"))
+        .expect("the list's `↓` row");
+    assert!(below.contains("Updated greet.py"), "{texts:#?}");
+    for piece in [
+        "● Done — greet.py greets by name now:",
+        "greet(\"Alter Zero\")",
+    ] {
+        let text = texts
+            .iter()
+            .find(|t| t.contains(piece))
+            .unwrap_or_else(|| panic!("{piece:?}: {texts:#?}"));
+        assert!(
+            text[..text.find(piece).expect("piece")].trim().is_empty(),
+            "nothing beside {piece:?}: {text:?}"
+        );
+    }
 }
 
 #[test]
@@ -302,7 +347,7 @@ fn a_standard_terminal_gets_the_side_by_side_page_and_a_narrow_one_stacks() {
         .iter()
         .position(|t| t.contains("Catppuccin Mocha"))
         .expect("the caption");
-    assert!(caption > row_index(&texts, "monokai"), "{texts:#?}");
+    assert!(caption > row_index(&texts, "onedark"), "{texts:#?}");
     assert_eq!(
         texts[caption].trim_end(),
         "  Catppuccin Mocha",
@@ -474,8 +519,10 @@ fn every_row_wears_its_own_swatch() {
     // Beside the list the preview's bullets share the row, but a bullet is
     // `● ` and a swatch a bare `●`.
     for width in [WIDE, NARROW] {
-        let lines = theme_view_lines(&open_app(), width, TALL);
-        for theme in Theme::ALL.iter().take(10) {
+        let mut app = open_app();
+        for (i, theme) in Theme::ALL.iter().enumerate() {
+            select(&mut app, i);
+            let lines = theme_view_lines(&app, width, TALL);
             let p = palette_of(*theme);
             let swatches: Vec<Color> = line_for(&lines, theme.name())
                 .spans
@@ -528,7 +575,8 @@ fn the_preview_wears_the_highlighted_theme_and_the_frame_the_active_one() {
         assert_ne!(keyword(&mocha), keyword(&dracula), "two code themes");
         // The frame around the preview stays in the ACTIVE theme: the `❯`
         // prompt is Mocha's accent on both pages, and nothing leaked.
-        let prompt = |lines: &[Line<'static>]| lines[1].spans[1].style.fg;
+        let prompt =
+            |lines: &[Line<'static>]| lines[usize::from(HEADED_SEARCH_ROW)].spans[1].style.fg;
         assert_eq!(prompt(&mocha), Some(palette_of(Theme::Mocha).accent));
         assert_eq!(prompt(&dracula), Some(palette_of(Theme::Mocha).accent));
         assert_eq!(active_theme(), Theme::Mocha);
@@ -658,7 +706,7 @@ fn the_active_theme_wears_the_check_and_the_open_seats_on_it() {
             "only the active row is marked: {texts:#?}"
         );
         assert!(
-            row_for(&texts, "nord").starts_with("  ❯ nord"),
+            row_for(&texts, "nord").starts_with("  → nord"),
             "the highlight seats on the active theme: {texts:#?}"
         );
     }
@@ -674,17 +722,19 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
             .map(|t| t.trim_end().to_string())
             .collect();
         let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-        assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:#?}");
+        assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:#?}");
         assert!(is_rule(&texts[0]), "{texts:#?}");
-        assert!(texts[1].contains('❯'), "the search line: {texts:#?}");
-        assert_eq!(texts[2], "", "{texts:#?}");
-        assert!(
-            texts[3].contains("No matching themes"),
-            "the placeholder: {texts:#?}"
+        assert_eq!(texts[1], format!("  {THEME_TITLE}"), "{texts:#?}");
+        assert_eq!(texts[3], "", "{texts:#?}");
+        assert!(texts[4].contains('❯'), "the search line: {texts:#?}");
+        assert_eq!(texts[5], "", "{texts:#?}");
+        assert_eq!(
+            texts[6], "    No matching themes",
+            "the placeholder, in the names' column: {texts:#?}"
         );
-        assert_eq!(texts[4], "", "one gap under the placeholder: {texts:#?}");
-        assert!(texts[5].contains("↑/↓ to navigate"), "the hint: {texts:#?}");
-        assert!(is_rule(&texts[6]), "{texts:#?}");
+        assert_eq!(texts[7], "", "one gap under the placeholder: {texts:#?}");
+        assert!(texts[8].contains("↑/↓ to navigate"), "the hint: {texts:#?}");
+        assert!(is_rule(&texts[9]), "{texts:#?}");
     }
 }
 
@@ -767,19 +817,22 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 
 #[test]
 fn a_short_terminal_keeps_the_theme_choices_on_screen() {
-    // codex's short-panel rule: the preview yields first, so the search
-    // line, three theme rows and the hint fit where the whole page cannot —
-    // where the bottom anchor used to keep only the preview on screen and
-    // flow the theme names into scrollback.
+    // codex's short-panel rule: the preview yields, so the header, the
+    // search line, three theme rows and the hint fit where the whole page
+    // cannot — where the bottom anchor used to keep only the preview on
+    // screen and flow the theme names into scrollback.
     for width in [WIDE, NARROW] {
         let texts = texts_at(&open_app(), width, SHORT);
         assert!(texts.len() <= usize::from(SHORT), "fits: {texts:#?}");
+        assert_eq!(texts[1], format!("  {THEME_TITLE}"), "{texts:#?}");
         assert!(
-            texts[1].trim_start().starts_with('❯'),
-            "the search line straight under the top rule: {texts:#?}"
+            texts[usize::from(HEADED_SEARCH_ROW)]
+                .trim_start()
+                .starts_with('❯'),
+            "the search line under the header: {texts:#?}"
         );
         assert!(
-            row_for(&texts, "mocha").starts_with("  ❯ mocha"),
+            row_for(&texts, "mocha").starts_with("  → mocha"),
             "{texts:#?}"
         );
         assert_eq!(
@@ -813,14 +866,14 @@ fn the_compact_page_is_codexs_short_picker() {
     // hint, rule — no blank row hugs either rule. Both slots are always
     // there — blank when nothing is hidden that way — so the page is one
     // height at every selection, and a blank slot is the gap the page wants
-    // there anyway.
-    let texts = texts_at(&open_app(), NARROW, SHORT);
+    // there anyway. On eleven rows the header has gone too.
+    let texts = texts_at(&open_app(), NARROW, 11);
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
     assert_eq!(texts.len(), 9, "{texts:#?}");
     assert!(is_rule(&texts[0]), "{texts:#?}");
     assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
     assert_eq!(texts[2], "", "nothing above the first row: {texts:#?}");
-    assert!(texts[3].starts_with("  ❯ mocha"), "{texts:#?}");
+    assert!(texts[3].starts_with("  → mocha"), "{texts:#?}");
     assert!(texts[4].starts_with("    macchiato"), "{texts:#?}");
     assert!(texts[5].starts_with("    frappe"), "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 8 more below", "{texts:#?}");
@@ -835,18 +888,18 @@ fn the_compact_page_is_codexs_short_picker() {
 fn the_compact_window_keeps_the_selection_in_its_middle() {
     let mut app = open_app();
     select(&mut app, 5); // dracula: one row either side, the rest named
-    let middle = texts_at(&app, NARROW, SHORT);
+    let middle = texts_at(&app, NARROW, 11);
     assert_eq!(middle[2], "  ↑ 4 more above", "{middle:#?}");
     assert!(middle[3].starts_with("    onedark"), "{middle:#?}");
-    assert!(middle[4].starts_with("  ❯ dracula"), "{middle:#?}");
+    assert!(middle[4].starts_with("  → dracula"), "{middle:#?}");
     assert!(middle[5].starts_with("    nord"), "{middle:#?}");
     assert_eq!(middle[6], "  ↓ 4 more below", "{middle:#?}");
     select(&mut app, Theme::ALL.len() - 1); // ansi: the window pinned to the end
-    let end = texts_at(&app, NARROW, SHORT);
+    let end = texts_at(&app, NARROW, 11);
     assert_eq!(end[2], "  ↑ 8 more above", "{end:#?}");
     assert!(end[3].starts_with("    solarized"), "{end:#?}");
     assert!(end[4].starts_with("    monokai"), "{end:#?}");
-    assert!(end[5].starts_with("  ❯ ansi"), "{end:#?}");
+    assert!(end[5].starts_with("  → ansi"), "{end:#?}");
     assert_eq!(end[6], "", "nothing below the last row: {end:#?}");
 }
 
@@ -868,19 +921,28 @@ fn the_compact_page_holds_still_across_selections() {
 
 #[test]
 fn the_whole_page_returns_once_it_fits() {
-    // The compact page is only for a terminal too short for the whole one:
-    // at the whole page's own height it is the whole page, one row shorter
-    // the compact one.
+    // At the whole page's own height it is the whole page. A row short of
+    // it the header goes and the preview stays — the preview is what a
+    // theme is chosen by, the header names a page opened by name — and only
+    // a row short of that page does the preview yield to the compact one.
     let app = open_app();
     let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Edit(greet.py)"));
+    let has_header = |texts: &[String]| texts.iter().any(|t| t.contains(THEME_TITLE));
     for width in [WIDE, NARROW] {
         let whole = u16::try_from(theme_view_lines(&app, width, TALL).len()).expect("rows");
+        let full = texts_at(&app, width, whole);
         assert!(
-            has_preview(&texts_at(&app, width, whole)),
+            has_preview(&full) && has_header(&full),
             "width {width}: the whole page at its own height"
         );
+        let headless = texts_at(&app, width, whole - 1);
         assert!(
-            !has_preview(&texts_at(&app, width, whole - 1)),
+            has_preview(&headless) && !has_header(&headless),
+            "width {width}: the header yields first: {headless:#?}"
+        );
+        let short = u16::try_from(headless.len()).expect("rows");
+        assert!(
+            !has_preview(&texts_at(&app, width, short - 1)),
             "width {width}: compact one row short of it"
         );
     }
@@ -931,7 +993,7 @@ fn the_cursor_sits_on_the_compact_pages_search_line() {
     assert!(height <= SHORT, "the compact page fits the terminal");
     let area = Rect::new(0, SHORT - height, NARROW, height);
     let (x, y) = crate::ui::cursor_position(area, &app);
-    assert_eq!(y, area.y + SEARCH_ROW, "on the search line");
+    assert_eq!(y, area.y + HEADED_SEARCH_ROW, "on the search line");
     // indent (2) + `❯ ` (2) + the two-character query.
     assert_eq!(x, 2 + 2 + 2);
 }
@@ -973,7 +1035,7 @@ fn the_picker_renders_the_page_its_height_reserves() {
         "the search line: {rows:#?}"
     );
     assert!(
-        rows.iter().any(|r| r.contains("❯ mocha")),
+        rows.iter().any(|r| r.contains("→ mocha")),
         "the theme names: {rows:#?}"
     );
     assert!(
@@ -996,7 +1058,7 @@ fn an_area_shorter_than_the_compact_page_paints_a_rung_whole() {
         .map(|y| row(&buf, y, 80).trim_end().to_string())
         .collect();
     assert_eq!(rows[0], "  ❯", "the search line opens it: {rows:#?}");
-    assert!(rows[1].starts_with("  ❯ mocha"), "{rows:#?}");
+    assert!(rows[1].starts_with("  → mocha"), "{rows:#?}");
     assert!(rows[3].starts_with("    frappe"), "{rows:#?}");
     assert!(rows[4].contains("↑/↓ to navigate"), "the hint: {rows:#?}");
     assert!(
@@ -1019,7 +1081,7 @@ fn a_tiny_terminal_keeps_the_search_line_and_the_highlighted_theme() {
         assert_sheds_to_its_search_line(
             |height| texts_at(&app, width, height),
             "",
-            "❯ dracula",
+            "→ dracula",
             "↑/↓ to navigate",
         );
         for height in 1..=10 {
@@ -1041,7 +1103,7 @@ fn on_seven_rows_the_search_line_sits_under_the_top_rule() {
     assert!(is_rule(&texts[0]), "{texts:#?}");
     assert_eq!(texts[1], "  ❯", "{texts:#?}");
     assert!(texts[2].starts_with("    onedark"), "{texts:#?}");
-    assert!(texts[3].starts_with("  ❯ dracula"), "{texts:#?}");
+    assert!(texts[3].starts_with("  → dracula"), "{texts:#?}");
     assert!(texts[4].starts_with("    nord"), "{texts:#?}");
     assert!(texts[5].contains("↑/↓ to navigate"), "{texts:#?}");
     assert!(is_rule(&texts[6]), "{texts:#?}");

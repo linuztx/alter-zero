@@ -11,21 +11,19 @@ per change.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
+  Settings
+  Changes apply at once and are saved
+
   ❯
 
-→ Hide thinking           false
-  Verbose output          false
-  Show images             true
-  Image width             120
-  Auto-resize images      true
-  Error retry             3
-  Tools                   true
-  Permission mode         auto
-  ...
-  Max tool calls          0
-  (1/20)
+  → Hide thinking        false
+    Verbose output       false
+    Show images          true
+    Image width          120
+    Auto-resize images   true
+    (1/20)
 
-  Hide the model's chain-of-thought…
+    Hide the model's chain-of-thought instead of streaming it above the…
 
   Type to search · Enter/Space to change · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────
@@ -152,18 +150,27 @@ what the session is actually doing.
 The layout is the `/model` picker's plus one hint row:
 
 ```
-rule · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · rule
+rule · title · description · gap · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · rule
 ```
 
-A search that matches **nothing** has no count and nothing to describe, so
-those slots collapse to a single gap — `rule · ❯ search · gap ·
-No matching settings · gap · hint · rule` — instead of painting four
-blank rows mid-frame (the `/model` picker's `model_has_detail` rule, shared
-now by `/mascot`, `/skills` and `/login`). No blank row hugs either rule
-(`docs/view-flow.md` *The frame hugs its content*).
+The header is the `Settings` title in the pages' title dress over a dim
+*Changes apply at once and are saved* — the two facts every row shares
+(`model_view::picker_header`, `docs/view-flow.md` *A header over the search
+line*). The rows hang from the search line's `❯`: the highlighted row's `→`
+under it, every label two columns past it, and the counter and the
+highlighted row's description in the labels' column.
 
-— nine fixed chrome rows around a list capped at
-`SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
+A search that matches **nothing** has no count and nothing to describe, so
+those slots collapse to a single gap — `rule · title · description · gap ·
+❯ search · gap · No matching settings · gap · hint · rule` — instead of
+painting four blank rows mid-frame (the `/model` picker's `model_has_detail`
+rule, shared now by `/mascot`, `/skills` and `/login`). No blank row hugs
+either rule (`docs/view-flow.md` *The frame hugs its content*).
+
+— twelve fixed chrome rows around a list capped at
+`SETTINGS_MENU_MAX_ROWS` (**five**: the counter says where in the twenty they
+are, the search reaches the rest, and the page under its header stays short
+beside a running turn), windowed by the shared `centered_window` so the
 selection stays centred; the whole page is one line builder
 (`settings_view_lines` — the `/mcp` family's shape, its height the built line
 count, painted bottom-anchored with the skipped top flowing into scrollback,
@@ -173,11 +180,11 @@ placeholder in the same frame.
 
 ### A terminal too short for the page
 
-The whole page is twenty-one rows or more, and bottom-anchoring it on a
+The whole page is seventeen rows or more, and bottom-anchoring it on a
 shorter terminal kept the description and the hint while the search line and
 the highlighted row flowed into scrollback — on twelve rows the row Enter
 would change was off screen. So `settings_view_lines` takes the rows the page
-may have and builds the first of three pages that fits them
+may have and builds the first of four pages that fits them
 (`first_page_that_fits`, the family rule in `docs/view-flow.md` *A page that
 sheds rows before it flows*):
 
@@ -187,15 +194,17 @@ sheds rows before it flows*):
    80-column terminal, so the whole page's height moves with the selection,
    and a terminal at the edge, deciding on that height alone, flipped
    between the whole and the compact page as ↑/↓ passed one;
-3. the compact page, the `/theme` and `/skills` one row for row:
+3. the compact page under the header (`headed_compact_page`), twelve rows;
+4. the compact page, the `/theme` and `/skills` one row for row, the header
+   gone — it goes last:
 
 ```
 ──────────────────────────────────────────────────────────
   ❯
   ↑ 5 more above
-  Tools                true
-→ Permission mode      auto
-  Checkpoints          false
+    Tools                true
+  → Permission mode      auto
+    Checkpoints          false
   ↓ 10 more below
   Type to search · Enter/Space to change · Esc to cancel
 ──────────────────────────────────────────────────────────
@@ -208,7 +217,9 @@ selection — no blank row hugs either rule (`docs/view-flow.md` *The frame
 hugs its content*). The value column is sized off every listed setting rather than
 the rows in view, so it holds still as the window scrolls — it used to shift
 on the whole page too, whenever ↑/↓ scrolled `Auto-resize images` in or out
-of the ten rows shown.
+of the rows shown. On a terminal too narrow for the widest label, value
+and gap together the label column is capped and a label `…`-cuts, so the
+value keeps a seat on its row.
 
 On a terminal shorter still the compact page sheds what is left one row at a
 time and never its search line (`docs/view-flow.md` *Below the compact

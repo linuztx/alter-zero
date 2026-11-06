@@ -35,14 +35,17 @@ fn model_rows_show_marker_provider_tag_and_active_check() {
     let picker = model_picker(three_models(), 0, "anthropic/claude-fable-5");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // First list row (y = SEARCH_ROW + 2 = 3).
-    let first = row(&buf, 3, 60);
-    assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
+    // First list row (y = HEADED_SEARCH_ROW + 2 = 6).
+    let first = row(&buf, 6, 60);
+    assert!(
+        first.starts_with("  → anthropic/claude-3-haiku"),
+        "{first:?}"
+    );
     assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
     // The selected marker is cyan.
-    assert_eq!(buf[(0, 3)].fg, model_selected_color());
-    // The active model (row 1, y=4) carries the ✓.
-    let second = row(&buf, 4, 60);
+    assert_eq!(buf[(2, 6)].fg, model_selected_color());
+    // The active model (row 1, y=7) carries the ✓.
+    let second = row(&buf, 7, 60);
     assert!(second.contains('✓'), "active model has a check: {second:?}");
 }
 
@@ -52,9 +55,9 @@ fn counter_notes_more_providers_still_loading() {
     // list now with a dim "loading more…" hint beside the counter.
     let mut picker = model_picker(three_models(), 0, "x");
     picker.pending = 1;
-    let mut buf = buffer(60, 10);
+    let mut buf = buffer(60, 13);
     render_model_picker(buf.area, &mut buf, &picker);
-    let counter = row(&buf, 6, 60);
+    let counter = row(&buf, 9, 60);
     assert!(counter.contains("(1/3)"), "{counter:?}");
     assert!(counter.contains("loading more"), "{counter:?}");
 }
@@ -95,15 +98,16 @@ fn all_failed_picker_shows_one_red_row_per_provider() {
             message: "HTTP 401".into(),
         },
     ];
-    // Natural height: collapsed chrome (4) + 2 error rows = 6.
-    let mut buf = buffer(60, 6);
+    // Natural height: collapsed chrome (7, the header's three among them) +
+    // 2 error rows = 9.
+    let mut buf = buffer(60, 9);
     render_model_picker(buf.area, &mut buf, &picker);
-    let r0 = row(&buf, 3, 60);
-    let r1 = row(&buf, 4, 60);
+    let r0 = row(&buf, 6, 60);
+    let r1 = row(&buf, 7, 60);
     assert!(r0.contains("OpenRouter"), "{r0:?}");
     assert!(r0.contains("HTTP 500"), "{r0:?}");
     assert!(r1.contains("Agent Zero API"), "{r1:?}");
-    assert_eq!(buf[(2, 3)].fg, error_color(), "error rows are red");
+    assert_eq!(buf[(4, 6)].fg, error_color(), "error rows are red");
 }
 
 #[test]
@@ -123,7 +127,7 @@ fn render_login_provider_step_frames_lists_and_marks_configured() {
     // is named by the hint below and by the save toast; repeating it on every
     // row only crowds the list.
     let first = row(&buf, 3, 60);
-    assert!(first.starts_with("→ OpenRouter"), "{first:?}");
+    assert!(first.starts_with("  → OpenRouter"), "{first:?}");
     assert!(
         !first.contains('[') && !first.contains("OPENROUTER_API_KEY"),
         "the env var does not ride the row: {first:?}"
@@ -244,10 +248,10 @@ fn model_picker_shows_a_login_hint_when_no_provider_is_configured() {
     let picker = app.model_picker.as_ref().unwrap();
     let mut buf = buffer(60, 12);
     render_model_picker(buf.area, &mut buf, picker);
-    // The list area (row 3) points at /login, in cyan (not a red error).
-    let list = row(&buf, 3, 60);
+    // The list area (row 6) points at /login, in cyan (not a red error).
+    let list = row(&buf, 6, 60);
     assert!(list.contains("run /login"), "{list:?}");
-    assert_eq!(buf[(2, 3)].fg, model_selected_color());
+    assert_eq!(buf[(4, 6)].fg, model_selected_color());
     // No counter or model-name line when there's nothing selectable.
     let text = (0..12)
         .map(|y| row(&buf, y, 60))
@@ -284,11 +288,28 @@ fn an_unmatched_provider_filter_collapses_to_placeholder_and_hint() {
     assert!(is_rule(&texts[0]), "{texts:?}");
     assert!(texts[1].contains('❯'), "{texts:?}");
     assert_eq!(texts[2], "", "{texts:?}");
-    assert!(texts[3].contains("No matching providers"), "{texts:?}");
+    // The placeholder in the names' column, where the list would be; the
+    // notes under it at the page's own inset, with the filter and the title.
+    assert_eq!(texts[3], "    No matching providers", "{texts:?}");
     assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[5].contains("Keys are saved"), "the hint: {texts:?}");
-    assert!(texts[6].contains("esc back"), "the key hint: {texts:?}");
+    assert!(
+        texts[5].starts_with("  Keys are saved"),
+        "the hint: {texts:?}"
+    );
+    assert!(
+        texts[6].starts_with("  ↑↓ navigate"),
+        "the key hint: {texts:?}"
+    );
     assert!(is_rule(&texts[7]), "{texts:?}");
+}
+
+#[test]
+fn a_login_lists_counter_sits_in_the_names_column() {
+    // The counter speaks for the list, so it starts where the names do — two
+    // columns past the marker, which sits under the filter's `❯`.
+    let app = login_app_provider();
+    let texts = page_texts(app.key_onboarding.as_ref().expect("open"), 70);
+    assert!(texts.iter().any(|t| t == "    (1/2)"), "{texts:#?}");
 }
 
 #[test]
@@ -413,9 +434,9 @@ fn the_method_step_offers_the_three_ways_in_with_no_counter() {
         .collect();
     assert_eq!(texts.len(), 9, "{texts:?}");
     assert!(texts[1].contains('❯'), "{texts:?}");
-    assert_eq!(texts[3], "→ Use a subscription", "{texts:?}");
-    assert_eq!(texts[4], "  Use an API key", "{texts:?}");
-    assert_eq!(texts[5], "  Use a local model", "{texts:?}");
+    assert_eq!(texts[3], "  → Use a subscription", "{texts:?}");
+    assert_eq!(texts[4], "    Use an API key", "{texts:?}");
+    assert_eq!(texts[5], "    Use a local model", "{texts:?}");
     assert!(texts[7].contains("↑↓ navigate"), "{texts:?}");
     assert!(texts[7].contains("escape/ctrl+c cancel"), "{texts:?}");
     assert!(
@@ -433,7 +454,7 @@ fn the_subscription_step_lists_each_row_under_its_filter() {
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(row(&buf, LOGIN_SEARCH_ROW, 70).contains('❯'), "the filter");
     let entry = row(&buf, 3, 70);
-    assert!(entry.starts_with("→ GitHub Copilot"), "{entry:?}");
+    assert!(entry.starts_with("  → GitHub Copilot"), "{entry:?}");
     assert!(
         !entry.contains("Sign in with your GitHub account"),
         "the row is the name and its status, not a sentence: {entry:?}"
@@ -907,7 +928,7 @@ fn a_provider_row_says_whether_its_key_is_configured() {
     let keyed = page_row(onboarding, 60, "OpenRouter");
     assert_eq!(
         plain(&keyed).trim_end(),
-        format!("→ OpenRouter · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+        format!("  → OpenRouter · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
     );
     assert_eq!(
         span_fg(&keyed, LOGIN_CONFIGURED_MARK),
@@ -923,7 +944,7 @@ fn a_provider_row_says_whether_its_key_is_configured() {
     let bare = page_row(onboarding, 60, "Together AI");
     assert_eq!(
         plain(&bare).trim_end(),
-        format!("  Together AI · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
+        format!("    Together AI · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
     );
     // Nothing to find on a row with no key: the ◯ is dim like its word, so the
     // green marks are the only thing standing out down the list.
@@ -945,7 +966,7 @@ fn a_subscription_row_says_whether_it_is_signed_in() {
     let row = page_row(onboarding, 70, "GitHub Copilot");
     assert_eq!(
         plain(&row).trim_end(),
-        format!("→ GitHub Copilot · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+        format!("  → GitHub Copilot · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
     );
 }
 
@@ -1150,8 +1171,8 @@ fn the_sign_in_method_choice_is_a_titled_two_row_question() {
     assert!(is_rule(&texts[0]) && is_rule(&texts[7]), "{texts:?}");
     assert_eq!(texts[1].trim(), "Select ChatGPT Codex login method:");
     assert_eq!(texts[2], "", "{texts:?}");
-    assert_eq!(texts[3], "→ Browser login (default)", "{texts:?}");
-    assert_eq!(texts[4], "  Device code login (headless)", "{texts:?}");
+    assert_eq!(texts[3], "  → Browser login (default)", "{texts:?}");
+    assert_eq!(texts[4], "    Device code login (headless)", "{texts:?}");
     assert_eq!(texts[5], "", "{texts:?}");
     assert_eq!(
         texts[6].trim(),
@@ -1182,12 +1203,12 @@ fn the_highlight_follows_the_selection_on_the_method_choice() {
     let mut buf = buffer(76, 8);
     render_key_onboarding(buf.area, &mut buf, onboarding);
     assert!(
-        row(&buf, 3, 76).starts_with("  Browser login (default)"),
+        row(&buf, 3, 76).starts_with("    Browser login (default)"),
         "{:?}",
         row(&buf, 3, 76)
     );
     assert!(
-        row(&buf, 4, 76).starts_with("→ Device code login (headless)"),
+        row(&buf, 4, 76).starts_with("  → Device code login (headless)"),
         "{:?}",
         row(&buf, 4, 76)
     );
@@ -1264,9 +1285,9 @@ fn a_short_terminal_keeps_the_provider_choices_on_screen() {
         "the filter: {texts:#?}"
     );
     assert_eq!(texts[2], "", "{texts:#?}");
-    assert!(texts[3].starts_with("→ Provider 0"), "{texts:#?}");
-    assert!(texts[4].starts_with("  Provider 1"), "{texts:#?}");
-    assert!(texts[5].starts_with("  Provider 2"), "{texts:#?}");
+    assert!(texts[3].starts_with("  → Provider 0"), "{texts:#?}");
+    assert!(texts[4].starts_with("    Provider 1"), "{texts:#?}");
+    assert!(texts[5].starts_with("    Provider 2"), "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 4 more below", "{texts:#?}");
     assert!(texts[7].contains("esc back"), "the hint: {texts:#?}");
     assert!(is_rule(&texts[8]), "{texts:#?}");
@@ -1286,7 +1307,7 @@ fn the_compact_provider_window_rides_the_selection() {
     app.key_onboarding.as_mut().expect("open").selected = 6;
     let texts = login_page_at(&app, 70, 12);
     assert_eq!(texts[2], "  ↑ 4 more above", "{texts:#?}");
-    assert!(texts[5].starts_with("→ Provider 6"), "{texts:#?}");
+    assert!(texts[5].starts_with("  → Provider 6"), "{texts:#?}");
     assert_eq!(texts[6], "", "nothing below the last row: {texts:#?}");
     let whole = u16::try_from(login_page_at(&app, 70, 200).len()).expect("rows");
     let has_note = |texts: &[String]| texts.iter().any(|t| t.contains("Keys are saved to"));
@@ -1419,11 +1440,11 @@ fn the_local_list_names_each_server_and_whether_it_is_pointed_at() {
     assert!(texts[1].contains('❯'), "the filter first: {texts:?}");
     assert_eq!(
         texts[3],
-        format!("→ LM Studio · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
+        format!("  → LM Studio · {LOGIN_UNCONFIGURED_MARK}{LOGIN_UNCONFIGURED_LABEL}")
     );
     assert_eq!(
         texts[4],
-        format!("  Ollama · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
+        format!("    Ollama · {LOGIN_CONFIGURED_MARK}{LOGIN_CONFIGURED_LABEL}")
     );
     assert!(texts.iter().any(|t| t.trim() == "(1/2)"), "{texts:?}");
     let hint = texts.iter().rev().nth(1).unwrap();

@@ -4,6 +4,7 @@ use super::*;
 use crate::app::{Spinner, Theme, VERB_ROTATION};
 use crate::ui::palette::palette_of;
 use crate::ui::spinner_view::{spinner_menu_rows, spinner_view_lines};
+use crate::ui::theme::{SPINNER_DESCRIPTION, SPINNER_TITLE};
 use crate::ui::wrap::cols;
 
 /// A standard terminal: wide enough for the side-by-side page.
@@ -36,12 +37,12 @@ fn select(app: &mut App, i: usize) {
     app.spinner_picker.as_mut().expect("open").selected = i;
 }
 
-/// Whether `text` is the list row for `name`: past the indent and the `❯`
+/// Whether `text` is the list row for `name`: past the indent and the `→`
 /// marker it opens with the name (a caption or preview row mentioning the
 /// same word doesn't count).
 fn is_row_for(text: &str, name: &str) -> bool {
     let t = text.trim_start();
-    let t = t.strip_prefix("❯ ").unwrap_or(t);
+    let t = t.strip_prefix("→ ").unwrap_or(t);
     t.starts_with(name) && t[name.len()..].chars().next().is_none_or(|c| c == ' ')
 }
 
@@ -101,18 +102,35 @@ fn closed_builds_nothing() {
 fn the_page_is_framed_with_search_rows_preview_and_hint() {
     for width in [WIDE, NARROW] {
         let texts = texts(&open_app(), width);
+        let lines = spinner_view_lines(&open_app(), width, TALL);
         let is_rule = |t: &String| !t.trim().is_empty() && t.trim().chars().all(|c| c == '─');
         assert!(is_rule(texts.first().expect("a top rule")), "top rule");
         assert!(is_rule(texts.last().expect("a bottom rule")), "bottom rule");
+        // The header straight under the top rule — the title over a dim
+        // line — then a gap and the search line.
+        assert_eq!(texts[1], format!("  {SPINNER_TITLE}"), "{texts:#?}");
+        assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+        assert_eq!(texts[2], format!("  {SPINNER_DESCRIPTION}"), "{texts:#?}");
+        assert_eq!(texts[3], "", "{texts:#?}");
         assert!(
-            texts[1].trim_start().starts_with('❯'),
-            "the ❯ search line sits straight under the top rule: {texts:#?}"
+            texts[usize::from(HEADED_SEARCH_ROW)]
+                .trim_start()
+                .starts_with('❯'),
+            "the ❯ search line under the header: {texts:#?}"
         );
-        for spinner in Spinner::ALL {
-            row_for(&texts, spinner.name());
+        // Five of the nine styles and a row naming the rest: the six-row
+        // list column (`fitted_window`).
+        for name in ["comet", "gravity", "wave", "sparkle", "dots"] {
+            row_for(&texts, name);
         }
         assert!(
-            row_for(&texts, "gravity").starts_with("  ❯ gravity"),
+            texts
+                .iter()
+                .any(|t| t.trim_start().starts_with("↓ 4 more below")),
+            "{texts:#?}"
+        );
+        assert!(
+            row_for(&texts, "gravity").starts_with("  → gravity"),
             "the open seats the marker on gravity, the default: {texts:#?}"
         );
         let title = texts
@@ -145,7 +163,7 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
 #[test]
 fn rows_wear_the_mcp_lists_marker_and_indent() {
     // The /mcp list's shape, /theme's: the selected row is the indent, the
-    // accent `❯` and the bold name; every other row keeps the marker's width
+    // accent `→` and the bold name; every other row keeps the marker's width
     // blank, so the names line up under it.
     let mut app = open_app();
     select(&mut app, 4); // dots
@@ -153,10 +171,10 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
         let lines = spinner_view_lines(&app, width, TALL);
         let texts: Vec<String> = lines.iter().map(plain).collect();
         assert!(
-            row_for(&texts, "dots").starts_with("  ❯ dots"),
+            row_for(&texts, "dots").starts_with("  → dots"),
             "{texts:#?}"
         );
-        for name in ["comet", "gravity", "wave", "line"] {
+        for name in ["wave", "sparkle", "blocks"] {
             assert!(
                 row_for(&texts, name).starts_with(&format!("    {name}")),
                 "{name} is indented under the marker: {texts:#?}"
@@ -166,7 +184,7 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
         let marker = row
             .spans
             .iter()
-            .find(|s| s.content == "❯ ")
+            .find(|s| s.content == "→ ")
             .expect("the marker span");
         assert_eq!(
             marker.style.fg,
@@ -187,7 +205,8 @@ fn every_row_carries_its_own_live_glyph() {
     // The list is a live catalog: each row shows its style's spinner at the
     // shared frame clock, so the styles compare at a glance.
     for width in [WIDE, NARROW] {
-        let texts = texts(&open_app(), width);
+        let mut app = open_app();
+        let texts = texts(&app, width);
         assert!(row_for(&texts, "comet").contains("(●•·   )"), "{texts:?}");
         // The two braille tracks at the open: the ball on the floor at the
         // left wall, and the wave's eight two-dot cells.
@@ -202,6 +221,9 @@ fn every_row_carries_its_own_live_glyph() {
             "the wave is eight braille cells: {texts:?}"
         );
         assert!(row_for(&texts, "dots").contains('⠋'), "{texts:?}");
+        // The rest are under the window: walk to the last.
+        select(&mut app, Spinner::ALL.len() - 1);
+        let texts = self::texts(&app, width);
         assert!(row_for(&texts, "blocks").contains('▙'), "{texts:?}");
         assert!(row_for(&texts, "pulse").contains('●'), "{texts:?}");
         assert!(row_for(&texts, "bars").contains('▁'), "{texts:?}");
@@ -261,8 +283,8 @@ fn a_narrow_terminal_stacks_the_preview_under_the_list() {
     );
     assert_eq!(texts[caption - 1], "", "a gap over the caption: {texts:#?}");
     assert!(
-        is_row_for(&texts[caption - 2], "line"),
-        "the list just above the gap: {texts:#?}"
+        texts[caption - 2].starts_with("  ↓ 4 more below"),
+        "the list (its `↓` row) just above the gap: {texts:#?}"
     );
     assert_eq!(texts[caption + 2], "", "a gap over the sample: {texts:#?}");
     assert_eq!(
@@ -335,7 +357,7 @@ fn the_glyph_column_holds_still_as_a_search_narrows_the_list() {
     // spinners stay on one column whatever the search leaves listed.
     let mut app = open_app();
     let home = glyph_col(&texts(&app, WIDE), "dots");
-    // (Never the bare name: the search line `❯ dots` would read as its row.)
+    // (Never the bare name: the search line `→ dots` would read as its row.)
     for query in ["dot", "braille", "classic"] {
         let picker = app.spinner_picker.as_mut().expect("open");
         picker.query = query.to_string();
@@ -527,12 +549,13 @@ fn the_active_style_wears_the_check_and_the_open_seats_on_it() {
             row_for(&texts, "blocks").contains('✓'),
             "blocks carries the ✓: {texts:?}"
         );
-        assert!(
-            !row_for(&texts, "comet").contains('✓'),
+        assert_eq!(
+            texts.iter().filter(|t| t.contains('✓')).count(),
+            1,
             "only the active row is marked: {texts:?}"
         );
         assert!(
-            row_for(&texts, "blocks").starts_with("  ❯ blocks"),
+            row_for(&texts, "blocks").starts_with("  → blocks"),
             "the highlight seats on the active style: {texts:?}"
         );
     }
@@ -547,17 +570,18 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     app.spinner_picker.as_mut().expect("open").query = "zzz".to_string();
     let texts = texts(&app, 80);
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:?}");
+    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert!(texts[1].contains('❯'), "the search line: {texts:?}");
-    assert_eq!(texts[2], "", "{texts:?}");
+    assert_eq!(texts[1], format!("  {SPINNER_TITLE}"), "{texts:?}");
+    assert!(texts[4].contains('❯'), "the search line: {texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
     assert!(
-        texts[3].contains("No matching spinners"),
+        texts[6] == "    No matching spinners",
         "the placeholder: {texts:?}"
     );
-    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[5].contains("Type to search"), "the hint: {texts:?}");
-    assert!(is_rule(&texts[6]), "{texts:?}");
+    assert_eq!(texts[7], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[8].contains("Type to search"), "the hint: {texts:?}");
+    assert!(is_rule(&texts[9]), "{texts:?}");
 }
 
 #[test]
@@ -672,22 +696,31 @@ fn is_rule(text: &str) -> bool {
 #[test]
 fn a_short_terminal_keeps_the_spinner_choices_on_screen() {
     // The whole page is fifteen rows beside the list and twenty stacked
-    // under it; on a terminal shorter than that the preview yields, and the
-    // search line, three styles between the overflow slots and the hint stay
-    // on screen (bottom-anchoring the whole page kept the preview while the
-    // search line and the highlighted style flowed away).
+    // under it, twelve and seventeen without its header — which yields
+    // first, so twelve rows still show the live preview beside the list. On
+    // a terminal shorter than that the preview yields, and the search line,
+    // three styles between the overflow slots and the hint stay on screen
+    // (bottom-anchoring the whole page kept the preview while the search
+    // line and the highlighted style flowed away).
     let app = open_app();
     assert_eq!(page_at(&app, WIDE, TALL).len(), 15, "beside the list");
     assert_eq!(page_at(&app, NARROW, TALL).len(), 20, "stacked");
+    let twelve = page_at(&app, WIDE, 12);
+    assert_eq!(twelve.len(), 12, "{twelve:#?}");
+    assert!(twelve.iter().any(|t| t.contains("Working")), "{twelve:#?}");
+    assert!(
+        !twelve.iter().any(|t| t.contains(SPINNER_TITLE)),
+        "the header yields first: {twelve:#?}"
+    );
     for width in [WIDE, NARROW] {
-        let texts = page_at(&app, width, 12);
+        let texts = page_at(&app, width, 11);
         assert_eq!(texts.len(), 9, "the compact page: {texts:#?}");
         assert!(is_rule(&texts[0]), "{texts:#?}");
         assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
         assert_eq!(texts[2], "", "nothing above comet: {texts:#?}");
         assert!(texts[3].starts_with("    comet"), "{texts:#?}");
         assert!(
-            texts[4].starts_with("  ❯ gravity"),
+            texts[4].starts_with("  → gravity"),
             "the open seats on it: {texts:#?}"
         );
         assert!(texts[5].starts_with("    wave"), "{texts:#?}");
@@ -710,10 +743,10 @@ fn the_compact_spinner_window_rides_the_selection_and_holds_still() {
     // The glyph column is sized off the whole catalog, so it holds still as
     // the three rows in view change.
     let mut app = open_app();
-    let col = glyph_col(&page_at(&app, 80, 12), "gravity");
+    let col = glyph_col(&page_at(&app, 80, 11), "gravity");
     for i in 0..Spinner::ALL.len() {
         select(&mut app, i);
-        let texts = page_at(&app, 80, 12);
+        let texts = page_at(&app, 80, 11);
         assert_eq!(texts.len(), 9, "selection {i} moved the frame");
         let name = Spinner::ALL[i].name();
         assert_eq!(
@@ -723,24 +756,34 @@ fn the_compact_spinner_window_rides_the_selection_and_holds_still() {
         );
     }
     select(&mut app, 5); // blocks
-    let texts = page_at(&app, 80, 12);
+    let texts = page_at(&app, 80, 11);
     assert_eq!(texts[2], "  ↑ 4 more above", "{texts:#?}");
-    assert!(texts[4].starts_with("  ❯ blocks"), "{texts:#?}");
+    assert!(texts[4].starts_with("  → blocks"), "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 2 more below", "{texts:#?}");
 }
 
 #[test]
 fn the_whole_spinner_page_returns_once_it_fits() {
+    // The header yields first and the preview second: the preview is what a
+    // style is chosen by.
     let app = open_app();
     let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Working"));
+    let has_header = |texts: &[String]| texts.iter().any(|t| t.contains(SPINNER_TITLE));
     for width in [WIDE, NARROW] {
         let whole = u16::try_from(page_at(&app, width, TALL).len()).expect("rows");
+        let full = page_at(&app, width, whole);
         assert!(
-            has_preview(&page_at(&app, width, whole)),
+            has_preview(&full) && has_header(&full),
             "{width}: whole at its own height"
         );
+        let headless = page_at(&app, width, whole - 1);
         assert!(
-            !has_preview(&page_at(&app, width, whole - 1)),
+            has_preview(&headless) && !has_header(&headless),
+            "{width}: the header yields first: {headless:#?}"
+        );
+        let short = u16::try_from(headless.len()).expect("rows");
+        assert!(
+            !has_preview(&page_at(&app, width, short - 1)),
             "{width}: compact a row short"
         );
     }
@@ -749,13 +792,13 @@ fn the_whole_spinner_page_returns_once_it_fits() {
 #[test]
 fn the_cursor_sits_on_the_compact_spinner_search_line() {
     let app = open_app();
-    let height = spinner_picker_height(&app, 80, 12).expect("open");
+    let height = spinner_picker_height(&app, 80, 11).expect("open");
     assert_eq!(height, 9, "the compact page");
     let area = Rect::new(0, 1, 80, height);
     let (_, y) = crate::ui::cursor_position(area, &app);
     assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
     assert!(
-        crate::ui::view_flow(&app, 80, 12, 1000).is_none(),
+        crate::ui::view_flow(&app, 80, 11, 1000).is_none(),
         "nothing flows"
     );
 }
@@ -769,7 +812,7 @@ fn a_tiny_terminal_keeps_the_spinner_search_line() {
         assert_sheds_to_its_search_line(
             |height| page_at(&app, width, height),
             "",
-            "❯ gravity",
+            "→ gravity",
             "Enter to choose",
         );
         for height in 1..=10 {

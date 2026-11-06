@@ -466,12 +466,19 @@ pub(super) fn login_locals() -> Vec<LocalChoice> {
     ]
 }
 
-/// The row a search-line picker's `❯` search line sits on in its whole and
-/// compact pages — top rule (0), search (1): no blank row hugs the rule
-/// (`docs/view-flow.md` *The frame hugs its content*). A shorter terminal's
-/// rungs move it up (`compact_page`), which is why the boundary finds it in
-/// the built page rather than pinning it.
+/// The row a search-line picker's `❯` search line sits on in its compact
+/// page — top rule (0), search (1): no blank row hugs the rule
+/// (`docs/view-flow.md` *The frame hugs its content*) — and on the `/login`
+/// lists. A shorter terminal's rungs move it up (`compact_page`), which is
+/// why the boundary finds it in the built page rather than pinning it.
 pub(super) const SEARCH_ROW: u16 = 1;
+
+/// The row the search line sits on in a page that opens on its header — top
+/// rule (0), the title (1), a one-row description (2), the gap (3), search
+/// (4): the whole page of `/model`, `/settings`, `/theme`, `/mascot` and
+/// `/spinner`, and the compact page that keeps the header. A description
+/// that wraps moves it down a row per extra row.
+pub(super) const HEADED_SEARCH_ROW: u16 = 4;
 
 /// A search-line picker on short terminals (`docs/view-flow.md` *A page that
 /// sheds rows before it flows*): from thirty rows down to one its page —

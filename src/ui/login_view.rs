@@ -6,8 +6,8 @@
 use crate::app::{LocalChoice, ProviderChoice, ServerPage};
 
 use super::model_view::{
-    compact_page, first_page_that_fits, list_window, model_linked_rows, model_placeholder_row,
-    model_rule, model_wrapped_rows, placeholder_window,
+    compact_page, first_page_that_fits, list_placeholder_row, list_window, marked_row_head,
+    model_linked_rows, model_placeholder_row, model_rule, model_wrapped_rows, placeholder_window,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize, truncate_cols};
@@ -33,8 +33,9 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
     super::header::page_title_line(text, width)
 }
 
-/// One list row shared by the three `/login` lists:
-/// `{marker}{name} · {✔ configured | ◯ unconfigured}`.
+/// One list row shared by the `/login` lists:
+/// `{indent}{marker}{name} · {✔ configured | ◯ unconfigured}`
+/// ([`marked_row_head`]).
 ///
 /// The selected row's marker and name light up cyan (the palette accent), and
 /// a row that names something *reachable* — a provider, a subscription —
@@ -67,7 +68,6 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
 ///
 /// [`KeyOnboarding::subscription_matches`]: crate::app::KeyOnboarding::subscription_matches
 fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Line<'static> {
-    let marker = if selected { MODEL_MARKER } else { "  " };
     let tag = status.map(|configured| {
         if configured {
             (
@@ -83,28 +83,13 @@ fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Li
             )
         }
     });
-    let reserved = cols(marker)
+    let reserved = cols(MODEL_LIST_INDENT)
         + tag.map_or(0, |(mark, label, _)| {
             cols(LOGIN_STATUS_SEP) + cols(mark) + cols(label)
         });
     let name_room = (width as usize).saturating_sub(reserved).max(1);
     // `…`-cut like the model id: the status keeps its seat and the cut shows.
-    let name = ellipsize(name, name_room);
-
-    let (marker_style, name_style) = if selected {
-        (
-            Style::new().fg(model_selected_color()),
-            Style::new()
-                .fg(model_selected_color())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (Style::default(), Style::new().fg(model_id_color()))
-    };
-    let mut spans = vec![
-        Span::styled(marker.to_string(), marker_style),
-        Span::styled(name, name_style),
-    ];
+    let mut spans = marked_row_head(&ellipsize(name, name_room), selected);
     if let Some((mark, label, mark_color)) = tag {
         let dim = Style::new().fg(model_meta_color());
         spans.push(Span::styled(LOGIN_STATUS_SEP, dim));
@@ -175,11 +160,7 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
             KeyStep::Local => LOGIN_NO_LOCAL_MATCH,
             _ => LOGIN_NO_MATCH,
         };
-        return vec![model_placeholder_row(
-            placeholder,
-            model_meta_color(),
-            width,
-        )];
+        return vec![list_placeholder_row(placeholder, model_meta_color(), width)];
     }
     let (_, lines, _) = login_window(
         &rows,
@@ -200,8 +181,8 @@ fn login_list_len(onboarding: &KeyOnboarding) -> usize {
     }
 }
 
-/// The `(selected+1/total)` counter under a `/login` list, or a blank line when
-/// nothing is selectable.
+/// The `(selected+1/total)` counter under a `/login` list, in its names'
+/// column, or a blank line when nothing is selectable.
 fn login_counter_line(onboarding: &KeyOnboarding) -> Line<'static> {
     let len = login_list_len(onboarding);
     if len == 0 {
@@ -209,7 +190,7 @@ fn login_counter_line(onboarding: &KeyOnboarding) -> Line<'static> {
     }
     let selected = onboarding.selected.min(len - 1);
     Line::from(vec![
-        Span::raw(MODEL_INDENT),
+        Span::raw(MODEL_LIST_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, len),
             Style::new().fg(model_meta_color()),

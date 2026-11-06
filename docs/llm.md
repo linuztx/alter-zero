@@ -266,22 +266,25 @@ prompt — the shape the user asked for. It is `App::model_picker: Option<ModelP
 (not a `View`), owned in `on_key` like the Ctrl+R search, and special-cased in
 `ui::render_live` / `ui::live_height` / `ui::cursor_position`.
 
-Layout (headerless — the top rule, the airy codex-style body, then the bottom
+Layout (the top rule, the header, the airy codex-style body, then the bottom
 rule, with no blank row hugging either rule: the shape of the user's mock,
 tightened by two rows when the frame stopped padding itself,
 `docs/view-flow.md` *The frame hugs its content*):
 
 ```
-────────────────────────────────────────────────
+────────────────────────────────────────────────────────────
+  Select model                                           (title, the pages' title dress)
+  Applies to this session and new ones in this directory (what a pick changes, dim)
+
   ❯ cla                                                  (search prompt, cyan '❯')
 
-→ anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
-  anthropic/claude-3.5-haiku  [openrouter]
-  claude-opus-4-8-fast        [a0_venice]  ✓
-  (3/12)   ·   loading more…                             (position/total + load status, dim)
+  → anthropic/claude-3-haiku    [openrouter]             (selected: '→' under the '❯', active: ✓)
+    anthropic/claude-3.5-haiku  [openrouter]
+    claude-opus-4-8-fast        [a0_venice]  ✓
+    (3/12)   ·   loading more…                           (position/total + load status, dim)
 
-  Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
-────────────────────────────────────────────────
+    Model Name: Anthropic: Claude 3.5 Haiku              (friendly name, dim)
+────────────────────────────────────────────────────────────
 ```
 
 - Opened by `/model` (`Action::OpenModelPicker`). **Works mid-turn** (updated
@@ -381,8 +384,19 @@ tightened by two rows when the frame stopped padding itself,
   settings carry the thinking state beside the selection. See
   `docs/reasoning.md`.
 
-- The picker is **headerless** — the old "Showing models…" banner was dropped, so
-  the `❯` search line sits directly under the top rule; the selection marker is `→`.
+- The picker opens on a **header** (updated 2026-11-06): the `Select model` title
+  in the pages' title dress over a dim line saying what a pick changes — this
+  session, and the directory's entry every new session here starts on
+  (`docs/session-model.md`, `docs/per-directory-state.md`) — then a gap and the
+  `❯` search line, the header `/skills`, `/hooks` and `/mcp` open on
+  (`model_view::picker_header`, `docs/view-flow.md` *A header over the search
+  line*). The old "Showing models…" banner it replaces was dropped for saying
+  nothing; the title names the page and the description the scope of a pick.
+  The selection marker is `→`, under the `❯` rather than in the frame's gutter,
+  and the counter, the `Model Name:` line, a failed provider's reason and a
+  placeholder start where the ids do. **Seven** rows at once
+  (`MODEL_MENU_MAX_ROWS`), so the page under its header is the seventeen rows it
+  was before it.
 - The counter + `Model Name:` rows show **only when a real model is highlighted**.
   A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
   `No matching models`) has no counter or name, so those rows collapse away and
@@ -394,11 +408,12 @@ tightened by two rows when the frame stopped padding itself,
   framed view; `docs/view-flow.md`). The `/login` provider step
   follows the same rule: with no provider matched its counter takes no row, so
   one gap carries `No matching providers` to the hint.
-- On a terminal too short for the page (seventeen rows with ten models listed),
+- On a terminal too short for the page (seventeen rows with seven models listed),
   `model_view_lines(picker, width, height)` builds the family's **compact**
   page instead (`docs/view-flow.md` *A page that sheds rows before it flows*):
   three models between the reserved `↑ N more above` / `↓ N more below`
-  slots, the counter and the failed providers' rows yielding. The picker has
+  slots, the counter and the failed providers' rows yielding, under the header
+  while it fits (twelve rows) and without it a row shorter. The picker has
   no hint row, so the compact page keeps the highlighted model's `Model Name:`
   line where its siblings keep their hint — the same nine-row shape:
 
@@ -406,11 +421,11 @@ tightened by two rows when the frame stopped padding itself,
   ────────────────────────────────────────────────
     ❯
 
-  → stub/model-00 [stub]
-    stub/model-01 [stub]
-    stub/model-02 [stub]
+    → stub/model-00 [stub]
+      stub/model-01 [stub]
+      stub/model-02 [stub]
     ↓ 9 more below
-    Model Name: Stub: Model 0
+      Model Name: Stub: Model 0
   ────────────────────────────────────────────────
   ```
 
@@ -429,8 +444,9 @@ tightened by two rows when the frame stopped padding itself,
 
 All picker styling is centralized in `ui/theme.rs`'s `MODEL_*` consts: the cyan `❯`
 prompt and selection accent (reusing `menu_selected_color()`), the dim provider tag /
-counter / model-name, the `→` marker, the `✓` active mark, the cyan
-`MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`. Retheme there.
+counter / model-name, the `→` marker and the `MODEL_LIST_INDENT` the names start at,
+the `✓` active mark, the cyan `MODEL_LOGIN_HINT`, the `MODEL_TITLE` /
+`MODEL_DESCRIPTION` header, and `MODEL_MENU_MAX_ROWS`. Retheme there.
 
 ## The inline `/login` onboarding flow
 
@@ -444,16 +460,16 @@ The API-key half is below; the subscription half is its own bullet, and the
 local half — a server's address, **tested before it is saved** — is
 `docs/local-models.md`.
 
-**Step 1 — pick a provider** (a filterable list, headerless like `/model`;
+**Step 1 — pick a provider** (a filterable list with no title;
 `KeyStep::Provider`):
 
 ```
 ────────────────────────────────────────────────
   ❯ agent                                                (filter, cyan '❯')
 
-→ Agent Zero API · ✔ configured                          (selected '→'; green ✔ = a key resolves)
-  OpenRouter · ◯ unconfigured                            (no key yet; the word stays dim)
-  (1/2)                                                  (position/total, dim)
+  → Agent Zero API · ✔ configured                        (selected '→' under the '❯'; green ✔ = a key resolves)
+    OpenRouter · ◯ unconfigured                          (no key yet; the word stays dim)
+    (1/2)                                                (position/total, dim, in the names' column)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
 ────────────────────────────────────────────────

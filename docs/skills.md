@@ -664,8 +664,9 @@ name is completable there — and nothing here forecloses the palette half.
 `/skills` opens the **fifth composer-replacing inline picker**. Its list is
 deliberately the `/settings` menu's twin rather than a new shape — same frame,
 same `❯` type-to-search, same aligned `{label}  {value}` column with the same
-two-tone colouring, same `(n/total)` counter, same Enter/Space grammar — under
-the header the `/hooks` and `/mcp` pages open on:
+two-tone colouring, same `(n/total)` counter, same five-row window, same
+Enter/Space grammar — under the header the `/hooks` and `/mcp` pages open on,
+here a count line where `/settings` has a description:
 
 ```
   Skills
@@ -673,15 +674,21 @@ the header the `/hooks` and `/mcp` pages open on:
 
   ❯
 
-→ commit-helper        ✔ enabled
-  haiku-writer         ◯ disabled
-  startup-hook-skill   ✔ enabled
-  (1/3)
+  → commit-helper        ✔ enabled
+    haiku-writer         ◯ disabled
+    startup-hook-skill   ✔ enabled
+    (1/3)
 
-  Write a git commit message in this project's house style…
+    Write a git commit message in this project's house style…
 
-  Type to search · Enter/Space to enable/disable · Esc to cancel
+  Type to search · Space to toggle · Esc to cancel
 ```
+
+The rows hang from the search line's `❯` — the highlighted row's `→` under
+it, every name two columns past it, the counter and the description in the
+names' column (`docs/view-flow.md` *A header over the search line*) — and the
+hint names Space, the key every row shares with `/settings`' cycle (Enter
+toggles too).
 
 Only the rows differ: one per discovered skill instead of one per knob, with
 the skill's **own description** as the line under the list — so the picker
@@ -726,7 +733,8 @@ Two notes the `/settings` menu has no need of:
 ### A terminal too short for the page
 
 The whole page is eleven rows of chrome plus the rows and the description:
-eighteen for six skills. A shorter terminal gets a **compact** page instead —
+seventeen for six skills, five of them in the window. A shorter terminal gets
+a **compact** page instead —
 the `/theme` picker's (`docs/theme.md`), over this list — and codex's order of
 what yields: *"optional gaps and previews yield first"*, while a header stays
 for as long as it fits (`selection_picker_layout.rs`). Here the description
@@ -740,11 +748,11 @@ then gone with the `(n/total)` counter:
 
   ❯
   ↑ 1 more above
-  dataviz         ✔ enabled
-→ haiku-writer    ✔ enabled
-  jina-reader     ✔ enabled
+    dataviz         ✔ enabled
+  → haiku-writer    ✔ enabled
+    jina-reader     ✔ enabled
   ↓ 2 more below
-  Type to search · Enter/Space to enable/disable · Esc to…
+  Type to search · Space to toggle · Esc to cancel
 ──────────────────────────────────────────────────────────
 ```
 
@@ -756,11 +764,11 @@ of the header:
 ──────────────────────────────────────────────────────────
   ❯
   ↑ 1 more above
-  dataviz         ✔ enabled
-→ haiku-writer    ✔ enabled
-  jina-reader     ✔ enabled
+    dataviz         ✔ enabled
+  → haiku-writer    ✔ enabled
+    jina-reader     ✔ enabled
   ↓ 2 more below
-  Type to search · Enter/Space to enable/disable · Esc to…
+  Type to search · Space to toggle · Esc to cancel
 ──────────────────────────────────────────────────────────
 ```
 

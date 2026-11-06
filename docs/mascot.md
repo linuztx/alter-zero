@@ -36,9 +36,12 @@ layout (`docs/theme.md`):
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select mascot
+  The mascot the startup banner opens with
+
   ❯
 
-  ❯ crest ✓     Crest
+  → crest ✓     Crest
     bloom       A crested hatchling flaring its frill
     sprout
     twin         ▙▄▙▄▟▄▟   Alter Zero (v0.14.0)
@@ -53,9 +56,12 @@ On a narrower one the same preview stacks under the list:
 
 ```
 ──────────────────────────────────────────────────────
+  Select mascot
+  The mascot the startup banner opens with
+
   ❯
 
-  ❯ crest ✓
+  → crest ✓
     bloom
     sprout
     twin
@@ -73,12 +79,15 @@ On a narrower one the same preview stacks under the list:
 ──────────────────────────────────────────────────────
 ```
 
-Deliberately the `/theme` picker's layout — the same inline frame and `❯`
-type-to-search (matching names *and* descriptions), the rows in the **`/mcp`
-list's shape** (the accent `❯` and the bold name on the selection, every
+Deliberately the `/theme` picker's layout — the same header (the `Select
+mascot` title over a dim line, which yields before the preview on a short
+terminal), the same inline frame and `❯` type-to-search (matching names
+*and* descriptions), the rows in the **`/mcp` list's shape** (the accent `→`
+and the bold name on the selection, under the search line's `❯`, every
 other row indented under it; dim `↑ N more above` / `↓ N more below` rows
-name whatever a window hides, in place of an `(n/total)` counter, though six
-mascots never window in the ten-row list), and a hint led by the navigation
+name whatever a window hides, in place of an `(n/total)` counter, though the
+six mascots fill the six-row list column whole — `/theme`'s column,
+`model_view::fitted_window`), and a hint led by the navigation
 — around the one thing a mascot picker exists for: a **live banner
 preview**. It is built by the *same* `ui::header` builder the startup banner
 uses (`header_lines_for(app, mascot, width)`, at the preview column's width),
@@ -108,11 +117,13 @@ its description in the frame's dim.
   it.
 - **One layout, three pickers.** `ui::model_view::PreviewLayout` lays the
   preview beside or under the list for `/theme`, `/mascot` and `/spinner`
-  alike, over the shared row head (`marked_row_head`), overflow rows
-  (`overflow_list`) and caption (`caption_lines`).
+  alike, over the shared row head (`marked_row_head`), list column
+  (`fitted_window`, `overflow_list`), caption (`caption_lines`) and ladder
+  (`previewed_page`).
 
-Laid side by side the page is twelve rows against the stacked page's
-nineteen, so it fits a 12-row terminal whole.
+Laid side by side the page is fifteen rows against the stacked page's
+twenty-two, and twelve and nineteen without its header, so a 12-row
+terminal still shows it whole but for the header.
 
 A search that matches **nothing** collapses to its essentials — the
 placeholder, one blank gap, the hint — because there is no list, no caption
@@ -122,9 +133,12 @@ of blank lines mid-frame. It is the `/model` picker's placeholder rule
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select mascot
+  The mascot the startup banner opens with
+
   ❯ ?
 
-  No matching mascots
+    No matching mascots
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────────
@@ -139,18 +153,20 @@ pastes are swallowed (nothing anyone pastes is a mascot name). It works
 **mid-turn** like `/settings` — it only replaces the composer, and the
 streaming strip keeps its rows above it.
 
-On a terminal too short for the page (twelve rows beside the list,
-nineteen stacked) the picker builds the family's **compact** page instead
-(`docs/view-flow.md` *A page that sheds rows before it flows*): the preview
-yields, caption and banner together, and three mascots sit between the
-reserved overflow slots, so the search line, the highlighted mascot and the
-hint stay on screen.
+On a terminal too short for the page (fifteen rows beside the list,
+twenty-two stacked) the header yields first — twelve rows still show every
+mascot beside its banner — and on one too short for that the picker builds
+the family's **compact** page instead (`docs/view-flow.md` *A page that
+sheds rows before it flows*): the preview yields, caption and banner
+together, and three mascots sit between the reserved overflow slots, under
+the header while it fits, so the search line, the highlighted mascot and
+the hint stay on screen.
 
 ```
 ──────────────────────────────────────────────────────────
   ❯
 
-  ❯ crest ✓
+  → crest ✓
     bloom
     sprout
   ↓ 3 more below

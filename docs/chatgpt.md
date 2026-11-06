@@ -219,8 +219,8 @@ for, less the blank rows that once hugged its rules (`docs/view-flow.md`
 ────────────────────────────────────────────────────────────────────────────
   Select ChatGPT Codex login method:
 
-→ Browser login (default)
-  Device code login (headless)
+  → Browser login (default)
+    Device code login (headless)
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────

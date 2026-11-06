@@ -42,7 +42,7 @@ expect_has "$sks_open" -F "6 skills · 6 enabled" "the compact page lost its hea
 expect_has "$sks_open" -E '^  ❯ *$' "the compact page lost its search line"
 expect_has "$sks_open" -E "→ alpha-skill +✔ enabled" "the highlighted skill is not on screen"
 expect_has "$sks_open" -F "↓ 3 more below" "the rows under the window are not named"
-expect_has "$sks_open" -F "Type to search · Enter/Space to enable/disable · Esc to cancel" "the compact page lost its hint"
+expect_has "$sks_open" -F "Type to search · Space to toggle · Esc to cancel" "the compact page lost its hint"
 expect_lacks "$sks_open" -F "The alpha demo skill" "the compact page still shows the description"
 expect_lacks "$sks_open" -F "(1/6)" "the compact page still shows the counter"
 if [ "$(printf '%s\n' "$sks_open" | grep -cE '(✔|◯) (enabled|disabled)')" -ne 3 ]; then
@@ -76,14 +76,15 @@ sks_toggled="$(tmux capture-pane -t "$S77B" -p)"
 echo "==== Phase 77b: Enter on the compact page ===="
 printf '%s\n' "$sks_toggled"
 expect_has "$sks_toggled" -E "→ delta-skill +◯ disabled" "Enter did not toggle the highlighted row on the compact page"
-# 30 rows: the whole page again, its description and counter back.
+# 30 rows: the whole page again, its description and counter back — five
+# of the six skills, the window riding delta.
 tmux resize-window -t "$S77B" -x 90 -y 30
 sleep 0.6
 sks_tall="$(tmux capture-pane -t "$S77B" -p)"
 echo "==== Phase 77b: 30 rows — the whole page again ===="
 printf '%s\n' "$sks_tall"
 for expect in "(4/6)" "The delta demo skill, for the smoke suite only" "6 skills · 5 enabled" \
-	"alpha-skill" "foxtrot-skill"; do
+	"bravo-skill" "foxtrot-skill"; do
 	expect_has "$sks_tall" -F -- "$expect" "the whole page is missing '$expect'"
 done
 expect_lacks "$sks_tall" -F "more below" "the whole page still names hidden rows"

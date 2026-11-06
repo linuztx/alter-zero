@@ -48,6 +48,25 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The pickers open on a title and keep their lists under the prompt.**
+  `/model`, `/settings`, `/theme`, `/mascot` and `/spinner` now open on a
+  title and a dim line saying what the page changes, as `/skills` already
+  did: `Select model` over *Applies to this session and new ones in this
+  directory*, `Settings` over *Changes apply at once and are saved*, and
+  `Select theme`, `Select mascot`, `Select spinner`. In every picker the
+  highlighted row's `→` now sits under the search line's `❯` instead of at
+  the left edge, with the names two columns further in, and the counter,
+  the highlighted row's description, `Model Name:` and a `No matching …`
+  placeholder line up with the names. `/theme`, `/mascot` and `/spinner`
+  mark the highlighted row with `→`, where they used a second `❯` just under
+  the search line's. The lists are shorter: `/model` shows seven rows at
+  once, `/settings` and `/skills` five, and `/theme` and `/spinner` five
+  rows and a `↓ N more below` row, with the `(n/total)` counter or the
+  overflow rows saying where you are. All six mascots still fit. On a short
+  terminal the title goes before the list does, and on `/theme`, `/mascot`
+  and `/spinner` before the preview. `/skills`' hint now reads `Type to
+  search · Space to toggle · Esc to cancel` (`docs/view-flow.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

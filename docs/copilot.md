@@ -35,8 +35,8 @@ page's, and follow `/theme` like the banner does.
 ────────────────────────────────────────────────────────────────────────────
   ❯
 
-→ Use a subscription
-  Use an API key
+  → Use a subscription
+    Use an API key
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────
@@ -52,9 +52,9 @@ would say nothing they don't. Type-to-filter works here like every list step
 ────────────────────────────────────────────────────────────────────────────
   ❯
 
-→ GitHub Copilot · ✔ configured
-  ChatGPT Codex · ◯ unconfigured
-  (1/2)
+  → GitHub Copilot · ✔ configured
+    ChatGPT Codex · ◯ unconfigured
+    (1/2)
 
   ↑↓ navigate  enter sign in  esc back
 ────────────────────────────────────────────────────────────────────────────

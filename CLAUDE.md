@@ -425,10 +425,16 @@ system per entry: the four Catppuccin flavours with **Mocha the default**
 `onedark` — the TUI's original chrome value for value, over Atom's One Dark
 code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
-follows the terminal's theme. codex's theme picker in the family's frame:
-the catalog in the **`/mcp` list's shape** (the accent `❯` on the
-selection, the other rows indented under it, a ten-row centred window whose
-hidden rows dim `↑ N more above` / `↓ N more below` rows name, the hint led
+follows the terminal's theme. codex's theme picker in the family's frame,
+under the `Select theme` header every search-line picker now opens on (a
+title in the pages' title dress over one dim row, `model_view::picker_header`,
+which on these previewed pickers yields *before* the preview,
+`model_view::previewed_page`): the catalog in the **`/mcp` list's shape**
+(the accent `→` on the selection, under the search line's `❯`, the other
+rows indented under it, a six-row list column counting its overflow rows —
+`model_view::fitted_window`, five themes and a dim `↓ N more below` row at
+an end of the catalog, four between the dim `↑ N more above` / `↓ N more
+below` rows in its middle, one height at every selection — the hint led
 by `↑/↓ to navigate`), every row wearing a five-`●` swatch of its own
 palette, the highlighted theme previewed on **real cells** — a user bubble,
 an `Edit` diff cell, a reply with a code line, built by
@@ -2615,8 +2621,9 @@ and the **`/skills`
 menu** (the fifth composer-replacing inline picker and deliberately the
 `/settings` menu's **twin** rather than a new shape — same frame, same `❯`
 type-to-search, same aligned `{label}  {value}` column with the same two-tone
-colouring, same `(n/total)` counter, same Enter/Space grammar — under the
-header `/hooks` and `/mcp` open on: the `Skills` title in the pages' title
+colouring under the prompt, same `(n/total)` counter, same five-row window,
+same Enter/Space grammar (the hint `Type to search · Space to toggle · Esc to
+cancel`) — under the header `/hooks` and `/mcp` open on: the `Skills` title in the pages' title
 dress over a dim `{n} skills · {k} enabled` count of what is **installed**
 (never the search, which the counter already follows; `enabled_count` counts
 over the discovered skills, since the off-set keeps names not installed
@@ -3786,13 +3793,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the band's height is `shortcuts_lines`' built line count,
   so every width's grid reserves its own rows — `docs/shortcuts.md`), the
   inline `/settings` menu (`SETTINGS_*` — it
-  reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
-  selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
-  sized off the widest visible label) and its two-tone colouring
+  reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker (after
+  the inset, the names at `MODEL_LIST_INDENT` with the counter and the
+  description) and cyan selection, adding only its `SETTINGS_TITLE` /
+  `SETTINGS_DESCRIPTION` header, the value column's geometry
+  (`SETTINGS_VALUE_GAP`, sized off the widest visible label, capped so a
+  value keeps its seat) and its two-tone colouring
   (`settings_value_color()` for a live value, `settings_value_off_color()` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
-  and `SETTINGS_MENU_MAX_ROWS` — the cursor seated on the search line
+  and `SETTINGS_MENU_MAX_ROWS` (five) — the cursor seated on the search line
   `cursor_position` finds in the page `settings_view_lines` builds
   (`view_prompt_row`, since a short terminal's rungs move it up), the page
   height the built line count — `docs/view-flow.md` — see

@@ -48,12 +48,12 @@ echo "==== Phase 77: the skills menu open ===="
 printf '%s\n' "$skills_open"
 for expect in "alpha-skill" "beta-skill" "(1/2)" \
 	"The first demo skill, for the smoke suite only" \
-	"Type to search · Enter/Space to enable/disable · Esc to cancel"; do
+	"Type to search · Space to toggle · Esc to cancel"; do
 	expect_has "$skills_open" -F "$expect" "the skills menu is missing '$expect'"
 done
 expect_has "$skills_open" -E "^  Skills *$" "the skills menu does not open on its title"
 expect_has "$skills_open" -F "2 skills · 2 enabled" "the header does not count the skills and how many are on"
-expect_has "$skills_open" -E "→ alpha-skill +✔ enabled" "the first row is not marked with its value in the value column"
+expect_has "$skills_open" -E "^  → alpha-skill +✔ enabled" "the first row is not marked, under the search line's ❯, with its value in the value column"
 # Enter disables the highlighted skill: the row flips and a toast confirms.
 tmux send-keys -t "$S77" Enter
 sleep 0.6
@@ -68,7 +68,7 @@ expect_has "$skills_off" -F "2 skills · 1 enabled" "the header's count did not 
 tmux send-keys -t "$S77" Escape
 sleep 0.5
 skills_closed="$(tmux capture-pane -t "$S77" -p)"
-expect_lacks "$skills_closed" -F "Enter/Space to enable/disable" "Esc did not close the skills menu"
+expect_lacks "$skills_closed" -F "Space to toggle" "Esc did not close the skills menu"
 expect_has "$skills_closed" -F "dummy_model_name" "the composer (and its footer) did not come back"
 tmux kill-session -t "$S77" 2>/dev/null
 echo "==== Phase 77: skills.json on disk ===="

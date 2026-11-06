@@ -657,12 +657,15 @@ fn render_live_shows_the_model_picker_when_open() {
     // pinned at the region's bottom (the strip above it owns any slack).
     let mut buf = buffer(60, model_picker_height(&app, 60, 40).unwrap());
     render_live(buf.area, &mut buf, &app);
-    // The picker stands in for the composer: top rule, then the `❯` search
-    // line (headerless), then the model rows.
+    // The picker stands in for the composer: top rule, the header, the `❯`
+    // search line, then the model rows.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-    assert!(row(&buf, SEARCH_ROW, 60).contains('❯'), "search line");
     assert!(
-        row(&buf, 3, 60).contains("anthropic/claude-3-haiku"),
+        row(&buf, HEADED_SEARCH_ROW, 60).contains('❯'),
+        "search line"
+    );
+    assert!(
+        row(&buf, HEADED_SEARCH_ROW + 2, 60).contains("anthropic/claude-3-haiku"),
         "a model row"
     );
 }

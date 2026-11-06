@@ -194,19 +194,22 @@ columns over this catalog — the preview sits **beside** the list:
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select theme
+  Colours for the interface and its code blocks
+
   ❯
 
-  ❯ mocha       ●●●●● ✓    Catppuccin Mocha
+  → mocha       ●●●●● ✓    Catppuccin Mocha
     macchiato   ●●●●●      The darkest flavour, and the default
     frappe      ●●●●●
     latte       ●●●●●      ❯ Rename the greeting in greet.py
     onedark     ●●●●●      ● Edit(greet.py)
-    dracula     ●●●●●        ⎿  Updated greet.py (+1 -1)
-    nord        ●●●●●            1  def greet(name):
-    gruvbox     ●●●●●            2 -    print("Hello, world")
-    solarized   ●●●●●            2 +    print(f"Hello, {name}")
-    monokai     ●●●●●      ● Done — greet.py greets by name now:
-  ↓ 1 more below
+  ↓ 6 more below             ⎿  Updated greet.py (+1 -1)
+                                 1  def greet(name):
+                                 2 -    print("Hello, world")
+                                 2 +    print(f"Hello, {name}")
+                           ● Done — greet.py greets by name now:
+
                              greet("Alter Zero")  # Hello, Alter Zero
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
@@ -218,14 +221,17 @@ the end of the catalog, so the overflow row is above the window):
 
 ```
 ──────────────────────────────────────────────────────────────
+  Select theme
+  Colours for the interface and its code blocks
+
   ❯
 
-  ↑ 1 more above
-    macchiato   ●●●●●
-    frappe      ●●●●●
-    …
+  ↑ 6 more above
+    nord        ●●●●●
+    gruvbox     ●●●●●
+    solarized   ●●●●●
     monokai     ●●●●●
-  ❯ ansi        ●●●●●
+  → ansi        ●●●●●
 
   Terminal
   The terminal's own 16 ANSI colours, so the TUI follows its …
@@ -252,17 +258,28 @@ so `catppuccin` finds the four flavours and `follows` the terminal theme)
 over the list, and a dim hint led, like the `/mcp` list's, by the
 navigation. Then the things a theme picker exists for:
 
+- **The page opens on a header** — the `Select theme` title in the pages'
+  title dress over a dim *Colours for the interface and its code blocks*,
+  then a gap and the search line (`model_view::picker_header`,
+  `docs/view-flow.md` *A header over the search line*). On a terminal one
+  row too short for it the header yields **before** the preview does
+  (`model_view::previewed_page`): the preview is what a theme is chosen by.
 - **The list is the `/mcp` list.** The selected row is the indent, the
-  accent `❯` (`HOOKS_MARKER`) and the name in bold; every other row keeps
-  the marker's width blank, so the names line up under it. A ten-row window
-  (`THEME_MENU_MAX_ROWS`, the settings window's size) keeps the selection on
-  its middle row (`centered_window`), and the rows it hides are named by a
-  dim `↑ N more above` row over the window and a dim `↓ N more below` row
-  under it — each only when something is hidden that way, exactly as `/mcp`
-  does it. The eleven-theme catalog always hides one row on one side, so the
+  accent `→` (`MODEL_MARKER` — the `❯` it used to wear was a second prompt a
+  row under the search line's) and the name in bold; every other row keeps
+  the marker's width blank, so the names line up under it. The list column
+  is **six rows counting its overflow rows** (`THEME_MENU_MAX_ROWS`,
+  `model_view::fitted_window`): the rows it hides are named by a dim
+  `↑ N more above` row over the window and a dim `↓ N more below` row under
+  it — each only when something is hidden that way, exactly as `/mcp` does
+  it — and they come out of the column's rows, so the window is five themes
+  at either end of the catalog and four between the two in its middle. The
   frame holds still as ↑/↓ walk it — the `/settings` always-emit rule
-  (`the_page_height_is_stable_across_selections`). There is no `(n/total)`
-  counter: the overflow rows say what is hidden.
+  (`the_page_height_is_stable_across_selections`) — without a blank row
+  reserved for an overflow row with nothing to say. Beside the preview the
+  sample sets the block's height, so the short column costs nothing there;
+  stacked under it, it gives the conversation four rows back. There is no
+  `(n/total)` counter: the overflow rows say what is hidden.
 - **Every row wears its own swatch.** After the name column — sized to the
   widest name in the **whole catalog** plus `THEME_MENU_GAP`, never just the
   visible rows', so a search or a scroll moves neither the swatches nor the
@@ -335,23 +352,25 @@ depends on the selection — and the page is **still** (nothing on it ticks),
 so unlike the `/spinner` picker it asks for no animation frames and its
 scrollback flow is signed on its **rows**, like the `/mascot` picker's: any
 keystroke re-flows it (`docs/view-flow.md`). Laid side by side the page is
-eighteen rows against the stacked page's thirty, so it fits a 24-row
-terminal without flowing — the frame pads neither rule, the search line
-straight under the top one and the hint straight over the bottom one
+twenty-one rows against the stacked page's twenty-eight, so it fits a 24-row
+terminal without flowing — the frame pads neither rule, the header straight
+under the top one and the hint straight over the bottom one
 (`docs/view-flow.md` *The frame hugs its content*).
 
 ### A terminal too short for the page
 
-A terminal shorter than the whole page gets a **compact** page instead —
+A terminal a row shorter than the whole page gets it without its header,
+the preview kept; one shorter than that gets a **compact** page instead —
 codex's short panel, whose `selection_picker_layout.rs` puts the rule in a
-line: *"optional gaps and previews yield first"*:
+line: *"optional gaps and previews yield first"* — under the header while it
+fits (twelve rows, `headed_compact_page`), and without it below that:
 
 ```
 ──────────────────────────────────────────────────────────
   ❯
   ↑ 4 more above
     onedark     ●●●●●
-  ❯ dracula     ●●●●●
+  → dracula     ●●●●●
     nord        ●●●●●
   ↓ 4 more below
   ↑/↓ to navigate · Type to search · Enter to choose · Es…
@@ -374,8 +393,9 @@ frame on ↑/↓. Reserved, the page is nine rows at every selection
 gap the page wants there anyway.
 
 The choice is the page builder's: `theme_view_lines` takes the rows the page
-may have and builds the whole page when it fits them, the compact one when
-it doesn't (`the_whole_page_returns_once_it_fits`). Those rows are the
+may have and builds the whole page when it fits them, the page without its
+header a row short of that, and the compact one when neither does
+(`the_whole_page_returns_once_it_fits`). Those rows are the
 terminal's — a composer-replacing view keeps its rows and the streaming
 strip above it gives way (`view_split`) — and every reader of the page
 passes either that height or the region already reserved for the page,
@@ -395,7 +415,7 @@ still in place:
 ──────────────────────────────────────────────────────────
   ❯
     onedark     ●●●●●
-  ❯ dracula     ●●●●●
+  → dracula     ●●●●●
     nord        ●●●●●
   ↑/↓ to navigate · Type to search · Enter to choose · Es…
 ──────────────────────────────────────────────────────────

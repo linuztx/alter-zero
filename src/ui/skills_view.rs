@@ -21,9 +21,9 @@
 //! be off screen.
 
 use super::model_view::{
-    Description, compact_page, first_page_that_fits, list_window, model_compact_list,
-    model_description_rows, model_placeholder_row, model_rule, model_wrapped_rows,
-    placeholder_window,
+    Description, compact_page, first_page_that_fits, headed_compact_page, list_placeholder_row,
+    list_window, list_wrapped_rows, marked_row_head, model_description_rows, model_placeholder_row,
+    model_wrapped_rows, picker_search_line, placeholder_page, search_page,
 };
 use super::theme::*;
 use super::wrap::{cols, ellipsize};
@@ -60,35 +60,21 @@ fn value_cols(enabled: bool) -> usize {
     cols(mark) + 1 + cols(word)
 }
 
-/// One skill row: `{marker}{name}{pad}{mark} {enabled|disabled}` — the
-/// `/settings` row's shape with a status mark leading the value, so the two
-/// menus read as one family. `name_width` is the (capped) widest listed
-/// name, so the value column lines up down the list; a name wider than it
-/// `…`-cuts rather than paint-clipping at the buffer edge and shoving the
-/// value off the row.
+/// One skill row: `{indent}{marker}{name}{pad}{mark} {enabled|disabled}`
+/// ([`marked_row_head`]) — the `/settings` row's shape with a status mark
+/// leading the value, so the two menus read as one family. `name_width` is
+/// the (capped) widest listed name, so the value column lines up down the
+/// list; a name wider than it `…`-cuts rather than paint-clipping at the
+/// buffer edge and shoving the value off the row.
 fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16) -> Line<'static> {
-    let marker = if selected { MODEL_MARKER } else { "  " };
-    let (marker_style, name_style) = if selected {
-        (
-            Style::new().fg(model_selected_color()),
-            Style::new()
-                .fg(model_selected_color())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (Style::default(), Style::new().fg(model_id_color()))
-    };
     let name = ellipsize(&row.name, name_width.max(1));
     let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
-    let reserved = cols(marker) + cols(&name) + pad;
+    let reserved = cols(MODEL_LIST_INDENT) + cols(&name) + pad;
     let value_room = (width as usize).saturating_sub(reserved).max(1);
     let (mark, mark_color, word, word_color) = skills_value(row.enabled);
-    let mut spans = vec![
-        Span::styled(marker.to_string(), marker_style),
-        Span::styled(name, name_style),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(mark, Style::new().fg(mark_color)),
-    ];
+    let mut spans = marked_row_head(&name, selected);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(mark, Style::new().fg(mark_color)));
     // The mark IS the state, so it keeps its seat however narrow the row; the
     // word only restates it, so it is the half that `…`-cuts — the `/mcp`
     // rows' rule, where the glyph survives a squeeze its words don't.
@@ -104,12 +90,12 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
 }
 
 /// The widest name among `rows` — capped so the value column always keeps a
-/// seat on the row (`width` minus the marker, the gap, and the widest value)
-/// — so [`skills_row`] can align the value column.
+/// seat on the row (`width` minus the inset and the marker, the gap, and the
+/// widest value) — so [`skills_row`] can align the value column.
 fn name_column(rows: &[SkillMenuRow], width: u16) -> usize {
     let widest_value = value_cols(true).max(value_cols(false));
     let cap = (width as usize)
-        .saturating_sub(cols(MODEL_MARKER) + SETTINGS_VALUE_GAP + widest_value)
+        .saturating_sub(cols(MODEL_LIST_INDENT) + SETTINGS_VALUE_GAP + widest_value)
         .max(1);
     rows.iter()
         .map(|r| cols(&r.name))
@@ -118,10 +104,10 @@ fn name_column(rows: &[SkillMenuRow], width: u16) -> usize {
         .min(cap)
 }
 
-/// The placeholder lines shown in place of the list: one row saying nothing
-/// matched the search, or — when nothing was discovered at all — the roots
-/// skills are looked for in, since that is the only question an empty list
-/// raises. The middle of [`skills_placeholder_body`].
+/// The placeholder lines shown in place of the list, in its names' column:
+/// one row saying nothing matched the search, or — when nothing was
+/// discovered at all — the roots skills are looked for in, since that is the
+/// only question an empty list raises ([`placeholder_page`]).
 fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let roots = app
         .skills_menu
@@ -131,18 +117,18 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         // Nothing discovered: name where one would go — the path rows ARE
         // the instruction, so they wrap rather than losing their tails.
         Some((true, roots)) if !roots.is_empty() => {
-            let mut lines = vec![model_placeholder_row(
+            let mut lines = vec![list_placeholder_row(
                 SKILLS_NONE_FOUND,
                 model_meta_color(),
                 width,
             )];
             lines.extend(roots.iter().flat_map(|root| {
-                model_wrapped_rows(&format!("{root}/<name>/SKILL.md"), model_id_color(), width)
+                list_wrapped_rows(&format!("{root}/<name>/SKILL.md"), model_id_color(), width)
             }));
             lines
         }
         // Skills exist, the search just matched none of them.
-        _ => vec![model_placeholder_row(
+        _ => vec![list_placeholder_row(
             SKILLS_NO_MATCH,
             model_meta_color(),
             width,
@@ -173,10 +159,11 @@ fn skills_window(
     (above, lines, below)
 }
 
-/// The `(selected+1/total)` counter under the whole page's list.
+/// The `(selected+1/total)` counter under the whole page's list, in the
+/// names' column.
 fn skills_counter_line(selected: usize, total: usize) -> Line<'static> {
     Line::from(vec![
-        Span::raw(MODEL_INDENT),
+        Span::raw(MODEL_LIST_INDENT),
         Span::styled(
             format!("({}/{total})", selected + 1),
             Style::new().fg(model_meta_color()),
@@ -269,62 +256,6 @@ fn skills_whole_body(
     lines
 }
 
-/// The compact page's body, for a terminal too short for the whole page —
-/// codex's short panel, where "optional gaps and previews yield first"
-/// (`selection_picker_layout.rs`): a [`COMPACT_LIST_ROWS`]-row window of
-/// the rows between two reserved overflow slots ([`model_compact_list`] —
-/// the `↑` directly under the search line, the `↓` directly over the hint),
-/// and no counter or description, so what stays on screen is the choices.
-/// The `/theme` picker's compact body for this list.
-fn skills_compact_body(rows: &[SkillMenuRow], selected: usize, width: u16) -> Vec<Line<'static>> {
-    let (above, window, below) =
-        skills_window(rows, selected, usize::from(COMPACT_LIST_ROWS), width);
-    model_compact_list(above, window, below, width)
-}
-
-/// The body when the list is empty: the placeholder block between single
-/// gaps — one gap carries it to the hint (the `/settings` menu's collapse,
-/// so the two menus stay twins). There is no window to compact, so it is the
-/// same at every height.
-fn skills_placeholder_body(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::default()];
-    lines.extend(skills_empty_lines(app, width));
-    lines.push(Line::default());
-    lines
-}
-
-/// The menu's `❯` search line, carrying the query.
-fn skills_search_line(menu: &SkillsMenu) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(menu.query.clone()),
-    ])
-}
-
-/// Frame `body` as a page: a top rule, the `header` and a gap under it
-/// (when there is a header), the `search` line, the body, the `hint` and
-/// the bottom rule — no blank row hugs either rule (`docs/view-flow.md`
-/// *The frame hugs its content*).
-fn skills_page(
-    header: &[Line<'static>],
-    search: &Line<'static>,
-    body: Vec<Line<'static>>,
-    hint: &Line<'static>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines = vec![model_rule(width)];
-    if !header.is_empty() {
-        lines.extend_from_slice(header);
-        lines.push(Line::default());
-    }
-    lines.push(search.clone());
-    lines.extend(body);
-    lines.push(hint.clone());
-    lines.push(model_rule(width));
-    lines
-}
-
 /// The framed page as lines — one blank row between each block, never two,
 /// and none hugging either rule (`docs/view-flow.md` *The frame hugs its
 /// content*) — the first of four pages that fits `height` rows
@@ -337,7 +268,7 @@ fn skills_page(
 ///    height at every selection, so a terminal at the edge never flips
 ///    between the whole and the compact page as ↑/↓ cross a long one;
 /// 3. the **compact** page, the header kept: the description and the counter
-///    yield ([`skills_compact_body`] — three rows between reserved `↑`/`↓`
+///    yield ([`headed_compact_page`] — three rows between reserved `↑`/`↓`
 ///    slots), codex's short-panel rule;
 /// 4. the compact page **without the header**, which yields next — the
 ///    `/theme` picker's compact page, row for row — and below it the rungs
@@ -366,40 +297,33 @@ pub(super) fn skills_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
     let rows = app.skill_menu_rows();
     let selected = menu.selected.min(rows.len().saturating_sub(1));
     let header = skills_header_lines(menu, width);
-    let search = skills_search_line(menu);
-    let hint = model_placeholder_row(SKILLS_HINT, model_meta_color(), width);
-    let page = |body: Vec<Line<'static>>| skills_page(&header, &search, body, &hint, width);
+    let search = picker_search_line(&menu.query);
+    let hint = [model_placeholder_row(
+        SKILLS_HINT,
+        model_meta_color(),
+        width,
+    )];
     if rows.is_empty() {
         let block = skills_empty_lines(app, width);
-        return first_page_that_fits(
-            height,
-            &[&|| page(skills_placeholder_body(app, width)), &|| {
-                compact_page(
-                    height,
-                    &search,
-                    &|max| placeholder_window(&block, max),
-                    std::slice::from_ref(&hint),
-                    width,
-                )
-            }],
-        );
+        return placeholder_page(height, &header, &search, &block, &hint, width);
     }
-    let whole = |description| skills_whole_body(&rows, selected, description, width);
+    let whole = |description| {
+        search_page(
+            &header,
+            &search,
+            skills_whole_body(&rows, selected, description, width),
+            &hint,
+            width,
+        )
+    };
+    let window = |max| skills_window(&rows, selected, max, width);
     first_page_that_fits(
         height,
         &[
-            &|| page(whole(Description::Wrapped)),
-            &|| page(whole(Description::OneRow)),
-            &|| page(skills_compact_body(&rows, selected, width)),
-            &|| {
-                compact_page(
-                    height,
-                    &search,
-                    &|max| skills_window(&rows, selected, max, width),
-                    std::slice::from_ref(&hint),
-                    width,
-                )
-            },
+            &|| whole(Description::Wrapped),
+            &|| whole(Description::OneRow),
+            &|| headed_compact_page(&header, &search, &window, &hint, width),
+            &|| compact_page(height, &search, &window, &hint, width),
         ],
     )
 }

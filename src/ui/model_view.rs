@@ -5,15 +5,34 @@ use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize};
 use super::*;
 
-/// A two-space-inset single-row line (placeholder / hint / description) in
-/// the picker family's list area, `…`-cut to `width` ([`ellipsize`]) — the
-/// shared single-row primitive of `/model`, `/login`, `/settings`, `/skills`
-/// and `/mascot`, so a cut row always says so. Text the user must read whole
-/// (errors, paths, descriptions) goes through [`model_wrapped_rows`] instead.
+/// A two-space-inset single-row line (a hint, a note, a page's count line)
+/// at the picker family's page inset, `…`-cut to `width` ([`ellipsize`]) —
+/// the shared single-row primitive of the composer-replacing pages, so a cut
+/// row always says so. Text the user must read whole (errors, paths,
+/// descriptions) goes through [`model_wrapped_rows`] instead; a row that
+/// speaks for a picker's **list** goes through [`list_placeholder_row`].
 pub(super) fn model_placeholder_row(text: &str, color: Color, width: u16) -> Line<'static> {
-    let room = (width as usize).saturating_sub(cols(MODEL_INDENT));
+    inset_placeholder_row(MODEL_INDENT, text, color, width)
+}
+
+/// [`model_placeholder_row`] in a search-line picker's **names' column**
+/// ([`MODEL_LIST_INDENT`]): the counter under its list, the placeholder in
+/// the list's place (`Loading models…`, `No matching settings`) — the rows
+/// that speak for the list start where its names do.
+pub(super) fn list_placeholder_row(text: &str, color: Color, width: u16) -> Line<'static> {
+    inset_placeholder_row(MODEL_LIST_INDENT, text, color, width)
+}
+
+/// One `…`-cut row of `text` in `color` behind `indent`.
+fn inset_placeholder_row(
+    indent: &'static str,
+    text: &str,
+    color: Color,
+    width: u16,
+) -> Line<'static> {
+    let room = (width as usize).saturating_sub(cols(indent));
     Line::from(vec![
-        Span::raw(MODEL_INDENT),
+        Span::raw(indent),
         Span::styled(ellipsize(text, room), Style::new().fg(color)),
     ])
 }
@@ -64,17 +83,19 @@ pub(super) enum Description {
     OneRow,
 }
 
-/// `text`'s rows in the picker family's dim, laid out by `layout`.
+/// `text`'s rows in the picker family's dim, laid out by `layout`, in the
+/// names' column ([`MODEL_LIST_INDENT`]): the highlighted row's description
+/// speaks for the list, so it starts where the names do.
 pub(super) fn model_description_rows(
     text: &str,
     layout: Description,
     width: u16,
 ) -> Vec<Line<'static>> {
     match layout {
-        Description::Wrapped => model_wrapped_rows(text, model_meta_color(), width),
+        Description::Wrapped => list_wrapped_rows(text, model_meta_color(), width),
         Description::OneRow => {
             let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            vec![model_placeholder_row(&flat, model_meta_color(), width)]
+            vec![list_placeholder_row(&flat, model_meta_color(), width)]
         }
     }
 }
@@ -91,6 +112,31 @@ pub(super) fn list_window(
     let offset = centered_window(len, selected, max);
     let end = (offset + max).min(len);
     (offset, offset..end, len - end)
+}
+
+/// The window of a `len`-row list that keeps `selected` in view in a column
+/// of `rows` rows **counting its overflow rows** — the previewed pickers'
+/// list column (`/theme`, `/mascot`, `/spinner`, [`overflow_list`]): the
+/// whole list when it fits, else `rows - 1` rows and the one `↑`/`↓` row
+/// naming the side that hides any (either end of the list), else `rows - 2`
+/// rows between the two (its middle). The column is then `rows` tall at
+/// every selection, so the frame holds still as ↑/↓ walk it, with no blank
+/// row reserved for an overflow row that has nothing to say. As
+/// [`list_window`]: how many rows it hides above, the visible index range,
+/// and how many below.
+pub(super) fn fitted_window(
+    len: usize,
+    selected: usize,
+    rows: usize,
+) -> (usize, std::ops::Range<usize>, usize) {
+    if len <= rows {
+        return (0, 0..len, 0);
+    }
+    let one_side = list_window(len, selected, rows.saturating_sub(1).max(1));
+    if one_side.0 == 0 || one_side.2 == 0 {
+        return one_side;
+    }
+    list_window(len, selected, rows.saturating_sub(2).max(1))
 }
 
 /// A compact page's list: the reserved `↑` slot, the window's rows, the
@@ -115,15 +161,18 @@ pub(super) fn model_compact_list(
 }
 
 /// The head of one list row in the **`/mcp` list's shape**: the family's
-/// indent, then the accent [`HOOKS_MARKER`] and the name in bold accent on
+/// indent, then the accent [`MODEL_MARKER`] and the name in bold accent on
 /// the selected row, or the marker's width left blank and the name in the
-/// muted ink on every other row, so the names line up under the marker. The
-/// previewed pickers (`/theme`, `/mascot`, `/spinner`) open every row with
-/// it.
+/// muted ink on every other row, so the names line up under the marker
+/// ([`MODEL_LIST_INDENT`]). Every search-line picker opens its rows with it
+/// — `/model`, `/login`, `/settings`, `/skills`, `/theme`, `/mascot` and
+/// `/spinner` — so the marker sits under the search line's `❯` rather than
+/// in the frame's gutter, and it is the `→`, not a second `❯` a row below
+/// the prompt's.
 pub(super) fn marked_row_head(name: &str, selected: bool) -> Vec<Span<'static>> {
     let (marker, marker_style, name_style) = if selected {
         (
-            HOOKS_MARKER.to_string(),
+            MODEL_MARKER.to_string(),
             Style::new().fg(model_selected_color()),
             Style::new()
                 .fg(model_selected_color())
@@ -131,7 +180,7 @@ pub(super) fn marked_row_head(name: &str, selected: bool) -> Vec<Span<'static>> 
         )
     } else {
         (
-            " ".repeat(cols(HOOKS_MARKER)),
+            " ".repeat(cols(MODEL_MARKER)),
             Style::default(),
             Style::new().fg(model_id_color()),
         )
@@ -496,12 +545,31 @@ pub(super) fn first_page_that_fits(
 /// derive their height from the built line count (`docs/view-flow.md`), so
 /// continuation rows are free and nothing the user must read is ever cut.
 pub(super) fn model_wrapped_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
-    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    inset_wrapped_rows(MODEL_INDENT, text, color, width)
+}
+
+/// [`model_wrapped_rows`] in a search-line picker's names' column
+/// ([`MODEL_LIST_INDENT`]) — the multi-row sibling of
+/// [`list_placeholder_row`], for what speaks for the list and must be read
+/// whole: a failed provider's reason, the `/login` hint standing in for
+/// `/model`'s list, the roots an empty `/skills` names.
+pub(super) fn list_wrapped_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
+    inset_wrapped_rows(MODEL_LIST_INDENT, text, color, width)
+}
+
+/// `text` word-wrapped behind `indent`, every row in `color`.
+fn inset_wrapped_rows(
+    indent: &'static str,
+    text: &str,
+    color: Color,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let room = (width as usize).saturating_sub(cols(indent)).max(1) as u16;
     text.split('\n')
         .flat_map(|part| super::wrap::wrap_text(part, room))
         .map(|row| {
             Line::from(vec![
-                Span::raw(MODEL_INDENT),
+                Span::raw(indent),
                 Span::styled(row, Style::new().fg(color)),
             ])
         })
@@ -590,45 +658,33 @@ fn linked_segments(line: &str, base: Style) -> Vec<(String, Style)> {
     out
 }
 
-/// One model row: `{marker}{id} [{provider}]{✓}` — the selected row's marker and
-/// id light up cyan (the palette accent), the `[provider]` tag is dim, and the
-/// active model carries a green ✓. The id is `…`-cut so the tag stays visible
-/// *and* the cut shows — two long ids clipped silently read as twins.
+/// One model row: `{indent}{marker}{id} [{provider}]{✓}` ([`marked_row_head`])
+/// — the selected row's marker and id light up cyan (the palette accent), the
+/// `[provider]` tag is dim, and the active model carries a green ✓. The id is
+/// `…`-cut so the tag stays visible *and* the cut shows — two long ids
+/// clipped silently read as twins.
 fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Line<'static> {
-    let marker = if selected { MODEL_MARKER } else { "  " };
     let tag = format!(" [{}]", entry.provider);
     let active_mark = if active { MODEL_ACTIVE_MARK } else { "" };
-    let reserved = cols(marker) + cols(&tag) + cols(active_mark);
+    let reserved = cols(MODEL_LIST_INDENT) + cols(&tag) + cols(active_mark);
     let id_room = (width as usize).saturating_sub(reserved).max(1);
-    let id = ellipsize(&entry.id, id_room);
-
-    let (marker_style, id_style) = if selected {
-        (
-            Style::new().fg(model_selected_color()),
-            Style::new()
-                .fg(model_selected_color())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (Style::default(), Style::new().fg(model_id_color()))
-    };
-    Line::from(vec![
-        Span::styled(marker.to_string(), marker_style),
-        Span::styled(id, id_style),
-        Span::styled(tag, Style::new().fg(model_meta_color())),
-        Span::styled(
-            active_mark.to_string(),
-            Style::new().fg(model_active_color()),
-        ),
-    ])
+    let mut spans = marked_row_head(&ellipsize(&entry.id, id_room), selected);
+    spans.push(Span::styled(tag, Style::new().fg(model_meta_color())));
+    spans.push(Span::styled(
+        active_mark.to_string(),
+        Style::new().fg(model_active_color()),
+    ));
+    Line::from(spans)
 }
 
 /// The picker's list lines: a single placeholder while loading / errored /
 /// empty, else the model rows windowed ([`centered_window`]) to keep the
-/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`].
+/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`]. A
+/// placeholder stands in the list's place, so it sits in the ids' column
+/// ([`MODEL_LIST_INDENT`]).
 fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     match &picker.status {
-        ModelLoad::Loading => vec![model_placeholder_row(
+        ModelLoad::Loading => vec![list_placeholder_row(
             MODEL_LOADING,
             model_meta_color(),
             width,
@@ -639,13 +695,13 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         // user gets and a silent clip hid the cause at narrow widths.
         ModelLoad::Error(msg) => {
             if picker.errors.is_empty() {
-                model_wrapped_rows(&format!("Error: {msg}"), error_color(), width)
+                list_wrapped_rows(&format!("Error: {msg}"), error_color(), width)
             } else {
                 picker
                     .errors
                     .iter()
                     .flat_map(|e| {
-                        model_wrapped_rows(
+                        list_wrapped_rows(
                             &format!("{}: {}", e.provider, e.message),
                             error_color(),
                             width,
@@ -656,9 +712,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         }
         // No key configured yet — an inviting cyan hint, not a red error.
         // Wrapped: the actionable "run /login" tail must survive any width.
-        ModelLoad::NeedsLogin => {
-            model_wrapped_rows(MODEL_LOGIN_HINT, model_selected_color(), width)
-        }
+        ModelLoad::NeedsLogin => list_wrapped_rows(MODEL_LOGIN_HINT, model_selected_color(), width),
         ModelLoad::Ready => {
             let matches = picker.matches();
             if matches.is_empty() {
@@ -674,7 +728,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
                 } else {
                     MODEL_NO_MATCH
                 };
-                return vec![model_placeholder_row(text, model_meta_color(), width)];
+                return vec![list_placeholder_row(text, model_meta_color(), width)];
             }
             let max = MODEL_MENU_MAX_ROWS as usize;
             let selected = picker.selected.min(matches.len() - 1);
@@ -690,10 +744,11 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     }
 }
 
-/// The `(selected+1/total)` counter line under the list, or a blank line when
-/// there's nothing selectable (loading / error / empty). Clamped to the width
-/// with a dim `…` ([`clamp_spans`]) — the red `{provider} unavailable` suffix
-/// used to paint-clip past the buffer edge, an error the user never saw.
+/// The `(selected+1/total)` counter line under the list, in the ids' column,
+/// or a blank line when there's nothing selectable (loading / error / empty).
+/// Clamped to the width with a dim `…` ([`clamp_spans`]) — the red
+/// `{provider} unavailable` suffix used to paint-clip past the buffer edge,
+/// an error the user never saw.
 fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
     if picker.status != ModelLoad::Ready {
         return Line::default();
@@ -704,7 +759,7 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
     }
     let selected = picker.selected.min(matches.len() - 1);
     let mut spans = vec![
-        Span::raw(MODEL_INDENT),
+        Span::raw(MODEL_LIST_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, matches.len()),
             Style::new().fg(model_meta_color()),
@@ -751,12 +806,13 @@ fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
 ///
 /// Bounded to [`MODEL_ERROR_MAX_ROWS`]: a provider that answers a blocked
 /// request with an HTML page would otherwise push the list off the frame.
+/// In the ids' column, under the name line: it speaks for the list.
 fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     let mut rows: Vec<Line<'static>> = picker
         .errors
         .iter()
         .flat_map(|e| {
-            model_wrapped_rows(
+            list_wrapped_rows(
                 &format!("{}: {}", e.provider, e.message),
                 error_color(),
                 width,
@@ -783,17 +839,18 @@ fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     rows
 }
 
-/// The `Model Name: {friendly}` line under the counter, naming the highlighted
-/// model, or a blank line when nothing is highlighted.
+/// The `Model Name: {friendly}` line under the counter, in the ids' column,
+/// naming the highlighted model, or a blank line when nothing is
+/// highlighted.
 fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
     let Some(entry) = picker.highlighted() else {
         return Line::default();
     };
     let room = (width as usize)
-        .saturating_sub(cols(MODEL_INDENT) + cols(MODEL_NAME_LABEL))
+        .saturating_sub(cols(MODEL_LIST_INDENT) + cols(MODEL_NAME_LABEL))
         .max(1);
     Line::from(vec![
-        Span::raw(MODEL_INDENT),
+        Span::raw(MODEL_LIST_INDENT),
         Span::styled(MODEL_NAME_LABEL, Style::new().fg(model_meta_color())),
         Span::styled(
             ellipsize(&entry.display_name, room),
@@ -836,26 +893,144 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
     ))
 }
 
-/// The framed page as lines — the shape of the user's mock: a top rule, the
-/// `❯` search line straight under it, the scrolling model list (each row
-/// `→ id [provider] ✓`), and — when a real model is highlighted — the
-/// `(n/total)` counter and the `Model Name:` line straight over the bottom
-/// rule (a placeholder page has neither, so the placeholder closes it). No
+/// A search-line picker's `❯` search line: the family's inset, the cyan
+/// prompt, then what was typed.
+pub(super) fn picker_search_line(query: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
+        Span::raw(query.to_string()),
+    ])
+}
+
+/// A search-line picker's header: its `title` in the pages' title dress
+/// ([`page_title_line`](super::header::page_title_line)) over its
+/// `description`, dim and wrapped whole — the header `/skills`, `/hooks` and
+/// `/mcp` open on, so every composer-replacing page says what it is in the
+/// same place (`docs/view-flow.md` *A header over the search line*).
+pub(super) fn picker_header(title: &str, description: &str, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![super::header::page_title_line(title, width)];
+    lines.extend(model_wrapped_rows(description, model_meta_color(), width));
+    lines
+}
+
+/// A search-line picker's page: the top rule, the `header` and a gap under
+/// it (when there is one), the `search` line, the `body`, the `tail` (the
+/// key hint, `/model`'s name line, or nothing) and the bottom rule — no
 /// blank row hugs either rule (`docs/view-flow.md` *The frame hugs its
-/// content*). Headerless (the "Showing models…" banner was dropped).
+/// content*).
+pub(super) fn search_page(
+    header: &[Line<'static>],
+    search: &Line<'static>,
+    body: Vec<Line<'static>>,
+    tail: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![model_rule(width)];
+    if !header.is_empty() {
+        lines.extend_from_slice(header);
+        lines.push(Line::default());
+    }
+    lines.push(search.clone());
+    lines.extend(body);
+    lines.extend_from_slice(tail);
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The compact page ([`compact_page`]'s first rung) with `header` and a gap
+/// between its top rule and its search line: what a picker with a header
+/// builds on a terminal too short for its whole page but tall enough for the
+/// header, since the header yields last (`docs/view-flow.md` *A page that
+/// sheds rows before it flows*). `window` and `tail` are [`compact_page`]'s.
+pub(super) fn headed_compact_page(
+    header: &[Line<'static>],
+    search: &Line<'static>,
+    window: &dyn Fn(usize) -> (usize, Vec<Line<'static>>, usize),
+    tail: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = rung_lines(COMPACT, search, window, tail, width);
+    let mut head = header.to_vec();
+    head.push(Line::default());
+    lines.splice(1..1, head);
+    lines
+}
+
+/// A search-line picker's page when its list is a placeholder — a search
+/// matching nothing, a list still loading, an empty catalog — on a terminal
+/// `height` rows tall: the placeholder `block` in the list's place under the
+/// `header` ([`headed_compact_page`]: the placeholder between single gaps,
+/// over the `tail`), or, on a terminal too short for the header, the rungs
+/// of [`compact_page`], keeping what was typed.
+pub(super) fn placeholder_page(
+    height: u16,
+    header: &[Line<'static>],
+    search: &Line<'static>,
+    block: &[Line<'static>],
+    tail: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let window = |max| placeholder_window(block, max);
+    first_page_that_fits(
+        height,
+        &[
+            &|| headed_compact_page(header, search, &window, tail, width),
+            &|| compact_page(height, search, &window, tail, width),
+        ],
+    )
+}
+
+/// A previewed picker's page (`/theme`, `/mascot`, `/spinner`) on a terminal
+/// `height` rows tall: the first that fits of the **whole** page under its
+/// `header` (`whole` builds the body between the search line and the hint
+/// — the list beside or over the preview, [`PreviewLayout::body`]), the
+/// whole page without the header, the compact page under the header, and
+/// the compact page's rungs. The header yields **before** the preview, the
+/// one place it does not go last (`docs/view-flow.md`): the preview is what
+/// the choice is made by, while the header names a page opened by name.
+pub(super) fn previewed_page(
+    height: u16,
+    header: &[Line<'static>],
+    search: &Line<'static>,
+    whole: &dyn Fn() -> Vec<Line<'static>>,
+    window: &dyn Fn(usize) -> (usize, Vec<Line<'static>>, usize),
+    hint: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    first_page_that_fits(
+        height,
+        &[
+            &|| search_page(header, search, whole(), hint, width),
+            &|| search_page(&[], search, whole(), hint, width),
+            &|| headed_compact_page(header, search, window, hint, width),
+            &|| compact_page(height, search, window, hint, width),
+        ],
+    )
+}
+
+/// The framed page as lines — the shape of the user's mock: a top rule, the
+/// header (the `Select model` title over a dim line saying what a pick
+/// changes, [`picker_header`]), a gap, the `❯` search line, the scrolling
+/// model list (each row `→ id [provider] ✓`, under the `❯`), and — when a
+/// real model is highlighted — the `(n/total)` counter and the `Model Name:`
+/// line straight over the bottom rule (a placeholder page has neither, so
+/// the placeholder closes it). No blank row hugs either rule
+/// (`docs/view-flow.md` *The frame hugs its content*).
 ///
-/// The first of two pages that fits `height` rows ([`first_page_that_fits`]):
-/// the **whole** page, or, on a terminal too short for it, a **compact**
-/// page ([`compact_page`]) — three models between the reserved overflow
-/// slots, the counter and the failed providers' rows yielding, and on a
-/// terminal shorter still the slots, the rules and the rows one by one — so
-/// the search line and the highlighted model stay on screen
-/// (`docs/view-flow.md` *A page that sheds rows before it flows*). The
-/// picker has no hint row, so the compact page keeps the highlighted
+/// The first page that fits `height` rows ([`first_page_that_fits`]): the
+/// **whole** page; on a terminal too short for it, the **compact** page
+/// under the header ([`headed_compact_page`]) — three models between the
+/// reserved overflow slots, the counter and the failed providers' rows
+/// yielding; then the compact page alone ([`compact_page`]), the header
+/// yielding last, and on a terminal shorter still the slots, the rules and
+/// the rows one by one — so the search line and the highlighted model stay
+/// on screen (`docs/view-flow.md` *A page that sheds rows before it flows*).
+/// The picker has no hint row, so a compact page keeps the highlighted
 /// model's `Model Name:` line where its siblings keep theirs, which gives it
-/// their shape. A placeholder page (loading, an error, no match) has
-/// nothing under its list, so the placeholder closes it, and it sheds the
-/// same way, keeping what was typed. What [`render_model_picker`] paints and
+/// their shape. A placeholder page (loading, an error, no match) has nothing
+/// under its list, so the placeholder closes it, and it sheds the same way,
+/// keeping what was typed. What [`render_model_picker`] paints and
 /// `layout::model_picker_rows` counts, so the reserved height and the
 /// painted rows can never disagree.
 pub(super) fn model_view_lines(
@@ -863,28 +1038,13 @@ pub(super) fn model_view_lines(
     width: u16,
     height: u16,
 ) -> Vec<Line<'static>> {
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(picker.query.clone()),
-    ]);
-    let page = |body: Vec<Line<'static>>| {
-        let mut lines = vec![model_rule(width), search_line.clone()];
-        lines.extend(body);
-        lines.push(model_rule(width));
-        lines
-    };
+    let header = picker_header(MODEL_TITLE, MODEL_DESCRIPTION, width);
+    let search_line = picker_search_line(&picker.query);
     if !model_has_detail(picker) {
         // A placeholder (loading / error / needs-login / no match) has no
         // counter and no name to show, so the placeholder closes the page.
         let block = model_list_lines(picker, width);
-        return compact_page(
-            height,
-            &search_line,
-            &|max| placeholder_window(&block, max),
-            &[],
-            width,
-        );
+        return placeholder_page(height, &header, &search_line, &block, &[], width);
     }
     let whole = || {
         let mut body = vec![Line::default()];
@@ -893,7 +1053,7 @@ pub(super) fn model_view_lines(
         body.push(Line::default());
         body.push(model_name_line(picker, width));
         body.extend(model_error_lines(picker, width));
-        page(body)
+        search_page(&header, &search_line, body, &[], width)
     };
     let matches = picker.matches();
     let selected = picker.selected.min(matches.len() - 1);
@@ -906,16 +1066,15 @@ pub(super) fn model_view_lines(
             .collect();
         (above, rows, below)
     };
-    let compact = || {
-        compact_page(
-            height,
-            &search_line,
-            &window,
-            &[model_name_line(picker, width)],
-            width,
-        )
-    };
-    first_page_that_fits(height, &[&whole, &compact])
+    let tail = [model_name_line(picker, width)];
+    first_page_that_fits(
+        height,
+        &[
+            &whole,
+            &|| headed_compact_page(&header, &search_line, &window, &tail, width),
+            &|| compact_page(height, &search_line, &window, &tail, width),
+        ],
+    )
 }
 
 /// Render the **inline** `/model` picker into the live region, in place of the
