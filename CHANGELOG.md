@@ -48,6 +48,19 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The `?` shortcuts band fits itself to the terminal.** It was a fixed
+  two-column grid, eight rows tall, that paired unrelated keys across each
+  row and left everything right of its 61st column blank. The keys are now
+  grouped by what they do, one column per group: what the composer opens and
+  recalls (`/`, `@`, `$`, `!`, `↑`, `ctrl+r`), the session and its views, and
+  editing and the queue. An 80-column terminal shows the three groups side by
+  side in six rows, and one 151 columns or wider splits each group across two
+  columns in three. A narrower terminal flows the keys down two columns, or
+  one below 54, never cutting an entry at the edge. The columns stay put when
+  a turn starts or ends. The band now lists `@ for file paths`, Ctrl+O reads
+  `for transcript`, the view it opens, and Shift+Tab reads
+  `for permissions` (`docs/shortcuts.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

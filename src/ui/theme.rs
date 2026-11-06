@@ -2675,52 +2675,65 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
 // input box** (the palette's slot — the two never show together), toggled by
 // `?` from an empty composer — a port of codex's footer shortcut overlay
-// (`footer.rs::shortcut_overlay_lines`): two aligned columns of
-// `{key} for {thing}` entries, keys cyan, labels dim, inset by `MENU_INDENT`
-// like the footer row whose slot it takes (codex's overlay, a footer mode,
-// wears its footer's indent too) — one entry per row on a terminal too narrow
-// for both columns whole. See docs/shortcuts.md. ---
+// (`footer.rs::shortcut_overlay_lines`) laid out the way Claude Code's is:
+// columns of `{key} for {thing}` entries grouped by what they do, keys cyan,
+// labels dim, inset by `MENU_INDENT` like the footer row whose slot it takes.
+// The groups are its columns on a standard terminal, split across more
+// columns where the width allows and flowed down fewer where it does not, so
+// the band spends the terminal's width before its rows. See
+// docs/shortcuts.md. ---
 
-/// The bindings listed in the band, as `(key, label)` pairs laid out two per
-/// row in declaration order. The `esc` entry is context-sensitive —
-/// [`shortcuts_lines`] swaps it for ` to interrupt` while a turn runs (codex's
-/// quit entry does the same) and for the [`SHORTCUTS_BACKTRACK`] edit hint
-/// when idle with a previous user message to edit (docs/backtrack.md).
-pub(super) const SHORTCUTS: &[(&str, &str)] = &[
-    ("/", " for commands"),
-    ("!", " for shell command"),
-    ("↑", " for input history"),
-    ("ctrl+r", " to search history"),
-    ("shift+enter", " for newline"),
-    ("ctrl+o", " for tool output"),
-    ("esc", " to quit"),
-    ("ctrl+c", " to quit"),
-    ("alt+↑", " to edit queue"),
-    ("tab", " to queue next turn"),
-    ("ctrl+v", " for image paste"),
-    ("ctrl+d", " for llm context"),
-    ("ctrl+t", " to cycle thinking"),
-    ("shift+tab", " for permission mode"),
-    ("$", " for skills"),
-    ("ctrl+w/u/k", " to kill text"),
+/// The bindings listed in the band, as `(key, label)` pairs in **groups** read
+/// top to bottom: what the composer opens and recalls, the session and its
+/// views, editing and the queue. Each group is a column of its own wherever
+/// the width holds them side by side — 80 columns, which
+/// `every_group_has_a_column_of_its_own_on_an_80_column_terminal` pins, so an
+/// entry that widens its group's column costs the standard terminal its
+/// grouped layout — and is split across two columns (never sharing one) where
+/// the width holds twice as many ([`shortcuts_lines`]). The band is as tall as
+/// the tallest group there, so a group longer than the others costs a row.
+///
+/// The `esc` entry is context-sensitive — [`shortcuts_lines`] swaps it for
+/// [`SHORTCUTS_INTERRUPT`] while a turn runs (codex's quit entry does the
+/// same) and for the [`SHORTCUTS_BACKTRACK`] edit hint when idle with a
+/// previous user message to edit (docs/backtrack.md), and its column is as
+/// wide as the widest of the three, so the band never moves between them.
+pub(super) const SHORTCUT_GROUPS: &[&[(&str, &str)]] = &[
+    &[
+        ("/", " for commands"),
+        ("@", " for file paths"),
+        ("$", " for skills"),
+        ("!", " for shell command"),
+        ("↑", " for input history"),
+        ("ctrl+r", " to search history"),
+    ],
+    &[
+        ("esc", " to quit"),
+        ("ctrl+c", " to quit"),
+        ("shift+tab", " for permissions"),
+        ("ctrl+t", " to cycle thinking"),
+        ("ctrl+o", " for transcript"),
+        ("ctrl+d", " for llm context"),
+    ],
+    &[
+        ("shift+enter", " for newline"),
+        ("ctrl+v", " for image paste"),
+        ("ctrl+w/u/k", " to kill text"),
+        ("tab", " to queue next turn"),
+        ("alt+↑", " to edit queue"),
+    ],
 ];
 
-/// The column a row's second entry starts at, counted from the band's
-/// [`MENU_INDENT`] inset (the first entry is padded out to here, so on screen
-/// the second column sits at 32) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
-/// **widest** first-column variant keeps a readable gutter (the pairing once
-/// put a 27-column entry in the first column, which at the old 28 left a
-/// single space before its neighbour — one run-on line). The
-/// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
-/// ≥ 2-column gutter across every context state; widen this with any new
-/// entry that needs it. A terminal narrower than the inset, this column and a
-/// row's second entry together stacks the band into one entry per row
-/// ([`shortcuts_lines`]).
-///
-/// Note that an entry added anywhere **reflows the pairing**, so a wide entry
-/// that had been safe in a second column can land in a first one — check this
-/// still holds when adding one.
-pub(super) const SHORTCUTS_COL: usize = 30;
+/// Blank columns between two of the band's columns. Each column is as wide as
+/// its widest entry (the `esc` entry's widest reading), so this is the
+/// narrowest gap on any row: three keeps two entries from reading as one
+/// line, which a fixed column grid once did to its widest entry with a
+/// single space.
+pub(super) const SHORTCUTS_GUTTER: usize = 3;
+
+/// The band's `esc` entry while a turn runs: Esc interrupts it
+/// (docs/interrupt.md).
+pub(super) const SHORTCUTS_INTERRUPT: (&str, &str) = ("esc", " to interrupt");
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) fn shortcuts_key_color() -> Color {

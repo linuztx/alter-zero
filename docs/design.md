@@ -332,13 +332,17 @@ which Ctrl+V reads the clipboard from.
 - **`?` shows a shortcuts band** (codex's footer shortcut overlay — see
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
-  the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
-  labels dim), inset two columns like the footer row whose slot it takes and
-  stacked one entry per row on a terminal too narrow for both columns whole,
-  listing `/`, `!`, `↑`, `ctrl+r`, `alt+enter`, `ctrl+o`, `esc`,
-  `ctrl+c`, `alt+↑` (edit queue), `tab` (queue next turn), and `ctrl+v`
-  (image paste);
-  the `esc` entry reads `to interrupt` while a turn runs and `to quit` idle.
+  the box — `{key} for {thing}` entries (keys cyan, labels dim) in groups, a
+  column each, inset two columns like the footer row whose slot it takes:
+  what the composer opens and recalls (`/`, `@`, `$`, `!`, `↑`, `ctrl+r`),
+  the session and its views (`esc`, `ctrl+c`, `shift+tab`, `ctrl+t`,
+  `ctrl+o`, `ctrl+d`), and editing and the queue (`shift+enter`, `ctrl+v`,
+  `ctrl+w/u/k`, `tab`, `alt+↑`). The layout is the fewest rows the width
+  holds: the groups side by side from 80 columns, each split across two from
+  151, the bindings flowing down two columns from 54 and one under that;
+  the `esc` entry reads `to interrupt` while a turn runs, `esc esc to edit
+  previous` idle with a message to go back to, and `to quit` otherwise, its
+  column sized by the widest so the band never moves.
   With a draft in the box `?` is just a character. The band is display-only,
   never modal: any other key closes it and still performs its action — except
   Esc, which only dismisses (the palette's Esc rule; idle Esc would otherwise
@@ -1207,13 +1211,14 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   too) and types into a non-empty draft; any other key closes it but still
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
   interrupt mid-turn (the turn is untouched); `?` is ignored in the tool view.
-- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open
-  (one per row below the width two columns need);
-  `shortcuts_lines` lists the bindings in two aligned columns behind the
-  `MENU_INDENT` inset (including `alt+↑ to edit queue`), keys cyan and
-  labels dim, the `esc` entry flipping `to quit`/`to interrupt` with the turn;
-  `live_height` grows by the band; `render_live` paints it below the box;
-  `cursor_position` stays put when it opens.
+- `ui` (shortcuts band): `shortcuts_rows` 0 closed / the tallest group open
+  at 80 columns (a column per group), half that at 200, more where the
+  bindings flow down two columns (60) or stack one to a row (under 54);
+  `shortcuts_lines` keeps every binding once and every row inside the width
+  at every width, never grows as the width does, and holds still across the
+  `esc` entry's three readings, behind the `MENU_INDENT` inset, keys cyan and
+  labels dim; `live_height` grows by the band; `render_live` paints it below
+  the box; `cursor_position` stays put when it opens.
 - `app` (message queue): Enter mid-turn queues (composer cleared, FIFO order,
   recorded for ↑ recall) while idle Enter still submits — consecutive Enters
   append to one batch, **Tab opens a new follow-up batch** (recorded for ↑ too;

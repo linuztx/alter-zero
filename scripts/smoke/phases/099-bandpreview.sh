@@ -57,8 +57,11 @@ for band_key in "/" "?" "@s"; do
 	esac
 	expect_has "$band_pane" -F "$band_marker" "the '$band_key' band did not open"
 	# The preview yielded rather than the composer: the forming block is still
-	# there, tail-following into the rows that are left.
-	expect_has "$band_pane" -E "(Code Snippet|│)" "the forming table vanished from the strip entirely"
+	# there, tail-following into the rows that are left. At 51 columns the
+	# table streams as stacked records, and the `?` band (one binding a row at
+	# this width) leaves room for only the newest of a record's rows, so any of
+	# them counts.
+	expect_has "$band_pane" -E "(ID:|Name:|Code Snippet|Description:|│)" "the forming table vanished from the strip entirely"
 done
 tmux kill-session -t "$S99" 2>/dev/null
 echo "==== Phase 99: a band opened under a tall streaming preview keeps the composer ===="

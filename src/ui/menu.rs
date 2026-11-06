@@ -448,9 +448,9 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// How many rows the `?` shortcuts band occupies for `app` at `width`: 0 when
 /// closed, otherwise **the built line count** of [`shortcuts_lines`] — the
-/// entries two per row where `width` holds both columns whole (every entry,
-/// the `$` skill sigil included, an ordinary grid slot), one per row where it
-/// does not. [`live_height`] adds this (via its band parameter);
+/// fewest rows its columns fit `width` in: the tallest group's on a standard
+/// terminal, half that on a wide one, more where the groups flow down fewer
+/// columns. [`live_height`] adds this (via its band parameter);
 /// [`render_live`] paints exactly this many rows — the two agree by
 /// construction, like [`menu_rows`].
 #[must_use]
@@ -475,63 +475,136 @@ pub fn band_rows(app: &App, width: u16) -> u16 {
     menu_rows(app, width) + shortcuts_rows(app, width) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
-/// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
-/// per row, inset by `MENU_INDENT` — the band takes the footer's slot, so it
-/// starts where the footer does, in the column every band's names start at —
-/// with the second column `SHORTCUTS_COL` past the inset, keys cyan and labels
-/// dim. Where `width` cannot hold a row's second entry whole the band stacks
-/// into **one entry per row** instead, in the same reading order, each row
-/// still inset — taller, but never cut mid-word, which is what the paint's
-/// clip did to the second column on a narrow terminal (`docs/shortcuts.md`).
+/// One `?` band entry: a key and the label after it (` for commands`).
+type Shortcut = (&'static str, &'static str);
+
+/// The styled lines for the open shortcuts band, inset by `MENU_INDENT` — the
+/// band takes the footer's slot, so it starts where the footer does, in the
+/// column every band's names start at — each entry's key cyan and its label
+/// dim, laid out as `shortcut_columns` picks for `width`: the
+/// `SHORTCUT_GROUPS` a column apiece on a standard terminal, each group split
+/// across two on a wide one, every entry flowing down fewer columns on a
+/// narrow one, one entry a row at the narrowest — never cut mid-word, which
+/// the paint's clip did to a fixed grid's second column (`docs/shortcuts.md`).
 /// The `esc` entry is three-way context-sensitive (codex's quit entry):
-/// ` to interrupt` while a turn is in flight, the `SHORTCUTS_BACKTRACK`
+/// `SHORTCUTS_INTERRUPT` while a turn is in flight, the `SHORTCUTS_BACKTRACK`
 /// `esc esc` edit hint when idle with a previous user message to edit, and
 /// ` to quit` only with nothing to backtrack to (docs/backtrack.md).
 #[must_use]
 pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool, width: u16) -> Vec<Line<'static>> {
-    let entry = |key: &'static str, label: &'static str| {
-        let (key, label) = if key == "esc" && turn_active {
-            (key, " to interrupt")
-        } else if key == "esc" && can_backtrack {
-            SHORTCUTS_BACKTRACK
-        } else {
-            (key, label)
-        };
-        [
-            Span::styled(key, Style::new().fg(shortcuts_key_color())),
-            Span::styled(label, Style::new().fg(shortcuts_text_color())),
-        ]
-    };
-    let grid: Vec<Line<'static>> = SHORTCUTS
-        .chunks(2)
-        .map(|pair| {
-            let [key, label] = entry(pair[0].0, pair[0].1);
-            // Pad from the *displayed* widths — a context swap can change the
-            // key text too (`esc` → `esc esc`).
-            let used = cols(key.content.as_ref()) + cols(label.content.as_ref());
-            let mut spans = vec![Span::raw(MENU_INDENT), key, label];
-            if let Some(&(key2, label2)) = pair.get(1) {
-                spans.push(Span::raw(
-                    " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
-                ));
-                spans.extend(entry(key2, label2));
+    let columns = shortcut_columns(width);
+    let widths: Vec<usize> = columns.iter().map(|column| column_cols(column)).collect();
+    let rows = columns.iter().map(Vec::len).max().unwrap_or(0);
+    (0..rows)
+        .map(|row| {
+            let mut spans = vec![Span::raw(MENU_INDENT)];
+            // The blank columns owed before the next entry on the row: the
+            // rest of the last entry's column and the gutter, or a whole
+            // empty cell's.
+            let mut owed = 0;
+            for (column, &column_width) in columns.iter().zip(&widths) {
+                let Some(&entry) = column.get(row) else {
+                    owed += column_width + SHORTCUTS_GUTTER;
+                    continue;
+                };
+                if owed > 0 {
+                    spans.push(Span::raw(" ".repeat(owed)));
+                }
+                let (key, label) = shortcut_reading(entry, turn_active, can_backtrack);
+                spans.push(Span::styled(key, Style::new().fg(shortcuts_key_color())));
+                spans.push(Span::styled(label, Style::new().fg(shortcuts_text_color())));
+                owed = column_width.saturating_sub(cols(key) + cols(label)) + SHORTCUTS_GUTTER;
             }
             Line::from(spans)
         })
-        .collect();
-    let fits = |line: &Line<'static>| {
-        let used: usize = line.spans.iter().map(|span| cols(&span.content)).sum();
-        used <= usize::from(width)
-    };
-    if grid.iter().all(fits) {
-        return grid;
-    }
-    SHORTCUTS
-        .iter()
-        .map(|&(key, label)| {
-            let mut spans = vec![Span::raw(MENU_INDENT)];
-            spans.extend(entry(key, label));
-            Line::from(spans)
-        })
         .collect()
+}
+
+/// The band's columns at `width`, left to right, each a run of entries read
+/// top to bottom: the layout with the **fewest rows** that fits, since the
+/// band's rows come off the screen while its width is otherwise blank.
+///
+/// While every group can have a column of its own, each is cut into columns
+/// of one height — the tallest group's, half of it, a third — so a group
+/// never shares a column and the halves read top to bottom, left to right.
+/// Under that, every entry flows down fewer columns in reading order, the
+/// first filled before the next, down to one entry a row. A column is as wide
+/// as its widest entry ([`shortcut_cols`]) and the next starts
+/// `SHORTCUTS_GUTTER` past it, so the layout is the same whatever the turn is
+/// doing.
+fn shortcut_columns(width: u16) -> Vec<Vec<Shortcut>> {
+    let fits = |columns: &[Vec<Shortcut>]| {
+        let entries: usize = columns.iter().map(|column| column_cols(column)).sum();
+        let gutters = SHORTCUTS_GUTTER * columns.len().saturating_sub(1);
+        cols(MENU_INDENT) + entries + gutters <= usize::from(width)
+    };
+    let tallest = SHORTCUT_GROUPS
+        .iter()
+        .map(|group| group.len())
+        .max()
+        .unwrap_or(0);
+    let mut tried = 0;
+    // Most columns to a group first: a split into two takes half the rows.
+    for per_group in (1..=tallest).rev() {
+        let rows = tallest.div_ceil(per_group);
+        if rows == tried {
+            continue;
+        }
+        tried = rows;
+        let columns: Vec<Vec<Shortcut>> = SHORTCUT_GROUPS
+            .iter()
+            .flat_map(|group| group.chunks(rows))
+            .map(<[Shortcut]>::to_vec)
+            .collect();
+        if fits(&columns) {
+            return columns;
+        }
+    }
+    let all: Vec<Shortcut> = SHORTCUT_GROUPS
+        .iter()
+        .flat_map(|group| group.iter().copied())
+        .collect();
+    for count in (2..SHORTCUT_GROUPS.len()).rev() {
+        let columns: Vec<Vec<Shortcut>> = all
+            .chunks(all.len().div_ceil(count))
+            .map(<[Shortcut]>::to_vec)
+            .collect();
+        if fits(&columns) {
+            return columns;
+        }
+    }
+    vec![all]
+}
+
+/// A band column's width: its widest entry's.
+fn column_cols(column: &[Shortcut]) -> usize {
+    column
+        .iter()
+        .map(|&entry| shortcut_cols(entry))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The columns `entry` may need: its widest reading in any context, so the
+/// grid holds still when a turn starts or ends.
+fn shortcut_cols(entry: Shortcut) -> usize {
+    [(false, false), (true, false), (false, true)]
+        .into_iter()
+        .map(|(turn_active, can_backtrack)| {
+            let (key, label) = shortcut_reading(entry, turn_active, can_backtrack);
+            cols(key) + cols(label)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// `entry` as the band reads it now. Only the `esc` entry changes: Esc
+/// interrupts a turn in flight, edits a previous message when idle with one
+/// to go back to, and quits otherwise.
+fn shortcut_reading(entry: Shortcut, turn_active: bool, can_backtrack: bool) -> Shortcut {
+    match entry {
+        ("esc", _) if turn_active => SHORTCUTS_INTERRUPT,
+        ("esc", _) if can_backtrack => SHORTCUTS_BACKTRACK,
+        entry => entry,
+    }
 }

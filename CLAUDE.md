@@ -3062,9 +3062,11 @@ three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
-overlay, two dim columns of `{key} for {thing}` entries inset two columns like the
-footer row it displaces, stacked one entry per row on a terminal too narrow to
-hold both columns whole — when `?` is pressed in
+overlay in Claude Code's layout, dim `{key} for {thing}` entries in groups, a
+column each, inset two columns like the footer row it displaces: the fewest
+rows the width holds, the groups side by side from 80 columns, each split
+across two on a wide terminal, the bindings flowing down two columns or one
+on a narrow one — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
@@ -3781,10 +3783,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   matched name characters the same way, the description column `…`-cut at the
   width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
   helpers — see `docs/skill-mentions.md`), the `?` shortcuts
-  band (`SHORTCUTS*` — the entry list, the second-entry column counted past
-  the band's `MENU_INDENT` inset, and the cyan key / dim label colours; the
-  band's height is `shortcuts_lines`' built line count, so a narrow
-  terminal's one-entry-per-row stack reserves its own rows), the
+  band (`SHORTCUT_GROUPS`/`SHORTCUTS*` — the entries in their groups, the
+  `SHORTCUTS_GUTTER` between content-sized columns past the band's
+  `MENU_INDENT` inset, the `esc` entry's other readings, and the cyan key /
+  dim label colours; the band's height is `shortcuts_lines`' built line
+  count, the fewest rows the width holds, so every layout reserves its own
+  rows), the
   inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
   selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
