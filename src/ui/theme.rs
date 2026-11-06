@@ -221,7 +221,9 @@ pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// or a read/search group leaves once it is done. It is the [`TOOL_BULLET`]'s
 /// width in spaces, so the text settles in the column its live `●` header's
 /// text sat in and only the bullet goes away. The turn summary (`Done for Ns`)
-/// is not one of them: it settles the status line, not a cell.
+/// is not one of them: it settles the status line, not a cell, so its
+/// [`SUMMARY_MARK`] takes the spinner's place at the edge — which lands its
+/// words in this same column.
 pub(super) const SETTLED_INDENT: &str = "  ";
 
 /// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the
@@ -2275,8 +2277,9 @@ pub(super) fn timestamp_color() -> Color {
 // sweeps across it (see [`shimmer_spans`], ported from openai/codex
 // `tui/src/shimmer.rs`). The elapsed / thinking / done
 // times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
-// finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
-// `HistoryItem::Summary`). See docs/status-indicator.md. ---
+// finish a dim `✦ {done verb} for {n}` summary commits to scrollback (a
+// `HistoryItem::Summary`, opening on [`SUMMARY_MARK`]). See
+// docs/status-indicator.md. ---
 
 /// White — the comet's head (matches the codex/Claude-Code white status text).
 pub(super) fn status_color() -> Color {
@@ -2404,10 +2407,20 @@ pub(super) const OFFLINE_RIPPLE_GAP: &str = "  ";
 pub(super) const OFFLINE_ROW_LEAD: &str = "No connection to ";
 pub(super) const OFFLINE_ROW_TAIL: &str = " — trying again · ";
 
-/// Dim grey — the committed `"{done verb} for {n}"` turn summary.
+/// Dim grey — the committed `"✦ {done verb} for {n}"` turn summary, its mark
+/// included.
 pub(super) fn status_done_color() -> Color {
     tool_dim_color()
 }
+
+/// The mark a committed turn summary opens on — `✦ Worked for 12s · 8.2k
+/// tokens` — at the edge, where the live status line's spinner ran: the
+/// spinner settled to a still star, so every turn's end is one shape to find
+/// scrolling back. One column plus its space, a bullet's width, so a wrapped
+/// receipt hangs its rows on `INDENT` under the words. Public for the
+/// smoke scripts' `SUMMARY_RE`, which `app::tests::turn` pins to it
+/// (`docs/status-indicator.md`).
+pub const SUMMARY_MARK: &str = "✦ ";
 
 /// Marks a summary's token total as partly the app's estimate: an
 /// interrupted turn's receipt, whose cut round never reported its usage

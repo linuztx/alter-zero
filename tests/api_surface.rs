@@ -384,6 +384,7 @@ use alter_zero::ui::{
     ViewFlow,
     COMPACTED_NOTICE,
     LIVE_MIN_HEIGHT,
+    SUMMARY_MARK,
     activate_theme,
     active_theme,
     agent_group_lines,

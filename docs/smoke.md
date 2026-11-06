@@ -155,17 +155,19 @@ was not a safe transformation until each carried its own.
 | `smoke_on_exit CMD…` | run at teardown — a stub server to kill |
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
 
-A turn's summary wears the past tense of the status verb it ended on
-(`Worked for 3s`, `Generated for 1m 5s` — `docs/status-indicator.md`), and a
-turn that runs past 30s ends on a later verb than it opened on. So a phase
-that waits for *a* turn to settle matches `SUMMARY_RE`, the lib's pattern
-naming every past tense (`-E "^$SUMMARY_RE"`, or `wait_summaries` to count
-them), and only a phase that must tell turns apart on one screen names a
-turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Worked`,
+A turn's summary opens on the `✦ ` mark and wears the past tense of the
+status verb it ended on (`✦ Worked for 3s`, `✦ Generated for 1m 5s` —
+`docs/status-indicator.md`), and a turn that runs past 30s ends on a later
+verb than it opened on. So a phase that waits for *a* turn to settle matches
+`SUMMARY_RE`, the lib's pattern — the mark, then every past tense
+(`-E "^$SUMMARY_RE"`, or `wait_summaries` to count them) — and only a phase
+that must tell turns apart on one screen names a turn's own verb —
+`SUMMARY_TURN1`…`3`, the mark included, since a launch's turns end `Worked`,
 `Generated`, `Pondered`, … in order while each stays under 30s.
 `app::tests::turn` pins the pattern, its copies in the standalone scripts and
-the per-turn names to the verb table, so a verb added, dropped or reordered
-fails `cargo test` rather than a smoke run.
+the per-turn names to the verb table and to `ui::SUMMARY_MARK`, so a verb
+added, dropped or reordered, or a new mark, fails `cargo test` rather than a
+smoke run.
 
 A slash-palette row opens on the selection's `→ ` marker or the two-space
 inset every other row wears, so a phase finds one by `PALETTE_ROW`

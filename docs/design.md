@@ -79,8 +79,9 @@ which Ctrl+V reads the clipboard from.
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
-  finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
-  — the past tense of the verb the line wore last (`Worked for 12s`), the verb
+  finish the line is replaced by a dim, committed **`✦ {done verb} for Ns`** summary
+  — a still `✦` where the spinner ran, then the past tense of the verb the line
+  wore last (`✦ Worked for 12s`), the verb
   moving on every 30 s of a turn (`docs/status-indicator.md`) —
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
@@ -971,7 +972,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   running call and each waiting sibling, in order), and the red
   `Conversation interrupted` notice; then settle the held background
   completions and commit the turn's receipt under them — the summary a
-  finished turn ends on, over the tally the line last showed (`Worked for 8s ·
+  finished turn ends on, over the tally the line last showed (`✦ Worked for 8s ·
   ≈24.3k tokens`, `docs/interrupt.md`).
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), and the commit-to-scrollback steps above still run — the
@@ -1266,8 +1267,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `Thinking for` clause; and a per-char bold shimmering verb resting in the
   page titles' gradient, whose crest lifts its char toward the text colour
   and moves as `elapsed` advances), `summary_lines`
-  is one dim bullet-less `"{verb} for
-  Ns"` line, `render_live` stacks preview / gap / status / gap in the streaming
+  is one dim `"✦ {verb} for
+  Ns"` line (the `✦` at the edge where the spinner ran), `render_live` stacks preview / gap / status / gap in the streaming
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
   (stamp-free) like any non-user item; the
   **command palette** — `centered_window_rows` keeps the

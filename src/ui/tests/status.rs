@@ -7,7 +7,7 @@ use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::palette::with_theme;
 use crate::ui::theme::{
-    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
+    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, SUMMARY_MARK, ai_color, header_gradient_end,
     header_gradient_start, shimmer_highlight, spinner_bars_high, spinner_pulse_bright,
     spinner_tail_color, status_color, status_detail_color, status_done_color, status_offline_color,
     status_retry_color, status_thinking_color, tool_diff_add_color, tool_diff_del_color,
@@ -196,7 +196,7 @@ fn summary_humanizes_a_long_turn() {
         cached: 0,
         cache_write: 0,
     };
-    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 1h 1m");
+    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "✦ Done for 1h 1m");
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn summary_lines_append_the_real_token_usage() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (8.1k cached)"
+        "✦ Done for 12s · 8.2k tokens (8.1k cached)"
     );
     // The turn that *primed* the cache says so too: an explicit-caching
     // provider bills that write at a premium, and a receipt reading just
@@ -257,25 +257,25 @@ fn summary_lines_append_the_real_token_usage() {
     summary.cache_write = 1_204;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (8.1k cached · 1.2k written)",
+        "✦ Done for 12s · 8.2k tokens (8.1k cached · 1.2k written)",
         "both halves when both apply"
     );
     summary.cached = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens (1.2k written)",
+        "✦ Done for 12s · 8.2k tokens (1.2k written)",
         "a zero half is omitted"
     );
     summary.cache_write = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s · 8.2k tokens",
+        "✦ Done for 12s · 8.2k tokens",
         "no parenthetical when nothing was cached or written"
     );
     summary.tokens = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 12s",
+        "✦ Done for 12s",
         "a usage-less turn (the dummy) keeps the bare summary"
     );
 }
@@ -298,21 +298,21 @@ fn summary_lines_mark_an_estimated_share_with_approx() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · ≈24.3k tokens (8k cached)",
+        "✦ Worked for 8s · ≈24.3k tokens (8k cached)",
         "the frames' tokens and the cut round's estimate, one marked total"
     );
     summary.tokens = 0;
     summary.cached = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · ≈4.3k tokens",
+        "✦ Worked for 8s · ≈4.3k tokens",
         "nothing reported (the offline demo): all of it estimated"
     );
     summary.tokens = 24_300;
     summary.estimated = 0;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Worked for 8s · 24.3k tokens",
+        "✦ Worked for 8s · 24.3k tokens",
         "nothing estimated reads bare"
     );
 }
@@ -701,7 +701,10 @@ fn the_thinking_clause_wears_the_thinking_colour() {
 }
 
 #[test]
-fn summary_lines_is_a_single_dim_bulletless_line() {
+fn summary_lines_is_one_dim_line_opening_on_the_star() {
+    // The status line settles to a still `✦` where its spinner ran: the
+    // mark that says a turn ended here, dim like the words after it —
+    // turn meta, never a heading — and never the `●` a cell opens on.
     let summary = TurnSummary {
         verb: "Done",
         secs: 20,
@@ -714,9 +717,28 @@ fn summary_lines_is_a_single_dim_bulletless_line() {
     };
     let lines = summary_lines(&summary, 80);
     assert_eq!(lines.len(), 1, "one line");
-    assert_eq!(plain(&lines[0]), "Done for 20s");
-    assert!(!plain(&lines[0]).contains('●'), "no bullet");
-    assert_eq!(lines[0].spans[0].style.fg, Some(status_done_color()), "dim");
+    assert_eq!(plain(&lines[0]), "✦ Done for 20s");
+    assert_eq!(lines[0].spans[0].content, SUMMARY_MARK, "the mark leads");
+    assert!(!plain(&lines[0]).contains('●'), "no cell bullet");
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.fg == Some(status_done_color())),
+        "the mark and the words share one dim: {:?}",
+        lines[0]
+    );
+}
+
+#[test]
+fn the_summary_mark_is_a_bullet_wide() {
+    // A wrapped receipt hangs its rows on INDENT, so the mark must be
+    // exactly that wide or the words would drift off their column.
+    assert_eq!(SUMMARY_MARK, "✦ ");
+    assert_eq!(
+        crate::ui::wrap::cols(SUMMARY_MARK),
+        crate::ui::wrap::cols(INDENT)
+    );
 }
 
 #[test]
@@ -740,7 +762,7 @@ fn conversation_lines_renders_a_committed_turn_summary() {
         .collect();
     assert!(texts.iter().any(|t| t == "● all done"));
     assert!(
-        texts.iter().any(|t| t == "Done for 7s"),
+        texts.iter().any(|t| t == "✦ Done for 7s"),
         "the summary flows inline: {texts:?}"
     );
 }
@@ -823,16 +845,16 @@ fn summary_lines_append_the_still_running_shell_count() {
     };
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 22s · 3 shells still running"
+        "✦ Done for 22s · 3 shells still running"
     );
     summary.shells = 1;
     assert_eq!(
         plain(&summary_lines(&summary, 80)[0]),
-        "Done for 22s · 1 shell still running",
+        "✦ Done for 22s · 1 shell still running",
         "singular for one shell"
     );
     summary.shells = 0;
-    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 22s");
+    assert_eq!(plain(&summary_lines(&summary, 80)[0]), "✦ Done for 22s");
 }
 
 /// The RGB triple of a span's foreground (panics on a non-RGB colour).
@@ -1003,8 +1025,43 @@ fn the_turn_summary_wraps_to_the_width() {
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(
-        all, "Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
+        all, "✦ Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
         "nothing lost, nothing reordered"
+    );
+}
+
+#[test]
+fn a_wrapped_summary_hangs_its_rows_under_the_words() {
+    // The mark opens the receipt once; the rows a narrow terminal wraps it
+    // onto start under its words, as a bullet's continuation rows do, so the
+    // `✦` stands alone in its column and the turn's end is easy to find.
+    let summary = TurnSummary {
+        verb: "Worked",
+        secs: 95,
+        timestamp: String::new(),
+        shells: 2,
+        tokens: 1_500_000,
+        estimated: 0,
+        cached: 1_200_000,
+        cache_write: 0,
+    };
+    let rows: Vec<String> = summary_lines(&summary, 24).iter().map(plain).collect();
+    assert!(
+        rows.len() > 2,
+        "the receipt wrapped onto several rows: {rows:?}"
+    );
+    assert!(rows[0].starts_with("✦ Worked"), "{rows:?}");
+    for row in &rows[1..] {
+        assert!(
+            row.starts_with(INDENT) && !row[INDENT.len()..].starts_with(' '),
+            "a continuation row starts under the words: {rows:?}"
+        );
+        assert!(crate::ui::wrap::cols(row.trim_end()) <= 24, "{rows:?}");
+    }
+    assert_eq!(
+        rows.iter().filter(|row| row.contains('✦')).count(),
+        1,
+        "one mark per receipt: {rows:?}"
     );
 }
 

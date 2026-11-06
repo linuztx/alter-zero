@@ -41,21 +41,22 @@ SETTLED_REPLY="Two commands away"
 # The startup banner's tier-independent title word (docs/header.md).
 HEADER_MARK="Alter Zero"
 # A committed turn summary (an ERE; anchor it with ^ where it must start a
-# row): the past tense of the status verb the turn ended on, then " for {n}"
+# row): the `✦ ` mark every summary opens on (`ui::SUMMARY_MARK`), the past
+# tense of the status verb the turn ended on, then " for {n}"
 # (`app::STATUS_VERBS`, docs/status-indicator.md). Wait on this wherever any
 # settle will do. A turn that runs past 30s ends on a later verb than it
 # opened on, so no single verb is safe there. A phase that tells turns apart
 # names that turn's verb instead (SUMMARY_TURN1…3, below). The same line lives
 # in `scripts/live_smoke.sh`, `cursor_hide_check.sh` and `paste_mem.sh`;
-# `app::tests::turn` pins all four copies to the table.
-SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
+# `app::tests::turn` pins all four copies to the mark and the table.
+SUMMARY_RE='✦ (Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
 # The summary each of a launch's first three turns ends on, for the phases
 # that must tell turns apart on one screen: a launch walks the table one verb
-# per turn while each turn stays under 30s. Pinned to the table by the same
-# `app::tests::turn` test.
-SUMMARY_TURN1="Worked for"
-SUMMARY_TURN2="Generated for"
-SUMMARY_TURN3="Pondered for"
+# per turn while each turn stays under 30s, the mark included. Pinned to the
+# mark and the table by the same `app::tests::turn` test.
+SUMMARY_TURN1="✦ Worked for"
+SUMMARY_TURN2="✦ Generated for"
+SUMMARY_TURN3="✦ Pondered for"
 # The opening of a slash-palette row (an ERE, anchored): the selection's `→ `
 # marker or the two-space inset every other row wears (`MENU_MARKER` /
 # `MENU_INDENT`, docs/design.md), then the command's slash — so

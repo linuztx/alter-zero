@@ -963,7 +963,7 @@ reads as a pair), its text left in the column `Thinking…` streamed in behind
 the bullet's blank two columns (`ui::theme::SETTLED_INDENT`, which the settled
 MCP `  Called {server}` line and a read/search group's `  Read 2 files` line
 wear too — the turn summary, settling the status line rather than a cell,
-stays at the edge);
+opens on its `✦` at the edge instead, which lands its words in that column);
 the text itself never reaches immutable scrollback (which is *why* it can
 collapse) but expands in Ctrl+O under that same dim line, minus the hint since
 the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
@@ -3037,8 +3037,9 @@ resting in the page titles' gradient (the `/mcp` and `/skills` headlines'
 dress) under a white sweep ported from
 codex's `shimmer_spans` and moving on to the next verb every 30 s, the
 `Thinking for` clause in the thinking purple; on finish a dim
-`{done verb} for {n}s` summary — the past tense of the verb the line wore last,
-`Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
+`✦ {done verb} for {n}s` summary — a still `✦` (`ui::SUMMARY_MARK`) where the
+spinner ran, then the past tense of the verb the line wore last,
+`Working…` → `✦ Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in
 flight as failed — a parallel batch's running call and each `⎿ Waiting…`
 sibling alike, every one keeping its red cell and its place in the next
@@ -3751,7 +3752,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `spinner_tail_color()` fading tail + dim walls and the
   `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's
-  closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
+  closing clause), the dim committed-summary colour and the `SUMMARY_MARK` (`✦ `,
+  a bullet's width, so a wrapped receipt hangs on `INDENT`) it opens on, and
+  `STATUS_ROWS`/`STATUS_GAP_ROWS`;
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
   `shimmer_spans`; the verbs themselves are `STATUS_VERBS` in `app/turn.rs` —

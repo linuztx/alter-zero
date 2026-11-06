@@ -80,9 +80,9 @@ maps() {
 	# large blocks), and of everything else (the binary, libraries, files).
 	awk '/^[0-9a-f]+-[0-9a-f]+ /{name=$6; if(name=="")name="[anon]"} /^Rss:/{ if(name=="[heap]")h+=$2; else if(name=="[anon]")a+=$2; else o+=$2 } END{printf "heap %6.1f MB  anon %6.1f MB  other %6.1f MB", h/1024, a/1024, o/1024}' /proc/"$APP"/smaps
 }
-# The turn-end summary is `{verb} for {n}s[ · …]`, the verb picked per turn.
+# The turn-end summary is `✦ {verb} for {n}s[ · …]`, the verb picked per turn.
 turns_done() {
-	tmux capture-pane -t "$S" -p -S -2000 | grep -cE "^[A-Z][a-z]+( [a-z]+)? for [0-9]+s( ·.*)?$"
+	tmux capture-pane -t "$S" -p -S -2000 | grep -cE "^✦ [A-Z][a-z]+( [a-z]+)? for [0-9]+s( ·.*)?$"
 }
 wait_turn() {
 	local want="$1"

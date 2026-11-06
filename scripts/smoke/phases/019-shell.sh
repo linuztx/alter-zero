@@ -49,7 +49,7 @@ expect_has "$shell_mode" -E "^! echo smoke_shell_ok" "the composer does not abso
 expect_lacks "$shell_mode" -F "❯ !echo" "the composer still shows the bang as text ('❯ !echo …')"
 expect_has "$shell_ran" -E "^! echo smoke_shell_ok" "the committed cell is missing its '! echo …' header line"
 expect_has "$shell_ran" -F "⎿  smoke_shell_ok" "the shell command's ⎿ output line is not in view"
-expect_lacks "$shell_ran" -E "● echo|^Ran for" "the old '● cmd' tool header / 'Ran for' summary resurfaced"
+expect_lacks "$shell_ran" -E "● echo|^(✦ )?Ran for|$SUMMARY_RE" "the old '● cmd' tool header / a turn summary ('Ran for', or any verb) resurfaced on a shell turn"
 expect_has "$shell_fail" -F "exit status: 3" "a failing !command did not report its non-zero exit status"
 # Req 3: a running !command shows the `⎿ Running…` preview with its elapsed and
 # NO spinner status line (its elapsed rides the preview instead).

@@ -17,7 +17,7 @@ working:
    the other three wires report it unasked), and the app's token tally snaps
    to it instead of trusting the app-side estimate, which never
    saw the system prompt, the re-sent context, or the cache discount. The
-   committed turn summary then reads `Done for 12s · 8.2k tokens (8k cached)`
+   committed turn summary then reads `✦ Done for 12s · 8.2k tokens (8k cached)`
    — or, on the turn that *primed* the cache, `(8k written)` — the visible
    proof caching worked.
 
@@ -245,7 +245,7 @@ stream_round → StreamEvent::Usage(TokenUsage)                (backend.rs — o
 App::apply_usage: accumulate + SNAP status.tokens            (app/status.rs, pure)
         ↓
 TurnSummary { tokens, cached, cache_write }
-        → "Done for 12s · 8.2k tokens (8k cached · 1.2k written)"
+        → "✦ Done for 12s · 8.2k tokens (8k cached · 1.2k written)"
                                                              (ui::summary_lines; persisted
                                                               by session.rs, serde-defaulted
                                                               so old rollouts still parse)

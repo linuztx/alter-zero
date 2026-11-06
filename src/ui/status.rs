@@ -1,6 +1,6 @@
 //! The live status line — the session's spinner, shimmering verb, token
 //! tally (`docs/spinner.md` for the styles; `gravity` is the default) — and
-//! the dim `Done for Ns` summary it commits.
+//! the dim `✦ Done for Ns` summary it commits.
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
@@ -490,18 +490,21 @@ pub fn styled_status_line(
     clamp_spans(spans, width as usize)
 }
 
-/// The committed turn summary: dim, bullet-less `"{verb} for {elapsed}"`
-/// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
+/// The committed turn summary: dim `"✦ {verb} for {elapsed}"` (the seconds
+/// humanized by [`format_elapsed`] — `✦ Done for 20s`, `✦ Done for 1m 30s`)
 /// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
 /// running` suffix when either applies (`docs/background.md`,
 /// `docs/prompt-caching.md`); an interrupted turn's total carries the
-/// estimate's share too, marked `≈` (`docs/interrupt.md`). Shown inline (it
-/// flows into scrollback) and in the transcript like any other
-/// [`HistoryItem`]. **Word-wrapped** to
-/// `width`: the full chain runs past 60 columns and the rows are permanent
-/// scrollback, so a narrow terminal keeps the whole receipt instead of
-/// paint-clipping its tail (the old `_width` was ignored on a "the line
-/// never wraps" premise the token clause outgrew).
+/// estimate's share too, marked `≈` (`docs/interrupt.md`). It opens on
+/// [`SUMMARY_MARK`], where the live line's spinner ran, in the words' own
+/// dim, and never on a cell's `●` (`docs/status-indicator.md` *The mark*).
+/// Shown inline (it flows into scrollback) and in the transcript like any
+/// other [`HistoryItem`]. **Word-wrapped** to `width`: the full chain runs
+/// past 60 columns and the rows are permanent scrollback, so a narrow
+/// terminal keeps the whole receipt instead of paint-clipping its tail (the
+/// old `_width` was ignored on a "the line never wraps" premise the token
+/// clause outgrew), its continuation rows hanging under the words on
+/// `INDENT` so the mark stands alone in its column.
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
@@ -542,9 +545,14 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
             summary.shells
         ));
     }
-    wrap_text(&text, width)
+    let dim = Style::new().fg(status_done_color());
+    wrap_text(&text, width.saturating_sub(BULLET_WIDTH).max(1))
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::new().fg(status_done_color()))))
+        .enumerate()
+        .map(|(i, row)| {
+            let lead = if i == 0 { SUMMARY_MARK } else { INDENT };
+            Line::from(vec![Span::styled(lead, dim), Span::styled(row, dim)])
+        })
         .collect()
 }
 

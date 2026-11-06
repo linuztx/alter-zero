@@ -271,7 +271,7 @@ the dim summary a finished turn ends on, under the notice:
 
 ● Conversation interrupted - tell the model what to do differently.
 
-Worked for 8s · ≈24.3k tokens (8k cached)
+✦ Worked for 8s · ≈24.3k tokens (8k cached)
 ```
 
 - **Verb and time** follow the finished turn's rule

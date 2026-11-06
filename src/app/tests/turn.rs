@@ -1094,9 +1094,11 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
     // opened on — and the phases that tell turns apart on one screen name
     // each turn's own verb. A verb added, dropped or reordered here but not
     // there would time a phase out, or settle it on the wrong turn, so every
-    // copy is pinned to the table.
+    // copy is pinned to the table — and to the mark a summary row opens on,
+    // without which every `^$SUMMARY_RE` anchor misses the row it waits for.
+    let mark = crate::ui::SUMMARY_MARK;
     let past: Vec<&str> = STATUS_VERBS.iter().map(|verb| verb.done).collect();
-    let pattern = format!("SUMMARY_RE='({}) for [0-9]'", past.join("|"));
+    let pattern = format!("SUMMARY_RE='{mark}({}) for [0-9]'", past.join("|"));
     let mut required: Vec<(&str, String)> = [
         "scripts/smoke/lib.sh",
         "scripts/live_smoke.sh",
@@ -1109,7 +1111,7 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
     for (turn, done) in past.iter().take(3).enumerate() {
         required.push((
             "scripts/smoke/lib.sh",
-            format!("SUMMARY_TURN{}=\"{done} for\"", turn + 1),
+            format!("SUMMARY_TURN{}=\"{mark}{done} for\"", turn + 1),
         ));
     }
     for (script, line) in required {

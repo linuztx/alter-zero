@@ -151,15 +151,16 @@ bullet's width:
 
 ```
   Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
-Done for 1m 12s · 2.8k tokens (64 cached)
+✦ Done for 1m 12s · 2.8k tokens (64 cached)
 ```
 
 The two part ways at the margin, on purpose. A thought settles a *cell* — the
 `● Thinking…` block — and keeps the column that cell's text had, as the
 settled MCP line (`  Called Deepwiki`, `docs/mcp.md`) and a read/search
 group's (`  Read 2 files`, `docs/tool-groups.md`) keep theirs. The turn summary
-settles the *status line*, which no bullet ever opened, and stays at the edge
-where every turn's receipt lines up. The Ctrl+O expansion wears the same inset,
+settles the *status line*, which no bullet ever opened: its `✦` takes the
+spinner's place at the edge, where every turn's receipt lines up, and its words
+land in the thought's column (`docs/status-indicator.md` *The mark*). The Ctrl+O expansion wears the same inset,
 which puts its `⎿` corner under the label the way a tool cell's sits under
 its name.
 
