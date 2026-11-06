@@ -3057,9 +3057,12 @@ three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
-overlay, two dim columns of `{key} for {thing}` entries inset two columns like the
-footer row it displaces, stacked one entry per row on a terminal too narrow to
-hold both columns whole — when `?` is pressed in
+overlay, dim `{key} for {thing}` entries inset two columns like the footer row it
+displaces, running down as many columns as the terminal holds whole — three at
+80 columns, up to six (three rows) on a wide one, the fewest rows that fit; on a
+narrow pane two columns of labels without their `for`/`to`, then one entry per
+row — and ending on a dim `… +N more` row on a terminal too short for the
+whole band — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
@@ -3773,10 +3776,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   matched name characters the same way, the description column `…`-cut at the
   width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
   helpers — see `docs/skill-mentions.md`), the `?` shortcuts
-  band (`SHORTCUTS*` — the entry list, the second-entry column counted past
-  the band's `MENU_INDENT` inset, and the cyan key / dim label colours; the
-  band's height is `shortcuts_lines`' built line count, so a narrow
-  terminal's one-entry-per-row stack reserves its own rows), the
+  band (`SHORTCUTS*` — the entry list in its column-major reading order, the
+  `SHORTCUTS_MIN_ROWS` floor, the `SHORTCUTS_MIN_GUTTER`/`SHORTCUTS_MAX_GUTTER`
+  range the spare width widens the gaps over, the `… +N more` marker of a band
+  cut by a short terminal, and the cyan key / dim label colours; the layout is
+  `ui/menu.rs`'s private `ShortcutsGrid`, the fewest rows whose columns fit the
+  width whole — in the labels' terse wording (`terse_label`, their leading
+  ` for`/` to` dropped) only where the full one cannot make two columns — and
+  the band's height is `shortcuts_lines`' built line count,
+  so every width's grid reserves its own rows — `docs/shortcuts.md`), the
   inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
   selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,

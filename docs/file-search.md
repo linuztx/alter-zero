@@ -162,6 +162,8 @@ A third band sharing the palette's slot below the box:
 - `render_live`/`cursor_position`/`live_height` (and `tui::view::Session::live_region_height`)
   add `file_menu_rows` to the band so the box, cursor, and footer stay put when
   the picker opens — exactly like the palette/shortcuts.
+- The `?` shortcuts band names the sigil, `@ for file paths`, beside
+  `/`, `!` and `$` (`docs/shortcuts.md`).
 
 ## Testing
 

@@ -50,12 +50,15 @@ for band_key in "/" "?" "@s"; do
 	fi
 	# …and neither the band nor the turn's status line was traded away for it.
 	expect_has "$band_pane" -F "Working…" "the status line went missing under the '$band_key' band"
+	# The `?` band's first entry in either wording: under 53 columns it
+	# drops its `for`/`to` to keep two columns (docs/shortcuts.md), which is
+	# what leaves the strip rows to preview the table in here.
 	case "$band_key" in
 	"/") band_marker="/help" ;;
-	"?") band_marker="for commands" ;;
+	"?") band_marker="^  / (for )?commands " ;;
 	*) band_marker="Dir" ;;
 	esac
-	expect_has "$band_pane" -F "$band_marker" "the '$band_key' band did not open"
+	expect_has "$band_pane" -E "$band_marker" "the '$band_key' band did not open"
 	# The preview yielded rather than the composer: the forming block is still
 	# there, tail-following into the rows that are left.
 	expect_has "$band_pane" -E "(Code Snippet|│)" "the forming table vanished from the strip entirely"
