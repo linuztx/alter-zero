@@ -122,6 +122,12 @@ fn with_no_subscription_signed_in_nothing_opens() {
     assert_eq!(app.open_usage_page(Vec::new()), None);
     assert!(app.usage_page.is_none());
     assert!(USAGE_EMPTY_NOTICE.contains("/login"));
+    // …by the words of the row that signs in, so a renamed row cannot leave
+    // the advice pointing at nothing.
+    assert!(
+        USAGE_EMPTY_NOTICE.contains(LoginMethod::Subscription.label()),
+        "{USAGE_EMPTY_NOTICE}"
+    );
 }
 
 #[test]

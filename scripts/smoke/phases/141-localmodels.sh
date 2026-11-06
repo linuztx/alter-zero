@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Phase 141 — /login's "Use a local model": each address tested, then saved
+# Phase 141 — /login's "Sign in with a local model": each address tested, then saved
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# `/login` → Use a local model (docs/local-models.md). Local stubs stand in
+# `/login` → Sign in with a local model (docs/local-models.md). Local stubs stand in
 # for the servers: an LM Studio listing one language model and one embedding
 # model over its native /api/v1/models, a second LM Studio set to require an
 # API token (401 without `Bearer sk-lm-smoke`), an LM Studio before 0.4 (no
@@ -156,16 +156,16 @@ l_clear() {
 	for _ in $(seq 1 "$2"); do keys "$1" BSpace; done
 	sleep 0.2
 }
-# l_server SESSION NAME DOWNS — /login → Use a local model → the server DOWNS
+# l_server SESSION NAME DOWNS — /login → Sign in with a local model → the server DOWNS
 # rows down the list, and print its page.
 l_server() {
 	local _
 	submit "$1" "/login"
-	wait_for 5 "$1" -F "Use a local model" || fail "/login did not open"
+	wait_for 5 "$1" -F "Sign in with a local model" || fail "/login did not open"
 	keys "$1" Up # the root's last row
 	sleep 0.2
 	keys "$1" Enter
-	wait_for 5 "$1" -F "enter connect" || fail "Use a local model did not open the server list"
+	wait_for 5 "$1" -F "enter connect" || fail "Sign in with a local model did not open the server list"
 	for _ in $(seq 1 "$3"); do keys "$1" Down; done
 	sleep 0.2
 	keys "$1" Enter
@@ -175,9 +175,9 @@ l_server() {
 # ---- (a) a third way in, and the local servers out of the API-key list ----
 launch "$S141" 100 32 "$L_APP"
 submit "$S141" "/login"
-root="$(wait_pane 5 "$S141" -F "Use a local model")" || fail "/login's root does not offer a local model"
+root="$(wait_pane 5 "$S141" -F "Sign in with a local model")" || fail "/login's root does not offer a local model"
 dump "the /login root" "$root"
-for want in "Use a subscription" "Use an API key" "Use a local model"; do
+for want in "Sign in with an account" "Sign in with an API key" "Sign in with a local model"; do
 	expect_has "$root" -F "$want" "the /login root did not show \"$want\""
 done
 keys "$S141" Down
@@ -193,7 +193,7 @@ sleep 0.3
 keys "$S141" Up
 sleep 0.2
 keys "$S141" Enter
-local_list="$(wait_pane 5 "$S141" -F "enter connect")" || fail "Use a local model did not open the server list"
+local_list="$(wait_pane 5 "$S141" -F "enter connect")" || fail "Sign in with a local model did not open the server list"
 dump "the local server list" "$local_list"
 expect_has "$local_list" -F "LM Studio · ◯ unconfigured" "LM Studio is not an unconfigured row"
 expect_has "$local_list" -F "Ollama · ◯ unconfigured" "the local Ollama is not an unconfigured row"
@@ -356,4 +356,4 @@ dump "a prompt longer than LM Studio's loaded context" "$overflow"
 expect_has "$overflow" -F "context-length 32768" "the advice does not say how to load the model larger"
 grep -qF "lmstudio-overflow POST /v1/chat/completions" "$L_LOG" || fail "the turn never reached the stub"
 tmux kill-session -t "$S141J" 2>/dev/null
-note "Use a local model tests each address, reads an older LM Studio, refuses a server that is not the one named, reports a stopped server, names an exported override, and explains a prompt too long for the loaded context"
+note "Sign in with a local model tests each address, reads an older LM Studio, refuses a server that is not the one named, reports a stopped server, names an exported override, and explains a prompt too long for the loaded context"

@@ -21,8 +21,8 @@ const SEARCH_ROW: u16 = 4;
 /// A terminal tall enough for any whole page here.
 const TALL: u16 = 200;
 
-/// A terminal too short for [`many_app`]'s whole page (22 rows) but tall
-/// enough for its compact page with the header kept (14 rows).
+/// A terminal too short for [`many_app`]'s whole page (17 rows) but tall
+/// enough for its compact page with the header kept (12 rows).
 const SHORT: u16 = 15;
 
 fn meta(name: &str, description: &str) -> SkillMetadata {
@@ -102,6 +102,57 @@ fn col_of(buf: &Buffer, y: u16, width: u16, needle: &str) -> u16 {
 /// settings-view tests' idiom.
 fn colour_at(buf: &Buffer, y: u16, width: u16, needle: &str) -> ratatui::style::Color {
     buf[(col_of(buf, y, width, needle), y)].fg
+}
+
+/// The menu over the seven skills the user's mock lists, every one on.
+fn seven_app() -> App {
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![
+            meta("flaredantic", "Share a local port on a public URL"),
+            meta("jina-reader", "Read public webpages and PDFs"),
+            meta("skill-creator", "Write or update a skill"),
+            meta("web-search", "Search the web"),
+            meta("yt-dlp", "Download media you are allowed to"),
+            meta("alpha", "The alpha skill"),
+            meta("beta", "The beta skill"),
+        ],
+        Default::default(),
+        true,
+        vec!["~/.claude/skills".to_string()],
+    );
+    app
+}
+
+#[test]
+fn the_whole_page_lists_five_skills_under_the_search_prompt() {
+    // The user's mock: the title over the count, a gap, the search line, a
+    // gap, five rows whose `→` sits under the `❯`, the counter and the
+    // highlighted skill's description hanging under the names, a gap, and
+    // the hint saying Space toggles.
+    let rule = "─".repeat(78);
+    assert_eq!(
+        page(&seven_app(), 78),
+        [
+            rule.as_str(),
+            "  Skills",
+            "  7 skills · 7 enabled",
+            "",
+            "  ❯",
+            "",
+            "  → flaredantic     ✔ enabled",
+            "    jina-reader     ✔ enabled",
+            "    skill-creator   ✔ enabled",
+            "    web-search      ✔ enabled",
+            "    yt-dlp          ✔ enabled",
+            "    (1/7)",
+            "",
+            "    Share a local port on a public URL",
+            "",
+            "  Type to search · Space to toggle · Esc to cancel",
+            rule.as_str(),
+        ]
+    );
 }
 
 #[test]
@@ -563,7 +614,7 @@ fn a_narrow_row_cuts_the_word_but_keeps_the_mark() {
     let row = lines
         .iter()
         .map(plain)
-        .find(|l| l.starts_with('→'))
+        .find(|l| l.trim_start().starts_with('→'))
         .expect("the selected row");
     assert!(
         crate::ui::wrap::cols(row.trim_end()) <= 12,
@@ -671,14 +722,14 @@ fn is_rule(text: &str) -> bool {
 
 #[test]
 fn a_short_terminal_keeps_the_skill_choices_on_screen() {
-    // The whole page is 20 rows here. On 15, bottom-anchoring it used to
+    // The whole page is 17 rows here. On 15, bottom-anchoring it used to
     // flow the search line and the highlighted row into scrollback, leaving
     // the description and the rows below the selection — nothing showed
     // what Enter would toggle. codex's short-panel rule instead: the
     // description yields first, so the search line, three skill rows and
     // the hint stay on screen.
     let app = many_app();
-    assert_eq!(page_at(&app, 78, TALL).len(), 20, "the whole page");
+    assert_eq!(page_at(&app, 78, TALL).len(), 17, "the whole page");
     let texts = page_at(&app, 78, SHORT);
     assert!(texts.len() <= usize::from(SHORT), "fits: {texts:#?}");
     assert!(
@@ -688,7 +739,7 @@ fn a_short_terminal_keeps_the_skill_choices_on_screen() {
     assert!(
         texts
             .iter()
-            .any(|t| t.starts_with("→ commit-message-helper")),
+            .any(|t| t.starts_with("  → commit-message-helper")),
         "the highlighted skill: {texts:#?}"
     );
     assert_eq!(skill_rows(&texts), 3, "three skill rows: {texts:#?}");
@@ -729,11 +780,11 @@ fn the_compact_page_keeps_the_header_while_it_fits() {
     assert_eq!(texts[4], "  ❯", "the search line: {texts:#?}");
     assert_eq!(texts[5], "", "nothing above the first row: {texts:#?}");
     assert!(
-        texts[6].starts_with("→ commit-message-helper"),
+        texts[6].starts_with("  → commit-message-helper"),
         "{texts:#?}"
     );
-    assert!(texts[7].starts_with("  dataviz"), "{texts:#?}");
-    assert!(texts[8].starts_with("  haiku-writer"), "{texts:#?}");
+    assert!(texts[7].starts_with("    dataviz"), "{texts:#?}");
+    assert!(texts[8].starts_with("    haiku-writer"), "{texts:#?}");
     assert_eq!(texts[9], "  ↓ 5 more below", "{texts:#?}");
     assert_eq!(texts[10], format!("  {SKILLS_HINT}"), "{texts:#?}");
     assert!(is_rule(&texts[11]), "{texts:#?}");
@@ -750,11 +801,11 @@ fn a_terminal_too_short_for_the_header_drops_it_too() {
     assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
     assert_eq!(texts[2], "", "{texts:#?}");
     assert!(
-        texts[3].starts_with("→ commit-message-helper"),
+        texts[3].starts_with("  → commit-message-helper"),
         "{texts:#?}"
     );
-    assert!(texts[4].starts_with("  dataviz"), "{texts:#?}");
-    assert!(texts[5].starts_with("  haiku-writer"), "{texts:#?}");
+    assert!(texts[4].starts_with("    dataviz"), "{texts:#?}");
+    assert!(texts[5].starts_with("    haiku-writer"), "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 5 more below", "{texts:#?}");
     assert_eq!(texts[7], format!("  {SKILLS_HINT}"), "{texts:#?}");
     assert!(is_rule(&texts[8]), "{texts:#?}");
@@ -770,16 +821,16 @@ fn the_compact_window_keeps_the_selection_in_its_middle() {
     select(&mut app, 3); // jina-reader: one row either side, the rest named
     let middle = page_at(&app, 78, SHORT);
     assert_eq!(middle[5], "  ↑ 2 more above", "{middle:#?}");
-    assert!(middle[6].starts_with("  haiku-writer"), "{middle:#?}");
-    assert!(middle[7].starts_with("→ jina-reader"), "{middle:#?}");
-    assert!(middle[8].starts_with("  pdf"), "{middle:#?}");
+    assert!(middle[6].starts_with("    haiku-writer"), "{middle:#?}");
+    assert!(middle[7].starts_with("  → jina-reader"), "{middle:#?}");
+    assert!(middle[8].starts_with("    pdf"), "{middle:#?}");
     assert_eq!(middle[9], "  ↓ 3 more below", "{middle:#?}");
     select(&mut app, 7); // yt-dlp: the window pinned to the end
     let end = page_at(&app, 78, SHORT);
     assert_eq!(end[5], "  ↑ 5 more above", "{end:#?}");
-    assert!(end[6].starts_with("  skill-creator"), "{end:#?}");
-    assert!(end[7].starts_with("  web-search"), "{end:#?}");
-    assert!(end[8].starts_with("→ yt-dlp"), "{end:#?}");
+    assert!(end[6].starts_with("    skill-creator"), "{end:#?}");
+    assert!(end[7].starts_with("    web-search"), "{end:#?}");
+    assert!(end[8].starts_with("  → yt-dlp"), "{end:#?}");
     assert_eq!(end[9], "", "nothing below the last row: {end:#?}");
 }
 
@@ -965,7 +1016,7 @@ fn the_menu_renders_the_page_its_height_reserves() {
     );
     assert!(
         rows.iter()
-            .any(|r| r.starts_with("→ commit-message-helper")),
+            .any(|r| r.starts_with("  → commit-message-helper")),
         "the highlighted skill: {rows:#?}"
     );
     assert!(
@@ -989,12 +1040,12 @@ fn a_long_description_is_cut_to_one_row_before_the_list_shrinks() {
     let wrapped = page_at(&app, 78, TALL);
     assert_eq!(
         wrapped.len(),
-        21,
+        18,
         "the description wraps to two rows: {wrapped:#?}"
     );
-    let texts = page_at(&app, 78, 20);
-    assert_eq!(texts.len(), 20, "{texts:#?}");
-    assert_eq!(skill_rows(&texts), 8, "the whole list stays: {texts:#?}");
+    let texts = page_at(&app, 78, 17);
+    assert_eq!(texts.len(), 17, "{texts:#?}");
+    assert_eq!(skill_rows(&texts), 5, "the whole window stays: {texts:#?}");
     assert!(texts.iter().any(|t| t.contains("(1/8)")), "{texts:#?}");
     let description = texts
         .iter()
@@ -1006,7 +1057,7 @@ fn a_long_description_is_cut_to_one_row_before_the_list_shrinks() {
     );
     // A skill whose description fits one row looks the same either way.
     select(&mut app, 1);
-    assert_eq!(page_at(&app, 78, 20), page_at(&app, 78, TALL));
+    assert_eq!(page_at(&app, 78, 17), page_at(&app, 78, TALL));
 }
 
 // --- a terminal shorter than the compact page keeps the search line ---
@@ -1025,7 +1076,7 @@ fn a_tiny_terminal_keeps_the_skills_search_line() {
         |height| skills_page_at(&app, 78, height),
         "",
         "→ commit-helper",
-        "Enter/Space to enable/disable",
+        "Space to toggle",
     );
     for height in 1..=10 {
         assert_caret_on_search_line(&app, &skills_page_at(&app, 78, height), 78, "");
@@ -1036,6 +1087,6 @@ fn a_tiny_terminal_keeps_the_skills_search_line() {
         |height| skills_page_at(&app, 78, height),
         "zzz",
         "No matching skills",
-        "Enter/Space to enable/disable",
+        "Space to toggle",
     );
 }

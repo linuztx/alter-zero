@@ -305,7 +305,7 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
     {
         return Some(
             "Anthropic refused this OAuth credential — sign in again with /login, or use an \
-             Anthropic API key instead (/login → Use an API key)."
+             Anthropic API key instead (/login → Sign in with an API key)."
                 .to_string(),
         );
     }
@@ -1298,6 +1298,10 @@ mod tests {
         )
         .expect("advice");
         assert!(blocked.contains("API key"), "{blocked}");
+        assert!(
+            blocked.contains(crate::app::LoginMethod::ApiKey.label()),
+            "the /login row it names exists: {blocked}"
+        );
 
         let expired =
             auth_advice(401, r#"{"error":{"type":"authentication_error"}}"#).expect("advice");

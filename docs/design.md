@@ -405,8 +405,9 @@ which Ctrl+V reads the clipboard from.
   fetches **every configured provider's** `/v1/models` in parallel (one worker
   thread each), merging them into one provider-tagged list as they land (a
   provider that fails is noted beside the counter, the rest staying put), lists
-  them with type-to-search (`→` marks the selection, `❯` the search prompt,
-  headerless), and
+  them with type-to-search under a `Select model` title and a dim subtitle
+  (`→` marks the selection, `❯` the search prompt, seven rows at a time over
+  the `(n/total)` counter — `docs/view-flow.md` *A picker's page*), and
   `Enter` rebuilds the backend for the chosen model, updates the footer, and
   **persists the choice** to `~/.alter-zero/config.json` (`llm::settings::Settings`)
   so it's the default next run **in this working directory** — a directory
@@ -420,7 +421,9 @@ which Ctrl+V reads the clipboard from.
   visible while you browse (the ↓ manager band's geometry —
   `ui::layout`'s `strip_above_rows`/`view_split`; `docs/llm.md`).
 - **`/login` onboarding** (`docs/llm.md`). A second **inline** flow, rooted at
-  three ways in: a subscription sign-in, an API key — pick a provider
+  three ways in under a `Select login method` title (no search line: three
+  rows are a question, not a list): a subscription's account sign-in, an API
+  key — pick a provider
   (headerless list), then paste its key (masked, under an `Enter your … API
   key` title) — or a **local model** server, whose address is **tested before
   it is saved**: the page lists the server's models the way `/model` will, a

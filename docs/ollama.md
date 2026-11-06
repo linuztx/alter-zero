@@ -1,6 +1,6 @@
 # Ollama as a provider
 
-Run local models — `/login` → **Use a local model** → **Ollama** → Enter (the
+Run local models — `/login` → **Sign in with a local model** → **Ollama** → Enter (the
 address in force is offered, and tested before it is saved —
 `docs/local-models.md`), then `/model` lists what `ollama pull` fetched.
 
@@ -128,7 +128,7 @@ file, not just this pair.
 
 ### The `/login` server page
 
-`/login` → **Use a local model** → **Ollama** opens the local server page
+`/login` → **Sign in with a local model** → **Ollama** opens the local server page
 (`docs/local-models.md`) — it used to be a "host field" in the API-key list,
 which saved whatever was typed. The title asks `Enter your Ollama server
 URL`, the typed value shows **as typed** (a URL typed blind is a URL typed
@@ -144,7 +144,7 @@ saved verbatim in Ollama's grammar (`myhost:11434`, `0.0.0.0`,
 `https://host`); the config normalizes it, not the field.
 
 `ollama_cloud` is an ordinary key provider: its row asks for the key, under
-**Use an API key**.
+**Sign in with an API key**.
 
 ## The context window
 

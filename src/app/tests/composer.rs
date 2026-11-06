@@ -845,7 +845,7 @@ fn typing_reseats_the_selection_to_the_top() {
 
 #[test]
 fn typing_filters_providers_case_insensitively() {
-    let mut app = login_app();
+    let mut app = provider_app();
     type_chars(&mut app, "OPEN");
     let onboarding = app.key_onboarding.as_ref().unwrap();
     assert_eq!(onboarding.matches().len(), 1);
@@ -870,7 +870,7 @@ fn paste_into_the_key_step_strips_whitespace_and_newlines() {
 
 #[test]
 fn paste_into_the_provider_step_extends_the_filter() {
-    let mut app = login_app();
+    let mut app = provider_app();
     app.paste_into_key_onboarding("open router");
     assert_eq!(app.key_onboarding.as_ref().unwrap().query, "open router");
 }

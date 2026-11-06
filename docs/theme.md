@@ -194,19 +194,22 @@ columns over this catalog — the preview sits **beside** the list:
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select theme
+  The interface's colours — applies in every directory
+
   ❯
 
-  ❯ mocha       ●●●●● ✓    Catppuccin Mocha
+  → mocha       ●●●●● ✓    Catppuccin Mocha
     macchiato   ●●●●●      The darkest flavour, and the default
     frappe      ●●●●●
     latte       ●●●●●      ❯ Rename the greeting in greet.py
     onedark     ●●●●●      ● Edit(greet.py)
-    dracula     ●●●●●        ⎿  Updated greet.py (+1 -1)
-    nord        ●●●●●            1  def greet(name):
-    gruvbox     ●●●●●            2 -    print("Hello, world")
-    solarized   ●●●●●            2 +    print(f"Hello, {name}")
-    monokai     ●●●●●      ● Done — greet.py greets by name now:
-  ↓ 1 more below
+    (1/11)                   ⎿  Updated greet.py (+1 -1)
+                                 1  def greet(name):
+                                 2 -    print("Hello, world")
+                                 2 +    print(f"Hello, {name}")
+                           ● Done — greet.py greets by name now:
+
                              greet("Alter Zero")  # Hello, Alter Zero
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
@@ -214,18 +217,21 @@ columns over this catalog — the preview sits **beside** the list:
 ```
 
 On a narrower one the same preview stacks under the list (here scrolled to
-the end of the catalog, so the overflow row is above the window):
+the end of the catalog, the window riding the selection):
 
 ```
 ──────────────────────────────────────────────────────────────
+  Select theme
+  The interface's colours — applies in every directory
+
   ❯
 
-  ↑ 1 more above
-    macchiato   ●●●●●
-    frappe      ●●●●●
-    …
+    nord        ●●●●●
+    gruvbox     ●●●●●
+    solarized   ●●●●●
     monokai     ●●●●●
-  ❯ ansi        ●●●●●
+  → ansi        ●●●●●
+    (11/11)
 
   Terminal
   The terminal's own 16 ANSI colours, so the TUI follows its …
@@ -246,23 +252,27 @@ the end of the catalog, so the overflow row is above the window):
 
 The layout is codex's theme picker (`codex-rs/tui/src/theme_picker.rs` —
 the list on the left, the highlighted theme's sample on the right, stacked
-when the terminal is narrow) in this TUI's dress: the family's inline
-frame and `❯` type-to-search (matching names, **titles** and descriptions,
-so `catppuccin` finds the four flavours and `follows` the terminal theme)
-over the list, and a dim hint led, like the `/mcp` list's, by the
-navigation. Then the things a theme picker exists for:
+when the terminal is narrow) in this TUI's dress: the picker family's page
+(`docs/view-flow.md` *A picker's page*) — a `Select theme` title over a dim
+line saying a theme applies in every directory (one `theme.json` per user,
+where `/mascot` and `/spinner` keep theirs per directory), the inline frame
+and `❯` type-to-search (matching names, **titles** and descriptions, so
+`catppuccin` finds the four flavours and `follows` the terminal theme) over
+the list, and a dim hint led, like the `/mcp` list's, by the navigation.
+Then the things a theme picker exists for:
 
-- **The list is the `/mcp` list.** The selected row is the indent, the
-  accent `❯` (`HOOKS_MARKER`) and the name in bold; every other row keeps
-  the marker's width blank, so the names line up under it. A ten-row window
-  (`THEME_MENU_MAX_ROWS`, the settings window's size) keeps the selection on
-  its middle row (`centered_window`), and the rows it hides are named by a
-  dim `↑ N more above` row over the window and a dim `↓ N more below` row
-  under it — each only when something is hidden that way, exactly as `/mcp`
-  does it. The eleven-theme catalog always hides one row on one side, so the
-  frame holds still as ↑/↓ walk it — the `/settings` always-emit rule
-  (`the_page_height_is_stable_across_selections`). There is no `(n/total)`
-  counter: the overflow rows say what is hidden.
+- **The list is the family's list.** The selected row is the indent, the
+  accent `→` (`MODEL_MARKER`, sitting under the search line's `❯`) and the
+  name in bold; every other row keeps the marker's width blank, so the names
+  line up under it. It used to be the `/mcp` list's `❯`, a second `❯` on a
+  page whose search line is one. A five-row window (`THEME_MENU_MAX_ROWS`,
+  the settings window's size) keeps the selection on its middle row
+  (`centered_window`), and the `(n/total)` counter under it says where it
+  stands — where `↑ N more above` / `↓ N more below` rows used to name what
+  it hid, which over a short window come and go as the selection moves. So
+  the list column is one height at every selection and the frame holds still
+  as ↑/↓ walk it — the `/settings` always-emit rule
+  (`the_page_height_is_stable_across_selections`).
 - **Every row wears its own swatch.** After the name column — sized to the
   widest name in the **whole catalog** plus `THEME_MENU_GAP`, never just the
   visible rows', so a search or a scroll moves neither the swatches nor the
@@ -311,8 +321,9 @@ navigation. Then the things a theme picker exists for:
   The list column is a constant of the catalog, so neither ↑/↓ nor a search
   moves the preview sideways
   (`the_preview_column_holds_still_as_the_list_moves_and_filters`), and
-  beside the list the overflow rows live in the list column, so the
-  preview's rows never move up or down either.
+  beside the list the counter lives in the list column, so the preview's
+  rows never move up or down either. Beside the list the preview is the
+  taller column, so the short window costs the page no height there.
 - **The bubble's ground stays in its own column.** In the conversation the
   user bubble's dark ground is a *line* style, which ratatui patches into
   every span on the line — laid beside the list, it would have painted the
@@ -322,8 +333,9 @@ navigation. Then the things a theme picker exists for:
   (`the_bubble_ground_stays_in_the_preview_column`).
 - **One layout, three pickers.** The `/mascot` (`docs/mascot.md`) and
   `/spinner` (`docs/spinner.md`) pickers lay their previews out the same
-  way, through the same pieces in `ui::model_view`: `marked_row_head` (the
-  `/mcp` row's indent, marker and name), `overflow_list` (the `↑`/`↓` rows),
+  way, through the same pieces in `ui::model_view`: `picker_header` (the
+  title over its subtitle), `marked_row_head` (the family row's indent,
+  marker and name), `list_counter_line` (the counter under the window),
   `caption_lines` (the bold title over the dim subtitle) and
   `PreviewLayout` (the list column, the gap and the preview's narrowest
   column, deciding beside or stacked; its `body` folds every preview row's
@@ -335,9 +347,9 @@ depends on the selection — and the page is **still** (nothing on it ticks),
 so unlike the `/spinner` picker it asks for no animation frames and its
 scrollback flow is signed on its **rows**, like the `/mascot` picker's: any
 keystroke re-flows it (`docs/view-flow.md`). Laid side by side the page is
-eighteen rows against the stacked page's thirty, so it fits a 24-row
-terminal without flowing — the frame pads neither rule, the search line
-straight under the top one and the hint straight over the bottom one
+twenty-one rows against the stacked page's twenty-eight, so it fits a 24-row
+terminal without flowing — the frame pads neither rule, the title straight
+under the top one and the hint straight over the bottom one
 (`docs/view-flow.md` *The frame hugs its content*).
 
 ### A terminal too short for the page
@@ -348,18 +360,23 @@ line: *"optional gaps and previews yield first"*:
 
 ```
 ──────────────────────────────────────────────────────────
+  Select theme
+  The interface's colours — applies in every directory
+
   ❯
   ↑ 4 more above
     onedark     ●●●●●
-  ❯ dracula     ●●●●●
+  → dracula     ●●●●●
     nord        ●●●●●
   ↓ 4 more below
   ↑/↓ to navigate · Type to search · Enter to choose · Es…
 ──────────────────────────────────────────────────────────
 ```
 
-The search line, `COMPACT_LIST_ROWS` (3, the whole family's compact window)
-rows of the list — codex's minimum result rows — and the hint stay; the preview and its caption yield.
+The header while it fits, then the search line, `COMPACT_LIST_ROWS` (3, the
+whole family's compact window) rows of the list — codex's minimum result
+rows — and the hint stay; the preview, its caption and the counter yield,
+and a row shorter the header follows them.
 Before this the page bottom-anchored on a short terminal like every framed
 view, which kept the preview and the hint on screen and flowed the search
 line and the theme names into scrollback: wherever the picker was squeezed,
@@ -369,7 +386,7 @@ are codex's reserved arrow slots here — the `↑` directly under the search
 line, the `↓` directly over the hint, each blank when nothing is hidden that
 way — because a three-row window over eleven themes hides rows on *both*
 sides in the middle of the list, and rows that came and went would move the
-frame on ↑/↓. Reserved, the page is nine rows at every selection
+frame on ↑/↓. Reserved, the page is one height at every selection
 (`the_compact_page_holds_still_across_selections`), and a blank slot is the
 gap the page wants there anyway.
 
@@ -395,7 +412,7 @@ still in place:
 ──────────────────────────────────────────────────────────
   ❯
     onedark     ●●●●●
-  ❯ dracula     ●●●●●
+  → dracula     ●●●●●
     nord        ●●●●●
   ↑/↓ to navigate · Type to search · Enter to choose · Es…
 ──────────────────────────────────────────────────────────
@@ -477,10 +494,10 @@ the saved theme.
   builder, the `/spinner` preview the status line's.
 - **Why codex's layout, and not codex's every detail?** The preview beside
   the list is codex's, because a preview under a list makes the page as tall
-  as both — thirty-two rows, more than a 24-row terminal shows, so the top
+  as both — twenty-eight rows, more than a 24-row terminal shows, so the top
   of the page flowed into scrollback — where side by side the two read at
-  one glance in twenty. The rest stays this TUI's. The `❯` and the named
-  `↓ N more below` rows are the `/mcp` list's, not codex's `›` over a
+  one glance in twenty-one. The rest stays this TUI's. The `→` and the
+  `(n/total)` counter are the picker family's, not codex's `›` over a
   full-width fill and bare arrows, so a theme list looks like the app's
   other lists. The list column is sized to the catalog rather than taking
   codex's half of the width: codex's shaded panel spends half the screen
@@ -559,9 +576,10 @@ the saved theme.
   no RGB and its stepping blends, the light theme's inverted inks and
   tints, the gradient/blend derivations, the error toast's softened red in
   every theme, and a rendered cell wearing the active theme.
-- `ui/tests/theme_view.rs` — the framed page (rules, search, rows,
-  preview, hint, no counter) at a wide and a narrow width, the `/mcp` list's
-  marker and indent, the overflow rows naming what is hidden, the preview
+- `ui/tests/theme_view.rs` — the framed page (rules, the title over its
+  subtitle, search, five rows under the family's `→`, the counter, preview,
+  hint) at a wide and a narrow width, the marker and indent, the counter
+  saying where the window stands, the preview
   beside the list on one column (an 80-column terminal included) and
   stacked under it after a gap on a narrow one, the one breakpoint with no
   wrapping past it, the preview column holding still through ↑/↓ and
@@ -576,7 +594,7 @@ the saved theme.
   keeping the selection in its middle, one height at every selection, the
   whole page back once it fits, width and blank-row safety, the cursor on
   its search line); on a terminal shorter than the compact page the rungs
-  (the search line, the highlighted theme and the hint kept from ten rows
+  (the search line, the highlighted theme and the hint kept from thirty rows
   down to one, seven rows reading search line, three themes, hint, gap,
   rule, the caret on the search line at every height, what was typed kept
   over no match), nothing flowing at any height, the render filling the
@@ -589,12 +607,13 @@ the saved theme.
   theme.
 - `scripts/smoke.sh` Phase 111 — the picker end to end in a real terminal:
   the banner hint in the default accent (raw SGR), the palette entry, the
-  open page with its swatches, its `↓ 1 more below` row and its real-cell
-  preview **beside the list** at 90 columns, ↓ moving the marker and the
-  caption, a **resize to 64 columns stacking the preview** under the list
-  and back to 90 laying it beside again, a **resize to 14 rows** showing
-  the compact page (the search line, three theme rows, `↓ 8 more below`,
-  the hint, no preview), a filtered Enter switching the
+  open page with its title, its five swatched rows over the `(1/11)`
+  counter and its real-cell preview **beside the list** at 90 columns, ↓
+  moving the marker and the caption, a **resize to 64 columns stacking the
+  preview** under the list and back to 90 laying it beside again, a
+  **resize to 14 rows** showing the compact page (the title, the search
+  line, three theme rows, `↓ 8 more below`, the hint, no preview), a
+  filtered Enter switching the
   theme with a toast and a `theme.json` write, the **already-painted banner
   recoloured** by the rebuild, and a **second process against the same
   config home launching in the saved theme**.

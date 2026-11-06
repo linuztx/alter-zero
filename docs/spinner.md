@@ -117,17 +117,17 @@ columns over this catalog — the preview sits **beside** the list, the
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
+  Select spinner
+  The status line's animation — saved for this directory
+
   ❯
 
     comet     (●•·   )      Gravity
-  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
+  → gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
     wave      ⠔⠉⠉⠑⠤⣀⣀⡠
     sparkle   ·             ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
     dots      ⠋
-    blocks    ▙
-    pulse     ●
-    bars      ▁
-    line      |
+    (2/9)
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────────
@@ -137,13 +137,17 @@ On a narrower one the same preview stacks under the list:
 
 ```
 ────────────────────────────────────────────────────────────
+  Select spinner
+  The status line's animation — saved for this directory
+
   ❯
 
     comet     (●•·   )
-  ❯ gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓
+  → gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓
     wave      ⠔⠉⠉⠑⠤⣀⣀⡠
-    …
-    line      |
+    sparkle   ·
+    dots      ⠋
+    (2/9)
 
   Gravity
   A ball hopping along the track, wall to wall
@@ -154,15 +158,19 @@ On a narrower one the same preview stacks under the list:
 ────────────────────────────────────────────────────────────
 ```
 
-Deliberately the `/theme` picker's layout — the same inline frame and `❯`
+Deliberately the `/theme` picker's layout — the picker family's page
+(`docs/view-flow.md` *A picker's page*): a `Select spinner` title over a dim
+line saying the choice is saved for this directory
+(`docs/per-directory-state.md`), the same inline frame and `❯`
 type-to-search (matching names *and* descriptions, so `braille` finds
-`dots`), the rows in the **`/mcp` list's shape** (the accent `❯` and the
-bold name on the selection, every other row indented under it; dim `↑ N
-more above` / `↓ N more below` rows name whatever a window hides, in place of
-an `(n/total)` counter, though nine styles never window in the ten-row
-list), `/theme`'s caption over the preview (the style's name as a bold title
-over its description in the frame's dim), and a hint led by the navigation
-— plus the thing a spinner picker exists for: the page is **live**.
+`dots`), the rows with the family's `→` and the bold name on the selection
+under the `❯`, every other row indented under it, a five-row window around
+the highlighted style over the `(n/total)` counter — where `↑`/`↓` rows
+would come and go and move the frame as the selection walks the nine
+styles — `/theme`'s caption over the preview (the style's name as a bold
+title over its description in the frame's dim), and a hint led by the
+navigation — plus the thing a spinner picker exists for: the page is
+**live**.
 
 - **Every row wears its own spinner.** The name column is sized to the
   widest name in the **whole catalog** plus `SPINNER_MENU_GAP` — never just
@@ -236,8 +244,9 @@ stacked) the picker builds the family's **compact** page instead
 (`docs/view-flow.md` *A page that sheds rows before it flows*): the live
 preview yields, caption and status line together, and three styles sit
 between the reserved overflow slots, each still wearing its own live
-spinner, so the search line, the highlighted style and the hint stay on
-screen where bottom-anchoring the whole page flowed them into scrollback.
+spinner — under the header while it fits, then without it — so the search
+line, the highlighted style and the hint stay on screen where
+bottom-anchoring the whole page flowed them into scrollback.
 The glyph column is sized off the whole catalog, not the three in view, so
 it holds still as the window scrolls. On a terminal shorter still the
 compact page sheds what is left one row at a time and never its search line
@@ -374,9 +383,10 @@ wears it.
   gradient over a dim floor; the wave's two dots per cell, its motion, its
   seamless reversal and time-symmetric crawl, its gradient wash; and
   `render_live` wearing the session's style.
-- `ui/tests/spinner_view.rs` — the framed page (rules, search, rows,
-  captioned preview, hint, no counter) at a wide and a narrow width, the
-  `/mcp` list's marker and indent, every row's live glyph (the tracks
+- `ui/tests/spinner_view.rs` — the framed page (rules, the title over its
+  subtitle, search, five rows under the family's `→`, the counter, the
+  captioned preview, hint) at a wide and a narrow width, the marker and
+  indent, every row's live glyph (the tracks
   included), the preview beside the list on one column (an 80-column
   terminal included) and stacked under it after a gap on a narrow one, the
   one breakpoint with the sample whole at it, the preview and glyph columns

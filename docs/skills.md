@@ -665,23 +665,30 @@ name is completable there — and nothing here forecloses the palette half.
 deliberately the `/settings` menu's twin rather than a new shape — same frame,
 same `❯` type-to-search, same aligned `{label}  {value}` column with the same
 two-tone colouring, same `(n/total)` counter, same Enter/Space grammar — under
-the header the `/hooks` and `/mcp` pages open on:
+the header the `/hooks` and `/mcp` pages open on, in the picker family's page
+(`docs/view-flow.md` *A picker's page*):
 
 ```
   Skills
-  3 skills · 2 enabled
+  7 skills · 7 enabled
 
   ❯
 
-→ commit-helper        ✔ enabled
-  haiku-writer         ◯ disabled
-  startup-hook-skill   ✔ enabled
-  (1/3)
+  → flaredantic      ✔ enabled
+    jina-reader      ✔ enabled
+    skill-creator    ✔ enabled
+    web-search       ✔ enabled
+    yt-dlp           ✔ enabled
+    (1/7)
 
-  Write a git commit message in this project's house style…
+    Share a local port on a public URL through Cloudflare…
 
-  Type to search · Enter/Space to enable/disable · Esc to cancel
+  Type to search · Space to toggle · Esc to cancel
 ```
+
+Five rows at a time (`SETTINGS_MENU_MAX_ROWS`), their `→` under the `❯`,
+the counter and the highlighted skill's description hanging under the names.
+The hint names Space; Enter toggles too, the `/settings` menu's twin key.
 
 Only the rows differ: one per discovered skill instead of one per knob, with
 the skill's **own description** as the line under the list — so the picker
@@ -725,8 +732,8 @@ Two notes the `/settings` menu has no need of:
 
 ### A terminal too short for the page
 
-The whole page is eleven rows of chrome plus the rows and the description:
-eighteen for six skills. A shorter terminal gets a **compact** page instead —
+The whole page is eleven rows of chrome plus the rows (five at most) and the
+description: seventeen for six skills. A shorter terminal gets a **compact** page instead —
 the `/theme` picker's (`docs/theme.md`), over this list — and codex's order of
 what yields: *"optional gaps and previews yield first"*, while a header stays
 for as long as it fits (`selection_picker_layout.rs`). Here the description
@@ -740,11 +747,11 @@ then gone with the `(n/total)` counter:
 
   ❯
   ↑ 1 more above
-  dataviz         ✔ enabled
-→ haiku-writer    ✔ enabled
-  jina-reader     ✔ enabled
+    dataviz         ✔ enabled
+  → haiku-writer    ✔ enabled
+    jina-reader     ✔ enabled
   ↓ 2 more below
-  Type to search · Enter/Space to enable/disable · Esc to…
+  Type to search · Space to toggle · Esc to cancel
 ──────────────────────────────────────────────────────────
 ```
 
@@ -756,11 +763,11 @@ of the header:
 ──────────────────────────────────────────────────────────
   ❯
   ↑ 1 more above
-  dataviz         ✔ enabled
-→ haiku-writer    ✔ enabled
-  jina-reader     ✔ enabled
+    dataviz         ✔ enabled
+  → haiku-writer    ✔ enabled
+    jina-reader     ✔ enabled
   ↓ 2 more below
-  Type to search · Enter/Space to enable/disable · Esc to…
+  Type to search · Space to toggle · Esc to cancel
 ──────────────────────────────────────────────────────────
 ```
 

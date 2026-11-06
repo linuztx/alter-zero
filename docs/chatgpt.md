@@ -1,7 +1,7 @@
 # ChatGPT Codex as a provider
 
 Sign in with a ChatGPT Plus/Pro/Team seat instead of pasting an API key —
-`/login` → **Use a subscription** → **ChatGPT Codex** → **Browser login**
+`/login` → **Sign in with an account** → **ChatGPT Codex** → **Browser login**
 (or **Device code login** on a machine with no browser).
 
 This is the second subscription provider, after GitHub Copilot

@@ -8,10 +8,11 @@ step that asks the prior question first, and a second half behind it.
 
 ```
 /login
-  ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
-  │                    ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
-  │                    └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
-  └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  ├─ Sign in with an account ──► GitHub Copilot ──► device code ──► (approved)
+  │                         ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
+  │                         └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
+  ├─ Sign in with an API key ──► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  └─ Sign in with a local model ──► LM Studio / Ollama / … ──► an address, tested       docs/local-models.md
 ```
 
 Both halves end in the **same place**: a secret in `~/.alter-zero/.env` under
@@ -33,18 +34,28 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-  ❯
+  Select login method
 
-→ Use a subscription
-  Use an API key
+  → Sign in with an account
+    Sign in with an API key
+    Sign in with a local model
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-No title — the two rows *are* the question — and no `(1/2)` counter, which
-would say nothing they don't. Type-to-filter works here like every list step
-(one grammar for all three), and Esc closes: this is the root.
+The question in words over its three answers — `Select login method`, the
+sign-in method choice's own phrasing (`Select ChatGPT Codex login method:`,
+`docs/chatgpt.md`), so the flow's two questions read alike — and the rows'
+`→` at the frame's inset like every picker's. **No `❯` filter**: three rows
+are a question, not a list to search, so typing and pasting do nothing and
+the cursor hides (the method choice's rule, `ui::cursor_visible`), and no
+`(1/3)` counter, which would say nothing the rows don't. "Account" rather
+than "subscription": the list it opens signs in to accounts, and an
+Anthropic Console account bills per token with no plan at all. Esc closes:
+this is the root. On a terminal too short for the page its gaps and rules
+yield before the title and the rows do (`model_view::compact_page`, the title
+in the search line's seat — `docs/view-flow.md`).
 
 ### `KeyStep::Subscription`
 
@@ -52,9 +63,9 @@ would say nothing they don't. Type-to-filter works here like every list step
 ────────────────────────────────────────────────────────────────────────────
   ❯
 
-→ GitHub Copilot · ✔ configured
-  ChatGPT Codex · ◯ unconfigured
-  (1/2)
+  → GitHub Copilot · ✔ configured
+    ChatGPT Codex · ◯ unconfigured
+    (1/2)
 
   ↑↓ navigate  enter sign in  esc back
 ────────────────────────────────────────────────────────────────────────────
@@ -71,9 +82,10 @@ now introduces a *keyed* provider on the key step (`docs/llm.md`); it is
 simply not what a list row is for.
 
 No title either (updated 2026-09-03). This page used to open on a cyan
-`Use a subscription` heading — the row that opened it, repeated — which said
-nothing the hint under the list doesn't and pushed every row two lines down.
-All three lists open straight onto their filter now.
+heading repeating the row that opened it (then `Use a subscription`), which
+said nothing the hint under the list doesn't and pushed every row two lines
+down. All three lists open straight onto their filter now; only the root asks
+its question in words.
 
 ### `KeyStep::Device`
 

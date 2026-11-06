@@ -14,12 +14,12 @@ windows — and until now the first a user heard of any of them was a refused
 turn.
 
 The page shows every **subscription** the app is signed in to — the ones
-`/login` lists under *Use a subscription* (`docs/llm.md`) — each with its plan,
+`/login` lists under *Sign in with an account* (`docs/llm.md`) — each with its plan,
 a meter per limit, when each one resets, and anything the provider says is
 stopping requests now. A pasted API key bills per token and has no plan to
 measure against, so API-key providers are not on the page. With no
 subscription signed in at all there is nothing to show, and `/usage` opens no
-page: a toast says so and points at `/login` → *Use a subscription* — the
+page: a toast says so and points at `/login` → *Sign in with an account* — the
 `/export` empty rule.
 
 ## The page
@@ -158,7 +158,7 @@ staying open; the hint names `c` only when there is a link to copy.
 | a refresh in flight | the last report; the subtitle says `refreshing…` |
 
 A page left with no subscription at all — every one signed out while it was
-open — says so and points at `/login` → *Use a subscription*, in the accent
+open — says so and points at `/login` → *Sign in with an account*, in the accent
 `/model` uses for the same advice.
 
 ## Keys

@@ -100,7 +100,7 @@ open_chatgpt_row() {
 }
 submit "$S119" "/login"
 sleep 0.5
-keys "$S119" Enter # Use a subscription
+keys "$S119" Enter # Sign in with an account
 sleep 0.4
 open_chatgpt_row
 method="$(tmux capture-pane -t "$S119" -p)"

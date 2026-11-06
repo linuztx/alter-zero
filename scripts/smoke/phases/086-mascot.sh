@@ -5,8 +5,9 @@
 smoke_begin
 
 # the `/mascot` picker (docs/mascot.md). The `/theme`
-# picker's layout over the mascot catalog with a LIVE banner preview: the
-# rows in the `/mcp` list's shape, the highlighted mascot previewed through
+# picker's layout over the mascot catalog with a LIVE banner preview: a
+# title over a dim subtitle, the rows' `→` under the search line's `❯` over a
+# five-row window and its counter, the highlighted mascot previewed through
 # the header's own builder beside the list on this 80-column pane, Enter
 # switches the startup banner in place (the selection purge-rebuilds, so the
 # chrome at the top of scrollback redraws at once), the switch is confirmed
@@ -34,14 +35,15 @@ sleep 0.5
 mascot_open="$(tmux capture-pane -t "$S86" -p)"
 echo "==== Phase 86: the picker open (crest highlighted + previewed) ===="
 printf '%s\n' "$mascot_open"
-for expect in "❯ crest ✓" "sprout" "gem" "Crest" \
+for expect in "Select mascot" "The startup banner's art — saved for this directory" \
+	"→ crest ✓" "sprout" "skiter" "(1/6)" "Crest" \
 	"A crested hatchling flaring its frill" \
 	"↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel"; do
 	expect_has "$mascot_open" -F "$expect" "the open picker is missing '$expect'"
 done
-expect_lacks "$mascot_open" -F "(1/6)" "the picker still shows a counter"
+expect_lacks "$mascot_open" -E "^ +gem" "the five-row window shows the sixth mascot"
 # Beside the list: the caption's title shares the first row.
-if ! printf '%s\n' "$mascot_open" | grep -F "❯ crest ✓" | grep -qF "Crest"; then
+if ! printf '%s\n' "$mascot_open" | grep -F "→ crest ✓" | grep -qF "Crest"; then
 	fail "the preview is not laid beside the list on 80 columns"
 fi
 # ↓ to bloom: the preview follows the selection live (bloom's petal row shows,
@@ -53,7 +55,7 @@ mascot_bloom="$(tmux capture-pane -t "$S86" -p)"
 echo "==== Phase 86: ↓ previews bloom ===="
 printf '%s\n' "$mascot_bloom"
 expect_has "$mascot_bloom" -F "▀█▄███▄█▀" "moving the selection did not preview bloom's art"
-expect_has "$mascot_bloom" -F "❯ bloom" "the marker did not follow the selection"
+expect_has "$mascot_bloom" -F "→ bloom" "the marker did not follow the selection"
 expect_has "$mascot_bloom" -F "A round little creature in full bloom" "the caption did not follow the selection"
 # Type-to-search narrows to sprout; Enter switches the banner.
 tmux send-keys -t "$S86" -l "spr"
