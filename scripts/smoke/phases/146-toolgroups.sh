@@ -88,10 +88,10 @@ run_line="$(grep -nF "Bash(python3 about.py)" <<<"$settled" | head -1 | cut -d: 
 if [ -z "$group_line" ] || [ -z "$run_line" ] || [ "$group_line" -ge "$run_line" ]; then
 	fail "the group's line and the call that closed it are out of order (rows ${group_line:-none}, ${run_line:-none})"
 fi
-# The settled line wears no bullet: what is left is a fact about the turn. Its
-# text stays where the live line's was, the bullet's two columns left blank.
+# The settled line wears no bullet: what is left is a fact about the turn, and
+# it starts at the edge, where the turn summary does.
 expect_lacks "$settled" -F "● $GROUP146" "the settled group line kept a bullet"
-expect_eq "$(grep -cxF "  $GROUP146" <<<"$settled")" "1" "the settled group line is not inset two columns, under its live text"
+expect_eq "$(grep -cxF "$GROUP146" <<<"$settled")" "1" "the settled group line is not at the edge, where the turn summary starts"
 
 # Ctrl+O shows every call whole — the group is only what the conversation shows.
 keys "$S146" C-o
@@ -145,10 +145,10 @@ for cell in "Bash(ls -la)" "Read(about.py)" "Bash(grep -rn 'card()' .)" "Bash(he
 	expect_has "$verbose" -F "$cell" "Verbose output did not give $cell its own cell back"
 done
 expect_lacks "$verbose" -F "$GROUP146" "Verbose output left the collapsed line on screen"
-expect_eq "$(grep -cE "^  Thought for [0-9]+s" <<<"$verbose")" "2" \
+expect_eq "$(grep -cE "^Thought for [0-9]+s" <<<"$verbose")" "2" \
 	"Verbose output lost a thought"
 # …each back in its place: the first between the listing and the search.
-first_thought="$(grep -nE "^  Thought for [0-9]+s" <<<"$verbose" | head -1 | cut -d: -f1)"
+first_thought="$(grep -nE "^Thought for [0-9]+s" <<<"$verbose" | head -1 | cut -d: -f1)"
 search_cell="$(grep -nF "Bash(grep -rn 'card()' .)" <<<"$verbose" | tail -1 | cut -d: -f1)"
 if [ -z "$first_thought" ] || [ -z "$search_cell" ] || [ "$first_thought" -ge "$search_cell" ]; then
 	fail "Verbose output did not put the thought between the rounds back above the search (rows ${first_thought:-none}, ${search_cell:-none})"

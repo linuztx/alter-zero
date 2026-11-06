@@ -1058,10 +1058,9 @@ quiet; Ctrl+O carries the full story:
   bash sibling's commit re-emitted the deepwiki line that had already
   committed at its own ToolEnd).
 - **Resolved ok**: the bullet-less dim two-tone
-  `  Called {server} (ctrl+o to expand)` line — the settled thinking line's
-  shape, because what is left is a fact about the turn, not output to read —
-  its text two columns in (`SETTLED_INDENT`), where `● Calling {server}…`
-  had it, so only the bullet goes away. The result text never reaches inline scrollback;
+  `Called {server} (ctrl+o to expand)` line — the settled thinking line's
+  shape (`summary_lines`), because what is left is a fact about the turn,
+  not output to read. The result text never reaches inline scrollback;
   that is *why* the cell can collapse. The auto mode classifier's
   `⎿ Allowed by auto mode classifier` provenance row stays off it too
   (`ui::tool::tool_cell_lines` skips the note for exactly this cell): in

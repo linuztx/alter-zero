@@ -50,21 +50,21 @@ if ! printf '%s' "$think_live" | grep -B 1 -E "^(● |  )Thinking…" | head -1 
 	fail "the live '● Thinking…' header is not preceded by a blank row: the segment before it was not finalised (invariant 4)"
 fi
 # …then the collapsed cell, once the phase ends.
-think_done="$(wait_pane 20 "$S66" -S -80 -- -E "^  Thought for [0-9]+s")" # up to ~20s
+think_done="$(wait_pane 20 "$S66" -S -80 -- -E "^Thought for [0-9]+s")" # up to ~20s
 echo "==== Phase 66: captured pane + scrollback (the collapsed thought) ===="
 printf '%s\n' "$think_done"
-expect_has "$think_done" -E "^  Thought for [0-9]+s · [0-9]+ tokens \(ctrl\+o to expand\)" "the phase never collapsed into a bullet-less 'Thought for Ns · N tokens (ctrl+o to expand)' line, inset where 'Thinking…' streamed"
-# …bullet-less: a settled thought is turn meta, so only the bullet's two blank
-# columns may prefix it — its text stays in the column it streamed in.
+expect_has "$think_done" -E "^Thought for [0-9]+s · [0-9]+ tokens \(ctrl\+o to expand\)" "the phase never collapsed into a bullet-less 'Thought for Ns · N tokens (ctrl+o to expand)' line"
+# …bullet-less and at the edge: a settled thought is turn meta, so nothing may
+# prefix it, not even the bullet's two blank columns.
 expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like the turn summary ('Worked for Ns')"
-expect_lacks "$think_done" -E "^Thought for " "the settled line sits flush against the edge instead of under the bullet's inset"
+expect_lacks "$think_done" -E "^[[:space:]]+Thought for " "the settled line is inset; it must start at the edge like the turn summary ('Worked for Ns')"
 expect_lacks "$think_done" -F "Then edit it and run it." "the chain-of-thought reached scrollback; only the collapsed cell may commit"
 # Invariant 4: a phase that ends MID-REPLY must finalise the assistant text
 # before it (the ToolStart dance), so the cell is its own block rather than a
 # line spliced into the paragraph that was streaming. The dummy's default turn
 # is exactly that shape — text, then thinking — so the row above the cell must
 # be blank, and the reply must resume as a fresh `● …` bullet below it.
-if ! printf '%s' "$think_done" | grep -B 1 -E "^  Thought for" | head -1 | grep -qE "^[[:space:]]*$"; then
+if ! printf '%s' "$think_done" | grep -B 1 -E "^Thought for" | head -1 | grep -qE "^[[:space:]]*$"; then
 	fail "the thought cell was spliced into the streaming reply instead of following a finalised segment (invariant 4)"
 fi
 # Ctrl+O expands it back.
@@ -112,4 +112,4 @@ echo "==== Phase 66: captured pane (Esc mid-thought) ===="
 printf '%s\n' "$thinkint"
 tmux kill-session -t "$S66C" 2>/dev/null
 expect_has "$thinkint" -F "Conversation interrupted" "Esc mid-thought did not interrupt the turn"
-expect_has "$thinkint" -E "^  Thought for [1-9][0-9]*s · " "the thought settled by the Esc lost its duration (it read 'Thought for 0s' after a second of thinking)"
+expect_has "$thinkint" -E "^Thought for [1-9][0-9]*s · " "the thought settled by the Esc lost its duration (it read 'Thought for 0s' after a second of thinking)"

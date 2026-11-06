@@ -7,9 +7,9 @@ answer.** That rule ended turns on rounds that answered nothing:
 ```
 ● I'll look at the current model first, so I know what's wrong with it.
 
-  Called Brave-devtools 2 times (ctrl+o to expand)
+Called Brave-devtools 2 times (ctrl+o to expand)
 
-  Thought for 3m 42s · 4.1k tokens (ctrl+o to expand)
+Thought for 3m 42s · 4.1k tokens (ctrl+o to expand)
 
 Conjured for 4m 33s · 95.3k tokens (60k cached · 3k written)
 

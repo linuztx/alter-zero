@@ -18,21 +18,18 @@ Now it **streams live**, then **collapses**:
 …and when the phase ends, the whole block gives way to one committed line:
 
 ```
-  Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
+Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
 ```
 
 Two shapes, deliberately: while it runs it **is** a tool cell — a `●` bullet
 over a `⎿` gutter, because that is what is happening (something working, with
 output under it) — and it is the **only** part of the feature that moves: the
 bullet blinks like any running tool's, and `Thinking…` carries the status
-line's shimmer sweep. When it settles the cell shape goes away: no bullet,
-because nothing is happening any more. What is left is a fact about the turn,
-one dim row like the `Done for 7s` it shares a dress with, with the
+line's shimmer sweep. When it settles the cell shape goes away entirely: no
+bullet, because nothing is happening any more. What is left is a fact about
+the turn, in the bullet-less shape `Done for 7s` already uses, with the
 `(ctrl+o to expand)` hint saying where the thought went — the same promise a
-capped tool peek makes. Its text stays where `Thinking…` streamed: the
-bullet's two columns are left blank (`SETTLED_INDENT`) rather than taken
-back, so the eye that followed the live block finds the settled line in the
-same column, the way a tool cell's text never moves when its bullet blinks.
+capped tool peek makes.
 
 ## Where the weight goes
 
@@ -145,23 +142,13 @@ pub struct Reasoning {
 ```
 
 `ui::reasoning_lines` renders it as one unwrapped, **bullet-less**, dim line —
-`summary_lines`' one row *and* its colour (`status_done_color()`), so the pair
-that brackets a turn reads as a pair — behind the blank `SETTLED_INDENT`, the
-bullet's width:
+`summary_lines`' shape *and* its colour (`status_done_color()`), so the pair that
+brackets a turn reads as a pair:
 
 ```
-  Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
+Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
 Done for 1m 12s · 2.8k tokens (64 cached)
 ```
-
-The two part ways at the margin, on purpose. A thought settles a *cell* — the
-`● Thinking…` block — and keeps the column that cell's text had, as the
-settled MCP line (`  Called Deepwiki`, `docs/mcp.md`) and a read/search
-group's (`  Read 2 files`, `docs/tool-groups.md`) keep theirs. The turn summary
-settles the *status line*, which no bullet ever opened, and stays at the edge
-where every turn's receipt lines up. The Ctrl+O expansion wears the same inset,
-which puts its `⎿` corner under the label the way a tool cell's sits under
-its name.
 
 `format_elapsed` humanizes the seconds (`5s`, `1m 5s`, `1h 2m`) and
 `format_token_count` the tokens (`842`, `1.5k`, `1.2M`) — the same two helpers

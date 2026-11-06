@@ -746,6 +746,54 @@ fn conversation_lines_renders_a_committed_turn_summary() {
 }
 
 #[test]
+fn settled_one_liners_start_at_the_edge_like_the_turn_summary() {
+    // What a step leaves once it is done — a finished thought, a read/search
+    // group, a resolved MCP call — is one dim, bullet-less line, and it starts
+    // at the edge in the turn summary's column. Only a cell's `●` opens a row
+    // two columns in; none of these is a cell any more, so none keeps the
+    // bullet's width as an inset.
+    let history = [
+        HistoryItem::Reasoning(crate::app::Reasoning {
+            text: "hmm".to_string(),
+            secs: 0,
+            tokens: 16,
+            timestamp: String::new(),
+        }),
+        HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "src")),
+        HistoryItem::Summary(TurnSummary {
+            verb: "Conjured",
+            secs: 4,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 10_000,
+            estimated: 1_000,
+            cached: 9_000,
+            cache_write: 0,
+        }),
+        HistoryItem::Tool(tool(
+            "brave-devtools - take_snapshot (MCP)",
+            "{}",
+            ToolStatus::Ok,
+            "snapshot",
+        )),
+    ];
+    let rows: Vec<String> = conversation_lines(&history, 80, &PathDisplay::VERBATIM, false)
+        .iter()
+        .map(plain)
+        .filter(|row| !row.is_empty())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "Thought for 0s · 16 tokens (ctrl+o to expand)",
+            "Listed 1 directory (ctrl+o to expand)",
+            "Conjured for 4s · ≈11k tokens (9k cached)",
+            "Called Brave-devtools (ctrl+o to expand)",
+        ]
+    );
+}
+
+#[test]
 fn render_live_shell_run_shows_running_elapsed_and_hides_the_status_line() {
     // A `!` shell run suppresses the spinner status line entirely and shows
     // its elapsed in the `⎿ Running… (Ns)` preview (req 3): the strip is

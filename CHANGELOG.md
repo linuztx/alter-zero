@@ -90,13 +90,6 @@ release heading when a version is cut.
   61 columns) it lists one shortcut per row, where it used to cut the second
   column off mid-word.
 
-- **Finished thoughts, MCP calls and file reads keep their place.** The
-  one-line summary a step leaves once it is done (`Thought for 3s`,
-  `Called Deepwiki`, `Read 2 files, listed 1 directory`) jumped two columns
-  left of where the step had been shown while it ran. Each now starts two
-  columns in, where its text was beside the `●`, so only the bullet goes
-  away. The turn's closing `Worked for …` line is unchanged.
-
 - **The status line and the footer now wear the theme's colours.** The
   status verb (`Working…`, or a task's `Setting up project structure…`)
   rests in the same gradient as the `/mcp` and `/skills` titles, with the
