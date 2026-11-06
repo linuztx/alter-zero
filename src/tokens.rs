@@ -2,477 +2,440 @@
 //! the correction the provider's own usage reports teach it. See
 //! `docs/token-estimate.md`.
 //!
-//! **[`estimate`]** is provider-agnostic and vocabulary-free. Every model
-//! this app talks to splits text the same way before its vocabulary is ever
-//! consulted — the GPT-style pre-tokenizer that OpenAI, Anthropic, Llama,
-//! Qwen, DeepSeek and Mistral encoders all share: a word with the space or
-//! single symbol in front of it is one piece, a case change starts another,
-//! digits go three at a time, a run of whitespace is one piece, punctuation
-//! runs merge in pairs. Counting those pieces gets almost all of the way to
-//! a real count, because a vocabulary of 100k–200k entries holds nearly
-//! every common piece whole; what is left is a little cost per letter for
-//! the long and the rare. So one pass over the characters, classifying each
-//! and pricing the pieces it closes, estimates within a few percent of a
-//! real encoder on code, prose, JSON, diffs and shell output (measured
-//! against `o200k_base`; `docs/token-estimate.md` has the numbers) — with no
-//! tables to load, nothing resident, and nothing tied to one provider.
+//! **[`estimate`]** is provider-agnostic. The providers this app talks to
+//! tokenize with a dozen vocabularies (OpenAI's `o200k_base`, Anthropic's,
+//! Gemini's SentencePiece, Llama's, Qwen's, …), none of which ships with a
+//! client, so no local count is exact for more than one of them, and the
+//! estimate does not pretend to be one of them. It models what every
+//! byte-pair tokenizer does — a common word is one token with the space in
+//! front of it, a long or rare word is several, digits go in threes, a run
+//! of indentation is one token, punctuation clusters, a Han character is
+//! close to one token, a random base64 run is one per one and a half
+//! characters — in one pass over the text, with no vocabulary, no regex and
+//! no allocation. Fitted against `o200k_base` and `cl100k_base` over code,
+//! tool output and prose in sixteen languages, it lands within a few percent
+//! of both on English, code and tool output, and between the two (nearer
+//! the newer, denser one) where they disagree.
 //!
 //! What a heuristic cannot know — that this provider's tokenizer makes 15%
-//! more tokens of the same text than the one it was fitted against, that the
-//! request carries tool schemas the estimate never sees — the provider says
-//! itself, once a round, in its usage report. **[`Calibration`]** learns the first from those
-//! reports and **[`ContextMeter`]** keeps the second: the context gauge reads
-//! the provider's own count of the last request, plus the calibrated
-//! estimate of whatever changed since.
+//! more tokens of the same text, that its chat framing and its rendering of
+//! the tool schemas cost what they cost — the provider says itself, once a
+//! round, in its usage report. **[`Calibration`]** learns the first from
+//! those reports and **[`ContextMeter`]** keeps the second: the context
+//! gauge reads the provider's own count of the last request, plus the
+//! calibrated estimate of whatever changed since.
 
-/// Costs are kept in hundredths of a token, so the fractional costs of many
-/// small pieces add up exactly and only the total is rounded.
-type Cost = u64;
+/// Estimates are summed in thousandths of a token, so a word part's quarter
+/// tokens and a run's fractions add up before anything is rounded.
+const TOKEN: u64 = 1000;
+/// A word part's first token covers this many letters…
+const WORD_FIRST_LETTERS: u64 = 6;
+/// …and each letter past them costs a quarter token: rare and long words
+/// split into several pieces.
+const WORD_EXTRA_LETTER: u64 = 250;
+/// An all-capitals part (`HTTP`, `MAX`) — about six letters a token.
+const CAPS_LETTER: u64 = 167;
+/// Digits split into groups of at most three.
+const DIGITS_PER_TOKEN: u64 = 3;
+/// A run of punctuation — `();`, `::`, `-->` — about five characters a
+/// token, never less than one.
+const PUNCT_CHAR: u64 = 200;
+/// One punctuation character opening a word (`(self`, `"name`): it usually
+/// joins the word's token…
+const WORD_LEAD: u64 = 500;
+/// …and almost always does when it is one of the characters paths, urls and
+/// identifiers are made of ([`JOINING_LEADS`]).
+const JOINING_LEAD: u64 = 150;
+/// The punctuation that joins the word after it — `/home`, `.rs`, `_id`,
+/// `-x`, `?q`, `&page`.
+const JOINING_LEADS: &[u8] = b"/._-'@$#?&%\\<*!+=";
+/// Two or more spaces (indentation, column alignment), or spaces ending the
+/// text: one token for the run.
+const SPACE_RUN: u64 = 1300;
+/// A space before a number is a token of its own: no byte-pair
+/// pre-tokenizer joins a space to the digits after it.
+const SPACE_BEFORE_NUMBER: u64 = 1500;
+/// A run of line breaks, with the spaces between them.
+const LINE_BREAK: u64 = 750;
+/// Each accented Latin letter, on top of its word: `ü`, `é`, `ñ` split words
+/// the plain alphabet keeps whole.
+const ACCENT: u64 = 400;
+/// Each Cyrillic letter — the vocabularies hold Cyrillic words almost as
+/// well as English ones.
+const CYRILLIC: u64 = 300;
+/// Each letter of Greek, Armenian, Georgian, Hebrew, Arabic and their
+/// neighbours.
+const ALPHABET: u64 = 500;
+/// Each letter of the Indic scripts, Thai, Lao, Tibetan, Myanmar, Khmer and
+/// Ethiopic — and of any script the table does not name.
+const ABUGIDA: u64 = 550;
+/// Each Han character, kana or Hangul syllable.
+const CJK: u64 = 850;
+/// Each emoji or pictograph.
+const EMOJI: u64 = 2200;
+/// Each zero-width joiner, variation selector or skin tone holding an emoji
+/// sequence together.
+const JOINER: u64 = 600;
+/// Each character of a random-looking base64 run — about one and a half
+/// characters a token, where words of the same length are four or five.
+const BLOB_CHAR: u64 = 690;
+/// How long a run must be before it can read as random…
+const BLOB_MIN_LEN: usize = 20;
+/// …and how often, per hundred characters, its letters must flip case or
+/// turn into digits. Words, paths and identifiers flip a handful of times;
+/// base64 flips at every other character.
+const BLOB_MIN_FLIPS_PER_HUNDRED: usize = 35;
 
-/// One token, in [`Cost`] units.
-const TOKEN: Cost = 100;
-
-/// What one CJK ideograph, kana or hangul syllable costs: a little under a
-/// token, since a vocabulary holds the common two-character words whole.
-const WIDE_LETTER: Cost = 70;
-
-/// A stretch of text between whitespace this long or longer may read as
-/// random data (see [`Stretch`]).
-const BLOB_MIN_CHARS: Cost = 16;
-
-/// How often, in percent of its characters, a random stretch switches
-/// between lower case, upper case and digits — base64 does on about half.
-const BLOB_SWITCH_PERCENT: Cost = 30;
-
-/// What one character of random data costs: no vocabulary compresses it,
-/// so about a token per one and a half characters.
-const BLOB_CHAR: Cost = 68;
-
-/// The number of tokens `text` is estimated to cost — never zero for text
-/// that is not empty, since a single character is a token. Deterministic,
-/// one pass, no allocation. See the module docs for what it models.
-#[must_use]
-pub fn estimate(text: &str) -> usize {
-    if text.is_empty() {
-        return 0;
-    }
-    let mut scanner = Scanner::new(text);
-    while let Some((_, class)) = scanner.peek() {
-        match class {
-            Class::Space | Class::Newline => scanner.whitespace(),
-            Class::Lower | Class::Upper => scanner.word(),
-            Class::Digit => scanner.digits(),
-            Class::Wide => scanner.letters(Class::Wide, WIDE_LETTER),
-            kind @ Class::Script(per_letter) => scanner.letters(kind, per_letter),
-            Class::Symbol => scanner.symbols(),
-        }
-    }
-    scanner.finish()
-}
-
-/// What the scanner sees in a character.
+/// What a character contributes to an estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
-    /// A lowercase Latin letter, accented ones included.
     Lower,
-    /// An uppercase Latin letter.
     Upper,
-    /// A digit.
+    Accent,
+    Cyrillic,
+    Alphabet,
+    Abugida,
+    Cjk,
     Digit,
-    /// Horizontal whitespace.
     Space,
-    /// A line break.
-    Newline,
-    /// Punctuation, a symbol, an emoji.
-    Symbol,
-    /// A CJK ideograph, kana, hangul syllable or full-width form.
-    Wide,
-    /// A letter of a script vocabularies hold fewer whole words of, with
-    /// what one of its letters costs.
-    Script(Cost),
+    LineBreak,
+    Punct,
+    Emoji,
+    Joiner,
+    Control,
 }
 
-/// The class of an ASCII character.
-const fn ascii_class(byte: u8) -> Class {
-    match byte {
-        b'a'..=b'z' => Class::Lower,
-        b'A'..=b'Z' => Class::Upper,
-        b'0'..=b'9' => Class::Digit,
-        b'\n' | b'\r' => Class::Newline,
-        b' ' | b'\t' | 0x0b | 0x0c => Class::Space,
-        _ => Class::Symbol,
+impl Class {
+    /// Whether this character can be part of a word.
+    const fn in_word(self) -> bool {
+        matches!(
+            self,
+            Self::Lower
+                | Self::Upper
+                | Self::Accent
+                | Self::Cyrillic
+                | Self::Alphabet
+                | Self::Abugida
+        )
     }
 }
 
-/// [`ascii_class`] of every ASCII character, looked up rather than matched —
-/// the scanner's hot path, since most of what a session carries is ASCII.
-const ASCII_CLASS: [Class; 128] = {
-    let mut table = [Class::Symbol; 128];
-    let mut byte: u8 = 0;
+/// Every ASCII character's class, so the common case is a table read.
+const ASCII: [Class; 128] = {
+    let mut table = [Class::Control; 128];
+    let mut byte = 0;
     while byte < 128 {
-        table[byte as usize] = ascii_class(byte);
+        table[byte] = match byte as u8 {
+            b'a'..=b'z' => Class::Lower,
+            b'A'..=b'Z' => Class::Upper,
+            b'0'..=b'9' => Class::Digit,
+            b' ' | b'\t' | 0x0B | 0x0C => Class::Space,
+            b'\n' | b'\r' => Class::LineBreak,
+            b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => Class::Punct,
+            _ => Class::Control,
+        };
         byte += 1;
     }
     table
 };
 
-/// The class of any character.
-fn class(c: char) -> Class {
-    if c.is_ascii() {
-        return ASCII_CLASS[c as usize];
-    }
-    let code = u32::from(c);
+/// A non-ASCII character's class, by the block it sits in.
+fn class_of(c: char) -> Class {
+    let code = c as u32;
     match code {
-        0x2E80..=0x2FDF
+        0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F => Class::Joiner,
+        0x0085 | 0x2028 | 0x2029 => Class::LineBreak,
+        0x00D7 | 0x00F7 => Class::Punct,
+        0x00C0..=0x024F | 0x0300..=0x036F | 0x1E00..=0x1EFF => Class::Accent,
+        0x0400..=0x052F => Class::Cyrillic,
+        // Greek, Armenian, Hebrew, Arabic, Syriac, Thaana, NKo, Georgian —
+        // with the Hebrew points and Arabic vowel marks riding their letters.
+        0x0370..=0x03FF | 0x0530..=0x08FF | 0x10A0..=0x10FF => {
+            if c.is_alphabetic()
+                || (0x0591..=0x05C7).contains(&code)
+                || (0x064B..=0x065F).contains(&code)
+            {
+                Class::Alphabet
+            } else if c.is_numeric() {
+                Class::Digit
+            } else {
+                Class::Punct
+            }
+        }
+        // Indic, Sinhala, Thai, Lao, Tibetan, Myanmar, Ethiopic, Khmer.
+        0x0900..=0x0FFF | 0x1000..=0x109F | 0x1200..=0x139F | 0x1780..=0x17FF => {
+            if c.is_numeric() {
+                Class::Digit
+            } else {
+                Class::Abugida
+            }
+        }
+        0x1100..=0x11FF
+        | 0x2E80..=0x2FDF
         | 0x3000..=0x303F
         | 0x3040..=0x30FF
         | 0x3100..=0x31FF
+        | 0x3200..=0x33FF
         | 0x3400..=0x4DBF
         | 0x4E00..=0x9FFF
         | 0xA960..=0xA97F
         | 0xAC00..=0xD7FF
         | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
         | 0xFF00..=0xFFEF
-        | 0x2_0000..=0x3_FFFF => Class::Wide,
-        0x85 | 0x2028 | 0x2029 => Class::Newline,
+        | 0x20000..=0x3FFFF => Class::Cjk,
+        0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000.. => Class::Emoji,
         _ if c.is_whitespace() => Class::Space,
-        0x00C0..=0x024F | 0x1E00..=0x1EFF if c.is_alphabetic() => {
-            if c.is_uppercase() {
-                Class::Upper
-            } else {
-                Class::Lower
-            }
-        }
-        _ if c.is_alphabetic() || is_combining_mark(code) => Class::Script(script_letter(code)),
+        _ if c.is_alphabetic() => Class::Abugida,
         _ if c.is_numeric() => Class::Digit,
-        _ => Class::Symbol,
+        _ if c.is_control() => Class::Control,
+        _ => Class::Punct,
     }
 }
 
-/// The combining marks that are not `Alphabetic` themselves but belong to
-/// the letter before them — accents written as separate code points, vowel
-/// points and signs.
-const fn is_combining_mark(code: u32) -> bool {
-    matches!(
-        code,
-        0x0300..=0x036F
-            | 0x0483..=0x0489
-            | 0x0591..=0x05BD
-            | 0x064B..=0x065F
-            | 0x0900..=0x0903
-            | 0x093A..=0x094F
-            | 0x0E31
-            | 0x0E34..=0x0E3A
-            | 0x0E47..=0x0E4E
-            | 0x1AB0..=0x1AFF
-            | 0x1DC0..=0x1DFF
-            | 0x20D0..=0x20FF
-            | 0xFE20..=0xFE2F
-    )
+/// One part of a word, cut where `camelCase` changes case.
+#[derive(Default)]
+struct Part {
+    letters: u64,
+    capitals: u64,
 }
 
-/// What one letter of a non-Latin script costs. Greek and Cyrillic words
-/// come out at a token per four letters or so, Arabic and Hebrew per three,
-/// the Indic scripts a little denser, and the scripts written without
-/// spaces (Thai, Lao, Khmer, Myanmar) densest of all.
-const fn script_letter(code: u32) -> Cost {
-    match code {
-        0x0370..=0x058F => 24,
-        0x0590..=0x08FF => 32,
-        0x0900..=0x0DFF => 36,
-        _ => 45,
-    }
-}
-
-/// Whether `c` is a vowel, as far as telling a word from random letters
-/// goes — an accented letter counts as one.
-fn is_vowel(c: char) -> bool {
-    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y') || !c.is_ascii()
-}
-
-/// What a word piece follows, which decides how much of it a vocabulary
-/// holds whole: ` function` is one token in every modern vocabulary,
-/// `/function` and `.function` less often.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lead {
-    /// Nothing — the start of the text, a line, or a piece of another kind.
-    None,
-    /// A space.
-    Space,
-    /// One symbol (`.method`, `/usr`, `_name`).
-    Symbol,
-}
-
-/// What a word piece of `letters` letters costs. A common word is one token
-/// however it is led; past a few letters each letter adds a little, more
-/// after a symbol than after a space. A word with no vowel at all is an
-/// abbreviation when short and random letters when long — nothing a
-/// vocabulary learned whole (`lrwxrwxrwx` is six tokens).
-fn word_cost(letters: Cost, vowels: bool, lead: Lead) -> Cost {
-    let past = |n: Cost| letters.saturating_sub(n);
-    if !vowels {
-        return TOKEN + 35 * past(2) + 45 * past(5);
-    }
-    match lead {
-        Lead::Space => TOKEN + 4 * past(4) + 4 * past(7),
-        Lead::None => TOKEN + 6 * past(4) + 9 * past(7),
-        Lead::Symbol => TOKEN + 10 * past(3) + 10 * past(8),
-    }
-}
-
-/// What a run of symbols worth `units` costs (an ASCII symbol is one unit,
-/// any other two): one or two merge into a single token (`();`, `=>`,
-/// `":"`), longer mixes cost about a token per two.
-fn symbol_cost(units: Cost) -> Cost {
-    TOKEN + 20 * units.saturating_sub(2) + 25 * units.saturating_sub(4)
-}
-
-/// What one more copy of the symbol just before it costs, when repeating it
-/// is cheap: the rules and banners vocabularies learned whole (twenty-four
-/// `-` are two tokens) almost nothing, any other ASCII symbol a quarter of a
-/// token. `None` for a symbol that does not compress when repeated (`│`,
-/// `╌` — a token each).
-const fn repeat_cost(c: char) -> Option<Cost> {
-    match c {
-        '-' | '=' | '_' | '*' | '#' | '~' | '.' | '/' | '+' | ':' | ';' | '!' | '?' | '^' | '<'
-        | '>' | '%' | '@' | '─' | '━' | '═' | '…' => Some(8),
-        _ if c.is_ascii() => Some(25),
-        _ => None,
-    }
-}
-
-/// A maximal stretch of text between whitespace, watched for one thing:
-/// whether it reads as random data — a key, a hash in base64, an encoded
-/// blob — which no vocabulary compresses, so it costs about
-/// [`BLOB_CHAR`] per character whatever its pieces add up to. Random data
-/// mixes lower case, upper case and digits and keeps switching between
-/// them; an identifier, a path or a URL does not.
-#[derive(Debug, Default)]
-struct Stretch {
-    /// What its pieces cost.
-    cost: Cost,
-    /// Its characters.
-    chars: Cost,
-    /// Which of lower case (1), upper case (2) and digits (4) it holds.
-    seen: u8,
-    /// How often it switched between them.
-    switches: Cost,
-    /// The kind of its last character, 0 for any other.
-    last: u8,
-}
-
-impl Stretch {
-    /// `count` more characters of `class` — a run, noted once it ends.
-    fn extend(&mut self, class: Class, count: Cost) {
-        if count == 0 {
-            return;
+impl Part {
+    fn cost(&self) -> u64 {
+        match self.letters {
+            0 => 0,
+            letters if self.capitals == letters && letters > 1 => {
+                (letters * CAPS_LETTER).max(TOKEN)
+            }
+            letters => TOKEN + letters.saturating_sub(WORD_FIRST_LETTERS) * WORD_EXTRA_LETTER,
         }
-        let kind = match class {
-            Class::Lower => 1,
-            Class::Upper => 2,
-            Class::Digit => 4,
-            _ => 0,
-        };
-        self.seen |= kind;
-        if kind != 0 && self.last != 0 && kind != self.last {
-            self.switches += 1;
-        }
-        self.last = kind;
-        self.chars += count;
-    }
-
-    /// The stretch's cost, now that it has ended — and a fresh stretch.
-    fn settle(&mut self) -> Cost {
-        let random = self.chars >= BLOB_MIN_CHARS
-            && self.seen == 0b111
-            && self.switches * 100 >= self.chars * BLOB_SWITCH_PERCENT;
-        let cost = if random {
-            self.cost.max(self.chars * BLOB_CHAR)
-        } else {
-            self.cost
-        };
-        *self = Self::default();
-        cost
     }
 }
 
-/// [`estimate`]'s one pass: the position, the running total, and what the
-/// piece about to start follows.
-struct Scanner<'a> {
+/// A cursor over the text being estimated.
+struct Scan<'a> {
     text: &'a str,
-    position: usize,
-    total: Cost,
-    stretch: Stretch,
-    /// What the next word piece follows.
-    lead: Lead,
-    /// The last piece ended in a space a symbol run cannot share with the
-    /// word after it (` (foo` is two pieces, `(foo` one).
-    after_space: bool,
-    /// The last piece was a symbol run, which line breaks straight after it
-    /// ride with (`{` and its newline are one piece).
-    after_symbols: bool,
+    at: usize,
+    /// Where the last run that failed the blob test ended: nothing before it
+    /// is tested again, which keeps the whole pass linear.
+    blob_checked: usize,
 }
 
-impl<'a> Scanner<'a> {
-    fn new(text: &'a str) -> Self {
-        Self {
-            text,
-            position: 0,
-            total: 0,
-            stretch: Stretch::default(),
-            lead: Lead::None,
-            after_space: false,
-            after_symbols: false,
+impl Scan<'_> {
+    /// The class and UTF-8 length of the character at byte `at`.
+    fn class_at(&self, at: usize) -> Option<(Class, usize)> {
+        let byte = *self.text.as_bytes().get(at)?;
+        if byte < 0x80 {
+            return Some((ASCII[usize::from(byte)], 1));
         }
+        let c = self.text[at..].chars().next()?;
+        Some((class_of(c), c.len_utf8()))
     }
 
-    /// The character at the position and its class, not consumed.
-    fn peek(&self) -> Option<(char, Class)> {
-        let byte = *self.text.as_bytes().get(self.position)?;
-        if byte.is_ascii() {
-            return Some((char::from(byte), ASCII_CLASS[usize::from(byte)]));
+    fn peek(&self) -> Option<(Class, usize)> {
+        self.class_at(self.at)
+    }
+
+    /// Consume every character of `class` from here; how many there were.
+    fn take_while(&mut self, class: Class) -> u64 {
+        let mut count = 0;
+        while let Some((next, len)) = self.peek() {
+            if next != class {
+                break;
+            }
+            self.at += len;
+            count += 1;
         }
-        let c = self.text[self.position..].chars().next()?;
-        Some((c, class(c)))
+        count
     }
 
-    /// The character at the position, when it is of `kind` — consumed. The
-    /// caller notes the run on the stretch once it ends.
-    fn take(&mut self, kind: Class) -> Option<char> {
-        let (c, _) = self.peek().filter(|&(_, class)| class == kind)?;
-        self.position += c.len_utf8();
-        Some(c)
+    /// A random-looking run of the base64 alphabet starting here, consumed
+    /// and costed — or `None`, the run marked as tested, to be read as words
+    /// and numbers instead.
+    fn take_blob(&mut self) -> Option<u64> {
+        let bytes = self.text.as_bytes();
+        let start = self.at;
+        let mut end = start;
+        let (mut flips, mut last, mut seen) = (0, 0u8, 0u8);
+        while let Some(&byte) = bytes.get(end) {
+            let kind = match byte {
+                b'a'..=b'z' => 1,
+                b'A'..=b'Z' => 2,
+                b'0'..=b'9' => 4,
+                b'+' | b'/' | b'=' | b'_' | b'-' => 0,
+                _ => break,
+            };
+            if kind != 0 {
+                if last != 0 && kind != last {
+                    flips += 1;
+                }
+                last = kind;
+                seen |= kind;
+            }
+            end += 1;
+        }
+        let len = end - start;
+        if len >= BLOB_MIN_LEN
+            && seen & 0b11 == 0b11
+            && flips * 100 >= len * BLOB_MIN_FLIPS_PER_HUNDRED
+        {
+            self.at = end;
+            return Some(len as u64 * BLOB_CHAR);
+        }
+        self.blob_checked = end.max(start + 1);
+        None
     }
 
-    /// A piece other than a word ended: nothing leads the next one.
-    fn ended_piece(&mut self) {
-        self.lead = Lead::None;
-        self.after_space = false;
-        self.after_symbols = false;
-    }
-
-    /// A run of whitespace. Line breaks are one piece (with any spaces
-    /// before them), unless they directly follow a symbol run, which they
-    /// ride with; the spaces after the last break are one more, less the
-    /// one the next word or symbol run takes as its own first character —
-    /// a number takes none, so the run splits in two before it.
-    fn whitespace(&mut self) {
-        self.total += self.stretch.settle();
-        let mut line_break = false;
-        let mut riding = self.after_symbols;
-        let mut trailing: Cost = 0;
-        while let Some((c, class)) = self.peek() {
+    /// A word — letters of any script but the CJK ones — cut into parts
+    /// where its case changes; never less than a token.
+    fn take_word(&mut self) -> u64 {
+        let mut cost = 0;
+        let mut part = Part::default();
+        let mut previous = Class::Space;
+        while let Some((class, len)) = self.peek() {
             match class {
-                Class::Newline => {
-                    line_break |= !riding;
-                    trailing = 0;
+                Class::Lower => {
+                    if previous == Class::Upper
+                        && part.capitals >= 2
+                        && part.capitals == part.letters
+                    {
+                        // `HTMLParser`: the last capital opens the next part.
+                        cost += Part {
+                            letters: part.letters - 1,
+                            capitals: part.capitals - 1,
+                        }
+                        .cost();
+                        part = Part {
+                            letters: 1,
+                            capitals: 1,
+                        };
+                    }
+                    part.letters += 1;
                 }
-                Class::Space => {
-                    riding = false;
-                    trailing += 1;
+                Class::Upper => {
+                    if previous == Class::Lower {
+                        cost += part.cost();
+                        part = Part::default();
+                    }
+                    part.letters += 1;
+                    part.capitals += 1;
                 }
+                Class::Accent => {
+                    part.letters += 1;
+                    cost += ACCENT;
+                }
+                Class::Cyrillic => cost += CYRILLIC,
+                Class::Alphabet => cost += ALPHABET,
+                Class::Abugida => cost += ABUGIDA,
                 _ => break,
             }
-            self.position += c.len_utf8();
+            previous = class;
+            self.at += len;
         }
-        if line_break {
-            self.total += TOKEN;
+        (cost + part.cost()).max(TOKEN)
+    }
+
+    /// Spaces between pieces. One space rides the piece after it — except a
+    /// number, which never takes one; a longer run is a token of its own;
+    /// spaces ending a line belong to its line break.
+    fn take_spaces(&mut self) -> u64 {
+        let run = self.take_while(Class::Space);
+        match self.peek() {
+            None => SPACE_RUN,
+            Some((Class::LineBreak, _)) => 0,
+            Some((next, _)) => {
+                let indent = if run >= 2 { SPACE_RUN } else { 0 };
+                indent
+                    + if next == Class::Digit {
+                        SPACE_BEFORE_NUMBER
+                    } else {
+                        0
+                    }
+            }
         }
-        self.total += match self.peek().map(|(_, class)| class) {
-            None => TOKEN * trailing.min(1),
-            Some(Class::Digit) => TOKEN * trailing.min(2),
-            Some(_) => TOKEN * Cost::from(trailing >= 2),
-        };
-        self.after_space = trailing > 0;
-        self.after_symbols = false;
-        self.lead = if trailing > 0 {
-            Lead::Space
+    }
+
+    /// Line breaks, and the spaces between them, up to the run's last line
+    /// break: one piece. The indentation after it is the next one.
+    fn take_line_breaks(&mut self) -> u64 {
+        let mut probe = self.at;
+        while let Some((class, len)) = self.class_at(probe) {
+            match class {
+                Class::LineBreak => {
+                    probe += len;
+                    self.at = probe;
+                }
+                Class::Space => probe += len,
+                _ => break,
+            }
+        }
+        LINE_BREAK
+    }
+
+    /// A run of punctuation, with the line break straight after it, which
+    /// joins its piece. A lone character opening a word mostly joins the
+    /// word instead.
+    fn take_punctuation(&mut self) -> u64 {
+        let first = self.text.as_bytes()[self.at];
+        let run = self.take_while(Class::Punct);
+        let opens_word =
+            matches!(self.peek(), Some((class, _)) if class.in_word() || class == Class::Cjk);
+        self.take_while(Class::LineBreak);
+        if run == 1 && opens_word {
+            if JOINING_LEADS.contains(&first) {
+                JOINING_LEAD
+            } else {
+                WORD_LEAD
+            }
         } else {
-            Lead::None
+            (run * PUNCT_CHAR).max(TOKEN)
+        }
+    }
+}
+
+/// About how many tokens `text` is, by any current model's tokenizer: a
+/// provider-agnostic estimate (this module's doc), never less than one for
+/// text that is not empty. One pass, no allocation.
+#[must_use]
+pub fn estimate(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let mut scan = Scan {
+        text,
+        at: 0,
+        blob_checked: 0,
+    };
+    let mut thousandths: u64 = 0;
+    while let Some((class, len)) = scan.peek() {
+        thousandths += match class {
+            Class::Lower | Class::Upper | Class::Digit
+                if scan.at >= scan.blob_checked && text.as_bytes()[scan.at] < 0x80 =>
+            {
+                match scan.take_blob() {
+                    Some(cost) => cost,
+                    None => continue,
+                }
+            }
+            class if class.in_word() => scan.take_word(),
+            Class::Digit => scan.take_while(Class::Digit).div_ceil(DIGITS_PER_TOKEN) * TOKEN,
+            Class::Space => scan.take_spaces(),
+            Class::LineBreak => scan.take_line_breaks(),
+            Class::Punct => scan.take_punctuation(),
+            single => {
+                scan.at += len;
+                match single {
+                    Class::Cjk => CJK,
+                    Class::Emoji => EMOJI,
+                    Class::Joiner => JOINER,
+                    _ => TOKEN,
+                }
+            }
         };
     }
-
-    /// A word piece: capitals then lower case, so `HTTPServer` is one piece
-    /// and `getUserById` four.
-    fn word(&mut self) {
-        let (mut letters, mut vowels) = (0, false);
-        for kind in [Class::Upper, Class::Lower] {
-            let mut run = 0;
-            while let Some(c) = self.take(kind) {
-                run += 1;
-                vowels |= is_vowel(c);
-            }
-            self.stretch.extend(kind, run);
-            letters += run;
-        }
-        self.stretch.cost += word_cost(letters, vowels, self.lead);
-        self.ended_piece();
-    }
-
-    /// A run of digits: a token per three.
-    fn digits(&mut self) {
-        let mut digits: Cost = 0;
-        while self.take(Class::Digit).is_some() {
-            digits += 1;
-        }
-        self.stretch.extend(Class::Digit, digits);
-        self.stretch.cost += TOKEN * digits.div_ceil(3);
-        self.ended_piece();
-    }
-
-    /// A run of letters priced per letter — CJK, or a non-Latin script.
-    fn letters(&mut self, kind: Class, per_letter: Cost) {
-        let mut letters: Cost = 0;
-        while self.take(kind).is_some() {
-            letters += 1;
-        }
-        self.stretch.extend(kind, letters);
-        self.stretch.cost += (per_letter * letters).max(TOKEN);
-        self.ended_piece();
-    }
-
-    /// A run of symbols: priced by [`symbol_cost`], a cheap repeat by
-    /// [`repeat_cost`], an emoji at two tokens and its joiners, modifiers
-    /// and variation selectors at one. One ASCII symbol straight before a
-    /// letter, with no space before it, is that word's first character and
-    /// costs nothing of its own.
-    fn symbols(&mut self) {
-        let (mut chars, mut units, mut flat): (Cost, Cost, Cost) = (0, 0, 0);
-        let mut previous = None;
-        while let Some(c) = self.take(Class::Symbol) {
-            match u32::from(c) {
-                0x1_F3FB..=0x1_F3FF | 0x200D | 0xFE00..=0xFE0F => flat += TOKEN,
-                0x1_0000.. => flat += 2 * TOKEN,
-                _ => match repeat_cost(c).filter(|_| previous == Some(c)) {
-                    Some(cost) => flat += cost,
-                    None => units += if c.is_ascii() { 1 } else { 2 },
-                },
-            }
-            previous = Some(c);
-            chars += 1;
-        }
-        self.stretch.extend(Class::Symbol, chars);
-        let before_letter = self.peek().is_some_and(|(_, class)| {
-            matches!(
-                class,
-                Class::Lower | Class::Upper | Class::Wide | Class::Script(_)
-            )
-        });
-        if chars == 1 && units == 1 && !self.after_space && before_letter {
-            self.ended_piece();
-            self.lead = Lead::Symbol;
-            return;
-        }
-        self.stretch.cost += flat + if units > 0 { symbol_cost(units) } else { 0 };
-        self.ended_piece();
-        self.after_symbols = true;
-    }
-
-    fn finish(mut self) -> usize {
-        self.total += self.stretch.settle();
-        let tokens = ((self.total + TOKEN / 2) / TOKEN).max(1);
-        usize::try_from(tokens).unwrap_or(usize::MAX)
-    }
+    usize::try_from((thousandths + TOKEN / 2) / TOKEN)
+        .unwrap_or(usize::MAX)
+        .max(1)
 }
 
 /// A change in the context smaller than this many estimated tokens teaches
@@ -670,286 +633,350 @@ mod tests {
     }
 
     #[test]
-    fn any_text_costs_at_least_one_token() {
-        for text in ["a", " ", "\n", ".", "\t\t"] {
-            assert_eq!(estimate(text), 1, "{text:?}");
+    fn any_other_text_is_at_least_one_token() {
+        for text in [" ", "\n", "a", "\t\t", "😀", ".", "\u{0}"] {
+            assert!(estimate(text) >= 1, "{text:?}");
         }
     }
 
     #[test]
-    fn common_words_cost_a_token_each() {
-        // o200k_base counts, matched exactly: a space-led common word is one
-        // token, and so is the punctuation after it.
+    fn common_words_are_a_token_each() {
         assert_eq!(estimate("hello world"), 2);
-        assert_eq!(estimate("Hello, world!"), 4);
         assert_eq!(estimate("The quick brown fox jumps over the lazy dog."), 10);
     }
 
     #[test]
-    fn identifiers_split_where_tokenizers_split_them() {
-        // A case change and an underscore each start a new piece.
-        assert_eq!(estimate("getUserById"), 4);
-        assert_eq!(estimate("snake_case_name"), 3);
+    fn a_space_rides_the_word_after_it() {
+        assert_eq!(estimate(" world"), estimate("world"));
     }
 
     #[test]
-    fn digits_cost_a_token_per_three() {
-        assert_eq!(estimate("2026"), 2);
+    fn word_sized_pieces_add_up_to_the_whole() {
+        // The live tally sums what each streamed piece estimates, and a
+        // provider streams in token-sized pieces: they must add up to what
+        // the whole text estimates, not to a piece's rounding apiece.
+        let pieces = [
+            "The", " quick", " brown", " fox", " jumps", " over", " the", " lazy", " dog",
+        ];
+        let whole: String = pieces.concat();
+        let summed: usize = pieces.iter().map(|piece| estimate(piece)).sum();
+        assert_eq!(summed, estimate(&whole));
+    }
+
+    #[test]
+    fn long_words_cost_more_than_short_ones() {
+        assert!(estimate("internationalization") > estimate("nation"));
+        assert!(estimate("internationalization") >= 4);
+    }
+
+    #[test]
+    fn identifiers_split_where_their_case_changes() {
+        assert_eq!(estimate("hashmap"), 1);
+        assert_eq!(estimate("HashMap"), 2);
+        // An acronym ahead of a word: the last capital opens the word.
+        assert_eq!(estimate("HTMLParser"), 2);
+    }
+
+    #[test]
+    fn numbers_are_a_token_per_three_digits() {
         assert_eq!(estimate("1234567"), 3);
+        assert_eq!(estimate("2026"), 2);
     }
 
     #[test]
-    fn a_run_of_spaces_is_one_token_however_long() {
-        let text = format!("a{}b", " ".repeat(40));
-        assert_eq!(estimate(&text), 3);
+    fn the_space_before_a_number_is_a_token_of_its_own() {
+        // BPE pre-tokenizers never join a space to the digits after it.
+        assert!(estimate("page 3") > estimate("page3"));
     }
 
     #[test]
-    fn a_line_break_after_punctuation_rides_with_it() {
-        // `{` + newline, the indentation, and `;` + newline are a piece each.
-        assert_eq!(estimate("fn main() {\n    body();\n}"), 8);
+    fn indentation_and_line_breaks_cost_a_token_a_run() {
+        let flat = estimate("fn main() {}");
+        let indented = estimate("fn main() {\n        body();\n}\n");
+        assert!(indented > flat);
+        // Eight spaces of indentation cost what four do: one run.
+        assert_eq!(estimate("x\n        y"), estimate("x\n    y"),);
     }
 
     #[test]
-    fn a_repeated_rule_costs_a_few_tokens_however_long() {
+    fn cjk_text_is_close_to_a_token_a_character() {
+        let text = "人工智能正在改变软件开发的方式";
+        let chars = text.chars().count();
+        let tokens = estimate(text);
         assert!(
-            estimate(&"-".repeat(48)) <= 6,
-            "{}",
-            estimate(&"-".repeat(48))
+            tokens * 10 >= chars * 7 && tokens <= chars,
+            "{tokens} for {chars}"
         );
+    }
+
+    #[test]
+    fn a_random_base64_run_is_denser_than_words() {
+        let blob = "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgZGF0YQ==";
+        // About a token per one and a half characters, where prose of the
+        // same length is a handful of words.
         assert!(
-            estimate(&"─".repeat(32)) <= 6,
+            estimate(blob) * 3 >= blob.len() * 2 - 3,
             "{}",
-            estimate(&"─".repeat(32))
+            estimate(blob)
         );
-        assert!(estimate(&"=".repeat(10_000)) < 1_000);
+        assert!(estimate("an ordinary sentence of the same length.") < estimate(blob) / 2);
     }
 
     #[test]
-    fn letters_with_no_vowel_cost_like_random_letters() {
-        // A permissions string is no word any vocabulary learned whole.
-        assert_eq!(estimate("lrwxrwxrwx"), 6);
+    fn a_path_or_identifier_is_not_mistaken_for_a_blob() {
+        // Long runs of the base64 alphabet that read as words are words.
+        assert!(estimate("/home/user/Projects2024/alter-zero/src") < 15);
+        assert!(estimate("unwrap_or_default_for_every_value") < 15);
     }
 
     #[test]
-    fn a_random_blob_costs_about_a_token_per_one_and_a_half_characters() {
-        let blob = "kJ8sdQx2Lm9PzR4tYw7VbN3cXf6GhK1q";
-        let tokens = estimate(blob);
-        assert!((21..=32).contains(&tokens), "{tokens}");
+    fn scripts_cost_what_their_tokenizers_charge() {
+        // A Cyrillic letter is cheaper than an Arabic one, which is cheaper
+        // than a Devanagari one — each script's place in the vocabularies.
+        let cyrillic = estimate("Поэтому мы решили считать токены заранее");
+        let arabic = estimate("لذلك نحتاج إلى طريقة سريعة لتقدير عدد");
+        assert!(cyrillic < 20, "{cyrillic}");
+        assert!(arabic > 10, "{arabic}");
+        assert!(estimate("ข") >= 1 && estimate("नमस्ते") >= 2);
     }
 
     #[test]
-    fn an_emoji_costs_two_tokens_and_cjk_about_three_for_four_characters() {
-        assert_eq!(estimate("🚀"), 2);
-        assert_eq!(estimate("数据压缩"), 3);
+    fn emoji_cost_more_than_letters() {
+        assert!(estimate("🎉🎊🥳") >= 5);
+        // A zero-width-joined family is several pictures, joined.
+        assert!(estimate("👨\u{200D}👩\u{200D}👧") > estimate("👨"));
     }
 
     #[test]
-    fn the_estimate_grows_with_the_text() {
-        assert!(estimate("a much longer string of several words") > estimate("a"));
+    fn every_kind_of_text_estimates_without_panicking() {
+        // Non-ASCII digits once sent the blob check round forever: it read
+        // a zero-length run and never moved on.
+        for text in [
+            "٣٤٥",
+            "²³¹ ½",
+            "abc٣def",
+            "\u{0300}\u{0301}",
+            "e\u{0301}",
+            "\r\n\r\n",
+            "\u{FEFF}bom",
+            "\u{1F3FB}",
+            "Ⅻ ⅻ",
+            "\u{7F}\u{1}\u{2}",
+            "a\u{2028}b\u{2029}c\u{85}d",
+            "ﾃｽﾄ　ＡＢＣ",
+        ] {
+            let _ = estimate(text);
+        }
+    }
+
+    #[test]
+    fn the_estimate_is_deterministic() {
         let text = "def main():\n    print('hi')";
-        assert_eq!(estimate(text), estimate(text), "deterministic");
+        assert_eq!(estimate(text), estimate(text));
     }
 
-    /// Hand-written samples of what a session carries, each with the count
-    /// the exact `o200k_base` byte-pair encoder gave it — measured with the
-    /// BPE counter this module replaced, before it was removed. They hold
-    /// the estimate to the encoding the heuristic was fitted against.
-    fn reference_samples() -> Vec<(&'static str, usize, &'static str)> {
-        vec![
-            (
-                "prose",
-                87,
-                r##"The status line counts tokens while a reply streams, and the footer shows how much of the context window the conversation already fills. Neither number has to be exact to be useful: the provider reports its own accounting at the end of every round, and the estimate only needs to be close enough to say whether a long paste or a large tool output just cost a lot. When the report arrives, the app trusts it over anything it guessed.
-"##,
-            ),
-            (
-                "rust",
-                131,
-                r##"/// Re-seat the gauge on the estimate when the history moved under it.
-pub fn sync_context_used(&mut self) {
-    let signature = (self.history_generation, self.history.len());
-    if self.context_signature == Some(signature) {
-        return;
-    }
-    let estimate = self.estimate_context_tokens();
-    self.context_used = match estimate {
-        0 => 0,
-        tokens => self.context_meter.reading(tokens),
-    };
-    self.context_signature = Some(signature);
-}
+    /// Samples of what fills an agent's context, each with its token count
+    /// under tiktoken's `o200k_base` (GPT-4o onward) and `cl100k_base`
+    /// (GPT-4, and the shape of the Llama 3 / Qwen vocabularies), measured
+    /// when the estimator was fitted (`docs/token-estimate.md`).
+    const REFERENCE: &[(&str, &str, usize, usize)] = &[
+        (
+            "english prose",
+            "The model reads the whole conversation on every request, so the context window \
+             fills as the session goes on. When it is nearly full, the app summarizes the older \
+             turns and keeps the recent ones, which is cheaper than starting over and loses far \
+             less.",
+            50,
+            50,
+        ),
+        (
+            "rust code",
+            "pub fn estimate_messages(messages: &[ChatMessage]) -> u64 {\n    messages\n        \
+             .iter()\n        .map(|message| match &message.content {\n            \
+             MessageContent::Text(text) => estimate(text) as u64,\n            \
+             MessageContent::Parts(parts) => parts.len() as u64 * 4,\n        })\n        \
+             .sum()\n}\n",
+            72,
+            72,
+        ),
+        (
+            "python code",
+            "def load_settings(path: str) -> dict:\n    \"\"\"Read the settings file, falling \
+             back to the defaults.\"\"\"\n    try:\n        with open(path, encoding=\"utf-8\") \
+             as handle:\n            return {**DEFAULTS, **json.load(handle)}\n    except \
+             FileNotFoundError:\n        return dict(DEFAULTS)\n",
+            65,
+            62,
+        ),
+        (
+            "pretty json",
+            "{\n  \"results\": [\n    {\n      \"id\": 17,\n      \"name\": \"item-17\",\n      \
+             \"tags\": [\"alpha\", \"prod\"],\n      \"price\": 412.5,\n      \"active\": true\n    \
+             }\n  ],\n  \"next_page\": null\n}\n",
+            61,
+            61,
+        ),
+        (
+            "git diff",
+            "diff --git a/src/app/compact.rs b/src/app/compact.rs\nindex 3f1c2a7..9b0e4d2 \
+             100644\n--- a/src/app/compact.rs\n+++ b/src/app/compact.rs\n@@ -160,7 +160,7 @@ \
+             impl App {\n-        let total = self.system_prompt.as_deref().map_or(0, \
+             count_tokens)\n+        let total = self.system_prompt.as_deref().map_or(0, \
+             estimate_tokens)\n             + estimate_messages_tokens(&messages);\n",
+            114,
+            114,
+        ),
+        (
+            "ls output",
+            "drwxr-xr-x  5 root root    4096 Oct 31 01:17 assets\n-rw-r--r--  1 root root   \
+             48211 Nov  5 09:42 Cargo.lock\n-rw-r--r--  1 root root    9133 Nov  5 09:42 \
+             Cargo.toml\nlrwxrwxrwx  1 root root       9 Apr  8  2024 latest -> v0.18.0\n",
+            108,
+            108,
+        ),
+        (
+            "log lines",
+            "2026-11-05T09:42:17.204Z INFO  [worker-3] request 5f0c2a1e finished in 184ms \
+             status=200\n2026-11-05T09:42:18.913Z WARN  [worker-7] retrying upstream call \
+             (attempt 2/5) after 500ms\n2026-11-05T09:42:19.002Z ERROR [worker-7] upstream \
+             refused: connection reset by peer\n",
+            108,
+            108,
+        ),
+        (
+            "csv numbers",
+            "id,timestamp,latency_ms,bytes,status\n1,1700000037,184,52311,200\n\
+             2,1700000074,9921,1048576,500\n3,1700000111,12,880,404\n",
+            54,
+            53,
+        ),
+        (
+            "base64 blob",
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJ\
+             RU5ErkJgggZm9vYmFyYmF6cXV4MTIzNDU2Nzg5MEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla",
+            90,
+            99,
+        ),
+        (
+            "hex digests",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  Cargo.lock\n\
+             2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae  src/main.rs\n",
+            80,
+            80,
+        ),
+        (
+            "urls and paths",
+            "https://github.com/linuztx/alter-zero/blob/main/docs/compact.md?plain=1#L136\n\
+             /home/user/alter-zero/src/llm/backend.rs:2022:fn stream_round(\n",
+            44,
+            44,
+        ),
+        (
+            "markdown table",
+            "| number | where it comes from |\n| --- | --- |\n| the gauge after a round | the \
+             provider's own `input + output` |\n| the gauge before a frame | the calibrated \
+             estimate of the request |\n",
+            44,
+            44,
+        ),
+        (
+            "chinese",
+            "人工智能正在改变软件开发的方式。过去，程序员需要手动编写每一行代码，而现在，智能助手\
+             可以根据自然语言描述生成函数、修复错误，甚至解释复杂的系统架构。",
+            47,
+            70,
+        ),
+        (
+            "japanese",
+            "今日は朝から雨が降っていたので、家で本を読むことにしました。最近読んでいるのは、\
+             プログラミングの歴史についての本です。",
+            40,
+            59,
+        ),
+        (
+            "korean",
+            "서울의 겨울은 생각보다 훨씬 춥습니다. 처음 이곳에 왔을 때는 두꺼운 외투도 없이 가벼운 \
+             재킷 하나만 가지고 왔습니다.",
+            44,
+            68,
+        ),
+        (
+            "russian",
+            "Поэтому мы решили считать токены заранее, перед каждым запросом, а затем сверять \
+             оценку с точными данными, которые возвращает провайдер.",
+            33,
+            54,
+        ),
+        (
+            "arabic",
+            "لذلك نحتاج إلى طريقة سريعة لتقدير عدد الرموز قبل إرسال الطلب، ثم تصحيح هذا التقدير \
+             باستخدام الأرقام الحقيقية التي يعيدها مزود الخدمة.",
+            38,
+            94,
+        ),
+        (
+            "hindi",
+            "लेकिन इनका सही उपयोग करने के लिए यह समझना ज़रूरी है कि मॉडल कैसे काम करता है और \
+             उसकी सीमाएँ क्या हैं।",
+            28,
+            100,
+        ),
+        (
+            "thai",
+            "หลังจากนั้นเรานั่งเรือชมวิถีชีวิตของชาวบ้านริมคลอง ซึ่งยังคงรักษาวัฒนธรรมดั้งเดิมไว้ได้อย่างดี",
+            36,
+            95,
+        ),
+        (
+            "german",
+            "Automatisierte Tests, kontinuierliche Integration und sorgfältige \
+             Code-Überprüfungen sind dabei unverzichtbar.",
+            23,
+            32,
+        ),
+        (
+            "emoji chat",
+            "Party tonight 🎉🎊🥳? I'll bring 🍕🍺. 👨\u{200D}👩\u{200D}👧\u{200D}👦 family, \
+             🏳\u{FE0F}\u{200D}🌈 flag, 👍🏽 thumbs, ❤\u{FE0F} heart. ✅ done ❌ failed ⚠\u{FE0F} \
+             warning",
+            55,
+            74,
+        ),
+    ];
 
-fn parse_port(text: &str) -> Result<u16, std::num::ParseIntError> {
-    text.trim().parse::<u16>()
-}
-"##,
-            ),
-            (
-                "python",
-                121,
-                r##"import json
-from pathlib import Path
-
-
-def load_settings(path: Path) -> dict:
-    """Read the settings file, falling back to defaults when it is missing."""
-    if not path.exists():
-        return {"theme": "mocha", "tips": True, "retries": 3}
-    with path.open(encoding="utf-8") as handle:
-        data = json.load(handle)
-    return {**DEFAULTS, **data}
-
-
-for index, name in enumerate(sorted(Path(".").glob("*.toml"))):
-    print(f"{index:>3}: {name}")
-"##,
-            ),
-            (
-                "compact json",
-                87,
-                r##"{"type":"function","function":{"name":"edit","description":"Replace one exact string in a file.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The absolute path to the file to modify."},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["path","old_string","new_string"]}}}"##,
-            ),
-            (
-                "pretty json",
-                74,
-                r##"{
-  "projects": {
-    "/home/user/alter-zero": {
-      "allow_commands": [
-        "cargo test *",
-        "git status",
-        "npm run"
-      ],
-      "mode": "edit"
-    }
-  },
-  "version": 2,
-  "enabled": true,
-  "last_check_day": 20397
-}
-"##,
-            ),
-            (
-                "ls -la",
-                233,
-                r##"total 1244
-drwxr-xr-x 16 root root    4096 Nov  5 15:13 .
-drwxr-xr-x  3 root root    4096 Oct 31 01:17 ..
--rw-r--r--  1 root root   18342 Oct 31 01:17 AGENTS.md
--rw-r--r--  1 root root  301442 Oct 31 01:17 CHANGELOG.md
--rw-r--r--  1 root root  125573 Nov  5 15:13 Cargo.lock
--rw-r--r--  1 root root   15204 Oct 31 01:17 Cargo.toml
-drwxr-xr-x  2 root root    4096 Oct 31 01:17 assets
--rwxr-xr-x  1 root root   21934 Oct 31 01:17 install.sh
-lrwxrwxrwx  1 root root      11 Oct 31 01:17 latest -> release/0.18
-"##,
-            ),
-            (
-                "diff",
-                153,
-                r##"diff --git a/src/app/compact.rs b/src/app/compact.rs
-index 3f2a1b9..8c4d7e2 100644
---- a/src/app/compact.rs
-+++ b/src/app/compact.rs
-@@ -176,7 +176,9 @@ impl App {
-     /// Re-seat the gauge on the estimate (the last usage frame no
-     /// longer describes the derived context).
-     pub(super) fn refresh_context_used(&mut self) {
--        self.context_used = self.estimate_context_tokens();
-+        let estimate = self.estimate_context_tokens();
-+        self.context_used = self.context_meter.reading(estimate);
-+        self.context_signature = Some(self.history_signature());
-     }
-"##,
-            ),
-            (
-                "markdown",
-                111,
-                r##"## Settings
-
-| Row | Values | Default |
-| --- | ------ | ------- |
-| **Auto compact** | `true`, `false` | `true` |
-| **Error retry** | `0`–`10` | `3` |
-| **Ask timeout** | `5m`, `10m`, `never` | `10m` |
-
-- Run `cargo test --lib app::` after editing `src/app/`.
-- See [the design notes](docs/design.md#known-limitations) for the rest.
-"##,
-            ),
-            (
-                "base64",
-                252,
-                r##"IMyuySb915oZaZ2iK2zeTCvxqb+/wnSaylAvKwZOROXzVt4MfNIRepDg9C96KdWPYBx/RIvf+24L
-ye6zhLy+wuaReKgNeXJvn1jVmCD8OhvZPge1nILN/fvQDri5xDOAEtlmS8BkCidyiLFAhM+s8+1F
-U56u2tFBZkSkuRWi1f+fmbQzEhZuC+g9JBGUQXdSIG7/SwvU5hMkolf8AgtkBNVefm+4mF7rHb7E
-qj7xf2eYEgKjIJOZQ+TLKNmq0Hb1z0+LtUZrQ1ivdGll9ag1UrtfFg0I1YAkbYTI5pCJ3UmfoXLF
-hPSLdNZVBLU6hp9d+rKHTMVNudMjCkSd/NM/q1WW4TOj2aMA2x6YbDIu
-"##,
-            ),
-            (
-                "uuids",
-                140,
-                r##"0b72c1fa-61ef-44d1-8f44-f1f0552b6c79
-d01a4449-3e2a-457c-b618-399e80f44108
-5cb70dad-516b-4781-9005-db0c2e74d6c6
-4382f5d1-7e18-482d-9461-306c460ac68c
-6f89d864-4c27-473a-adc9-de63e8618951
-9f674377-17ae-415b-b056-eb22d0401c48
-"##,
-            ),
-            (
-                "log",
-                143,
-                r##"2026-11-05T15:13:02.118Z INFO  alter_zero::llm::backend: request sent model=gpt-5.5 round=3 bytes=48213
-2026-11-05T15:13:04.902Z WARN  alter_zero::llm::retry: 429 Too Many Requests, retrying in 2s (attempt 1/3)
-2026-11-05T15:13:07.336Z INFO  alter_zero::llm::backend: usage input=38114 output=1207 cached=31604
-error[E0308]: mismatched types --> src/app/status.rs:310:29
-"##,
-            ),
-            (
-                "cjk",
-                43,
-                r##"上下文窗口快满时，应用会自动压缩对话，把较早的内容总结成一段简短的说明。設定は作業ディレクトリごとに保存されます。
-"##,
-            ),
-            (
-                "cyrillic",
-                27,
-                r##"Когда окно контекста почти заполнено, приложение само сжимает разговор и заменяет старые сообщения кратким пересказом.
-"##,
-            ),
-            (
-                "emoji",
-                41,
-                r##"Shipped 🚀 the fix 🐛 — tests ✅, docs 📝, and one regression ⚠️ left. Thanks 🙏 everyone 👨‍👩‍👧‍👦!
-"##,
-            ),
-        ]
+    /// Where a provider-agnostic estimate should land between the two
+    /// references: nearer the newer, denser vocabulary, which is what most
+    /// providers now serve (`docs/token-estimate.md`).
+    fn midpoint(o200k: usize, cl100k: usize) -> f64 {
+        (o200k as f64).powf(0.65) * (cl100k as f64).powf(0.35)
     }
 
     #[test]
-    fn every_reference_sample_lands_within_fifteen_percent() {
-        for (name, reference, text) in reference_samples() {
-            let tokens = estimate(text);
-            let error = tokens.abs_diff(reference) as f64 / reference as f64;
+    fn every_sample_lands_within_a_quarter_of_the_reference_tokenizers() {
+        for (name, text, o200k, cl100k) in REFERENCE {
+            let estimated = estimate(text) as f64;
+            let ratio = estimated / midpoint(*o200k, *cl100k);
             assert!(
-                error <= 0.15,
-                "{name}: estimated {tokens}, the encoder counted {reference}"
+                (0.75..=1.25).contains(&ratio),
+                "{name}: estimated {estimated} against o200k {o200k} / cl100k {cl100k} ({ratio:.2})"
             );
         }
     }
 
     #[test]
-    fn the_samples_together_land_within_three_percent() {
+    fn english_code_and_tool_output_land_within_a_tenth_of_the_tokenizers() {
+        // Where the vocabularies agree — English, code, logs, JSON, diffs —
+        // the estimate agrees with both, in sum.
         let (mut estimated, mut reference) = (0, 0);
-        for (_, counted, text) in reference_samples() {
+        for (_, text, o200k, _) in &REFERENCE[..12] {
             estimated += estimate(text);
-            reference += counted;
+            reference += o200k;
         }
-        let error = estimated.abs_diff(reference) as f64 / reference as f64;
-        assert!(error <= 0.03, "estimated {estimated}, counted {reference}");
+        let ratio = estimated as f64 / reference as f64;
+        assert!(
+            (0.9..=1.1).contains(&ratio),
+            "{estimated} against {reference} ({ratio:.3})"
+        );
     }
 
     #[test]

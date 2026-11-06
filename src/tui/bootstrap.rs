@@ -1034,7 +1034,11 @@ impl<'t> Session<'t> {
         // report, rather than when the next request is counted. Two integer
         // compares when the history did not move (every streamed chunk), and
         // an estimate of only what joined when it did. Before the auto-compact
-        // check, which reads it.
+        // check, which reads it. The tool set first: every request carries its
+        // schemas, and a set that changed (an MCP server connecting, the
+        // Tools knob) re-reads the gauge — a pointer compare when it did not.
+        self.app
+            .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
         // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
         // start the summarization turn on our own at this idle boundary — the loop

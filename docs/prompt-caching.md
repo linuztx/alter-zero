@@ -34,7 +34,7 @@ provider, by `tests/live_caching.rs` (the table at the end).
 
 | number | where it comes from |
 | --- | --- |
-| the status line's `↓ N tokens` **between** usage frames | the app-side estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — vocabulary-free, within a few percent of a real encoder (`docs/token-estimate.md`) |
+| the status line's `↓ N tokens` **between** usage frames | the app-side estimate of what streamed (chunks, reasoning, tool output, the tool call being generated) — vocabulary-free, within a few percent of the common encoders on code and English (`docs/token-estimate.md`) |
 | the tally **at every round boundary**, the `Done … · N tokens` receipt, its `(N cached · N written)` | the provider's own usage frame — never estimated; a provider that reports none (the dummy, a shim that drops usage) leaves the receipt bare rather than guessing |
 | an **interrupted** turn's receipt, `Worked for 8s · ≈24.3k tokens` | the tally the status line showed as Esc landed: the frames of the rounds that finished, plus the estimate for the round the Esc cut short, which never sends its frame — the total marked `≈` whenever that estimate is in it, the cache halves still the frames' own (`docs/interrupt.md`) |
 | the footer's context gauge | real at each round: the last frame's `input`, then the estimate of what joins after it added on top, in the provider's tokens — the frames calibrate the estimate (`docs/token-estimate.md`) |

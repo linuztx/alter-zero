@@ -44,76 +44,108 @@ provider.
 
 ## The estimate
 
-Every model this app talks to splits text the same way **before** its
-vocabulary is consulted: the GPT-style pre-tokenizer that OpenAI,
-Anthropic, Llama, Qwen, DeepSeek and Mistral encoders share. A word with
-the space or the single symbol in front of it is one piece, a case change
-starts another, digits go three at a time, a run of whitespace is one
-piece, and punctuation runs are pieces of their own. A vocabulary of
-100k–200k entries holds nearly every common piece whole, so counting the
-pieces gets most of the way to a real count. The rest is a small charge
-per letter for the long and the rare.
+The providers this app talks to tokenize with a dozen vocabularies —
+OpenAI's, Anthropic's, Gemini's SentencePiece, Llama's, Qwen's, DeepSeek's,
+Mistral's — and outside English they disagree by a factor of two or three:
+the Hindi sample in the tests is 28 tokens to `o200k_base` and 100 to
+`cl100k_base`. No local count can be exact for all of them, so the estimate
+does not try to be exact for one. What all of them do with a text is much
+the same, and `estimate` models that: one pass over the characters, an
+ASCII table on the hot path, every piece priced in thousandths of a token
+so that fractions add up exactly and only the total is rounded, with no
+vocabulary, no regex and no allocation.
 
-`estimate` is one pass over the characters. It classifies each one (an
-ASCII table on the hot path) and prices each piece as it closes, in
-hundredths of a token so that fractions add up exactly and only the total
-is rounded:
+| Piece | Estimate |
+| --- | --- |
+| a word (letters of any non-CJK script) | a token for its first six letters, a quarter token for each letter after; cut into parts where `camelCase` changes case, `HTMLParser` at the last capital |
+| an all-capitals part (`HTTP`, `MAX`) | about six letters a token, at least one |
+| an accented Latin letter | 0.4 on top of its word |
+| a Cyrillic letter | 0.3 |
+| a Greek, Armenian, Georgian, Hebrew or Arabic letter | 0.5 |
+| a letter of the Indic scripts, Thai, Lao, Tibetan, Myanmar, Khmer, Ethiopic | 0.55 |
+| a Han character, kana or Hangul syllable | 0.85 |
+| a number | a token per three digits |
+| one space before a word or punctuation | nothing: it rides the piece |
+| one space before a number | 1.5: no pre-tokenizer joins a space to digits |
+| two or more spaces, or spaces ending the text | 1.3 for the run |
+| a run of line breaks (spaces between them included) | 0.75 |
+| a line break straight after punctuation | nothing: it joins the punctuation |
+| a run of punctuation | a token per five characters, at least one |
+| one punctuation character opening a word | 0.5, or 0.15 for the ones paths, URLs and identifiers are made of: `/ . _ - ' @ $ # ? & % \ < * ! + =` |
+| an emoji or pictograph | 2.2, and 0.6 per joiner, variation selector or skin tone |
+| a random-looking base64 run | about a token per one and a half characters |
+| a control character | 1 |
 
-| Piece | Cost | Why |
-| --- | --- | --- |
-| a word after a space | 1, +0.04 a letter past 4 and again past 7 | ` function` is one token in every modern vocabulary |
-| a word after nothing | 1, +0.06 past 4, +0.09 past 7 | identifiers and line starts split a little more |
-| a word after one symbol (`.method`, `/usr`, `_name`) | 1, +0.1 a letter past 3 and again past 8 | the symbol rides with the word, but such pieces are learned whole less often |
-| a word with no vowel (`lrwxrwxrwx`, `kvfree`) | 1, +0.35 a letter past 2, +0.45 past 5 | an abbreviation when short, random letters when long |
-| digits | 1 per 3 | the shared `\p{N}{1,3}` rule |
-| whitespace | 1 for the line breaks, 1 for the run after them less the one space the next piece takes; a number takes none | a run of any length is one token |
-| line breaks straight after symbols | free | `{` and its newline are one piece |
-| symbols | 1 for one or two, then ~1 per 2 (non-ASCII ones count double) | `();`, `=>` and `":"` merge |
-| a repeated rule character (`-`, `=`, `_`, `─`) | 0.08 per repeat | 24 dashes are 2 tokens |
-| other repeated ASCII symbols | 0.25 per repeat | brackets and quotes merge in pairs |
-| an emoji | 2, its joiners, selectors and skin tones 1 | |
-| CJK ideographs, kana, hangul | 0.7 each | common two-character words are one token |
-| other scripts | 0.24 (Greek, Cyrillic) to 0.45 (Thai, Khmer…) per letter | thinner vocabulary coverage |
-| a stretch of random data | at least 0.68 per character | a 16+ character stretch between whitespace that mixes all of lower case, upper case and digits and switches between them on 30% of its characters: base64, keys, hashes |
+A word never costs less than a token, and text that is not empty is never
+less than one. The base64 rule is the one place the estimate looks ahead: a
+run of the base64 alphabet at least twenty long, with both letter cases,
+whose letters flip case or turn into digits at a third of its characters or
+more. Words, paths and identifiers flip a handful of times in that span;
+base64 flips at every other character, and tokenizes at three times the
+density of words: the integrity hashes in a lockfile, a JWT in a log, a
+`data:` URL a tool printed. A run that fails the test is read as words and
+numbers, and never tested again, which keeps the pass linear.
+
+### How it was fitted
+
+The costs were fitted by coordinate descent, then rounded, against
+tiktoken's `o200k_base` (GPT-4o onward) and `cl100k_base` (GPT-4, and the
+shape of the Llama 3 and Qwen vocabularies) over 307 samples of about 3 KB:
+this repository's Rust, Markdown, JavaScript, Python, shell, TOML, YAML and
+SQL; pretty and minified JSON; `git log --stat`, diffs, `ls -la`, `ps`,
+`find` and `grep` output; logs, CSV, URLs, UUIDs, hex digests and base64;
+prose in sixteen languages and an emoji-heavy chat. The target was the two
+references' geometric mean weighted 0.65 toward `o200k_base`, since most
+providers now serve the newer, denser vocabularies. Where the two agree
+(English, code, data, tool output) that target is within a few percent of
+both; where they do not, it lands between them.
 
 ### How close it is
 
-The rules were fitted against the exact `o200k_base` counts of the old
-encoder, measured before it was removed. The corpus was this repository's
-own Rust, docs, prompts, JavaScript, Python and shell, plus `ps`, `ls`,
-`git log --stat`, a diff, a hexdump, base64, UUIDs, numbers, pretty and
-compact JSON, and prose in eight other languages:
+Measured on 13 MB of text it was not fitted on, 3.7M `o200k_base` tokens:
+Rust from 198 crates, the Python standard library, C headers, JavaScript and
+TypeScript declarations, JSON, TOML, shell scripts, fresh command output,
+and two texts (the vim tutor and a chapter of *Alice*) in about thirty
+languages:
 
-| Content | Estimate ÷ o200k | Mean error per file |
-| --- | --- | --- |
-| Rust (376 files, 3.0M tokens) | 1.008 | 1.5% |
-| Markdown docs (113 files, 630k tokens) | 0.982 | 2.0% |
-| JavaScript / Python / shell | 0.996 / 0.979 / 0.969 | 2.7% / 1.9% / 3.3% |
-| JSON (pretty / compact schema) | 0.995 / 1.053 | |
-| a diff, `git log --stat`, `ps`, `ls -la` | 0.983, 0.963, 0.956, 0.911 | |
-| base64, UUIDs, numbers, hexdump | 0.993, 0.974, 1.000, 0.948 | |
-| emoji | 1.017 | |
-| Spanish/German/French, Japanese, Korean, Arabic, Thai, Hindi | 0.97–1.06 | |
-| Russian, Chinese | 1.10, 1.12 | |
-| **everything (4.3M tokens)** | **0.999** | |
+| Content | ÷ `o200k_base` | ÷ `cl100k_base` | Mean error per file |
+| --- | --- | --- | --- |
+| Rust / Python / C | 0.99 / 1.01 / 0.97 | 1.00 / 1.02 / 0.98 | 4–6% |
+| JavaScript / TypeScript declarations | 1.00 / 1.11 | 1.01 / 1.12 | 5% / 16% |
+| Markdown / JSON / TOML | 0.97 / 0.94 / 0.96 | 0.97 / 0.94 / 0.96 | 4% / 9% / 4% |
+| shell scripts / command output | 0.92 / 0.99 | 0.93 / 0.99 | 8% / 6% |
+| English prose | 1.08 | 1.00 | |
+| 21 other Latin-script languages | 0.89 | 0.79 | 11% |
+| Russian, Ukrainian, Bulgarian | 0.98 | 0.68 | |
+| Greek / Arabic and Hebrew / Thai | 1.14 / 1.11 / 1.15 | 0.55 / 0.52 / 0.58 | |
+| Chinese, Japanese, Korean | 1.08 | 0.83 | |
+| **all of it** | **0.98** | **0.97** | |
 
-Russian and Chinese come out a little high on purpose. `o200k_base` is the
-most efficient tokenizer there is on those scripts, and most of the others
-are less so, so a slight over-count is the side to err on before a provider
-has reported anything. The test suite keeps the estimate honest without
-the encoder. Fourteen hand-written samples (prose, Rust, Python, two kinds
-of JSON, `ls -la`, a diff, a markdown table, base64, UUIDs, a log, CJK,
-Cyrillic, emoji) carry their frozen `o200k_base` counts, and each estimate
-must land within 15% of its count, the fourteen together within 3%
-(`every_reference_sample_lands_within_fifteen_percent`,
-`the_samples_together_land_within_three_percent`).
+A provider whose vocabulary is like `o200k_base` meets an estimate within a
+few percent on what a coding session mostly carries. A provider with a
+thinner vocabulary for a language counts that language higher than the
+estimate does, and that is what the calibration below learns. Once a
+provider has reported, the level matters less than how *consistently* the
+estimate tracks it across kinds of text, because one ratio covers a whole
+conversation. Across the rows above, the log of the ratio spreads by 0.07
+(about ±7%) against `o200k_base` and by 0.23 against `cl100k_base`.
+
+The tests keep the fit honest without a reference crate. Twenty-one samples
+carry the `o200k_base` and `cl100k_base` counts they had when the costs were
+fitted. Each must land within a quarter of the weighted midpoint, and the
+English, code and tool-output ones within a tenth of `o200k_base` in sum
+(`every_sample_lands_within_a_quarter_of_the_reference_tokenizers`,
+`english_code_and_tool_output_land_within_a_tenth_of_the_tokenizers`).
+Changing a cost is changing the fit, and those tests say whether it still
+holds.
 
 It costs nothing at rest. There are no tables to build and nothing stays
 resident, so the startup thread that warmed the encoder is gone. It is a
-single pass with no allocation, about four times faster than the encoder
-in the same build (58 MB/s against 14 MB/s over the corpus above). That
-speed matters because a tool's output and every whole-context estimate go
-through it.
+single pass with no allocation, about 160 MB/s on the corpus above in a
+release build, against 17–19 MB/s for `tiktoken-rs`'s `o200k_base` on the
+same machine. Word-sized pieces add up to exactly what their whole
+estimates, so the live tally, which estimates each streamed piece as it
+lands, agrees with an estimate of the whole reply.
 
 ## The correction
 
@@ -123,31 +155,42 @@ through it.
 tokens:
 
 - **A usage frame sets the base.** Its `input` is the provider's own count
-  of the request's whole context, covering what the estimate can see and
-  what it cannot: tool schemas, the chat template's framing, anything the
-  provider adds. The meter sets that count beside the estimate of the same
-  context, taken at the frame, and the gauge reads exactly `input`. The
-  reply the frame reports as `output` is not context until it is recorded.
-  Its reasoning never is on most wires, which is why the gauge no longer
-  adds `output` in (the old `input + output` over-counted a reasoning
-  model's turns until the next frame).
+  of the request's whole context, including what the estimate can only
+  approximate: the tool schemas as the provider renders them, the chat
+  template's framing, anything the provider adds. The meter sets that count
+  beside the estimate of the same context, taken at the frame, and the gauge
+  reads exactly `input`. The reply the frame reports as `output` is not
+  context until it is recorded. Its reasoning never is on most wires, which
+  is why the gauge does not add `output` in: the old `input + output`
+  over-counted a reasoning model's turns until the next request, and could
+  start an auto-compaction early.
 - **What joins after the frame adds its corrected estimate.** The reply, a
   tool's output, a message the user sends next. The loop bottom
   (`App::sync_context_used`, which costs two integer compares when nothing
   moved) estimates only the history that joined since the base, derived
   exactly as a request would carry it. So a large paste or tool output
   shows on the footer at once, before the next request is counted.
+- **Before any frame, the estimate is the reading, tool schemas included.**
+  The backend's tool set (`ReplySource::tool_definitions`, each schema as
+  the client serializes it) is handed to `App` at every loop bottom and
+  estimated with the rest of the context. So the first request of a session,
+  a resumed one, and a provider that reports no usage all count the schemas
+  every request carries. A tool set that changes (an MCP server connecting,
+  the Tools knob) re-reads the whole context with the new set's estimate in
+  it, and a frame's base already holds the provider's count of the old one.
 - **A history the frame no longer describes moves the base.** A
   compaction, a rewind, `/clear` followed by a new message, or `/resume`
   re-estimates the whole context once and moves the reading by the
-  corrected estimate of the change. The share of the count the estimate
-  never saw stays in. Here is what that means for a compaction. The last
-  frame counted 88k, of which the estimate saw 78k, and the summary leaves
-  2k estimated. The gauge, and the `● Context compacted · 88k → 12k
-  tokens` cell, read 12k: the 2k left plus the 10k of schemas and framing
-  that ride the next request too. They used to read the bare 2k.
+  corrected estimate of the change. Whatever the provider counts beyond the
+  estimate stays in. Here is what that means for a compaction. The last
+  frame counted 88k for a context the estimate put at 84k, since the
+  provider renders the tool schemas and frames the messages its own way. The
+  summary leaves 6k estimated, the schemas among it. The gauge, and the
+  `● Context compacted · 88k → 10k tokens` cell, read 10k: the provider's
+  count less the 78k the summary replaced. They used to read the bare
+  estimate, without the schemas at all.
 - **An empty conversation still reads a true zero**, as it always did
-  (`docs/compact.md`).
+  (`docs/compact.md`), whatever the tools.
 - **The summarizer's own frame measures nothing.** A `/compact` request is
   shaped unlike the conversation's: no tools, plus the compact prompt.
 
@@ -158,9 +201,9 @@ estimate's. A sample is the change between two consecutive frames: the
 provider's count of what joined the context against the estimate of the
 same change. Whatever both frames carried unchanged (the tool schemas, the
 system prompt, the framing) cancels out. What remains is how many tokens
-the provider's tokenizer makes of this session's text per estimated one —
-say 1.18 for a model whose tokenizer splits code into more pieces than
-`o200k_base` does. Several guards keep bad samples out:
+the provider's tokenizer makes of this session's text per estimated one,
+say 1.18 for a model whose tokenizer splits code into more pieces than the
+estimate does. Several guards keep bad samples out:
 
 - a change under 256 estimated tokens is skipped, since a chat template's
   per-message framing is a real share of anything smaller;
@@ -176,6 +219,17 @@ say 1.18 for a model whose tokenizer splits code into more pieces than
   estimates pass 64k tokens, so it follows what the session is doing now.
   It is held to 0.5–2.0, the most one modern tokenizer differs from
   another.
+
+**Why the change between frames, and not the whole request.** A ratio of a
+whole request's count to its estimate exists from the first frame, but it
+scales what is not text as if it were: tool schemas a provider renders more
+compactly than their JSON reads, a picture the provider charges 1,500 tokens
+for and the estimate 256. Played through the same constructed cases, a
+whole-request ratio read a compaction's result 50–65% high when the schemas'
+estimate ran 8k over the provider's count, and the request after an early
+picture 40% high. The change between frames read both exactly. The price is
+a second frame before the ratio exists; the first frame is already the
+reading's base.
 
 The ratio corrects every estimate of context: what joins after a frame,
 the change a compaction or rewind makes, every count on the `/context`
@@ -201,5 +255,11 @@ ends on.
 - One ratio covers a whole conversation, so a session that mixes text a
   provider counts very differently (prose, then base64) is corrected on
   average.
+- A subagent's estimate holds no tool set, so its gauge counts its tool
+  schemas from its first frame on.
+- Re-estimating the whole context runs on the loop's thread once per frame,
+  with every text's count remembered from the last time: under 2 ms for a
+  2 MB history (3 ms the first time), so it stays there rather than moving
+  to the backend's thread.
 - The gauge between frames is still an estimate, but only of what joined
   since the last frame, which is usually a small share of the window.

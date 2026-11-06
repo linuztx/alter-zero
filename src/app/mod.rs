@@ -301,6 +301,11 @@ pub struct App {
     /// Each text's estimate, remembered from the last whole-context estimate
     /// so the next one — a usage report's — counts only what is new.
     context_memo: crate::context_usage::CountMemo,
+    /// The estimate of the main session's tool schemas
+    /// ([`tool_definitions`](Self::tool_definitions)), which every request
+    /// carries beside the conversation: part of every whole-context
+    /// estimate, so the gauge counts them before any provider has.
+    tools_estimate: u64,
     /// One auto-compact attempt per user turn (codex's per-turn semantics):
     /// set when a compact turn ends **any** way — landed, interrupted, or
     /// failed — and cleared when the next real turn begins, so a compaction
@@ -613,8 +618,8 @@ pub struct App {
     /// page's reset times. `None` in unit tests: UTC.
     local_offset: Option<fn(i64) -> i32>,
     /// The tools the main session's next request offers, as the client
-    /// sends them — pulled from the backend while the `/context` page is
-    /// open ([`App::set_tool_definitions`]), empty for the dummy.
+    /// sends them — pulled from the backend at every loop bottom
+    /// ([`App::set_tool_definitions`]), empty for the dummy.
     tool_definitions: std::sync::Arc<[crate::context_usage::ToolDefinition]>,
     /// The tools the **viewed** subagent's type is offered — its session
     /// view's `/context` ([`App::set_agent_tool_definitions`]).

@@ -2728,8 +2728,9 @@ via `ModelEntry::context`, persisted in `config.json`, overridable via
 gauge (the last usage frame's `input` plus the calibrated estimate of what
 joined since, read at the loop bottom so a paste or a tool's output shows
 before the next request; a compaction, rewind or `/resume` moves that count
-by the estimate of the change, keeping the tool schemas the estimate never
-sees; the estimate alone offline — `tokens::ContextMeter`,
+by the estimate of the change, keeping the provider's own count of what
+rides every request; before any frame the estimate, the tool schemas'
+included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
@@ -4030,8 +4031,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   rendering treat chunks and tool output as opaque text, and count the status
   tokens app-side with a vocabulary-free, provider-agnostic estimate via the
   `app::count_tokens` → `tokens::estimate` seam (`docs/token-estimate.md`:
-  one pass pricing the pieces every modern tokenizer splits text into,
-  within a few percent of a real encoder, nothing loaded or resident) —
+  one pass pricing what every byte-pair tokenizer does with words, digits,
+  indentation and punctuation, fitted between `o200k_base` and
+  `cl100k_base`, nothing loaded or resident) —
   **as the live estimate between usage frames**: a real
   backend forwards each round's final `usage` frame as `StreamEvent::Usage`
   and `App::apply_usage` snaps the tally to the provider's own accounting

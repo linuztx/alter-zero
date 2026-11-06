@@ -107,8 +107,9 @@ impl App {
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
         // The gauge drops by the estimate of what the summary replaced
-        // (codex's recompute_token_usage) — the share of the last count the
-        // estimate never saw stays — and the marker records the shrink.
+        // (codex's recompute_token_usage) — what the provider counts beyond
+        // the estimate, its framing and its own rendering of the tool
+        // schemas, stays — and the marker records the shrink.
         self.refresh_context_used();
         // The newest frame is the summarizer's request, which described the
         // conversation the marker just replaced (`docs/context-usage.md`).
@@ -144,14 +145,14 @@ impl App {
     }
 
     /// Estimate the whole context the next request carries, and the
-    /// pictures in it: the system prompt, plus every derived context message
-    /// (the `<system-reminder>` among them — the AGENTS.md instructions ride
-    /// every request) — its text, a flat [`IMAGE_INPUT_TOKENS`] per
-    /// attachment, its tool calls. Each text's count is remembered, so the
-    /// re-estimate every usage report asks for counts only what is new. A
-    /// usage report's count is set beside it, and a history the report no
-    /// longer describes (compaction, `/clear`, backtrack, `/resume`) is
-    /// re-read from it (`docs/token-estimate.md`).
+    /// pictures in it: the system prompt and the tool schemas, plus every
+    /// derived context message (the `<system-reminder>` among them — the
+    /// AGENTS.md instructions ride every request) — its text, a flat
+    /// [`IMAGE_INPUT_TOKENS`] per attachment, its tool calls. Each text's
+    /// count is remembered, so the re-estimate every usage report asks for
+    /// counts only what is new. A usage report's count is set beside it, and
+    /// a history the report no longer describes (compaction, `/clear`,
+    /// backtrack, `/resume`) is re-read from it (`docs/token-estimate.md`).
     ///
     /// **An empty conversation estimates zero.** The system prompt and the
     /// standing instructions do ride the next request, but a *booted* session
@@ -182,7 +183,10 @@ impl App {
                 .sum::<usize>();
         memo.finish_pass();
         let images = messages.iter().map(|message| message.images.len()).sum();
-        (u64::try_from(total).unwrap_or(u64::MAX), images)
+        let total = u64::try_from(total)
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.tools_estimate);
+        (total, images)
     }
 
     /// The history's identity for the gauge: committed items are immutable,

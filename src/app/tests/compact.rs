@@ -537,7 +537,7 @@ fn estimate_of(texts: &[&str]) -> u64 {
 #[test]
 fn a_usage_frame_reads_the_providers_count_of_the_request() {
     // The frame's `input` is the request's whole context, counted by the
-    // provider — tool schemas and framing the estimate never sees
+    // provider — its framing and its own rendering of the tool schemas
     // included. The reply its `output` reports is not context until it is
     // recorded (and its reasoning never is).
     let mut app = App::new();
@@ -584,10 +584,10 @@ fn a_message_moves_the_gauge_before_any_frame_has_counted() {
 
 #[test]
 fn a_compaction_keeps_what_the_provider_counted_beyond_the_estimate() {
-    // 3k of the provider's count is what the estimate cannot see (tool
-    // schemas, a template's framing): it rides the request after a
-    // compaction just as before, so the marker's `after` and the gauge
-    // keep it — where they used to drop to the bare estimate.
+    // 3k of the provider's count is beyond the estimate (a template's
+    // framing, its own rendering of the tool schemas): it rides the request
+    // after a compaction just as before, so the marker's `after` and the
+    // gauge keep it — where they used to drop to the bare estimate.
     let mut app = App::new();
     app.record_user_message(&"an early request with a lot of detail ".repeat(40));
     app.begin_stream();
@@ -618,6 +618,79 @@ fn a_compaction_turns_frame_neither_reads_nor_teaches() {
     app.apply_usage(&usage_of(900, 100));
     assert_eq!(app.context_used(), 4_000);
     assert_eq!(app.context_calibration().ratio_permille(), 1000);
+}
+
+/// A tool set of `schemas`, each the client's serialized
+/// `{"type":"function",…}` entry, named for the gauge tests below.
+fn tool_set(schemas: &[&str]) -> std::sync::Arc<[crate::context_usage::ToolDefinition]> {
+    schemas
+        .iter()
+        .enumerate()
+        .map(|(i, schema)| crate::context_usage::ToolDefinition {
+            name: format!("tool_{i}"),
+            schema: (*schema).to_string(),
+        })
+        .collect()
+}
+
+const BASH_SCHEMA: &str = r#"{"type":"function","function":{"name":"bash","description":"Run a shell command in the working directory and return what it printed.","parameters":{"type":"object","properties":{"command":{"type":"string","description":"The command to run."}},"required":["command"]}}}"#;
+
+const SEARCH_SCHEMA: &str = r#"{"type":"function","function":{"name":"mcp__docs__search","description":"Search the project's documentation and return the best matching pages.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"What to look for."}},"required":["query"]}}}"#;
+
+#[test]
+fn before_any_report_the_gauge_counts_the_tool_schemas_too() {
+    // Every request carries the tool schemas beside the conversation, the
+    // first one included: until a provider has counted one, their estimate
+    // is in the reading rather than missing from it.
+    let mut app = App::new();
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.record_user_message("hello");
+    app.sync_context_used();
+    assert_eq!(app.context_used(), estimate_of(&["hello", BASH_SCHEMA]));
+}
+
+#[test]
+fn an_empty_conversation_reads_zero_whatever_the_tools() {
+    // The gauge measures a conversation: with none, it reads what a fresh
+    // session reads (docs/compact.md), tools or not.
+    let mut app = App::new();
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 0);
+}
+
+#[test]
+fn a_tool_set_that_grows_moves_the_gauge_by_the_new_schemas() {
+    // An MCP server connecting adds its tools to every request after it:
+    // the reading moves by their estimate before the next request counts
+    // them, and the provider's count of the tools it already had stays.
+    let mut app = App::new();
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(app.context_used(), 5_000);
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA, SEARCH_SCHEMA]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 5_000 + estimate_of(&[SEARCH_SCHEMA]));
+}
+
+#[test]
+fn the_same_tool_set_handed_over_again_moves_nothing() {
+    // The boundary hands the backend's set over at every loop bottom; a
+    // rebuilt backend's equal set in a new handle is no change.
+    let mut app = App::new();
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 5_000);
 }
 
 /// Two frames whose change the provider counts at three halves of the

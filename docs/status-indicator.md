@@ -99,9 +99,10 @@ real backend's own latency plays the same role.
   and tool output), counted
   app-side by a vocabulary-free, provider-agnostic estimate (the count seam is
   `app::count_tokens` → `tokens::estimate` — one pass over the text pricing
-  the pieces every modern tokenizer splits it into, within a few percent of a
-  real encoder on code, prose, JSON and shell output, with nothing to load or
-  keep resident; see `docs/token-estimate.md`). Each
+  what every byte-pair tokenizer does with words, digits, indentation and
+  punctuation, within a few percent of the common encoders on code, English,
+  JSON and shell output, with nothing to load or keep resident; see
+  `docs/token-estimate.md`). Each
   input/chunk/tool-output is estimated as it arrives and **added** to the tally
   (`↑`/`↓` per source); a piece straddling a chunk boundary can nudge the live
   total a hair above a whole-buffer estimate — fine for a status estimate, and
