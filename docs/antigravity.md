@@ -2,8 +2,8 @@
 
 Sign in with a Google account and use the models Google Antigravity serves —
 Gemini, and the Claude and GPT-OSS models Google routes through it — on that
-account's Antigravity quota: `/login` → **Use a subscription** → **Google
-Antigravity**. Nothing is pasted; the browser comes back to this machine on
+account's Antigravity quota: `/login` → **Sign in with an account** →
+**Google Antigravity**. Nothing is pasted; the browser comes back to this machine on
 its own.
 
 This is the fifth sign-in (after GitHub Copilot, ChatGPT Codex, the Anthropic

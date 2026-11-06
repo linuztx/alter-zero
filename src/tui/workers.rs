@@ -31,7 +31,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
+use alter_zero::app::{App, LoginMethod, ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files};
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
@@ -136,9 +136,10 @@ pub(crate) fn spawn_signin(
         // refuses such a row before it gets here; this arm only keeps the
         // match honest.
         (AuthScheme::ApiKey | AuthScheme::OptionalKey, _) => {
-            let _ = tx.send(DeviceEvent::Done(Err(
-                "this provider has no sign-in — paste its key under Use an API key".to_string(),
-            )));
+            let _ = tx.send(DeviceEvent::Done(Err(format!(
+                "this provider has no sign-in — paste its key under {}",
+                LoginMethod::ApiKey.label()
+            ))));
         }
     }
 }

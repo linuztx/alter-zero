@@ -203,6 +203,10 @@ fn a_page_whose_subscriptions_were_all_signed_out_points_at_login() {
     let joined = texts(&app, 80, TALL).join(" ");
     assert!(joined.contains("No subscription is signed in"), "{joined}");
     assert!(joined.contains("/login"), "{joined}");
+    assert!(
+        joined.contains(crate::app::LoginMethod::Subscription.label()),
+        "the root row that signs in: {joined}"
+    );
     let hint = row_with(&page, "No subscription");
     assert_eq!(
         hint.spans.last().and_then(|span| span.style.fg),

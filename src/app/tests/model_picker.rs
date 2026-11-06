@@ -393,12 +393,15 @@ fn backspace_pops_the_model_query() {
 }
 
 #[test]
-fn esc_on_the_provider_step_clears_the_query_then_closes() {
-    let mut app = login_app();
+fn esc_on_the_provider_step_clears_the_query_before_stepping_back() {
+    let mut app = provider_app();
     type_chars(&mut app, "open");
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
-    assert!(app.key_onboarding.as_ref().unwrap().query.is_empty());
-    assert!(app.key_onboarding.is_some(), "first Esc only clears");
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    assert!(onboarding.query.is_empty());
+    assert_eq!(onboarding.step, KeyStep::Provider, "first Esc only clears");
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.key_onboarding.as_ref().unwrap().step, KeyStep::Method);
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
     assert!(app.key_onboarding.is_none());
 }

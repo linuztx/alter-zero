@@ -81,7 +81,7 @@ sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /spinner back to the composer"
 # /login's API-key list: the counter and the where-keys-are-saved note yield.
 submit "$S139" "/login"
-wait_pane 5 "$S139" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139" -F "Sign in with an API key" >/dev/null
 tmux send-keys -t "$S139" Down Enter
 short_login="$(wait_pane 5 "$S139" -F "esc back")"
 echo "==== Phase 139: /login's provider list on 12 rows ===="
@@ -93,7 +93,7 @@ expect_lacks "$short_login" -F "Keys are saved to" "/login still shows its note 
 # One Esc back to the sign-in fork, one more to close it — sent apart, since
 # two ESC bytes in one write read as a single Alt+Esc.
 tmux send-keys -t "$S139" Escape
-wait_pane 5 "$S139" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139" -F "Sign in with an API key" >/dev/null
 tmux send-keys -t "$S139" Escape
 wait_pane 5 "$S139" -F "dummy_model_name" >/dev/null ||
 	fail "Esc did not close /login back to the composer"
@@ -237,12 +237,19 @@ for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:❯ c
 	caret_on_search_line "$cmd on 7 rows" "$tiny" ""
 	close_picker "$cmd"
 done
+# /login's root is a titled question rather than a search-line picker: it
+# sheds on the same rungs with its title where they keep a search line, so
+# seven rows hold the whole question — only its two gaps yield — and the
+# cursor stays hidden, with nothing to type into.
 submit "$S139T" "/login"
-tiny_login="$(wait_pane 5 "$S139T" -F "Use an API key")"
+tiny_login="$(wait_pane 5 "$S139T" -F "Sign in with an API key")"
 echo "==== Phase 139: /login on 7 rows ===="
 printf '%s\n' "$tiny_login"
-expect_has "$tiny_login" -E '^→ Use a subscription' "/login on 7 rows lost its highlighted row"
-caret_on_search_line "/login on 7 rows" "$tiny_login" ""
+expect_has "$tiny_login" -x -F "  Select authentication method:" "/login on 7 rows lost its title"
+expect_has "$tiny_login" -x -F "→ Sign in with an account" "/login on 7 rows lost its highlighted row"
+expect_has "$tiny_login" -x -F "  Connect a local model" "/login on 7 rows lost a way in"
+expect_has "$tiny_login" -F "escape/ctrl+c cancel" "/login on 7 rows lost its hint"
+expect_eq "$(tmux display-message -p -t "$S139T" '#{cursor_flag}')" "0" "/login on 7 rows shows a hardware cursor"
 tmux send-keys -t "$S139T" Down Enter
 tiny_providers="$(wait_pane 5 "$S139T" -F "esc back")"
 echo "==== Phase 139: /login's provider list on 7 rows ===="
@@ -251,7 +258,7 @@ expect_eq "$(printf '%s\n' "$tiny_providers" | sed -n 2p)" "  ❯" "/login's pro
 expect_has "$tiny_providers" -E '^→ .+ · (✔|◯) ' "/login's provider list on 7 rows lost its highlighted provider"
 caret_on_search_line "/login's provider list on 7 rows" "$tiny_providers" ""
 tmux send-keys -t "$S139T" Escape
-wait_pane 5 "$S139T" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139T" -F "Sign in with an API key" >/dev/null
 close_picker /login
 tmux kill-session -t "$S139T" 2>/dev/null
 

@@ -893,7 +893,7 @@ fn cloud_code_catalog(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Mod
     let (Some(bearer), Some(project)) = (auth.bearer.as_deref(), auth.project.as_deref()) else {
         return Err(LlmError::Api {
             status: 401,
-            body: "not signed in — run /login and choose Use a subscription".to_string(),
+            body: super::auth::not_signed_in(),
         });
     };
     let base = if cfg.api_model_base.trim().is_empty() {

@@ -903,10 +903,13 @@ pub fn cursor_visible(app: &App) -> bool {
     }
     // The `/login` device page is a wait, not a field — the same menu rule: a
     // kitty cursor trail would streak across it on every countdown tick. The
-    // sign-in method choice above it has nothing to type into either
-    // (`docs/chatgpt.md`).
+    // two questions — the method root and the sign-in method choice — have
+    // nothing to type into either (`docs/copilot.md`, `docs/chatgpt.md`).
     if let Some(onboarding) = &app.key_onboarding
-        && matches!(onboarding.step, KeyStep::Device | KeyStep::SigninMethod)
+        && matches!(
+            onboarding.step,
+            KeyStep::Method | KeyStep::Device | KeyStep::SigninMethod
+        )
     {
         return false;
     }
@@ -1247,8 +1250,8 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, y);
     }
     // The inline `/login` flow parks the cursor at the end of its active `>`
-    // line: the provider filter (step 1) or the masked key field (step 2) —
-    // again inside its own frame, below the strip, shifted by the anchor.
+    // line: a list's filter or the masked key field — again inside its own
+    // frame, below the strip, shifted by the anchor.
     if let Some(onboarding) = &app.key_onboarding {
         // Built once and read twice — the page's height *and* the row its `❯`
         // landed on. The key step's field has no fixed row any more (the
@@ -1258,19 +1261,20 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let lines = super::login_view::key_onboarding_lines(onboarding, area.width, area.height);
         let prompt = super::model_view::view_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
-            // The device page has no field at all, nor has the sign-in method
-            // choice before it; the (hidden — see `cursor_visible`) caret
-            // parks at the frame's top, off the code and the rows and out of
-            // the way of the countdown's redraws.
-            KeyStep::SigninMethod | KeyStep::Device => (0, DEVICE_CURSOR_ROW),
+            // The device page has no field at all, nor have the two
+            // questions before it (the method root, the sign-in method
+            // choice); the (hidden — see `cursor_visible`) caret parks at the
+            // frame's top — the title row — off the code and the rows and out
+            // of the way of the countdown's redraws, where no ↑/↓ moves it.
+            KeyStep::Method | KeyStep::SigninMethod | KeyStep::Device => (0, DEVICE_CURSOR_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (
                 onboarding.key_input.chars().count(),
                 prompt.unwrap_or(DEVICE_CURSOR_ROW),
             ),
-            // The four lists are one shape — none carries a title — so their
+            // The three lists are one shape — none carries a title — so their
             // filter is the frame's first content row.
-            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
+            KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
                 (cols(&onboarding.query), prompt.unwrap_or(DEVICE_CURSOR_ROW))
             }
             // After what was typed: the address as typed, or one mask glyph

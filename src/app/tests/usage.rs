@@ -122,6 +122,11 @@ fn with_no_subscription_signed_in_nothing_opens() {
     assert_eq!(app.open_usage_page(Vec::new()), None);
     assert!(app.usage_page.is_none());
     assert!(USAGE_EMPTY_NOTICE.contains("/login"));
+    // …and the row there that signs in, by the name the root shows it under.
+    assert!(
+        USAGE_EMPTY_NOTICE.contains(LoginMethod::Subscription.label()),
+        "{USAGE_EMPTY_NOTICE}"
+    );
 }
 
 #[test]

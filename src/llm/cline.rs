@@ -701,12 +701,12 @@ pub fn is_api_base(base: &str) -> bool {
 fn plan_advice(body: &str) -> Option<String> {
     let lower = body.to_ascii_lowercase();
     if lower.contains(ORG_SUBSCRIPTION_REFUSAL) {
-        return Some(
+        return Some(format!(
             "ClinePass is for personal Cline accounts, and this is an organization account — \
              switch to your personal account at app.cline.bot, or use Cline's usage-billed \
-             models through an API key (/login → Use an API key → Cline)."
-                .to_string(),
-        );
+             models through an API key (/login → {} → Cline).",
+            crate::app::LoginMethod::ApiKey.label()
+        ));
     }
     if lower.contains(CLINEPASS_LIMIT) {
         let what = clinepass_window(body).map_or_else(
@@ -720,12 +720,12 @@ fn plan_advice(body: &str) -> Option<String> {
         ));
     }
     if lower.contains(NOT_SUBSCRIBED_REFUSAL) || lower.contains(NOT_SUBSCRIBED_SHOWN) {
-        return Some(
+        return Some(format!(
             "this Cline account has no ClinePass subscription — subscribe at \
              app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
-             an API key (/login → Use an API key → Cline)."
-                .to_string(),
-        );
+             an API key (/login → {} → Cline).",
+            crate::app::LoginMethod::ApiKey.label()
+        ));
     }
     None
 }
@@ -1844,12 +1844,21 @@ mod tests {
         );
     }
 
+    /// Where `/login` takes a Cline API key, by the names its rows show.
+    fn key_row_path() -> String {
+        format!(
+            "/login → {} → Cline",
+            crate::app::LoginMethod::ApiKey.label()
+        )
+    }
+
     #[test]
     fn the_server_s_own_words_for_a_missing_plan_are_explained() {
         // The advice matched only the sentence Cline's client *displays*;
         // the server sends this one, and Cline's `errors.ts` matches both.
         let advice = auth_advice(403, NOT_SUBSCRIBED).unwrap();
         assert!(advice.contains("no ClinePass subscription"), "{advice}");
+        assert!(advice.contains(&key_row_path()), "{advice}");
         let displayed = auth_advice(
             403,
             "No access to ClinePass subscription models yet. Subscribe to ClinePass, …",
@@ -1867,6 +1876,7 @@ mod tests {
         .unwrap();
         assert!(advice.contains("organization"), "{advice}");
         assert!(advice.contains("personal"), "{advice}");
+        assert!(advice.contains(&key_row_path()), "{advice}");
         assert_ne!(
             Some(advice),
             auth_advice(403, ""),

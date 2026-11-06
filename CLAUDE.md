@@ -592,8 +592,15 @@ ladder on a short terminal, folding every section but the highlighted one to
 its fullest limit, then the header into one title row, ending on one folded
 row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
 **`/login` sign-in fork** (the
-flow's root now asks *how* you sign in — **Use a subscription**, **Use an
-API key** or **Use a local model** — because GitHub Copilot is not a key you
+flow's root now asks *how* you sign in — a titled question, `Select
+authentication method:` over **Sign in with an account**, **Sign in with an
+API key** and **Connect a local model**, with no `❯` filter, a hidden cursor
+and the sign-in method choice's grammar and page
+(`login_view::question_page_lines`, shedding on a short terminal with the
+title where the lists keep their filter; every message that sends the user
+to a row names it by `LoginMethod::label` or is pinned to it by a test,
+`docs/copilot.md`) —
+because GitHub Copilot is not a key you
 paste and a local server takes an address, not a key: the three lists
 partition the providers by `auth`, and a local server's page **tests the
 address before saving it** — the `/model` listing run on the `/login`

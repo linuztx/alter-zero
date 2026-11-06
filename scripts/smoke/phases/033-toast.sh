@@ -70,7 +70,7 @@ for _ in $(seq 1 15); do # up to ~1.5s (still inside the 2s pause)
 	# The flow's ROOT, not the provider list: `/login` asks how you sign in
 	# first (Phase 103), so the provider step's `Keys are saved to` hint is a
 	# step further in and never appears on the page this phase opens.
-	if printf '%s' "$toast_login" | grep -qF "Use a subscription"; then
+	if printf '%s' "$toast_login" | grep -qF "Select authentication method:"; then
 		break
 	fi
 	sleep 0.1
@@ -93,5 +93,5 @@ expect_has "$toast_model" -F "esc to interrupt" "the mid-turn /model picker hid 
 # Phase 33: /login opens mid-turn under the same live status line — on its
 # method root (the sign-in fork, Phase 103), which is what a mid-turn `/login`
 # now shows.
-expect_has "$toast_login" -F "Use a subscription" "mid-turn /login did not open the inline onboarding flow"
+expect_has "$toast_login" -F "Select authentication method:" "mid-turn /login did not open the inline onboarding flow"
 expect_has "$toast_login" -F "esc to interrupt" "the mid-turn /login flow hid the status indicator — it must replace the composer only"

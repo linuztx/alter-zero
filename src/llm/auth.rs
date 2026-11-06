@@ -97,6 +97,17 @@ impl RequestAuth {
 ///   stored refresh token, the agy CLI `User-Agent` the backend gates its
 ///   catalog on, and the account's Cloud Code project (`docs/antigravity.md`).
 ///
+/// What a request for a sign-in provider says when no sign-in was ever
+/// made: where `/login` makes one, by the name its root row shows
+/// ([`LoginMethod::label`](crate::app::LoginMethod::label)), so the advice
+/// can never point at a row the root no longer has.
+pub(crate) fn not_signed_in() -> String {
+    format!(
+        "not signed in — run /login and choose {}",
+        crate::app::LoginMethod::Subscription.label()
+    )
+}
+
 /// A subscription config with no stored token resolves to an empty
 /// [`RequestAuth`] rather than calling out: the `/model` picker builds configs
 /// for providers that were never signed in to, and an exchange attempt there
@@ -208,6 +219,19 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sign_in_never_made_names_the_root_row_that_makes_one() {
+        let sentence = not_signed_in();
+        assert!(
+            sentence.starts_with("not signed in — run /login"),
+            "{sentence}"
+        );
+        assert!(
+            sentence.contains(crate::app::LoginMethod::Subscription.label()),
+            "{sentence}"
+        );
+    }
 
     #[test]
     fn an_api_key_provider_resolves_to_its_stored_key_with_no_io() {

@@ -47,7 +47,7 @@ api_base = "https://api.groq.com/openai/v1"
   shows the first and links the second, so a user without a key knows where
   to make one.
 
-Then `/login` → **Use an API key** → **Groq** saves the key to
+Then `/login` → **Sign in with an API key** → **Groq** saves the key to
 `~/.alter-zero/.env` (an exported `GROQ_API_KEY` works as well), and `/model`
 lists Groq's models beside every other configured provider's. **Both re-read
 the file when they open**, so a provider added while the app is running — by
@@ -178,7 +178,7 @@ nothing more.
 LM Studio itself no longer needs a block: it ships, with its native listing
 and its `LM_API_TOKEN` (`docs/local-models.md`). A `[providers.lmstudio]`
 block written from this page's earlier example now **patches** the shipped
-one — connect it once under Use a local model, or delete the block.
+one — connect it once under Connect a local model, or delete the block.
 
 ## Fields a strict server refuses
 

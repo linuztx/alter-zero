@@ -20,7 +20,10 @@ const LOGIN_PAGE: usize = TOOL_VIEW_PAGE;
 /// (`docs/llm.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyStep {
-    /// The root: which way in — a subscription, or an API key.
+    /// The root: which way in — an account sign-in, an API key, or a local
+    /// model server. A titled question with three answers, like
+    /// [`SigninMethod`](Self::SigninMethod), not a list to search: no filter,
+    /// so typing does nothing (`docs/copilot.md`).
     #[default]
     Method,
     /// Choosing which subscription to sign in to (a filterable list).
@@ -48,7 +51,8 @@ pub enum KeyStep {
 /// The three ways in, in the order the method step lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginMethod {
-    /// Sign in to a subscription that serves models (GitHub Copilot).
+    /// Sign in to an account that serves models (GitHub Copilot, ChatGPT,
+    /// the Anthropic Console, …) — the subscription list.
     Subscription,
     /// Paste a provider's API key.
     ApiKey,
@@ -61,13 +65,23 @@ impl LoginMethod {
     /// The methods in list order.
     pub const ALL: [Self; 3] = [Self::Subscription, Self::ApiKey, Self::Local];
 
-    /// The row label.
+    /// The row label — under the root's `Select authentication method:`
+    /// title. **Every message that sends the user to a row names it by this
+    /// label** (the `/usage` notice, a refusal's "/login → …" advice), and
+    /// tests pin each one to it, so renaming a row cannot strand a pointer
+    /// at a row that no longer exists.
+    ///
+    /// The subscription row says *account*: the list under it is a set of
+    /// account sign-ins, not all of them subscriptions — the Anthropic
+    /// Console bills per token (`docs/claude.md`). The local row says
+    /// *connect*, the verb its list and its page already use: a server is
+    /// pointed at and tested, never signed in to.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Subscription => "Use a subscription",
-            Self::ApiKey => "Use an API key",
-            Self::Local => "Use a local model",
+            Self::Subscription => "Sign in with an account",
+            Self::ApiKey => "Sign in with an API key",
+            Self::Local => "Connect a local model",
         }
     }
 }
@@ -432,21 +446,11 @@ pub struct KeyOnboarding {
 }
 
 impl KeyOnboarding {
-    /// The method rows in list order, filtered by the query — the labels the
-    /// method step shows.
-    #[must_use]
-    pub fn method_matches(&self) -> Vec<LoginMethod> {
-        let query = self.query.to_lowercase();
-        LoginMethod::ALL
-            .into_iter()
-            .filter(|m| query.is_empty() || m.label().to_lowercase().contains(&query))
-            .collect()
-    }
-
-    /// The method labels, for tests and the renderer.
+    /// The method step's row labels, in order — every way in, always: the
+    /// root has no filter to hide one.
     #[must_use]
     pub fn method_labels(&self) -> Vec<&'static str> {
-        self.method_matches()
+        LoginMethod::ALL
             .into_iter()
             .map(LoginMethod::label)
             .collect()
@@ -455,7 +459,7 @@ impl KeyOnboarding {
     /// The highlighted method (the method step).
     #[must_use]
     pub fn highlighted_method(&self) -> Option<LoginMethod> {
-        self.method_matches().get(self.selected).copied()
+        LoginMethod::ALL.get(self.selected).copied()
     }
 
     /// Subscriptions whose id, name or description contains the query
@@ -593,7 +597,7 @@ impl KeyOnboarding {
     /// key handling shares across the lists.
     fn list_len(&self) -> usize {
         match self.step {
-            KeyStep::Method => self.method_matches().len(),
+            KeyStep::Method => LoginMethod::ALL.len(),
             KeyStep::Subscription => self.subscription_matches().len(),
             KeyStep::SigninMethod => self.signin_kinds().len(),
             KeyStep::Provider => self.matches().len(),
@@ -782,15 +786,18 @@ impl App {
     /// Keys while the inline `/login` flow is open. The steps have distinct
     /// grammars:
     ///
-    /// - **The three lists** (method / subscription / provider): ↑/↓ move
-    ///   wrapping at the ends, PageUp/PageDown/Home/End jump (clamped),
+    /// - **The two questions** — the method root, and the sign-in method
+    ///   choice a subscription offering two ways in puts first: ↑/↓ move
+    ///   wrapping, Home/End jump, `Enter` takes the highlighted answer (the
+    ///   root descends into its list, the choice opens its page), `Esc`
+    ///   leaves (the root, being the root, closes the flow; the choice steps
+    ///   back to the subscription list), `Ctrl+C` closes. No filter — a
+    ///   handful of answers is not a list to search — so typing does nothing.
+    /// - **The three lists** (subscription / provider / local server): ↑/↓
+    ///   move wrapping at the ends, PageUp/PageDown/Home/End jump (clamped),
     ///   type-to-filter with Backspace, `Enter` activates the highlighted row,
-    ///   `Esc` clears a non-empty filter then steps *back* (the method step,
-    ///   being the root, closes instead), `Ctrl+C` closes.
-    /// - **Sign-in method** (a subscription offering two ways in): ↑/↓ move
-    ///   wrapping, Home/End jump, `Enter` opens the highlighted way's page,
-    ///   `Esc` steps back to the subscription list, `Ctrl+C` closes. No
-    ///   filter — it is a question with two answers — so typing does nothing.
+    ///   `Esc` clears a non-empty filter then steps *back* to the root,
+    ///   `Ctrl+C` closes.
     /// - **Device** (the sign-in page): `c` copies the code — or, on a
     ///   browser flow, the link — once there is one, `Esc` cancels the
     ///   sign-in back to where it was opened from (the method choice, else
@@ -823,10 +830,10 @@ impl App {
             return Action::None;
         };
         match step {
-            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
+            KeyStep::Method | KeyStep::SigninMethod => self.on_key_login_question(key),
+            KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
                 self.on_key_login_list(key)
             }
-            KeyStep::SigninMethod => self.on_key_signin_method(key),
             KeyStep::Device => self.on_key_device(key),
             KeyStep::Key => self.on_key_login_key(key),
             KeyStep::Server => self.on_key_server(key),
@@ -834,8 +841,8 @@ impl App {
     }
 
     /// The shared grammar of the three list steps — navigation and
-    /// type-to-filter are identical; only `Enter` and `Esc` differ, and both
-    /// are one match on the step.
+    /// type-to-filter are identical; only `Enter` differs, one match on the
+    /// step, and `Esc` steps back to the root from each.
     fn on_key_login_list(&mut self, key: KeyEvent) -> Action {
         let Some(onboarding) = self.key_onboarding.as_mut() else {
             return Action::None;
@@ -856,12 +863,7 @@ impl App {
                     onboarding.selected = 0;
                     return Action::None;
                 }
-                // The method step is the root: Esc there closes the flow; the
-                // two lists below it step back to it.
-                if onboarding.step == KeyStep::Method {
-                    self.close_key_onboarding();
-                    return Action::CloseKeyOnboarding;
-                }
+                // Every list sits one step below the root.
                 onboarding.go(KeyStep::Method);
             }
             KeyCode::Backspace => {
@@ -881,7 +883,8 @@ impl App {
         Action::None
     }
 
-    /// `Enter` on a list step: descend into what the highlighted row names.
+    /// `Enter` on a list step or a question: descend into what the
+    /// highlighted row names.
     fn activate_login_row(&mut self) -> Action {
         let Some(onboarding) = self.key_onboarding.as_mut() else {
             return Action::None;
@@ -943,17 +946,26 @@ impl App {
                 }
                 Action::None
             }
-            KeyStep::SigninMethod | KeyStep::Device | KeyStep::Key | KeyStep::Server => {
-                Action::None
+            KeyStep::SigninMethod => {
+                let Some(kind) = onboarding.highlighted_signin_kind() else {
+                    return Action::None;
+                };
+                let Some(choice) = onboarding.chosen_subscription().cloned() else {
+                    return Action::None;
+                };
+                onboarding.open_signin_page(&choice, kind)
             }
+            KeyStep::Device | KeyStep::Key | KeyStep::Server => Action::None,
         }
     }
 
-    /// Keys on the sign-in method choice: ↑/↓ (wrapping) and Home/End move,
-    /// `Enter` opens the highlighted way's page, `Esc` steps back to the
-    /// subscription list. Everything else is swallowed — two rows are a
-    /// question, not a list to search, so there is no filter to type into.
-    fn on_key_signin_method(&mut self, key: KeyEvent) -> Action {
+    /// Keys on the two questions — the method root and the sign-in method
+    /// choice: ↑/↓ (wrapping) and Home/End move, `Enter` takes the
+    /// highlighted answer, `Esc` leaves — the root closes the flow, the
+    /// choice steps back to the subscription list. Everything else is
+    /// swallowed: a handful of answers is a question, not a list to search,
+    /// so there is no filter to type into.
+    fn on_key_login_question(&mut self, key: KeyEvent) -> Action {
         let Some(onboarding) = self.key_onboarding.as_mut() else {
             return Action::None;
         };
@@ -963,14 +975,10 @@ impl App {
             KeyCode::Down => onboarding.selected = wrap_step(onboarding.selected, len, 1),
             KeyCode::Home => onboarding.selected = 0,
             KeyCode::End => onboarding.selected = len.saturating_sub(1),
-            KeyCode::Enter => {
-                let Some(kind) = onboarding.highlighted_signin_kind() else {
-                    return Action::None;
-                };
-                let Some(choice) = onboarding.chosen_subscription().cloned() else {
-                    return Action::None;
-                };
-                return onboarding.open_signin_page(&choice, kind);
+            KeyCode::Enter => return self.activate_login_row(),
+            KeyCode::Esc if onboarding.step == KeyStep::Method => {
+                self.close_key_onboarding();
+                return Action::CloseKeyOnboarding;
             }
             KeyCode::Esc => {
                 onboarding.chosen_subscription = None;
@@ -1168,8 +1176,9 @@ impl App {
     /// appended; a server page's address or token field takes it the same
     /// way, unless its test is running or its address is fixed. On a list
     /// step it extends the filter query like a [`paste_into_resume_search`],
-    /// whitespace collapsed; the device page and the sign-in method choice
-    /// have no field, so a paste there is ignored.
+    /// whitespace collapsed; the device page and the two questions (the
+    /// method root, the sign-in method choice) have no field, so a paste
+    /// there is ignored.
     ///
     /// [`paste_into_resume_search`]: App::paste_into_resume_search
     pub fn paste_into_key_onboarding(&mut self, pasted: &str) {
@@ -1208,8 +1217,8 @@ impl App {
                 field.push_str(&cleaned);
                 page.failure = None;
             }
-            KeyStep::SigninMethod | KeyStep::Device => {}
-            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
+            KeyStep::Method | KeyStep::SigninMethod | KeyStep::Device => {}
+            KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
                 let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
                 if flat.is_empty() {
                     return;

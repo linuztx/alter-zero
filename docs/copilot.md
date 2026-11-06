@@ -8,10 +8,11 @@ step that asks the prior question first, and a second half behind it.
 
 ```
 /login
-  ├─ Use a subscription ──► GitHub Copilot ──► device code ──► (approved)
-  │                    ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
-  │                    └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
-  └─ Use an API key ──────► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  ├─ Sign in with an account ──► GitHub Copilot ──► device code ──► (approved)
+  │                         ├──► ChatGPT Codex ──► browser | device code ──► (approved)   docs/chatgpt.md
+  │                         └──► Anthropic Console ──► browser ──► (approved)              docs/claude.md
+  ├─ Sign in with an API key ──► Agent Zero API / Venice / OpenRouter / … ──► paste the key
+  └─ Connect a local model ────► Ollama / LM Studio / … ──► test the address           docs/local-models.md
 ```
 
 Both halves end in the **same place**: a secret in `~/.alter-zero/.env` under
@@ -33,18 +34,41 @@ page's, and follow `/theme` like the banner does.
 
 ```
 ────────────────────────────────────────────────────────────────────────────
-  ❯
+  Select authentication method:
 
-→ Use a subscription
-  Use an API key
+→ Sign in with an account
+  Sign in with an API key
+  Connect a local model
 
   ↑↓ navigate  enter select  escape/ctrl+c cancel
 ────────────────────────────────────────────────────────────────────────────
 ```
 
-No title — the two rows *are* the question — and no `(1/2)` counter, which
-would say nothing they don't. Type-to-filter works here like every list step
-(one grammar for all three), and Esc closes: this is the root.
+A **titled question** (updated 2026-11-06), the sign-in method choice's
+shape (`docs/chatgpt.md`) — the two pages are built by one
+`question_page_lines` — where the root used to open on a `❯` filter over
+`Use a subscription` / `Use an API key` / `Use a local model`. Three answers
+are not a list to search: there is **no `❯` line, no type-to-filter and no
+`(1/3)` counter**, so a typed character or a paste lands nowhere, the
+hardware cursor hides (its seat parked on the title row, the device page's
+rule — a kitty cursor trail would streak across the rows on every ↑/↓), ↑/↓
+wrap, Home/End jump, and Esc closes: this is the root. Its rows carry no
+status — they are answers, not things that can be configured.
+
+The rows name what each one *does*. **Sign in with an account** rather than
+"a subscription", because the list under it is a set of account sign-ins and
+not all of them are subscriptions — the Anthropic Console bills per token
+(`docs/claude.md`); **Connect a local model**, the verb its list (`enter
+connect`) and its page already use, since a server is pointed at and tested,
+never signed in to. `LoginMethod::label` is the one spelling: every message
+that sends the user to a row (the `/usage` notice, a refusal's `/login → …`
+advice) names it by that label or is pinned to it by a test.
+
+On a terminal too short for its nine rows the page sheds rather than flows,
+on the compact pages' rungs with its title where they keep a search line
+(`docs/view-flow.md` *A page that sheds rows before it flows*): the two gaps,
+then the top rule, the rows down to the highlighted one, the bottom rule and
+the hint — so seven rows still hold the whole question.
 
 ### `KeyStep::Subscription`
 
@@ -71,9 +95,11 @@ now introduces a *keyed* provider on the key step (`docs/llm.md`); it is
 simply not what a list row is for.
 
 No title either (updated 2026-09-03). This page used to open on a cyan
-`Use a subscription` heading — the row that opened it, repeated — which said
-nothing the hint under the list doesn't and pushed every row two lines down.
-All three lists open straight onto their filter now.
+`Use a subscription` heading — the row that opened it, repeated (the row is
+**Sign in with an account** now) — which said nothing the hint under the list
+doesn't and pushed every row two lines down. All three lists open straight
+onto their filter now; the root above them is the one page that asks a
+question, so it is the one with a title.
 
 ### `KeyStep::Device`
 

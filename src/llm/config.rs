@@ -1326,7 +1326,7 @@ api_base = "https://cloudcode-pa.googleapis.com"
         assert_eq!(pass.kwargs.api_base, "https://api.cline.bot/api/v1");
         // And it is the only Cline sign-in. A second row running the same
         // flow for the usage-billed catalog was the same sign-in twice under
-        // "Use a subscription", for models that bill credits rather than a
+        // "Sign in with an account", for models that bill credits rather than a
         // plan — those are the pasted key's (`cline`), and a row with this
         // scheme lists the plan's.
         let cline_sign_ins: Vec<String> = file
@@ -1684,7 +1684,7 @@ api_base = "http://127.0.0.1:11434"
     #[test]
     fn the_builtin_file_ships_lm_studio_as_a_local_server() {
         // LM Studio's server, reached the way Ollama's is: no key needed, its
-        // address in a variable of its own — `/login` → Use a local model
+        // address in a variable of its own — `/login` → Connect a local model
         // writes it (docs/local-models.md) — and LM Studio's own
         // `LM_API_TOKEN` riding as a bearer when its server is set to require
         // one.

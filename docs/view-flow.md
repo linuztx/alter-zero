@@ -195,10 +195,20 @@ was typed stays on screen above the placeholder; a page with nothing under
 its list (`/model`'s placeholder) closes on the placeholder, leaving off the
 blank `↓` slot that would hug its bottom rule.
 
+A titled **question** walks the same rungs with its title in the search
+line's place: `/login`'s root (`Select authentication method:`) and its
+sign-in method choice, which have no filter (`docs/copilot.md`,
+`login_view::question_page_lines`). Its gaps sit exactly where the overflow
+slots do — blank, every answer fitting the window — so the whole page and
+the first rung are the same rows, and the first thing to yield is the pair
+of gaps: seven rows still hold the root's whole question. Its cursor is
+hidden, so nothing seats on the title; it is simply the row that stays.
+
 The compact pages so far: `/theme` (`docs/theme.md`), `/skills`
 (`docs/skills.md`), `/settings` (`docs/settings.md`), `/mascot`
 (`docs/mascot.md`), `/spinner` (`docs/spinner.md`), `/model` and `/login`'s
-lists (`docs/llm.md`), the `/secrets` list (`docs/secrets.md`), and
+lists and its two questions (`docs/llm.md`), the `/secrets` list
+(`docs/secrets.md`), and
 `/donate`, whose list is of boxes rather than rows, so it collapses before
 it windows — an accordion first, the addresses the highlight is not on
 folded to their label rows while the highlighted one keeps its box, then

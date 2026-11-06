@@ -48,6 +48,18 @@ release heading when a version is cut.
 
 ### Changed
 
+- **`/login` opens on a question instead of a search box.** Its first page
+  now reads `Select authentication method:` over **Sign in with an account**,
+  **Sign in with an API key** and **Connect a local model**, with no `❯`
+  search line above them: three choices are not a list to search, so typing
+  there no longer filters them and the cursor stays hidden. ↑/↓, Enter and
+  Esc work as before. The rows were **Use a subscription**, **Use an API
+  key** and **Use a local model**; every message that pointed at them — the
+  `/usage` notice, a refused sign-in's advice — now names the new rows. On a
+  short terminal the page and the ChatGPT sign-in method choice, which
+  shares its layout, drop their spacing first instead of scrolling their top
+  out of view (`docs/copilot.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

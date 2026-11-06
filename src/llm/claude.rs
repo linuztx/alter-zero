@@ -303,11 +303,11 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
     if lower.contains("oauth authentication is currently not supported")
         || lower.contains("oauth authentication is currently not allowed")
     {
-        return Some(
+        return Some(format!(
             "Anthropic refused this OAuth credential — sign in again with /login, or use an \
-             Anthropic API key instead (/login → Use an API key)."
-                .to_string(),
-        );
+             Anthropic API key instead (/login → {}).",
+            crate::app::LoginMethod::ApiKey.label()
+        ));
     }
     if lower.contains("enforced_spend_limit_reached") {
         return Some(
@@ -1298,6 +1298,8 @@ mod tests {
         )
         .expect("advice");
         assert!(blocked.contains("API key"), "{blocked}");
+        let key_row = format!("/login → {}", crate::app::LoginMethod::ApiKey.label());
+        assert!(blocked.contains(&key_row), "{blocked}");
 
         let expired =
             auth_advice(401, r#"{"error":{"type":"authentication_error"}}"#).expect("advice");

@@ -12,7 +12,10 @@ smoke_begin
 # disjoint — a subscription offered a key field, or Copilot missing from the
 # subscriptions, is the bug this phase exists for — and Esc must step *back*
 # from either list rather than closing the flow, with only the root's Esc
-# closing it. The device page itself is not driven here (it would talk to
+# closing it. The root itself is a titled question — `Select authentication
+# method:` over its three ways in — with no `❯` search line: typing there
+# filters nothing and the hardware cursor hides, the sign-in method choice's
+# rule. The device page itself is not driven here (it would talk to
 # github.com); Phase 33 already covers `/login` opening mid-turn.
 S103="${S}_loginfork"
 launch "$S103" 90 30
@@ -21,10 +24,24 @@ sleep 0.5
 login_root="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: /login opens on the method root ===="
 printf '%s\n' "$login_root"
-for want in "Use a subscription" "Use an API key" "escape/ctrl+c cancel"; do
-	expect_has "$login_root" -F "$want" "the /login root did not show \"$want\""
+expect_has "$login_root" -x -F "  Select authentication method:" "the /login root did not open on its title"
+expect_has "$login_root" -x -F "→ Sign in with an account" "the /login root did not highlight its first way in"
+for want in "  Sign in with an API key" "  Connect a local model"; do
+	expect_has "$login_root" -x -F "$want" "the /login root did not show \"$want\""
 done
+expect_has "$login_root" -F "↑↓ navigate  enter select  escape/ctrl+c cancel" "the /login root lost its hint"
+expect_lacks "$login_root" -E '^  ❯ *$' "the /login root still opens on a search line"
 expect_lacks "$login_root" -F "Keys are saved to" "the root opened straight onto the provider list"
+expect_eq "$(tmux display-message -p -t "$S103" '#{cursor_flag}')" "0" "the /login root shows a hardware cursor, with nothing to type into"
+# Typing at the root filters nothing: every way in stays, no placeholder
+# takes their place, and Enter still takes the highlighted first row.
+type_text "$S103" "zzz"
+sleep 0.3
+login_typed="$(tmux capture-pane -t "$S103" -p)"
+for want in "Sign in with an account" "Sign in with an API key" "Connect a local model"; do
+	expect_has "$login_typed" -F "$want" "typing at the /login root hid \"$want\""
+done
+expect_lacks "$login_typed" -F "No matching" "typing at the /login root filtered its rows"
 
 # Enter on the highlighted first row opens the subscription list.
 tmux send-keys -t "$S103" Enter
@@ -45,13 +62,14 @@ expect_lacks "$login_subs" -F "Sign in with your" "a row still trails its descri
 expect_has "$login_subs" -F "◯ unconfigured" "a subscription row does not report its configured status"
 # …and the list opens straight onto its filter: the heading that used to
 # repeat the row that opened it is gone.
-expect_lacks "$login_subs" -F "Use a subscription" "the subscription list still carries a heading"
+expect_has "$login_subs" -E '^  ❯ *$' "the subscription list did not open onto its filter"
+expect_lacks "$login_subs" -F "Sign in with an account" "the subscription list still carries a heading"
 
 # Esc steps BACK to the root, not out of the flow.
 tmux send-keys -t "$S103" Escape
 sleep 0.4
 login_back="$(tmux capture-pane -t "$S103" -p)"
-if ! printf '%s' "$login_back" | grep -qF "Use a subscription"; then
+if ! printf '%s' "$login_back" | grep -qF "Select authentication method:"; then
 	fail "Esc on the subscription list left the flow instead of stepping back"
 	printf '%s\n' "$login_back" >&2
 fi
@@ -75,7 +93,7 @@ expect_lacks "$login_keys" -F "GitHub Copilot" "a subscription provider was offe
 # pushed the names apart.
 expect_lacks "$login_keys" -F "_API_KEY]" "a provider row still trails its env var"
 expect_has "$login_keys" -F "◯ unconfigured" "a provider row does not report its configured status"
-expect_lacks "$login_keys" -F "Use an API key" "the provider list still carries a heading"
+expect_lacks "$login_keys" -F "Sign in with an API key" "the provider list still carries a heading"
 
 # Enter on the highlighted provider opens the key step — which introduces the
 # provider it is asking a secret for and links the page that secret is made
@@ -105,7 +123,7 @@ sleep 0.3
 tmux send-keys -t "$S103" Escape
 sleep 0.4
 login_closed="$(tmux capture-pane -t "$S103" -p)"
-if printf '%s' "$login_closed" | grep -qF "Use a subscription"; then
+if printf '%s' "$login_closed" | grep -qF "Select authentication method:"; then
 	fail "Esc on the root did not close the flow"
 	printf '%s\n' "$login_closed" >&2
 fi

@@ -1,7 +1,7 @@
 # ChatGPT Codex as a provider
 
 Sign in with a ChatGPT Plus/Pro/Team seat instead of pasting an API key —
-`/login` → **Use a subscription** → **ChatGPT Codex** → **Browser login**
+`/login` → **Sign in with an account** → **ChatGPT Codex** → **Browser login**
 (or **Device code login** on a machine with no browser).
 
 This is the second subscription provider, after GitHub Copilot
@@ -232,6 +232,13 @@ for, less the blank rows that once hugged its rules (`docs/view-flow.md`
   search; typing does nothing, and the hardware cursor hides (the device
   page's rule — a kitty cursor trail would streak across it on every ↑/↓),
   its seat parked on the title row like the device page's.
+- **The root's own page.** The `/login` root became the same kind of
+  question (`Select authentication method:`, `docs/copilot.md`), so the two
+  are built by one `question_page_lines` and share its short-terminal
+  behaviour: on a terminal too short for the page it sheds rather than
+  flows — the gaps, the top rule, the rows down to the highlighted one, the
+  bottom rule, the hint — with the title the line that stays
+  (`docs/view-flow.md` *A page that sheds rows before it flows*).
 - The rows are `SigninKind::method_label`: the first kind the row lists is
   the default and says so; the device code says what it is *for*, since
   "headless" is the one word that tells an SSH user which row is theirs.

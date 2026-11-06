@@ -33,15 +33,16 @@ fn login_title(text: &str, width: u16) -> Line<'static> {
     super::header::page_title_line(text, width)
 }
 
-/// One list row shared by the three `/login` lists:
+/// One list row shared by the three `/login` lists and the two questions:
 /// `{marker}{name} · {✔ configured | ◯ unconfigured}`.
 ///
 /// The selected row's marker and name light up cyan (the palette accent), and
 /// a row that names something *reachable* — a provider, a subscription —
 /// closes with its **status**: `✔ configured` when a key or token already
 /// resolves, `◯ unconfigured` when none does. `status` is `None` for the
-/// method root's two rows, which are the question rather than an answer and
-/// so have nothing to report.
+/// rows of the two questions — the method root's ways in, the sign-in method
+/// choice's — which are answers rather than things that can be configured,
+/// and so have nothing to report.
 ///
 /// Only the **`✔` is coloured** — the green the `/model` picker's ✓ wears —
 /// because the mark is what the eye hunts for down a column of names. Its
@@ -115,15 +116,9 @@ fn login_row(name: &str, status: Option<bool>, selected: bool, width: u16) -> Li
 }
 
 /// The (name, status) of every row the current step's list offers — one
-/// shape for all three lists. The method rows report **no** status: they are
-/// the question, not an answer.
+/// shape for all three lists.
 fn login_rows(onboarding: &KeyOnboarding) -> Vec<(String, Option<bool>)> {
     match onboarding.step {
-        KeyStep::Method => onboarding
-            .method_matches()
-            .into_iter()
-            .map(|m| (m.label().to_string(), None))
-            .collect(),
         KeyStep::Subscription => onboarding
             .subscription_matches()
             .into_iter()
@@ -170,7 +165,6 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
     let rows = login_rows(onboarding);
     if rows.is_empty() {
         let placeholder = match onboarding.step {
-            KeyStep::Method => LOGIN_NO_METHOD_MATCH,
             KeyStep::Subscription => LOGIN_NO_SUBSCRIPTION_MATCH,
             KeyStep::Local => LOGIN_NO_LOCAL_MATCH,
             _ => LOGIN_NO_MATCH,
@@ -193,7 +187,6 @@ fn login_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>
 /// How many rows the current list step offers — the `(n/total)` counter's total.
 fn login_list_len(onboarding: &KeyOnboarding) -> usize {
     match onboarding.step {
-        KeyStep::Method => onboarding.method_matches().len(),
         KeyStep::Subscription => onboarding.subscription_matches().len(),
         KeyStep::Local => onboarding.local_matches().len(),
         _ => onboarding.matches().len(),
@@ -410,43 +403,94 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     login_page(blocks, width)
 }
 
-/// The sign-in method choice ([`KeyStep::SigninMethod`], `docs/chatgpt.md`):
-/// a cyan `Select {subscription} login method:` title over the ways in the
-/// chosen subscription offers — `Browser login (default)` / `Device code
-/// login (headless)` — in the root's own row dress (no status: the rows are
-/// the answers, not things that can be configured), over the root's hint.
+/// A titled **question** — the method root and the sign-in method choice:
+/// the title in the pages' title dress, the answers in the lists' row dress
+/// with no status (they are answers, not things that can be configured),
+/// and the hint, each block one blank row from the next — rule, title, gap,
+/// rows, gap, hint, rule, the shape the user asked for (`docs/copilot.md`,
+/// `docs/chatgpt.md`) and the one `smoke.sh` Phases 103 and 119 read back.
 ///
-/// **No `❯` filter and no counter.** Two rows are a question, not a list to
-/// search, and the page exists so the row's Enter can ask it rather than
-/// silently opening one flow and hiding the other. Built as blocks like the
-/// sign-in page, so the shape is rule, title, gap, rows, gap, hint, rule —
-/// the shape the user asked for, less the blank rows that once hugged its
-/// rules (`docs/view-flow.md`), and the one `smoke.sh` Phase 119 reads back.
-fn signin_method_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
+/// **No `❯` filter and no counter.** A handful of answers is a question, not
+/// a list to search: typing does nothing here, and the hidden cursor parks
+/// on the title row (`layout::cursor_position`).
+///
+/// On a terminal too short for it, the family's ladder ([`compact_page`],
+/// `docs/view-flow.md` *A page that sheds rows before it flows*) with the
+/// **title** in the place a picker keeps its search line. The gaps sit
+/// exactly where the compact page's overflow slots do — blank, while every
+/// answer fits the window — so the whole page and the ladder's first rung
+/// are the same rows; below that the gaps go, then the top rule, the rows
+/// down to the highlighted one, the bottom rule and the hint. The page never
+/// flows, so the answer Enter would take stays on screen.
+fn question_page_lines<S: AsRef<str>>(
+    title: &str,
+    answers: &[S],
+    selected: usize,
+    hint: &str,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
+    // A title can be the file's to choose (a subscription's name);
+    // `login_title` `…`-cuts one that would spill past the frame and take
+    // the rule with it.
+    let title = login_title(title, width);
+    let hint = model_placeholder_row(hint, model_meta_color(), width);
+    let rows: Vec<(String, Option<bool>)> = answers
+        .iter()
+        .map(|answer| (answer.as_ref().to_string(), None))
+        .collect();
+    if rows.is_empty() {
+        // Unreachable in practice (a question opens with its answers); the
+        // frame still holds its title and hint rather than a void.
+        return login_page(vec![vec![title], vec![hint]], width);
+    }
+    let window = |max| login_window(&rows, selected, max, width);
+    let whole = || {
+        let (_, answers, _) = window(rows.len());
+        login_page(
+            vec![vec![title.clone()], answers, vec![hint.clone()]],
+            width,
+        )
+    };
+    let compact = || compact_page(height, &title, &window, std::slice::from_ref(&hint), width);
+    first_page_that_fits(height, &[&whole, &compact])
+}
+
+/// The method root ([`KeyStep::Method`], `docs/copilot.md`): `Select
+/// authentication method:` over the three ways in — an account sign-in, an
+/// API key, a local model server — as a [`question_page_lines`].
+fn method_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<Line<'static>> {
+    question_page_lines(
+        LOGIN_METHOD_TITLE,
+        &onboarding.method_labels(),
+        onboarding.selected,
+        LOGIN_METHOD_HINT,
+        width,
+        height,
+    )
+}
+
+/// The sign-in method choice ([`KeyStep::SigninMethod`], `docs/chatgpt.md`):
+/// `Select {subscription} login method:` over the ways in the chosen
+/// subscription offers — `Browser login (default)` / `Device code login
+/// (headless)` — as a [`question_page_lines`], the root's own page. It
+/// exists so the row's Enter can ask rather than silently opening one flow
+/// and hiding the other.
+fn signin_method_page_lines(
+    onboarding: &KeyOnboarding,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
     let name = onboarding
         .chosen_subscription()
         .map_or("", |s| s.name.as_str());
-    // A subscription's name is the file's to choose; `login_title` `…`-cuts
-    // one that would spill past the frame and take the rule with it.
-    let title =
-        format!("{LOGIN_SIGNIN_METHOD_TITLE_PREFIX}{name}{LOGIN_SIGNIN_METHOD_TITLE_SUFFIX}");
-    let rows: Vec<Line<'static>> = onboarding
-        .signin_method_labels()
-        .iter()
-        .enumerate()
-        .map(|(i, label)| login_row(label, None, i == onboarding.selected, width))
-        .collect();
-    login_page(
-        vec![
-            vec![login_title(&title, width)],
-            rows,
-            vec![model_placeholder_row(
-                LOGIN_SIGNIN_METHOD_HINT,
-                model_meta_color(),
-                width,
-            )],
-        ],
+    question_page_lines(
+        &format!("{LOGIN_SIGNIN_METHOD_TITLE_PREFIX}{name}{LOGIN_SIGNIN_METHOD_TITLE_SUFFIX}"),
+        &onboarding.signin_method_labels(),
+        onboarding.selected,
+        LOGIN_SIGNIN_METHOD_HINT,
         width,
+        height,
     )
 }
 
@@ -613,15 +657,14 @@ fn server_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static
 /// screen (`docs/view-flow.md` *A page that sheds rows before it flows*). A
 /// list the filter emptied has nothing to compact.
 ///
-/// **No title.** The two lists below the root used to repeat the method row
-/// that opened them (`Use a subscription` / `Use an API key`) as a cyan
-/// heading, which said nothing the rows and the hint under them don't — and
-/// cost every row two lines of a region that is already sharing the terminal
-/// with a running turn. All three lists are one shape now, and the root never
-/// had one to begin with: there its two rows *are* the question.
+/// **No title.** The lists below the root used to repeat the method row that
+/// opened them as a cyan heading, which said nothing the rows and the hint
+/// under them don't — and cost every row two lines of a region that is
+/// already sharing the terminal with a running turn. All three lists are one
+/// shape now; the root above them is the one place a question is asked, so
+/// it is the one with a title ([`method_page_lines`]).
 fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<Line<'static>> {
     let hint = match onboarding.step {
-        KeyStep::Method => LOGIN_METHOD_HINT,
         KeyStep::Subscription => LOGIN_SUBSCRIPTION_HINT,
         KeyStep::Local => LOGIN_LOCAL_HINT,
         _ => LOGIN_PROVIDER_HINT,
@@ -646,10 +689,8 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
         body.extend(login_list_lines(onboarding, width));
         // The counter takes a row only when something is selectable; with
         // nothing matched it collapsed to a blank line stacked on the gap
-        // below it (the `/model` picker's placeholder rule). The method step
-        // never shows one — it is a fixed two-row question, and "(1/2)"
-        // under it says nothing the rows don't.
-        if onboarding.step != KeyStep::Method && login_list_len(onboarding) > 0 {
+        // below it (the `/model` picker's placeholder rule).
+        if login_list_len(onboarding) > 0 {
             body.push(login_counter_line(onboarding));
         }
         body.push(Line::default());
@@ -685,12 +726,13 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
     first_page_that_fits(height, &[&whole, &compact])
 }
 
-/// The whole framed page as lines, per step — the three lists share
-/// [`list_page_lines`], the sign-in method choice is
-/// [`signin_method_page_lines`], the device page is [`device_page_lines`], and the key
-/// step is a cyan `Enter your {provider} API key` title over what the provider
-/// file says the provider *is* ([`provider_about_lines`] — omitted when it
-/// says nothing), the masked `❯` field, and a dim `Enter to save · Esc to go
+/// The whole framed page as lines, per step — the root and the sign-in
+/// method choice are the two questions ([`method_page_lines`],
+/// [`signin_method_page_lines`]), the three lists share [`list_page_lines`],
+/// the device page is [`device_page_lines`], and the key step is a cyan
+/// `Enter your {provider} API key` title over what the provider file says
+/// the provider *is* ([`provider_about_lines`] — omitted when it says
+/// nothing), the masked `❯` field, and a dim `Enter to save · Esc to go
 /// back` hint. What [`render_key_onboarding`] paints (bottom-anchored) and
 /// `layout::key_onboarding_rows` counts, so the reserved height and the
 /// painted rows can never disagree (`docs/view-flow.md`).
@@ -700,10 +742,11 @@ pub(super) fn key_onboarding_lines(
     height: u16,
 ) -> Vec<Line<'static>> {
     match onboarding.step {
-        KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
+        KeyStep::Method => method_page_lines(onboarding, width, height),
+        KeyStep::SigninMethod => signin_method_page_lines(onboarding, width, height),
+        KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
             list_page_lines(onboarding, width, height)
         }
-        KeyStep::SigninMethod => signin_method_page_lines(onboarding, width),
         KeyStep::Device => match &onboarding.device {
             Some(device) => device_page_lines(device, width),
             // Unreachable in practice (the step and the page open together),
