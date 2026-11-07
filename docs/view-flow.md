@@ -116,7 +116,8 @@ The cursor seats count from that edge: a picker's `❯` search line is found
 in the built page (`view_prompt_row`) rather than pinned — under its header
 on a page with room for one, straight under the top rule once a short
 terminal's rungs have shed it (*Below the compact page*) — a `/login`
-page's first content row is row 1 (`DEVICE_CURSOR_ROW`), and a permission
+question's title is found the same way (`title_row`, the page's first text
+row), its device page's seat is row 1 (`DEVICE_CURSOR_ROW`), and a permission
 prompt's
 options sit `PERMISSION_TAIL_ROWS` — gap, hint, rule — above the region's
 bottom. The `/mcp` auth page's `URL >` field is **found** in the page the
@@ -178,7 +179,8 @@ the same thing in the same place on every one (`model_view`'s
 - `/login`'s root asks its question in words — `Select login method` over
   its three ways in — and so has no search line at all: typing does nothing
   and the cursor hides there, as on the sign-in method choice, and its
-  ladder keeps the title in the search line's seat (`docs/copilot.md`).
+  ladder keeps the title in the search line's seat, the hidden cursor seated
+  on it wherever the rungs leave it (`docs/copilot.md`).
 
 ## A page that sheds rows before it flows: the compact pages
 

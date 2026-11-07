@@ -978,6 +978,16 @@ fn is_text_row(line: &ratatui::text::Line<'_>) -> bool {
         .any(|c| !c.is_whitespace() && !VIEW_RULE.contains(c))
 }
 
+/// The row of a built page's first **text** line — a question page's title,
+/// which every rung of its ladder keeps at the top (`docs/view-flow.md`).
+/// `None` on a page with no text at all.
+fn title_row(lines: &[ratatui::text::Line<'_>]) -> Option<u16> {
+    lines
+        .iter()
+        .position(is_text_row)
+        .and_then(|row| u16::try_from(row).ok())
+}
+
 /// The hidden cursor's seat inside a no-text-entry menu: the highlighted
 /// `❯` row's marker column, found by scanning the built lines for the
 /// selection marker span — the views are content-driven, so the row is
@@ -1249,9 +1259,10 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let y = area.y + area.height.saturating_sub(1);
         return (x, y);
     }
-    // The inline `/login` flow parks the cursor at the end of its active `>`
-    // line: the provider filter (step 1) or the masked key field (step 2) —
-    // again inside its own frame, below the strip, shifted by the anchor.
+    // The inline `/login` flow parks the cursor at the end of its active `❯`
+    // line — a list's filter, the masked key field, a server's address — or,
+    // on a question or a wait, where the hidden caret rests; again inside its
+    // own frame, below the strip, shifted by the anchor.
     if let Some(onboarding) = &app.key_onboarding {
         // Built once and read twice — the page's height *and* the row its `❯`
         // landed on. The key step's field has no fixed row any more (the
@@ -1261,12 +1272,18 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let lines = super::login_view::key_onboarding_lines(onboarding, area.width, area.height);
         let prompt = super::model_view::view_prompt_row(&lines);
         let (query_cols, row) = match onboarding.step {
-            // The device page has no field at all, nor have the two
-            // questions — the method root and the sign-in method choice; the
-            // (hidden — see `cursor_visible`) caret parks at the frame's top,
-            // off the code and the rows and out of the way of the
-            // countdown's redraws.
-            KeyStep::Method | KeyStep::SigninMethod | KeyStep::Device => (0, DEVICE_CURSOR_ROW),
+            // The root and the sign-in method choice are questions, not
+            // fields: the (hidden — see `cursor_visible`) caret parks on
+            // their title, off the rows, wherever a short terminal's rungs
+            // left it — the page's first text row, since a title is the one
+            // row the question never sheds.
+            KeyStep::Method | KeyStep::SigninMethod => {
+                (0, title_row(&lines).unwrap_or(DEVICE_CURSOR_ROW))
+            }
+            // The device page has no field at all; the caret parks at the
+            // frame's top, off the code and out of the way of the countdown's
+            // redraws.
+            KeyStep::Device => (0, DEVICE_CURSOR_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (
                 onboarding.key_input.chars().count(),

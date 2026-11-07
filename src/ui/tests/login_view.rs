@@ -443,7 +443,34 @@ fn the_method_root_hides_the_cursor_like_the_method_choice() {
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 70, 200).len() as u16;
     let (_, y) = cursor_position(Rect::new(0, 0, 70, rows), &app);
-    assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
+    assert_eq!(y, DEVICE_CURSOR_ROW, "the title, under the top rule");
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_root_question_and_seats_the_cursor_on_its_title() {
+    // On a terminal too short for the root page it sheds rows the compact
+    // pages' way — the rules, the rows down to the highlighted one, the hint
+    // — and never its title, which says what the rows answer. Once the top
+    // rule has gone the title is the first row, and the hidden cursor follows
+    // it there rather than landing on an answer.
+    let app = login_app();
+    for height in 1..=12_u16 {
+        let texts = login_page_at(&app, 70, height);
+        assert!(texts.len() <= usize::from(height), "{height}: {texts:#?}");
+        let title = texts
+            .iter()
+            .position(|t| t == "  Select login method")
+            .unwrap_or_else(|| panic!("{height}: the title stays: {texts:#?}"));
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t == "  → Sign in with an account"),
+                "{height}: the highlighted way in stays: {texts:#?}"
+            );
+        }
+        let area = Rect::new(0, 0, 70, u16::try_from(texts.len()).expect("rows"));
+        let (_, y) = cursor_position(area, &app);
+        assert_eq!(usize::from(y), title, "{height}: on the title: {texts:#?}");
+    }
 }
 
 #[test]
@@ -1262,7 +1289,32 @@ fn the_method_choice_hides_the_cursor_and_parks_it_on_the_title() {
     let onboarding = app.key_onboarding.as_ref().unwrap();
     let rows = crate::ui::login_view::key_onboarding_lines(onboarding, 76, 200).len() as u16;
     let (_, y) = cursor_position(Rect::new(0, 0, 76, rows), &app);
-    assert_eq!(y, DEVICE_CURSOR_ROW, "the frame's first content row");
+    assert_eq!(y, DEVICE_CURSOR_ROW, "the title, under the top rule");
+}
+
+#[test]
+fn a_tiny_terminal_keeps_the_sign_in_method_title_and_seats_the_cursor_on_it() {
+    // The choice is the root's shape, so it sheds the root's way — never its
+    // title, the highlighted way in from two rows up — and the hidden cursor
+    // stays on the title wherever the shed rows leave it.
+    let app = login_app_signin_method();
+    for height in 1..=10_u16 {
+        let texts = login_page_at(&app, 76, height);
+        assert!(texts.len() <= usize::from(height), "{height}: {texts:#?}");
+        let title = texts
+            .iter()
+            .position(|t| t == "  Select ChatGPT Codex login method:")
+            .unwrap_or_else(|| panic!("{height}: the title stays: {texts:#?}"));
+        if height >= 2 {
+            assert!(
+                texts.iter().any(|t| t == "  → Browser login (default)"),
+                "{height}: the highlighted way in stays: {texts:#?}"
+            );
+        }
+        let area = Rect::new(0, 0, 76, u16::try_from(texts.len()).expect("rows"));
+        let (_, y) = cursor_position(area, &app);
+        assert_eq!(usize::from(y), title, "{height}: on the title: {texts:#?}");
+    }
 }
 
 #[test]

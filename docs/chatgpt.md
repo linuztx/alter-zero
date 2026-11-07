@@ -231,7 +231,9 @@ for, less the blank rows that once hugged its rules (`docs/view-flow.md`
 - **No `❯` filter and no counter.** Two rows are a question, not a list to
   search; typing does nothing, and the hardware cursor hides (the device
   page's rule — a kitty cursor trail would streak across it on every ↑/↓),
-  its seat parked on the title row like the device page's.
+  its seat parked on the title, which is found in the built page
+  (`ui::layout`'s `title_row`) so a tiny terminal that has shed the top rule
+  never leaves it on an answer.
 - The rows are `SigninKind::method_label`: the first kind the row lists is
   the default and says so; the device code says what it is *for*, since
   "headless" is the one word that tells an SSH user which row is theirs.

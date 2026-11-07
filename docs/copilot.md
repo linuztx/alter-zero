@@ -55,7 +55,9 @@ than "subscription": the list it opens signs in to accounts, and an
 Anthropic Console account bills per token with no plan at all. Esc closes:
 this is the root. On a terminal too short for the page its gaps and rules
 yield before the title and the rows do (`model_view::compact_page`, the title
-in the search line's seat — `docs/view-flow.md`).
+in the search line's seat — `docs/view-flow.md`), and the hidden cursor's seat
+follows the title (`ui::layout`'s `title_row`, the page's first text row), so
+it never lands on an answer once the top rule has gone.
 
 ### `KeyStep::Subscription`
 
