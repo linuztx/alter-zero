@@ -156,6 +156,16 @@ the status line and the turn summary use, so every duration and count in the
 TUI reads the same. A zero token count hides its clause; the `EXPAND_HINT` is
 the same string a capped tool peek ends with.
 
+**The block's rows stay held until the next cell lands** (updated
+2026-11-07). The settle commits two rows — the line and its spacer — where
+the live block stood on up to five, and the backend settles it at the round's
+*first tool-call piece*, while the call gets a cell only once its batch is
+announced. The box used to sit up to three rows high for as long as the call
+took to generate, then drop back: the flicker reported between a thought and
+a `skill` call. The strip now holds those rows blank under the settled line
+until the call's cell (or the reply's first rows) takes them
+(`ui::PreviewFloor`, `docs/strip-floor.md`).
+
 **Ordering is invariant 4's business, not free.** The item is appended the
 moment thinking ends — which is usually before the round's reply text exists,
 but a model can reason *after* it has begun answering (the dummy's default turn

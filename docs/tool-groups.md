@@ -160,6 +160,12 @@ dress (`docs/thinking-stream.md`, `Thought for 4s · 1.2k tokens (ctrl+o to
 expand)`), since what is left is a fact about the turn rather than something
 happening. The counts stay bold.
 
+The live cell is two rows and its separator; the settled line is one row and
+a spacer. So when the group closes under a call that runs on behind it, the
+strip holds the row the line did not take — blank, under the queue — until
+that call's own cell commits, rather than lifting the box a row and dropping
+it back (`ui::PreviewFloor`, `docs/strip-floor.md`).
+
 ## Which calls join a group
 
 A **member** is a call the group takes ([`app::is_group_member`]):

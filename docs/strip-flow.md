@@ -120,6 +120,16 @@ region already reserves), and a strip that fits returns before
 frontier the reserved count can exceed what the fallback build produces — so
 "fits" always means "fits".
 
+### Held rows never flow
+
+The preview floor (`docs/strip-floor.md`) can reserve rows the content does
+not fill — a settled thought's rows, held blank for the call that follows.
+They are geometry, so a live cell's overflow is sized from its content's own
+ask (`layout::content_preview_rows`) and the held rows count only through the
+reserved ones: padding can never make the strip outgrow its rect and flow
+blank rows into scrollback behind a purge rebuild. The floor is also clamped
+to the preview budget, so it never takes a row the composer needs.
+
 ## The invariants it leans on
 
 - Invariant 3 (content-anchored viewport, rebuilds via `term::reflow`): the

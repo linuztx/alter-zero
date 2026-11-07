@@ -524,4 +524,21 @@ impl App {
     pub const fn stream_preview_rows(&self) -> u16 {
         self.stream_preview_rows
     }
+    /// Inject the strip's preview floor before a draw (the
+    /// [`set_stream_preview_rows`] pattern): the boundary's
+    /// `ui::PreviewFloor` knows what the last frame reserved and how many rows
+    /// committed since, and `ui::preview_rows` reserves at least this many so
+    /// the box never rises mid-turn. See `docs/strip-floor.md`.
+    ///
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    pub fn set_preview_floor(&mut self, rows: u16) {
+        self.preview_floor = rows;
+    }
+    /// The boundary-injected preview floor (see
+    /// [`set_preview_floor`](App::set_preview_floor); 0 until a draw injects
+    /// one, and outside a turn).
+    #[must_use]
+    pub const fn preview_floor(&self) -> u16 {
+        self.preview_floor
+    }
 }

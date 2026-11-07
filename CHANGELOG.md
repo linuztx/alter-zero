@@ -133,6 +133,17 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **The input box no longer jumps when a thought hands over to a tool
+  call.** When the model thought and then called a tool — a `skill` load
+  right after a short think, say — the `● Thinking…` block settled into
+  its one `Thought for …` line before the call's cell was on screen, and
+  for as long as the call took to generate the box and footer jumped up to
+  three rows and then dropped back: a flicker that came and went with how
+  fast the call arrived. The rows the block stood on now stay, blank, until
+  the next cell lands in them. The same hold covers a thought giving way to
+  the reply, a group of reads settling under the call after it, and a
+  subagent's own session view (`docs/strip-floor.md`).
+
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed
   invalid JSON, the dim row it left under a tool call held the whole

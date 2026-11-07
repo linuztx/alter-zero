@@ -102,7 +102,29 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// arriving, `StreamRender::preview`'s own rule), while a queue of live cells
 /// or a thinking block keeps its head (the running call, the `● Thinking…`
 /// header — the rows that say what is happening).
+///
+/// Padded with blank rows up to the **preview floor**
+/// (`layout::applied_preview_floor`, `docs/strip-floor.md`) when the content
+/// is shorter than what the slot held a frame ago less what committed since —
+/// the rows a settled thought left for the call it handed over to. The
+/// padding goes under the content, where its next rows land.
 pub(super) fn preview_lines(
+    app: &App,
+    width: u16,
+    stream_preview: Option<&[Line<'static>]>,
+    rows: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = preview_content_lines(app, width, stream_preview, rows);
+    let held = usize::from(super::layout::applied_preview_floor(app).min(rows));
+    while lines.len() < held {
+        lines.push(Line::default());
+    }
+    lines
+}
+
+/// [`preview_lines`]' content — every branch's rows, trimmed to `rows`,
+/// before the floor's padding.
+fn preview_content_lines(
     app: &App,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
@@ -526,11 +548,18 @@ fn render_strip(
 /// committed — and flowing a frontier that grows on every chunk would re-sign
 /// the flow, and purge-rebuild the screen, once per chunk
 /// (`docs/strip-flow.md`).
+///
+/// The live cells' ask is their **content's** (`layout::content_preview_rows`),
+/// never the preview floor's: rows held blank for the next cell
+/// (`docs/strip-floor.md`) are geometry the slot reserves, so they are counted
+/// through the reserved rows and can never make the strip outgrow its rect —
+/// a flow there would purge-rebuild the screen over blank rows.
 pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16) -> u16 {
+    let reserved = fitted_preview_rows(app, width, term_height);
     if strip_preview_is_live_cells(app) {
-        preview_rows(app, width)
+        super::layout::content_preview_rows(app, width).max(reserved)
     } else {
-        fitted_preview_rows(app, width, term_height)
+        reserved
     }
 }
 

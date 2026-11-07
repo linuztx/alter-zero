@@ -323,6 +323,16 @@ pub struct App {
     /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
     /// [`set_status_times`]: App::set_status_times
     stream_preview_rows: u16,
+    /// The fewest rows the strip's preview slot may reserve this frame,
+    /// injected by the boundary before each draw ([`set_preview_floor`], the
+    /// [`set_stream_preview_rows`] pattern): what the slot held a frame ago,
+    /// less every row committed since, so a live cell that gives way to
+    /// fewer committed rows than it stood on never lifts the box. 0 outside
+    /// a turn. See `docs/strip-floor.md`.
+    ///
+    /// [`set_preview_floor`]: App::set_preview_floor
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    preview_floor: u16,
     /// The live tool calls of the current turn, front-first: the front is the
     /// running (status [`ToolStatus::Running`]) or about-to-run call, and any
     /// calls behind it are [`ToolStatus::Waiting`] siblings of a **parallel

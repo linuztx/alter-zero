@@ -245,6 +245,13 @@ itself: `assert_stream_matches_batch` fails any step whose preview shrinks
 by more than that step committed, over the whole hostile-soup fuzz corpus
 at every width — which is how the table's shape was found at all.
 
+That floor covers a reply's frontier and nothing else. **Between** the
+strip's cells — a thought settling before the round's call has a cell, the
+read group settling under the call behind it — the same invariant is kept
+one level up, by `ui::PreviewFloor` at the boundary, which knows what the
+whole preview slot reserved last frame and how many rows were queued since
+(`docs/strip-floor.md`). The two compose: the strip reserves the larger.
+
 The smoke phase's own hop watch confirms a lower footer against a second
 capture a beat later, since `tmux capture-pane` can read a frame
 half-parsed — the screen scrolled, the region not yet repainted, the old

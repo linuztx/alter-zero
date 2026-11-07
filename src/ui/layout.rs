@@ -72,8 +72,23 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 /// [`fitted_preview_rows`] instead, which is this clamped to
 /// [`preview_budget`]. Must match exactly what `preview_lines` builds before
 /// its own trim (they share this walk, so they agree by construction).
+///
+/// Never fewer than the **preview floor** while a live strip is up
+/// (`applied_preview_floor`, [`PreviewFloor`], `docs/strip-floor.md`): a
+/// live cell that gave way to fewer committed rows than it stood on — a
+/// settled `● Thinking…` block before the round's call has landed — leaves
+/// its rows held, blank, for what comes next, so the box does not rise and
+/// drop back.
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
+    content_preview_rows(app, width).max(applied_preview_floor(app))
+}
+
+/// What the strip's **content** asks for, without the preview floor — the
+/// walk [`preview_rows`] raises to it. The strip flow sizes overflow from
+/// this (`ui::live::strip_content_preview_rows`): held rows are geometry,
+/// never content that could flow into scrollback (`docs/strip-floor.md`).
+pub(super) fn content_preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
     // tool cells, its thinking block, or its reply's uncommitted frontier
     // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
@@ -227,6 +242,115 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
         preview_rows(app, width),
         non_preview_rows(app, width),
     )
+}
+
+/// The strip's **preview floor** across frames — the boundary-owned tracker
+/// that keeps the live region from rising mid-turn (`docs/strip-floor.md`).
+///
+/// The region is content-anchored (invariant 3): a frame that commits `c`
+/// rows pushes it down by `c`, and a frame whose region is `h` rows shorter
+/// pulls its bottom up by `h`. So the box rises exactly when the strip sheds
+/// more rows than went to scrollback in the same frame — and the strip sheds
+/// rows at every hand-off between live cells: the `● Thinking…` block (its
+/// header, three rows of thought and the gap) settles into a one-line
+/// `Thought for …` cell and its spacer *before* the round's call has an
+/// announced cell to take its place, so the box sat three rows up for as
+/// long as the call took to generate, then dropped back when it landed (the
+/// reported flicker). A collapsed read group's two-row cell settling into its
+/// one line under the call behind it, and a thought giving way to a one-row
+/// reply frontier, did the same by a row. `StreamRender`'s own floor answers
+/// this inside a reply (`docs/slow-stream.md`); this one answers it between
+/// the strip's cells, for every one of them.
+///
+/// Each frame the boundary asks [`floor`](Self::floor) — what the slot held
+/// a frame ago, less every row committed since — injects it
+/// ([`App::set_preview_floor`]), paints, and [`record`](Self::record)s what
+/// the frame reserved. [`preview_rows`] reserves at least the floor and the
+/// strip pads with blank rows up to it: the rows the next content lands on.
+/// Nothing is held outside a turn or under a modal prompt, and a purge
+/// rebuild — which re-seats the region from scratch — starts it over
+/// ([`reset`](Self::reset)).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PreviewFloor {
+    /// The preview rows the last painted frame reserved — 0 when it painted
+    /// no live strip (idle, a modal prompt) or nothing since a rebuild.
+    reserved: u16,
+}
+
+impl PreviewFloor {
+    /// The fewest preview rows the frame about to be drawn may reserve,
+    /// given the `committed` rows queued for scrollback since the last
+    /// painted frame: enough that the preview slot (its rows and their gap)
+    /// shrinks by no more than what committed. Clamped to the frame's
+    /// [`preview_budget`], so it can never squeeze the composer — the budget
+    /// protects the box first (`docs/table-streaming.md`). 0 outside a live
+    /// strip.
+    ///
+    /// When the commits leave a single row owing, the slot cannot hold just
+    /// one — a preview row brings its gap — so it holds two and the box steps
+    /// down a row rather than up.
+    #[must_use]
+    pub fn floor(&self, app: &App, committed: usize, width: u16, height: u16) -> u16 {
+        if !holds_strip(app) {
+            return 0;
+        }
+        // The rows the slot stood on: its preview rows and their gap.
+        let slot = if self.reserved > 0 {
+            usize::from(self.reserved) + usize::from(GAP_ROWS)
+        } else {
+            0
+        };
+        let owed = slot.saturating_sub(committed);
+        if owed == 0 {
+            return 0;
+        }
+        u16::try_from(owed)
+            .unwrap_or(u16::MAX)
+            .saturating_sub(GAP_ROWS)
+            .max(1)
+            .min(preview_budget(app, width, height))
+    }
+
+    /// Record what the frame just drawn reserved for its preview slot — the
+    /// floor's starting point for the next one. Nothing under a modal prompt
+    /// or outside a turn: there is no strip on screen to hold.
+    pub fn record(&mut self, app: &App, width: u16, height: u16) {
+        self.reserved = if holds_strip(app) {
+            fitted_preview_rows(app, width, height)
+        } else {
+            0
+        };
+    }
+
+    /// Forget what the last frame reserved — a purge rebuild re-seats the
+    /// region, so there is no bottom left to hold.
+    pub fn reset(&mut self) {
+        self.reserved = 0;
+    }
+}
+
+/// Whether the region shows a **live strip** a preview floor may hold: a
+/// turn in flight — the viewed agent's run inside its session view, the main
+/// turn otherwise — and no modal prompt, which replaces the whole region
+/// (its close purge-rebuilds).
+fn holds_strip(app: &App) -> bool {
+    if app.modal_open() {
+        return false;
+    }
+    app.viewed_agent()
+        .map_or_else(|| app.turn_active(), |run| !run.status.is_final())
+}
+
+/// The preview floor that applies to `app` now — the boundary-injected
+/// [`App::preview_floor`] while a live strip is up, else 0, so a value
+/// injected a frame ago can never pad an idle composer
+/// (`docs/strip-floor.md`).
+pub(super) fn applied_preview_floor(app: &App) -> u16 {
+    if holds_strip(app) {
+        app.preview_floor()
+    } else {
+        0
+    }
 }
 
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip

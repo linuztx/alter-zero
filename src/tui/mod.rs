@@ -143,6 +143,10 @@ pub(crate) struct Session<'t> {
     /// The same, for an open agent session view's own transcript
     /// (`docs/agent-tool.md`).
     agent_render: ui::StreamRender,
+    /// What the strip's preview slot reserved last frame, so the next one
+    /// holds those rows — less what committed since — instead of letting the
+    /// box rise between two live cells (`docs/strip-floor.md`).
+    preview_floor: ui::PreviewFloor,
     /// The Ctrl+O overlay's incrementally-built transcript, retained across
     /// closes and warmed at the loop bottom so it never opens cold
     /// (`docs/tool-view-performance.md`).

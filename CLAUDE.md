@@ -1021,7 +1021,22 @@ height less every row `commit` has since moved to scrollback, padded with
 blank rows the next content lands on — so the preview never loses more
 rows than a step committed, the invariant the differential harness now
 carries over the fuzz corpus at every width, with `matches_up_to_padding`
-as the contract's one tolerance; the **clickable OSC 8 links** (every URL an assistant
+as the contract's one tolerance — and its **between-cells** half in
+`docs/strip-floor.md`: the same invariant one level up, for the whole preview
+slot, since a live cell handing over to the next shed rows too — the
+`● Thinking…` block settles into its one `Thought for` line at the round's
+first tool-call piece while the call gets a cell only at its batch, so the box
+sat up to three rows high for as long as the call took to generate and then
+dropped back (the flicker reported between a thought and a `skill` call;
+present in v0.18.0 too), and the read group settling under the call behind it
+did the same by a row — answered by `ui::PreviewFloor`, a pure tracker the
+boundary drives per frame in `draw_conversation` (what the slot reserved last
+frame, less `InlineViewport::pending_rows`, injected via
+`App::set_preview_floor`, clamped to `preview_budget`, nothing outside a turn
+or under a modal, reset by every purge rebuild), which `ui::preview_rows`
+reserves and `preview_lines` pads with blank rows under the content, the
+strip flow sizing overflow from `content_preview_rows` so held rows never
+flow, `smoke.sh` Phase 153; the **clickable OSC 8 links** (every URL an assistant
 reply shows — a bare URL in prose/lists/table cells, inline/fenced/indented
 code, a heading, or a `[text](url)` target — is painted inside an OSC 8
 hyperlink carrying the whole URL, so a wrapped URL's every fragment opens the
