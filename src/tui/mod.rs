@@ -406,13 +406,11 @@ pub(crate) struct Session<'t> {
     /// clears) the flow; while it is `Some`, scrollback commits pause
     /// ([`Session::commits_allowed`]) so nothing tears the flowed page.
     flowed_view: Option<u64>,
-    /// The streaming strip's preview slot — the preview and its gap — as the
-    /// last inline frame painted it (`ui::strip_slot_rows`): what the next
-    /// frame's strip hold is measured from, less the rows committed between
-    /// the two (`ui::strip_hold`). 0 after a purge rebuild, which reseats
-    /// everything, and whenever no turn's status line was up
-    /// (`docs/strip-hold.md`).
-    strip_slot: u16,
+    /// What the last inline frame painted that the next one may be held to —
+    /// a settled thought's rows, until the call it led to lands on them
+    /// (`ui::StripHold`, `docs/strip-hold.md`). Reset by every purge
+    /// rebuild, which reseats everything.
+    strip_hold: ui::StripHold,
     /// The working directory: the tasks root, the permissions project key, the
     /// checkpoint store, the `/resume` filter, and the footer's `~`-relative
     /// form all key off it.

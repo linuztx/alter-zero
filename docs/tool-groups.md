@@ -329,13 +329,6 @@ no-op with none open):
   backstop at every turn end (`dispatch_after_turn`), so no path can leave a
   group holding its reads out of scrollback.
 
-A close mid-turn commits one line where the strip held a two-row cell, so
-the strip keeps the row it did not commit, blank, until the next cell lands
-on it. Without that, the box rose a row as the line committed and dropped
-back when the call behind the group showed (the **strip hold**,
-`docs/strip-hold.md`; `smoke.sh` Phase 153 runs a turn with Verbose output
-off for it).
-
 ### Thoughts
 
 A thought does not close a group, and it does not show inline either: the

@@ -1,16 +1,18 @@
-//! The strip hold: while a turn runs, the streaming strip never gives back
-//! more rows than it committed, so the box never hops up between one live
-//! cell and the next (`docs/strip-hold.md`).
+//! The strip hold: a thought that settles ahead of the call it led to keeps
+//! its rows, blank, until the call's cell lands on them, so the box never
+//! hops up and back between the two — and nothing else is ever held, so no
+//! blank row is left between a cell and the status line
+//! (`docs/strip-hold.md`).
 //!
 //! Each test drives the strip through the frames the boundary paints: before
-//! a frame it holds the slot at what the last frame painted less the rows
-//! committed since ([`strip_hold`]), and after it records the slot this frame
-//! painted ([`strip_slot_rows`]) — the two calls `tui::view` makes.
+//! a frame it injects [`StripHold::hold`], and after it
+//! [`StripHold::record`]s what the frame painted — the two calls `tui::view`
+//! makes.
 
 use super::*;
 use crate::app::Reasoning;
 use crate::stream::ToolCallSummary;
-use crate::ui::layout::hang_rows;
+use crate::ui::layout::{hang_rows, strip_slot_rows};
 use crate::ui::live::preview_lines;
 
 const WIDTH: u16 = 100;
@@ -19,8 +21,8 @@ const HEIGHT: u16 = 40;
 /// The boundary's half of the hold, frame by frame.
 #[derive(Default)]
 struct Frames {
-    /// The preview slot the last frame painted.
-    slot: u16,
+    /// What the boundary keeps between two frames.
+    hold: StripHold,
     /// The live region's height in the last frame.
     region: u16,
 }
@@ -32,7 +34,7 @@ impl Frames {
     /// it, so a commit pushes its top down by the committed rows and the
     /// bottom ends at `top + committed + region`.
     fn paint(&mut self, app: &mut App, committed: usize) -> u16 {
-        app.set_strip_hold(strip_hold(self.slot, committed));
+        app.set_strip_hold(self.hold.hold(app, committed, WIDTH));
         let preview = fitted_preview_rows(app, WIDTH, HEIGHT);
         let region = live_height(
             &app.input,
@@ -57,7 +59,7 @@ impl Frames {
         let committed = u16::try_from(committed).unwrap_or(u16::MAX);
         let rose = self.region.saturating_sub(committed.saturating_add(region));
         self.region = region;
-        self.slot = strip_slot_rows(app, WIDTH, HEIGHT);
+        self.hold.record(app, WIDTH, HEIGHT);
         rose
     }
 }
@@ -131,6 +133,38 @@ fn a_settled_thought_keeps_the_rows_it_did_not_commit() {
 }
 
 #[test]
+fn the_call_being_written_keeps_the_hold() {
+    // The model writes the call the thought led to before announcing it:
+    // its pieces stream into the round's drafts, but a `skill` call
+    // previews nothing, so the slot stays empty — and held — the whole time.
+    let mut app = thinking_app();
+    let mut frames = Frames::default();
+    frames.paint(&mut app, 0);
+    let committed = settle(&mut app);
+    assert_eq!(frames.paint(&mut app, committed), 0);
+    for (name, arguments) in [
+        ("skill", ""),
+        ("", r#"{"skill":"#),
+        ("", r#""web-search"}"#),
+    ] {
+        app.push_tool_call_fragment(&crate::stream::ToolCallFragment {
+            index: 0,
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
+        assert_eq!(
+            frames.paint(&mut app, 0),
+            0,
+            "the box rose while the call was being written"
+        );
+    }
+    assert!(
+        fitted_preview_rows(&app, WIDTH, HEIGHT) > 0,
+        "the thought's rows are still held"
+    );
+}
+
+#[test]
 fn the_next_cell_lands_on_the_held_rows() {
     let mut app = thinking_app();
     let mut frames = Frames::default();
@@ -182,20 +216,20 @@ fn the_whole_thought_to_skill_round_never_lifts_the_box() {
 }
 
 #[test]
-fn a_reply_after_a_thought_keeps_the_rows_under_its_first_line() {
-    // ThinkingEnd and the first chunk can straddle a frame, and a reply's
-    // first line is a shorter preview than the block it replaces.
+fn a_reply_after_a_thought_takes_the_slot_without_padding() {
+    // A hold only ever fills an empty slot: the reply's first line takes
+    // the slot whole, and no blank row is held under it while it streams.
     let mut app = thinking_app();
     let mut frames = Frames::default();
     frames.paint(&mut app, 0);
     let committed = settle(&mut app);
     app.push_chunk("Gukesh");
-    assert_eq!(frames.paint(&mut app, committed), 0);
+    frames.paint(&mut app, committed);
     let preview = preview_lines(&app, WIDTH, None, fitted_preview_rows(&app, WIDTH, HEIGHT));
-    assert!(
-        plain(&preview[0]).contains("Gukesh"),
-        "the reply opens the slot, the held rows under it: {:?}",
-        preview.iter().map(plain).collect::<Vec<_>>()
+    assert_eq!(
+        preview.iter().map(plain).collect::<Vec<_>>(),
+        vec!["● Gukesh".to_string()],
+        "the reply's line alone, no held row under it"
     );
 }
 
@@ -208,10 +242,14 @@ fn every_committed_row_releases_a_held_one() {
     frames.paint(&mut app, 0);
     let committed = settle(&mut app);
     frames.paint(&mut app, committed);
-    let slot = frames.slot;
+    let slot = strip_slot_rows(&app, WIDTH, HEIGHT);
     assert!(slot > 0, "the held slot is painted");
     frames.paint(&mut app, usize::from(slot));
-    assert_eq!(frames.slot, 0, "a commit as tall as the hold releases it");
+    assert_eq!(
+        strip_slot_rows(&app, WIDTH, HEIGHT),
+        0,
+        "a commit as tall as the hold releases it"
+    );
     assert_eq!(app.strip_hold(), 0);
 }
 
@@ -277,14 +315,19 @@ fn a_modal_frame_paints_no_slot() {
     assert_eq!(strip_slot_rows(&app, WIDTH, HEIGHT), 0);
 }
 
-#[test]
-fn a_running_command_resolving_into_a_shorter_cell_keeps_its_rows() {
-    // The same shape one transition along: a command tailing its output —
-    // four rows, the `+N lines (Ns · wait …)` clock and the ctrl+b hint —
-    // settles into a peek of three rows under its `… +N lines` hint, with
-    // the next round's request still to go out.
+/// A turn whose round ran one command that tailed its output — four rows
+/// and the `+N lines (Ns · wait …)` clock under its header, the ctrl+b hint
+/// below that — the cell taller than the peek it settles into.
+fn running_command_app() -> App {
     let mut app = App::new();
     app.begin_stream();
+    start_command(&mut app);
+    app
+}
+
+/// Announce and start the command [`running_command_app`] runs, its output
+/// streamed and its clock past the ctrl+b hint's delay.
+fn start_command(app: &mut App) {
     app.start_tool_batch(&[ToolCallSummary {
         name: "Bash".to_string(),
         args: "ping -c 9 host".to_string(),
@@ -294,14 +337,20 @@ fn a_running_command_resolving_into_a_shorter_cell_keeps_its_rows() {
         "ping -c 9 host",
         Some(r#"{"command":"ping -c 9 host"}"#),
     );
-    let output: String = (1..=9).map(|i| format!("reply {i}\n")).collect();
-    app.push_tool_output(&output);
+    app.push_tool_output(COMMAND_OUTPUT);
     app.set_command_elapsed(Some(Duration::from_secs(5)));
-    let mut frames = Frames::default();
-    frames.paint(&mut app, 0);
-    app.end_tool(&output, true);
+}
+
+const COMMAND_OUTPUT: &str =
+    "reply 1\nreply 2\nreply 3\nreply 4\nreply 5\nreply 6\nreply 7\nreply 8\nreply 9\n";
+
+/// Resolve the running command, returning the rows its cell and spacer
+/// commit (`Session::commit_tool_cell`).
+fn resolve_command(app: &mut App) -> usize {
+    app.end_tool(COMMAND_OUTPUT, true);
     app.place_resolved_tool();
-    let committed = tool_commit_lines(
+    app.set_command_elapsed(None);
+    tool_commit_lines(
         &app.history,
         app.tool_queue(),
         WIDTH,
@@ -309,12 +358,46 @@ fn a_running_command_resolving_into_a_shorter_cell_keeps_its_rows() {
     )
     .expect("the resolved call has a cell")
     .len()
-        + 1;
-    app.set_command_elapsed(None);
+        + 1
+}
+
+#[test]
+fn a_round_ending_on_a_shorter_cell_leaves_the_status_line_one_spacer_under_it() {
+    // The reported gap: the command's tailing cell settles into its shorter
+    // peek, and nothing follows until the next request comes back. Holding
+    // the difference left three blank rows over the status line — the cell's
+    // spacer, a held row and the slot's gap — for as long as that took. A
+    // call resolving holds nothing: the strip is the status line alone.
+    let mut app = running_command_app();
+    let mut frames = Frames::default();
+    frames.paint(&mut app, 0);
+    let committed = resolve_command(&mut app);
+    frames.paint(&mut app, committed);
     assert_eq!(
-        frames.paint(&mut app, committed),
+        fitted_preview_rows(&app, WIDTH, HEIGHT),
         0,
-        "the box rose when the command's cell settled"
+        "rows were held after the round's last call settled"
+    );
+}
+
+#[test]
+fn a_thoughts_hold_ends_once_its_call_has_landed() {
+    // The thought's rows are held until the call it led to lands on them —
+    // and no longer: that call settling at its round's end holds nothing,
+    // however much taller its live cell grew meanwhile.
+    let mut app = thinking_app();
+    let mut frames = Frames::default();
+    frames.paint(&mut app, 0);
+    let committed = settle(&mut app);
+    frames.paint(&mut app, committed);
+    start_command(&mut app);
+    frames.paint(&mut app, 0);
+    let committed = resolve_command(&mut app);
+    frames.paint(&mut app, committed);
+    assert_eq!(
+        fitted_preview_rows(&app, WIDTH, HEIGHT),
+        0,
+        "the thought's hold outlived the call that landed on it"
     );
 }
 
@@ -363,11 +446,12 @@ fn a_foreground_agent_tree_settling_never_lifts_the_box() {
 }
 
 #[test]
-fn a_read_group_settling_under_the_call_behind_it_keeps_its_rows() {
+fn a_read_group_settling_holds_no_row_under_the_call_behind_it() {
     // Verbose output off — what a user starts with: a batch opening on a
     // read collapses it into the read group's live cell, and the call behind
     // it closes the group, which commits its one line while the strip loses
-    // the cell (docs/tool-groups.md).
+    // the cell (docs/tool-groups.md). The slot still shows the calls, so
+    // nothing is held: no blank row sits between them and the status line.
     let batch = |name: &str, args: &str| ToolCallSummary {
         name: name.to_string(),
         args: args.to_string(),
@@ -397,9 +481,13 @@ fn a_read_group_settling_under_the_call_behind_it_keeps_its_rows() {
     )
     .len()
         + 1;
-    assert_eq!(
-        frames.paint(&mut app, committed),
-        0,
-        "the box rose when the read group settled into its line"
+    frames.paint(&mut app, committed);
+    let preview = preview_lines(&app, WIDTH, None, fitted_preview_rows(&app, WIDTH, HEIGHT));
+    assert!(
+        preview
+            .last()
+            .is_some_and(|line| !plain(line).trim().is_empty()),
+        "a blank row was held under the calls: {:?}",
+        preview.iter().map(plain).collect::<Vec<_>>()
     );
 }

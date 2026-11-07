@@ -1509,13 +1509,13 @@ stream for their own reasons).
   `insert_before` over-scroll and the box rises off the bottom, leaving blank rows
   beneath. Covered by `scripts/smoke.sh` Phase 5 (a short terminal where one
   exchange overflows the screen, asserting no blank rows below the settled box).
-  *Mid-turn* the strip never collapses below what it committed: a live cell
-  that gives way to a shorter one (a thought settling into its one-line cell
-  while the call it led to is still being generated, a running command
-  resolving into a shorter peek) keeps its rows as blank padding until the
-  next cell lands on them, so the box never rises and drops back within a turn
-  (the **strip hold**, `docs/strip-hold.md`; `smoke.sh` Phase 153). The turn's
-  end is the one collapse it leaves to the reseat above.
+  *Mid-turn*, one collapse is held: a thought settling into its one-line cell
+  while the call it led to is still being generated keeps its rows as blank
+  padding, in an otherwise empty slot, until that call's cell lands on them,
+  so the box no longer rises and drops back between the two (the **strip
+  hold**, `docs/strip-hold.md`; `smoke.sh` Phase 153). Nothing else is held:
+  a call settling into a shorter cell at its round's end leaves the status
+  line one spacer under it, and the turn's end is left to the reseat above.
 - On resize the on-screen chat is repainted (any dimension — a width change
   re-wraps, a height change reseats the box; `smoke.sh` Phase 17), but lines
   already in the terminal's own scrollback keep their original wrapping (so

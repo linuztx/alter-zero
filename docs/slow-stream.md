@@ -252,12 +252,11 @@ footer a row up — and a real hop lasts a token where a torn frame lasts
 microseconds.
 
 The floor stops at the reply's edge: it knows only what *its* preview
-answered a token ago. When the slot's content changes kind — a thought
-settling into its one-line cell while the call it led to is still being
-generated, a live cell resolving into a shorter peek — the same rule is
-applied one level up, to everything the slot shows, by the boundary's
-**strip hold** (`docs/strip-hold.md`): the slot never gives back more rows
-than were committed since the last frame.
+answered a token ago. One hand-off between kinds of content gets the same
+treatment from the boundary's **strip hold** (`docs/strip-hold.md`): a
+thought settling into its one-line cell while the call it led to is still
+being generated keeps its rows, blank, in the otherwise empty slot until the
+call's cell lands on them.
 
 ## What stays as it was, and why
 

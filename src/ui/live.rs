@@ -103,10 +103,10 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// or a thinking block keeps its head (the running call, the `● Thinking…`
 /// header — the rows that say what is happening).
 ///
-/// Padded with blank rows up to the strip hold ([`held_preview_rows`],
-/// within `rows`): the rows a shorter cell left that scrollback has not taken
-/// yet, which the next cell lands on (`docs/strip-hold.md`). After the trim,
-/// so a squeezed reply still tail-follows its content, never its padding.
+/// An **empty** slot is padded with blank rows up to the strip hold
+/// ([`held_preview_rows`], within `rows`): the rows a settled thought left
+/// that scrollback has not taken, which the call it led to lands on
+/// (`docs/strip-hold.md`). A slot with content is never padded.
 pub(super) fn preview_lines(
     app: &App,
     width: u16,
@@ -114,9 +114,11 @@ pub(super) fn preview_lines(
     rows: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = content_preview_lines(app, width, stream_preview, rows);
-    let held = usize::from(held_preview_rows(app).min(rows));
-    if lines.len() < held {
-        lines.resize(held, Line::default());
+    if lines.is_empty() {
+        lines.resize(
+            usize::from(held_preview_rows(app, width).min(rows)),
+            Line::default(),
+        );
     }
     lines
 }

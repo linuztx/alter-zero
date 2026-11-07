@@ -73,27 +73,36 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 /// [`preview_budget`]. Must match exactly what `preview_lines` builds before
 /// its own trim (they share this walk, so they agree by construction).
 ///
-/// Never fewer than the strip hold keeps (`held_preview_rows`): while a
-/// turn runs, a slot whose content gave way to something shorter — a thought
-/// settling into its one-line cell before the call it led to is announced —
-/// keeps the rows it has not committed, as blank rows `preview_lines` pads
-/// with and the next cell lands on (`docs/strip-hold.md`).
+/// An **empty** slot keeps the rows the strip hold says (`held_preview_rows`):
+/// a thought that settled into its one-line cell before the call it led to
+/// is announced leaves its rows held, as blank rows `preview_lines` pads with
+/// and the call's cell lands on, so the box does not rise and drop back
+/// (`docs/strip-hold.md`). A slot with content of its own is never padded.
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
-    content_preview_rows(app, width).max(held_preview_rows(app))
+    match content_preview_rows(app, width) {
+        0 => held_preview_rows(app, width),
+        content => content,
+    }
 }
 
 /// The preview rows the strip hold keeps this frame: the injected
 /// [`App::strip_hold`] — a slot, the preview's gap included — as content
 /// rows, at least one so the gap comes back with it (a one-row content
 /// floor would otherwise leave a slot of nothing, and the box would rise by
-/// the row the hold was for). Nothing is held without a turn's status line
-/// (the turn's end collapses the strip, the one shrink the hold never
-/// resists) or under a modal, which replaces the strip whole
+/// the row the hold was for). Only ever an **empty** slot's: a slot showing
+/// anything of its own is that and no more, so a held row never sits
+/// between a cell and the status line. Nothing is held without a turn's
+/// status line either (the turn's end collapses the strip, the one shrink
+/// the hold never resists) or under a modal, which replaces the strip whole
 /// (`docs/strip-hold.md`).
-pub(super) fn held_preview_rows(app: &App) -> u16 {
+pub(super) fn held_preview_rows(app: &App, width: u16) -> u16 {
     let hold = app.strip_hold();
-    if hold == 0 || region_is_modal(app) || !strip_has_status(app) {
+    if hold == 0
+        || region_is_modal(app)
+        || !strip_has_status(app)
+        || content_preview_rows(app, width) > 0
+    {
         return 0;
     }
     hold.saturating_sub(GAP_ROWS).max(1)
@@ -260,25 +269,101 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
     )
 }
 
-/// The strip hold for the next frame (`docs/strip-hold.md`): the preview
-/// slot the last frame painted ([`strip_slot_rows`]) less the rows committed
-/// to scrollback since. Each committed row pushed the region down by one, so
-/// the strip may give back exactly that many and the box's bottom stays where
-/// it was — the region is content-anchored, so the rows a slot gives back
-/// beyond what committed are rows the box **rises** by. What the boundary
-/// injects through [`App::set_strip_hold`] before every inline draw.
-#[must_use]
-pub fn strip_hold(previous_slot: u16, committed: usize) -> u16 {
-    previous_slot.saturating_sub(u16::try_from(committed).unwrap_or(u16::MAX))
+/// The **strip hold** across frames (`docs/strip-hold.md`) — what the
+/// boundary keeps between two inline draws so that a thought settling ahead
+/// of the call it led to does not lift the box.
+///
+/// The backend closes a thinking phase on the round's first tool-call piece,
+/// but the call only gets a cell once the model has finished writing it. In
+/// between, the `● Thinking…` block has collapsed into its one-line
+/// `Thought for …` cell and the slot has nothing to show. The region is
+/// content-anchored (invariant 3), so the rows the slot gave back beyond the
+/// two that committed were rows the box rose by, until the call's cell went
+/// up and pushed it back down: the flicker after a quick think.
+///
+/// So across exactly that hand-off the slot is **held** at what the last
+/// frame painted, less every row committed since (each pushed the region
+/// down by one), as blank rows the call's cell lands on. Nothing else is
+/// held: the hold carries only from a frame that showed the thinking block
+/// (or was already holding it), only while the newest thing the conversation
+/// on screen recorded is that thought, and only while the slot has nothing
+/// of its own — a cell, a reply, a new thought takes the slot and ends it.
+/// A call settling at the end of its round therefore holds nothing, and the
+/// status line sits one spacer under the cell for as long as the next
+/// request takes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StripHold {
+    /// The preview slot — its rows and their gap — the last frame painted.
+    slot: u16,
+    /// Whether the last frame showed the live thinking block, or was
+    /// already holding the rows it left: the only frames a hold carries from.
+    carried: bool,
+}
+
+impl StripHold {
+    /// The hold for the frame about to be drawn, after `committed` rows went
+    /// to scrollback since the last one — what the boundary injects through
+    /// [`App::set_strip_hold`] before every inline draw. 0 unless a thought
+    /// has just settled and nothing has taken its slot yet.
+    #[must_use]
+    pub fn hold(&self, app: &App, committed: usize, width: u16) -> u16 {
+        if !self.carried || !thought_awaits_its_cell(app, width) {
+            return 0;
+        }
+        self.slot
+            .saturating_sub(u16::try_from(committed).unwrap_or(u16::MAX))
+    }
+
+    /// Record the frame just drawn: the slot it painted, and whether it
+    /// showed the thinking block or held its rows.
+    pub fn record(&mut self, app: &App, width: u16, height: u16) {
+        self.slot = strip_slot_rows(app, width, height);
+        self.carried = strip_shows_thought(app, width) || held_preview_rows(app, width) > 0;
+    }
+
+    /// Forget the last frame: a purge rebuild reseats the whole screen, so
+    /// there is no box position left to keep.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Whether the strip is waiting on the cell a settled thought led to: a
+/// turn's status line is up, no modal covers the strip, the newest item the
+/// conversation on screen recorded is that thought — the viewed agent's in
+/// its session view — and the slot has nothing of its own to show.
+fn thought_awaits_its_cell(app: &App, width: u16) -> bool {
+    let newest = match app.viewed_agent() {
+        Some(run) => run.history.last(),
+        None => app.history.last(),
+    };
+    strip_has_status(app)
+        && !region_is_modal(app)
+        && matches!(newest, Some(HistoryItem::Reasoning(_)))
+        && content_preview_rows(app, width) == 0
+}
+
+/// Whether the slot's content is the live `● Thinking…` block — the
+/// reasoning branch of [`content_preview_rows`], nothing ahead of it.
+fn strip_shows_thought(app: &App, width: u16) -> bool {
+    if let Some(run) = app.viewed_agent() {
+        return run.tool_queue.is_empty()
+            && run.drafts().previews().next().is_none()
+            && run.reasoning().is_some();
+    }
+    app.agent_group().is_none()
+        && app.tool_queue().is_empty()
+        && app.tool_drafts().previews().next().is_none()
+        && super::live::open_group_lines(app, width).is_empty()
+        && app.reasoning().is_some()
 }
 
 /// The preview-slot rows — the preview and its gap — the conversation view's
-/// live region paints for `app` in a `height`-row terminal: what the
-/// boundary records after a frame, for the next frame's [`strip_hold`]. Zero
-/// when no turn's status line is up (nothing is held then) and under a modal,
-/// which replaces the strip whole (`docs/strip-hold.md`).
-#[must_use]
-pub fn strip_slot_rows(app: &App, width: u16, height: u16) -> u16 {
+/// live region paints for `app` in a `height`-row terminal: what
+/// [`StripHold::record`] keeps for the next frame. Zero when no turn's status
+/// line is up (nothing is held then) and under a modal, which replaces the
+/// strip whole (`docs/strip-hold.md`).
+pub(super) fn strip_slot_rows(app: &App, width: u16, height: u16) -> u16 {
     if region_is_modal(app) || !strip_has_status(app) {
         return 0;
     }

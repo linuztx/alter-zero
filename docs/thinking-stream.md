@@ -190,8 +190,8 @@ is still being generated, with nothing to show for it until it is announced.
 The block collapsing into its one-line cell used to lift the box by the rows
 it gave back, then drop it again when the call's cell went up: a hop for a
 frame or two, the reported flicker after a thinking model's skill load. The
-strip now holds those rows, blank, until the next cell lands on them
-(`docs/strip-hold.md`).
+otherwise empty slot now holds those rows, blank, until the call's cell, a
+reply or a new thought lands on them (`docs/strip-hold.md`).
 
 `ui::reasoning_full_lines` is the Ctrl+O expansion — the same dim line
 **without** the `(ctrl+o to expand)` hint (this *is* the expansion) over the

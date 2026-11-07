@@ -3309,13 +3309,15 @@ of bug:
    at its close while the multi-row preview drops to one row — `term::paint_live`
    syncs the tracked height to the frame's height before `flush_pending` whenever
    lines are pending, `docs/table-streaming.md`, guarded by Phase 41). *Mid-turn*
-   the strip never gives back more preview-slot rows than were committed since the
-   last frame — the **strip hold**: `tui::view` injects `ui::strip_hold(last slot,
-   pending rows)` via `App::set_strip_hold` before each draw and records
-   `ui::strip_slot_rows` after, `ui::preview_rows` floors at it while a status line
-   is up and `preview_lines` pads with the blank rows the next cell lands on, so a
-   thought settling ahead of the call it led to no longer lifts the box for a frame
-   and drops it back (`docs/strip-hold.md`, guarded by Phase 153). (`insert_before` itself only
+   one hand-off is held — the **strip hold**: a thought settling ahead of the call
+   it led to keeps its rows, blank, in the otherwise empty slot until the call's
+   cell lands on them (`ui::StripHold`, whose `hold` the boundary injects through
+   `App::set_strip_hold` before each draw and whose `record` notes the frame
+   after, `ui::preview_rows` answering an empty slot with it and `preview_lines`
+   padding to it), so the box no longer lifts for a frame and drops back; nothing
+   else is held, so a call settling into a shorter cell at its round's end leaves
+   the status line one spacer under it (`docs/strip-hold.md`, guarded by Phase
+   153). (`insert_before` itself only
    **queues**: the next `term::draw` writes the lines and repaints the live region
    inside one synchronized update, so a commit can never flash a boxless frame —
    `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the

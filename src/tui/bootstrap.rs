@@ -582,7 +582,7 @@ impl<'t> Session<'t> {
             clipboard_lease: None,
             overlay_resized: false,
             flowed_view: None,
-            strip_slot: 0,
+            strip_hold: ui::StripHold::default(),
             cwd,
             cwd_display,
         };

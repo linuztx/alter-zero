@@ -237,14 +237,15 @@ impl Session<'_> {
     /// one-way move for the close's purge rebuild; `docs/permissions.md`).
     pub(crate) fn draw_conversation(&mut self) -> io::Result<()> {
         // The strip hold first, since everything below sizes the region from
-        // it: the slot the last frame painted, less the rows this frame's
-        // flush is about to commit above the region — each of which pushes
-        // the region down one — so a live cell giving way to a shorter one (a
-        // thought settling into its line before the call it led to is
-        // announced) keeps its rows and the box never hops up and back
-        // (`docs/strip-hold.md`).
-        self.app
-            .set_strip_hold(ui::strip_hold(self.strip_slot, self.term.pending_rows()));
+        // it: a thought that settled into its line before the call it led to
+        // is announced keeps its rows — the slot the last frame painted, less
+        // the rows this frame's flush is about to commit above the region —
+        // so the box never hops up and back (`docs/strip-hold.md`).
+        let width = self.term.screen().width;
+        let hold = self
+            .strip_hold
+            .hold(&self.app, self.term.pending_rows(), width);
+        self.app.set_strip_hold(hold);
         // Compute the strip preview cheaply once per frame (O(one line); a
         // forming table re-renders just its own block), so the status animation
         // never re-renders the whole reply — and inject its row count so the
@@ -263,11 +264,12 @@ impl Session<'_> {
         drawn
     }
 
-    /// Record the preview slot the frame just painted, for the next frame's
-    /// strip hold (`docs/strip-hold.md`).
+    /// Record what the frame just painted, for the next frame's strip hold
+    /// (`docs/strip-hold.md`).
     fn note_strip_slot(&mut self) {
         let screen = self.term.screen();
-        self.strip_slot = ui::strip_slot_rows(&self.app, screen.width, screen.height);
+        self.strip_hold
+            .record(&self.app, screen.width, screen.height);
     }
 
     /// Render the full-screen tool-output overlay. Clamps the scroll to the
@@ -500,6 +502,7 @@ impl Session<'_> {
         // A rebuild reseats the whole screen, so there is no box position to
         // keep: the strip hold starts over from what this frame paints
         // (`docs/strip-hold.md`).
+        self.strip_hold.reset();
         self.app.set_strip_hold(0);
         // The preview comes FIRST: it injects the strip's preview row count
         // (`set_stream_preview_rows` — a forming table previews multi-row) that
@@ -569,6 +572,7 @@ impl Session<'_> {
         self.agent_render.reset();
         // The rebuild reseats the screen: the strip hold starts over
         // (`docs/strip-hold.md`, `repaint_conversation`'s rule).
+        self.strip_hold.reset();
         self.app.set_strip_hold(0);
         let Some(run) = self.app.viewed_agent() else {
             return Ok(());

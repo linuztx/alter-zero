@@ -140,12 +140,11 @@ release heading when a version is cut.
   the call, there was nothing to show in its place: the box, the status line
   and the footer rose by the rows the block had used, then dropped again
   once the call's cell appeared. Depending on how quickly the call arrived
-  this read as a flicker or was not visible at all. While a turn runs, those
-  rows are now kept as blank space until the next cell lands on them, so the
-  box only moves down. The same applies when a tool's live cell is replaced
-  by a shorter result, when a run of file reads collapses into its one-line
-  summary, and when a thought gives way to the reply. At the end of the turn
-  the box settles as before (`docs/strip-hold.md`).
+  this read as a flicker or was not visible at all. Those rows are now kept
+  as blank space until the call's cell lands on them, so the box stays put.
+  Nothing else is held, so a finished tool call still sits one blank line
+  above the status line while the next request is out
+  (`docs/strip-hold.md`).
 
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed
