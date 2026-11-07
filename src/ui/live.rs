@@ -10,8 +10,8 @@
 use super::agent::{agent_view_preview_lines, agent_view_rule_label};
 use super::file_cell::draft_cell_lines;
 use super::layout::{
-    fit_preview_rows, input_box, key_onboarding_rows, live_layout, model_picker_rows,
-    strip_other_rows, view_split,
+    content_preview_rows, fit_preview_rows, held_preview_rows, input_box, key_onboarding_rows,
+    live_layout, model_picker_rows, strip_other_rows, view_split,
 };
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
@@ -102,7 +102,28 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// arriving, `StreamRender::preview`'s own rule), while a queue of live cells
 /// or a thinking block keeps its head (the running call, the `● Thinking…`
 /// header — the rows that say what is happening).
+///
+/// Padded with blank rows up to the strip hold ([`held_preview_rows`],
+/// within `rows`): the rows a shorter cell left that scrollback has not taken
+/// yet, which the next cell lands on (`docs/strip-hold.md`). After the trim,
+/// so a squeezed reply still tail-follows its content, never its padding.
 pub(super) fn preview_lines(
+    app: &App,
+    width: u16,
+    stream_preview: Option<&[Line<'static>]>,
+    rows: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = content_preview_lines(app, width, stream_preview, rows);
+    let held = usize::from(held_preview_rows(app).min(rows));
+    if lines.len() < held {
+        lines.resize(held, Line::default());
+    }
+    lines
+}
+
+/// [`preview_lines`]' content, trimmed to `rows` and not yet padded to the
+/// strip hold.
+fn content_preview_lines(
     app: &App,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
@@ -514,10 +535,11 @@ fn render_strip(
 }
 
 /// The preview rows the strip's **content** is built at in the conversation
-/// view — the content's full ask ([`preview_rows`]) for the live cells that
-/// reach no other buffer until they resolve (a running tool queue, an agent
-/// group, a thinking block), so the rows the region cannot paint can flow
-/// into scrollback instead of being trimmed away.
+/// view — the content's full ask (`content_preview_rows`) for the live cells
+/// that reach no other buffer until they resolve (a running tool queue, an
+/// agent group, a thinking block), so the rows the region cannot paint can
+/// flow into scrollback instead of being trimmed away. The strip hold's blank
+/// rows count only as far as they fit ([`fitted_preview_rows`]).
 ///
 /// A streaming **reply's** frontier is the exception, and takes the reserved
 /// count ([`fitted_preview_rows`]) so it contributes nothing to the flow:
@@ -528,7 +550,10 @@ fn render_strip(
 /// (`docs/strip-flow.md`).
 pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16) -> u16 {
     if strip_preview_is_live_cells(app) {
-        preview_rows(app, width)
+        // The cells' own ask, which may overflow and flow — and the hold's
+        // blank rows only as far as they are fitted, so padding never pushes
+        // a cell's head into scrollback (`docs/strip-hold.md`).
+        content_preview_rows(app, width).max(fitted_preview_rows(app, width, term_height))
     } else {
         fitted_preview_rows(app, width, term_height)
     }

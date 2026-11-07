@@ -506,6 +506,8 @@ use alter_zero::ui::{
     status_line_with_verb,
     stream_preview_max_rows,
     strip_has_status,
+    strip_hold,
+    strip_slot_rows,
     styled_status_line,
     summary_lines,
     task_rows,

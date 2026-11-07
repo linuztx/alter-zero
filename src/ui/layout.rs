@@ -72,8 +72,39 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 /// [`fitted_preview_rows`] instead, which is this clamped to
 /// [`preview_budget`]. Must match exactly what `preview_lines` builds before
 /// its own trim (they share this walk, so they agree by construction).
+///
+/// Never fewer than the strip hold keeps (`held_preview_rows`): while a
+/// turn runs, a slot whose content gave way to something shorter — a thought
+/// settling into its one-line cell before the call it led to is announced —
+/// keeps the rows it has not committed, as blank rows `preview_lines` pads
+/// with and the next cell lands on (`docs/strip-hold.md`).
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
+    content_preview_rows(app, width).max(held_preview_rows(app))
+}
+
+/// The preview rows the strip hold keeps this frame: the injected
+/// [`App::strip_hold`] — a slot, the preview's gap included — as content
+/// rows, at least one so the gap comes back with it (a one-row content
+/// floor would otherwise leave a slot of nothing, and the box would rise by
+/// the row the hold was for). Nothing is held without a turn's status line
+/// (the turn's end collapses the strip, the one shrink the hold never
+/// resists) or under a modal, which replaces the strip whole
+/// (`docs/strip-hold.md`).
+pub(super) fn held_preview_rows(app: &App) -> u16 {
+    let hold = app.strip_hold();
+    if hold == 0 || region_is_modal(app) || !strip_has_status(app) {
+        return 0;
+    }
+    hold.saturating_sub(GAP_ROWS).max(1)
+}
+
+/// What the strip's content asks for, before the strip hold: the walk
+/// [`preview_rows`] floors. The strip flow builds a live cell at this full
+/// ask (`strip_content_preview_rows`), so a cell taller than the region
+/// flows its head into scrollback — the hold's padding never does, being
+/// blank rows that are only ever fitted.
+pub(super) fn content_preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
     // tool cells, its thinking block, or its reply's uncommitted frontier
     // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
@@ -227,6 +258,31 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
         preview_rows(app, width),
         non_preview_rows(app, width),
     )
+}
+
+/// The strip hold for the next frame (`docs/strip-hold.md`): the preview
+/// slot the last frame painted ([`strip_slot_rows`]) less the rows committed
+/// to scrollback since. Each committed row pushed the region down by one, so
+/// the strip may give back exactly that many and the box's bottom stays where
+/// it was — the region is content-anchored, so the rows a slot gives back
+/// beyond what committed are rows the box **rises** by. What the boundary
+/// injects through [`App::set_strip_hold`] before every inline draw.
+#[must_use]
+pub fn strip_hold(previous_slot: u16, committed: usize) -> u16 {
+    previous_slot.saturating_sub(u16::try_from(committed).unwrap_or(u16::MAX))
+}
+
+/// The preview-slot rows — the preview and its gap — the conversation view's
+/// live region paints for `app` in a `height`-row terminal: what the
+/// boundary records after a frame, for the next frame's [`strip_hold`]. Zero
+/// when no turn's status line is up (nothing is held then) and under a modal,
+/// which replaces the strip whole (`docs/strip-hold.md`).
+#[must_use]
+pub fn strip_slot_rows(app: &App, width: u16, height: u16) -> u16 {
+    if region_is_modal(app) || !strip_has_status(app) {
+        return 0;
+    }
+    strip_rows(false, fitted_preview_rows(app, width, height), 0)
 }
 
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip

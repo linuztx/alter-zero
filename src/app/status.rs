@@ -524,4 +524,23 @@ impl App {
     pub const fn stream_preview_rows(&self) -> u16 {
         self.stream_preview_rows
     }
+    /// Inject the strip hold before a draw (the
+    /// [`set_stream_preview_rows`] pattern): the preview-slot rows — content
+    /// and its gap — the last frame painted, less the rows committed to
+    /// scrollback since (`ui::strip_hold`). While a turn's status line is up
+    /// the strip never takes fewer, so a thought collapsing into its one-line
+    /// cell, or a call resolving into a shorter one, keeps its rows until the
+    /// next cell lands on them instead of lifting the box for a frame
+    /// (`docs/strip-hold.md`).
+    ///
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    pub fn set_strip_hold(&mut self, rows: u16) {
+        self.strip_hold = rows;
+    }
+    /// The boundary-injected strip hold (see
+    /// [`set_strip_hold`](App::set_strip_hold); 0 until a draw injects one).
+    #[must_use]
+    pub const fn strip_hold(&self) -> u16 {
+        self.strip_hold
+    }
 }

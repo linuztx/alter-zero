@@ -323,6 +323,17 @@ pub struct App {
     /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
     /// [`set_status_times`]: App::set_status_times
     stream_preview_rows: u16,
+    /// The fewest rows the streaming strip's preview slot may take this
+    /// frame — the slot the last frame painted, less every row committed to
+    /// scrollback since — injected by the boundary before each draw
+    /// ([`set_strip_hold`], the [`set_stream_preview_rows`] pattern). While
+    /// a turn's status line is up `ui::preview_rows` never answers with
+    /// less, padding with blank rows the next cell lands on, so a live cell
+    /// giving way to a shorter one never lifts the box (`docs/strip-hold.md`).
+    ///
+    /// [`set_strip_hold`]: App::set_strip_hold
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    strip_hold: u16,
     /// The live tool calls of the current turn, front-first: the front is the
     /// running (status [`ToolStatus::Running`]) or about-to-run call, and any
     /// calls behind it are [`ToolStatus::Waiting`] siblings of a **parallel

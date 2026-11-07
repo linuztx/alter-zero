@@ -251,6 +251,14 @@ half-parsed — the screen scrolled, the region not yet repainted, the old
 footer a row up — and a real hop lasts a token where a torn frame lasts
 microseconds.
 
+The floor stops at the reply's edge: it knows only what *its* preview
+answered a token ago. When the slot's content changes kind — a thought
+settling into its one-line cell while the call it led to is still being
+generated, a live cell resolving into a shorter peek — the same rule is
+applied one level up, to everything the slot shows, by the boundary's
+**strip hold** (`docs/strip-hold.md`): the slot never gives back more rows
+than were committed since the last frame.
+
 ## What stays as it was, and why
 
 - **Every frame hides and re-shows the cursor.** 2 184 hides in the run. The

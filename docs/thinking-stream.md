@@ -183,6 +183,16 @@ delta (`llm::backend` sends `ThinkingStart` from inside
 it is a no-op after the start's, and it is still the one that runs for an
 Esc/error mid-phase.
 
+**The block's rows outlive it for a moment** (added 2026-11-07). A phase
+ends when the next thing the model streams arrives, so a thought that leads
+to a tool call settles on the call's first argument piece — while the call
+is still being generated, with nothing to show for it until it is announced.
+The block collapsing into its one-line cell used to lift the box by the rows
+it gave back, then drop it again when the call's cell went up: a hop for a
+frame or two, the reported flicker after a thinking model's skill load. The
+strip now holds those rows, blank, until the next cell lands on them
+(`docs/strip-hold.md`).
+
 `ui::reasoning_full_lines` is the Ctrl+O expansion — the same dim line
 **without** the `(ctrl+o to expand)` hint (this *is* the expansion) over the
 whole text in the `⎿` gutter, the model's own paragraph breaks preserved.

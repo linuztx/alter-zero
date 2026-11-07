@@ -3308,7 +3308,14 @@ of bug:
    coincide with a flush *mid-stream* too — a forming table's whole block commits
    at its close while the multi-row preview drops to one row — `term::paint_live`
    syncs the tracked height to the frame's height before `flush_pending` whenever
-   lines are pending, `docs/table-streaming.md`, guarded by Phase 41). (`insert_before` itself only
+   lines are pending, `docs/table-streaming.md`, guarded by Phase 41). *Mid-turn*
+   the strip never gives back more preview-slot rows than were committed since the
+   last frame — the **strip hold**: `tui::view` injects `ui::strip_hold(last slot,
+   pending rows)` via `App::set_strip_hold` before each draw and records
+   `ui::strip_slot_rows` after, `ui::preview_rows` floors at it while a status line
+   is up and `preview_lines` pads with the blank rows the next cell lands on, so a
+   thought settling ahead of the call it led to no longer lifts the box for a frame
+   and drops it back (`docs/strip-hold.md`, guarded by Phase 153). (`insert_before` itself only
    **queues**: the next `term::draw` writes the lines and repaints the live region
    inside one synchronized update, so a commit can never flash a boxless frame —
    `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the
