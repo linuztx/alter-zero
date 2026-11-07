@@ -24,11 +24,16 @@ smoke_begin
 # down until it reaches the bottom, where it stays, and nothing may pull it
 # back up while the status line is on screen. A drop seen once is confirmed
 # against a second capture a beat later — a capture can read a frame
-# half-parsed, a real hop holds until the next cell. Twice: on a tall
-# terminal, where the region has room to rise into, and on a short one,
-# where it sits at the bottom and a rise strands blank rows under the box.
+# half-parsed, a real hop holds until the next cell. Three times: on a tall
+# terminal, where the region has room to rise into; on a short one, where it
+# sits at the bottom and a rise strands blank rows under the box; and with
+# **Verbose output** off — the setting a user starts with, which the suite
+# overrides — where the turn's opening `Read` collapses into a read group
+# whose two-row cell settles into its one line under the `Edit` behind it,
+# a second hand-off that used to lift the box a row.
 S153="${S}_striphold"
 S153S="${S}_stripholdshort"
+S153V="${S}_stripholdgroup"
 
 # watch_turn SESSION — sample the footer row until the turn's summary
 # commits; sets HOPS (confirmed rises while a status line was up) and
@@ -96,3 +101,21 @@ expect_eq "$short_hops" "0" "the box rose off the bottom row mid-turn on the sho
 footer_row="$(printf '%s\n' "$short" | grep -nF 'dummy_model_name ·' | tail -1 | cut -d: -f1)"
 expect_eq "${footer_row:-0}" "16" "the settled box is not on the bottom row: held rows outlived the turn"
 expect_eq "$(count_footers "$short")" "1" "the settled short session shows the footer more than once"
+
+# ---- 3. Verbose output off: the read group hands over too -----------------
+# The fixture exports ALTER_ZERO_VERBOSE=1 and spells it out in every launch
+# string; this session takes it out of both.
+APP153V="env -u ALTER_ZERO_VERBOSE ${CFG_ENV_NOHIST/ ALTER_ZERO_VERBOSE=1/} ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+case "$APP153V" in
+*ALTER_ZERO_VERBOSE=*) fail "the launch string still sets ALTER_ZERO_VERBOSE: $APP153V" ;;
+esac
+launch "$S153V" 100 30 "$APP153V"
+submit "$S153V" "$USER_MSG"
+watch_turn "$S153V"
+group_hops="$HOPS"
+group="$(pane "$S153V" -S -60)"
+dump "the settled session with Verbose output off" "$group"
+note "verbose off: sampled $SAMPLES times, $group_hops hop(s)"
+expect_has "$group" -E "^Read 1 file" "the turn's Read never collapsed into a read group (is Verbose output still on?)"
+expect_eq "$group_hops" "0" "the box rose mid-turn with Verbose output off: a hand-off (the thought, or the read group's line) gave back rows it never committed"
+

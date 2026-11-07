@@ -143,8 +143,9 @@ release heading when a version is cut.
   this read as a flicker or was not visible at all. While a turn runs, those
   rows are now kept as blank space until the next cell lands on them, so the
   box only moves down. The same applies when a tool's live cell is replaced
-  by a shorter result, and when a thought gives way to the reply. At the end
-  of the turn the box settles as before (`docs/strip-hold.md`).
+  by a shorter result, when a run of file reads collapses into its one-line
+  summary, and when a thought gives way to the reply. At the end of the turn
+  the box settles as before (`docs/strip-hold.md`).
 
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed

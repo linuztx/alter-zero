@@ -52,9 +52,11 @@ long enough to measure.
 
 The same shape appears wherever a live cell gives way to a shorter one with
 more of the turn still to come: a thought followed by a reply whose first
-line is a one-row preview, or a running command whose tail (four rows, the
+line is a one-row preview; a running command whose tail (four rows, the
 `+N lines (Ns · wait …)` clock and the ctrl+b hint) is taller than its
-settled peek. A foreground agent tree does not have the problem. It settles
+settled peek; and, with **Verbose output** off (the default), a collapsed
+read group settling into its one line under the call behind it, a one-row
+rise for ~0.4 s in the dummy's default turn (`docs/tool-groups.md`). A foreground agent tree does not have the problem. It settles
 in place, each activity row becoming its `⎿ Done`, so it commits exactly
 the rows it held.
 
@@ -162,17 +164,19 @@ subagent's thought → call holds the same way.
   batch, the answer, the next thought. Every frame's rise must be zero. It
   also checks that the held rows are blank and that the next cell opens the
   slot. A thought → reply text keeps its rows under the reply's first line,
-  and so does a running command settling into its shorter peek. An agent
-  tree settles without a rise. Every committed row releases a held one. The
+  and so do a running command settling into its shorter peek and a read
+  group settling into its line. An agent tree settles without a rise. Every committed row releases a held one. The
   hold ends with the turn.
   Padding is fitted on a short terminal, and nothing flows. A modal frame
   paints no slot. Before the change: `the box rose between frames: [0, 3, 0,
   0, 0, 0, 1]`.
 - `scripts/smoke.sh` **Phase 153** samples the footer row through the
   dummy's default turn (text, a thought, three calls generated for ~0.8 s,
-  the batch), on a 100×40 terminal and an 80×16 one. It counts every drop
-  while the status line is up, confirmed by a second capture. The pre-change
-  binary fails both checks (row 20 → 18, and 16 → 14 off the bottom row).
+  the batch), on a 100×40 terminal, an 80×16 one, and a 100×30 one with
+  Verbose output off, where the turn's `Read` collapses into a read group.
+  It counts every drop while the status line is up, confirmed by a second
+  capture. The pre-change binary fails all three checks (row 20 → 18, 16 →
+  14 off the bottom row, and 20 → 18 then 27 → 26 at the read group).
 - Live: replaying the recorded byte stream (one frame per `ESC[?2026l`)
   found one rise in the pre-change recording of the reported prompt
   (`#140, 29 → 27`). Three runs after the change found none.

@@ -361,3 +361,45 @@ fn a_foreground_agent_tree_settling_never_lifts_the_box() {
         "the box rose when the agent tree settled"
     );
 }
+
+#[test]
+fn a_read_group_settling_under_the_call_behind_it_keeps_its_rows() {
+    // Verbose output off — what a user starts with: a batch opening on a
+    // read collapses it into the read group's live cell, and the call behind
+    // it closes the group, which commits its one line while the strip loses
+    // the cell (docs/tool-groups.md).
+    let batch = |name: &str, args: &str| ToolCallSummary {
+        name: name.to_string(),
+        args: args.to_string(),
+    };
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&[
+        batch("Read", "about.py"),
+        batch("Edit", "about.py"),
+        batch("Bash", "python3 about.py"),
+    ]);
+    app.start_tool("Read", "about.py", Some(r#"{"path":"about.py"}"#));
+    app.end_tool("1 print('hi')", true);
+    assert_eq!(
+        app.place_resolved_tool(),
+        crate::app::ToolPlacement::Held,
+        "the read joins the open group"
+    );
+    let mut frames = Frames::default();
+    frames.paint(&mut app, 0);
+    app.start_tool("Edit", "about.py", Some(r#"{"path":"about.py"}"#));
+    let range = app.close_tool_group().expect("the edit closes the group");
+    let committed = tool_group_lines(
+        &app.history[range],
+        WIDTH,
+        &crate::app::PathDisplay::VERBATIM,
+    )
+    .len()
+        + 1;
+    assert_eq!(
+        frames.paint(&mut app, committed),
+        0,
+        "the box rose when the read group settled into its line"
+    );
+}
