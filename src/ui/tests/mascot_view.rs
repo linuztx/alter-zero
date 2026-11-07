@@ -38,12 +38,12 @@ fn page_at(app: &App, width: u16, height: u16) -> Vec<String> {
         .collect()
 }
 
-/// Whether `text` is the list row for `name`: past the indent and the `❯`
+/// Whether `text` is the list row for `name`: past the indent and the `→`
 /// marker it opens with the name (a caption or banner row mentioning the
 /// same word doesn't count).
 fn is_row_for(text: &str, name: &str) -> bool {
     let t = text.trim_start();
-    let t = t.strip_prefix("❯ ").unwrap_or(t);
+    let t = t.strip_prefix("→ ").unwrap_or(t);
     t.starts_with(name) && t[name.len()..].chars().next().is_none_or(|c| c == ' ')
 }
 
@@ -77,6 +77,48 @@ fn is_beside(app: &App, width: u16) -> bool {
 }
 
 #[test]
+fn the_page_is_titled_and_its_five_rows_wear_the_pickers_arrow() {
+    // A title over a dim line saying what a mascot is, a gap, the search
+    // line, a gap, then five mascots whose `→` sits under the `❯` — the
+    // only `❯` on the page — over the counter naming the sixth.
+    for width in [WIDE, NARROW] {
+        let lines = mascot_view_lines(&open_app(), width, TALL);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|line| plain(line).trim_end().to_string())
+            .collect();
+        assert_eq!(texts[1], "  Select mascot", "{texts:#?}");
+        assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+        assert!(
+            texts[2].starts_with("  The startup banner's art"),
+            "{texts:#?}"
+        );
+        let search = texts
+            .iter()
+            .position(|t| t == "  ❯")
+            .expect("the search line");
+        assert_eq!(texts[search + 1], "", "a gap under it: {texts:#?}");
+        let first = search + 2;
+        assert!(texts[first].starts_with("  → crest ✓"), "{texts:#?}");
+        assert!(texts[first + 1].starts_with("    bloom"), "{texts:#?}");
+        assert!(texts[first + 4].starts_with("    skiter"), "{texts:#?}");
+        assert!(
+            texts[first + 5].starts_with(&format!("    (1/{})", Mascot::ALL.len())),
+            "the counter closes the five rows: {texts:#?}"
+        );
+        assert!(
+            !texts.iter().any(|t| is_row_for(t, "gem")),
+            "the sixth is past the window: {texts:#?}"
+        );
+        assert_eq!(
+            texts.iter().filter(|t| t.contains('❯')).count(),
+            1,
+            "one ❯, the search prompt's: {texts:#?}"
+        );
+    }
+}
+
+#[test]
 fn closed_builds_nothing() {
     assert!(mascot_view_lines(&with_session(), 80, TALL).is_empty());
     assert_eq!(mascot_picker_height(&with_session(), 80, 200), None);
@@ -89,15 +131,19 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
         let is_rule = |t: &String| !t.trim().is_empty() && t.trim().chars().all(|c| c == '─');
         assert!(is_rule(texts.first().expect("a top rule")), "top rule");
         assert!(is_rule(texts.last().expect("a bottom rule")), "bottom rule");
-        assert!(
-            texts[1].trim_start().starts_with('❯'),
-            "the ❯ search line sits straight under the top rule: {texts:#?}"
+        assert_eq!(
+            texts[1], "  Select mascot",
+            "the title sits straight under the top rule: {texts:#?}"
         );
-        for mascot in Mascot::ALL {
+        assert_eq!(
+            texts[4], "  ❯",
+            "the ❯ search line under the header: {texts:#?}"
+        );
+        for mascot in Mascot::ALL.iter().take(5) {
             row_for(&texts, mascot.name());
         }
         assert!(
-            row_for(&texts, "crest").starts_with("  ❯ crest"),
+            row_for(&texts, "crest").starts_with("  → crest"),
             "the open seats the marker on crest, the default: {texts:#?}"
         );
         let title = texts
@@ -129,27 +175,27 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
             "the key hint leads with navigation: {texts:#?}"
         );
         assert!(
-            !texts.iter().any(|t| t.contains("/6)")),
-            "no (n/total) counter — the overflow rows say what is hidden: {texts:#?}"
+            texts.iter().any(|t| t.contains("(1/6)")),
+            "the (n/total) counter names the mascot past the window: {texts:#?}"
         );
     }
 }
 
 #[test]
-fn rows_wear_the_mcp_lists_marker_and_indent() {
-    // The /mcp list's shape, /theme's: the selected row is the indent, the
-    // accent `❯` and the bold name; every other row keeps the marker's width
-    // blank, so the names line up under it.
+fn rows_wear_the_pickers_marker_and_indent() {
+    // The picker family's shape, /theme's: the selected row is the indent,
+    // the accent `→` and the bold name; every other row keeps the marker's
+    // width blank, so the names line up under it.
     let mut app = open_app();
     select(&mut app, 1); // bloom
     for width in [WIDE, NARROW] {
         let lines = mascot_view_lines(&app, width, TALL);
         let texts: Vec<String> = lines.iter().map(plain).collect();
         assert!(
-            row_for(&texts, "bloom").starts_with("  ❯ bloom"),
+            row_for(&texts, "bloom").starts_with("  → bloom"),
             "{texts:#?}"
         );
-        for name in ["crest", "sprout", "twin", "skiter", "gem"] {
+        for name in ["crest", "sprout", "twin", "skiter"] {
             assert!(
                 row_for(&texts, name).starts_with(&format!("    {name}")),
                 "{name} is indented under the marker: {texts:#?}"
@@ -159,7 +205,7 @@ fn rows_wear_the_mcp_lists_marker_and_indent() {
         let marker = row
             .spans
             .iter()
-            .find(|s| s.content == "❯ ")
+            .find(|s| s.content == "→ ")
             .expect("the marker span");
         assert_eq!(
             marker.style.fg,
@@ -208,9 +254,13 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
         row_for(&texts, "twin").contains("▙▄▙▄▟▄▟   Alter Zero (v"),
         "the banner's first row beside twin: {texts:#?}"
     );
+    let counter = texts
+        .iter()
+        .find(|t| t.trim_start().starts_with("(1/6)"))
+        .expect("the counter");
     assert!(
-        row_for(&texts, "gem").contains("/login   /model   /resume"),
-        "the banner's hint row beside gem: {texts:#?}"
+        counter.contains("/login   /model   /resume"),
+        "the banner's hint row beside the counter: {texts:#?}"
     );
 }
 
@@ -233,9 +283,10 @@ fn a_narrow_terminal_stacks_the_preview_under_the_list() {
         "{texts:#?}"
     );
     assert_eq!(texts[caption - 1], "", "a gap over the caption: {texts:#?}");
-    assert!(
-        is_row_for(&texts[caption - 2], "gem"),
-        "the list just above the gap: {texts:#?}"
+    assert_eq!(
+        texts[caption - 2],
+        "    (1/6)",
+        "the list's counter just above the gap: {texts:#?}"
     );
     let art = texts
         .iter()
@@ -419,13 +470,14 @@ fn the_active_mascot_wears_the_check_and_the_open_seats_on_it() {
             row_for(&texts, "gem").contains('✓'),
             "gem carries the ✓: {texts:#?}"
         );
-        assert!(
-            !row_for(&texts, "crest").contains('✓'),
+        assert_eq!(
+            texts.iter().filter(|t| t.contains('✓')).count(),
+            1,
             "only the active row is marked: {texts:#?}"
         );
         // …and the open landed on it, so the picker resumes where the session is.
         assert!(
-            row_for(&texts, "gem").starts_with("  ❯ gem"),
+            row_for(&texts, "gem").starts_with("  → gem"),
             "the highlight seats on the active mascot: {texts:#?}"
         );
     }
@@ -436,22 +488,25 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     // Nothing matched means there is no list, no caption and no banner to
     // preview — so the page collapses to the placeholder between single
     // gaps instead of a band of empty rows (the `/model` picker's
-    // placeholder rule): rule, search, blank, placeholder, blank, hint, rule.
+    // placeholder rule): rule, header, blank, search, blank, placeholder,
+    // blank, hint, rule.
     let mut app = open_app();
     app.mascot_picker.as_mut().expect("open").query = "zzz".to_string();
     let texts = texts(&app, 80);
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:?}");
+    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert!(texts[1].contains('❯'), "the search line: {texts:?}");
-    assert_eq!(texts[2], "", "{texts:?}");
+    assert_eq!(texts[1], "  Select mascot", "the header stays: {texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains('❯'), "the search line: {texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
     assert!(
-        texts[3].contains("No matching mascots"),
+        texts[6].contains("No matching mascots"),
         "the placeholder: {texts:?}"
     );
-    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[5].contains("Type to search"), "the hint: {texts:?}");
-    assert!(is_rule(&texts[6]), "{texts:?}");
+    assert_eq!(texts[7], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[8].contains("Type to search"), "the hint: {texts:?}");
+    assert!(is_rule(&texts[9]), "{texts:?}");
 }
 
 #[test]
@@ -560,24 +615,25 @@ fn is_rule(text: &str) -> bool {
 
 #[test]
 fn a_short_terminal_keeps_the_mascot_choices_on_screen() {
-    // The whole page is twelve rows beside the list and nineteen stacked
+    // The whole page is fifteen rows beside the list and twenty-two stacked
     // under it. A terminal shorter than that gets the compact page: the
-    // preview yields, and the search line, three mascots between the
-    // overflow slots and the hint stay on screen (bottom-anchoring the whole
-    // page kept the preview and flowed the search line and the highlighted
-    // mascot into scrollback).
+    // preview yields, and the header, the search line, three mascots
+    // between the overflow slots and the hint stay on screen
+    // (bottom-anchoring the whole page kept the preview and flowed the
+    // search line and the highlighted mascot into scrollback).
     let app = open_app();
-    assert_eq!(page_at(&app, WIDE, TALL).len(), 12, "beside the list");
-    assert_eq!(page_at(&app, NARROW, TALL).len(), 19, "stacked");
-    for (width, height) in [(WIDE, 11), (NARROW, 12)] {
+    assert_eq!(page_at(&app, WIDE, TALL).len(), 15, "beside the list");
+    assert_eq!(page_at(&app, NARROW, TALL).len(), 22, "stacked");
+    for (width, height) in [(WIDE, 14), (NARROW, 21)] {
         let texts = page_at(&app, width, height);
-        assert_eq!(texts.len(), 9, "{width}x{height}: {texts:#?}");
+        assert_eq!(texts.len(), 12, "{width}x{height}: {texts:#?}");
+        assert_eq!(texts[1], "  Select mascot", "the header: {texts:#?}");
         assert!(
             texts.iter().any(|t| t == "  ❯"),
             "the search line: {texts:#?}"
         );
         assert!(
-            row_for(&texts, "crest").starts_with("  ❯ crest"),
+            row_for(&texts, "crest").starts_with("  → crest"),
             "{texts:#?}"
         );
         assert_eq!(mascot_rows(&texts), 3, "three rows: {texts:#?}");
@@ -604,7 +660,7 @@ fn the_compact_mascot_page_is_the_familys_short_page() {
     assert!(is_rule(&texts[0]), "{texts:#?}");
     assert_eq!(texts[1], "  ❯", "{texts:#?}");
     assert_eq!(texts[2], "", "{texts:#?}");
-    assert_eq!(texts[3], "  ❯ crest ✓", "{texts:#?}");
+    assert_eq!(texts[3], "  → crest ✓", "{texts:#?}");
     assert_eq!(texts[4], "    bloom", "{texts:#?}");
     assert_eq!(texts[5], "    sprout", "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 3 more below", "{texts:#?}");
@@ -619,7 +675,7 @@ fn the_compact_mascot_window_rides_the_selection_and_holds_still() {
     let texts = page_at(&app, WIDE, 11);
     assert_eq!(texts[2], "  ↑ 2 more above", "{texts:#?}");
     assert_eq!(texts[3], "    sprout", "{texts:#?}");
-    assert_eq!(texts[4], "  ❯ twin", "{texts:#?}");
+    assert_eq!(texts[4], "  → twin", "{texts:#?}");
     assert_eq!(texts[5], "    skiter", "{texts:#?}");
     assert_eq!(texts[6], "  ↓ 1 more below", "{texts:#?}");
     for i in 0..Mascot::ALL.len() {
@@ -672,7 +728,7 @@ fn a_tiny_terminal_keeps_the_mascot_search_line() {
         assert_sheds_to_its_search_line(
             |height| page_at(&app, width, height),
             "",
-            "❯ crest",
+            "→ crest",
             "Enter to choose",
         );
         for height in 1..=10 {

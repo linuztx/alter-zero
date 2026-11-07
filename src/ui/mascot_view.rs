@@ -1,11 +1,12 @@
 //! The inline `/mascot` picker. See `docs/mascot.md`.
 //!
-//! The `/theme` picker's layout over the mascot catalog: the family's frame
-//! and `❯` search line over one row per mascot in the **`/mcp` list's
-//! shape** — the accent `❯` on the selection, the other rows indented under
-//! it, dim `↑ N more above` / `↓ N more below` rows naming whatever a
-//! window hides — and a **live banner preview** of the highlighted mascot
-//! under a caption naming it. The preview is built by
+//! The `/theme` picker's layout over the mascot catalog: the family's header
+//! — the `Select mascot` title over a dim line saying what a mascot is — and
+//! its frame and `❯` search line over one row per mascot in the **picker
+//! family's shape** — the accent `→` on the selection under the `❯`, the
+//! other rows indented under it, a five-row window over the `(n/total)`
+//! counter — and a **live banner preview** of the highlighted mascot under a
+//! caption naming it. The preview is built by
 //! [`header_lines_for`](super::header::header_lines_for), the *same* builder
 //! the startup banner uses, so what the picker shows and what Enter produces
 //! can never disagree. Once the terminal has room for the list, a gap and
@@ -16,8 +17,9 @@
 
 use super::header::header_lines_for;
 use super::model_view::{
-    PreviewLayout, capitalized, caption_lines, compact_page, first_page_that_fits, list_window,
-    marked_row_head, model_placeholder_row, model_rule, overflow_list, placeholder_window,
+    PreviewLayout, capitalized, caption_lines, compact_page, compact_page_with_header,
+    first_page_that_fits, list_counter_line, list_window, marked_row_head, model_placeholder_row,
+    picker_header, picker_page, placeholder_window, search_line,
 };
 use super::theme::*;
 use super::wrap::{clamp_spans, spans_cols};
@@ -25,7 +27,7 @@ use super::*;
 
 use crate::app::{Mascot, MascotRow};
 
-/// One mascot row in the `/mcp` list's shape: `{indent}{❯ }{name}{ ✓}`
+/// One mascot row in the picker family's shape: `{indent}{→ }{name}{ ✓}`
 /// ([`marked_row_head`]) — the selected row's marker and name in the
 /// accent, every other row keeping the marker's width blank, and the
 /// session's current mascot wearing the `/model` picker's green ✓.
@@ -91,19 +93,22 @@ fn layout() -> PreviewLayout {
     }
 }
 
-/// The list column in the `/mcp` list's shape ([`overflow_list`]): the
-/// window of rows at [`MASCOT_MENU_MAX_ROWS`] between overflow rows that
-/// name what it hides, if anything. The overflow rows are `…`-cut to
-/// `overflow_width`, the rows to `width`.
+/// The list column: the window of rows at [`MASCOT_MENU_MAX_ROWS`] over the
+/// `(n/total)` counter ([`list_counter_line`]), so the column is one height
+/// at every selection. The rows are `…`-cut to `width`, the counter to
+/// `column_width`.
 fn list_lines(
     rows: &[MascotRow],
     selected: usize,
     width: u16,
-    overflow_width: u16,
+    column_width: u16,
 ) -> Vec<Line<'static>> {
-    let (above, window, below) =
-        mascot_window(rows, selected, usize::from(MASCOT_MENU_MAX_ROWS), width);
-    overflow_list(above, window, below, overflow_width)
+    let (_, mut lines, _) = mascot_window(rows, selected, usize::from(MASCOT_MENU_MAX_ROWS), width);
+    lines.push(clamp_spans(
+        list_counter_line(selected, rows.len()).spans,
+        usize::from(column_width),
+    ));
+    lines
 }
 
 /// The preview for `mascot` at `width`: the caption ([`caption_lines`] —
@@ -137,19 +142,21 @@ fn banner_slot(app: &App, width: u16) -> usize {
         .unwrap_or(0)
 }
 
-/// The framed page as lines — a top rule, the `❯` search line straight
-/// under it, a body, the key hint, and a bottom rule straight under that,
-/// no blank row hugging either rule (`docs/view-flow.md` *The frame hugs
-/// its content*) — the first of two pages that fits `height` rows
-/// ([`first_page_that_fits`]). The **whole** page's body is the list
-/// column and the captioned **live banner preview**, beside the list when
-/// the terminal has the room and under it when it doesn't
-/// ([`PreviewLayout::body`]). On a terminal too short for that it is a
-/// **compact** page ([`compact_page`]): three of the rows between the two
-/// reserved overflow slots, the preview yielding, and on a terminal shorter
-/// still the slots, the rules and the rows one by one, so the search line,
-/// the highlighted mascot and the hint stay on screen (`docs/view-flow.md`
-/// *A page that sheds rows before it flows*). What [`render_mascot_picker`]
+/// The framed page as lines — a top rule, the `Select mascot` title over its
+/// dim subtitle, the `❯` search line, a body, the key hint, and a bottom rule
+/// straight under that, no blank row hugging either rule
+/// (`docs/view-flow.md` *The frame hugs its content*) — the first of three
+/// pages that fits `height` rows ([`first_page_that_fits`]). The **whole**
+/// page's body is the list column and the captioned **live banner
+/// preview**, beside the list when the terminal has the room and under it
+/// when it doesn't ([`PreviewLayout::body`]). On a terminal too short for
+/// that it is a **compact** page: three of the rows between the two reserved
+/// overflow slots under the header ([`compact_page_with_header`]), the
+/// preview yielding, then the same page without the header
+/// ([`compact_page`]), and on a terminal shorter still the slots, the rules
+/// and the rows one by one, so the search line, the highlighted mascot and
+/// the hint stay on screen (`docs/view-flow.md` *A page that sheds rows
+/// before it flows*). What [`render_mascot_picker`]
 /// paints and [`mascot_menu_rows`] counts, so the reserved height and the
 /// painted rows can never disagree. `height` is the terminal's, or the
 /// region already reserved for the page, which builds the same page. Empty
@@ -165,17 +172,13 @@ pub(super) fn mascot_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
         return Vec::new();
     };
     let rows = app.mascot_rows();
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(picker.query.clone()),
-    ]);
+    let header = picker_header(MASCOT_TITLE, MASCOT_SUBTITLE, width);
+    let search = search_line(&picker.query);
     let hint = model_placeholder_row(MASCOT_HINT, model_meta_color(), width);
-    let page = |body: Vec<Line<'static>>| {
-        let mut lines = vec![model_rule(width), search_line.clone()];
-        lines.extend(body);
-        lines.extend([hint.clone(), model_rule(width)]);
-        lines
+    let tail = std::slice::from_ref(&hint);
+    let page = |mut body: Vec<Line<'static>>| {
+        body.push(hint.clone());
+        picker_page(&header, &search, body, width)
     };
     if rows.is_empty() {
         let block = [model_placeholder_row(
@@ -183,12 +186,20 @@ pub(super) fn mascot_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
             model_meta_color(),
             width,
         )];
-        return compact_page(
+        return first_page_that_fits(
             height,
-            &search_line,
-            &|max| placeholder_window(&block, max),
-            &[hint],
-            width,
+            &[
+                &|| page(vec![Line::default(), block[0].clone(), Line::default()]),
+                &|| {
+                    compact_page(
+                        height,
+                        &search,
+                        &|max| placeholder_window(&block, max),
+                        tail,
+                        width,
+                    )
+                },
+            ],
         );
     }
     let selected = picker.selected.min(rows.len() - 1);
@@ -196,20 +207,14 @@ pub(super) fn mascot_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<
     let whole = || {
         page(layout().body(
             width,
-            &|overflow_width| list_lines(&rows, selected, width, overflow_width),
+            &|column_width| list_lines(&rows, selected, width, column_width),
             &|preview_width| preview_lines(app, mascot, preview_width),
         ))
     };
-    let compact = || {
-        compact_page(
-            height,
-            &search_line,
-            &|max| mascot_window(&rows, selected, max, width),
-            std::slice::from_ref(&hint),
-            width,
-        )
-    };
-    first_page_that_fits(height, &[&whole, &compact])
+    let window = |max| mascot_window(&rows, selected, max, width);
+    let with_header = || compact_page_with_header(&header, &search, &window, tail, width);
+    let compact = || compact_page(height, &search, &window, tail, width);
+    first_page_that_fits(height, &[&whole, &with_header, &compact])
 }
 
 /// The rows the picker's own frame occupies — the built page's line count
@@ -236,10 +241,10 @@ pub fn mascot_picker_height(app: &App, width: u16, term_height: u16) -> Option<u
 }
 
 /// Render the **inline** `/mascot` picker into the live region, in place of
-/// the composer: a top rule, the `❯` search line, the mascot rows in the
-/// `/mcp` list's shape (`❯ crest ✓`), the captioned live banner preview —
-/// beside the rows on a wide terminal, under them on a narrow one — the key
-/// hint, and a bottom rule; or, in an area too short for that, the compact
+/// the composer: a top rule, the title over its subtitle, the `❯` search
+/// line, the mascot rows (`→ crest ✓`) over the `(n/total)` counter, the
+/// captioned live banner preview — beside the rows on a wide terminal, under
+/// them on a narrow one — the key hint, and a bottom rule; or, in an area too short for that, the compact
 /// page, which sheds its own rows down to the search line in an area shorter
 /// still. The page is built for the area's height, so it always fits and
 /// nothing flows (`docs/view-flow.md`). Pure — `render_live` paints this.

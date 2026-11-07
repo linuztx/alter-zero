@@ -10,11 +10,24 @@ use crate::ui::theme::{
     model_selected_color, settings_value_color, settings_value_off_color,
 };
 
-/// The fixed rows framing the menu: top rule, search, gap (3 above the
-/// list), then counter, gap, description, gap, hint, bottom rule (6 below)
-/// — pinned here so a builder change that adds or drops a chrome row fails
-/// a height test (`settings_view_lines`).
-const SETTINGS_CHROME_ROWS: u16 = 9;
+/// The fixed rows framing the menu: top rule, title, subtitle, gap, search,
+/// gap (6 above the list), then counter, gap, description, gap, hint, bottom
+/// rule (6 below) — pinned here so a builder change that adds or drops a
+/// chrome row fails a height test (`settings_view_lines`). Counted at
+/// [`WIDE`], where every description these tests highlight is one row.
+const SETTINGS_CHROME_ROWS: u16 = 12;
+
+/// A terminal wide enough for the descriptions the height tests highlight
+/// to read on one row under the labels.
+const WIDE: u16 = 90;
+
+/// The page row the `❯` search line sits on on the whole page: top rule
+/// (0), title (1), subtitle (2), gap (3), search (4).
+const SETTINGS_SEARCH_ROW: u16 = 4;
+
+/// The page row the first setting sits on: the search line, a gap, then the
+/// list.
+const FIRST_ROW: u16 = SETTINGS_SEARCH_ROW + 2;
 
 /// How many setting rows the menu actually shows: every one, until there are
 /// more than the window holds — past [`SETTINGS_MENU_MAX_ROWS`] the list
@@ -36,10 +49,84 @@ fn settings_app() -> App {
 /// Render the menu at its natural height, like the boundary does — otherwise
 /// the list's `Min(0)` would expand and push the rows below it down.
 fn render(app: &App, width: u16) -> Buffer {
-    let height = settings_height(app, 78, 200).expect("the menu is open");
+    let height = settings_height(app, width, 200).expect("the menu is open");
     let mut buf = buffer(width, height);
     render_settings(buf.area, &mut buf, app);
     buf
+}
+
+// --- the page's shape (docs/settings.md, docs/view-flow.md) ---
+
+#[test]
+fn the_whole_page_is_titled_and_lists_its_rows_under_the_search_prompt() {
+    // The user's mock: a title over a dim line saying what a change does,
+    // a gap, the search line, a gap, five rows whose `→` sits under the
+    // `❯`, the counter and the highlighted row's description hanging under
+    // the labels, a gap, the hint.
+    let app = settings_app();
+    let rule = "─".repeat(90);
+    let counter = format!("    (1/{})", SettingKey::ALL.len());
+    assert_eq!(
+        page_at(&app, 90, TALL),
+        [
+            rule.as_str(),
+            "  Settings",
+            "  Changes take effect at once and persist across sessions",
+            "",
+            "  ❯",
+            "",
+            "  → Hide thinking        false",
+            "    Verbose output       false",
+            "    Show images          true",
+            "    Image width          120",
+            "    Auto-resize images   true",
+            counter.as_str(),
+            "",
+            "    Hide the model's chain-of-thought instead of streaming it above the composer",
+            "",
+            "  Type to search · Enter/Space to change · Esc to cancel",
+            rule.as_str(),
+        ]
+    );
+}
+
+#[test]
+fn the_title_wears_the_page_title_dress_over_a_dim_subtitle() {
+    let app = settings_app();
+    let lines = crate::ui::settings_view::settings_view_lines(&app, 90, TALL);
+    assert!(wears_the_title_dress(&lines[1]), "{:?}", lines[1]);
+    assert!(
+        lines[2]
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .all(|span| span.style.fg == Some(crate::ui::theme::model_meta_color())),
+        "{:?}",
+        lines[2]
+    );
+}
+
+#[test]
+fn the_window_shows_five_settings_and_the_counter_names_the_rest() {
+    let mut app = settings_app();
+    let labels = labels(&app);
+    assert_eq!(SETTINGS_MENU_MAX_ROWS, 5);
+    assert_eq!(setting_rows(&page_at(&app, 90, TALL), &labels), 5);
+    // Deep in the list the window rides the selection, centred on it.
+    select(&mut app, 7); // Permission mode
+    let texts = page_at(&app, 90, TALL);
+    let rows: Vec<&String> = texts
+        .iter()
+        .filter(|t| value_col(t, &labels).is_some())
+        .collect();
+    assert_eq!(rows.len(), 5, "{texts:#?}");
+    assert!(rows[2].starts_with("  → Permission mode"), "{texts:#?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| *t == format!("    (8/{})", SettingKey::ALL.len())),
+        "{texts:#?}"
+    );
 }
 
 #[test]
@@ -48,8 +135,15 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
     let buf = render(&app, 78);
     let last = buf.area.height - 1;
     assert!(row(&buf, 0, 78).starts_with('─'), "top rule");
-    assert_eq!(SEARCH_ROW, 1, "no header banner, no padding row");
-    assert!(row(&buf, SEARCH_ROW, 78).contains('❯'), "the search line");
+    assert_eq!(
+        row(&buf, 1, 78).trim_end(),
+        "  Settings",
+        "the title hugs the rule"
+    );
+    assert!(
+        row(&buf, SETTINGS_SEARCH_ROW, 78).contains('❯'),
+        "the search line under the header"
+    );
     assert!(row(&buf, last, 78).starts_with('─'), "bottom rule");
     assert!(
         row(&buf, last - 1, 78).contains(SETTINGS_HINT),
@@ -62,7 +156,7 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
 fn the_height_is_the_chrome_plus_the_listed_rows() {
     let mut app = settings_app();
     assert_eq!(
-        settings_height(&app, 78, 200),
+        settings_height(&app, WIDE, 200),
         Some(SETTINGS_CHROME_ROWS + visible_rows())
     );
     // A narrowed search shrinks the list — and so the region.
@@ -70,15 +164,15 @@ fn the_height_is_the_chrome_plus_the_listed_rows() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     assert_eq!(
-        settings_height(&app, 78, 200),
+        settings_height(&app, WIDE, 200),
         Some(SETTINGS_CHROME_ROWS + 1)
     );
     // …and it is clamped to the terminal.
-    assert_eq!(settings_height(&app, 78, 5), Some(5));
+    assert_eq!(settings_height(&app, WIDE, 5), Some(5));
     // Closed, there is no menu height at all (the caller falls back to the
     // composer's).
     app.close_settings();
-    assert_eq!(settings_height(&app, 78, 200), None);
+    assert_eq!(settings_height(&app, WIDE, 200), None);
 }
 
 #[test]
@@ -90,11 +184,11 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     let mut app = settings_app();
     app.begin_stream();
     app.start_tool("Bash", "cargo test", None);
-    let preview = preview_rows(&app, 78);
+    let preview = preview_rows(&app, WIDE);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
     assert_eq!(
-        settings_height(&app, 78, 200),
+        settings_height(&app, WIDE, 200),
         Some(strip + SETTINGS_CHROME_ROWS + visible_rows())
     );
     // Idle again, the menu is alone — the old geometry.
@@ -102,7 +196,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     app.finish_stream();
     app.end_turn(1);
     assert_eq!(
-        settings_height(&app, 78, 200),
+        settings_height(&app, WIDE, 200),
         Some(SETTINGS_CHROME_ROWS + visible_rows())
     );
 }
@@ -111,18 +205,19 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
 fn every_row_shows_its_label_and_value_and_the_first_is_marked() {
     let app = settings_app();
     let buf = render(&app, 78);
-    // The list starts at row 3: top(0) search(1) gap(2).
-    let first = row(&buf, 3, 78);
-    assert!(first.starts_with("→ Hide thinking"), "{first:?}");
+    // The list starts under the search line and its gap, the `→` under the
+    // `❯`.
+    let first = row(&buf, FIRST_ROW, 78);
+    assert!(first.starts_with("  → Hide thinking"), "{first:?}");
     assert!(first.contains("false"), "{first:?}");
-    let second = row(&buf, 4, 78);
-    assert!(second.starts_with("  Verbose output"), "{second:?}");
+    let second = row(&buf, FIRST_ROW + 1, 78);
+    assert!(second.starts_with("    Verbose output"), "{second:?}");
     assert!(second.contains("false"), "{second:?}");
-    let third = row(&buf, 5, 78);
-    assert!(third.starts_with("  Show images"), "{third:?}");
+    let third = row(&buf, FIRST_ROW + 2, 78);
+    assert!(third.starts_with("    Show images"), "{third:?}");
     assert!(third.contains("true"), "{third:?}");
     // The selected row's marker takes the picker family's cyan accent.
-    assert_eq!(buf[(0, 3)].fg, model_selected_color());
+    assert_eq!(buf[(2, FIRST_ROW)].fg, model_selected_color());
 }
 
 #[test]
@@ -139,15 +234,16 @@ fn the_values_line_up_in_a_column() {
             .expect("the row has a value")
     };
     assert_eq!(
-        value_col(3, 'f'),
-        value_col(5, 't'),
+        value_col(FIRST_ROW, 'f'),
+        value_col(FIRST_ROW + 2, 't'),
         "the value column is shared"
     );
     assert_eq!(
-        value_col(3, 'f'),
-        // marker (2) + the widest label ("Auto-resize images", 18) + the gap (3).
-        2 + 18 + 3,
-        "sized off the widest visible label"
+        value_col(FIRST_ROW, 'f'),
+        // indent (2) + marker (2) + the widest label ("Auto-resize images",
+        // 18) + the gap (3).
+        2 + 2 + 18 + 3,
+        "sized off the widest listed label"
     );
 }
 
@@ -156,13 +252,17 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
     // A glance down the column should show what is actually doing something.
     let app = settings_app();
     let buf = render(&app, 78);
-    let line = row(&buf, 3, 78);
+    let line = row(&buf, FIRST_ROW, 78);
     let at = u16::try_from(line.find("false").unwrap()).unwrap();
-    assert_eq!(buf[(at, 3)].fg, settings_value_off_color(), "false is dim");
-    let line = row(&buf, 5, 78);
+    assert_eq!(
+        buf[(at, FIRST_ROW)].fg,
+        settings_value_off_color(),
+        "false is dim"
+    );
+    let line = row(&buf, FIRST_ROW + 2, 78);
     let at = u16::try_from(line.find("true").unwrap()).unwrap();
     assert_eq!(
-        buf[(at, 5)].fg,
+        buf[(at, FIRST_ROW + 2)].fg,
         settings_value_color(),
         "a live value is not"
     );
@@ -172,15 +272,19 @@ fn an_off_value_is_dimmed_and_an_on_value_is_not() {
 fn the_counter_and_description_track_the_selection() {
     let mut app = settings_app();
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let buf = render(&app, 78);
+    let buf = render(&app, WIDE);
     let rows = visible_rows();
     let total = SettingKey::ALL.len();
-    // counter = 3 (list start) + the rows actually drawn; the count it shows
-    // is the whole list, not the window.
-    let counter = row(&buf, 3 + rows, 78);
-    assert!(counter.contains(&format!("(2/{total})")), "{counter:?}");
-    // description = counter + gap + 1.
-    let description = row(&buf, 3 + rows + 2, 78);
+    // counter = the list start + the rows actually drawn, hanging under the
+    // labels; the count it shows is the whole list, not the window.
+    let counter = row(&buf, FIRST_ROW + rows, WIDE);
+    assert!(
+        counter.starts_with(&format!("    (2/{total})")),
+        "{counter:?}"
+    );
+    // description = counter + gap + 1, under the labels too.
+    let description = row(&buf, FIRST_ROW + rows + 2, WIDE);
+    assert!(description.starts_with("    A cell per"), "{description:?}");
     assert!(
         description.contains(SettingKey::Verbose.description()),
         "{description:?}"
@@ -194,14 +298,14 @@ fn the_search_query_shows_after_the_prompt() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    let search = row(&buf, SEARCH_ROW, 78);
+    let search = row(&buf, SETTINGS_SEARCH_ROW, 78);
     assert!(search.contains("❯ temp"), "{search:?}");
-    assert_eq!(buf[(2, SEARCH_ROW)].fg, model_selected_color());
+    assert_eq!(buf[(2, SETTINGS_SEARCH_ROW)].fg, model_selected_color());
     // …and the list narrowed to the one match.
     assert!(
-        row(&buf, 3, 78).contains("Temperature"),
+        row(&buf, FIRST_ROW, 78).contains("Temperature"),
         "{:?}",
-        row(&buf, 3, 78)
+        row(&buf, FIRST_ROW, 78)
     );
 }
 
@@ -212,8 +316,11 @@ fn a_search_matching_nothing_shows_a_placeholder_and_a_blank_counter() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    assert!(row(&buf, 3, 78).contains("No matching settings"));
-    assert!(row(&buf, 4, 78).trim().is_empty(), "no counter to show");
+    assert!(row(&buf, FIRST_ROW, 78).contains("No matching settings"));
+    assert!(
+        row(&buf, FIRST_ROW + 1, 78).trim().is_empty(),
+        "no counter to show"
+    );
     // The frame is intact — the hint and rules still sit where they belong.
     let last = buf.area.height - 1;
     assert!(row(&buf, last, 78).starts_with('─'));
@@ -232,10 +339,13 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
         telemetry: true,
         update_check: true,
     });
-    let buf = render(&app, 78);
-    let all = SettingKey::ALL.len();
-    let checkpoints = (0..all)
-        .map(|i| row(&buf, 3 + u16::try_from(i).unwrap(), 78))
+    let at = labels(&app)
+        .iter()
+        .position(|label| *label == "Checkpoints")
+        .expect("the row");
+    select(&mut app, at);
+    let checkpoints = page_at(&app, 78, TALL)
+        .into_iter()
         .find(|line| line.contains("Checkpoints"))
         .expect("the row is listed");
     assert!(
@@ -257,7 +367,9 @@ fn a_long_list_keeps_the_selection_centered() {
         .collect();
     let last = SettingKey::ALL.last().unwrap().label();
     assert!(
-        visible.iter().any(|l| l.starts_with(&format!("→ {last}"))),
+        visible
+            .iter()
+            .any(|l| l.starts_with(&format!("  → {last}"))),
         "the last row ({last}) is visible and marked: {visible:?}"
     );
 }
@@ -271,7 +383,7 @@ fn the_cursor_sits_at_the_end_of_the_search_query() {
     let height = settings_height(&app, 78, 200).unwrap();
     let area = Rect::new(0, 3, 78, height);
     let (x, y) = cursor_position(area, &app);
-    assert_eq!(y, 3 + SEARCH_ROW, "on the search row");
+    assert_eq!(y, 3 + SETTINGS_SEARCH_ROW, "on the search row");
     // indent (2) + `❯ ` (2) + the 5-character query.
     assert_eq!(x, 2 + 2 + 5);
 }
@@ -329,8 +441,8 @@ fn a_squeezed_settings_menu_paints_the_page_built_for_its_height() {
 fn an_unmatched_search_collapses_to_placeholder_and_hint() {
     // Nothing matched means there is no count and no description, so those
     // slots collapse to ONE blank gap instead of a band of empty rows (the
-    // `/model` picker's placeholder rule). The whole page is rule, search,
-    // blank, placeholder, blank, hint, rule.
+    // `/model` picker's placeholder rule). The whole page is rule, header,
+    // blank, search, blank, placeholder, blank, hint, rule.
     let mut app = App::new();
     app.open_settings();
     app.settings_picker.as_mut().expect("open").query = "zzz".to_string();
@@ -339,14 +451,16 @@ fn an_unmatched_search_collapses_to_placeholder_and_hint() {
         .map(|l| plain(l).trim_end().to_string())
         .collect();
     let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
-    assert_eq!(texts.len(), 7, "the collapsed page is 7 rows: {texts:?}");
+    assert_eq!(texts.len(), 10, "the collapsed page is 10 rows: {texts:?}");
     assert!(is_rule(&texts[0]), "{texts:?}");
-    assert!(texts[1].contains('❯'), "{texts:?}");
-    assert_eq!(texts[2], "", "{texts:?}");
-    assert!(texts[3].contains("No matching settings"), "{texts:?}");
-    assert_eq!(texts[4], "", "one gap under the placeholder: {texts:?}");
-    assert!(texts[5].contains("Type to search"), "{texts:?}");
-    assert!(is_rule(&texts[6]), "{texts:?}");
+    assert_eq!(texts[1], "  Settings", "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains('❯'), "{texts:?}");
+    assert_eq!(texts[5], "", "{texts:?}");
+    assert!(texts[6].contains("No matching settings"), "{texts:?}");
+    assert_eq!(texts[7], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[8].contains("Type to search"), "{texts:?}");
+    assert!(is_rule(&texts[9]), "{texts:?}");
 }
 
 #[test]
@@ -441,10 +555,14 @@ fn a_never_ask_timeout_is_dimmed_like_any_off_value() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let buf = render(&app, 78);
-    let line = row(&buf, 3, 78);
+    let line = row(&buf, FIRST_ROW, 78);
     assert!(line.contains("Ask timeout"), "{line:?}");
     let at = u16::try_from(line.find("never").expect("the value")).unwrap();
-    assert_eq!(buf[(at, 3)].fg, settings_value_off_color(), "never is dim");
+    assert_eq!(
+        buf[(at, FIRST_ROW)].fg,
+        settings_value_off_color(),
+        "never is dim"
+    );
 }
 
 // --- the compact page: a short terminal keeps the choices on screen ---
@@ -496,13 +614,14 @@ fn is_rule(text: &str) -> bool {
 
 #[test]
 fn a_short_terminal_keeps_the_setting_choices_on_screen() {
-    // The whole page is 19 rows. On 12, bottom-anchoring it flowed the search
+    // The whole page is 18 rows (the first description wraps under the
+    // labels at 78 columns). On 12, bottom-anchoring it flowed the search
     // line and the highlighted row into scrollback — the row Enter would
     // change was off screen. The description and the counter yield instead,
     // and three rows of the list stay between the search line and the hint.
     let app = settings_app();
     let labels = labels(&app);
-    assert_eq!(page_at(&app, 78, TALL).len(), 19, "the whole page");
+    assert_eq!(page_at(&app, 78, TALL).len(), 18, "the whole page");
     let texts = page_at(&app, 78, 12);
     assert!(texts.len() <= 12, "fits: {texts:#?}");
     assert!(
@@ -510,7 +629,7 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
         "the search line: {texts:#?}"
     );
     assert!(
-        texts.iter().any(|t| t.starts_with("→ Hide thinking")),
+        texts.iter().any(|t| t.starts_with("  → Hide thinking")),
         "the highlighted setting: {texts:#?}"
     );
     assert_eq!(setting_rows(&texts, &labels), 3, "three rows: {texts:#?}");
@@ -538,24 +657,33 @@ fn a_short_terminal_keeps_the_setting_choices_on_screen() {
 
 #[test]
 fn the_compact_settings_page_is_the_familys_short_page() {
-    // Rule, the search line with the `↑` slot directly under it, three rows,
-    // the `↓` slot directly over the hint, rule — the /theme and /skills
-    // compact pages, row for row, no blank row hugging either rule.
+    // Rule, the header and its gap, the search line with the `↑` slot
+    // directly under it, three rows, the `↓` slot directly over the hint,
+    // rule — the /theme and /skills compact pages, row for row, no blank row
+    // hugging either rule.
     let texts = page_at(&settings_app(), 78, 12);
-    assert_eq!(texts.len(), 9, "{texts:#?}");
+    assert_eq!(texts.len(), 12, "{texts:#?}");
     assert!(is_rule(&texts[0]), "{texts:#?}");
-    assert_eq!(texts[1], "  ❯", "{texts:#?}");
-    assert_eq!(texts[2], "", "nothing above the first row: {texts:#?}");
-    assert!(texts[3].starts_with("→ Hide thinking"), "{texts:#?}");
-    assert!(texts[4].starts_with("  Verbose output"), "{texts:#?}");
-    assert!(texts[5].starts_with("  Show images"), "{texts:#?}");
+    assert_eq!(texts[1], "  Settings", "the header stays: {texts:#?}");
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert_eq!(texts[4], "  ❯", "{texts:#?}");
+    assert_eq!(texts[5], "", "nothing above the first row: {texts:#?}");
+    assert!(texts[6].starts_with("  → Hide thinking"), "{texts:#?}");
+    assert!(texts[7].starts_with("    Verbose output"), "{texts:#?}");
+    assert!(texts[8].starts_with("    Show images"), "{texts:#?}");
     assert_eq!(
-        texts[6],
+        texts[9],
         format!("  ↓ {} more below", SettingKey::ALL.len() - 3),
         "{texts:#?}"
     );
+    assert_eq!(texts[10], format!("  {SETTINGS_HINT}"), "{texts:#?}");
+    assert!(is_rule(&texts[11]), "{texts:#?}");
+    // A row shorter, the header yields too: the search line hugs the rule.
+    let texts = page_at(&settings_app(), 78, 11);
+    assert_eq!(texts.len(), 9, "{texts:#?}");
+    assert_eq!(texts[1], "  ❯", "{texts:#?}");
+    assert!(texts[3].starts_with("  → Hide thinking"), "{texts:#?}");
     assert_eq!(texts[7], format!("  {SETTINGS_HINT}"), "{texts:#?}");
-    assert!(is_rule(&texts[8]), "{texts:#?}");
 }
 
 #[test]
@@ -563,12 +691,12 @@ fn the_compact_settings_window_keeps_the_selection_in_its_middle() {
     let mut app = settings_app();
     select(&mut app, 7); // Permission mode
     let texts = page_at(&app, 78, 12);
-    assert_eq!(texts[2], "  ↑ 6 more above", "{texts:#?}");
-    assert!(texts[3].starts_with("  Tools"), "{texts:#?}");
-    assert!(texts[4].starts_with("→ Permission mode"), "{texts:#?}");
-    assert!(texts[5].starts_with("  Checkpoints"), "{texts:#?}");
+    assert_eq!(texts[5], "  ↑ 6 more above", "{texts:#?}");
+    assert!(texts[6].starts_with("    Tools"), "{texts:#?}");
+    assert!(texts[7].starts_with("  → Permission mode"), "{texts:#?}");
+    assert!(texts[8].starts_with("    Checkpoints"), "{texts:#?}");
     assert_eq!(
-        texts[6],
+        texts[9],
         format!("  ↓ {} more below", SettingKey::ALL.len() - 9),
         "{texts:#?}"
     );
@@ -599,7 +727,7 @@ fn the_compact_settings_page_holds_still_across_selections() {
 
 #[test]
 fn a_long_settings_description_is_cut_to_one_row_before_the_list_shrinks() {
-    // `Ask timeout`'s description wraps to two rows at 78 columns, so its
+    // `Ask timeout`'s description wraps to two rows at 90 columns, so its
     // whole page is a row taller than the first setting's. On a terminal
     // one row short of that, the page keeps its whole list and cuts the
     // description to one row — the page is one height at every selection,
@@ -611,13 +739,13 @@ fn a_long_settings_description_is_cut_to_one_row_before_the_list_shrinks() {
         .position(|l| *l == "Ask timeout")
         .expect("row");
     select(&mut app, at);
-    assert_eq!(page_at(&app, 78, TALL).len(), 20, "wrapped to two rows");
-    let texts = page_at(&app, 78, 19);
-    assert_eq!(texts.len(), 19, "{texts:#?}");
+    assert_eq!(page_at(&app, WIDE, TALL).len(), 18, "wrapped to two rows");
+    let texts = page_at(&app, WIDE, 17);
+    assert_eq!(texts.len(), 17, "{texts:#?}");
     assert_eq!(
         setting_rows(&texts, &labels),
-        10,
-        "the whole list: {texts:#?}"
+        5,
+        "the whole window: {texts:#?}"
     );
     let description = texts
         .iter()
@@ -629,21 +757,23 @@ fn a_long_settings_description_is_cut_to_one_row_before_the_list_shrinks() {
     );
     // The first setting's one-row description fits that terminal whole.
     select(&mut app, 0);
-    assert_eq!(page_at(&app, 78, 19), page_at(&app, 78, TALL));
+    assert_eq!(page_at(&app, WIDE, 17), page_at(&app, WIDE, TALL));
 }
 
 #[test]
 fn the_whole_settings_page_returns_once_it_fits() {
+    // At a width where the first description is one row, cutting it to one
+    // row saves nothing, so a row short is the compact page.
     let app = settings_app();
-    let whole = u16::try_from(page_at(&app, 78, TALL).len()).expect("rows");
+    let whole = u16::try_from(page_at(&app, WIDE, TALL).len()).expect("rows");
     let counter = format!("(1/{})", SettingKey::ALL.len());
     let has_counter = |texts: &[String]| texts.iter().any(|t| t.contains(&counter));
     assert!(
-        has_counter(&page_at(&app, 78, whole)),
+        has_counter(&page_at(&app, WIDE, whole)),
         "whole at its own height"
     );
     assert!(
-        !has_counter(&page_at(&app, 78, whole - 1)),
+        !has_counter(&page_at(&app, WIDE, whole - 1)),
         "compact a row short"
     );
 }
@@ -685,13 +815,17 @@ fn the_cursor_sits_on_the_compact_settings_search_line() {
     for c in "o".chars() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    let height = settings_height(&app, 78, 12).expect("open");
-    assert_eq!(height, 9, "the compact page");
-    let area = Rect::new(0, 1, 78, height);
-    let (x, y) = cursor_position(area, &app);
-    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
-    // indent (2) + `❯ ` (2) + the one-character query.
-    assert_eq!(x, 2 + 2 + 1);
+    // On 12 rows the compact page keeps its header, so the search line sits
+    // under it; on 11 the header has yielded and it hugs the rule.
+    for (rows, search) in [(12, SETTINGS_SEARCH_ROW), (11, SEARCH_ROW)] {
+        let height = settings_height(&app, 78, rows).expect("open");
+        assert_eq!(height, if rows == 12 { 12 } else { 9 }, "the compact page");
+        let area = Rect::new(0, 1, 78, height);
+        let (x, y) = cursor_position(area, &app);
+        assert_eq!(y, 1 + search, "{rows} rows: on the search line");
+        // indent (2) + `❯ ` (2) + the one-character query.
+        assert_eq!(x, 2 + 2 + 1);
+    }
 }
 
 #[test]
@@ -715,7 +849,7 @@ fn the_settings_menu_renders_the_page_its_height_reserves() {
     assert!(is_rule(rows.last().expect("rows").trim()), "{rows:#?}");
     assert!(rows.iter().any(|r| r.trim() == "❯"), "{rows:#?}");
     assert!(
-        rows.iter().any(|r| r.starts_with("→ Hide thinking")),
+        rows.iter().any(|r| r.starts_with("  → Hide thinking")),
         "{rows:#?}"
     );
     assert!(rows.iter().any(|r| r.contains(SETTINGS_HINT)), "{rows:#?}");

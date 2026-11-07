@@ -99,26 +99,88 @@ because there they say where one thing ends and the next begins.
 
 ```
 ────────────────────────────────────────────
-  ❯ cla
+  Select model
+  Applies to this session and new ones in this directory
                                              (blocks keep their gaps…)
-→ anthropic/claude-3-haiku [openrouter]
-  claude-opus-4-8-fast [a0_venice] ✓
-  (1/12)
+  ❯ cla
 
-  Model Name: Anthropic: Claude 3 Haiku
+  → anthropic/claude-3-haiku [openrouter]
+    claude-opus-4-8-fast [a0_venice] ✓
+    (1/12)
+
+    Model Name: Anthropic: Claude 3 Haiku
 ────────────────────────────────────────────  (…but nothing hugs a rule)
 ```
 
-The cursor seats count from that edge: a picker's `❯` search line is the
-page's row 1 on a page with room for it — found in the built page
-(`view_prompt_row`) rather than pinned, since a short terminal's rungs move
-it (*Below the compact page*) — a `/login` page's first content row is row
-1 (`DEVICE_CURSOR_ROW`), and a permission prompt's
+The cursor seats count from that edge: a picker's `❯` search line is found
+in the built page (`view_prompt_row`) rather than pinned — under its header
+on a page with room for one, straight under the top rule once a short
+terminal's rungs have shed it (*Below the compact page*) — a `/login`
+question's title is found the same way (`title_row`, the page's first text
+row), its device page's seat is row 1 (`DEVICE_CURSOR_ROW`), and a permission
+prompt's
 options sit `PERMISSION_TAIL_ROWS` — gap, hint, rule — above the region's
 bottom. The `/mcp` auth page's `URL >` field is **found** in the page the
 paint builds rather than counted from the bottom, since the notes under it
 wrap. Each view's tests walk its states through one shared assertion
 (`assert_frame_hugs_content`), so a page that pads a rule fails its suite.
+
+## A picker's page
+
+The search-line pickers — `/model`, `/settings`, `/skills`, `/theme`,
+`/mascot`, `/spinner` — and `/login`'s pages are one shape, so the eye finds
+the same thing in the same place on every one (`model_view`'s
+`picker_header`, `picker_page`, `marked_row_head`, `list_counter_line`):
+
+```
+────────────────────────────────────────────
+  Settings                                   the title, the pages' dress
+  Changes take effect at once and persist …  what a choice changes, dim
+                                             gap
+  ❯                                          the search line
+                                             gap
+  → Hide thinking        false               the window: `→` under the `❯`
+    Verbose output       false
+    …                                        (five rows; /model 7, /theme 10)
+    (1/20)                                   the counter, under the names
+                                             gap
+    Hide the model's chain-of-thought …      the highlighted row's detail
+                                             gap
+  Type to search · Enter/Space to change …   the hint
+────────────────────────────────────────────
+```
+
+- **One `❯` per page, the search prompt's.** Every list row opens on the
+  frame's inset and the `→` marker (`MODEL_MARKER`) — or that marker's width
+  blank — so the marker sits under the `❯` and the names line up under the
+  marker. The previewed pickers used to mark their selection with a second
+  `❯`, the `/mcp` list's, which read as a second prompt; the no-text-entry
+  menus (`/hooks`, `/mcp`, the startup review, `/donate`) keep the `❯`, having
+  no search line for it to be confused with.
+- **The detail hangs under the names** (`MODEL_DETAIL_INDENT`): the
+  `(n/total)` counter, the highlighted row's description, `/model`'s
+  `Model Name:` line and its failed providers' reasons. The title, the search
+  line, a placeholder standing in the list's place and the hint keep the
+  frame's inset.
+- **A header names the page**: a title in the pages' title dress over one dim
+  line — `/skills`' catalog count, or for the others what a choice changes and
+  where it is kept (`Changes take effect at once and persist across
+  sessions`, `The startup banner's art — saved for this directory`). It wraps
+  rather than cuts, and each subtitle fits a 60-column terminal on one row.
+- **Short windows.** Five rows (`SETTINGS_MENU_MAX_ROWS`, which `/skills`,
+  `/mascot` and `/spinner` share; seven for `/model`), the selection riding
+  the middle, the counter under them saying where it stands. `/theme` keeps
+  ten (`THEME_MENU_MAX_ROWS`): its rows and counter stand no taller than the
+  preview beside them, so nearly the whole catalog shows at no cost in
+  height. The previewed pickers count too, where they used to name what the
+  window hid with `↑ N more above` / `↓ N more below` rows: over a short
+  window those come and go as the selection moves, and the page would jump a
+  row with them.
+- `/login`'s root asks its question in words — `Select login method` over
+  its three ways in — and so has no search line at all: typing does nothing
+  and the cursor hides there, as on the sign-in method choice, and its
+  ladder keeps the title in the search line's seat, the hidden cursor seated
+  on it wherever the rungs leave it (`docs/copilot.md`).
 
 ## A page that sheds rows before it flows: the compact pages
 
@@ -143,7 +205,8 @@ first; headers, tabs, search, and at least one result remain visible"*):
    whole and its compact layout as ↑/↓ crossed a long one;
 2. the description, a preview and the `(n/total)` counter go, and the list
    becomes a `COMPACT_LIST_ROWS` (3) window between two reserved overflow
-   slots (`model_compact_list`): codex's arrow rows, the `↑ N more above`
+   slots (`model_compact_list`), under the header while the header still fits
+   (`model_view::compact_page_with_header`): codex's arrow rows, the `↑ N more above`
    directly under the search line and the `↓ N more below` directly over the
    hint, each blank when nothing is hidden that way, so the frame is one
    height at every selection and a blank slot is the gap the page wants
@@ -152,7 +215,8 @@ first; headers, tabs, search, and at least one result remain visible"*):
    its header, `/donate`'s lone address) keeps no slots, since a blank one
    there would be exactly the padding row *The frame hugs its content*
    forbids;
-3. a header goes last.
+3. a header goes last: the same compact page without it, the search line
+   straight under the top rule.
 
 The height comes from two places: the reserved height and the flow pass the
 terminal's, while the paint and the cursor seat pass the region already
@@ -171,7 +235,9 @@ went with it. So the search-line pickers (`/theme`, `/skills`, `/settings`,
 `/mascot`, `/spinner`, `/model` and `/login`'s lists) don't stop at the
 compact page. It is the first of eight rungs (`model_view::compact_page`),
 each a row shorter than the last but where the overflow pair goes, which is
-two rows at once:
+two rows at once — and a page with no search line shares them with its
+title in the search line's seat (`/login`'s root and its sign-in method
+choice, `/usage`, `/context`):
 
 | rows | what the page keeps |
 | ---- | ------------------- |

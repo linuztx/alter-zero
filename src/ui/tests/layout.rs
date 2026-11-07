@@ -486,8 +486,9 @@ fn all_failed_picker_height_covers_each_error_row() {
     app.begin_model_load(2);
     app.add_model_error("OpenRouter", "HTTP 500");
     app.add_model_error("Agent Zero API", "HTTP 401");
-    // Collapsed chrome (4) + 2 error rows = 6.
-    assert_eq!(model_picker_height(&app, 74, 40), Some(6));
+    // The placeholder page's chrome — rule, title, subtitle, gap, search,
+    // gap, rule (7) — + 2 error rows = 9.
+    assert_eq!(model_picker_height(&app, 74, 40), Some(9));
 }
 
 #[test]
@@ -495,15 +496,15 @@ fn model_picker_height_covers_the_chrome_plus_list() {
     let mut app = App::new();
     app.open_model_picker("a");
     app.set_models(three_models());
-    // 7 chrome rows + 3 list rows.
-    assert_eq!(model_picker_height(&app, 74, 40), Some(10));
+    // 10 chrome rows + 3 list rows.
+    assert_eq!(model_picker_height(&app, 74, 40), Some(13));
     // A terminal shorter than the page gets the rung that fits it
     // (`compact_page`): on 8 rows, the 7-row page without the overflow pair.
     assert_eq!(model_picker_height(&app, 74, 8), Some(7));
     // A placeholder state (still loading — no models) drops the counter +
-    // name detail rows: 4 collapsed chrome + 1 placeholder row = 5.
+    // name detail rows: 7 collapsed chrome + 1 placeholder row = 8.
     app.open_model_picker("a");
-    assert_eq!(model_picker_height(&app, 74, 40), Some(5));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(8));
     // None when the picker is closed.
     app.close_model_picker();
     assert_eq!(model_picker_height(&app, 74, 40), None);
@@ -544,10 +545,10 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     let preview = preview_rows(&app, 74);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
-    // 7 chrome rows + 3 list rows, over the strip.
+    // 10 chrome rows + 3 list rows, over the strip.
     assert_eq!(
         model_picker_height(&app, 74, 40),
-        Some(strip + 10),
+        Some(strip + 13),
         "the picker keeps the streaming strip above its own frame"
     );
     // A queued follow-up and a toast ride the strip too — the same rows the
@@ -556,7 +557,7 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     app.show_toast("Switched model to kimi-k3", ToastKind::Info);
     let extra = queued_rows(&app, 74) + toast_rows(&app);
     assert!(extra > 0);
-    assert_eq!(model_picker_height(&app, 74, 40), Some(strip + extra + 10));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(strip + extra + 13));
     // Clamped to the terminal height like every region.
     assert_eq!(model_picker_height(&app, 74, 8), Some(8));
     // Idle again (turn over, tool resolved, toast/queue gone), the picker is
@@ -566,7 +567,7 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     app.end_tool("done", true);
     app.finish_stream();
     app.end_turn(1);
-    assert_eq!(model_picker_height(&app, 74, 40), Some(10));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(13));
 }
 
 #[test]
@@ -606,8 +607,9 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
     app.start_tool("Bash", "sleep 100", None);
     app.open_model_picker("a");
     app.set_models(three_models());
-    let picker = 10; // 7 chrome + 3 list rows
-    let term = 14; // shorter than the strip (4) + picker (10) would want…
+    let picker = 13; // 10 chrome + 3 list rows
+    let search_row = 4; // rule, title, subtitle, gap, then the search line
+    let term = 14; // shorter than the strip (4) + picker (13) would want…
     app.queued.push_back(batch(&["a queued follow-up"]));
     assert!(
         model_picker_height(&app, 60, 40).unwrap() > term,
@@ -623,7 +625,7 @@ fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
         "the picker's top rule sits {picker} rows up from the bottom: {rows:?}"
     );
     assert!(
-        rows[usize::from(h - picker) + usize::from(SEARCH_ROW)].contains('❯'),
+        rows[usize::from(h - picker) + search_row].contains('❯'),
         "…so its search line is on screen: {rows:?}"
     );
     assert!(

@@ -339,8 +339,9 @@ session-context footer in `docs/footer.md`; the **startup banner** (the
 gradient mascot beside the bold `Alter Zero (v…)` title, the cwd in the
 footer's path green, and the cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
-switches it (the `/theme` picker's layout over the six-mascot catalog — the
-rows in the `/mcp` list's shape, a bold-name-over-dim-description caption,
+switches it (the `/theme` picker's layout over the six-mascot catalog — a
+`Select mascot` title over a dim subtitle, the rows in the picker family's
+shape over a `(n/total)` counter, a bold-name-over-dim-description caption,
 and a **live banner preview** rendered by the header's own builder, laid
 **beside** the list from 56 columns and stacked under it below that, the
 three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
@@ -426,10 +427,13 @@ system per entry: the four Catppuccin flavours with **Mocha the default**
 code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
 follows the terminal's theme. codex's theme picker in the family's frame:
-the catalog in the **`/mcp` list's shape** (the accent `❯` on the
-selection, the other rows indented under it, a ten-row centred window whose
-hidden rows dim `↑ N more above` / `↓ N more below` rows name, the hint led
-by `↑/↓ to navigate`), every row wearing a five-`●` swatch of its own
+a `Select theme` title over a dim subtitle saying what a theme changes, then
+the catalog in the **picker family's shape** (`docs/view-flow.md` *A
+picker's page*: the accent `→` on the selection under the `❯` search line,
+the other rows indented under it, a ten-row centred window — the other
+previewed pickers show five — over the dim `(n/total)` counter, the hint led
+by `↑/↓ to navigate`), every row wearing a
+five-`●` swatch of its own
 palette, the highlighted theme previewed on **real cells** — a user bubble,
 an `Edit` diff cell, a reply with a code line, built by
 `message_lines`/`tool_lines` with the theme scoped active around them
@@ -442,10 +446,11 @@ line style folded onto its spans so the bubble's ground never paints the
 list — a still page signed on its rows; and on a terminal too short for that
 page, a **compact** one instead (`theme_view_lines(app, width, height)`
 choosing by the rows it may have): codex's short panel, where the preview
-yields first — the search line, a `COMPACT_LIST_ROWS` (3, the family's one
-compact window) window of the list between codex's reserved `↑`/`↓` slots
-(directly under the search line and over the hint, blank when nothing is
-hidden that way, so it is one height at every selection), the hint — since
+yields first — the header (kept on the first compact rung, shed on the
+next), the search line, a `COMPACT_LIST_ROWS` (3, the family's one compact
+window) window of the list between codex's reserved `↑`/`↓` slots (directly
+under the search line and over the hint, blank when nothing is hidden that
+way, so it is one height at every selection), the hint — since
 bottom-anchoring the whole page there kept only the preview on screen and
 flowed the theme names into scrollback; and on a terminal shorter still that
 compact page — which hugs its rules like every framed page, nine rows —
@@ -592,9 +597,11 @@ ladder on a short terminal, folding every section but the highlighted one to
 its fullest limit, then the header into one title row, ending on one folded
 row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
 **`/login` sign-in fork** (the
-flow's root now asks *how* you sign in — **Use a subscription**, **Use an
-API key** or **Use a local model** — because GitHub Copilot is not a key you
-paste and a local server takes an address, not a key: the three lists
+flow's root now asks *how* you sign in — under a `Select login method` title
+and no filter, three rows being a question — **Sign in with an account**,
+**Sign in with an API key** or **Sign in with a local model** — because
+GitHub Copilot is not a key you paste and a local server takes an address,
+not a key: the three lists
 partition the providers by `auth`, and a local server's page **tests the
 address before saving it** — the `/model` listing run on the `/login`
 worker, the verdict worded by the pure `llm::local::verdict`, a 401 asking
@@ -2828,13 +2835,15 @@ an install that has not updated) and serving a users-per-day / per-country /
 per-platform (`ubuntu 24.04`, `macos 15.3.1`) dashboard at `/`; `smoke.sh` runs
 every phase with `ALTER_ZERO_TELEMETRY=0` and Phase 115 drives the whole loop
 against a local stub)
-of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
+of `{label}  {value}` in an aligned column, under a `Settings` title and a
+dim subtitle and shown five at a time over a `(n/total)` counter, the
 highlighted row's description, and a `Type to search · Enter/Space to change ·
 Esc to cancel` hint — on a terminal too short for that page, the family's
 **compact** page instead (`settings_view_lines(app, width, height)`, the
 first page that fits: a long description cut to one row, then the description
 and the counter gone and a `COMPACT_LIST_ROWS` window between the reserved
-`↑`/`↓` slots, the value column sized off every listed row so it holds still,
+`↑`/`↓` slots under the header, then without it, the value column sized off
+every listed row so it holds still,
 `docs/view-flow.md`, `smoke.sh` Phase 139); every value **cycles** — there is no free-text field, so
 Enter and Space mean the same thing on every row and Space never reaches the
 type-to-search (which matches the label *and* the description, so `agents.md`
@@ -3786,13 +3795,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the band's height is `shortcuts_lines`' built line count,
   so every width's grid reserves its own rows — `docs/shortcuts.md`), the
   inline `/settings` menu (`SETTINGS_*` — it
-  reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
-  selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
+  reuses the `/model` picker's frame, header (`SETTINGS_TITLE` over the dim
+  `SETTINGS_SUBTITLE`, `model_view::picker_header`), indent, `❯` prompt, `→`
+  marker and cyan selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
   sized off the widest visible label) and its two-tone colouring
   (`settings_value_color()` for a live value, `settings_value_off_color()` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
-  and `SETTINGS_MENU_MAX_ROWS` — the cursor seated on the search line
+  and `SETTINGS_MENU_MAX_ROWS` (five rows) — the cursor seated on the search line
   `cursor_position` finds in the page `settings_view_lines` builds
   (`view_prompt_row`, since a short terminal's rungs move it up), the page
   height the built line count — `docs/view-flow.md` — see

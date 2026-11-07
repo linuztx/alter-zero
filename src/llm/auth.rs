@@ -76,6 +76,12 @@ impl RequestAuth {
     }
 }
 
+/// The refusal for a sign-in provider with no stored token: what to do, by
+/// the words of the `/login` row that does it — one sentence, shared by the
+/// catalog fetch and the usage read, so the two cannot name different rows.
+pub(crate) const NOT_SIGNED_IN: &str =
+    "not signed in — run /login and choose Sign in with an account";
+
 /// Resolve `cfg` into what its next request needs.
 ///
 /// - **[`AuthScheme::ApiKey`]** → the stored key and nothing else, with **no
@@ -208,6 +214,16 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_not_signed_in_refusal_names_the_row_that_signs_in() {
+        // The sentence points at a `/login` row by its words; a renamed row
+        // must not leave it pointing at nothing.
+        assert!(
+            NOT_SIGNED_IN.contains(crate::app::LoginMethod::Subscription.label()),
+            "{NOT_SIGNED_IN}"
+        );
+    }
 
     #[test]
     fn an_api_key_provider_resolves_to_its_stored_key_with_no_io() {

@@ -5,19 +5,107 @@ use crate::ui::theme::{
     MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, error_color, model_selected_color,
 };
 
+/// The page row the `❯` search line sits on on the whole page at a width
+/// that holds the subtitle on one row: top rule (0), title (1), subtitle
+/// (2), gap (3), search (4).
+const MODEL_SEARCH_ROW: u16 = 4;
+
+/// The page row the first model (or the placeholder) sits on: the search
+/// line, a gap, then the list.
+const MODEL_FIRST_ROW: u16 = MODEL_SEARCH_ROW + 2;
+
+/// Twelve models from one stub provider.
+fn twelve_stub_models() -> Vec<ModelEntry> {
+    (0..12)
+        .map(|i| {
+            model_entry(
+                &format!("stub/model-{i:02}"),
+                "stub",
+                &format!("Stub: Model {i}"),
+            )
+        })
+        .collect()
+}
+
 #[test]
-fn model_picker_frames_with_rules_and_no_header() {
+fn the_whole_page_is_titled_and_lists_seven_models_under_the_search_prompt() {
+    // The user's mock: a title over a dim line saying what a pick changes,
+    // a gap, the search line, a gap, seven rows whose `→` sits under the
+    // `❯`, then the counter (and the load status beside it) and the
+    // highlighted model's name hanging under the ids.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(twelve_stub_models(), 0, "stub/model-00");
+    picker.pending = 1;
+    let texts: Vec<String> = model_view_lines(&picker, 90, 200)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let rule = "─".repeat(90);
+    assert_eq!(
+        texts,
+        [
+            rule.as_str(),
+            "  Select model",
+            "  Applies to this session and new ones in this directory",
+            "",
+            "  ❯",
+            "",
+            "  → stub/model-00 [stub] ✓",
+            "    stub/model-01 [stub]",
+            "    stub/model-02 [stub]",
+            "    stub/model-03 [stub]",
+            "    stub/model-04 [stub]",
+            "    stub/model-05 [stub]",
+            "    stub/model-06 [stub]",
+            "    (1/12)   ·   loading more…",
+            "",
+            "    Model Name: Stub: Model 0",
+            rule.as_str(),
+        ]
+    );
+    assert_eq!(MODEL_MENU_MAX_ROWS, 7);
+}
+
+#[test]
+fn a_placeholder_page_keeps_the_header_over_its_search_line() {
+    use crate::ui::model_view::model_view_lines;
+    let loading = ModelPicker {
+        active_id: "x".into(),
+        ..ModelPicker::default()
+    };
+    let texts: Vec<String> = model_view_lines(&loading, 90, 200)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let rule = "─".repeat(90);
+    assert_eq!(
+        texts,
+        [
+            rule.as_str(),
+            "  Select model",
+            "  Applies to this session and new ones in this directory",
+            "",
+            "  ❯",
+            "",
+            "  Loading models…",
+            rule.as_str(),
+        ]
+    );
+}
+
+#[test]
+fn model_picker_frames_with_rules_under_its_title() {
     let picker = model_picker(three_models(), 0, "anthropic/claude-3-haiku");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // Top rule, then the search line straight under it: no header banner
-    // (the old "Showing models…" was dropped) and no padding row either.
+    // Top rule, the title straight under it — no padding row — then the
+    // subtitle, a gap and the search line.
     assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
+    assert_eq!(row(&buf, 1, 60).trim_end(), "  Select model", "the title");
     assert!(
-        row(&buf, SEARCH_ROW, 60).contains('❯'),
-        "the search line hugs the rule"
+        row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'),
+        "the search line under the header"
     );
-    assert_eq!(SEARCH_ROW, 1, "straight under the rule");
 }
 
 #[test]
@@ -66,31 +154,32 @@ fn model_picker_shows_the_search_prompt_and_query() {
     picker.query = "haiku".into();
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let search = row(&buf, SEARCH_ROW, 60);
+    let search = row(&buf, MODEL_SEARCH_ROW, 60);
     assert!(search.contains("❯ haiku"), "{search:?}");
     // The `❯` prompt is cyan.
-    assert_eq!(buf[(2, SEARCH_ROW)].fg, model_selected_color());
+    assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, model_selected_color());
 }
 
 #[test]
 fn model_picker_counter_and_name_reflect_the_selection() {
     let picker = model_picker(three_models(), 2, "x");
-    // Size the buffer to the picker's natural height (7 chrome + 3 list),
+    // Size the buffer to the picker's natural height (10 chrome + 3 list),
     // like the boundary does — otherwise the Min(0) list would expand and
     // push the counter/name rows down.
-    let mut buf = buffer(60, 10);
+    let mut buf = buffer(60, 13);
     render_model_picker(buf.area, &mut buf, &picker);
-    // Counter row = top(0) search(1) gap(2) list(3,4,5) → 6.
-    let counter = row(&buf, 6, 60);
-    assert!(counter.contains("(3/3)"), "{counter:?}");
-    // Model-name row = counter(6) + gap(7) + 1 = 8.
-    let name = row(&buf, 8, 60);
+    // Counter row = the list start (6) + the three rows → 9, hanging under
+    // the ids.
+    let counter = row(&buf, MODEL_FIRST_ROW + 3, 60);
+    assert!(counter.starts_with("    (3/3)"), "{counter:?}");
+    // Model-name row = counter(9) + gap(10) + 1 = 11, under the ids too.
+    let name = row(&buf, MODEL_FIRST_ROW + 5, 60);
     assert!(
-        name.contains("Model Name: MoonshotAI: Kimi K2.6"),
+        name.starts_with("    Model Name: MoonshotAI: Kimi K2.6"),
         "{name:?}"
     );
     // The bottom rule straight under it — the user's mock, no trailing gap.
-    assert!(row(&buf, 9, 60).starts_with('─'), "bottom rule");
+    assert!(row(&buf, 12, 60).starts_with('─'), "bottom rule");
 }
 
 #[test]
@@ -110,8 +199,10 @@ fn model_list_keeps_the_selection_centered_not_pinned_to_an_edge() {
     let picker = model_picker(models, 15, "x");
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    // The list spans rows 3..13 — top(0) search(1) gap(2) then 10 rows.
-    let list: Vec<String> = (3..13).map(|y| row(&buf, y, 60)).collect();
+    // The list spans the window's rows from the list start (6).
+    let list: Vec<String> = (MODEL_FIRST_ROW..MODEL_FIRST_ROW + MODEL_MENU_MAX_ROWS)
+        .map(|y| row(&buf, y, 60))
+        .collect();
     // The highlight lands on the middle row of the window (max/2), carrying
     // the `→` marker — centered, not jammed against the bottom edge.
     let middle = &list[MODEL_MENU_MAX_ROWS as usize / 2];
@@ -122,9 +213,9 @@ fn model_list_keeps_the_selection_centered_not_pinned_to_an_edge() {
     let joined = list.join("\n");
     // Models both above *and* below the selection are on screen — the broad
     // view the fix restores.
-    assert!(joined.contains("model-11"), "rows above show: {joined:?}");
+    assert!(joined.contains("model-12"), "rows above show: {joined:?}");
     assert!(
-        joined.contains("model-19"),
+        joined.contains("model-18"),
         "rows below show (the old window hid these): {joined:?}"
     );
 }
@@ -138,7 +229,7 @@ fn model_picker_shows_a_loading_placeholder() {
     assert_eq!(picker.status, ModelLoad::Loading);
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let list = row(&buf, 3, 60);
+    let list = row(&buf, MODEL_FIRST_ROW, 60);
     assert!(list.contains("Loading models…"), "{list:?}");
 }
 
@@ -172,9 +263,9 @@ fn model_picker_shows_an_error_placeholder_in_red() {
     };
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let list = row(&buf, 3, 60);
+    let list = row(&buf, MODEL_FIRST_ROW, 60);
     assert!(list.contains("Error: 401 bad key"), "{list:?}");
-    assert_eq!(buf[(2, 3)].fg, error_color());
+    assert_eq!(buf[(2, MODEL_FIRST_ROW)].fg, error_color());
 }
 
 #[test]
@@ -183,7 +274,7 @@ fn model_picker_shows_no_match_when_the_query_filters_everything() {
     picker.query = "zzzz".into();
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    assert!(row(&buf, 3, 60).contains("No matching models"));
+    assert!(row(&buf, MODEL_FIRST_ROW, 60).contains("No matching models"));
 }
 
 #[test]
@@ -196,7 +287,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     picker.pending = 1;
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let loading = row(&buf, 3, 60);
+    let loading = row(&buf, MODEL_FIRST_ROW, 60);
     assert!(loading.contains("Loading models…"), "{loading:?}");
     assert!(!loading.contains("No matching models"), "{loading:?}");
 
@@ -204,7 +295,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     picker.pending = 0;
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
-    let settled = row(&buf, 3, 60);
+    let settled = row(&buf, MODEL_FIRST_ROW, 60);
     assert!(settled.contains("No matching models"), "{settled:?}");
 }
 
@@ -216,8 +307,9 @@ fn cursor_sits_at_the_end_of_the_model_search_query() {
     app.model_picker.as_mut().unwrap().query = "hai".into();
     let area = Rect::new(0, 0, 60, model_picker_height(&app, 60, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
-    // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7.
-    assert_eq!((x, y), (7, SEARCH_ROW));
+    // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7, on the row under the
+    // header.
+    assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
 }
 
 /// Rejoin built rows word-by-word so a wrapped needle matches across rows.
@@ -296,7 +388,10 @@ fn a_cut_model_id_ends_with_an_ellipsis() {
     let picker = model_picker(models, 0, "x");
     let mut buf = buffer(40, 14);
     render_model_picker(buf.area, &mut buf, &picker);
-    let first = row(&buf, 3, 40);
+    let first = (0..buf.area.height)
+        .map(|y| row(&buf, y, 40))
+        .find(|r| r.contains('→'))
+        .expect("the model row");
     assert!(
         first.contains('…') && first.contains("[openrouter]"),
         "the id marks its cut and the tag keeps its seat: {first:?}"
@@ -752,23 +847,34 @@ fn a_short_terminal_keeps_the_model_choices_on_screen() {
     let picker = twelve_models();
     assert_eq!(page_at(&picker, 70, TALL).len(), 17, "the whole page");
     let texts = page_at(&picker, 70, 12);
-    assert_eq!(texts.len(), 9, "{texts:#?}");
+    assert_eq!(texts.len(), 12, "{texts:#?}");
     assert!(is_rule(&texts[0]), "{texts:#?}");
-    assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
-    assert_eq!(texts[2], "", "nothing above the first row: {texts:#?}");
-    assert!(texts[3].starts_with("→ vendor/model-00"), "{texts:#?}");
-    assert!(texts[4].starts_with("  vendor/model-01"), "{texts:#?}");
-    assert!(texts[5].starts_with("  vendor/model-02"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 9 more below", "{texts:#?}");
+    assert_eq!(texts[1], "  Select model", "the header stays: {texts:#?}");
+    assert_eq!(texts[3], "", "{texts:#?}");
+    assert_eq!(texts[4], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[5], "", "nothing above the first row: {texts:#?}");
+    assert!(texts[6].starts_with("  → vendor/model-00"), "{texts:#?}");
+    assert!(texts[7].starts_with("    vendor/model-01"), "{texts:#?}");
+    assert!(texts[8].starts_with("    vendor/model-02"), "{texts:#?}");
+    assert_eq!(texts[9], "  ↓ 9 more below", "{texts:#?}");
     assert!(
-        texts[7].contains("Vendor: Model 0"),
+        texts[10].contains("Vendor: Model 0"),
         "the name line: {texts:#?}"
     );
-    assert!(is_rule(&texts[8]), "{texts:#?}");
+    assert!(is_rule(&texts[11]), "{texts:#?}");
     assert!(
         !texts.iter().any(|t| t.contains("(1/12)")),
         "no counter: {texts:#?}"
     );
+    // A row shorter, the header yields: the search line hugs the rule.
+    let texts = page_at(&picker, 70, 11);
+    assert_eq!(texts.len(), 9, "{texts:#?}");
+    assert_eq!(texts[1], "  ❯", "the search line: {texts:#?}");
+    assert_eq!(texts[2], "", "nothing above the first row: {texts:#?}");
+    assert!(texts[3].starts_with("  → vendor/model-00"), "{texts:#?}");
+    assert_eq!(texts[6], "  ↓ 9 more below", "{texts:#?}");
+    assert!(texts[7].contains("Vendor: Model 0"), "{texts:#?}");
+    assert!(is_rule(&texts[8]), "{texts:#?}");
 }
 
 #[test]
@@ -776,14 +882,14 @@ fn the_compact_model_window_rides_the_selection_and_holds_still() {
     let mut picker = twelve_models();
     picker.selected = 6;
     let texts = page_at(&picker, 70, 12);
-    assert_eq!(texts[2], "  ↑ 5 more above", "{texts:#?}");
-    assert!(texts[4].starts_with("→ vendor/model-06"), "{texts:#?}");
-    assert_eq!(texts[6], "  ↓ 4 more below", "{texts:#?}");
+    assert_eq!(texts[5], "  ↑ 5 more above", "{texts:#?}");
+    assert!(texts[7].starts_with("  → vendor/model-06"), "{texts:#?}");
+    assert_eq!(texts[9], "  ↓ 4 more below", "{texts:#?}");
     for i in 0..12 {
         picker.selected = i;
         assert_eq!(
             page_at(&picker, 70, 12).len(),
-            9,
+            12,
             "selection {i} moved the frame"
         );
     }
@@ -818,12 +924,27 @@ fn a_placeholder_page_sheds_like_the_list_page() {
         page_at(&picker, 70, TALL),
         [
             rule.as_str(),
+            "  Select model",
+            "  Applies to this session and new ones in this directory",
+            "",
             "  ❯ zzz",
             "",
             "  No matching models",
             rule.as_str()
         ]
         .map(str::to_string)
+    );
+    assert_eq!(
+        page_at(&picker, 70, 7),
+        [
+            rule.as_str(),
+            "  ❯ zzz",
+            "",
+            "  No matching models",
+            rule.as_str()
+        ]
+        .map(str::to_string),
+        "the header yields first"
     );
     assert_eq!(
         page_at(&picker, 70, 4),
@@ -846,15 +967,18 @@ fn the_cursor_sits_on_the_compact_model_search_line() {
     let mut app = App::new();
     app.open_model_picker("vendor/model-00");
     app.set_models(twelve_models().models);
-    let height = model_picker_height(&app, 70, 12).expect("open");
-    assert_eq!(height, 9, "the compact page");
-    let area = Rect::new(0, 1, 70, height);
-    let (_, y) = cursor_position(area, &app);
-    assert_eq!(y, 1 + SEARCH_ROW, "on the search line");
-    assert!(
-        crate::ui::view_flow(&app, 70, 12, 1000).is_none(),
-        "nothing flows"
-    );
+    // On 12 rows the compact page keeps its header, on 11 it has yielded.
+    for (rows, search, page) in [(12, MODEL_SEARCH_ROW, 12), (11, SEARCH_ROW, 9)] {
+        let height = model_picker_height(&app, 70, rows).expect("open");
+        assert_eq!(height, page, "the compact page");
+        let area = Rect::new(0, 1, 70, height);
+        let (_, y) = cursor_position(area, &app);
+        assert_eq!(y, 1 + search, "{rows} rows: on the search line");
+        assert!(
+            crate::ui::view_flow(&app, 70, rows, 1000).is_none(),
+            "nothing flows"
+        );
+    }
 }
 
 // --- a terminal shorter than the compact page keeps the search line ---

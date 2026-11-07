@@ -1,10 +1,11 @@
 //! The inline `/spinner` picker. See `docs/spinner.md`.
 //!
-//! The `/theme` picker's layout over the spinner-style catalog: the
-//! family's frame and `❯` search line over one row per style in the **`/mcp`
-//! list's shape** — the accent `❯` on the selection, the other rows indented
-//! under it, dim `↑ N more above` / `↓ N more below` rows naming whatever a
-//! window hides — and the page is **live**: every row carries its own
+//! The `/theme` picker's layout over the spinner-style catalog: the family's
+//! header — the `Select spinner` title over a dim line saying what a spinner
+//! is — and its frame and `❯` search line over one row per style in the
+//! **picker family's shape** — the accent `→` on the selection under the
+//! `❯`, the other rows indented under it, a five-row window over the
+//! `(n/total)` counter — and the page is **live**: every row carries its own
 //! spinner, turning at the shared frame clock, and the highlighted style
 //! previews as a whole sample status line under a caption naming it. Both
 //! are built by the status line's own renderer
@@ -18,8 +19,9 @@
 //! sized off the whole catalog, so the frame holds still while it animates.
 
 use super::model_view::{
-    PreviewLayout, capitalized, caption_lines, compact_page, first_page_that_fits, list_window,
-    marked_row_head, model_placeholder_row, model_rule, overflow_list, placeholder_window,
+    PreviewLayout, capitalized, caption_lines, compact_page, compact_page_with_header,
+    first_page_that_fits, list_counter_line, list_window, marked_row_head, model_placeholder_row,
+    picker_header, picker_page, placeholder_window, search_line,
 };
 use super::status::{spinner_spans, styled_status_line};
 use super::theme::*;
@@ -65,8 +67,8 @@ fn name_col() -> usize {
         + SPINNER_MENU_GAP
 }
 
-/// One style row in the `/mcp` list's shape:
-/// `{indent}{❯ }{name}{pad}{spinner} {✓}` ([`marked_row_head`]) — the
+/// One style row in the picker family's shape:
+/// `{indent}{→ }{name}{pad}{spinner} {✓}` ([`marked_row_head`]) — the
 /// selected row's marker and name in the accent, every other row keeping
 /// the marker's width blank; the row's own spinner turns at `elapsed`, and
 /// the session's current style carries the `/model` picker's green ✓.
@@ -146,25 +148,29 @@ fn layout() -> PreviewLayout {
     }
 }
 
-/// The list column in the `/mcp` list's shape ([`overflow_list`]): the
-/// window of rows at [`SPINNER_MENU_MAX_ROWS`] between overflow rows that
-/// name what it hides, if anything. The overflow rows are `…`-cut to
-/// `overflow_width`, the rows to `width`.
+/// The list column: the window of rows at [`SPINNER_MENU_MAX_ROWS`] over
+/// the `(n/total)` counter ([`list_counter_line`]), so the column is one
+/// height at every selection. The rows are `…`-cut to `width`, the counter
+/// to `column_width`.
 fn list_lines(
     rows: &[SpinnerRow],
     selected: usize,
     elapsed: Duration,
     width: u16,
-    overflow_width: u16,
+    column_width: u16,
 ) -> Vec<Line<'static>> {
-    let (above, window, below) = spinner_window(
+    let (_, mut lines, _) = spinner_window(
         rows,
         selected,
         usize::from(SPINNER_MENU_MAX_ROWS),
         elapsed,
         width,
     );
-    overflow_list(above, window, below, overflow_width)
+    lines.push(clamp_spans(
+        list_counter_line(selected, rows.len()).spans,
+        usize::from(column_width),
+    ));
+    lines
 }
 
 /// The preview for `spinner` at `width`: the caption ([`caption_lines`] —
@@ -188,16 +194,18 @@ fn preview_lines(spinner: Spinner, elapsed: Duration, width: u16) -> Vec<Line<'s
     lines
 }
 
-/// The framed page as lines — a top rule, the `❯` search line straight
-/// under it, a body, the key hint, and a bottom rule straight under that,
-/// no blank row hugging either rule (`docs/view-flow.md` *The frame hugs
-/// its content*) — the first of two pages that fits `height` rows
-/// ([`first_page_that_fits`]). The **whole** page's body is the list column
-/// (each row wearing its own live spinner) and the captioned **live
-/// status-line preview**, beside the list when the terminal has the room
-/// and under it when it doesn't ([`PreviewLayout::body`]). On a terminal too
-/// short for that it is a **compact** page ([`compact_page`]): three of the
-/// rows between the two reserved overflow slots, the preview yielding, and
+/// The framed page as lines — a top rule, the `Select spinner` title over
+/// its dim subtitle, the `❯` search line, a body, the key hint, and a bottom
+/// rule straight under that, no blank row hugging either rule
+/// (`docs/view-flow.md` *The frame hugs its content*) — the first of three
+/// pages that fits `height` rows ([`first_page_that_fits`]). The **whole**
+/// page's body is the list column (each row wearing its own live spinner)
+/// and the captioned **live status-line preview**, beside the list when the
+/// terminal has the room and under it when it doesn't
+/// ([`PreviewLayout::body`]). On a terminal too short for that it is a
+/// **compact** page: three of the rows between the two reserved overflow
+/// slots under the header ([`compact_page_with_header`]), the preview
+/// yielding, then the same page without the header ([`compact_page`]), and
 /// on a terminal shorter still the slots, the rules and the rows one by
 /// one, so the search line, the highlighted style and the hint stay on
 /// screen (`docs/view-flow.md` *A page that sheds rows before it flows*).
@@ -216,17 +224,13 @@ pub(super) fn spinner_view_lines(app: &App, width: u16, height: u16) -> Vec<Line
     };
     let rows = app.spinner_rows();
     let elapsed = app.spinner_preview_elapsed();
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color())),
-        Span::raw(picker.query.clone()),
-    ]);
+    let header = picker_header(SPINNER_TITLE, SPINNER_SUBTITLE, width);
+    let search = search_line(&picker.query);
     let hint = model_placeholder_row(SPINNER_HINT, model_meta_color(), width);
-    let page = |body: Vec<Line<'static>>| {
-        let mut lines = vec![model_rule(width), search_line.clone()];
-        lines.extend(body);
-        lines.extend([hint.clone(), model_rule(width)]);
-        lines
+    let tail = std::slice::from_ref(&hint);
+    let page = |mut body: Vec<Line<'static>>| {
+        body.push(hint.clone());
+        picker_page(&header, &search, body, width)
     };
     if rows.is_empty() {
         let block = [model_placeholder_row(
@@ -234,12 +238,20 @@ pub(super) fn spinner_view_lines(app: &App, width: u16, height: u16) -> Vec<Line
             model_meta_color(),
             width,
         )];
-        return compact_page(
+        return first_page_that_fits(
             height,
-            &search_line,
-            &|max| placeholder_window(&block, max),
-            &[hint],
-            width,
+            &[
+                &|| page(vec![Line::default(), block[0].clone(), Line::default()]),
+                &|| {
+                    compact_page(
+                        height,
+                        &search,
+                        &|max| placeholder_window(&block, max),
+                        tail,
+                        width,
+                    )
+                },
+            ],
         );
     }
     let selected = picker.selected.min(rows.len() - 1);
@@ -247,20 +259,14 @@ pub(super) fn spinner_view_lines(app: &App, width: u16, height: u16) -> Vec<Line
     let whole = || {
         page(layout().body(
             width,
-            &|overflow_width| list_lines(&rows, selected, elapsed, width, overflow_width),
+            &|column_width| list_lines(&rows, selected, elapsed, width, column_width),
             &|preview_width| preview_lines(spinner, elapsed, preview_width),
         ))
     };
-    let compact = || {
-        compact_page(
-            height,
-            &search_line,
-            &|max| spinner_window(&rows, selected, max, elapsed, width),
-            std::slice::from_ref(&hint),
-            width,
-        )
-    };
-    first_page_that_fits(height, &[&whole, &compact])
+    let window = |max| spinner_window(&rows, selected, max, elapsed, width);
+    let with_header = || compact_page_with_header(&header, &search, &window, tail, width);
+    let compact = || compact_page(height, &search, &window, tail, width);
+    first_page_that_fits(height, &[&whole, &with_header, &compact])
 }
 
 /// The rows the picker's own frame occupies — the built page's line count
@@ -288,9 +294,9 @@ pub fn spinner_picker_height(app: &App, width: u16, term_height: u16) -> Option<
 }
 
 /// Render the **inline** `/spinner` picker into the live region, in place of
-/// the composer: a top rule, the `❯` search line, the style rows in the
-/// `/mcp` list's shape with their live spinners (`❯ gravity  ⣤⣀⣀⣀⣀⣀⣀⣀ ✓`),
-/// the captioned live status-line preview — beside the rows on a wide
+/// the composer: a top rule, the title over its subtitle, the `❯` search
+/// line, the style rows with their live spinners (`→ gravity  ⣤⣀⣀⣀⣀⣀⣀⣀ ✓`)
+/// over the `(n/total)` counter, the captioned live status-line preview — beside the rows on a wide
 /// terminal, under them on a narrow one — the key hint, and a bottom rule;
 /// or, in an area too short for that, the compact page, which sheds its own
 /// rows down to the search line in an area shorter still. The page is built

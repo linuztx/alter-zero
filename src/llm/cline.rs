@@ -704,7 +704,7 @@ fn plan_advice(body: &str) -> Option<String> {
         return Some(
             "ClinePass is for personal Cline accounts, and this is an organization account — \
              switch to your personal account at app.cline.bot, or use Cline's usage-billed \
-             models through an API key (/login → Use an API key → Cline)."
+             models through an API key (/login → Sign in with an API key → Cline)."
                 .to_string(),
         );
     }
@@ -723,7 +723,7 @@ fn plan_advice(body: &str) -> Option<String> {
         return Some(
             "this Cline account has no ClinePass subscription — subscribe at \
              app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
-             an API key (/login → Use an API key → Cline)."
+             an API key (/login → Sign in with an API key → Cline)."
                 .to_string(),
         );
     }
@@ -1850,6 +1850,10 @@ mod tests {
         // the server sends this one, and Cline's `errors.ts` matches both.
         let advice = auth_advice(403, NOT_SUBSCRIBED).unwrap();
         assert!(advice.contains("no ClinePass subscription"), "{advice}");
+        assert!(
+            advice.contains(crate::app::LoginMethod::ApiKey.label()),
+            "the /login row it names exists: {advice}"
+        );
         let displayed = auth_advice(
             403,
             "No access to ClinePass subscription models yet. Subscribe to ClinePass, …",
@@ -1867,6 +1871,10 @@ mod tests {
         .unwrap();
         assert!(advice.contains("organization"), "{advice}");
         assert!(advice.contains("personal"), "{advice}");
+        assert!(
+            advice.contains(crate::app::LoginMethod::ApiKey.label()),
+            "the /login row it names exists: {advice}"
+        );
         assert_ne!(
             Some(advice),
             auth_advice(403, ""),

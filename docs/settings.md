@@ -149,22 +149,48 @@ from the live state — `App::setting_rows()` — rather than stored, exactly as
 `/model` picker derives its matches, so the value column can never drift from
 what the session is actually doing.
 
-The layout is the `/model` picker's plus one hint row:
+The layout is the `/model` picker's plus one hint row — the picker family's
+page (`docs/view-flow.md` *A picker's page*):
 
 ```
-rule · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · rule
+──────────────────────────────────────────────────────────────────────────────────
+  Settings
+  Changes take effect at once and persist across sessions
+
+  ❯
+
+  → Hide thinking        false
+    Verbose output       false
+    Show images          true
+    Image width          120
+    Auto-resize images   true
+    (1/20)
+
+    Hide the model's chain-of-thought instead of streaming it above the composer
+
+  Type to search · Enter/Space to change · Esc to cancel
+──────────────────────────────────────────────────────────────────────────────────
 ```
+
+The title over a dim line saying what a change does (`SETTINGS_TITLE`,
+`SETTINGS_SUBTITLE` — every row takes effect at once and is saved, most per
+directory and three per user, so the line says what holds for all of them),
+the search line, five rows whose `→` sits under the `❯`, and the counter and
+the highlighted row's description hanging under the labels
+(`MODEL_DETAIL_INDENT`).
 
 A search that matches **nothing** has no count and nothing to describe, so
-those slots collapse to a single gap — `rule · ❯ search · gap ·
+those slots collapse to a single gap — `rule · header · gap · ❯ search · gap ·
 No matching settings · gap · hint · rule` — instead of painting four
 blank rows mid-frame (the `/model` picker's `model_has_detail` rule, shared
 now by `/mascot`, `/skills` and `/login`). No blank row hugs either rule
 (`docs/view-flow.md` *The frame hugs its content*).
 
-— nine fixed chrome rows around a list capped at
-`SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
-selection stays centred; the whole page is one line builder
+— twelve fixed chrome rows around a list capped at
+`SETTINGS_MENU_MAX_ROWS` (five; it was ten — the counter says how many more
+there are, and the search reaches any of them), windowed by the shared
+`centered_window` so the selection stays centred; the whole page is one line
+builder
 (`settings_view_lines` — the `/mcp` family's shape, its height the built line
 count, painted bottom-anchored with the skipped top flowing into scrollback,
 `docs/view-flow.md`). Unlike `/model` the chrome never collapses: there is
@@ -173,11 +199,11 @@ placeholder in the same frame.
 
 ### A terminal too short for the page
 
-The whole page is twenty-one rows or more, and bottom-anchoring it on a
+The whole page is seventeen rows or more, and bottom-anchoring it on a
 shorter terminal kept the description and the hint while the search line and
 the highlighted row flowed into scrollback — on twelve rows the row Enter
 would change was off screen. So `settings_view_lines` takes the rows the page
-may have and builds the first of three pages that fits them
+may have and builds the first of four pages that fits them
 (`first_page_that_fits`, the family rule in `docs/view-flow.md` *A page that
 sheds rows before it flows*):
 
@@ -187,28 +213,32 @@ sheds rows before it flows*):
    80-column terminal, so the whole page's height moves with the selection,
    and a terminal at the edge, deciding on that height alone, flipped
    between the whole and the compact page as ↑/↓ passed one;
-3. the compact page, the `/theme` and `/skills` one row for row:
+3. the compact page under the header, twelve rows
+   (`compact_page_with_header`);
+4. the same compact page without the header, the `/theme` and `/skills` one
+   row for row:
 
 ```
 ──────────────────────────────────────────────────────────
   ❯
   ↑ 5 more above
-  Tools                true
-→ Permission mode      auto
-  Checkpoints          false
-  ↓ 10 more below
+    Tools                true
+  → Permission mode      auto
+    Checkpoints          false
+  ↓ 12 more below
   Type to search · Enter/Space to change · Esc to cancel
 ──────────────────────────────────────────────────────────
 ```
 
 The description and the counter yield, and a `COMPACT_LIST_ROWS` (3) window
 sits between the reserved overflow slots (`model_compact_list`), each blank
-when nothing is hidden that way, so the page is nine rows at every
+when nothing is hidden that way, so the page is one height at every
 selection — no blank row hugs either rule (`docs/view-flow.md` *The frame
 hugs its content*). The value column is sized off every listed setting rather than
 the rows in view, so it holds still as the window scrolls — it used to shift
 on the whole page too, whenever ↑/↓ scrolled `Auto-resize images` in or out
-of the ten rows shown.
+of the rows shown — and on a terminal too narrow for the widest label the
+labels `…`-cut so the value keeps its seat.
 
 On a terminal shorter still the compact page sheds what is left one row at a
 time and never its search line (`docs/view-flow.md` *Below the compact

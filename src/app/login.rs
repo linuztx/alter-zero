@@ -20,7 +20,8 @@ const LOGIN_PAGE: usize = TOOL_VIEW_PAGE;
 /// (`docs/llm.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyStep {
-    /// The root: which way in — a subscription, or an API key.
+    /// The root: which way in — an account sign-in, an API key, or a local
+    /// model. A titled three-row question, not a searchable list.
     #[default]
     Method,
     /// Choosing which subscription to sign in to (a filterable list).
@@ -61,13 +62,15 @@ impl LoginMethod {
     /// The methods in list order.
     pub const ALL: [Self; 3] = [Self::Subscription, Self::ApiKey, Self::Local];
 
-    /// The row label.
+    /// The row label. "Account" rather than "subscription": the list it
+    /// opens signs in to accounts — GitHub Copilot, ChatGPT, Anthropic's
+    /// Console — and a Console account bills per token, no plan at all.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Subscription => "Use a subscription",
-            Self::ApiKey => "Use an API key",
-            Self::Local => "Use a local model",
+            Self::Subscription => "Sign in with an account",
+            Self::ApiKey => "Sign in with an API key",
+            Self::Local => "Sign in with a local model",
         }
     }
 }
@@ -432,30 +435,23 @@ pub struct KeyOnboarding {
 }
 
 impl KeyOnboarding {
-    /// The method rows in list order, filtered by the query — the labels the
-    /// method step shows.
+    /// The method rows in list order — every one, always: the root is a
+    /// question with three answers, so it has no filter to narrow them.
     #[must_use]
-    pub fn method_matches(&self) -> Vec<LoginMethod> {
-        let query = self.query.to_lowercase();
-        LoginMethod::ALL
-            .into_iter()
-            .filter(|m| query.is_empty() || m.label().to_lowercase().contains(&query))
-            .collect()
+    pub fn methods(&self) -> &'static [LoginMethod] {
+        &LoginMethod::ALL
     }
 
     /// The method labels, for tests and the renderer.
     #[must_use]
     pub fn method_labels(&self) -> Vec<&'static str> {
-        self.method_matches()
-            .into_iter()
-            .map(LoginMethod::label)
-            .collect()
+        self.methods().iter().map(|m| m.label()).collect()
     }
 
     /// The highlighted method (the method step).
     #[must_use]
     pub fn highlighted_method(&self) -> Option<LoginMethod> {
-        self.method_matches().get(self.selected).copied()
+        self.methods().get(self.selected).copied()
     }
 
     /// Subscriptions whose id, name or description contains the query
@@ -593,7 +589,7 @@ impl KeyOnboarding {
     /// key handling shares across the lists.
     fn list_len(&self) -> usize {
         match self.step {
-            KeyStep::Method => self.method_matches().len(),
+            KeyStep::Method => self.methods().len(),
             KeyStep::Subscription => self.subscription_matches().len(),
             KeyStep::SigninMethod => self.signin_kinds().len(),
             KeyStep::Provider => self.matches().len(),
@@ -782,11 +778,13 @@ impl App {
     /// Keys while the inline `/login` flow is open. The steps have distinct
     /// grammars:
     ///
-    /// - **The three lists** (method / subscription / provider): ↑/↓ move
+    /// - **The lists** (method / subscription / provider / local): ↑/↓ move
     ///   wrapping at the ends, PageUp/PageDown/Home/End jump (clamped),
     ///   type-to-filter with Backspace, `Enter` activates the highlighted row,
     ///   `Esc` clears a non-empty filter then steps *back* (the method step,
-    ///   being the root, closes instead), `Ctrl+C` closes.
+    ///   being the root, closes instead), `Ctrl+C` closes. The method step
+    ///   has no filter — three rows are a question, not a list to search —
+    ///   so typing there does nothing.
     /// - **Sign-in method** (a subscription offering two ways in): ↑/↓ move
     ///   wrapping, Home/End jump, `Enter` opens the highlighted way's page,
     ///   `Esc` steps back to the subscription list, `Ctrl+C` closes. No
@@ -864,14 +862,16 @@ impl App {
                 }
                 onboarding.go(KeyStep::Method);
             }
-            KeyCode::Backspace => {
+            // The root shows no filter, so typing there opens none.
+            KeyCode::Backspace if onboarding.step != KeyStep::Method => {
                 onboarding.query.pop();
                 onboarding.selected = 0;
             }
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if onboarding.step != KeyStep::Method
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 onboarding.query.push(c);
                 onboarding.selected = 0;
@@ -1168,8 +1168,8 @@ impl App {
     /// appended; a server page's address or token field takes it the same
     /// way, unless its test is running or its address is fixed. On a list
     /// step it extends the filter query like a [`paste_into_resume_search`],
-    /// whitespace collapsed; the device page and the sign-in method choice
-    /// have no field, so a paste there is ignored.
+    /// whitespace collapsed; the method root, the sign-in method choice and
+    /// the device page have no field, so a paste there is ignored.
     ///
     /// [`paste_into_resume_search`]: App::paste_into_resume_search
     pub fn paste_into_key_onboarding(&mut self, pasted: &str) {
@@ -1208,8 +1208,8 @@ impl App {
                 field.push_str(&cleaned);
                 page.failure = None;
             }
-            KeyStep::SigninMethod | KeyStep::Device => {}
-            KeyStep::Method | KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
+            KeyStep::Method | KeyStep::SigninMethod | KeyStep::Device => {}
+            KeyStep::Subscription | KeyStep::Provider | KeyStep::Local => {
                 let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
                 if flat.is_empty() {
                     return;

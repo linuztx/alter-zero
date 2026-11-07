@@ -98,7 +98,7 @@ is never ambiguous.
 
 ## `/login` and launching on it
 
-`/login` → **Use an API key** → **Venice** → the key step introduces the
+`/login` → **Sign in with an API key** → **Venice** → the key step introduces the
 provider with the file's description and links the key page, and Enter saves
 the key as `VENICE_API_KEY` in `~/.alter-zero/.env`. Venice issues two kinds
 of key; an **Inference Only** key is all the app needs (the Admin kind exists

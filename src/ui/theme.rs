@@ -1090,14 +1090,33 @@ pub(super) const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 
 // --- Inline `/model` picker (docs/llm.md). Unlike `/resume`, this one is
 // **inline** — it replaces the composer in the bottom live region with its own
-// `>` search prompt over a scrolling model list, framed by top/bottom rules
-// like the input box. A gold header, the palette's cyan selection accent, a
-// dim `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
-// counter and a `Model Name:` line — the shape of the user's mock. ---
+// `❯` search prompt over a scrolling model list, framed by top/bottom rules
+// like the input box. The picker family's page (docs/view-flow.md *A
+// picker's page*): a title over a dim subtitle, the search line, the rows
+// with their `→` under the `❯`, the palette's cyan selection accent, a dim
+// `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
+// counter and a `Model Name:` line hanging under the ids — the shape of the
+// user's mock. ---
 
-/// The two-space inset shared by every picker row (search, list rows,
-/// counter, name) so the content sits off the frame's left edge.
+/// The two-space inset shared by every picker row (title, search, list rows,
+/// hint) so the content sits off the frame's left edge.
 pub(super) const MODEL_INDENT: &str = "  ";
+
+/// The column a list's **detail** hangs at — past [`MODEL_INDENT`] and the
+/// [`MODEL_MARKER`]'s width, so the `(n/total)` counter, the highlighted
+/// row's description and `/model`'s `Model Name:` line line up under the
+/// row names they speak for, while the title, the search line and the hint
+/// keep the frame's own inset.
+pub(super) const MODEL_DETAIL_INDENT: &str = "    ";
+
+/// The `/model` page's title, in the pages' title dress
+/// (`header::page_title_line`).
+pub(super) const MODEL_TITLE: &str = "Select model";
+
+/// The dim line under the title: what a pick changes. A switch moves this
+/// session's model and the directory's own entry, which a new session here
+/// starts on (`docs/per-directory-state.md`, `docs/session-model.md`).
+pub(super) const MODEL_SUBTITLE: &str = "Applies to this session and new ones in this directory";
 
 /// The glyph a framed view's top and bottom rules repeat across the width
 /// (`model_rule`). Named so the hidden-cursor seat can tell a rule row from
@@ -1113,7 +1132,11 @@ pub(super) fn model_selected_color() -> Color {
     menu_selected_color()
 }
 
-/// The selected row's marker; unselected rows get spaces the same width.
+/// The selected row's marker in every picker's list — `/model`, `/login`,
+/// `/settings`, `/skills`, `/theme`, `/mascot`, `/spinner` — at the frame's
+/// inset, so it sits straight under the search line's `❯`, which stays the
+/// only `❯` on the page. Unselected rows get spaces the same width
+/// (`model_view::marked_row_head`).
 pub(super) const MODEL_MARKER: &str = "→ ";
 
 /// Light grey — an unselected model id (readable but quieter than the selection).
@@ -1139,8 +1162,10 @@ pub(super) const MODEL_NAME_LABEL: &str = "Model Name: ";
 
 /// The most model rows shown at once; longer lists scroll to keep the selection
 /// **centered** (`centered_window`) so the user sees the models above and below
-/// it, not just up to the edge it last crossed.
-pub(super) const MODEL_MENU_MAX_ROWS: u16 = 10;
+/// it, not just up to the edge it last crossed. Seven: enough of a long
+/// catalog to read the neighbourhood of a search, few enough that the page
+/// leaves the conversation above it most of the terminal.
+pub(super) const MODEL_MENU_MAX_ROWS: u16 = 7;
 
 /// The list placeholder while the fetch is in flight.
 pub(super) const MODEL_LOADING: &str = "Loading models…";
@@ -1171,12 +1196,12 @@ pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 /// otherwise push the model list off the top of the frame.
 pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 
-// --- The `/login` API-key onboarding flow (docs/llm.md). A two-step inline
-// picker sharing the model picker's framed look and colours: step 1 lists the
-// providers to choose from (headerless, like `/model`), step 2 collects the key
-// masked under a periwinkle prompt. All styling reuses the `MODEL_*` consts
-// (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
-// `LOGIN_*` strings/geometry below. ---
+// --- The `/login` onboarding flow (docs/llm.md). An inline flow sharing the
+// model picker's framed look and colours: the root asks how you sign in under
+// a title (no filter — three rows are a question), the lists below it filter
+// under a `❯` line, and the key step collects the key masked. All styling
+// reuses the `MODEL_*` consts (indent, `❯` prompt, cyan selection, dim meta,
+// green ✓, `→` marker) plus the `LOGIN_*` strings/geometry below. ---
 
 /// The separator between a `/login` row's name and its configured status.
 pub(super) const LOGIN_STATUS_SEP: &str = " · ";
@@ -1199,6 +1224,11 @@ pub(super) const LOGIN_CONFIGURED_LABEL: &str = " configured";
 pub(super) const LOGIN_UNCONFIGURED_MARK: &str = "◯";
 pub(super) const LOGIN_UNCONFIGURED_LABEL: &str = " unconfigured";
 
+/// The method step's title — the root's question, over its three ways in.
+/// "Login" is the command's own word and the sign-in method choice's
+/// (`Select ChatGPT Codex login method:`), so the two questions read alike.
+pub(super) const LOGIN_METHOD_TITLE: &str = "Select login method";
+
 /// The dim hint under the method step (the root: Esc closes).
 pub(super) const LOGIN_METHOD_HINT: &str = "↑↓ navigate  enter select  escape/ctrl+c cancel";
 
@@ -1213,9 +1243,6 @@ pub(super) const LOGIN_LOCAL_HINT: &str = "↑↓ navigate  enter connect  esc b
 
 /// The list placeholder when the local server filter matches nothing.
 pub(super) const LOGIN_NO_LOCAL_MATCH: &str = "No matching servers";
-
-/// The list placeholder when the method filter matches nothing.
-pub(super) const LOGIN_NO_METHOD_MATCH: &str = "No matching options";
 
 /// The list placeholder when the subscription filter matches nothing.
 pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
@@ -1365,9 +1392,21 @@ pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 // value column instead of a `[provider]` tag. Every colour is borrowed from the
 // `MODEL_*` set so the three inline pickers read as one family. ---
 
+/// The `/settings` page's title, in the pages' title dress.
+pub(super) const SETTINGS_TITLE: &str = "Settings";
+
+/// The dim line under the title: what a change does. Every row takes effect
+/// at once and is saved — most per directory, the tips, the update check and
+/// telemetry per user (`docs/per-directory-state.md`) — so the line says
+/// what holds for all of them.
+pub(super) const SETTINGS_SUBTITLE: &str =
+    "Changes take effect at once and persist across sessions";
+
 /// The most setting rows shown at once; a longer (or unfiltered) list scrolls
-/// to keep the selection **centered**, like the `/model` list.
-pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 10;
+/// to keep the selection **centered**, like the `/model` list. Five: the
+/// counter under them says how many more there are, and a search finds any
+/// of them by its label or its description.
+pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 5;
 
 /// The list rows a **compact** page shows — the page a picker builds instead
 /// of its whole one on a terminal too short for that. codex's minimum result
@@ -1432,9 +1471,9 @@ pub(super) const SKILLS_OFF_VALUE: &str = "disabled";
 pub(super) const SKILLS_ON_MARK: &str = LOGIN_CONFIGURED_MARK;
 pub(super) const SKILLS_OFF_MARK: &str = LOGIN_UNCONFIGURED_MARK;
 
-/// The key hint pinned under the description — the menu's whole grammar.
-pub(super) const SKILLS_HINT: &str =
-    "Type to search · Enter/Space to enable/disable · Esc to cancel";
+/// The key hint pinned under the description — the menu's whole grammar
+/// (Enter toggles too, the `/settings` menu's twin key).
+pub(super) const SKILLS_HINT: &str = "Type to search · Space to toggle · Esc to cancel";
 
 /// The list placeholder when the search matches no skill.
 pub(super) const SKILLS_NO_MATCH: &str = "No matching skills";
@@ -1451,11 +1490,18 @@ pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
 // --- the inline /mascot picker (docs/mascot.md). The /theme picker's
-// layout over the mascot catalog: the family's frame and `❯` search line,
-// the rows in the `/mcp` list's shape, and the live banner preview, drawn by
+// layout over the mascot catalog: the family's header, frame and `❯` search
+// line, the rows with the family's `→`, and the live banner preview, drawn by
 // the header's own builder so it can never disagree with the real thing,
 // laid BESIDE the list once the terminal has the room and stacked under it
 // when it doesn't. ---
+
+/// The page's title, in the pages' title dress.
+pub(super) const MASCOT_TITLE: &str = "Select mascot";
+
+/// The dim line under the title: what a mascot is and where the choice is
+/// kept (`docs/per-directory-state.md`).
+pub(super) const MASCOT_SUBTITLE: &str = "The startup banner's art — saved for this directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
 /// grammar, led by the navigation like the `/theme` picker's.
@@ -1464,8 +1510,9 @@ pub(super) const MASCOT_HINT: &str = THEME_HINT;
 /// The list placeholder when the search matches no mascot.
 pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
 
-/// The cap on the picker's visible list rows (the settings window's size —
-/// the six-mascot catalog never actually windows today).
+/// The cap on the picker's visible list rows — the settings window's size,
+/// so the six-mascot catalog windows by one row, which the counter under it
+/// names.
 pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
 /// Columns between the list column and the preview beside it — the
@@ -1480,12 +1527,19 @@ pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
 
 // --- the inline /spinner picker (docs/spinner.md). The /theme picker's
-// layout over the spinner-style catalog: the family's frame and `❯` search
-// line, the rows in the `/mcp` list's shape with a name column that leaves
+// layout over the spinner-style catalog: the family's header, frame and `❯`
+// search line, the rows with the family's `→` and a name column that leaves
 // room for each row's live spinner, and the live status-line preview laid
 // BESIDE the list once the terminal has the room and stacked under it when
 // it doesn't. The styles' own frames and colours sit with the status
 // indicator's consts below (`SPINNER_*_FRAMES`). ---
+
+/// The page's title, in the pages' title dress.
+pub(super) const SPINNER_TITLE: &str = "Select spinner";
+
+/// The dim line under the title: what a spinner is and where the choice is
+/// kept (`docs/per-directory-state.md`).
+pub(super) const SPINNER_SUBTITLE: &str = "The status line's animation — saved for this directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
 /// grammar, led by the navigation like the `/theme` picker's.
@@ -1494,8 +1548,9 @@ pub(super) const SPINNER_HINT: &str = THEME_HINT;
 /// The list placeholder when the search matches no style.
 pub(super) const SPINNER_NO_MATCH: &str = "No matching spinners";
 
-/// The cap on the picker's visible list rows (the settings window's size —
-/// the nine-style catalog never actually windows today).
+/// The cap on the picker's visible list rows — the settings window's size,
+/// so the nine-style catalog windows around the highlighted style, the
+/// counter under it naming where it stands.
 pub(super) const SPINNER_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
 /// Columns between the widest style name in the catalog and the spinner
@@ -1514,15 +1569,23 @@ pub(super) const SPINNER_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 pub(super) const SPINNER_PREVIEW_MIN_COLS: usize = THEME_PREVIEW_MIN_COLS;
 
 // --- The inline `/theme` picker (docs/theme.md). codex's theme picker in
-// this TUI's dress: the family's frame and `❯` search line over one row per
-// colour theme in the `/mcp` list's shape (the `HOOKS_MARKER` `❯` on the
-// selection, the dim `↑ N more above` / `↓ N more below` rows), each row
-// wearing a swatch of its own accents, and a preview built from REAL cells (a
-// user bubble, an `Edit` diff cell, an assistant reply with a code block)
-// rendered under the highlighted theme through the conversation's own
-// builders — laid BESIDE the list once the terminal has the room, stacked
-// under it when it doesn't. The palettes themselves live in `ui::palette`;
-// only the picker's words and geometry are here. ---
+// this TUI's dress: the family's header, frame and `❯` search line over one
+// row per colour theme (the family's `→` on the selection, a `(n/total)`
+// counter under the window), each row wearing a swatch of its own accents,
+// and a preview built from REAL cells (a user bubble, an `Edit` diff cell, an
+// assistant reply with a code block) rendered under the highlighted theme
+// through the conversation's own builders — laid BESIDE the list once the
+// terminal has the room, stacked under it when it doesn't. The palettes
+// themselves live in `ui::palette`; only the picker's words and geometry are
+// here. ---
+
+/// The page's title, in the pages' title dress.
+pub(super) const THEME_TITLE: &str = "Select theme";
+
+/// The dim line under the title: what a theme changes and where the choice
+/// is kept — one `theme.json` per user, where `/mascot` and `/spinner` keep
+/// theirs per directory (`docs/theme.md`).
+pub(super) const THEME_SUBTITLE: &str = "The interface's colours — applies in every directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
 /// grammar, led by the navigation the `/mcp` list's hint leads with.
@@ -1532,11 +1595,12 @@ pub(super) const THEME_HINT: &str =
 /// The list placeholder when the search matches no theme.
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
 
-/// The cap on the picker's visible list rows (the settings window's size —
-/// the eleven-theme catalog windows by one row, which an overflow row
-/// names). The ten rows and that row stand about as tall as the preview
-/// beside them, so the side-by-side block is balanced.
-pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
+/// The cap on the picker's visible list rows. Ten, where the other previewed
+/// pickers show five: the eleven-theme catalog windows by one row, which the
+/// counter under it names. The ten rows and the counter stand about as tall
+/// as the preview beside them, so the side-by-side page is no taller for
+/// showing nearly the whole catalog at once.
+pub(super) const THEME_MENU_MAX_ROWS: u16 = 10;
 
 /// Columns between the widest theme name in the catalog and the swatch
 /// column, so the swatches line up down the list.
@@ -1973,8 +2037,8 @@ pub(super) const USAGE_LOADING: &str = "Loading usage…";
 
 /// The page with no subscription signed in — advice, in `/model`'s accent.
 pub(super) const USAGE_NO_SUBSCRIPTION: &str = "No subscription is signed in — run /login and \
-     choose Use a subscription to see its plan limits here. An API key bills per token and has \
-     no plan to measure.";
+     choose Sign in with an account to see its plan limits here. An API key bills per token \
+     and has no plan to measure.";
 
 /// The tag on the subscription the session is running on.
 pub(super) const USAGE_IN_USE: &str = "in use";

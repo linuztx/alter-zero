@@ -9,11 +9,10 @@ smoke_begin
 # anchoring such a page kept its tail — a description, a preview, the hint —
 # and flowed its search line and its highlighted row into scrollback, so the
 # row Enter would act on was off screen. Each picker now sheds what its
-# choices don't need and keeps the search line, three rows between the ↑/↓
-# overflow slots, and the hint — /donate and /secrets their highlighted entry,
-# and the AskUserQuestion modal its question (docs/ask.md) — or, like
-# /mascot laid beside its preview, fits whole. Drive each one on a 12-row
-# pane. Counts are matched loosely where a catalog grows with each
+# choices don't need and keeps its title, the search line, three rows between
+# the ↑/↓ overflow slots, and the hint — /donate and /secrets their
+# highlighted entry, and the AskUserQuestion modal its question
+# (docs/ask.md). Drive each one on a 12-row pane. Counts are matched loosely where a catalog grows with each
 # new feature, which must not fail this phase instead of that feature's own.
 S139="${S}_shortpages"
 # Eight secrets for /secrets to window (docs/secrets.md).
@@ -34,7 +33,8 @@ short_settings="$(wait_pane 5 "$S139" -F "Enter/Space to change")"
 echo "==== Phase 139: /settings on 12 rows ===="
 printf '%s\n' "$short_settings"
 expect_has "$short_settings" -E '^  ❯ *$' "/settings lost its search line on 12 rows"
-expect_has "$short_settings" -E '^→ Hide thinking +' "/settings lost its highlighted row on 12 rows"
+expect_has "$short_settings" -E '^  Settings *$' "/settings lost its title on 12 rows"
+expect_has "$short_settings" -E '^  → Hide thinking +' "/settings lost its highlighted row on 12 rows"
 expect_has "$short_settings" -E '^  ↓ [0-9]+ more below$' "/settings does not name the rows under its window"
 expect_lacks "$short_settings" -E '\([0-9]+/[0-9]+\)' "/settings still shows its counter on 12 rows"
 expect_lacks "$short_settings" -F "chain-of-thought" "/settings still shows its description on 12 rows"
@@ -45,25 +45,24 @@ sleep 0.4
 short_settings_walk="$(pane "$S139")"
 echo "==== Phase 139: /settings after seven ↓ ===="
 printf '%s\n' "$short_settings_walk"
-expect_has "$short_settings_walk" -E '^→ Permission mode +' "the /settings window did not follow the selection"
+expect_has "$short_settings_walk" -E '^  → Permission mode +' "the /settings window did not follow the selection"
 expect_has "$short_settings_walk" -E '^  ↑ [0-9]+ more above$' "/settings does not name the rows over its window"
 expect_has "$short_settings_walk" -E '^  ↓ [0-9]+ more below$' "/settings lost the row naming what is under its window"
 tmux send-keys -t "$S139" Escape
 sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /settings back to the composer"
-# /mascot: laid beside the list, its whole page is twelve rows, so a 12-row
-# pane shows all of it — every mascot, the caption and the banner preview —
-# and nothing is windowed (docs/mascot.md).
+# /mascot: laid beside the list its whole page is fifteen rows, so on 12 the
+# banner preview yields, and its title, three mascots between the slots and
+# the hint stay on screen (docs/mascot.md).
 submit "$S139" "/mascot"
 short_mascot="$(wait_pane 5 "$S139" -F "Enter to choose")"
 echo "==== Phase 139: /mascot on 12 rows ===="
 printf '%s\n' "$short_mascot"
 expect_has "$short_mascot" -E '^  ❯ *$' "/mascot lost its search line on 12 rows"
-expect_has "$short_mascot" -E '^  ❯ crest ✓ +Crest *$' "/mascot lost its highlighted row, or the caption beside it, on 12 rows"
-expect_has "$short_mascot" -E '^    gem ' "/mascot does not list every mascot on 12 rows"
-expect_has "$short_mascot" -F "crested hatchling" "/mascot lost its caption on 12 rows"
-expect_has "$short_mascot" -F "▙▄▙▄▟▄▟" "/mascot lost its banner preview on 12 rows"
-expect_lacks "$short_mascot" -F " more below" "/mascot windows a list that fits on 12 rows"
+expect_has "$short_mascot" -E '^  Select mascot *$' "/mascot lost its title on 12 rows"
+expect_has "$short_mascot" -E '^  → crest ✓ *$' "/mascot lost its highlighted row on 12 rows"
+expect_has "$short_mascot" -E '^  ↓ [0-9]+ more below$' "/mascot does not name the mascots under its window"
+expect_lacks "$short_mascot" -F "crested hatchling" "/mascot still shows its preview's caption on 12 rows"
 tmux send-keys -t "$S139" Escape
 sleep 0.4
 # /spinner: laid beside the list its whole page is fifteen rows, so on 12 the
@@ -73,7 +72,7 @@ short_spinner="$(wait_pane 5 "$S139" -F "Enter to choose")"
 echo "==== Phase 139: /spinner on 12 rows ===="
 printf '%s\n' "$short_spinner"
 expect_has "$short_spinner" -E '^  ❯ *$' "/spinner lost its search line on 12 rows"
-expect_has "$short_spinner" -E '^  ❯ gravity' "/spinner lost its highlighted row on 12 rows"
+expect_has "$short_spinner" -E '^  → gravity' "/spinner lost its highlighted row on 12 rows"
 expect_has "$short_spinner" -E '^  ↓ [0-9]+ more below$' "/spinner does not name the rows under its window"
 expect_lacks "$short_spinner" -F "Working" "/spinner still shows its live preview on 12 rows"
 tmux send-keys -t "$S139" Escape
@@ -81,19 +80,19 @@ sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /spinner back to the composer"
 # /login's API-key list: the counter and the where-keys-are-saved note yield.
 submit "$S139" "/login"
-wait_pane 5 "$S139" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139" -F "Sign in with an API key" >/dev/null
 tmux send-keys -t "$S139" Down Enter
 short_login="$(wait_pane 5 "$S139" -F "esc back")"
 echo "==== Phase 139: /login's provider list on 12 rows ===="
 printf '%s\n' "$short_login"
 expect_has "$short_login" -E '^  ❯ *$' "/login lost its filter line on 12 rows"
-expect_has "$short_login" -E '^→ .+ · (✔|◯) ' "/login lost its highlighted provider on 12 rows"
+expect_has "$short_login" -E '^  → .+ · (✔|◯) ' "/login lost its highlighted provider on 12 rows"
 expect_has "$short_login" -E '^  ↓ [0-9]+ more below$' "/login does not name the providers under its window"
 expect_lacks "$short_login" -F "Keys are saved to" "/login still shows its note on 12 rows"
 # One Esc back to the sign-in fork, one more to close it — sent apart, since
 # two ESC bytes in one write read as a single Alt+Esc.
 tmux send-keys -t "$S139" Escape
-wait_pane 5 "$S139" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139" -F "Sign in with an API key" >/dev/null
 tmux send-keys -t "$S139" Escape
 wait_pane 5 "$S139" -F "dummy_model_name" >/dev/null ||
 	fail "Esc did not close /login back to the composer"
@@ -205,7 +204,7 @@ close_picker() { # $1 label
 submit "$S139T" "/theme"
 wait_pane 5 "$S139T" -F "Enter to choose" >/dev/null
 tmux send-keys -t "$S139T" Down Down Down Down Down
-tiny_theme="$(wait_pane 5 "$S139T" -E '^  ❯ dracula')"
+tiny_theme="$(wait_pane 5 "$S139T" -E '^  → dracula')"
 echo "==== Phase 139: /theme on 7 rows ===="
 printf '%s\n' "$tiny_theme"
 expect_has "$(printf '%s\n' "$tiny_theme" | head -1)" -F "──────────" "/theme on 7 rows lost its top rule"
@@ -223,8 +222,8 @@ caret_on_search_line "/theme matching nothing on 7 rows" "$tiny_nomatch" "zzz"
 tmux send-keys -t "$S139T" Escape # clears the search
 sleep 0.3
 close_picker /theme
-for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:❯ crest:Enter to choose" \
-	"/spinner:❯ gravity:Enter to choose" "/skills:→ alpha:Enter/Space to enable"; do
+for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:→ crest:Enter to choose" \
+	"/spinner:→ gravity:Enter to choose" "/skills:→ alpha:Space to toggle"; do
 	cmd="${picker%%:*}"
 	rest="${picker#*:}"
 	row="${rest%%:*}"
@@ -237,21 +236,25 @@ for picker in "/settings:→ Hide thinking:Enter/Space to change" "/mascot:❯ c
 	caret_on_search_line "$cmd on 7 rows" "$tiny" ""
 	close_picker "$cmd"
 done
+# /login's root has no search line — three rows are a question — so on 7
+# rows its gaps yield and its title, every way in and the hint stay.
 submit "$S139T" "/login"
-tiny_login="$(wait_pane 5 "$S139T" -F "Use an API key")"
+tiny_login="$(wait_pane 5 "$S139T" -F "Sign in with an API key")"
 echo "==== Phase 139: /login on 7 rows ===="
 printf '%s\n' "$tiny_login"
-expect_has "$tiny_login" -E '^→ Use a subscription' "/login on 7 rows lost its highlighted row"
-caret_on_search_line "/login on 7 rows" "$tiny_login" ""
+expect_eq "$(printf '%s\n' "$tiny_login" | sed -n 2p)" "  Select login method" "/login on 7 rows does not put its title under the rule"
+expect_has "$tiny_login" -E '^  → Sign in with an account$' "/login on 7 rows lost its highlighted row"
+expect_has "$tiny_login" -E '^    Sign in with a local model$' "/login on 7 rows lost a way in"
+expect_has "$tiny_login" -F "escape/ctrl+c cancel" "/login on 7 rows lost its hint"
 tmux send-keys -t "$S139T" Down Enter
 tiny_providers="$(wait_pane 5 "$S139T" -F "esc back")"
 echo "==== Phase 139: /login's provider list on 7 rows ===="
 printf '%s\n' "$tiny_providers"
 expect_eq "$(printf '%s\n' "$tiny_providers" | sed -n 2p)" "  ❯" "/login's provider list on 7 rows does not put its filter line under the rule"
-expect_has "$tiny_providers" -E '^→ .+ · (✔|◯) ' "/login's provider list on 7 rows lost its highlighted provider"
+expect_has "$tiny_providers" -E '^  → .+ · (✔|◯) ' "/login's provider list on 7 rows lost its highlighted provider"
 caret_on_search_line "/login's provider list on 7 rows" "$tiny_providers" ""
 tmux send-keys -t "$S139T" Escape
-wait_pane 5 "$S139T" -F "Use an API key" >/dev/null
+wait_pane 5 "$S139T" -F "Sign in with an API key" >/dev/null
 close_picker /login
 tmux kill-session -t "$S139T" 2>/dev/null
 
@@ -306,7 +309,8 @@ short_model="$(wait_pane 10 "$S139" -F "stub/model-01")"
 echo "==== Phase 139: /model on 12 rows ===="
 printf '%s\n' "$short_model"
 expect_has "$short_model" -E '^  ❯ *$' "/model lost its search line on 12 rows"
-expect_has "$short_model" -E '^→ stub/model-00 \[stub\]' "/model lost its highlighted model on 12 rows"
+expect_has "$short_model" -E '^  Select model *$' "/model lost its title on 12 rows"
+expect_has "$short_model" -E '^  → stub/model-00 \[stub\]' "/model lost its highlighted model on 12 rows"
 expect_has "$short_model" -E '^  ↓ 9 more below$' "/model does not name the models under its window"
 expect_has "$short_model" -F "Stub: Model 0" "/model's compact page lost the highlighted model's name"
 expect_lacks "$short_model" -E '\([0-9]+/[0-9]+\)' "/model still shows its counter on 12 rows"
@@ -321,7 +325,7 @@ tiny_model="$(wait_pane 10 "$S139" -F "stub/model-01")"
 echo "==== Phase 139: /model on 7 rows ===="
 printf '%s\n' "$tiny_model"
 expect_eq "$(printf '%s\n' "$tiny_model" | sed -n 2p)" "  ❯" "/model on 7 rows does not put its search line under the rule"
-expect_has "$tiny_model" -E '^→ stub/model-00 \[stub\]' "/model on 7 rows lost its highlighted model"
+expect_has "$tiny_model" -E '^  → stub/model-00 \[stub\]' "/model on 7 rows lost its highlighted model"
 expect_has "$tiny_model" -F "Stub: Model 0" "/model on 7 rows lost the highlighted model's name"
 expect_eq "$(tmux display-message -p -t "$S139" '#{cursor_x},#{cursor_y}')" "4,1" "/model on 7 rows: the caret is not on the search line"
 tmux send-keys -t "$S139" Escape

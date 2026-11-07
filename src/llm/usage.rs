@@ -1348,7 +1348,7 @@ fn clinepass_unsubscribed() -> UsageReport {
             NoteTone::Warning,
             "This Cline account has no ClinePass subscription — subscribe at \
              app.cline.bot/dashboard/subscription, or use Cline's usage-billed models through \
-             an API key (/login → Use an API key → Cline).",
+             an API key (/login → Sign in with an API key → Cline).",
         )],
         ..UsageReport::default()
     }
@@ -1472,7 +1472,7 @@ fn refusal(message: impl Into<String>) -> LlmError {
 fn signed_in(key: Option<&str>) -> Result<&str> {
     key.map(str::trim)
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| refusal("not signed in — run /login and choose Use a subscription"))
+        .ok_or_else(|| refusal(super::auth::NOT_SIGNED_IN))
 }
 
 /// The `Authorization` header for a minted bearer.
@@ -1655,6 +1655,13 @@ mod tests {
             assert!(report.meters.is_empty(), "{answer:?}");
             assert_eq!(report.notes.len(), 1, "{answer:?}");
             assert!(report.notes[0].text.contains("no ClinePass subscription"));
+            assert!(
+                report.notes[0]
+                    .text
+                    .contains(crate::app::LoginMethod::ApiKey.label()),
+                "the /login row it names exists: {}",
+                report.notes[0].text
+            );
             assert_eq!(server.join().unwrap().len(), 1);
         }
     }

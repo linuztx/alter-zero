@@ -190,7 +190,7 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
 | `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
-| `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Use a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
+| `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Sign in with a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
@@ -266,23 +266,32 @@ prompt — the shape the user asked for. It is `App::model_picker: Option<ModelP
 (not a `View`), owned in `on_key` like the Ctrl+R search, and special-cased in
 `ui::render_live` / `ui::live_height` / `ui::cursor_position`.
 
-Layout (headerless — the top rule, the airy codex-style body, then the bottom
-rule, with no blank row hugging either rule: the shape of the user's mock,
-tightened by two rows when the frame stopped padding itself,
-`docs/view-flow.md` *The frame hugs its content*):
+Layout (the picker family's page, `docs/view-flow.md` *A picker's page* —
+the top rule, a title over a dim subtitle, the airy codex-style body, then
+the bottom rule, with no blank row hugging either rule: the shape of the
+user's mock, `docs/view-flow.md` *The frame hugs its content*):
 
 ```
 ────────────────────────────────────────────────
+  Select model                                           (title, the pages' dress)
+  Applies to this session and new ones in this directory (what a pick changes, dim)
+
   ❯ cla                                                  (search prompt, cyan '❯')
 
-→ anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
-  anthropic/claude-3.5-haiku  [openrouter]
-  claude-opus-4-8-fast        [a0_venice]  ✓
-  (3/12)   ·   loading more…                             (position/total + load status, dim)
+  → anthropic/claude-3-haiku [openrouter]                (selected: '→' under the '❯')
+    anthropic/claude-3.5-haiku [openrouter]
+    claude-opus-4-8-fast [a0_venice] ✓                   (active: ✓)
+    (3/12)   ·   loading more…                           (position/total + load status, dim)
 
-  Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
+    Model Name: Anthropic: Claude 3.5 Haiku              (friendly name, dim)
 ────────────────────────────────────────────────
 ```
+
+The window holds seven models (`MODEL_MENU_MAX_ROWS`), the selection riding
+its middle; the counter, the `Model Name:` line and a failed provider's
+reasons hang under the ids (`MODEL_DETAIL_INDENT`). The subtitle says what
+Enter does to the session and to the directory (`docs/session-model.md`,
+`docs/per-directory-state.md`).
 
 - Opened by `/model` (`Action::OpenModelPicker`). **Works mid-turn** (updated
   2026-07-08; it used to be rejected like `/resume`): the picker only replaces
@@ -381,8 +390,10 @@ tightened by two rows when the frame stopped padding itself,
   settings carry the thinking state beside the selection. See
   `docs/reasoning.md`.
 
-- The picker is **headerless** — the old "Showing models…" banner was dropped, so
-  the `❯` search line sits directly under the top rule; the selection marker is `→`.
+- The picker opens on **a title over a dim subtitle** (updated 2026-11-06; it
+  had been headerless since the old "Showing models…" banner was dropped) —
+  `Select model` over what a pick changes — then a gap and the `❯` search
+  line; the selection marker is `→`, at the frame's inset under the `❯`.
 - The counter + `Model Name:` rows show **only when a real model is highlighted**.
   A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
   `No matching models`) has no counter or name, so those rows collapse away and
@@ -394,23 +405,25 @@ tightened by two rows when the frame stopped padding itself,
   framed view; `docs/view-flow.md`). The `/login` provider step
   follows the same rule: with no provider matched its counter takes no row, so
   one gap carries `No matching providers` to the hint.
-- On a terminal too short for the page (seventeen rows with ten models listed),
-  `model_view_lines(picker, width, height)` builds the family's **compact**
-  page instead (`docs/view-flow.md` *A page that sheds rows before it flows*):
-  three models between the reserved `↑ N more above` / `↓ N more below`
-  slots, the counter and the failed providers' rows yielding. The picker has
-  no hint row, so the compact page keeps the highlighted model's `Model Name:`
-  line where its siblings keep their hint — the same nine-row shape:
+- On a terminal too short for the page (seventeen rows with seven models
+  listed), `model_view_lines(picker, width, height)` builds the family's
+  **compact** page instead (`docs/view-flow.md` *A page that sheds rows
+  before it flows*): three models between the reserved `↑ N more above` /
+  `↓ N more below` slots, the counter and the failed providers' rows
+  yielding, under the header while it fits (twelve rows) and without it a row
+  shorter. The picker has no hint row, so the compact page keeps the
+  highlighted model's `Model Name:` line where its siblings keep their hint —
+  the same nine-row shape once the header has gone:
 
   ```
   ────────────────────────────────────────────────
     ❯
 
-  → stub/model-00 [stub]
-    stub/model-01 [stub]
-    stub/model-02 [stub]
+    → stub/model-00 [stub]
+      stub/model-01 [stub]
+      stub/model-02 [stub]
     ↓ 9 more below
-    Model Name: Stub: Model 0
+      Model Name: Stub: Model 0
   ────────────────────────────────────────────────
   ```
 
@@ -427,33 +440,36 @@ tightened by two rows when the frame stopped padding itself,
 
 ### Styling
 
-All picker styling is centralized in `ui/theme.rs`'s `MODEL_*` consts: the cyan `❯`
-prompt and selection accent (reusing `menu_selected_color()`), the dim provider tag /
-counter / model-name, the `→` marker, the `✓` active mark, the cyan
-`MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`. Retheme there.
+All picker styling is centralized in `ui/theme.rs`'s `MODEL_*` consts: the
+`MODEL_TITLE` / `MODEL_SUBTITLE` header, the cyan `❯` prompt and selection
+accent (reusing `menu_selected_color()`), the dim provider tag / counter /
+model-name, the `→` marker and the `MODEL_DETAIL_INDENT` the detail hangs at,
+the `✓` active mark, the cyan `MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`.
+Retheme there.
 
 ## The inline `/login` onboarding flow
 
 `/login` collects a provider API key and saves it to `.env` so it persists across
 runs — the "onboarding" the user asked for. Like `/model` it is **inline**
 (`App::key_onboarding: Option<KeyOnboarding>`, not a `View`), replacing the composer
-in place; unlike it, it is a multi-step flow, rooted at three ways in — **Use a
-subscription**, **Use an API key**, **Use a local model** — whose lists partition
-the provider table by `auth` (a sign-in, a pasted key, a key that is optional).
+in place; unlike it, it is a multi-step flow, rooted at three ways in under a
+`Select login method` title — **Sign in with an account**, **Sign in with an
+API key**, **Sign in with a local model** — whose lists partition the provider
+table by `auth` (a sign-in, a pasted key, a key that is optional).
 The API-key half is below; the subscription half is its own bullet, and the
 local half — a server's address, **tested before it is saved** — is
 `docs/local-models.md`.
 
-**Step 1 — pick a provider** (a filterable list, headerless like `/model`;
+**Step 1 — pick a provider** (a filterable list with no title;
 `KeyStep::Provider`):
 
 ```
 ────────────────────────────────────────────────
   ❯ agent                                                (filter, cyan '❯')
 
-→ Agent Zero API · ✔ configured                          (selected '→'; green ✔ = a key resolves)
-  OpenRouter · ◯ unconfigured                            (no key yet; the word stays dim)
-  (1/2)                                                  (position/total, dim)
+  → Agent Zero API · ✔ configured                        (selected '→'; green ✔ = a key resolves)
+    OpenRouter · ◯ unconfigured                          (no key yet; the word stays dim)
+    (1/2)                                                (position/total, dim)
 
   Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
 ────────────────────────────────────────────────
@@ -507,12 +523,15 @@ local half — a server's address, **tested before it is saved** — is
   are the question, not something that can be configured.
 - **No list carries a title** (updated 2026-09-03). The subscription and
   provider steps used to repeat the method row that opened them as a cyan
-  heading (`Use a subscription` / `Use an API key`); it said nothing the rows
-  and the hint below them don't, and it cost every row two lines of a region
-  already sharing the terminal with a running turn. All the lists are one
-  shape now — the rule, then the `❯` filter straight under it — and the root
-  never had one: there its rows *are* the question. The method step is
-  also the one list with no `(n/total)` counter.
+  heading (then `Use a subscription` / `Use an API key`); it said nothing the
+  rows and the hint below them don't, and it cost every row two lines of a
+  region already sharing the terminal with a running turn. All the lists are
+  one shape now — the rule, then the `❯` filter straight under it. **The root
+  asks its question in words instead** (updated 2026-11-06): `Select login
+  method` over its three rows, no `❯` filter and no `(n/total)` counter —
+  three rows are a question, not a list to search, so typing there does
+  nothing and the cursor hides, the sign-in method choice's rule
+  (`docs/copilot.md`).
 - **The remaining titles wear the pages' one title dress** — bold, washed in
   the active theme's banner gradient (`ui::header::page_title_line`,
   `docs/theme.md`) — the sign-in page's `Sign in to {provider}` and the key
@@ -568,8 +587,10 @@ local half — a server's address, **tested before it is saved** — is
   between the reserved overflow slots and the key hint, the counter and the
   `Keys are saved to` note yielding. The provider list is fifteen rows with
   the built-in catalog, and bottom-anchoring it on twelve flowed the filter
-  and the highlighted provider into scrollback; the root's two rows are the
-  same page either way. On a terminal shorter still the compact page sheds
+  and the highlighted provider into scrollback. The root, with no filter,
+  sheds the same rungs with its title in the filter's seat — its gaps and
+  rules first, so seven rows still hold the title and all three ways in. On
+  a terminal shorter still the compact page sheds
   what is left one row at a time and never its filter line (`docs/view-flow.md`
   *Below the compact page*), a filter matching nothing putting its
   placeholder in the list's place. The key step, the sign-in pages and the
@@ -586,7 +607,8 @@ local half — a server's address, **tested before it is saved** — is
 
 The `/login` flow reuses the `/model` picker's colours (indent, cyan `❯` prompt /
 selection, dim meta, green ✔/✓, `→` marker) plus the
-`LOGIN_*` strings and geometry consts in `ui/theme.rs` — the row's
+`LOGIN_*` strings and geometry consts in `ui/theme.rs` — the root's
+`LOGIN_METHOD_TITLE`, the row's
 `LOGIN_STATUS_SEP` / `LOGIN_CONFIGURED` / `LOGIN_UNCONFIGURED`, the key step's
 `LOGIN_KEY_URL_PREFIX` / `LOGIN_HOST_URL_PREFIX`, and the periwinkle
 `LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`) that names the provider on the key step.

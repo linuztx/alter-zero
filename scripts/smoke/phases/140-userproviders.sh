@@ -138,7 +138,7 @@ p_close() {
 # p_key_list SESSION — open /login's API-key list and print it.
 p_key_list() {
 	submit "$1" "/login"
-	wait_for 5 "$1" -F "Use an API key" || fail "/login did not open"
+	wait_for 5 "$1" -F "Sign in with an API key" || fail "/login did not open"
 	keys "$1" Down
 	sleep 0.2
 	keys "$1" Enter

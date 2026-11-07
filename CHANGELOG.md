@@ -83,6 +83,35 @@ release heading when a version is cut.
   up in one column. A `No matching commands`, `No matching files` or
   `No matching skills` row now sits in that same column.
 
+- **The pickers open on a title and show fewer rows at a time.** `/model`,
+  `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
+  (`Select model`, `Settings`, `Select theme`, `Select mascot`,
+  `Select spinner`) over a dim line saying what the choice changes and how
+  long it lasts, the way `/skills` opens on `Skills` and its count. In every
+  picker the `→` that marks the highlighted row now sits under the `❯`
+  search line, two columns in, and the `(n/total)` counter, the highlighted
+  row's description and `/model`'s `Model Name:` line start under the
+  names. `/theme`, `/mascot` and `/spinner` used to mark the
+  highlighted row with a second `❯`, and now show the same counter in place
+  of their `↑ N more above` and `↓ N more below` rows. Lists show at most
+  seven rows at a time in `/model` and five in `/settings`, `/skills`,
+  `/mascot` and `/spinner`, where they showed up to ten, so a picker no
+  longer fills a small terminal. `/theme` keeps its ten, which stand no
+  taller than the preview beside them. The `/skills` hint now reads
+  `Space to toggle`; Enter still toggles too. On a terminal too short for
+  the whole page, the title stays above a three-row list while there is
+  room for both (`docs/view-flow.md`).
+
+- **`/login` opens on `Select login method`.** The first page now asks how
+  you sign in under a title, with no search line, since three choices are a
+  question rather than a list to filter. Its rows read
+  `Sign in with an account`, `Sign in with an API key` and
+  `Sign in with a local model`, where they read `Use a subscription`,
+  `Use an API key` and `Use a local model`: not every account behind the
+  first row is a subscription, since an Anthropic Console sign-in bills per
+  token. Messages that send you to one of these rows, such as `/usage` with
+  nothing signed in, name them the new way (`docs/llm.md`).
+
 - **The `?` shortcuts list fits itself to the terminal.** It was a fixed
   two-column grid that left the right side of a wide terminal empty and took
   eight rows under the input box. It now uses as many columns as the width

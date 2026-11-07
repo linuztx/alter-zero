@@ -27,16 +27,18 @@ sleep 0.6
 settings_open="$(tmux capture-pane -t "$S67" -p)"
 echo "==== Phase 67: the settings menu open ===="
 printf '%s\n' "$settings_open"
-# Only rows that are ALWAYS in the opening window: the list is capped at
-# SETTINGS_MENU_MAX_ROWS and scrolls with the selection, so once the knob count
-# passed the cap the tail rows stopped showing on open. Same lesson the counter
-# below already learned — pinning something that grows with each new feature
-# fails here instead of in that feature's own phase. A row past the window is
-# reached the way a user reaches it: the type-to-search this phase drives next.
-for expect in "Hide thinking" "Error retry" "Permission mode" \
+# The header, then only rows that are ALWAYS in the opening window: the list
+# is capped at SETTINGS_MENU_MAX_ROWS (five) and scrolls with the selection,
+# so the tail rows do not show on open. Same lesson the counter below already
+# learned — pinning something that grows with each new feature fails here
+# instead of in that feature's own phase. A row past the window is reached the
+# way a user reaches it: the type-to-search this phase drives next.
+for expect in "Settings" "Changes take effect at once and persist across sessions" \
+	"Hide thinking" "Auto-resize images" \
 	"Type to search · Enter/Space to change · Esc to cancel"; do
 	expect_has "$settings_open" -F "$expect" "the settings menu is missing '$expect'"
 done
+expect_lacks "$settings_open" -F "Error retry" "the opening window shows more than its five rows"
 # …and a row below the window is still reachable by search (proving the cap
 # hides rows rather than dropping them).
 tmux send-keys -t "$S67" -l "max tool"
@@ -48,7 +50,7 @@ expect_has "$settings_tail" -F "Max tool calls" "a setting past the visible wind
 # Clear the query so the search assertions below start from the full list.
 for _ in $(seq 1 8); do tmux send-keys -t "$S67" BSpace; done
 sleep 0.4
-expect_has "$settings_open" -E "→ Hide thinking +false" "the first row is not marked with its value in the value column"
+expect_has "$settings_open" -E "^  → Hide thinking +false" "the first row is not marked, under the search prompt, with its value in the value column"
 # The counter's SHAPE, not a hard-coded total: this phase is about the menu
 # chrome, and pinning the row count made every later feature that adds a knob
 # fail here instead of in its own phase (the Hooks row did exactly that).
@@ -102,6 +104,9 @@ tmux send-keys -t "$S67B" -l "/settings"
 sleep 0.3
 tmux send-keys -t "$S67B" Enter
 sleep 0.6
+# Error retry sits past the opening window: search for it, as a user would.
+tmux send-keys -t "$S67B" -l "retry"
+sleep 0.4
 settings_restored="$(tmux capture-pane -t "$S67B" -p)"
 echo "==== Phase 67: a fresh process shows the saved value ===="
 printf '%s\n' "$settings_restored"

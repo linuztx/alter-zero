@@ -98,7 +98,7 @@ widened for the split.
 | `mascot_view.rs` | The inline `/mascot` picker with its live banner preview (`docs/mascot.md`). |
 | `spinner_view.rs` | The inline `/spinner` picker — live spinner rows over a sample status-line preview (`docs/spinner.md`). |
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
-| `theme_view.rs` | The inline `/theme` picker — swatch rows in the `/mcp` list's shape with a real-cell preview in the highlighted theme beside them (under them on a narrow terminal) (`docs/theme.md`). |
+| `theme_view.rs` | The inline `/theme` picker — swatch rows in the picker family's shape with a real-cell preview in the highlighted theme beside them (under them on a narrow terminal) (`docs/theme.md`). |
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `context_usage_view.rs` | The read-only `/context` page — the window bar, the legend with the highlighted category's parts beside or under it, the provider's usage rows and cache meter, and its shedding ladder (`docs/context-usage.md`). |
