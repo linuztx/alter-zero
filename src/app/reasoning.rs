@@ -124,6 +124,40 @@ impl App {
     pub(super) fn drop_reasoning(&mut self) {
         self.reasoning = None;
         self.round_reasoning.clear();
+        // A thought held for the last turn's next cell has nothing left to
+        // hand over to (docs/thought-handoff.md).
+        self.held_thought = None;
+    }
+
+    /// Hold a just-settled thought **on screen** until the next cell takes
+    /// its rows (`docs/thought-handoff.md`): the strip draws it as its
+    /// settled `Thought for …` line over the thought's tail — the rows the
+    /// live block stood on — while the boundary holds that line back from
+    /// scrollback. The thought is recorded already ([`finish_reasoning`]);
+    /// this is display only.
+    ///
+    /// The backend settles a phase at the round's first tool-call piece, but
+    /// the call has a cell only once its batch is announced: collapsing the
+    /// block at once lifted the box by its rows for as long as the call took
+    /// to generate, and dropped it back when the cell landed — the flicker
+    /// reported between a quick think and a `skill` call.
+    ///
+    /// [`finish_reasoning`]: App::finish_reasoning
+    pub fn hold_thought(&mut self, thought: Reasoning) {
+        self.held_thought = Some(thought);
+    }
+
+    /// The thought held on screen ([`hold_thought`](App::hold_thought)), if
+    /// any — what the strip draws while nothing else has taken its rows.
+    #[must_use]
+    pub const fn held_thought(&self) -> Option<&Reasoning> {
+        self.held_thought.as_ref()
+    }
+
+    /// Let the held thought go — its line has committed, or the screen was
+    /// rebuilt from history, which carries it.
+    pub fn drop_held_thought(&mut self) {
+        self.held_thought = None;
     }
 
     /// Replace this round's reasoning cells' token estimates with the

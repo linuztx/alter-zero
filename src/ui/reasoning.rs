@@ -196,6 +196,26 @@ pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> V
         Some(pulse),
         shimmer_spans_from(REASONING_RUNNING, pulse, reasoning_shimmer_base()),
     )];
+    lines.extend(thought_tail(text, width));
+    lines
+}
+
+/// A **settled** thought held in the strip until the next cell takes its rows
+/// (`docs/thought-handoff.md`): the live block with its header settled in
+/// place — the very `Thought for …` line [`reasoning_lines`] commits — over
+/// the same tail of thought, so it stands on exactly the rows the block did
+/// and the box does not move when the phase ends. When the next cell lands,
+/// the line commits with its spacer and the cell takes the tail's rows.
+pub(super) fn held_thought_lines(reasoning: &Reasoning, width: u16) -> Vec<Line<'static>> {
+    let mut lines = reasoning_lines(reasoning, width);
+    lines.extend(thought_tail(&reasoning.text, width));
+    lines
+}
+
+/// The last [`REASONING_PEEK_LINES`] wrapped rows of `text` in the `⎿`
+/// gutter, blank source lines skipped — the body under the live block's
+/// header, and under a held thought's settled line.
+fn thought_tail(text: &str, width: u16) -> Vec<Line<'static>> {
     let inner = body_width(width);
     let mut window: VecDeque<String> = VecDeque::new();
     for source in text.split('\n').rev() {
@@ -212,11 +232,9 @@ pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> V
     while window.len() > REASONING_PEEK_LINES {
         window.pop_front();
     }
-    lines.extend(
-        window
-            .into_iter()
-            .enumerate()
-            .map(|(i, row)| body_row(i, row)),
-    );
-    lines
+    window
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| body_row(i, row))
+        .collect()
 }

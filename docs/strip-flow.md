@@ -78,7 +78,8 @@ would purge-rebuild the whole screen thirty times a second, so it takes the ↓
 manager's `FlowSign::Frozen` (`docs/view-flow.md`) over
 `ui::live::strip_flow_key`: which conversation is on screen, whether a status
 line is up, each queued call's name/arguments/status, the live agent group's
-members, whether a thinking phase is open, and each `write` still being
+members, whether a thinking phase is open or a settled thought still holds
+its rows (`docs/thought-handoff.md`), and each `write` still being
 generated, by its path and whether it has finished (`docs/write-streaming.md`).
 A new call, a resolution, a new round, the turn ending or a streaming `write`
 flipping from its tail to its head re-signs it; a streamed line does not. The width and
@@ -119,16 +120,6 @@ region already reserves), and a strip that fits returns before
 `strip_lines` is ever called. It over-estimates at worst — for a reply's
 frontier the reserved count can exceed what the fallback build produces — so
 "fits" always means "fits".
-
-### Held rows never flow
-
-The preview floor (`docs/strip-floor.md`) can reserve rows the content does
-not fill — a settled thought's rows, held blank for the call that follows.
-They are geometry, so a live cell's overflow is sized from its content's own
-ask (`layout::content_preview_rows`) and the held rows count only through the
-reserved ones: padding can never make the strip outgrow its rect and flow
-blank rows into scrollback behind a purge rebuild. The floor is also clamped
-to the preview budget, so it never takes a row the composer needs.
 
 ## The invariants it leans on
 

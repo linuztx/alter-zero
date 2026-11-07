@@ -236,21 +236,9 @@ impl Session<'_> {
     /// chat above it scrolling into real scrollback (`InlineViewport` notes that
     /// one-way move for the close's purge rebuild; `docs/permissions.md`).
     pub(crate) fn draw_conversation(&mut self) -> io::Result<()> {
-        // Hold the strip's rows first: what its preview slot reserved last
-        // frame, less every row queued for scrollback since — so a live cell
-        // that gives way to fewer committed rows than it stood on (a settled
-        // `● Thinking…` block before the round's call has landed) leaves its
-        // rows held for what comes next instead of lifting the box and
-        // dropping it back a few frames later (`docs/strip-floor.md`).
-        // Before the preview and the height below, which both reserve it.
-        let screen = self.term.screen();
-        let floor = self.preview_floor.floor(
-            &self.app,
-            self.term.pending_rows(),
-            screen.width,
-            screen.height,
-        );
-        self.app.set_preview_floor(floor);
+        // A held thought gives its rows up the frame something takes them,
+        // its line committing in that same frame (docs/thought-handoff.md).
+        self.sync_held_thought();
         // Compute the strip preview cheaply once per frame (O(one line); a
         // forming table re-renders just its own block), so the status animation
         // never re-renders the whole reply — and inject its row count so the
@@ -260,23 +248,11 @@ impl Session<'_> {
         let app = &self.app;
         // `term` places the cursor from the final (content-anchored) viewport
         // via `ui::cursor_position`, which mirrors render_live's layout exactly.
-        let drawn = self.term.draw(
+        self.term.draw(
             height,
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
-        );
-        self.preview_floor
-            .record(&self.app, screen.width, screen.height);
-        drawn
-    }
-
-    /// A purge rebuild re-seats the live region from scratch, so there is no
-    /// bottom left to hold: the strip paints at its content's own height and
-    /// the floor starts over from what the rebuild reserved
-    /// (`docs/strip-floor.md`). Called before the rebuild's preview and height.
-    fn restart_preview_floor(&mut self) {
-        self.preview_floor.reset();
-        self.app.set_preview_floor(0);
+        )
     }
 
     /// Render the full-screen tool-output overlay. Clamps the scroll to the
@@ -391,8 +367,28 @@ impl Session<'_> {
             .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, &body))
     }
 
+    /// Let a held thought go once it no longer holds (`docs/thought-handoff.md`):
+    /// something took the strip's slot — a call's cell, the reply's first
+    /// words, a new phase, a modal — the turn ended, or a commit already
+    /// released the held line ahead of itself. Its line is queued now, so the
+    /// frame that draws what replaced the thought writes the line with it:
+    /// the line and its spacer above, the new content on the rows the
+    /// thought's tail had, and the box exactly where it was.
+    pub(crate) fn sync_held_thought(&mut self) {
+        let holding = self.term.has_held() && ui::holds_thought(&self.app);
+        if !holding {
+            self.term.release_held();
+            self.app.drop_held_thought();
+        }
+    }
+
     /// Paint whichever view is current — the draw tick's whole body.
     pub(crate) fn draw_active_view(&mut self) -> io::Result<()> {
+        // Before the flow and modal checks below, which size the strip
+        // (docs/thought-handoff.md).
+        if self.app.view == View::Conversation {
+            self.sync_held_thought();
+        }
         match self.app.view {
             // The modal (permission-prompt) region needs a purge rebuild
             // instead of an in-place paint — two cases, one pure decision
@@ -506,7 +502,10 @@ impl Session<'_> {
         // so nothing is "already committed" any more: reset, and let the
         // catch-up below re-commit the whole partial at the current width.
         self.render.reset();
-        self.restart_preview_floor();
+        // A held thought is in history, so the rebuilt tail carries its line;
+        // the strip must not show it a second time (docs/thought-handoff.md).
+        self.term.drop_held();
+        self.app.drop_held_thought();
         // The preview comes FIRST: it injects the strip's preview row count
         // (`set_stream_preview_rows` — a forming table previews multi-row) that
         // `live_region_height` below must reserve (docs/table-streaming.md).
@@ -547,8 +546,6 @@ impl Session<'_> {
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )?;
-        self.preview_floor
-            .record(&self.app, screen.width, screen.height);
         // Catch scrollback up on the in-flight partial the purge dropped:
         // exactly the rows live streaming would have committed, queued for
         // the next draw. Suppressed while a flow is active — the queued rows
@@ -574,7 +571,10 @@ impl Session<'_> {
     pub(crate) fn repaint_agent_view(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
         self.agent_render.reset();
-        self.restart_preview_floor();
+        // Whichever conversation held a thought, this rebuild re-seats the
+        // screen from history (docs/thought-handoff.md).
+        self.term.drop_held();
+        self.app.drop_held_thought();
         let Some(run) = self.app.viewed_agent() else {
             return Ok(());
         };
@@ -614,8 +614,6 @@ impl Session<'_> {
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )?;
-        self.preview_floor
-            .record(&self.app, screen.width, screen.height);
         // Catch scrollback up on the agent's in-flight partial the purge
         // dropped — `repaint_conversation`'s catch-up over `agent_render`, so
         // a rebuild mid-reply leaves the same rows behind here as it does in

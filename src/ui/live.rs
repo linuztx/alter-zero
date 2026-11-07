@@ -102,35 +102,24 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// arriving, `StreamRender::preview`'s own rule), while a queue of live cells
 /// or a thinking block keeps its head (the running call, the `● Thinking…`
 /// header — the rows that say what is happening).
-///
-/// Padded with blank rows up to the **preview floor**
-/// (`layout::applied_preview_floor`, `docs/strip-floor.md`) when the content
-/// is shorter than what the slot held a frame ago less what committed since —
-/// the rows a settled thought left for the call it handed over to. The
-/// padding goes under the content, where its next rows land.
 pub(super) fn preview_lines(
     app: &App,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
     rows: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines = preview_content_lines(app, width, stream_preview, rows);
-    let held = usize::from(super::layout::applied_preview_floor(app).min(rows));
-    while lines.len() < held {
-        lines.push(Line::default());
-    }
-    lines
-}
-
-/// [`preview_lines`]' content — every branch's rows, trimmed to `rows`,
-/// before the floor's padding.
-fn preview_content_lines(
-    app: &App,
-    width: u16,
-    stream_preview: Option<&[Line<'static>]>,
-    rows: u16,
-) -> Vec<Line<'static>> {
     let rows = usize::from(rows);
+    // A thought that just settled, held on its block's rows until the next
+    // cell takes them — its settled line over the thought's tail, the head
+    // kept on a squeezed slot (docs/thought-handoff.md). `preview_rows`
+    // sizes the same branch first.
+    if let Some(thought) = super::layout::held_thought_on_screen(app) {
+        return trim_preview(
+            super::reasoning::held_thought_lines(thought, width),
+            rows,
+            false,
+        );
+    }
     if let Some(run) = app.viewed_agent() {
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
@@ -548,18 +537,11 @@ fn render_strip(
 /// committed — and flowing a frontier that grows on every chunk would re-sign
 /// the flow, and purge-rebuild the screen, once per chunk
 /// (`docs/strip-flow.md`).
-///
-/// The live cells' ask is their **content's** (`layout::content_preview_rows`),
-/// never the preview floor's: rows held blank for the next cell
-/// (`docs/strip-floor.md`) are geometry the slot reserves, so they are counted
-/// through the reserved rows and can never make the strip outgrow its rect —
-/// a flow there would purge-rebuild the screen over blank rows.
 pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16) -> u16 {
-    let reserved = fitted_preview_rows(app, width, term_height);
     if strip_preview_is_live_cells(app) {
-        super::layout::content_preview_rows(app, width).max(reserved)
+        preview_rows(app, width)
     } else {
-        reserved
+        fitted_preview_rows(app, width, term_height)
     }
 }
 
@@ -568,6 +550,10 @@ pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16
 /// streaming reply's frontier. What [`strip_content_preview_rows`] branches
 /// on; mirrors [`preview_rows`]' own branch order.
 fn strip_preview_is_live_cells(app: &App) -> bool {
+    // A held thought is the block it settled from, still on screen.
+    if super::layout::holds_thought(app) {
+        return true;
+    }
     if let Some(run) = app.viewed_agent() {
         return !run.tool_queue.is_empty()
             || run.drafts().previews().next().is_some()
@@ -622,6 +608,7 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     app.agent_view.hash(&mut hasher);
     strip_has_status(app).hash(&mut hasher);
     app.reasoning().is_some().hash(&mut hasher);
+    super::layout::holds_thought(app).hash(&mut hasher);
     app.streaming_text().is_some().hash(&mut hasher);
     let queue = app
         .viewed_agent()

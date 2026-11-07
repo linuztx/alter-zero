@@ -378,7 +378,6 @@ use alter_zero::tasks::{
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::ui::{
-    PreviewFloor,
     Repin,
     StreamRender,
     TranscriptCache,
@@ -511,6 +510,7 @@ use alter_zero::ui::{
     summary_lines,
     task_rows,
     hang_rows,
+    holds_thought,
     offline_lines,
     offline_rows,
     tip_lines,

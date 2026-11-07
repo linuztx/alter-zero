@@ -1021,22 +1021,27 @@ height less every row `commit` has since moved to scrollback, padded with
 blank rows the next content lands on — so the preview never loses more
 rows than a step committed, the invariant the differential harness now
 carries over the fuzz corpus at every width, with `matches_up_to_padding`
-as the contract's one tolerance — and its **between-cells** half in
-`docs/strip-floor.md`: the same invariant one level up, for the whole preview
-slot, since a live cell handing over to the next shed rows too — the
-`● Thinking…` block settles into its one `Thought for` line at the round's
-first tool-call piece while the call gets a cell only at its batch, so the box
-sat up to three rows high for as long as the call took to generate and then
-dropped back (the flicker reported between a thought and a `skill` call;
-present in v0.18.0 too), and the read group settling under the call behind it
-did the same by a row — answered by `ui::PreviewFloor`, a pure tracker the
-boundary drives per frame in `draw_conversation` (what the slot reserved last
-frame, less `InlineViewport::pending_rows`, injected via
-`App::set_preview_floor`, clamped to `preview_budget`, nothing outside a turn
-or under a modal, reset by every purge rebuild), which `ui::preview_rows`
-reserves and `preview_lines` pads with blank rows under the content, the
-strip flow sizing overflow from `content_preview_rows` so held rows never
-flow, `smoke.sh` Phase 153; the **clickable OSC 8 links** (every URL an assistant
+as the contract's one tolerance — and the **thought hand-off** in
+`docs/thought-handoff.md`: the backend settles a thinking phase at the round's
+first tool-call piece while the call gets a cell only at its batch, so
+collapsing the `● Thinking…` block at once sat the box up to three rows high
+for as long as the call took to generate and dropped it back when the cell
+landed (the flicker reported between a thought and a `skill` call; present in
+v0.18.0 too). The block now **settles in place** — `App::hold_thought` keeps
+the settled `Reasoning`, `ui::reasoning::held_thought_lines` draws its
+`Thought for …` line over the same tail of thought on the block's rows — while
+the boundary holds that line back from scrollback (`InlineViewport::hold`;
+any later `insert_before` releases it first, so scrollback order matches
+history by construction); `ui::holds_thought` says when something else has
+taken the slot — a call's cell, a streaming `write`, the reply's first words,
+a new phase, a modal, the turn's end — and `Session::sync_held_thought`
+releases the line in that frame, the new content landing on the tail's rows,
+while a rebuild or a `Retrying` drops it unwritten (history carries it) and
+the agent session view holds its viewed agent's thought the same way. A
+preview **floor** padding every hand-off with blank rows was tried first and
+replaced: between rounds it held three empty lines over the status line for
+as long as the next request took; `smoke.sh` Phase 153 pins no hop *and* one
+blank row above the status line mid-turn; the **clickable OSC 8 links** (every URL an assistant
 reply shows — a bare URL in prose/lists/table cells, inline/fenced/indented
 code, a heading, or a `[text](url)` target — is painted inside an OSC 8
 hyperlink carrying the whole URL, so a wrapped URL's every fragment opens the

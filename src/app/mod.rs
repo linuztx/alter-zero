@@ -244,6 +244,13 @@ pub struct App {
     /// when the display is off (`ALTER_ZERO_SHOW_THINKING=0`), because the
     /// boundary then never opens one. See `docs/thinking-stream.md`.
     reasoning: Option<String>,
+    /// The thought that just settled, **held on screen** until the next cell
+    /// takes its rows: the strip draws it as its settled `Thought for …`
+    /// line over the thought's tail, standing on the rows the live block
+    /// did, while the boundary holds that line back from scrollback. Set and
+    /// dropped by the boundary ([`hold_thought`](App::hold_thought)); see
+    /// `docs/thought-handoff.md`.
+    held_thought: Option<Reasoning>,
     /// Where this round's settled [`HistoryItem::Reasoning`] items landed in
     /// [`history`](Self::history) — the snap targets for the round's usage
     /// frame, which reports the *real* `reasoning_tokens` the cells were built
@@ -323,16 +330,6 @@ pub struct App {
     /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
     /// [`set_status_times`]: App::set_status_times
     stream_preview_rows: u16,
-    /// The fewest rows the strip's preview slot may reserve this frame,
-    /// injected by the boundary before each draw ([`set_preview_floor`], the
-    /// [`set_stream_preview_rows`] pattern): what the slot held a frame ago,
-    /// less every row committed since, so a live cell that gives way to
-    /// fewer committed rows than it stood on never lifts the box. 0 outside
-    /// a turn. See `docs/strip-floor.md`.
-    ///
-    /// [`set_preview_floor`]: App::set_preview_floor
-    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
-    preview_floor: u16,
     /// The live tool calls of the current turn, front-first: the front is the
     /// running (status [`ToolStatus::Running`]) or about-to-run call, and any
     /// calls behind it are [`ToolStatus::Waiting`] siblings of a **parallel

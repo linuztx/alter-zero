@@ -75,13 +75,12 @@ which Ctrl+V reads the clipboard from.
   codex); the preview appears only once the reply streams (or a tool runs — a
   running backend tool previews its whole `header + ⎿ Running…` cell, so a long
   command isn't clipped, `docs/tools.md`), and the first chunk flips the arrow
-  `↓`. Mid-turn the preview slot never sheds more rows than went to
-  scrollback in the same frame: a live cell that gives way to fewer committed
-  rows than it stood on — the `● Thinking…` block settling into its one
-  `Thought for` line before the round's call has a cell, the read group
-  settling under the call behind it — leaves those rows held blank for what
-  comes next (`ui::PreviewFloor`, `docs/strip-floor.md`), so the box never
-  rises and drops back. While a
+  `↓`. A thought settles **in place**: its `● Thinking…` header becomes the
+  `Thought for` line with the thought still under it, standing on the block's
+  rows until the round's call has a cell to take them, so the box does not
+  rise while the call is generated and drop back when it lands
+  (`ui::holds_thought`, `docs/thought-handoff.md`). Nothing else holds rows:
+  between rounds the status line sits one spacer under the last cell. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On

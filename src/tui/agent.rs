@@ -164,6 +164,10 @@ impl Session<'_> {
             let withdrawn = self.app.withdraw_agent_attempt(id);
             if viewing {
                 self.agent_render.reset();
+                // A thought the attempt held on screen goes with it
+                // (docs/thought-handoff.md).
+                self.term.drop_held();
+                self.app.drop_held_thought();
             }
             Some((withdrawn, shown))
         } else {
@@ -182,7 +186,11 @@ impl Session<'_> {
             event,
             StreamEvent::ThinkingEnd | StreamEvent::StreamDone | StreamEvent::Error(_)
         ) {
-            self.settle_agent_reasoning(id, viewing, width);
+            // Only the phase's own end holds the line on the block's rows
+            // until the agent's next cell takes them; a run that ended or
+            // failed settles at once (docs/thought-handoff.md).
+            let hold = matches!(event, StreamEvent::ThinkingEnd);
+            self.settle_agent_reasoning(id, viewing, width, hold);
         }
         // The view's segment boundaries: the agent's streamed text finalises
         // before a tool cell / the live thinking block / the end of the run,
@@ -367,7 +375,7 @@ impl Session<'_> {
     /// and the Esc interrupt.
     fn begin_local_agent_settle(&mut self, id: &str, width: u16) -> usize {
         let on_screen = self.viewing_agent(id);
-        self.settle_agent_reasoning(id, on_screen, width);
+        self.settle_agent_reasoning(id, on_screen, width, false);
         if on_screen
             && let Some(text) = self
                 .app
@@ -449,7 +457,12 @@ impl Session<'_> {
     /// **Reseat before you commit** (invariant 3): the strip loses the live
     /// block's rows as the cell lands, so the box must not rise off the
     /// bottom. See `docs/agent-view-streaming.md`.
-    fn settle_agent_reasoning(&mut self, id: &str, viewing: bool, width: u16) {
+    ///
+    /// With `hold` (the phase's own `ThinkingEnd`) the line is held instead,
+    /// the main session's rule: the agent's strip keeps the thought on the
+    /// block's rows until its next cell takes them, so the box does not hop
+    /// up while the agent generates its call (`docs/thought-handoff.md`).
+    fn settle_agent_reasoning(&mut self, id: &str, viewing: bool, width: u16, hold: bool) {
         let secs = self
             .agent_thinking_clocks
             .remove(id)
@@ -462,9 +475,14 @@ impl Session<'_> {
         }
         let height = self.live_region_height();
         self.term.set_view_height(height);
-        self.term
-            .insert_before(ui::reasoning_lines(&reasoning, width));
-        self.term.insert_before(vec![Line::default()]);
+        let mut lines = ui::reasoning_lines(&reasoning, width);
+        lines.push(Line::default());
+        if hold {
+            self.term.hold(lines);
+            self.app.hold_thought(reasoning);
+        } else {
+            self.term.insert_before(lines);
+        }
     }
 
     /// Is `id`'s session the conversation currently on the inline screen?

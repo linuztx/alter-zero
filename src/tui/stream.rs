@@ -462,12 +462,15 @@ impl Session<'_> {
                 false
             }
             StreamEvent::ThinkingEnd => {
-                // The phase is over: collapse the live block into the
-                // committed `Thought for … · … tokens` cell. It lands here,
-                // before the round's reply text or tool calls exist, which is
-                // what puts it ahead of them in scrollback and history alike
-                // (docs/thinking-stream.md).
-                self.settle_reasoning();
+                // The phase is over: record the `Thought for … · … tokens`
+                // cell here, before the round's reply text or tool calls
+                // exist, which is what puts it ahead of them in scrollback and
+                // history alike (docs/thinking-stream.md) — and **hold** it on
+                // the block's rows until the next cell takes them. The phase
+                // ends at the round's first tool-call piece, but the call has
+                // a cell only once its batch is announced; collapsing at once
+                // lifted the box until it landed (docs/thought-handoff.md).
+                self.hold_settled_reasoning();
                 false
             }
             StreamEvent::StreamDone => self.on_stream_done(committing, width),
@@ -480,6 +483,11 @@ impl Session<'_> {
                 // settling, so its clock stops, and rows it had committed are
                 // rebuilt away — then the retry shows live in the status line.
                 let shown = self.render.has_committed();
+                // A thought the attempt settled and held is withdrawn with
+                // it: its line must never reach scrollback
+                // (docs/thought-handoff.md).
+                self.term.drop_held();
+                self.app.drop_held_thought();
                 let withdrawn = self.app.withdraw_attempt();
                 self.render.reset();
                 self.clocks.thinking_start = None;
@@ -662,6 +670,21 @@ impl Session<'_> {
     /// as the cell commits, so the box must not rise off the bottom
     /// (invariant 3).
     pub(crate) fn settle_reasoning(&mut self) {
+        self.settle_reasoning_with(false);
+    }
+
+    /// [`Session::settle_reasoning`] at the phase's own end (`ThinkingEnd`),
+    /// with the committed line **held** (`docs/thought-handoff.md`): the
+    /// strip keeps the thought on the block's rows — its header settled into
+    /// that very line — and the line reaches scrollback the frame the next
+    /// cell takes those rows ([`Session::sync_held_thought`]), or ahead of
+    /// whatever commits first. An Esc or an error settles at once instead:
+    /// the turn is ending, and its own commits follow straight after.
+    fn hold_settled_reasoning(&mut self) {
+        self.settle_reasoning_with(true);
+    }
+
+    fn settle_reasoning_with(&mut self, hold: bool) {
         let secs = self
             .clocks
             .thinking_start
@@ -703,9 +726,14 @@ impl Session<'_> {
         if committing {
             let height = self.live_region_height();
             self.term.set_view_height(height);
-            self.term
-                .insert_before(ui::reasoning_lines(&reasoning, width));
-            self.term.insert_before(vec![Line::default()]);
+            let mut lines = ui::reasoning_lines(&reasoning, width);
+            lines.push(Line::default());
+            if hold {
+                self.term.hold(lines);
+                self.app.hold_thought(reasoning);
+            } else {
+                self.term.insert_before(lines);
+            }
         }
     }
 
