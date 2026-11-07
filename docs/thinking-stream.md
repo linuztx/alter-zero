@@ -168,7 +168,9 @@ the line is held back from scrollback (`InlineViewport::hold`) until
 something takes the slot — the call's cell, the reply's first words, a new
 phase — when the line commits and the new content lands on the tail's rows in
 one frame (`App::hold_thought`, `ui::holds_thought`,
-`docs/thought-handoff.md`). An Esc or an error still settles at once.
+`docs/thought-handoff.md`). A record after the thought, such as a task call
+with no cell, lets it go too, since its round has moved on. An Esc or an
+error still settles at once.
 
 **Ordering is invariant 4's business, not free.** The item is appended the
 moment thinking ends — which is usually before the round's reply text exists,

@@ -163,11 +163,11 @@ impl Session<'_> {
             let shown = viewing && self.agent_render.has_committed();
             let withdrawn = self.app.withdraw_agent_attempt(id);
             if viewing {
+                // A held thought this attempt produced goes with it: the
+                // withdrawal recorded it, so the view is rebuilt below and
+                // the rebuild drops the held line. One from an earlier round
+                // stays, the main view's rule (docs/thought-handoff.md).
                 self.agent_render.reset();
-                // A thought the attempt held on screen goes with it
-                // (docs/thought-handoff.md).
-                self.term.drop_held();
-                self.app.drop_held_thought();
             }
             Some((withdrawn, shown))
         } else {

@@ -100,10 +100,16 @@ unchanged), but its line is not written to scrollback yet:
 
 **The next cell takes the rows.** `ui::holds_thought` is the pure decision:
 something is held, the conversation on screen is mid-turn, no modal prompt
-replaces the region, and nothing else has taken the preview slot — no call
+replaces the region, the thought is still the newest record of that
+conversation's history, and nothing else has taken the preview slot — no call
 queued or streaming into a cell of its own, no agent group, no open
 read/search group, no new thinking phase, no reply text beyond whitespace.
 `preview_rows`/`preview_lines` draw the held thought first while it holds.
+
+The newest-record rule ties the hold to the thought's own round. A round
+whose only call is a task call records it with no cell (`docs/task-tools.md`):
+the round has moved past the thought and nothing will land on its rows, so the
+line commits at once rather than staying held through the next request.
 The first frame it stops holding, `Session::sync_held_thought` (run at the top
 of the draw tick and of `draw_conversation`) releases the held line into the
 queue and drops the thought, so that frame writes the line and its spacer
@@ -133,11 +139,21 @@ next frame (a `skill` call resolves within one) lands *under* the thought's
 line in scrollback, as it does in history — no commit site needs to know a
 line is held. An empty batch releases nothing.
 
-**What drops a held thought unwritten.** A purge rebuild (`reflow`, and
-`repaint_conversation`/`repaint_agent_view`, which drop it before they paint)
-regenerates the line from history, where it already is; a `Retrying` voids
-the attempt that produced it, so its line must never reach scrollback. A quit
-flushes it (`restore`), since it is committed content.
+**What drops a held thought unwritten.** Only a purge rebuild (`reflow`, and
+`repaint_conversation`/`repaint_agent_view`, which drop it before they paint),
+which regenerates the line from history. A quit flushes it (`restore`), since
+it is committed content.
+
+A `Retrying` does not touch it. A thought the failed attempt produced is
+withdrawn from history with the attempt, and a withdrawal that took a record
+rebuilds the screen (`retract_withdrawn_rows`, or the agent view's own
+rebuild), which drops the held line: it never reaches scrollback. A thought
+held from an earlier round belongs to that round and commits when it is let
+go. The retry used to drop every held line itself, and that lost two lines:
+a thought followed only by a task call, then a retried request — the thought
+was still held, so its `Thought for …` line never reached scrollback (Ctrl+O
+still showed it); and, in an agent session view, the viewed agent's held line
+when the main conversation's request was retried.
 
 **Where it holds.** Only at the phase's own end: an Esc or a backend error
 settles at once, since the turn is ending and its own commits follow. The
@@ -164,18 +180,27 @@ agent session view holds the viewed agent's thought the same way
   header settled into the committed line; the box does not move from the
   thought to the call (and while the call is still generating); the hold
   gives way to a streaming `write`, the reply's first words (not whitespace),
-  a new phase, a modal and the turn's end; nothing holds a row between rounds;
-  a subagent's thought is held in its own strip. `app::tests::reasoning`: the
-  hold's lifecycle, dropped by a new turn and by `/clear`. Every guard in
-  `holds_thought` and the phase reset is mutation-checked — each fails its
-  test when removed.
-- `scripts/smoke.sh` **Phase 153** drives the default offline turn on the real
-  binary, sampling ~20 times a second with Phase 121's double-capture rule: no
-  hop mid-turn, the settled line seen with the thought under it, never more
-  than one blank row above the status line, no purge rebuild, and the thought's
-  line and each cell exactly once with the thought's own text never in
-  scrollback. It fails on the pre-fix binary (the hop, no held view) and on the
-  floor's (the held blank rows).
+  a new phase, a modal and the turn's end; a record after the thought (a task
+  call, an agent's hook note) ends the hold; nothing holds a row between
+  rounds; a subagent's thought is held in its own strip.
+  `app::tests::reasoning`: the hold's lifecycle, dropped by a new turn and by
+  `/clear`. Every guard in `holds_thought` and the phase reset is
+  mutation-checked — each fails its test when removed.
+- `scripts/smoke.sh` **Phase 153** samples four turns ~20 times a second with
+  Phase 121's double-capture rule: no hop while the hand-off is under way, the
+  settled line seen with the thought under it, and never more than one blank
+  row above the status line. The default offline turn runs on a terminal with
+  room below the box (no purge rebuild; the thought's line and each cell
+  exactly once, the thought's own text never in scrollback) and on an 80×16
+  one, where the box sits on the bottom row. Two more go through the real
+  backend against a paced stub provider (ported from
+  fix/box-flicker-after-thinking): a `bash` call written over about a second,
+  then a three-second round boundary; and a thought followed only by a
+  `taskcreate`, then a request that fails with a 500 once, after which the
+  thought's line must be in scrollback exactly once. The pre-fix binary fails
+  the first three turns (the hop, no held view), the floor's binary the blank
+  rows, and e97ef69's (this design before the newest-record rule and the retry
+  fix) the fourth.
 - Real provider: the reported prompt on ClinePass at 100×30, 80×24 and 80×14
   — no hop at the thought → `skill` hand-off, and exactly one blank row above
   the status line in every mid-turn frame.

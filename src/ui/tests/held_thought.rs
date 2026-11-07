@@ -158,6 +158,51 @@ fn the_held_thought_gives_way_to_whatever_takes_the_slot() {
 }
 
 #[test]
+fn a_record_after_the_thought_ends_its_hold() {
+    // The hold bridges a thought to its own round's next cell. A round whose
+    // only call is a task call records it with no cell (docs/task-tools.md):
+    // the round has moved past the thought and nothing will land on its rows,
+    // so the line commits now instead of waiting through the next request —
+    // where a retry used to drop it (docs/thought-handoff.md).
+    let (mut app, _) = settled(THOUGHT);
+    app.record_task_call(
+        "TaskCreate",
+        "Find the champion",
+        r#"{"subject":"Find the champion"}"#,
+        "Task #1 created successfully: Find the champion",
+        true,
+        crate::tasks::TaskStore::default(),
+    );
+    assert!(
+        !holds_thought(&app),
+        "a record after the thought ends the hold"
+    );
+    // The same rule in an agent's session view, whose cell-less record is a
+    // hook's note (a `SubagentStop` continuation, say).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Search", false)]);
+    app.begin_agent_reasoning("a1");
+    app.apply_agent_event("a1", &StreamEvent::ThinkingChunk(THOUGHT.into()));
+    app.open_agent_view("a1");
+    let thought = app.finish_agent_reasoning("a1", 0).expect("a thought");
+    app.hold_thought(thought);
+    assert!(holds_thought(&app));
+    app.apply_agent_event(
+        "a1",
+        &StreamEvent::HookNote {
+            label: "SubagentStop hook".into(),
+            text: "Keep going.".into(),
+            report: None,
+        },
+    );
+    assert!(
+        !holds_thought(&app),
+        "a record after the agent's thought ends its hold"
+    );
+}
+
+#[test]
 fn between_rounds_nothing_holds_a_row() {
     // The reported blank rows: a command whose live tail stood taller than
     // its settled peek, resolved between rounds. Nothing comes next until the

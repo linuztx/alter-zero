@@ -238,27 +238,37 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
 
 /// Whether the strip shows the **held thought** (`docs/thought-handoff.md`):
 /// one is held ([`App::held_thought`]), the conversation on screen is
-/// mid-turn, no modal prompt replaces the region, and nothing else has taken
-/// the preview slot — no call queued or streaming into a cell of its own, no
+/// mid-turn, no modal prompt replaces the region, the thought is still the
+/// newest thing that conversation recorded, and nothing else has taken the
+/// preview slot — no call queued or streaming into a cell of its own, no
 /// agent group, no open read/search group, no new thinking phase, and no
 /// reply text beyond whitespace. The first frame this turns false, the
 /// boundary commits the held line and lets the thought go
 /// (`Session::sync_held_thought`), so the line and whatever took the slot
 /// land in one frame.
+///
+/// The newest-record rule ties the hold to the thought's own round: a record
+/// with no cell — a task call — means the round has moved on and nothing
+/// will land on the thought's rows, so the line commits rather than waiting
+/// out the next request.
 #[must_use]
 pub fn holds_thought(app: &App) -> bool {
     if app.held_thought().is_none() || app.modal_open() {
         return false;
     }
     let says_something = |text: Option<&str>| text.is_some_and(|text| !text.trim().is_empty());
+    let newest_is_thought =
+        |history: &[HistoryItem]| matches!(history.last(), Some(HistoryItem::Reasoning(_)));
     if let Some(run) = app.viewed_agent() {
         return !run.status.is_final()
+            && newest_is_thought(&run.history)
             && run.tool_queue.is_empty()
             && run.drafts().previews().next().is_none()
             && run.reasoning().is_none()
             && !says_something(run.streaming.as_deref());
     }
     app.turn_active()
+        && newest_is_thought(&app.history)
         && app.agent_group().is_none()
         && app.tool_queue().is_empty()
         && app.tool_drafts().previews().next().is_none()

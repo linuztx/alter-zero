@@ -1034,14 +1034,18 @@ the boundary holds that line back from scrollback (`InlineViewport::hold`;
 any later `insert_before` releases it first, so scrollback order matches
 history by construction); `ui::holds_thought` says when something else has
 taken the slot — a call's cell, a streaming `write`, the reply's first words,
-a new phase, a modal, the turn's end — and `Session::sync_held_thought`
-releases the line in that frame, the new content landing on the tail's rows,
-while a rebuild or a `Retrying` drops it unwritten (history carries it) and
-the agent session view holds its viewed agent's thought the same way. A
-preview **floor** padding every hand-off with blank rows was tried first and
-replaced: between rounds it held three empty lines over the status line for
-as long as the next request took; `smoke.sh` Phase 153 pins no hop *and* one
-blank row above the status line mid-turn; the **clickable OSC 8 links** (every URL an assistant
+a new phase, a modal, the turn's end, or any record after the thought (a
+task call has no cell, so its round leaves nothing to land on the rows) — and
+`Session::sync_held_thought` releases the line in that frame, the new content
+landing on the tail's rows, while only a purge rebuild drops it unwritten
+(history carries it; a `Retrying` leaves it alone, since the withdrawal's own
+rebuild clears a thought the failed attempt produced and an earlier round's
+must still commit) and the agent session view holds its viewed agent's
+thought the same way. A preview **floor** padding every hand-off with blank
+rows was tried first and replaced: between rounds it held three empty lines
+over the status line for as long as the next request took; `smoke.sh` Phase
+153 pins no hop *and* one blank row above the status line mid-turn, through
+the dummy and through the real backend against a paced stub; the **clickable OSC 8 links** (every URL an assistant
 reply shows — a bare URL in prose/lists/table cells, inline/fenced/indented
 code, a heading, or a `[text](url)` target — is painted inside an OSC 8
 hyperlink carrying the whole URL, so a wrapped URL's every fragment opens the

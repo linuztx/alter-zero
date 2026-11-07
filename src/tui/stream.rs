@@ -483,11 +483,13 @@ impl Session<'_> {
                 // settling, so its clock stops, and rows it had committed are
                 // rebuilt away — then the retry shows live in the status line.
                 let shown = self.render.has_committed();
-                // A thought the attempt settled and held is withdrawn with
-                // it: its line must never reach scrollback
-                // (docs/thought-handoff.md).
-                self.term.drop_held();
-                self.app.drop_held_thought();
+                // A held thought is left alone here (docs/thought-handoff.md).
+                // One this attempt produced is withdrawn with the attempt, and
+                // that withdrawal rebuilds the screen below, dropping the held
+                // line unwritten; one an earlier round produced — a thought
+                // whose round recorded only a task call — is that round's, and
+                // commits when it is let go. Dropping every held line here
+                // lost that one, and an agent session view's too.
                 let withdrawn = self.app.withdraw_attempt();
                 self.render.reset();
                 self.clocks.thinking_start = None;
