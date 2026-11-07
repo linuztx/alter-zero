@@ -430,8 +430,9 @@ follows the terminal's theme. codex's theme picker in the family's frame:
 a `Select theme` title over a dim subtitle saying what a theme changes, then
 the catalog in the **picker family's shape** (`docs/view-flow.md` *A
 picker's page*: the accent `→` on the selection under the `❯` search line,
-the other rows indented under it, a five-row centred window over the dim
-`(n/total)` counter, the hint led by `↑/↓ to navigate`), every row wearing a
+the other rows indented under it, a ten-row centred window — the other
+previewed pickers show five — over the dim `(n/total)` counter, the hint led
+by `↑/↓ to navigate`), every row wearing a
 five-`●` swatch of its own
 palette, the highlighted theme previewed on **real cells** — a user bubble,
 an `Edit` diff cell, a reply with a code line, built by

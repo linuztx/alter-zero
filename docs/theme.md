@@ -265,13 +265,16 @@ Then the things a theme picker exists for:
   accent `→` (`MODEL_MARKER`, sitting under the search line's `❯`) and the
   name in bold; every other row keeps the marker's width blank, so the names
   line up under it. It used to be the `/mcp` list's `❯`, a second `❯` on a
-  page whose search line is one. A five-row window (`THEME_MENU_MAX_ROWS`,
-  the settings window's size) keeps the selection on its middle row
-  (`centered_window`), and the `(n/total)` counter under it says where it
-  stands — where `↑ N more above` / `↓ N more below` rows used to name what
-  it hid, which over a short window come and go as the selection moves. So
-  the list column is one height at every selection and the frame holds still
-  as ↑/↓ walk it — the `/settings` always-emit rule
+  page whose search line is one. A ten-row window (`THEME_MENU_MAX_ROWS`,
+  where the other previewed pickers show five) keeps the selection on its
+  middle row (`centered_window`), and the family's `(n/total)` counter under
+  it says where it stands, where an `↑ 1 more above` / `↓ 1 more below` row
+  used to name the one theme it hid. The ten rows and the counter stand
+  about as tall as the preview beside them, so showing nearly the whole
+  catalog costs the side-by-side page no height (21 rows); stacked, the
+  preview starts under the counter, which makes that page 33 rows. So the list
+  column is one height at every selection and the frame holds still as ↑/↓
+  walk it — the `/settings` always-emit rule
   (`the_page_height_is_stable_across_selections`).
 - **Every row wears its own swatch.** After the name column — sized to the
   widest name in the **whole catalog** plus `THEME_MENU_GAP`, never just the
@@ -577,7 +580,7 @@ the saved theme.
   tints, the gradient/blend derivations, the error toast's softened red in
   every theme, and a rendered cell wearing the active theme.
 - `ui/tests/theme_view.rs` — the framed page (rules, the title over its
-  subtitle, search, five rows under the family's `→`, the counter, preview,
+  subtitle, search, ten rows under the family's `→`, the counter, preview,
   hint) at a wide and a narrow width, the marker and indent, the counter
   saying where the window stands, the preview
   beside the list on one column (an 80-column terminal included) and

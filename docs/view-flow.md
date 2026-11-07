@@ -140,7 +140,7 @@ the same thing in the same place on every one (`model_view`'s
                                              gap
   → Hide thinking        false               the window: `→` under the `❯`
     Verbose output       false
-    …                                        (five rows; seven for /model)
+    …                                        (five rows; /model 7, /theme 10)
     (1/20)                                   the counter, under the names
                                              gap
     Hide the model's chain-of-thought …      the highlighted row's detail
@@ -167,9 +167,11 @@ the same thing in the same place on every one (`model_view`'s
   sessions`, `The startup banner's art — saved for this directory`). It wraps
   rather than cuts, and each subtitle fits a 60-column terminal on one row.
 - **Short windows.** Five rows (`SETTINGS_MENU_MAX_ROWS`, which `/skills`,
-  `/theme`, `/mascot` and `/spinner` share; seven for `/model`), the
-  selection riding the middle, the counter under them saying where it
-  stands. The previewed pickers count too, where they used to name what the
+  `/mascot` and `/spinner` share; seven for `/model`), the selection riding
+  the middle, the counter under them saying where it stands. `/theme` keeps
+  ten (`THEME_MENU_MAX_ROWS`): its rows and counter stand no taller than the
+  preview beside them, so nearly the whole catalog shows at no cost in
+  height. The previewed pickers count too, where they used to name what the
   window hid with `↑ N more above` / `↓ N more below` rows: over a short
   window those come and go as the selection moves, and the page would jump a
   row with them.

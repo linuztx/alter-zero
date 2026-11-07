@@ -1595,11 +1595,12 @@ pub(super) const THEME_HINT: &str =
 /// The list placeholder when the search matches no theme.
 pub(super) const THEME_NO_MATCH: &str = "No matching themes";
 
-/// The cap on the picker's visible list rows — the settings window's size,
-/// so the eleven-theme catalog windows around the highlighted theme and the
-/// counter under it names where it stands. Beside the list the preview is
-/// the taller column, so a short window costs the page no height there.
-pub(super) const THEME_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
+/// The cap on the picker's visible list rows. Ten, where the other previewed
+/// pickers show five: the eleven-theme catalog windows by one row, which the
+/// counter under it names. The ten rows and the counter stand about as tall
+/// as the preview beside them, so the side-by-side page is no taller for
+/// showing nearly the whole catalog at once.
+pub(super) const THEME_MENU_MAX_ROWS: u16 = 10;
 
 /// Columns between the widest theme name in the catalog and the swatch
 /// column, so the swatches line up down the list.

@@ -6,7 +6,7 @@ smoke_begin
 
 # the `/theme` picker (docs/theme.md). codex's theme picker in the
 # family's frame: a title over a dim subtitle, the colour-theme catalog with
-# the family's `→` on the selection under the search line's `❯` (a five-row
+# the family's `→` on the selection under the search line's `❯` (a ten-row
 # window over its `(n/total)` counter), each row wearing a swatch of its own
 # palette, and the highlighted theme previewed on REAL cells (a user
 # bubble, an Edit diff cell, a reply with a code line) under its title and
@@ -46,17 +46,17 @@ theme_open="$(tmux capture-pane -t "$S111" -p)"
 echo "==== Phase 111: the picker open (mocha highlighted, the real-cell preview) ===="
 printf '%s\n' "$theme_open"
 for expect in "Select theme" "The interface's colours — applies in every directory" \
-	"→ mocha" "macchiato" "frappe" "latte" "onedark" "(1/11)" \
+	"→ mocha" "macchiato" "frappe" "latte" "onedark" "dracula" "nord" "gruvbox" "solarized" "monokai" "(1/11)" \
 	"❯ Rename the greeting in greet.py" "● Edit(greet.py)" "Updated greet.py (+1 -1)" \
 	'-    print("Hello, world")' '+    print(f"Hello, {name}")' "● Done — greet.py greets by name now:" \
 	"Catppuccin Mocha" "The darkest flavour, and the default" \
 	"↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel"; do
 	expect_has "$theme_open" -F -- "$expect" "the open picker is missing '$expect'"
 done
-# Every listed row wears its five-swatch palette sample — five of them, the
+# Every listed row wears its five-swatch palette sample — ten of them, the
 # window's size.
-if [ "$(printf '%s\n' "$theme_open" | grep -cE '^ *(→ )?[a-z]+ +●●●●●')" -ne 5 ]; then
-	fail "the five listed theme rows do not wear their swatches"
+if [ "$(printf '%s\n' "$theme_open" | grep -cE '^ *(→ )?[a-z]+ +●●●●●')" -ne 10 ]; then
+	fail "the ten listed theme rows do not wear their swatches"
 fi
 # The mocha row is the only one wearing the ✓ (the session's theme).
 if [ "$(printf '%s\n' "$theme_open" | grep -c '✓')" -ne 1 ] || ! printf '%s\n' "$theme_open" | grep -F "→ mocha" | grep -qF "✓"; then

@@ -93,9 +93,11 @@ release heading when a version is cut.
   row's description and `/model`'s `Model Name:` line start under the
   names. `/theme`, `/mascot` and `/spinner` used to mark the
   highlighted row with a second `❯`, and now show the same counter in place
-  of their `↑ N more above` and `↓ N more below` rows. Lists show seven rows
-  at a time in `/model` and five in the others, down from ten, so a picker
-  no longer fills a small terminal. The `/skills` hint now reads
+  of their `↑ N more above` and `↓ N more below` rows. Lists show at most
+  seven rows at a time in `/model` and five in `/settings`, `/skills`,
+  `/mascot` and `/spinner`, where they showed up to ten, so a picker no
+  longer fills a small terminal. `/theme` keeps its ten, which stand no
+  taller than the preview beside them. The `/skills` hint now reads
   `Space to toggle`; Enter still toggles too. On a terminal too short for
   the whole page, the title stays above a three-row list while there is
   room for both (`docs/view-flow.md`).

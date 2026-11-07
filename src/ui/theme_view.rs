@@ -4,7 +4,7 @@
 //! `Select theme` title over a dim line saying what a theme changes — and
 //! its frame and `❯` search line sit over one row per colour theme in the
 //! **picker family's shape** — the accent `→` on the selection under the
-//! `❯`, the other rows indented under it, a five-row window over the
+//! `❯`, the other rows indented under it, a ten-row window over the
 //! `(n/total)` counter — and **every row wears a swatch of its own palette**
 //! (five `●`s in that theme's accent, link, success, warning and error
 //! colours), so the catalog compares at a glance.

@@ -13,7 +13,7 @@ const NARROW: u16 = 60;
 /// A terminal tall enough for the whole page at any of these widths.
 const TALL: u16 = 200;
 /// A terminal too short for the whole page at either width (the side-by-side
-/// page is twenty-one rows, the stacked one twenty-eight), but tall enough
+/// page is twenty-one rows, the stacked one thirty-three), but tall enough
 /// for the compact page with its header (twelve).
 const SHORT: u16 = 15;
 
@@ -109,10 +109,11 @@ fn bullet_fg(line: &Line<'static>) -> Option<Color> {
 }
 
 #[test]
-fn the_page_is_titled_and_its_five_rows_wear_the_pickers_arrow() {
+fn the_page_is_titled_and_its_ten_rows_wear_the_pickers_arrow() {
     // A title over a dim line saying what a theme changes, a gap, the
-    // search line, a gap, then five themes whose `→` sits under the `❯` —
-    // the only `❯` on the page is the search prompt — over the counter.
+    // search line, a gap, then ten of the eleven themes, whose `→` sits under
+    // the `❯` — the only `❯` on the page is the search prompt — over the
+    // counter.
     for width in [WIDE, NARROW] {
         let lines = theme_view_lines(&open_app(), width, TALL);
         let texts: Vec<String> = lines
@@ -135,9 +136,10 @@ fn the_page_is_titled_and_its_five_rows_wear_the_pickers_arrow() {
         assert!(texts[first].starts_with("  → mocha "), "{texts:#?}");
         assert!(texts[first + 1].starts_with("    macchiato "), "{texts:#?}");
         assert!(texts[first + 4].starts_with("    onedark "), "{texts:#?}");
+        assert!(texts[first + 9].starts_with("    monokai "), "{texts:#?}");
         assert!(
-            texts[first + 5].starts_with(&format!("    (1/{})", Theme::ALL.len())),
-            "the counter closes the five rows: {texts:#?}"
+            texts[first + 10].starts_with(&format!("    (1/{})", Theme::ALL.len())),
+            "the counter closes the ten rows: {texts:#?}"
         );
         assert_eq!(
             texts
@@ -239,9 +241,9 @@ fn rows_wear_the_pickers_marker_and_indent() {
 
 #[test]
 fn the_counter_says_where_the_window_stands() {
-    // Five rows of eleven, the family's window: a gap under the search line,
-    // the rows, and the `(n/total)` counter under them at every selection,
-    // so the list column is one height and the frame never moves.
+    // Ten rows of eleven: a gap under the search line, the rows, and the
+    // `(n/total)` counter under them at every selection, so the list column
+    // is one height and the frame never moves.
     let mut app = open_app();
     let first = usize::from(THEME_SEARCH_ROW) + 2;
     for width in [WIDE, NARROW] {
@@ -256,11 +258,11 @@ fn the_counter_says_where_the_window_stands() {
             "the gap under the search line: {top:#?}"
         );
         assert_eq!(row_index(&top, "mocha"), first, "{top:#?}");
-        assert_eq!(row_index(&top, "onedark"), first + 4, "{top:#?}");
-        assert!(top[first + 5].starts_with("    (1/11)"), "{top:#?}");
+        assert_eq!(row_index(&top, "monokai"), first + 9, "{top:#?}");
+        assert!(top[first + 10].starts_with("    (1/11)"), "{top:#?}");
         assert!(
-            !top.iter().any(|t| is_row_for(t, "dracula")),
-            "dracula is past the window: {top:#?}"
+            !top.iter().any(|t| is_row_for(t, "ansi")),
+            "ansi is past the window: {top:#?}"
         );
 
         select(&mut app, Theme::ALL.len() - 1);
@@ -268,12 +270,12 @@ fn the_counter_says_where_the_window_stands() {
             .iter()
             .map(|t| t.trim_end().to_string())
             .collect();
-        assert_eq!(row_index(&end, "nord"), first, "{end:#?}");
+        assert_eq!(row_index(&end, "macchiato"), first, "{end:#?}");
         assert!(
-            end[first + 4].starts_with("  → ansi"),
+            end[first + 9].starts_with("  → ansi"),
             "the selection on the last row: {end:#?}"
         );
-        assert!(end[first + 5].starts_with("    (11/11)"), "{end:#?}");
+        assert!(end[first + 10].starts_with("    (11/11)"), "{end:#?}");
         assert!(
             !end.iter().any(|t| is_row_for(t, "mocha")),
             "mocha is scrolled off: {end:#?}"
@@ -326,6 +328,7 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
         ("macchiato", "The darkest flavour, and the default"),
         ("latte", "❯ Rename the greeting in greet.py"),
         ("onedark", "● Edit(greet.py)"),
+        ("monokai", "● Done — greet.py greets by name now:"),
     ] {
         let text = row_for(&texts, row);
         assert!(text.contains(piece), "{piece:?} beside {row}: {texts:#?}");
@@ -335,24 +338,15 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
             "{piece:?} on the preview column"
         );
     }
-    // The list column closes on its counter, beside the cell's first row,
-    // and the preview runs on below it on the same column.
-    let counter = texts
+    // The ten rows and their counter stand about as tall as the sample: the
+    // list column closes on the counter just above the sample's code line.
+    let code = texts
         .iter()
-        .find(|t| t.trim_start().starts_with("(1/11)"))
-        .expect("the counter");
+        .position(|t| t.contains("greet(\"Alter Zero\")"))
+        .expect("the sample's code line");
     assert!(
-        counter.contains("Updated greet.py"),
-        "the counter beside the cell's report: {texts:#?}"
-    );
-    let done = texts
-        .iter()
-        .find(|t| t.contains("● Done — greet.py greets by name now:"))
-        .expect("the reply");
-    assert_eq!(
-        col_of(done, "● Done"),
-        column,
-        "the reply on the preview column"
+        texts[code - 1].trim_start().starts_with("(1/11)"),
+        "the counter sits just above the sample's last row: {texts:#?}"
     );
 }
 
@@ -547,7 +541,7 @@ fn every_row_wears_its_own_swatch() {
     let mut app = open_app();
     for width in [WIDE, NARROW] {
         for (i, theme) in Theme::ALL.iter().enumerate() {
-            // Highlight it, so the five-row window shows its row.
+            // Highlight it, so the window shows its row.
             select(&mut app, i);
             let lines = theme_view_lines(&app, width, TALL);
             let p = palette_of(*theme);
