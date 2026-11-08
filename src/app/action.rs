@@ -43,9 +43,9 @@ pub enum Action {
     /// q/Esc). The loop syncs the overlay to the now-updated [`App::view`],
     /// exactly like [`Action::ToggleToolView`]. See `docs/context.md`.
     ToggleContextDebug,
-    /// A slash command produced a one-off system notice (e.g. `/help`'s command
-    /// list, or a stub's placeholder). The loop records it as a [`Role::System`]
-    /// message and commits it to scrollback, like a normal message.
+    /// A one-off system notice (e.g. the hint an empty `!` shell posts). The
+    /// loop records it as a [`Role::System`] message and commits it to
+    /// scrollback, like a normal message.
     Notice(String),
     /// A slash command cleared the conversation (`/clear`). [`App::history`] is
     /// already empty; the loop repaints the now-blank inline view.
@@ -112,11 +112,12 @@ pub enum Action {
     /// unharmed (codex). See `docs/resume.md`.
     ResumeSession(PathBuf),
     /// Raise a transient info [`Toast`](crate::app::Toast) above the box — a
-    /// confirmation or soft rejection that self-clears (e.g. `/resume` or `/help`
-    /// run while a turn is active). The loop calls [`App::show_toast`] and arms
-    /// the boundary's expiry timer; nothing is committed to scrollback. Error
-    /// toasts (a `/copy` failure, a bad model switch) are raised by the boundary
-    /// directly, so this carries only the info text. See `docs/toast.md`.
+    /// confirmation or soft rejection that self-clears (e.g. `/resume` or
+    /// `/compact` run while a turn is active). The loop calls
+    /// [`App::show_toast`] and arms the boundary's expiry timer; nothing is
+    /// committed to scrollback. Error toasts (a `/copy` failure, a bad model
+    /// switch) are raised by the boundary directly, so this carries only the
+    /// info text. See `docs/toast.md`.
     Toast(String),
     /// `/model` from an idle composer: open the inline model picker. The *loop*
     /// spawns a worker to fetch the provider's model list (the HTTP stays at the

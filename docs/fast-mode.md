@@ -154,15 +154,14 @@ built-in's clone is a borrowed pointer copy (`SlashCommand`'s strings are
 row), so a keystroke's rebuild costs nothing.
 
 Everything downstream reads that list: `matching_commands(&commands, query)`
-is the filter the palette, ↑/↓ and Enter share, `/help` enumerates it — so
-`/fast — 1.5x speed, increased usage` and `/ultrafast — …` list under
-`/model` there too — and the palette band renders a tier row exactly as it
-renders a built-in (`ui::command_menu_lines`). Running one is
-`App::toggle_speed_tier`: the pure state toggles at once and the loop is
-handed `Action::SetSpeed(Option<ServiceTier>)`. It works **mid-turn**
-exactly as Ctrl+T does — the pure state moves now, and only the *next*
-turn's backend is rebound (the running turn streams on its own thread,
-untouched).
+is the filter the palette, ↑/↓ and Enter share, and the palette band renders
+a tier row exactly as it renders a built-in (`ui::command_menu_lines`), the
+`(n/total)` counter under the rows counting it like any other.
+Running one is `App::toggle_speed_tier`: the pure state toggles at once and
+the loop is handed `Action::SetSpeed(Option<ServiceTier>)`. It works
+**mid-turn** exactly as Ctrl+T does — the pure state moves now, and only the
+*next* turn's backend is rebound (the running turn streams on its own
+thread, untouched).
 
 The loop's `Session::set_speed` does the three things Ctrl+T's `set_thinking`
 does: `ModelSession::rebind_speed` rebuilds the backend with the tier in its
@@ -289,7 +288,7 @@ legacy file, the three-state `recorded` rule), the palette (no `/fast` in
 the registry, one row per listed tier right after `/model` with the
 record's description, the generic description for a tier described with
 nothing, no row for an unusable or shadowing name, the rows gone with the
-state, `/help` listing them), the key path (`/ultrafast` Enter →
+state), the key path (`/ultrafast` Enter →
 `SetSpeed`, the same command back to standard, `/fast` then `/ultrafast`
 switching straight over, mid-turn, an unmatched `/fast` swallowed rather
 than sent), the band's rendering of a tier row, and the footer wearing any

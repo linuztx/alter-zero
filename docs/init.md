@@ -38,7 +38,7 @@ The port mirrors that shape exactly; every piece rides existing machinery.
   Init-then-Compact adjacency). Description reworded concise and
   product-name-free like `/quit`'s: "Create an AGENTS.md contributor guide"
   (codex says "…with instructions for Codex").
-  `help_text()` walks `COMMANDS`, so `/help` lists it for free.
+  The palette walks `COMMANDS`, so it lists it for free.
 - **Dispatch** (`App::run_selected_command`):
   - idle → `Action::Submit(INIT_PROMPT.trim_end().to_string())`. The loop's
     existing `Submit` arm runs `start_turn`, so the whole prompt is echoed
@@ -54,7 +54,7 @@ The port mirrors that shape exactly; every piece rides existing machinery.
     history clean everywhere it is replayed).
   - mid-turn → `Action::Toast(INIT_BUSY_NOTICE)` ("/init is disabled while
     a task is in progress") — codex's `available_during_task = false`,
-    expressed in our `/help`/`/resume`/`/compact` busy-toast pattern
+    expressed in our `/resume`/`/compact` busy-toast pattern
     (`docs/toast.md`). Tab (the palette's other accept key) takes the same
     arm — mid-turn it must not fall through to the queue-as-new-batch Tab,
     which would send the literal `/init` to the model as text.

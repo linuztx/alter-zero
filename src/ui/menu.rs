@@ -8,13 +8,14 @@ use super::*;
 
 /// How many rows the command palette occupies for `app` at `width`: 0 when
 /// closed, otherwise **the built line count** of [`command_menu_lines`] — the
-/// row-budget window over the matches, wrapped-description continuation rows
-/// included, never more than `MENU_MAX_ROWS` (or a single placeholder row
-/// when the query matches nothing). Height-is-the-line-count is the
-/// settings/model pickers' rule (`docs/view-flow.md`): the reserved rows and
-/// the painted rows agree by construction, which is what lets a long
-/// description *wrap* instead of clipping at the width. [`live_height`] adds
-/// this; [`render_live`] paints exactly this many rows.
+/// window over the matches (at most `MENU_MAX_COMMANDS`), wrapped-description
+/// continuation rows included, and the `(n/total)` counter under them, never
+/// more than `MENU_MAX_ROWS` (or a single placeholder row when the query
+/// matches nothing). Height-is-the-line-count is the settings/model pickers'
+/// rule (`docs/view-flow.md`): the reserved rows and the painted rows agree
+/// by construction, which is what lets a long description *wrap* instead of
+/// clipping at the width. [`live_height`] adds this; [`render_live`] paints
+/// exactly this many rows.
 #[must_use]
 pub fn menu_rows(app: &App, width: u16) -> u16 {
     u16::try_from(command_menu_lines(app, width).len()).unwrap_or(u16::MAX)
@@ -60,23 +61,26 @@ pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
 
 /// The window of variable-height entries (entry `i` painting `heights[i]`
 /// rows) that keeps `selected` **centered** inside a budget of `max_rows`
-/// painted rows — [`centered_window`] for the palette's wrapped entries,
-/// returned as the visible `(start, end)` entry range. Whole entries only,
-/// balanced by *rows*: each step adds the next entry on whichever side of
-/// the selection holds fewer rows so far (above on a tie, which is where
-/// `centered_window`'s middle row leaves the odd row), and a side that has
-/// run out of entries — or whose next entry no longer fits — leaves the
-/// rest of the budget to the other, which is what anchors the window at the
-/// top and flush with the tail. With uniform heights this is
-/// [`centered_window`] over the `max_rows / height` whole entries the budget
-/// holds, exactly; a lone entry taller than the whole budget still windows
-/// alone (the caller trims its rows to the budget).
+/// painted rows and at most `max_entries` entries — [`centered_window`] for
+/// the palette's wrapped entries, returned as the visible `(start, end)`
+/// entry range. Whole entries only, balanced by *rows*: each step adds the
+/// next entry on whichever side of the selection holds fewer rows so far
+/// (above on a tie, which is where `centered_window`'s middle row leaves the
+/// odd row), and a side that has run out of entries — or whose next entry
+/// no longer fits — leaves the rest of the budget to the other, which is
+/// what anchors the window at the top and flush with the tail; the window
+/// stops growing at whichever limit it reaches first. With uniform heights
+/// this is [`centered_window`] over the `max_rows / height` whole entries
+/// the budget holds (or `max_entries`, when that is fewer), exactly; a lone
+/// entry taller than the whole budget still windows alone (the caller trims
+/// its rows to the budget).
 pub(super) fn centered_window_rows(
     heights: &[usize],
     selected: usize,
     max_rows: usize,
+    max_entries: usize,
 ) -> (usize, usize) {
-    if heights.is_empty() || max_rows == 0 {
+    if heights.is_empty() || max_rows == 0 || max_entries == 0 {
         return (0, 0);
     }
     let selected = selected.min(heights.len() - 1);
@@ -84,7 +88,8 @@ pub(super) fn centered_window_rows(
     let (mut above, mut below) = (0, 0);
     loop {
         let rows = heights[selected] + above + below;
-        let fits = |i: usize| rows + heights[i] <= max_rows;
+        let room = end - start < max_entries;
+        let fits = |i: usize| room && rows + heights[i] <= max_rows;
         let up = start > 0 && fits(start - 1);
         let down = end < heights.len() && fits(end);
         if !(up || down) {
@@ -173,17 +178,34 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
     lines
 }
 
+/// The palette's dim `(n/total)` counter: which match the highlight is on,
+/// of how many — the pickers' counter (`docs/view-flow.md` *A picker's
+/// page*), hanging under the command names at [`MENU_INDENT`] the way
+/// theirs hangs under their rows' names. `None` on a terminal too narrow to
+/// hold it whole, since a count cut at the edge would misread (`(1/2` for
+/// one of twenty-one).
+fn menu_counter_line(selected: usize, total: usize, width: u16) -> Option<Line<'static>> {
+    let counter = format!("({}/{total})", selected + 1);
+    (cols(MENU_INDENT) + cols(&counter) <= usize::from(width)).then(|| {
+        Line::from(vec![
+            Span::raw(MENU_INDENT),
+            Span::styled(counter, Style::new().fg(menu_dim_color())),
+        ])
+    })
+}
+
 /// The styled lines for the open command palette: the session's commands
 /// ([`App::commands`] — the active model's speed-tier rows included) filtered
 /// by the query, their descriptions **wrapped** to the width, windowed by
-/// `centered_window_rows` to keep the selection **centered** inside the
-/// `MENU_MAX_ROWS` **row budget** — the `/model` and `/resume` lists' rule,
-/// so the commands above *and* below the highlight stay in view as it
-/// scrolls. At widths where every description fits its row that is the
-/// familiar eight commands, and where descriptions wrap the band shows fewer
-/// *whole* commands (scrolling reveals the rest) rather than clipping text or
-/// growing under the box; or a single dim placeholder when nothing matches.
-/// Empty when the palette is closed.
+/// `centered_window_rows` to keep the selection **centered** among at most
+/// `MENU_MAX_COMMANDS` of them — the `/model` and `/resume` lists' rule, so
+/// the commands above *and* below the highlight stay in view as it scrolls —
+/// over the `(n/total)` counter saying where the highlight is and how many
+/// commands match. At widths where every description fits its row that is
+/// five rows of commands; where descriptions wrap the window shows fewer
+/// *whole* commands (scrolling reveals the rest) rather than clipping text
+/// or growing the band past `MENU_MAX_ROWS`; or a single dim placeholder
+/// when nothing matches. Empty when the palette is closed.
 #[must_use]
 pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.command_menu else {
@@ -197,23 +219,27 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if matches.is_empty() {
         return vec![placeholder_line(MENU_NO_MATCH)];
     }
-    let max = MENU_MAX_ROWS as usize;
+    // The commands' rows: the band's ceiling less the counter's row.
+    let max_rows = usize::from(MENU_MAX_ROWS) - 1;
     let blocks: Vec<Vec<Line<'static>>> = matches
         .iter()
         .enumerate()
         .map(|(i, cmd)| menu_row_lines(cmd, i == menu.selected, width))
         .collect();
     let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
-    let (start, end) = centered_window_rows(&heights, menu.selected, max);
-    // `take(max)` only ever bites on a lone entry taller than the whole
+    let (start, end) = centered_window_rows(&heights, menu.selected, max_rows, MENU_MAX_COMMANDS);
+    // `take(max_rows)` only ever bites on a lone entry taller than the whole
     // budget (a degenerately narrow terminal): its first rows show.
-    blocks
+    let mut lines: Vec<Line<'static>> = blocks
         .into_iter()
         .skip(start)
         .take(end.saturating_sub(start))
         .flatten()
-        .take(max)
-        .collect()
+        .take(max_rows)
+        .collect();
+    let selected = menu.selected.min(matches.len() - 1);
+    lines.extend(menu_counter_line(selected, matches.len(), width));
+    lines
 }
 
 /// How many rows the `@` file picker occupies for `app`: 0 when closed, one
