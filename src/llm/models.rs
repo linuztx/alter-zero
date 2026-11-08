@@ -256,9 +256,18 @@ fn lmstudio_loaded_context(record: &serde_json::Value) -> Option<u64> {
 /// One record's `capabilities` object, when it is GitHub Copilot's — the
 /// nested `{family, type, tokenizer, limits, supports}` shape none of the
 /// other providers send. Every Copilot-specific sniff hangs off this, so a
-/// bare OpenAI-style list is untouched by all of them.
+/// bare OpenAI-style list is untouched by all of them — and so is any other
+/// server's `capabilities` object: a gateway's flat booleans (OmniRoute's)
+/// sit beside a `supported_endpoints` naming the **upstream's** API, which
+/// [`is_callable`]'s Copilot rule would have read as a model this client
+/// cannot call.
 fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
-    record.get("capabilities").filter(|c| c.is_object())
+    let caps = record.get("capabilities").filter(|c| c.is_object())?;
+    let has = |key: &str, shape: fn(&serde_json::Value) -> bool| caps.get(key).is_some_and(shape);
+    let copilots = has("type", serde_json::Value::is_string)
+        || has("supports", serde_json::Value::is_object)
+        || has("limits", serde_json::Value::is_object);
+    copilots.then_some(caps)
 }
 
 /// One record's `capabilities` object, when it is **Anthropic's** — the
@@ -374,8 +383,9 @@ fn flat_reasoning(record: &serde_json::Value) -> ReasoningSupport {
 ///   `/chat/completions` request with a 400.
 ///
 /// An absent endpoint list means chat completions (the legacy GPT records
-/// omit it), and a record with no `capabilities` object at all isn't
-/// Copilot's — every other provider's list passes untouched.
+/// omit it), and a record whose `capabilities` object isn't Copilot's
+/// ([`copilot_capabilities`]) — or that has none at all — passes untouched:
+/// another server's endpoint list says nothing about what this one serves.
 fn is_callable(record: &serde_json::Value) -> bool {
     // LM Studio lists its embedding models beside the ones that chat — and
     // ships one with every install (`docs/local-models.md`).
@@ -1568,6 +1578,24 @@ mod tests {
             r#","input_modalities":["text"]"#,
         );
         assert_eq!(parse_models(&both, "p").unwrap()[0].vision, Some(false));
+    }
+
+    #[test]
+    fn a_gateways_upstream_endpoints_never_take_its_models_off_the_list() {
+        // OmniRoute lists a Codex model it discovered under the upstream's own
+        // endpoints, `["responses"]`, and serves it over chat completions all
+        // the same, translating each request. Only Copilot's record names the
+        // endpoints a model answers on *there*; read as Copilot's, the
+        // gateway's list took every such model out of the picker.
+        let body = gateway_record(
+            r#""vision":true,"effort_tiers":["low","medium","high","xhigh"],
+               "tool_calling":true,"reasoning":true,"thinking":true,"supportsThinking":true"#,
+            r#","api_format":"responses","supported_endpoints":["responses"],
+               "visibility":"list","input_modalities":["text","image"]"#,
+        );
+        let models = parse_models(&body, "omniroute").unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["codex/gpt-6-astra"]);
     }
 
     // --- context window (docs/compact.md: the footer gauge + auto-compact) ---

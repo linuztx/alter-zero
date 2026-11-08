@@ -162,6 +162,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Models an OpenAI-compatible gateway discovered stay in `/model`.**
+  OmniRoute lists a model it found upstream, such as a Codex model, under
+  the upstream's own endpoints (`"supported_endpoints": ["responses"]`) and
+  serves it over chat completions all the same. That list was read by the
+  rule meant for GitHub Copilot's records, which leaves out a model served
+  only from `/responses`, so every such model was missing from the picker.
+  Only Copilot's own records are filtered by their endpoints now
+  (`docs/copilot.md`).
+
 - **Models behind an OpenAI-compatible gateway can see the pictures you
   send, and Ctrl+T offers their thinking levels.** A gateway such as
   OmniRoute lists each model's capabilities as plain flags
