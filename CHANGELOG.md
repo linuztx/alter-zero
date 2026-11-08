@@ -163,16 +163,20 @@ release heading when a version is cut.
 ### Fixed
 
 - **Models behind an OpenAI-compatible gateway can see the pictures you
-  send.** A gateway such as OmniRoute lists each model's capabilities as
-  plain flags (`"vision": true`, `"thinking": true`), and the `thinking`
-  flag made its listing read as Anthropic's own, which spells every
-  capability as `{"supported": …}`. Every model behind the gateway then
-  counted as one that cannot see: **Ctrl+V** refused a picture with
-  `does not support image input` and the `read` tool refused image files,
-  though the gateway passes them through. A model's image input now comes
-  from the modalities its own record names. A model you picked before this
-  fix keeps what was saved for it until you pick it again in `/model`
-  (`docs/claude.md`).
+  send, and Ctrl+T offers their thinking levels.** A gateway such as
+  OmniRoute lists each model's capabilities as plain flags
+  (`"vision": true`, `"thinking": true`), and the `thinking` flag made its
+  listing read as Anthropic's own, which spells every capability as
+  `{"supported": …}`. Every model behind the gateway then counted as one
+  that cannot see or think: **Ctrl+V** refused a picture with
+  `does not support image input`, the `read` tool refused image files
+  though the gateway passes them through, and **Ctrl+T** had no thinking
+  level to cycle. A model's image input now comes from the modalities its
+  own record names, or from its `vision` flag where it names none, and
+  Ctrl+T cycles the levels the gateway lists for the model
+  (`effort_tiers`), offering Off only where that list includes `none`. A
+  model you picked before this fix keeps what was saved for it until you
+  pick it again in `/model` (`docs/user-providers.md`).
 
 - **The input box no longer jumps when a thought hands over to a tool
   call.** When the model thought and then called a tool — a `skill` load

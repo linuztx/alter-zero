@@ -217,10 +217,22 @@ spelling the server uses: the context window from `context_length`, vLLM's
 records naming the window a loaded model was loaded with instead, and none
 for one not loaded yet (`docs/local-models.md`) — or
 `context_window` (gauged at 95%, the ChatGPT backend's rule); image input and
-reasoning from the shapes `docs/llm.md` lists. A fact no record states stays
-unknown — the footer's gauge hides and auto-compaction stays off
-(`ALTER_ZERO_CONTEXT_WINDOW` supplies a window), and images are attached
-optimistically (`docs/tools.md`).
+reasoning from the shapes `docs/tools.md` and `docs/reasoning.md` list. A fact
+no record states stays unknown — the footer's gauge hides and auto-compaction
+stays off (`ALTER_ZERO_CONTEXT_WINDOW` supplies a window), and images are
+attached optimistically (`docs/tools.md`).
+
+A gateway that flattens every capability to a boolean is read the same way.
+OmniRoute's records carry `"capabilities": {"vision": true, "thinking": true,
+"effort_tiers": ["low", "medium", "high"], …}` beside a top-level
+`input_modalities`. Image input comes from `input_modalities`, or from
+`capabilities.vision` where the gateway names no modalities. Reasoning comes
+from `capabilities.thinking`, with `effort_tiers` as the Ctrl+T levels: the
+gateway counts `none` among them, so Off is offered only where the list names
+it, or where it names no level at all. `capabilities.reasoning` is a guess the
+gateway writes for every model, and is not read. These flags share key names
+with Anthropic's `capabilities` tree but not its `{supported: bool}` leaves,
+which is how the two are told apart (`docs/claude.md`).
 
 A server with no `/models` at all lists nothing, and `/model` notes it
 `unavailable` — so does one answering `/models` with a 200 that carries no
