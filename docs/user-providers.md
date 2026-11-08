@@ -232,7 +232,11 @@ gateway counts `none` among them, so Off is offered only where the list names
 it, or where it names no level at all. `capabilities.reasoning` is a guess the
 gateway writes for every model, and is not read. These flags share key names
 with Anthropic's `capabilities` tree but not its `{supported: bool}` leaves,
-which is how the two are told apart (`docs/claude.md`).
+which is how the two are told apart (`docs/claude.md`). Nor is the object
+Copilot's, so the `supported_endpoints` beside it, which names the
+upstream's API (`["responses"]` for a Codex model the gateway discovered),
+never takes a model off the list: the gateway serves every one over chat
+completions (`docs/copilot.md`).
 
 A server with no `/models` at all lists nothing, and `/model` notes it
 `unavailable` — so does one answering `/models` with a 200 that carries no
