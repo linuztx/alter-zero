@@ -162,6 +162,18 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Models behind an OpenAI-compatible gateway can see the pictures you
+  send.** A gateway such as OmniRoute lists each model's capabilities as
+  plain flags (`"vision": true`, `"thinking": true`), and the `thinking`
+  flag made its listing read as Anthropic's own, which spells every
+  capability as `{"supported": …}`. Every model behind the gateway then
+  counted as one that cannot see: **Ctrl+V** refused a picture with
+  `does not support image input` and the `read` tool refused image files,
+  though the gateway passes them through. A model's image input now comes
+  from the modalities its own record names. A model you picked before this
+  fix keeps what was saved for it until you pick it again in `/model`
+  (`docs/claude.md`).
+
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed
   invalid JSON, the dim row it left under a tool call held the whole
