@@ -155,7 +155,8 @@ row), so a keystroke's rebuild costs nothing.
 
 Everything downstream reads that list: `matching_commands(&commands, query)`
 is the filter the palette, ↑/↓ and Enter share, and the palette band renders
-a tier row exactly as it renders a built-in (`ui::command_menu_lines`).
+a tier row exactly as it renders a built-in (`ui::command_menu_lines`), the
+`(n/total)` counter under the rows counting it like any other.
 Running one is `App::toggle_speed_tier`: the pure state toggles at once and
 the loop is handed `Action::SetSpeed(Option<ServiceTier>)`. It works
 **mid-turn** exactly as Ctrl+T does — the pure state moves now, and only the

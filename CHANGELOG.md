@@ -83,6 +83,14 @@ release heading when a version is cut.
   up in one column. A `No matching commands`, `No matching files` or
   `No matching skills` row now sits in that same column.
 
+- **The `/` command palette lists five commands at a time, with a count.**
+  It showed eight, which took much of a small terminal under the input box.
+  It now shows five, the highlighted one kept in the middle as ↑/↓ scroll
+  through the rest, over a dim `(1/21)` counter saying which command is
+  highlighted and how many there are, or how many match what you typed. A
+  terminal narrow enough to wrap the descriptions shows fewer, and the
+  palette never takes more than the eight rows it did before.
+
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
   (`Select model`, `Settings`, `Select theme`, `Select mascot`,
