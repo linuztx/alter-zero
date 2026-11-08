@@ -206,12 +206,20 @@ for _ in 1 2 3 4; do
 	tmux send-keys -t "$S" Down
 done
 sleep 0.3
+palette_top="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (slash palette wrapped back to the top) ===="
+printf '%s\n' "$palette_top"
+# The whole history, before the wipe: the first message is more than twenty
+# rows into the scrollback by now, past what a `-S -20` capture reaches (the
+# check that read that much passed whether or not anything was wiped), so the
+# wipe check below reads all of it and first proves the message is there.
+clear_before="$(tmux capture-pane -t "$S" -p -S -)"
 
 # Run /clear (highlighted first) → wipes the conversation, scrollback and all.
 tmux send-keys -t "$S" Enter
 sleep 0.3
-clear_ran="$(tmux capture-pane -t "$S" -p -S -20)"
-echo "==== captured pane (after running /clear) ===="
+clear_ran="$(tmux capture-pane -t "$S" -p -S -)"
+echo "==== captured pane (after running /clear, the whole history) ===="
 printf '%s\n' "$clear_ran"
 
 # Quit with Ctrl+C (empty composer) — the way out whatever the history holds:
@@ -274,5 +282,13 @@ fi
 expect_lacks "$palette_recentered" -F "Exit the app" "three ↑ from /quit left it in view — the window did not scroll with the highlight once it reached the middle row"
 # The open palette DISPLACES the session footer (codex's popups take its row).
 expect_lacks "$palette_open" -F "dummy_model_name" "the session footer is still shown while the palette is open (the band must displace it)"
+# ↓ past /quit wrapped the highlight back to /clear, the counter with it — so
+# the Enter below runs /clear and nothing else.
+expect_has "$palette_top" -E '^→ /clear +Clear the conversation' "↓ past /quit did not wrap the palette highlight back to /clear"
+read -r top_n top_total <<<"$(palette_counter "$palette_top")"
+if [ "${top_n:-}" != 1 ] || [ "${top_total:-}" != "${open_total:-}" ]; then
+	fail "the palette wrapped back to /clear reads (${top_n:-?}/${top_total:-?}), not (1/${open_total:-?})"
+fi
+expect_has "$clear_before" -F "❯ $USER_MSG" "the first message is not in the pane's history before /clear runs, so the wipe check below would prove nothing"
 expect_lacks "$clear_ran" -F "❯ $USER_MSG" "Enter on the highlighted /clear did not wipe the conversation"
 expect_has "$clear_ran" -F "dummy_model_name ·" "running /clear did not close the palette (the footer it displaces is not back)"
