@@ -160,6 +160,12 @@ release heading when a version is cut.
   context you are reading. Tab's page, with what the auto-mode classifier
   reads, has the same look.
 
+### Removed
+
+- **`/help`.** It printed the list of commands into the conversation, which
+  the `/` palette already shows: every command and what it does. Type `/` to
+  browse them.
+
 ### Fixed
 
 - **A broken hook is named by the first line of its command.** When a hook

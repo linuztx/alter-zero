@@ -18,7 +18,7 @@ fn shell_query_is_none_without_a_leading_bang() {
     assert_eq!(shell_query(""), None);
     assert_eq!(shell_query("ls"), None);
     assert_eq!(shell_query("ask !ls"), None, "the ! must lead");
-    assert_eq!(shell_query("/help"), None);
+    assert_eq!(shell_query("/clear"), None);
 }
 
 #[test]

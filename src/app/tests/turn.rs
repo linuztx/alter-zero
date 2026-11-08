@@ -840,20 +840,6 @@ fn clear_mid_turn_wipes_the_streaming_state_and_records_nothing() {
 }
 
 #[test]
-fn help_mid_turn_is_rejected_with_a_toast_not_the_command_list() {
-    // Mid-turn the multi-line list would interleave with the streaming
-    // reply, so /help is rejected with a transient toast instead.
-    let mut app = App::new();
-    app.begin_stream();
-    type_str(&mut app, "/help");
-    assert_eq!(
-        app.on_key(key(KeyCode::Enter)),
-        Action::Toast(HELP_BUSY_NOTICE.to_string()),
-    );
-    assert!(app.input.is_empty());
-}
-
-#[test]
 fn esc_undo_of_an_init_turn_restores_the_command_not_the_prompt() {
     // Esc in the pre-stream window undoes the submission into the
     // composer (docs/interrupt.md). For an /init turn the user typed

@@ -1092,7 +1092,7 @@ fn the_palette_over_a_streaming_table_keeps_the_composer_on_screen() {
         2,
         "both of the box's rules are painted: {all}"
     );
-    assert!(all.contains("/help"), "the palette shows below it: {all}");
+    assert!(all.contains("/clear"), "the palette shows below it: {all}");
     assert!(
         all.contains("Working…"),
         "and the turn's status line is still there: {all}"

@@ -54,7 +54,7 @@ for band_key in "/" "?" "@s"; do
 	# drops its `for`/`to` to keep two columns (docs/shortcuts.md), which is
 	# what leaves the strip rows to preview the table in here.
 	case "$band_key" in
-	"/") band_marker="/help" ;;
+	"/") band_marker="/clear" ;;
 	"?") band_marker="^  / (for )?commands " ;;
 	*) band_marker="Dir" ;;
 	esac

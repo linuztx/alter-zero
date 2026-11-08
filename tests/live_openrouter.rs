@@ -4291,7 +4291,7 @@ fn live_streamed_table_never_squeezes_the_composer() {
     println!("streamed {} bytes in {} chunks", reply.len(), bounds.len());
     assert!(reply.contains('|'), "the model produced a table: {reply:?}");
 
-    for (band_key, marker) in [("/", "/help"), ("?", "for commands"), ("", "")] {
+    for (band_key, marker) in [("/", "/clear"), ("?", "for commands"), ("", "")] {
         for (width, term_height) in [(51u16, 24u16), (80, 24), (60, 18), (100, 30)] {
             let mut app = alter_zero::app::App::new();
             app.begin_stream();

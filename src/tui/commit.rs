@@ -204,7 +204,7 @@ impl Session<'_> {
         self.commit_notice(Role::Error, App::record_error_message, text);
     }
 
-    /// Commit a cyan system notice — `/help`'s command list —
+    /// Commit a cyan system notice — the empty `!` shell's hint —
     /// [`Session::commit_notice`] as [`Role::System`].
     pub(crate) fn commit_system_notice(&mut self, text: &str) {
         self.commit_notice(Role::System, App::record_system_message, text);
