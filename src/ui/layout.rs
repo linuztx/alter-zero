@@ -74,6 +74,13 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 /// its own trim (they share this walk, so they agree by construction).
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
+    // A thought that just settled stands on its block's rows until the next
+    // cell takes them — main session and agent session view alike
+    // (docs/thought-handoff.md).
+    if let Some(thought) = held_thought_on_screen(app) {
+        let rows = super::reasoning::held_thought_lines(thought, width).len();
+        return u16::try_from(rows).unwrap_or(u16::MAX);
+    }
     // An agent session view previews the *viewed agent's* stream — its live
     // tool cells, its thinking block, or its reply's uncommitted frontier
     // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
@@ -227,6 +234,57 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
         preview_rows(app, width),
         non_preview_rows(app, width),
     )
+}
+
+/// Whether the strip shows the **held thought** (`docs/thought-handoff.md`):
+/// one is held ([`App::held_thought`]), the conversation on screen is
+/// mid-turn, no modal prompt replaces the region, the thought is still the
+/// newest thing that conversation recorded, and nothing else has taken the
+/// preview slot — no call queued or streaming into a cell of its own, no
+/// agent group, no open read/search group, no new thinking phase, and no
+/// reply text beyond whitespace. The first frame this turns false, the
+/// boundary commits the held line and lets the thought go
+/// (`Session::sync_held_thought`), so the line and whatever took the slot
+/// land in one frame.
+///
+/// The newest-record rule ties the hold to the thought's own round: a record
+/// with no cell — a task call — means the round has moved on and nothing
+/// will land on the thought's rows, so the line commits rather than waiting
+/// out the next request.
+#[must_use]
+pub fn holds_thought(app: &App) -> bool {
+    if app.held_thought().is_none() || app.modal_open() {
+        return false;
+    }
+    let says_something = |text: Option<&str>| text.is_some_and(|text| !text.trim().is_empty());
+    let newest_is_thought =
+        |history: &[HistoryItem]| matches!(history.last(), Some(HistoryItem::Reasoning(_)));
+    if let Some(run) = app.viewed_agent() {
+        return !run.status.is_final()
+            && newest_is_thought(&run.history)
+            && run.tool_queue.is_empty()
+            && run.drafts().previews().next().is_none()
+            && run.reasoning().is_none()
+            && !says_something(run.streaming.as_deref());
+    }
+    app.turn_active()
+        && newest_is_thought(&app.history)
+        && app.agent_group().is_none()
+        && app.tool_queue().is_empty()
+        && app.tool_drafts().previews().next().is_none()
+        && app.tool_group_range().is_none()
+        && app.reasoning().is_none()
+        && !says_something(app.streaming_text())
+}
+
+/// The held thought while [`holds_thought`] — what the preview slot draws
+/// before any other branch, since by construction nothing else is in it.
+pub(super) fn held_thought_on_screen(app: &App) -> Option<&crate::app::Reasoning> {
+    if holds_thought(app) {
+        app.held_thought()
+    } else {
+        None
+    }
 }
 
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip

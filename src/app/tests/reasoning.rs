@@ -261,3 +261,39 @@ fn a_new_turn_starts_with_no_stale_phase() {
     app.begin_stream();
     assert_eq!(app.reasoning(), None);
 }
+
+#[test]
+fn a_held_thought_is_kept_until_it_is_dropped() {
+    // The settled phase stays on screen until the next cell takes its rows
+    // (docs/thought-handoff.md): `App` keeps it for the strip to draw, and
+    // the boundary drops it when the held line commits.
+    let mut app = App::new();
+    app.begin_stream();
+    app.begin_reasoning();
+    app.push_thinking("the plan");
+    let thought = app.finish_reasoning(2).expect("a thought");
+    assert!(app.held_thought().is_none(), "settling alone holds nothing");
+    app.hold_thought(thought.clone());
+    assert_eq!(app.held_thought(), Some(&thought));
+    app.drop_held_thought();
+    assert!(app.held_thought().is_none());
+}
+
+#[test]
+fn nothing_is_held_across_a_new_turn_or_a_clear() {
+    let held = |app: &mut App| {
+        app.begin_stream();
+        app.begin_reasoning();
+        app.push_thinking("the plan");
+        let thought = app.finish_reasoning(0).expect("a thought");
+        app.hold_thought(thought);
+    };
+    let mut app = App::new();
+    held(&mut app);
+    app.begin_stream();
+    assert!(app.held_thought().is_none(), "a fresh turn holds nothing");
+    let mut app = App::new();
+    held(&mut app);
+    app.clear_conversation();
+    assert!(app.held_thought().is_none(), "/clear holds nothing");
+}

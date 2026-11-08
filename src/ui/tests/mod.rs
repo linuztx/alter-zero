@@ -26,6 +26,7 @@ mod export_view;
 mod file_cell;
 mod footer;
 mod header;
+mod held_thought;
 mod hook_cell;
 mod hooks_view;
 mod image;

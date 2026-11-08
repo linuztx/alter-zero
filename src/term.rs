@@ -127,6 +127,21 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pending: Vec<Line<'static>>,
+    /// Lines committed but **held back** from the next flush ([`hold`]): a
+    /// settled thought's `Thought for …` line, kept off scrollback while the
+    /// strip still shows the thought on its rows, until the next cell takes
+    /// them (`docs/thought-handoff.md`). Order is kept by construction: any
+    /// later [`insert_before`] queues these first, so scrollback can never
+    /// show what came after them above them. [`release_held`] queues them
+    /// explicitly; [`reflow`] drops them (its tail regenerates them from
+    /// history); [`restore`] flushes them.
+    ///
+    /// [`hold`]: InlineViewport::hold
+    /// [`insert_before`]: InlineViewport::insert_before
+    /// [`release_held`]: InlineViewport::release_held
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`restore`]: InlineViewport::restore
+    held: Vec<Line<'static>>,
     /// Set when the screen moved **one-way while an inline modal was open**
     /// ([`ui::region_is_modal`] — the tool-permission prompt): its growth (or
     /// a commit under it) scrolled chat into the terminal's scrollback, or a
@@ -304,6 +319,7 @@ impl InlineViewport {
             prev: None,
             overlay_prev: None,
             pending: Vec::new(),
+            held: Vec::new(),
             modal_scrolled: false,
             painted_bottom: top.saturating_add(height),
             keyboard_enhanced,
@@ -602,7 +618,47 @@ impl InlineViewport {
     /// [`reflow`]: InlineViewport::reflow
     /// [`restore`]: InlineViewport::restore
     pub fn insert_before(&mut self, lines: Vec<Line<'static>>) {
+        // Anything held is older than what commits now: it goes first
+        // (`docs/thought-handoff.md`). An empty batch commits nothing, so it
+        // releases nothing.
+        if !lines.is_empty() {
+            self.release_held();
+        }
         self.pending.extend(lines);
+    }
+
+    /// Commit `lines` but **hold them back** from the next flush — a settled
+    /// thought's line, kept off scrollback while the strip still shows the
+    /// thought on its rows (`docs/thought-handoff.md`). They reach scrollback
+    /// ahead of the next [`insert_before`], or at [`release_held`].
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    /// [`release_held`]: InlineViewport::release_held
+    pub fn hold(&mut self, lines: Vec<Line<'static>>) {
+        self.held.extend(lines);
+    }
+
+    /// Whether any committed lines are held back ([`hold`]).
+    ///
+    /// [`hold`]: InlineViewport::hold
+    #[must_use]
+    pub fn has_held(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Queue the held lines for the next flush, in order — the frame that
+    /// draws whatever took the held thought's rows writes them with it.
+    pub fn release_held(&mut self) {
+        if !self.held.is_empty() {
+            let held = std::mem::take(&mut self.held);
+            self.pending.extend(held);
+        }
+    }
+
+    /// Drop the held lines unwritten — a rebuild regenerates them from
+    /// history, or the attempt that produced them was withdrawn.
+    pub fn drop_held(&mut self) {
+        drop(std::mem::take(&mut self.held));
     }
 
     /// Write any queued [`insert_before`] lines above the viewport and empty the
@@ -817,6 +873,8 @@ impl InlineViewport {
         // queue thousands of rows), while the flush path's `mem::take` already
         // releases it — the rebuild drops the stale queue the same way.
         drop(std::mem::take(&mut self.pending));
+        // Held lines too: they are in history, so the tail carries them.
+        self.drop_held();
         // A modal open right now takes its seat by this rebuild's real write —
         // note it (`modal_scrolled`): the close must purge-rebuild or its
         // collapse strands the box above the rows it vacates. Recording this
@@ -1059,6 +1117,8 @@ impl InlineViewport {
         // the old box's rows shifted and torn where the region now sits —
         // blank them, which is what `write_above`'s own clear did for this
         // one path before commits repainted in place (`docs/slow-stream.md`).
+        // A held line is committed content too — a quit mid-hand-off keeps it.
+        self.release_held();
         let flushed = !self.pending.is_empty();
         self.flush_pending()?;
         if flushed {

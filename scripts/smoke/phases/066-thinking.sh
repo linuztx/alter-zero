@@ -9,10 +9,12 @@ smoke_begin
 # the strip under a `● Thinking…` header over the `⎿` gutter, and COLLAPSES at
 # the phase's end into one bullet-less committed
 # `Thought for {n} · {t} tokens (ctrl+o to expand)` line — the reasoning text
-# itself never reaching scrollback (it expands in Ctrl+O instead). Driven
-# against the dummy's canned two-line reasoning: poll for the live block, then
-# for the settled cell, and assert the thought's text is nowhere in the
-# committed scrollback. Then the same turn with ALTER_ZERO_SHOW_THINKING=0
+# itself never reaching scrollback (it expands in Ctrl+O instead; until the
+# round's first cell lands it stays on screen under the settled line, holding
+# the block's rows — docs/thought-handoff.md). Driven against the dummy's
+# canned two-line reasoning: poll for the live block, then for the settled
+# cell, and once the calls have landed assert the thought's text is nowhere in
+# the committed scrollback. Then the same turn with ALTER_ZERO_SHOW_THINKING=0
 # must show neither.
 S66="${S}_thinking"
 launch "$S66" 80 24
@@ -58,7 +60,6 @@ expect_has "$think_done" -E "^Thought for [0-9]+s · [0-9]+ tokens \(ctrl\+o to 
 # prefix it, not even the bullet's two blank columns.
 expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like the turn summary ('Worked for Ns')"
 expect_lacks "$think_done" -E "^[[:space:]]+Thought for " "the settled line is inset; it must start at the edge like the turn summary ('Worked for Ns')"
-expect_lacks "$think_done" -F "Then edit it and run it." "the chain-of-thought reached scrollback; only the collapsed cell may commit"
 # Invariant 4: a phase that ends MID-REPLY must finalise the assistant text
 # before it (the ToolStart dance), so the cell is its own block rather than a
 # line spliced into the paragraph that was streaming. The dummy's default turn
@@ -78,6 +79,16 @@ if ! printf '%s' "$think_overlay" | grep -qF "Then edit it and run it."; then
 fi
 tmux send-keys -t "$S66" C-o
 sleep 0.3
+# The chain-of-thought itself never reaches scrollback. It stays on screen
+# under the settled line only until the round's first cell takes its rows —
+# the settled thought holds its block's rows so the box does not hop while the
+# call is generated (docs/thought-handoff.md) — so look once the batch has
+# landed, whether that happened under the overlay above or after it: the held
+# line commits ahead of the first cell either way. The read's bullet blinks,
+# so its header is matched without it.
+think_after="$(wait_pane 20 "$S66" -S -80 -- -F "Read(about.py)")" # up to ~20s
+expect_has "$think_after" -F "Read(about.py)" "the round's calls never landed after the thought"
+expect_lacks "$think_after" -F "Then edit it and run it." "the chain-of-thought reached scrollback; only the collapsed cell may commit"
 tmux kill-session -t "$S66" 2>/dev/null
 
 # The off switch: same turn, ALTER_ZERO_SHOW_THINKING=0 → neither the live

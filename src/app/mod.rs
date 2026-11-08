@@ -244,6 +244,13 @@ pub struct App {
     /// when the display is off (`ALTER_ZERO_SHOW_THINKING=0`), because the
     /// boundary then never opens one. See `docs/thinking-stream.md`.
     reasoning: Option<String>,
+    /// The thought that just settled, **held on screen** until the next cell
+    /// takes its rows: the strip draws it as its settled `Thought for …`
+    /// line over the thought's tail, standing on the rows the live block
+    /// did, while the boundary holds that line back from scrollback. Set and
+    /// dropped by the boundary ([`hold_thought`](App::hold_thought)); see
+    /// `docs/thought-handoff.md`.
+    held_thought: Option<Reasoning>,
     /// Where this round's settled [`HistoryItem::Reasoning`] items landed in
     /// [`history`](Self::history) — the snap targets for the round's usage
     /// frame, which reports the *real* `reasoning_tokens` the cells were built

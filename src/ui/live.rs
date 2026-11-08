@@ -109,6 +109,17 @@ pub(super) fn preview_lines(
     rows: u16,
 ) -> Vec<Line<'static>> {
     let rows = usize::from(rows);
+    // A thought that just settled, held on its block's rows until the next
+    // cell takes them — its settled line over the thought's tail, the head
+    // kept on a squeezed slot (docs/thought-handoff.md). `preview_rows`
+    // sizes the same branch first.
+    if let Some(thought) = super::layout::held_thought_on_screen(app) {
+        return trim_preview(
+            super::reasoning::held_thought_lines(thought, width),
+            rows,
+            false,
+        );
+    }
     if let Some(run) = app.viewed_agent() {
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
@@ -539,6 +550,10 @@ pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16
 /// streaming reply's frontier. What [`strip_content_preview_rows`] branches
 /// on; mirrors [`preview_rows`]' own branch order.
 fn strip_preview_is_live_cells(app: &App) -> bool {
+    // A held thought is the block it settled from, still on screen.
+    if super::layout::holds_thought(app) {
+        return true;
+    }
     if let Some(run) = app.viewed_agent() {
         return !run.tool_queue.is_empty()
             || run.drafts().previews().next().is_some()
@@ -593,6 +608,7 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     app.agent_view.hash(&mut hasher);
     strip_has_status(app).hash(&mut hasher);
     app.reasoning().is_some().hash(&mut hasher);
+    super::layout::holds_thought(app).hash(&mut hasher);
     app.streaming_text().is_some().hash(&mut hasher);
     let queue = app
         .viewed_agent()

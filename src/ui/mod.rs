@@ -125,7 +125,7 @@ pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_men
 pub use self::image::{image_block_lines, image_lines, item_image_paths, item_images};
 pub use self::layout::{
     Repin, background_view_height, cursor_position, cursor_visible, fitted_preview_rows, hang_rows,
-    key_onboarding_height, live_height, modal_needs_rebuild, model_picker_height,
+    holds_thought, key_onboarding_height, live_height, modal_needs_rebuild, model_picker_height,
     overlay_cursor_seat, permission_height, preview_budget, preview_rows, region_is_modal, repin,
     restore_cursor_row, stream_preview_max_rows, strip_has_status,
 };

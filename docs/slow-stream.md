@@ -245,6 +245,14 @@ itself: `assert_stream_matches_batch` fails any step whose preview shrinks
 by more than that step committed, over the whole hostile-soup fuzz corpus
 at every width — which is how the table's shape was found at all.
 
+That floor covers a reply's frontier and nothing else, and deliberately so.
+Lifted to the whole strip — every hand-off between its cells held to it — it
+held **blank** rows wherever the next cell was a whole request away: three
+empty lines over the status line between rounds (`docs/thought-handoff.md`).
+The one hand-off that hopped with its next cell moments away by construction,
+a thought settling at its call's first piece, holds the thought itself on
+those rows instead.
+
 The smoke phase's own hop watch confirms a lower footer against a second
 capture a beat later, since `tmux capture-pane` can read a frame
 half-parsed — the screen scrolled, the region not yet repainted, the old

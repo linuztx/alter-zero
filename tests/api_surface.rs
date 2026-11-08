@@ -510,6 +510,7 @@ use alter_zero::ui::{
     summary_lines,
     task_rows,
     hang_rows,
+    holds_thought,
     offline_lines,
     offline_rows,
     tip_lines,

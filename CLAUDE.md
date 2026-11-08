@@ -1028,7 +1028,31 @@ height less every row `commit` has since moved to scrollback, padded with
 blank rows the next content lands on — so the preview never loses more
 rows than a step committed, the invariant the differential harness now
 carries over the fuzz corpus at every width, with `matches_up_to_padding`
-as the contract's one tolerance; the **clickable OSC 8 links** (every URL an assistant
+as the contract's one tolerance — and the **thought hand-off** in
+`docs/thought-handoff.md`: the backend settles a thinking phase at the round's
+first tool-call piece while the call gets a cell only at its batch, so
+collapsing the `● Thinking…` block at once sat the box up to three rows high
+for as long as the call took to generate and dropped it back when the cell
+landed (the flicker reported between a thought and a `skill` call; present in
+v0.18.0 too). The block now **settles in place** — `App::hold_thought` keeps
+the settled `Reasoning`, `ui::reasoning::held_thought_lines` draws its
+`Thought for …` line over the same tail of thought on the block's rows — while
+the boundary holds that line back from scrollback (`InlineViewport::hold`;
+any later `insert_before` releases it first, so scrollback order matches
+history by construction); `ui::holds_thought` says when something else has
+taken the slot — a call's cell, a streaming `write`, the reply's first words,
+a new phase, a modal, the turn's end, or any record after the thought (a
+task call has no cell, so its round leaves nothing to land on the rows) — and
+`Session::sync_held_thought` releases the line in that frame, the new content
+landing on the tail's rows, while only a purge rebuild drops it unwritten
+(history carries it; a `Retrying` leaves it alone, since the withdrawal's own
+rebuild clears a thought the failed attempt produced and an earlier round's
+must still commit) and the agent session view holds its viewed agent's
+thought the same way. A preview **floor** padding every hand-off with blank
+rows was tried first and replaced: between rounds it held three empty lines
+over the status line for as long as the next request took; `smoke.sh` Phase
+153 pins no hop *and* one blank row above the status line mid-turn, through
+the dummy and through the real backend against a paced stub; the **clickable OSC 8 links** (every URL an assistant
 reply shows — a bare URL in prose/lists/table cells, inline/fenced/indented
 code, a heading, or a `[text](url)` target — is painted inside an OSC 8
 hyperlink carrying the whole URL, so a wrapped URL's every fragment opens the
