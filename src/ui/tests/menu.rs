@@ -150,10 +150,16 @@ fn the_counter_follows_the_highlight_and_counts_the_matches() {
             "selection {selected}"
         );
     }
-    // `/co` lists /copy, /compact and /context, the second highlighted.
+    // `/co` lists what it matches (/copy, /compact and /context today), the
+    // second highlighted. The count comes from the filter rather than being
+    // pinned, so a command added under `/co` cannot break a test about the
+    // counter (the rule smoke.sh Phase 1 writes down for its own counts).
+    let commands = palette("/", 0).commands();
+    let co = crate::app::matching_commands(&commands, "co").len();
+    assert!(co > 1 && co <= MENU_MAX_COMMANDS, "{co} /co matches");
     let lines = command_menu_lines(&palette("/co", 1), 80);
-    assert_eq!(command_rows(&lines).len(), 3, "{lines:?}");
-    assert_eq!(plain(lines.last().expect("a counter")), counter_text(1, 3));
+    assert_eq!(command_rows(&lines).len(), co, "{lines:?}");
+    assert_eq!(plain(lines.last().expect("a counter")), counter_text(1, co));
     // No match, no count: the placeholder stands alone.
     let miss = command_menu_lines(&palette("/zzz", 0), 80);
     assert_eq!(miss.len(), 1, "{miss:?}");
