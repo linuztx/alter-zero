@@ -76,7 +76,7 @@ shape in `main.rs` barely changes.
   lines are dropped first: everything queued is regenerated from `history`
   (the caller resets `committed`), so flushing them too would duplicate.
 - **`restore` flushes leftovers.** A quit can land between queueing and the
-  next tick (e.g. `/help` then an instant Ctrl+C); `restore` writes any
+  next tick (e.g. a notice, then an instant Ctrl+C); `restore` writes any
   pending lines before leaving raw mode so committed content is never lost.
 - **Ctrl+O enter paints immediately.** The `ToggleToolView` arm draws the
   overlay right after `enter_overlay` instead of waiting for the tick, closing

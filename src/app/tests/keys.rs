@@ -573,24 +573,6 @@ fn enter_runs_the_clear_command_emptying_history() {
 }
 
 #[test]
-fn enter_runs_help_posting_a_notice_that_lists_commands() {
-    let mut app = App::new();
-    type_str(&mut app, "/help");
-    match app.on_key(key(KeyCode::Enter)) {
-        Action::Notice(text) => {
-            assert!(text.contains("Available commands"), "{text:?}");
-            assert!(
-                text.contains("/clear"),
-                "the notice lists commands: {text:?}"
-            );
-        }
-        other => panic!("expected a Notice, got {other:?}"),
-    }
-    assert!(app.input.is_empty());
-    assert!(app.command_menu.is_none());
-}
-
-#[test]
 fn enter_runs_the_quit_command() {
     // `/quit` exits the app, like codex's `/quit` ("exit Codex").
     let mut app = App::new();

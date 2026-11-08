@@ -1111,7 +1111,7 @@ impl InlineViewport {
             let _ = execute!(self.backend, LeaveAlternateScreen);
         }
         // A quit can land between an `insert_before` and the draw tick that would
-        // have flushed it (e.g. `/help` then an instant Ctrl+C): write any queued
+        // have flushed it (e.g. a notice, then an instant Ctrl+C): write any queued
         // lines now so committed content is never lost with the session. No
         // frame repaints the region on the way out, so the flush would leave
         // the old box's rows shifted and torn where the region now sits —

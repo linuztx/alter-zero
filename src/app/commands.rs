@@ -36,12 +36,6 @@ pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 /// user needn't keep. See `docs/resume.md` / `docs/toast.md`.
 pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in progress";
 
-/// The transient toast shown when `/help` is run while a turn is active — its
-/// multi-line command list would interleave with the streaming reply in
-/// scrollback, so mid-turn it is rejected like `/resume` (idle it still commits
-/// the full list). Shown as an [`Action::Toast`]. See `docs/toast.md`.
-pub const HELP_BUSY_NOTICE: &str = "/help is disabled while a task is in progress";
-
 /// Codex's `/init` prompt (`prompts/init.md`, its `prompt_for_init_command.md`
 /// verbatim): generate an `AGENTS.md` contributor guide — never overwriting an
 /// existing one. Submitted as a **regular user turn** ([`Action::Submit`]), so
@@ -57,7 +51,7 @@ pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progres
 
 /// The transient toast shown when `/compact` is run while a turn is active —
 /// codex disables it during a task (`available_during_task`); ours rejects with
-/// the `/help`/`/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
+/// the `/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
 pub const COMPACT_BUSY_NOTICE: &str = "/compact is disabled while a task is in progress";
 
 /// The transient toast shown when `/compact` finds nothing to summarize — an
@@ -72,11 +66,6 @@ pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
 pub enum CommandEffect {
     /// Clear the conversation history (`/clear`).
     Clear,
-    /// Post the list of available commands as a system notice (`/help`) — or,
-    /// while a turn is active, reject with a [`HELP_BUSY_NOTICE`] toast (its
-    /// multi-line list would interleave with the streaming reply). See
-    /// `docs/toast.md`.
-    Help,
     /// Copy the last assistant response to the clipboard (`/copy`) — the
     /// confirmation surfaces as a toast, not a scrollback message. See
     /// `docs/copy.md` / `docs/toast.md`.
@@ -188,7 +177,7 @@ pub enum CommandEffect {
 /// palette, filtering, and scrolling don't change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {
-    /// The command name **without** the leading slash (e.g. `"help"`), lowercase.
+    /// The command name **without** the leading slash (e.g. `"clear"`), lowercase.
     pub name: Cow<'static, str>,
     /// A one-line description shown dimmed beside the name in the palette.
     pub description: Cow<'static, str>,
@@ -244,7 +233,6 @@ impl SlashCommand {
 /// The speed-tier rows are deliberately **not** here: they are what the
 /// active model lists, spliced in after `/model` by [`App::commands`].
 pub const COMMANDS: &[SlashCommand] = &[
-    SlashCommand::builtin("help", "List the available commands", CommandEffect::Help),
     SlashCommand::builtin("clear", "Clear the conversation", CommandEffect::Clear),
     SlashCommand::builtin(
         "copy",
@@ -338,8 +326,8 @@ pub struct CommandMenu {
 }
 
 /// The slash-command query in `input`, if it is a **bare command token**: a
-/// leading `/` followed by no whitespace (so `/`, `/he`, `/help` qualify, but
-/// `ask /help`, `/help me`, and `/a\nb` do not — a space or newline ends it).
+/// leading `/` followed by no whitespace (so `/`, `/cl`, `/clear` qualify, but
+/// `ask /clear`, `/clear me`, and `/a\nb` do not — a space or newline ends it).
 /// `Some("")` for a lone `/` (lists everything).
 #[must_use]
 pub fn command_query(input: &str) -> Option<&str> {
@@ -359,15 +347,6 @@ pub fn command_query(input: &str) -> Option<&str> {
 pub fn matching_commands<'a>(commands: &'a [SlashCommand], query: &str) -> Vec<&'a SlashCommand> {
     let q = query.to_lowercase();
     commands.iter().filter(|c| c.name.starts_with(&q)).collect()
-}
-
-/// The `/help` notice: a header followed by every command's `/name — description`.
-fn help_text(commands: &[SlashCommand]) -> String {
-    let mut text = String::from("Available commands:");
-    for cmd in commands {
-        text.push_str(&format!("\n/{} — {}", cmd.name, cmd.description));
-    }
-    text
 }
 
 impl App {
@@ -472,16 +451,6 @@ impl App {
             CommandEffect::Clear => {
                 self.clear_conversation();
                 Action::Clear
-            }
-            CommandEffect::Help => {
-                // Idle, /help commits its multi-line command list. Mid-turn that
-                // list would interleave with the streaming reply, so it's
-                // rejected with a transient toast instead. See docs/toast.md.
-                if self.turn_active() {
-                    Action::Toast(HELP_BUSY_NOTICE.to_string())
-                } else {
-                    Action::Notice(help_text(&self.commands()))
-                }
             }
             CommandEffect::Copy => match self.last_assistant_text() {
                 Some(text) => Action::Copy(text),

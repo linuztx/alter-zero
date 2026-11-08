@@ -107,7 +107,7 @@ fn the_palette_shows_at_most_eight_commands() {
         texts.len(),
         "one row per command at 80 columns"
     );
-    assert!(texts[0].contains("/help"), "{texts:?}");
+    assert!(texts[0].contains("/clear"), "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains("/quit")),
         "the ninth command starts off-window: {texts:?}"
@@ -125,7 +125,7 @@ fn the_palette_scrolls_down_to_the_last_command() {
     let texts = command_rows(&lines);
     assert_eq!(texts.len(), MENU_MAX_ROWS as usize);
     assert!(
-        !texts.iter().any(|t| t.contains("/help")),
+        !texts.iter().any(|t| t.contains("/clear")),
         "the first command scrolled out: {texts:?}"
     );
     let bottom = lines.last().expect("a windowed row");
@@ -335,7 +335,7 @@ fn the_narrow_palette_windows_fewer_commands_inside_the_row_budget() {
         lines.len()
     );
     let cmds = command_rows(&lines);
-    assert!(cmds[0].contains("/help"), "{cmds:?}");
+    assert!(cmds[0].contains("/clear"), "{cmds:?}");
     assert!(
         cmds.len() < MENU_MAX_ROWS as usize,
         "wrapped entries cost window slots: {cmds:?}"
@@ -466,11 +466,9 @@ fn command_menu_lines_lists_commands_with_descriptions() {
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
-    assert!(texts.iter().any(|t| t.contains("/help")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("/clear")), "{texts:?}");
     assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("List the available commands")),
+        texts.iter().any(|t| t.contains("Clear the conversation")),
         "{texts:?}"
     );
 }
@@ -512,7 +510,7 @@ fn the_palette_marks_the_selection_with_an_arrow() {
     // where the cyan alone says nothing (a monochrome terminal, a capture).
     let lines = command_menu_lines(&palette("/", 1), 80);
     let texts: Vec<String> = lines.iter().map(plain).collect();
-    assert!(texts[1].starts_with("→ /clear "), "{texts:?}");
+    assert!(texts[1].starts_with("→ /copy "), "{texts:?}");
     for (i, text) in texts.iter().enumerate().filter(|&(i, _)| i != 1) {
         assert!(text.starts_with("  /"), "row {i} is inset: {text:?}");
     }
@@ -522,7 +520,7 @@ fn the_palette_marks_the_selection_with_an_arrow() {
     };
     assert_eq!(marker.content, MENU_MARKER);
     assert_eq!(marker.style.fg, Some(menu_selected_color()));
-    assert_eq!(name.content, "/clear");
+    assert_eq!(name.content, "/copy");
     assert!(name.style.add_modifier.contains(Modifier::BOLD));
     assert_eq!(lines[0].spans[0].content, MENU_INDENT);
 }
@@ -584,7 +582,7 @@ fn render_live_draws_the_command_menu_below_the_box() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        all.contains("/help"),
+        all.contains("/clear"),
         "menu rendered below the box: {all:?}"
     );
     // The reserved band height is the painted line count, so the band's
@@ -1350,7 +1348,7 @@ fn the_palette_replaces_the_footer() {
         .map(|y| row(&buf, y, 60))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(all.contains("/help"), "palette shown: {all:?}");
+    assert!(all.contains("/clear"), "palette shown: {all:?}");
     assert!(
         !all.contains("dummy_model_name"),
         "the footer yields its slot: {all:?}"

@@ -3211,7 +3211,7 @@ mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast
 above the box's top rule* (`App::toast`/`ui::toast_rows`/`toast_line`, threaded
 beside `queued_rows`; dim for info, red for errors). It's raised for
 confirmations and soft rejections the user should see but never keep — `/copy`
-(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/help`
+(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/compact`
 rejection — instead of committing a scrollback bullet; it never enters `history`,
 and its expiry is timed at the boundary (`Session::toast_deadline` +
 `Session::toast`, the timestamp pattern, cleared in the draw tick). See
@@ -3616,7 +3616,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
-`app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
+`app::COMMANDS` (`SlashCommand { name, description, effect }` — currently
 `/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection
 wears the `@`/`$` pickers' **`→ ` marker** (`MENU_MARKER`; every other row opens
@@ -3624,10 +3624,8 @@ on `MENU_INDENT`, its width in spaces, so the names share one column) and lights
 up cyan whole (name *and* description the same colour) while the others are
 dimmed grey; a miss's `No matching commands` sits in the names' column too. A command
 dispatches an `Action`
-(`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
-message — **but mid-turn `/help` is rejected with a `Toast`** (its list would
-interleave with the reply; `docs/toast.md`),
-`/quit`→`Quit`, **`/copy`→`Copy(String)`** — codex's `/copy`:
+(`/clear`→`Clear`, `/quit`→`Quit` (there is no `/help`: the palette itself is
+the list of commands), **`/copy`→`Copy(String)`** — codex's `/copy`:
 the pure core picks the last assistant message (`App::last_assistant_text`) and
 the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
 headless/SSH/tmux, then shows a transient `Copied last message to clipboard` toast

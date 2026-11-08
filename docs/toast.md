@@ -32,19 +32,18 @@ there" and fades it after a few seconds.
 | `/login` key saved | `Saved {ENV} — run /model to use {provider}` | info |
 | `/login` write fails | `Couldn't write {path}: {e}` | error |
 | `/resume` run mid-turn | `/resume is disabled while a task is in progress` | info |
-| `/help` run mid-turn | `/help is disabled while a task is in progress` | info |
 | `/init` run mid-turn | `/init is disabled while a task is in progress` | info |
 | `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
 | `/compact` with an empty context | `Nothing to compact` | info |
 
-The original rows (`/copy`, `/model`, `/login`, `/resume`, `/help`) were all
-committed as scrollback messages before this design; the later `/init` and
-`/compact` rows were born as toasts. Either way they surface as toasts and
-leave no trace in `history` (so they never appear in the Ctrl+O
-transcript or a `/resume` rollout). The one thing that *stays* in scrollback is
-**idle `/help`** — its multi-line command list is real content the user wants to
-scroll, so it commits as a `Role::System` message as before. Only `/help`
-*mid-turn* becomes the toast rejection above.
+The original rows (`/copy`, `/model`, `/login`, `/resume`, and the retired
+`/help`) were all committed as scrollback messages before this design; the
+later `/init` and `/compact` rows were born as toasts. Either way they surface
+as toasts and leave no trace in `history` (so they never appear in the Ctrl+O
+transcript or a `/resume` rollout). Idle `/help` was the one exception: its
+multi-line command list committed as a `Role::System` message, since it was
+content to scroll. `/help` has since been removed — the palette lists every
+command and what it does — so no slash command commits a message any more.
 
 ## `/model` and `/login` now work mid-turn
 
@@ -93,8 +92,8 @@ pub struct Toast { pub text: String, pub kind: ToastKind }
 nothing lingering.
 
 The slash-command dispatch returns `Action::Toast(String)` for the palette's
-soft rejections — the mid-turn busy notices (`/resume`, `/help`, `/init`,
-`/compact`) and the commands that find nothing to act on yet: `/compact`'s
+soft rejections — the mid-turn busy notices (`/resume`, `/init`, `/compact`)
+and the commands that find nothing to act on yet: `/compact`'s
 `Nothing to compact`, `/export`'s `Nothing to export` and `/copy`'s
 `No agent response to copy`. The boundary shows every `Action::Toast` as an
 info toast, so a pure-core rejection can never come out red. Every other

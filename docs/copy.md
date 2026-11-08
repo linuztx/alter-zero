@@ -24,7 +24,7 @@ a scrollback bullet. See `docs/toast.md`.
 > in `main.rs`, `App::show_toast`). The clipboard I/O below is unchanged; only
 > the surface differs. `commit_system_notice` / the `COPY_OK_NOTICE` /
 > `COPY_EMPTY_NOTICE` strings still exist (the strings feed the toast now; the
-> commit helper still serves idle `/help`). The rest of this doc describes the
+> commit helper still serves the empty `!` shell's hint). The rest of this doc describes the
 > original committed-notice design for context.
 
 ## What codex does (ported from `/tmp/codex/codex-rs/tui`)

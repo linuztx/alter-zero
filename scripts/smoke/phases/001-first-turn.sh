@@ -152,8 +152,7 @@ expect_lacks "$returned" -F "T R A N S C R I P T" "Ctrl+O did not return to the 
 # wraps the selection to the last row and the window scrolls /quit in; four
 # more ↑ walk the highlight back to the band's middle row, where it stays while
 # the list scrolls under it (centered_window_rows, the /model list's rule), so
-# /quit scrolls back out below; running /help posts a system notice listing
-# them.
+# /quit scrolls back out below; Enter on the first row runs /clear.
 # Clear the leftover "AAA\nBBB" draft from Phase 2 first — the palette only opens
 # when the input *starts* with "/".
 for _ in $(seq 1 12); do
@@ -200,22 +199,23 @@ echo "==== captured pane (slash palette recentered, four up from /quit) ===="
 printf '%s\n' "$palette_recentered"
 
 # Back to the top the same way — four ↓ return to /quit and one more wraps to
-# row 0 (the window follows the selection up again) so Enter runs /help, not
+# row 0 (the window follows the selection up again) so Enter runs /clear, not
 # /quit.
 for _ in 1 2 3 4 5; do
 	tmux send-keys -t "$S" Down
 done
 sleep 0.3
 
-# Run /help (highlighted first) → posts a system notice listing the commands.
+# Run /clear (highlighted first) → wipes the conversation, scrollback and all.
 tmux send-keys -t "$S" Enter
 sleep 0.3
-help_ran="$(tmux capture-pane -t "$S" -p -S -20)"
-echo "==== captured pane (after running /help) ===="
-printf '%s\n' "$help_ran"
+clear_ran="$(tmux capture-pane -t "$S" -p -S -20)"
+echo "==== captured pane (after running /clear) ===="
+printf '%s\n' "$clear_ran"
 
-# Quit with Ctrl+C (empty composer): user messages exist by now, so idle Esc
-# would arm the Esc-Esc backtrack instead of quitting (docs/backtrack.md).
+# Quit with Ctrl+C (empty composer) — the way out whatever the history holds:
+# with user messages in it, idle Esc arms the Esc-Esc backtrack instead of
+# quitting (docs/backtrack.md).
 tmux send-keys -t "$S" C-c
 sleep 0.2
 
@@ -231,16 +231,16 @@ sleep 0.2
 # the `→ ` marker or its two-space inset, then its slash, its name and two or
 # more spaces before its description ($PALETTE_ENTRY) — a shape nothing else
 # on screen has, where the bare opening also matches the reply's wrapped prose.
-expect_has "$palette_open" -F "List the available commands" "typing '/' did not open the command palette (/help missing)"
-expect_has "$palette_open" -E '^→ /help +List the available commands' "the highlighted /help row does not open on the → marker"
-expect_has "$palette_open" -F "Clear the conversation" "the command palette did not list /clear"
+expect_has "$palette_open" -F "Clear the conversation" "typing '/' did not open the command palette (/clear missing)"
+expect_has "$palette_open" -E '^→ /clear +Clear the conversation' "the highlighted /clear row does not open on the → marker"
+expect_has "$palette_open" -F "Copy the last response to the clipboard" "the command palette did not list /copy"
 palette_rows="$(printf '%s\n' "$palette_open" | grep -cE "$PALETTE_ENTRY" || true)"
 if [ "$palette_rows" -ne 8 ]; then
 	fail "the command palette shows $palette_rows rows, not the 8 MENU_MAX_ROWS caps it at"
 fi
 expect_lacks "$palette_open" -F "Exit the app" "the palette shows /quit (the registry's last command) in its first window — the 8-row cap is gone"
 expect_has "$palette_scrolled" -F "Exit the app" "↓ to the last command did not scroll /quit into the palette window"
-expect_lacks "$palette_scrolled" -F "List the available commands" "the scrolled palette still shows /help — the window did not move"
+expect_lacks "$palette_scrolled" -F "Clear the conversation" "the scrolled palette still shows /clear — the window did not move"
 # Walking back up from /quit recenters: the window still holds its 8 rows, the
 # highlight rides the middle (5th) one with commands below it, and /quit — four
 # rows under the highlight — has scrolled out.
@@ -255,4 +255,5 @@ fi
 expect_lacks "$palette_recentered" -F "Exit the app" "four ↑ from /quit left it in view — the window did not scroll with the highlight once it reached the middle row"
 # The open palette DISPLACES the session footer (codex's popups take its row).
 expect_lacks "$palette_open" -F "dummy_model_name" "the session footer is still shown while the palette is open (the band must displace it)"
-expect_has "$help_ran" -F "Available commands:" "running /help did not post its system notice"
+expect_lacks "$clear_ran" -F "❯ $USER_MSG" "Enter on the highlighted /clear did not wipe the conversation"
+expect_has "$clear_ran" -F "dummy_model_name ·" "running /clear did not close the palette (the footer it displaces is not back)"
