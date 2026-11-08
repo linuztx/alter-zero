@@ -322,15 +322,15 @@ impl Session<'_> {
                 trusted,
             } => self.set_hook_trust(&source, identity, trusted),
             Action::Notice(text) => {
-                // A slash command's one-off system notice. The helper finalises
-                // any mid-flight reply segment first (same ordering trick as a
-                // tool call) so the notice slots after it in scrollback and
-                // history alike.
+                // A one-off system notice (the empty `!` shell's hint). The
+                // helper finalises any mid-flight reply segment first (same
+                // ordering trick as a tool call) so the notice slots after it
+                // in scrollback and history alike.
                 self.commit_system_notice(&text);
             }
             Action::Toast(text) => {
                 // A slash command's transient info toast — a soft rejection
-                // (/resume, /help run mid-turn) that self-clears above the box
+                // (/resume, /compact run mid-turn) that self-clears above the box
                 // instead of landing in scrollback. See docs/toast.md.
                 self.toast(text, ToastKind::Info);
             }

@@ -244,7 +244,6 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 
 | Command | What it does |
 | --- | --- |
-| `/help` | List the available commands |
 | `/clear` | Clear the conversation |
 | `/copy` | Copy the last response to the clipboard |
 | `/export` | Copy or save the conversation as plain text |

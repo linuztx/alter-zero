@@ -88,7 +88,7 @@ Everything downstream holds with zero remapping:
 `/compact` (palette description: codex's "summarize conversation to prevent
 hitting the context limit") dispatches `Action::Compact` when idle with a
 non-empty derivable context; mid-turn it is rejected with a
-`COMPACT_BUSY_NOTICE` toast (the `/help`/`/resume` pattern — codex also
+`COMPACT_BUSY_NOTICE` toast (the `/resume` pattern — codex also
 disables it during a task), and with nothing to compact it toasts
 `COMPACT_EMPTY_NOTICE`.
 

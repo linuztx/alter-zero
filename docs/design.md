@@ -244,21 +244,25 @@ which Ctrl+V reads the clipboard from.
   `q`, Esc, or Ctrl+C return to the preserved conversation. See `docs/diff.md`;
   `smoke.sh` Phase 120 covers the complete review flow in temporary repos.
 - **Slash-command palette (Claude-Code style).** When the input is a **bare
-  command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
-  space/newline — a scrollable command **palette opens below the input box** (a
+  command token** — `/`, `/cl`, `/clear`, but *not* `ask /clear` or anything past
+  a space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
-  (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
+  (`app::COMMANDS`: name + description + effect — currently `/clear`,
   `/copy`, `/export`, `/diff`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`,
   `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
-  ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
-  time — the registry has outgrown the window, so a bare `/` shows the first eight,
-  and the window keeps the highlight **centered** the way the `/model` and
+  ↑/↓ move the highlight, and the list shows at most `MENU_MAX_COMMANDS` (5)
+  commands at a time over a dim `(n/total)` counter in the names' column — which
+  match the highlight is on, of how many the query matched, the pickers' counter
+  (`docs/view-flow.md` *A picker's page*), left out only on a terminal too narrow
+  to hold it whole, since a count cut at the edge would misread. The registry
+  has outgrown the window, so a bare `/` shows `/clear` through `/compact` over
+  `(1/21)`, and the window keeps the highlight **centered** the way the `/model` and
   `/resume` lists do (`centered_window`): ↓ walks it down to the middle row, then
   the list scrolls under it, so the commands above *and* below it stay in view
   and each step scrolls the next one in, sliding to an edge only where the list
   runs out (the first rows anchor at the top, the last flush with the tail — ↑
-  from `/help` wraps to `/quit` on the bottom row). The edge-pinned window it
+  from `/clear` wraps to `/quit` on the bottom row). The edge-pinned window it
   replaced (`menu_window_rows`, the variable-height `menu_window` the `@` and `$`
   pickers still use) only scrolled once the highlight crossed the bottom edge and
   then held it there, hiding everything past it;
@@ -266,12 +270,16 @@ which Ctrl+V reads the clipboard from.
   onto continuation rows indented to that same column when the terminal is too
   narrow for them (nothing the palette says is ever silently cut; the
   descriptions themselves stay concise and product-name-free, ≤ 53 columns, so
-  the standard 80-column terminal shows one row per command), the cap acting as
-  a **row budget** — where descriptions wrap, the window (`centered_window_rows`,
-  the variable-height `centered_window`) shows fewer *whole* commands rather than
-  growing under the box or clipping text, centering the highlight by *rows*: each
-  whole entry joins whichever side of it holds fewer rows so far (above on a
-  tie, `centered_window`'s middle row) until neither side's next entry fits — and
+  the standard 80-column terminal shows one row per command, five rows and the
+  counter's), with a second limit for when they do: the band never takes more
+  than `MENU_MAX_ROWS` (8) rows, the counter's included — where descriptions
+  wrap, the window (`centered_window_rows`, the variable-height
+  `centered_window`) shows fewer *whole* commands rather than growing under the
+  box or clipping text, centering the highlight by *rows*: each whole entry
+  joins whichever side of it holds fewer rows so far (above on a tie,
+  `centered_window`'s middle row) until neither side's next entry fits or the
+  window holds five, whichever comes first (a bare `/` shows four commands at
+  60 columns, two at 44) — and
   the selection wears the **`→ ` marker** the `@` and `$` pickers already did
   (`MENU_MARKER`, every other row opening on `MENU_INDENT`, its width in spaces,
   so the names share one column two in from the edge — the same column the
@@ -286,8 +294,8 @@ which Ctrl+V reads the clipboard from.
   to reopen). The box's top is unchanged when the palette opens — it's reserved
   *below* the box — so the cursor never jumps. Running a command **consumes the
   input** and dispatches an `Action`: `/clear` → `Clear` (a full wipe — see
-  below), `/help` → `Notice` (lists the commands), `/quit` → `Quit`
-  (exits — codex's `/quit`/`/exit`, "exit Codex"), and `/copy` →
+  below), `/quit` → `Quit` (exits — codex's `/quit`/`/exit`, "exit Codex"),
+  and `/copy` →
   `Copy(String)` (codex's `/copy` — the last assistant response to the
   system clipboard, the loop doing the arboard/OSC 52 write at the boundary
   and confirming with a toast; with no response yet the command is
@@ -961,7 +969,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   clears.
 - On `ToggleToolView` (Ctrl+O / Esc): enter or leave the alternate-screen overlay;
   on leaving, `repaint_conversation` reflows the inline view to catch up.
-- On `Notice(text)` (a slash command's output — `/help`): if a reply is mid-flight,
+- On `Notice(text)` (a one-off notice — the empty `!` shell's hint): if a reply is mid-flight,
   `flush_streaming_segment` finalises its current segment first (the same ordering
   trick a tool call uses), then `record_system_message` + an `insert_before` commit
   a `Role::System` notice to scrollback.
@@ -1006,11 +1014,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `View { Conversation, ToolOutput, ResumePicker }` — which screen is showing
   (Ctrl+O toggles the transcript; `/resume` opens the picker —
   `docs/resume.md`).
-- `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
-  Copy, Init, Compact, Resume, Model, Login, Quit }` + the `COMMANDS` registry
-  (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,
-  `/login`, `/quit`) — the slash-command palette's data; adding a command is
-  one registry entry (+ an effect arm).
+- `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Copy,
+  Init, Compact, Resume, Model, Login, Quit, … }` + the `COMMANDS` registry
+  (`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`,
+  `/quit`, …) — the slash-command palette's data; adding a command is one
+  registry entry (+ an effect arm).
 - `KeyOnboarding { providers, subscriptions, locals, step, selected, query,
   chosen, chosen_subscription, chosen_local, key_input, device, server, … }` +
   `KeyStep { Method, Subscription, SigninMethod, Device, Provider, Key, Local,
@@ -1166,8 +1174,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
   same token (re-entering command mode reopens it); Enter/Tab run the highlighted
   command, returning the right `Action` (`/clear`→`Clear` + history emptied,
-  `/help`→`Notice` listing commands, `/copy`→`Copy` with the last assistant
-  text, `/quit`→`Quit`) and consuming the input; an
+  `/copy`→`Copy` with the last assistant text, `/quit`→`Quit`) and consuming
+  the input; `/help` is no command (typing it matches nothing); an
   empty-match Enter doesn't submit; with no palette open Enter still submits
   normally.
 - `app` (input history): ↑ recalls the newest submission (cursor at the end)
@@ -1288,8 +1296,12 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
   (stamp-free) like any non-user item; the
   **command palette** — `centered_window_rows` keeps the
-  selection centered, `menu_rows` reserves the band (0 closed, capped, 1 for no
-  matches), `command_menu_lines` lists the matches in aligned columns and
+  selection centered within its row budget and entry cap, `menu_rows` reserves
+  the band (0 closed, at most five commands and their counter, never past
+  `MENU_MAX_ROWS` at any width, 1 for no matches), `command_menu_lines` lists
+  the matches in aligned columns over the dim `(n/total)` counter (following
+  the highlight and counting the query's matches, left out where the width
+  cannot hold it whole) and
   **marks the selected row with the `→` marker and lights it whole in one cyan
   colour** (name and description alike, vs dimmed grey; an inset placeholder
   when empty), and `render_live` draws
@@ -1606,13 +1618,13 @@ stream for their own reasons).
   searches go further by default and fold into one line per run
   (`docs/tool-groups.md`); an agent's session view keeps a cell per call.
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
-  whitespace); there's no argument parsing yet. The registry is intentionally small
-  (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,
-  `/login`, `/quit`) — adding a command is a one-line `COMMANDS`
-  entry plus an effect arm in `run_selected_command`. Esc's dismissal reopens on
-  the next keystroke only if you leave and re-enter command mode; and running
-  `/help` mid-stream finalises the reply's current segment first (so the notice
-  never splits the reply), the same ordering rule tool calls use.
+  whitespace); there's no argument parsing yet. Adding a command is a one-line
+  `COMMANDS` entry plus an effect arm in `run_selected_command`. Esc's
+  dismissal reopens on the next keystroke only if you leave and re-enter
+  command mode. There is no `/help`: the palette itself lists every command
+  and what it does. A notice committed mid-stream (the empty `!` shell's hint)
+  finalises the reply's current segment first (so the notice never splits the
+  reply), the same ordering rule tool calls use.
 - Timestamps are shown **only** in the Ctrl+O transcript, and only for the
   **user's** messages (12-hour `hh:mm AM/PM`, no seconds, right-aligned below the
   message); assistant/tool/summary items record a stamp but never display it. The

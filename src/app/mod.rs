@@ -77,8 +77,8 @@ pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, Bg
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
     COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
-    CommandEffect, CommandMenu, HELP_BUSY_NOTICE, INIT_BUSY_NOTICE, INIT_PROMPT,
-    RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
+    CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
+    command_query, matching_commands,
 };
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
