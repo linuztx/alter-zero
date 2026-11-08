@@ -156,6 +156,31 @@ pub enum WireApi {
     Chat,
 }
 
+/// Which request field a chat-completions server reads the Ctrl+T thinking
+/// mode from (`docs/reasoning.md`). A server publishing a reasoning ladder is
+/// most often OpenRouter-shaped and reads the `reasoning` object; one that
+/// reads OpenAI's own top-level `reasoning_effort` string instead — OmniRoute's
+/// route to Claude models, which ignores the object — says so in its block
+/// (`docs/user-providers.md`). Only the chat-completions wire reads it: every
+/// other wire spells the mode its own API's way, and GitHub Copilot's is
+/// decided by its sign-in (`docs/copilot.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningParam {
+    /// OpenAI's top-level `reasoning_effort` string: the level as it is,
+    /// `"none"` for Off, nothing for On
+    /// ([`super::reasoning::reasoning_effort_value`]).
+    ReasoningEffort,
+    /// OpenRouter's `reasoning` object: `{"effort": …}`, `{"enabled": false}`
+    /// for Off, nothing for On ([`super::reasoning::reasoning_body`]). The
+    /// default, and — like [`WireApi::Chat`] — the fallback for a value this
+    /// build doesn't know (`#[serde(other)]`, which serde requires on the last
+    /// variant).
+    #[default]
+    #[serde(other)]
+    Reasoning,
+}
+
 /// One `[providers.<id>]` block. Unknown keys are ignored so the file can carry
 /// provider-specific extras without breaking the parse.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -219,6 +244,10 @@ pub struct Provider {
     /// it. Empty for every shipped provider.
     #[serde(default)]
     pub drop_params: Vec<String>,
+    /// The request field the server reads the thinking mode from — the
+    /// `reasoning` object by default (see [`ReasoningParam`]).
+    #[serde(default)]
+    pub reasoning_param: ReasoningParam,
     /// Every top-level key of the block this build does not read. Kept rather
     /// than dropped so a user's own file can be told about a typo — a misspelt
     /// key otherwise reads as configuration while changing nothing
@@ -534,6 +563,7 @@ impl ProvidersFile {
                 .collect(),
             extra_body: provider.extra_body(),
             drop_params: provider.drop_params.clone(),
+            reasoning_param: provider.reasoning_param,
         })
     }
 }
@@ -577,7 +607,11 @@ fn layer_block(
             .and_then(toml::Value::as_str)
             .map(str::to_string)
     };
-    let (auth, wire) = (spelled("auth"), spelled("wire_api"));
+    let (auth, wire, effort_param) = (
+        spelled("auth"),
+        spelled("wire_api"),
+        spelled("reasoning_param"),
+    );
     let mut provider: Provider = match toml::Value::Table(merged).try_into() {
         Ok(provider) => provider,
         Err(err) => {
@@ -606,6 +640,13 @@ fn layer_block(
     {
         issues.push(format!(
             "providers.{id}.wire_api = {wire:?} is not known — using chat completions"
+        ));
+    }
+    if provider.reasoning_param == ReasoningParam::Reasoning
+        && let Some(param) = effort_param.filter(|param| param != "reasoning")
+    {
+        issues.push(format!(
+            "providers.{id}.reasoning_param = {param:?} is not known — using the reasoning object"
         ));
     }
     issues.extend(
@@ -821,6 +862,9 @@ pub struct ModelConfig {
     /// Request fields the provider's server refuses (see
     /// [`Provider::drop_params`]), taken out by [`Self::drop_refused`].
     pub drop_params: Vec<String>,
+    /// The request field the thinking mode rides in on the chat-completions
+    /// wire (see [`Provider::reasoning_param`]).
+    pub reasoning_param: ReasoningParam,
 }
 
 /// The fields no request goes without, which [`ModelConfig::drop_refused`]
@@ -862,6 +906,7 @@ impl ModelConfig {
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
             drop_params: Vec::new(),
+            reasoning_param: ReasoningParam::Reasoning,
         }
     }
 
@@ -2231,6 +2276,65 @@ api_base = "https://api.groq.com/openai/v1"
                 "providers.groq.wire_api = \"chat_completions\" is not known — using chat completions",
             ]
         );
+    }
+
+    #[test]
+    fn a_provider_can_ask_for_the_thinking_level_as_reasoning_effort() {
+        // OmniRoute's route to Claude models reads the level only from
+        // OpenAI's top-level `reasoning_effort`, and ignores the `reasoning`
+        // object every provider is sent by default (docs/user-providers.md):
+        // the block says which one its server reads.
+        let (file, issues) = layer(
+            r#"
+[providers.omniroute]
+name = "OmniRoute"
+reasoning_param = "reasoning_effort"
+
+[providers.omniroute.kwargs]
+api_base = "http://localhost:20128/v1"
+"#,
+        );
+        assert_eq!(issues, Vec::<String>::new());
+        let sel = Selection {
+            provider_id: "omniroute".to_string(),
+            model: "cc/claude-opus-4-7".to_string(),
+            ..Selection::default()
+        };
+        let cfg = file.model_config(&sel).expect("defined");
+        assert_eq!(cfg.reasoning_param, ReasoningParam::ReasoningEffort);
+        // Every shipped provider, and the fallback, keeps the object.
+        let shipped = ProvidersFile::builtin();
+        assert!(
+            shipped
+                .providers
+                .values()
+                .all(|p| p.reasoning_param == ReasoningParam::Reasoning)
+        );
+        assert_eq!(
+            ModelConfig::fallback().reasoning_param,
+            ReasoningParam::Reasoning
+        );
+    }
+
+    #[test]
+    fn an_unknown_reasoning_param_is_said_and_keeps_the_object() {
+        // The `wire_api` rule: a value from a newer build degrades to the
+        // default, and a user's own typo is said rather than ignored.
+        let (file, issues) = layer(
+            "[providers.p]\nname = \"P\"\nreasoning_param = \"effort\"\n[providers.p.kwargs]\napi_base = \"https://x/v1\"\n",
+        );
+        assert_eq!(
+            file.get("p").unwrap().reasoning_param,
+            ReasoningParam::Reasoning
+        );
+        assert_eq!(
+            issues,
+            ["providers.p.reasoning_param = \"effort\" is not known — using the reasoning object"]
+        );
+        let (_, quiet) = layer(
+            "[providers.p]\nname = \"P\"\nreasoning_param = \"reasoning\"\n[providers.p.kwargs]\napi_base = \"https://x/v1\"\n",
+        );
+        assert_eq!(quiet, Vec::<String>::new());
     }
 
     #[test]

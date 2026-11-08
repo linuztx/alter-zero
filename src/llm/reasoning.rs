@@ -188,6 +188,21 @@ pub fn effort_label(mode: ThinkingMode) -> Option<&'static str> {
     }
 }
 
+/// The request's top-level `reasoning_effort` value for a mode — OpenAI's own
+/// spelling, for a chat-completions server that reads it rather than the
+/// `reasoning` object ([`super::config::ReasoningParam::ReasoningEffort`],
+/// `docs/user-providers.md`). Unlike [`effort_label`]'s opt-in wires, Off has
+/// a word here — `none` — since omitting the field leaves a reasoning model
+/// at its own default rather than turning it off; `On` sends nothing.
+#[must_use]
+pub fn reasoning_effort_value(mode: ThinkingMode) -> Option<&'static str> {
+    match mode {
+        ThinkingMode::Effort(effort) => Some(effort.as_str()),
+        ThinkingMode::Off => Some("none"),
+        ThinkingMode::On => None,
+    }
+}
+
 /// The request's `reasoning` object for a mode: an explicit effort, a disable,
 /// or nothing at all for [`ThinkingMode::On`] (the model's own default). The
 /// Venice-side `disable_thinking` companion is applied by the payload builder
@@ -436,5 +451,20 @@ mod tests {
         );
         // On = the model's own default — no reasoning key at all.
         assert_eq!(reasoning_body(ThinkingMode::On), None);
+    }
+
+    #[test]
+    fn a_reasoning_effort_server_hears_off_as_none() {
+        // OpenAI's own top-level string, for a server that reads it rather
+        // than the `reasoning` object (`reasoning_param`,
+        // docs/user-providers.md). Unlike Copilot's opt-in, Off has a word
+        // here, `none`, and omitting the field would leave a reasoning model
+        // at its default instead of turning it off.
+        assert_eq!(
+            reasoning_effort_value(ThinkingMode::Effort(ReasoningEffort::XHigh)),
+            Some("xhigh")
+        );
+        assert_eq!(reasoning_effort_value(ThinkingMode::Off), Some("none"));
+        assert_eq!(reasoning_effort_value(ThinkingMode::On), None);
     }
 }

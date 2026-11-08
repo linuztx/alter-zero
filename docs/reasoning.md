@@ -74,11 +74,18 @@ provider-reported default → the ladder's middle → `On`).
 On the wire (`openai::build_payload`, applied **after** the provider
 `extra_body` merge so the user's choice wins over a file-configured static):
 
-| mode | request |
-| --- | --- |
-| `Effort(e)` | `"reasoning": {"effort": "e"}` |
-| `Off` | `"reasoning": {"enabled": false}` |
-| `On` | nothing — the model's own default |
+| mode | request | with `reasoning_param = "reasoning_effort"` |
+| --- | --- | --- |
+| `Effort(e)` | `"reasoning": {"effort": "e"}` | `"reasoning_effort": "e"` |
+| `Off` | `"reasoning": {"enabled": false}` | `"reasoning_effort": "none"` |
+| `On` | nothing — the model's own default | nothing |
+
+The object is OpenRouter's, and what every shipped chat-completions provider
+reads. A server that reads OpenAI's own top-level `reasoning_effort` string
+instead — OmniRoute's route to Claude models, which ignores the object — is
+named so by its provider block's `reasoning_param`
+(`llm::config::ReasoningParam`, `docs/user-providers.md`), and the level then
+rides as that string alone, never beside the object.
 
 **The Venice quirk:** live testing showed Venice (through the Agent Zero
 proxy) *ignores* `reasoning.enabled` — its hybrid reasoners keep thinking.

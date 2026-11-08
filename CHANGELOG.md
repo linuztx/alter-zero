@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Added
 
+- **A provider of your own can take the thinking level as
+  `reasoning_effort`.** Ctrl+T's level rides every chat request in
+  OpenRouter's `reasoning` object, which some OpenAI-compatible servers
+  ignore: OmniRoute's route to Claude models reads only OpenAI's own
+  top-level `reasoning_effort`, so a level picked for one of them changed
+  nothing. A block in `~/.alter-zero/providers.toml` that sets
+  `reasoning_param = "reasoning_effort"` now sends the level as that string
+  instead, with `none` for **off** (`docs/user-providers.md`).
+
 - **MCP can be turned off for a whole session from `/settings`.** A new
   **MCP** row stops every MCP server and offers the model none of their
   tools, without disabling the servers one by one in `/mcp`: each keeps its
