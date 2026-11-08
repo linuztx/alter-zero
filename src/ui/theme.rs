@@ -2631,22 +2631,30 @@ pub(super) const SPINNER_LINE_INTERVAL: Duration = Duration::from_millis(100);
 // inset, `/name` padded to a column, then its description — the marker the `@`
 // and `$` pickers below share. The highlighted row also lights up cyan whole —
 // name *and* description the same colour — while the others are dimmed grey.
-// Capped at `MENU_MAX_ROWS`; longer lists scroll to keep the selection centered
-// (`centered_window_rows`, the `/model` list's rule). ---
+// At most `MENU_MAX_COMMANDS` commands show at once, over a dim `(n/total)`
+// counter; longer lists scroll to keep the selection centered
+// (`centered_window_rows`, the `/model` list's rule), and the band never takes
+// more than `MENU_MAX_ROWS`. ---
 
-/// The most command rows shown at once; longer match lists scroll within this
-/// (`centered_window_rows` keeps the selection on the middle row, like the
-/// `/model` and `/resume` lists, so the commands above and below it stay in
-/// view). The registry has outgrown the window — a bare `/` shows the first
-/// eight and ↓ scrolls the rest in (the
-/// `the_palette_shows_at_most_eight_commands` /
+/// The most commands the palette lists at once — the `/settings` picker's
+/// five; longer match lists scroll within this (`centered_window_rows` keeps
+/// the selection on the middle row, like the `/model` and `/resume` lists, so
+/// the commands above and below it stay in view), the `(n/total)` counter
+/// under them saying where the highlight is and how many commands match. The
+/// registry has outgrown the window — a bare `/` shows `/clear` through
+/// `/compact` and ↓ scrolls the rest in (the
+/// `the_palette_shows_five_commands_over_a_counter` /
 /// `the_palette_keeps_the_highlight_centered_as_it_scrolls` tests pin both
-/// halves). The cap is a **row budget**, not a match count: at widths where
-/// every description fits its row the two are the same eight, and where a
-/// description *wraps* (`menu_row_lines` — narrow terminals continue it on
-/// rows indented to the description column instead of clipping it) the
-/// window shows fewer whole commands so the band never outgrows the budget,
-/// centering the selection by rows.
+/// halves).
+pub(super) const MENU_MAX_COMMANDS: usize = 5;
+
+/// The most rows the palette band takes, its counter's row included — a
+/// ceiling only a narrow terminal reaches. Where a description *wraps*
+/// (`menu_row_lines` continues it on rows indented to the description column
+/// instead of clipping it) each command takes more than one row, and the
+/// window shows fewer whole commands rather than a band taller than this,
+/// centering the selection by rows. At widths where every description fits
+/// its row, the five commands and the counter take six.
 pub(super) const MENU_MAX_ROWS: u16 = 8;
 
 /// The column descriptions start at — the [`MENU_MARKER`] (or its inset) and

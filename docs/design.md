@@ -246,9 +246,13 @@ which Ctrl+V reads the clipboard from.
   `/copy`, `/export`, `/diff`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`,
   `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
-  ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
-  time — the registry has outgrown the window, so a bare `/` shows the first eight,
-  and the window keeps the highlight **centered** the way the `/model` and
+  ↑/↓ move the highlight, and the list shows at most `MENU_MAX_COMMANDS` (5)
+  commands at a time over a dim `(n/total)` counter in the names' column — which
+  match the highlight is on, of how many the query matched, the pickers' counter
+  (`docs/view-flow.md` *A picker's page*), left out only on a terminal too narrow
+  to hold it whole, since a count cut at the edge would misread. The registry
+  has outgrown the window, so a bare `/` shows `/clear` through `/compact` over
+  `(1/21)`, and the window keeps the highlight **centered** the way the `/model` and
   `/resume` lists do (`centered_window`): ↓ walks it down to the middle row, then
   the list scrolls under it, so the commands above *and* below it stay in view
   and each step scrolls the next one in, sliding to an edge only where the list
@@ -261,12 +265,16 @@ which Ctrl+V reads the clipboard from.
   onto continuation rows indented to that same column when the terminal is too
   narrow for them (nothing the palette says is ever silently cut; the
   descriptions themselves stay concise and product-name-free, ≤ 53 columns, so
-  the standard 80-column terminal shows one row per command), the cap acting as
-  a **row budget** — where descriptions wrap, the window (`centered_window_rows`,
-  the variable-height `centered_window`) shows fewer *whole* commands rather than
-  growing under the box or clipping text, centering the highlight by *rows*: each
-  whole entry joins whichever side of it holds fewer rows so far (above on a
-  tie, `centered_window`'s middle row) until neither side's next entry fits — and
+  the standard 80-column terminal shows one row per command, five rows and the
+  counter's), with a second limit for when they do: the band never takes more
+  than `MENU_MAX_ROWS` (8) rows, the counter's included — where descriptions
+  wrap, the window (`centered_window_rows`, the variable-height
+  `centered_window`) shows fewer *whole* commands rather than growing under the
+  box or clipping text, centering the highlight by *rows*: each whole entry
+  joins whichever side of it holds fewer rows so far (above on a tie,
+  `centered_window`'s middle row) until neither side's next entry fits or the
+  window holds five, whichever comes first (a bare `/` shows four commands at
+  60 columns, two at 44) — and
   the selection wears the **`→ ` marker** the `@` and `$` pickers already did
   (`MENU_MARKER`, every other row opening on `MENU_INDENT`, its width in spaces,
   so the names share one column two in from the edge — the same column the
@@ -1283,8 +1291,12 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
   (stamp-free) like any non-user item; the
   **command palette** — `centered_window_rows` keeps the
-  selection centered, `menu_rows` reserves the band (0 closed, capped, 1 for no
-  matches), `command_menu_lines` lists the matches in aligned columns and
+  selection centered within its row budget and entry cap, `menu_rows` reserves
+  the band (0 closed, at most five commands and their counter, never past
+  `MENU_MAX_ROWS` at any width, 1 for no matches), `command_menu_lines` lists
+  the matches in aligned columns over the dim `(n/total)` counter (following
+  the highlight and counting the query's matches, left out where the width
+  cannot hold it whole) and
   **marks the selected row with the `→` marker and lights it whole in one cyan
   colour** (name and description alike, vs dimmed grey; an inset placeholder
   when empty), and `render_live` draws

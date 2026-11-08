@@ -43,7 +43,8 @@ as toasts and leave no trace in `history` (so they never appear in the Ctrl+O
 transcript or a `/resume` rollout). Idle `/help` was the one exception: its
 multi-line command list committed as a `Role::System` message, since it was
 content to scroll. `/help` has since been removed — the palette lists every
-command and what it does — so no slash command commits a message any more.
+command and what it does, with a `(n/total)` count — so no slash command
+commits a message any more.
 
 ## `/model` and `/login` now work mid-turn
 

@@ -140,11 +140,11 @@ fn typing_a_slash_opens_the_command_palette_at_the_top() {
 
 #[test]
 fn help_is_no_longer_a_command() {
-    // The palette is the command list: every command and what it does.
-    // `/help` only printed the same list into scrollback, so it is gone —
-    // the registry carries no row for it, and typing it matches nothing, so
-    // Enter is swallowed like any other miss rather than sent to the model
-    // as a message.
+    // The palette is the command list: every command, what it does, and a
+    // `(n/total)` counter saying how many there are. `/help` only printed
+    // the same list into scrollback, so it is gone — the registry carries no
+    // row for it, and typing it matches nothing, so Enter is swallowed like
+    // any other miss rather than sent to the model as a message.
     assert!(
         COMMANDS.iter().all(|c| c.name != "help"),
         "/help is no longer a command"
