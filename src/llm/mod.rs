@@ -59,7 +59,7 @@ use std::time::Duration;
 
 pub use crate::images::AttachmentUrl;
 pub use backend::LlmBackend;
-pub use config::{AuthScheme, ModelConfig, ProvidersFile, Selection, WireApi};
+pub use config::{AuthScheme, ModelConfig, ProvidersFile, ReasoningParam, Selection, WireApi};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
 pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};

@@ -43,6 +43,10 @@
 #   - `drop_params` (optional) lists top-level request fields the provider's
 #     server refuses (`prompt_cache_key`, `stream_options`, …), taken out of
 #     every request after everything else is set (docs/user-providers.md).
+#   - `reasoning_param` (optional) is the field a chat-completions server reads
+#     the Ctrl+T thinking level from: OpenRouter's `reasoning` object by
+#     default, or `reasoning_effort` for OpenAI's own top-level string, which
+#     OmniRoute's route to Claude models reads (docs/user-providers.md).
 #
 # The active provider/model is chosen with `ALTER_ZERO_PROVIDER` /
 # `ALTER_ZERO_MODEL`, or interactively with the `/model` picker, and persists to

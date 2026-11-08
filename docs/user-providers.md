@@ -137,6 +137,7 @@ is for.
 | `auth` | how it authenticates: a pasted key by default, `optional_key` for a server that needs none, or one of the sign-ins (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`) |
 | `wire_api` | the request shape: Chat Completions by default, or `responses`, `anthropic`, `ollama` |
 | `drop_params` | request fields the server refuses, taken out of every request (below) |
+| `reasoning_param` | the field a Chat Completions server reads the Ctrl+T thinking level from: OpenRouter's `reasoning` object by default, or `reasoning_effort` (below) |
 
 ## Servers that take no key
 
@@ -207,6 +208,36 @@ is no request to make, and listing either is said. Dropping `stream_options`
 can cost the exact token count: a server that then sends no usage frame
 leaves the tally on the app's estimate.
 
+## The field a server reads the thinking level from
+
+A model whose listing names a thinking ladder (`docs/reasoning.md`) gets the
+Ctrl+T level on every Chat Completions request in OpenRouter's `reasoning`
+object — `{"effort": "high"}`, or `{"enabled": false}` for Off — which every
+shipped provider reads. A server that reads OpenAI's own top-level
+`reasoning_effort` string instead says so:
+
+```toml
+[providers.omniroute]
+name = "OmniRoute"
+api_key_env = "OMNIROUTE_API_KEY"
+reasoning_param = "reasoning_effort"
+
+[providers.omniroute.kwargs]
+api_base = "http://localhost:20128/v1"
+```
+
+OmniRoute is the case that needs it. Its route to Claude models (`cc/…`)
+reads the level only from `reasoning_effort` or a `thinking` block and
+ignores the object, so without this line a level picked for one of them
+changes nothing; its Codex route reads either. The level then rides as the
+string alone, never beside the object: the level's own name, `"none"` for
+Off — offered only where the model's list names `none` — and nothing at all
+for On, the model's own default. Only the Chat Completions wire reads the
+key; every other wire spells the level its own API's way, and GitHub
+Copilot's request takes the string whatever the block says
+(`docs/copilot.md`). The key comes out like any other field where
+`drop_params` names it.
+
 ## What `/model` reads from the listing
 
 The picker lists `{api_model_base or api_base}/models`. Both shapes servers
@@ -217,10 +248,32 @@ spelling the server uses: the context window from `context_length`, vLLM's
 records naming the window a loaded model was loaded with instead, and none
 for one not loaded yet (`docs/local-models.md`) — or
 `context_window` (gauged at 95%, the ChatGPT backend's rule); image input and
-reasoning from the shapes `docs/llm.md` lists. A fact no record states stays
-unknown — the footer's gauge hides and auto-compaction stays off
-(`ALTER_ZERO_CONTEXT_WINDOW` supplies a window), and images are attached
-optimistically (`docs/tools.md`).
+reasoning from the shapes `docs/tools.md` and `docs/reasoning.md` list. A fact
+no record states stays unknown — the footer's gauge hides and auto-compaction
+stays off (`ALTER_ZERO_CONTEXT_WINDOW` supplies a window), and images are
+attached optimistically (`docs/tools.md`).
+
+A gateway that flattens every capability to a boolean is read the same way.
+OmniRoute's records carry `"capabilities": {"vision": true, "thinking": true,
+"effort_tiers": ["low", "medium", "high"], …}` beside a top-level
+`input_modalities`. Image input comes from `input_modalities`, or from
+`capabilities.vision` where the gateway names no modalities. The Ctrl+T levels
+are `capabilities.effort_tiers`, read whether or not a `thinking` flag stands
+beside them, since the gateway writes one only for a model its capability
+sources know; `thinking: false` overrules a list it left there. The gateway
+counts `none` among the levels, so Off is offered only where the list names
+it. A list naming no level, or none at all, offers no Ctrl+T: the gateway
+would pass Off upstream unchecked as the effort `none`, to a model that never
+listed it. `capabilities.reasoning` is a guess the gateway writes for every
+model, and is not read. These flags share key names with Anthropic's
+`capabilities` tree but not its `{supported: bool}` leaves, which is how the
+two are told apart (`docs/claude.md`). Nor is the object Copilot's, so the
+`supported_endpoints` beside it, which names the upstream's API
+(`["responses"]` for a Codex model the gateway discovered), never takes a
+model off the list: the gateway serves every one over chat completions
+(`docs/copilot.md`). For a level picked on one of its Claude models to reach
+the model, its block also needs `reasoning_param = "reasoning_effort"`
+(above).
 
 A server with no `/models` at all lists nothing, and `/model` notes it
 `unavailable` — so does one answering `/models` with a 200 that carries no
@@ -248,7 +301,7 @@ in:
 | a key nothing reads | `providers.groq.descripton is not a known key` | the key is ignored; the provider loads |
 | a key other tools spell differently | `providers.groq.base_url is not a known key — set api_base under [providers.groq.kwargs]` (`api_base` the same; `env_key` → `api_key_env`; `headers`, `http_headers` → `extra_headers`; `model`, `models` → `choose a model with /model`) | the same |
 | a key written into the file | `providers.groq.api_key is not a known key — keys are not read from this file: use /login` | the same; the value is never echoed |
-| an `auth` or `wire_api` this build doesn't know | `providers.groq.wire_api = "chat_completions" is not known — using chat completions` | the default is used |
+| an `auth`, `wire_api` or `reasoning_param` this build doesn't know | `providers.groq.wire_api = "chat_completions" is not known — using chat completions` (`reasoning_param`'s: `… — using the reasoning object`) | the default is used |
 | `drop_params` naming `model` or `stream` | `providers.groq.drop_params cannot drop "stream" — every request needs it` | the rest of the list applies |
 | a value of the wrong type | ``providers.groq: invalid type: string "x", expected a map, in `extra_headers` — skipped`` | the block is skipped |
 | no chat base | `providers.groq has no api_base under [providers.groq.kwargs] — skipped` | the same |
@@ -308,7 +361,10 @@ goes too, at the next re-read, and a restart leaves the file alone to decide.
   a `#[serde(flatten)]` field, so the struct itself is the list of keys and the
   shipped-file test needs no hand-kept one; `Provider::configured_by_definition`;
   `Provider::drop_params` and `ModelConfig::drop_refused`, which each wire's
-  request builder calls last.
+  request builder calls last; `Provider::reasoning_param`
+  (`llm::ReasoningParam`), which `openai::OpenAiClient::build_payload` reads
+  to spell the thinking mode through `reasoning::reasoning_body` or
+  `reasoning::reasoning_effort_value`.
 - **`llm::models`** (pure) — `parse_models` reads either listing shape, and
   `context_window_of` the window's spellings.
 - **`tui::config::load_providers`** (boundary) — which file, its rows led by
@@ -329,8 +385,13 @@ goes too, at the next re-read, and a restart leaves the file alone to decide.
   `a_reread_takes_a_usable_edit_of_the_provider_in_use`,
   `a_reread_keeps_only_the_provider_in_use`),
   the keyless rule's pair (`a_keyless_provider_naming_no_host_variable_is_configured_by_its_definition`,
-  `no_shipped_provider_is_configured_by_its_definition`) and `drop_params`'
-  three; one `drop_params` test per wire in `openai.rs`, `responses.rs`,
+  `no_shipped_provider_is_configured_by_its_definition`), `drop_params`'
+  three and `reasoning_param`'s two
+  (`a_provider_can_ask_for_the_thinking_level_as_reasoning_effort`,
+  `an_unknown_reasoning_param_is_said_and_keeps_the_object`), with the wire's
+  own in `openai.rs` (`a_reasoning_effort_provider_hears_the_level_as_a_top_level_string`)
+  and `reasoning.rs` (`a_reasoning_effort_server_hears_off_as_none`); one
+  `drop_params` test per wire in `openai.rs`, `responses.rs`,
   `anthropic.rs` and `ollama.rs`; `src/llm/models.rs`:
   `a_listing_that_is_a_bare_array_reads_like_the_envelope` and
   `the_window_spellings_self_hosted_servers_use_are_read`.

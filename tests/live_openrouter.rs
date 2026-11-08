@@ -58,6 +58,7 @@ fn backend_with(model: String, thinking: Option<ThinkingMode>, vision: Option<bo
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     LlmBackend::with_system_prompt(
         cfg,
@@ -213,6 +214,7 @@ fn live_anthropic_prompt_cache_writes_then_reads() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     cfg.temperature = Some(0.0);
     // Tools off: a deterministic single round per turn, so each turn is
@@ -687,6 +689,7 @@ fn live_environment_context_reaches_the_model() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
@@ -763,6 +766,7 @@ fn live_scratchpad_context_reaches_the_model() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
@@ -818,6 +822,7 @@ fn scratchpad_targets(scratchpad: &std::path::Path, cwd: &str, task: &str) -> Ve
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     // The production prompt, assembled exactly as the boundary assembles it.
     let system = augment_with_scratchpad(
@@ -926,6 +931,7 @@ fn live_scratchpad_write_runs_without_a_permission_prompt() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let system = augment_with_scratchpad(
         "You are Alter Zero an autonomous AI agent running in terminal UI",
@@ -2388,6 +2394,7 @@ fn live_classifier() -> alter_zero::llm::classifier::SafetyClassifier {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     alter_zero::llm::classifier::SafetyClassifier::new(&cfg)
 }
@@ -2637,6 +2644,7 @@ fn live_tools_setting_decides_whether_the_model_is_offered_any() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let prompt = "Use the bash tool exactly once to run exactly: echo tools_marker \
                   Then reply with just the marker it printed.";
@@ -2705,6 +2713,7 @@ fn live_error_retry_setting_bounds_the_attempts() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let retries_for = |max: u32| {
         let backend = LlmBackend::configure(unreachable.clone(), None, false).with_max_retries(max);
@@ -2771,6 +2780,7 @@ fn live_temperature_setting_rides_the_request() {
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
             drop_params: Vec::new(),
+            reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
         };
         let backend = LlmBackend::configure(cfg, None, false);
         let prompt = "Reply with exactly: OK";
@@ -2825,6 +2835,7 @@ fn live_max_tool_calls_bounds_a_parallel_batch() {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     const CAP: usize = 3;
     let backend = LlmBackend::configure(cfg, None, true).with_max_tool_calls(CAP);
@@ -3395,6 +3406,7 @@ fn skill_backend_and_context(
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     let backend = LlmBackend::configure(
         cfg,
