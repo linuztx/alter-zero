@@ -349,9 +349,11 @@ fn flat_capability(record: &serde_json::Value, key: &str) -> Option<bool> {
 /// Ctrl+T ladder** — the levels the gateway passes on for this model,
 /// canonically ordered here like every other provider's list. The gateway
 /// counts `"none"` as a tier, so the explicit disable `Off` sends is offered
-/// only where the list names it — or where it names no level at all, leaving
-/// whether the model thinks as the one choice.
-fn flat_reasoning(record: &serde_json::Value) -> ReasoningSupport {
+/// only where the list names it. A list naming no level — or none at all —
+/// is the gateway saying the level isn't adjustable, and offers no Ctrl+T:
+/// not even Off, which it would pass upstream unchecked as the effort `none`
+/// to a model that never listed it.
+fn flat_reasoning(record: &serde_json::Value) -> Option<ReasoningSupport> {
     let tiers: Vec<&str> = record
         .get("capabilities")
         .and_then(|caps| caps.get("effort_tiers"))
@@ -364,12 +366,14 @@ fn flat_reasoning(record: &serde_json::Value) -> ReasoningSupport {
         .collect();
     efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
     efforts.dedup();
-    let offers_none = tiers.iter().any(|t| t.trim().eq_ignore_ascii_case("none"));
-    ReasoningSupport {
-        can_disable: offers_none || efforts.is_empty(),
+    if efforts.is_empty() {
+        return None;
+    }
+    Some(ReasoningSupport {
+        can_disable: tiers.iter().any(|t| t.trim().eq_ignore_ascii_case("none")),
         efforts,
         default_effort: None,
-    }
+    })
 }
 
 /// Can this client actually call the model? Copilot's list carries records
@@ -586,7 +590,7 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
     // `reasoning` flag is not read: the gateway writes a guess there for
     // every model.
     if let Some(thinks) = flat_capability(record, "thinking") {
-        return thinks.then(|| flat_reasoning(record));
+        return thinks.then(|| flat_reasoning(record)).flatten();
     }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
@@ -1521,22 +1525,23 @@ mod tests {
     }
 
     #[test]
-    fn a_gateway_model_that_thinks_without_tiers_is_an_on_off_reasoner() {
-        // No levels listed — no `effort_tiers` at all, or the empty list the
-        // gateway sends for a family that takes none — leaves whether it
-        // thinks as the one choice: Ctrl+T cycles Off and On.
+    fn a_gateway_model_that_thinks_without_tiers_offers_no_ctrl_t() {
+        // No level listed — no `effort_tiers` at all (the gateway's built-in
+        // Codex rows), the empty list it sends for a family that takes none,
+        // or a list naming no level this client knows — is the gateway saying
+        // the level isn't adjustable. Not even Off: the gateway turns Off
+        // into the effort `none` and passes it upstream unchecked, to a model
+        // that never listed it.
         for caps in [
             r#""tool_calling":true,"reasoning":true,"thinking":true"#,
             r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":[]"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":["none"]"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":["turbo"]"#,
         ] {
             let body = gateway_record(caps, "");
-            let reasoning = parse_models(&body, "p").unwrap()[0]
-                .reasoning
-                .clone()
-                .expect(caps);
             assert_eq!(
-                reasoning.modes(),
-                vec![crate::llm::ThinkingMode::Off, crate::llm::ThinkingMode::On],
+                parse_models(&body, "p").unwrap()[0].reasoning,
+                None,
                 "{caps}"
             );
         }
