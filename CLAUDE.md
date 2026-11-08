@@ -939,8 +939,13 @@ provider naming no host variable is configured by its block alone
 shipped provider qualifies); `drop_params` takes request fields a strict
 server refuses out of every wire's body last (`ModelConfig::drop_refused`,
 never `model`/`stream`), since TOML has no null for a kwarg to remove one;
-and the listing reads a bare-array `/models` (Together) and the
-`max_model_len`/`max_context_length` window spellings; `smoke.sh` Phase 140;
+and the listing reads a bare-array `/models` (Together), the
+`max_model_len`/`max_context_length` window spellings, and a gateway's flat
+capability booleans (OmniRoute's `capabilities.vision`, and
+`capabilities.thinking` with `effort_tiers` as the Ctrl+T ladder — told apart
+from Anthropic's same-named `{supported: bool}` tree by a leaf's shape, since
+reading a bare `thinking: true` as that tree declared every model behind the
+gateway blind, `models::anthropic_capabilities`); `smoke.sh` Phase 140;
 the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled

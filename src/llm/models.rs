@@ -327,6 +327,42 @@ fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
     })
 }
 
+/// One record's flat `capabilities.{key}` boolean — the shape an
+/// OpenAI-compatible gateway (OmniRoute) sends, every capability a bare
+/// `true`/`false` (`docs/user-providers.md`). `None` when the key is absent or
+/// not a boolean, so Anthropic's `{supported}` leaves never read as one.
+fn flat_capability(record: &serde_json::Value, key: &str) -> Option<bool> {
+    record.get("capabilities")?.get(key)?.as_bool()
+}
+
+/// A gateway record's reasoning capability, for a model its flat
+/// `capabilities.thinking` says reasons: the `effort_tiers` beside it **is the
+/// Ctrl+T ladder** — the levels the gateway passes on for this model,
+/// canonically ordered here like every other provider's list. The gateway
+/// counts `"none"` as a tier, so the explicit disable `Off` sends is offered
+/// only where the list names it — or where it names no level at all, leaving
+/// whether the model thinks as the one choice.
+fn flat_reasoning(record: &serde_json::Value) -> ReasoningSupport {
+    let tiers: Vec<&str> = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("effort_tiers"))
+        .and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let mut efforts: Vec<ReasoningEffort> = tiers
+        .iter()
+        .filter_map(|t| ReasoningEffort::parse(t))
+        .collect();
+    efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+    efforts.dedup();
+    let offers_none = tiers.iter().any(|t| t.trim().eq_ignore_ascii_case("none"));
+    ReasoningSupport {
+        can_disable: offers_none || efforts.is_empty(),
+        efforts,
+        default_effort: None,
+    }
+}
+
 /// Can this client actually call the model? Copilot's list carries records
 /// this one can't use, and offering them puts models in the picker that fail
 /// every turn:
@@ -534,6 +570,14 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
                 .and_then(ReasoningEffort::parse),
         });
     }
+    // A gateway's flat `capabilities` booleans (OmniRoute's). `thinking` is
+    // its word on whether the model reasons, so `false` is an answer — and an
+    // `effort_tiers` left beside it a leftover the gateway never cleared. The
+    // `reasoning` flag is not read: the gateway writes a guess there for
+    // every model.
+    if let Some(thinks) = flat_capability(record, "thinking") {
+        return thinks.then(|| flat_reasoning(record));
+    }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
     let flag = |name: &str| {
@@ -610,12 +654,18 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
         );
     }
     // The ChatGPT backend's `input_modalities` — a bare top-level array,
-    // where OpenRouter nests the same idea under `architecture`.
+    // where OpenRouter nests the same idea under `architecture`. A gateway
+    // flattening its capabilities (OmniRoute) sends the same array.
     if let Some(inputs) = record
         .get("input_modalities")
         .and_then(serde_json::Value::as_array)
     {
         return Some(inputs.iter().any(|m| m.as_str() == Some("image")));
+    }
+    // That gateway names modalities only for a model whose modalities it
+    // knows; its flat `capabilities.vision` still answers for the rest.
+    if let Some(sees) = flat_capability(record, "vision") {
+        return Some(sees);
     }
     record
         .get("model_spec")?
@@ -1303,6 +1353,24 @@ mod tests {
     }
 
     #[test]
+    fn only_a_supported_leaf_marks_the_anthropic_capability_tree() {
+        // Anthropic's leaves are `{supported: bool}` objects, and that shape —
+        // not the key's name — is what tells its tree apart. A bare value
+        // under the same name is another server's flat shape (a gateway's
+        // `thinking: true` turned every model behind it blind), which says
+        // nothing about image input: unknown, never Anthropic's explicit "no".
+        for caps in [
+            r#""thinking":true"#,
+            r#""image_input":true"#,
+            r#""thinking":"enabled""#,
+            r#""thinking":{"type":"enabled"}"#,
+        ] {
+            let body = format!(r#"{{"data":[{{"id":"m","capabilities":{{{caps}}}}}]}}"#);
+            assert_eq!(parse_models(&body, "p").unwrap()[0].vision, None, "{caps}");
+        }
+    }
+
+    #[test]
     fn the_anthropic_listing_asks_for_a_page_big_enough_to_hold_the_catalog() {
         // Its default page is 20: without an explicit limit the picker
         // silently shows whichever models sort first, with no error anywhere.
@@ -1352,6 +1420,154 @@ mod tests {
         );
         let models = parse_models(&body, "omniroute").unwrap();
         assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn a_gateways_effort_tiers_are_the_reported_records_ctrl_t_ladder() {
+        // The reported record in full: read as Anthropic's tree, it was blind
+        // and offered Ctrl+T nothing to cycle, though it names its levels.
+        let body = gateway_record(
+            r#""vision":true,"tool_calling":true,"reasoning":true,"thinking":true,
+               "supportsThinking":true,
+               "effort_tiers":["low","medium","high","xhigh","max","ultra"]"#,
+            r#","input_modalities":["text","image"],"output_modalities":["text"]"#,
+        );
+        let model = &parse_models(&body, "omniroute").unwrap()[0];
+        assert_eq!(model.vision, Some(true));
+        let reasoning = model.reasoning.clone().expect("a reasoning model");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+                ReasoningEffort::Ultra,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gateways_effort_tiers_are_ordered_and_offer_no_off_without_none() {
+        // The levels the gateway passes on for this model, canonically
+        // re-ordered like every other provider's list, a label off the ladder
+        // skipped. The gateway counts `none` among its tiers, so a list
+        // without it offers no way to turn the thinking off — and Ctrl+T
+        // offers no explicit disable either.
+        let body = gateway_record(
+            r#""tool_calling":true,"reasoning":true,"thinking":true,
+               "effort_tiers":["max","low","turbo","high","low"]"#,
+            "",
+        );
+        let reasoning = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ]
+        );
+        assert!(!reasoning.can_disable);
+        assert!(
+            !reasoning.modes().contains(&crate::llm::ThinkingMode::Off),
+            "{:?}",
+            reasoning.modes()
+        );
+    }
+
+    #[test]
+    fn a_gateways_none_tier_is_the_off_switch() {
+        // The gateway's fallback list for a model whose own levels it doesn't
+        // know: `none` is reasoning off, not a rung.
+        let body = gateway_record(
+            r#""tool_calling":true,"reasoning":true,"thinking":true,
+               "effort_tiers":["none","low","medium","high","xhigh","max"]"#,
+            "",
+        );
+        let reasoning = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+            ]
+        );
+        assert!(reasoning.can_disable);
+        assert_eq!(
+            reasoning.default_mode(),
+            crate::llm::ThinkingMode::Effort(ReasoningEffort::Medium)
+        );
+    }
+
+    #[test]
+    fn a_gateway_model_that_thinks_without_tiers_is_an_on_off_reasoner() {
+        // No levels listed — no `effort_tiers` at all, or the empty list the
+        // gateway sends for a family that takes none — leaves whether it
+        // thinks as the one choice: Ctrl+T cycles Off and On.
+        for caps in [
+            r#""tool_calling":true,"reasoning":true,"thinking":true"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":[]"#,
+        ] {
+            let body = gateway_record(caps, "");
+            let reasoning = parse_models(&body, "p").unwrap()[0]
+                .reasoning
+                .clone()
+                .expect(caps);
+            assert_eq!(
+                reasoning.modes(),
+                vec![crate::llm::ThinkingMode::Off, crate::llm::ThinkingMode::On],
+                "{caps}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateway_model_that_does_not_think_offers_no_ctrl_t() {
+        // `thinking: false` is an answer, and `effort_tiers` beside it is a
+        // leftover the gateway never cleared, not a ladder. `reasoning` alone
+        // is a guess the gateway writes for every model, which no Ctrl+T mode
+        // can act on.
+        for caps in [
+            r#""tool_calling":true,"reasoning":true,"thinking":false,
+               "effort_tiers":["low","medium","high"]"#,
+            r#""tool_calling":true,"reasoning":true"#,
+        ] {
+            let body = gateway_record(caps, "");
+            assert_eq!(
+                parse_models(&body, "p").unwrap()[0].reasoning,
+                None,
+                "{caps}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateways_vision_flag_decides_where_it_names_no_modalities() {
+        // The gateway writes `input_modalities` only for a model whose
+        // modalities it knows; its `vision` flag still answers for the rest,
+        // so a blind model degrades an image instead of failing the turn.
+        let seeing = gateway_record(r#""tool_calling":true,"vision":true"#, "");
+        assert_eq!(parse_models(&seeing, "p").unwrap()[0].vision, Some(true));
+        let blind = gateway_record(r#""tool_calling":true,"vision":false"#, "");
+        assert_eq!(parse_models(&blind, "p").unwrap()[0].vision, Some(false));
+        // Where both are sent, the modalities lead, as on every record that
+        // carries the top-level array.
+        let both = gateway_record(
+            r#""tool_calling":true,"vision":true"#,
+            r#","input_modalities":["text"]"#,
+        );
+        assert_eq!(parse_models(&both, "p").unwrap()[0].vision, Some(false));
     }
 
     // --- context window (docs/compact.md: the footer gauge + auto-compact) ---

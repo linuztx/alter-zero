@@ -29,9 +29,9 @@ offered).
 
 Support is parsed per record by the pure `llm::models::reasoning_support_of`
 into [`llm::reasoning::ReasoningSupport`] — `efforts` (the accepted ladder,
-canonically ordered), `can_disable`, `default_effort`. Both provider shapes
-are sniffed **per record**, so a custom OpenAI-compatible provider using
-either works unconfigured:
+canonically ordered), `can_disable`, `default_effort`. Each shape below is
+sniffed **per record**, so a custom OpenAI-compatible provider using any of
+them works unconfigured:
 
 - **OpenRouter** — a `reasoning` object on the record:
   `{"mandatory": bool, "supported_efforts": ["low", …] | null,
@@ -45,8 +45,16 @@ either works unconfigured:
   `supportsReasoningEffort`). With effort support the default ladder is
   offered; without it the model is an **on/off-only reasoner** (`efforts`
   empty) — it thinks at its own default, and the cycle is just `off ↔ on`.
+- **A gateway's flat capabilities** (OmniRoute) —
+  `capabilities.thinking` (a boolean; `false` is an answer), with
+  `capabilities.effort_tiers` as the ladder. The gateway counts `"none"`
+  among its tiers, so `Off` is offered only where the list names it — or
+  where it names no level, which makes an on/off-only reasoner
+  (`docs/user-providers.md`).
 
-A model advertising neither shape has no thinking: no footer mode, and
+Copilot, the ChatGPT backend and Anthropic publish their own ladders, read as
+their pages describe (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`).
+A model advertising none of these shapes has no thinking: no footer mode, and
 Ctrl+T explains.
 
 ## The mode, the cycle, and the wire

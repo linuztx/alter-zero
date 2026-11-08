@@ -369,8 +369,9 @@ Ctrl+T thinking cycle established (`docs/reasoning.md`):
   Venice's `model_spec.capabilities.supportsVision`; a bare top-level
   `input_modalities` (the ChatGPT backend's, and a gateway's such as
   OmniRoute's, whose flat `capabilities` object of booleans is never read as
-  Anthropic's `{"supported": bool}` tree — `docs/claude.md`). A record that
-  says nothing (a bare OpenAI-style list) yields `None` = unknown → attach
+  Anthropic's `{"supported": bool}` tree — `docs/claude.md`), else that
+  gateway's flat `capabilities.vision` (`docs/user-providers.md`). A record
+  that says nothing (a bare OpenAI-style list) yields `None` = unknown → attach
   optimistically, exactly the old behavior.
 - **Flow**: the picked entry's `vision` rides `Action::SelectModel` into the
   rebuilt backend (`Selection::vision` → `ModelConfig::vision` →
