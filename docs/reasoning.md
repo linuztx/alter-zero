@@ -48,9 +48,11 @@ them works unconfigured:
 - **A gateway's flat capabilities** (OmniRoute) —
   `capabilities.thinking` (a boolean; `false` is an answer), with
   `capabilities.effort_tiers` as the ladder. The gateway counts `"none"`
-  among its tiers, so `Off` is offered only where the list names it — or
-  where it names no level, which makes an on/off-only reasoner
-  (`docs/user-providers.md`).
+  among its tiers, so `Off` is offered only where the list names it. A
+  list naming no level, or no list at all (the gateway's built-in Codex
+  rows), is the gateway saying the level isn't adjustable, so Ctrl+T
+  offers nothing there — not even `Off`, which the gateway would pass
+  upstream unchecked as the effort `none` (`docs/user-providers.md`).
 
 Copilot, the ChatGPT backend and Anthropic publish their own ladders, read as
 their pages describe (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`).
