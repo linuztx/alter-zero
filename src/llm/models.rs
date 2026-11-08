@@ -263,12 +263,20 @@ fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value
 
 /// One record's `capabilities` object, when it is **Anthropic's** — the
 /// `{image_input, thinking, effort, …}` tree of `{supported: bool}` leaves
-/// that only the Messages API's `/v1/models` sends. Told apart from Copilot's
-/// same-named object by a key only this one has, so a Copilot record never
-/// reaches the sniffs below (and vice versa). See `docs/claude.md`.
+/// that only the Messages API's `/v1/models` sends. Told apart by the
+/// **leaf**, not the key: Copilot's same-named object has neither key, and a
+/// gateway's flat object of booleans (OmniRoute's `thinking: true`) has the
+/// key without the leaf — read as this tree, its `true` was "unsupported"
+/// and its missing `image_input` a model that cannot see. See
+/// `docs/claude.md`.
 fn anthropic_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
     let caps = record.get("capabilities").filter(|c| c.is_object())?;
-    (caps.get("image_input").is_some() || caps.get("thinking").is_some()).then_some(caps)
+    let is_leaf = |key: &str| {
+        caps.get(key)
+            .and_then(|leaf| leaf.get("supported"))
+            .is_some_and(serde_json::Value::is_boolean)
+    };
+    (is_leaf("image_input") || is_leaf("thinking")).then_some(caps)
 }
 
 /// Is one `{ "supported": bool }` leaf on?
@@ -1315,6 +1323,35 @@ mod tests {
         // Every other provider's URL is what it always was.
         let plain = ModelConfig::fallback();
         assert_eq!(models_endpoint(&plain), "https://api.openai.com/v1/models");
+    }
+
+    // --- a gateway's flat capabilities (OmniRoute — docs/user-providers.md) ---
+
+    /// One record of a gateway's `/v1/models` in the shape OmniRoute sends
+    /// for every model it routes: a flat `capabilities` object of booleans
+    /// beside a top-level `input_modalities` list. Its `thinking` shares a
+    /// name with a key of Anthropic's tree, but is a bare boolean rather than
+    /// a `{supported: …}` leaf.
+    fn gateway_record(capabilities: &str, extra: &str) -> String {
+        format!(
+            r#"{{"object":"list","data":[{{"id":"codex/gpt-6-astra","object":"model",
+                "owned_by":"codex","capabilities":{{{capabilities}}}{extra}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_gateways_boolean_thinking_flag_is_not_read_as_an_anthropic_leaf() {
+        // `thinking: true` used to mark the record as Anthropic's, whose
+        // leaves read a bare boolean as unsupported and the absent
+        // `image_input` as a model that cannot see: every image refused on a
+        // model the gateway serves pictures to. The record's own modalities
+        // decide.
+        let body = gateway_record(
+            r#""vision":true,"tool_calling":true,"reasoning":true,"thinking":true"#,
+            r#","input_modalities":["text","image"]"#,
+        );
+        let models = parse_models(&body, "omniroute").unwrap();
+        assert_eq!(models[0].vision, Some(true));
     }
 
     // --- context window (docs/compact.md: the footer gauge + auto-compact) ---

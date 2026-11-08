@@ -280,11 +280,19 @@ table:
 | `vision` | `capabilities.image_input.supported` |
 | `reasoning` | `capabilities.thinking` + `capabilities.effort` |
 
-Two traps the sniffs are written around:
+Three traps the sniffs are written around:
 
 - **The window is `max_input_tokens`.** There is no `context_length` and no
   `context_window` on this list, and the `max_tokens` sitting beside it is the
   *output* cap — reading the wrong one gauges a 1M window against 128K.
+- **The tree is told by its leaves, not its keys.** Other listings send a
+  `capabilities` object too: Copilot's has neither key, but a gateway's flat
+  object of booleans does — OmniRoute's `"thinking": true` beside
+  `"vision": true` (`docs/user-providers.md`). So a record is Anthropic's only
+  when its `image_input` or `thinking` is a `{"supported": bool}` leaf
+  (`models::anthropic_capabilities`). Matching the key alone read that `true`
+  as unsupported and the absent `image_input` as a model that cannot see:
+  every model behind the gateway refused pictures and offered no Ctrl+T.
 - **The default page is 20.** `models_url` asks for `limit=1000` (the
   endpoint's own maximum, comfortably one page); without it the catalog
   silently truncates to whichever models sort first, with no error anywhere.
