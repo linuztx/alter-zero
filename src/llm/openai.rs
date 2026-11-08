@@ -313,8 +313,22 @@ impl OpenAiClient {
                     fields.insert("reasoning_effort".to_string(), json!(effort));
                 }
             } else {
-                if let Some(body) = super::reasoning::reasoning_body(mode) {
-                    fields.insert("reasoning".to_string(), body);
+                // The field the provider's server reads it from: OpenRouter's
+                // `reasoning` object by default, or OpenAI's own top-level
+                // `reasoning_effort` where the block says so — never both,
+                // one being an unknown field to a server reading the other
+                // (`docs/user-providers.md`).
+                match self.cfg.reasoning_param {
+                    super::ReasoningParam::Reasoning => {
+                        if let Some(body) = super::reasoning::reasoning_body(mode) {
+                            fields.insert("reasoning".to_string(), body);
+                        }
+                    }
+                    super::ReasoningParam::ReasoningEffort => {
+                        if let Some(effort) = super::reasoning::reasoning_effort_value(mode) {
+                            fields.insert("reasoning_effort".to_string(), json!(effort));
+                        }
+                    }
                 }
                 // Venice ignores `reasoning.enabled` — `venice_parameters.
                 // disable_thinking` is the toggle it honours. A provider
@@ -2124,6 +2138,31 @@ mod tests {
         assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
         assert_eq!(p["reasoning"], json!({"effort": "high"}));
         assert!(p.get("reasoning_effort").is_none(), "{p}");
+    }
+
+    #[test]
+    fn a_reasoning_effort_provider_hears_the_level_as_a_top_level_string() {
+        // OmniRoute's route to Claude models reads only `reasoning_effort`
+        // and ignores the object, so a provider declaring it gets the level
+        // there *instead of* the object, never beside it — and Off spelled
+        // `none`, OpenAI's word for it (docs/user-providers.md).
+        use crate::llm::{ReasoningEffort, ReasoningParam, ThinkingMode};
+        for (mode, sent) in [
+            (ThinkingMode::Effort(ReasoningEffort::XHigh), Some("xhigh")),
+            (ThinkingMode::Off, Some("none")),
+            (ThinkingMode::On, None),
+        ] {
+            let mut cfg = ModelConfig::fallback();
+            cfg.reasoning_param = ReasoningParam::ReasoningEffort;
+            cfg.thinking = Some(mode);
+            let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+            assert_eq!(
+                p.get("reasoning_effort").and_then(|v| v.as_str()),
+                sent,
+                "{mode:?}: {p}"
+            );
+            assert!(p.get("reasoning").is_none(), "{mode:?}: {p}");
+        }
     }
 
     // --- a lost connection, as the transport sees it (docs/offline.md) ---

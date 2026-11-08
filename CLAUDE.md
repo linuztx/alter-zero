@@ -939,6 +939,10 @@ provider naming no host variable is configured by its block alone
 shipped provider qualifies); `drop_params` takes request fields a strict
 server refuses out of every wire's body last (`ModelConfig::drop_refused`,
 never `model`/`stream`), since TOML has no null for a kwarg to remove one;
+`reasoning_param = "reasoning_effort"` sends the Ctrl+T level on the chat
+wire as OpenAI's top-level string instead of OpenRouter's `reasoning` object,
+never both (`ReasoningParam`; `none` for Off, nothing for On — OmniRoute's
+route to Claude models reads only that string);
 and the listing reads a bare-array `/models` (Together), the
 `max_model_len`/`max_context_length` window spellings, and a gateway's flat
 capability booleans (OmniRoute's `capabilities.vision`, and
