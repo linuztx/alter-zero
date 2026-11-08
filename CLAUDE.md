@@ -945,8 +945,8 @@ never both (`ReasoningParam`; `none` for Off, nothing for On — OmniRoute's
 route to Claude models reads only that string);
 and the listing reads a bare-array `/models` (Together), the
 `max_model_len`/`max_context_length` window spellings, and a gateway's flat
-capability booleans (OmniRoute's `capabilities.vision`, and
-`capabilities.thinking` with `effort_tiers` as the Ctrl+T ladder — told apart
+capability booleans (OmniRoute's `capabilities.vision`, and `effort_tiers`
+as the Ctrl+T ladder unless `capabilities.thinking` is `false` — told apart
 from Anthropic's same-named `{supported: bool}` tree by a leaf's shape, since
 reading a bare `thinking: true` as that tree declared every model behind the
 gateway blind, `models::anthropic_capabilities`); `smoke.sh` Phase 140;

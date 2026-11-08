@@ -46,9 +46,13 @@ them works unconfigured:
   offered; without it the model is an **on/off-only reasoner** (`efforts`
   empty) — it thinks at its own default, and the cycle is just `off ↔ on`.
 - **A gateway's flat capabilities** (OmniRoute) —
-  `capabilities.thinking` (a boolean; `false` is an answer), with
-  `capabilities.effort_tiers` as the ladder. The gateway counts `"none"`
-  among its tiers, so `Off` is offered only where the list names it. A
+  `capabilities.effort_tiers` as the ladder, read whether or not a
+  `capabilities.thinking` boolean stands beside it: the gateway writes one
+  only for a model its capability sources know, and lists the levels
+  discovery or its own runtime learning found for the rest. `thinking:
+  false` is an answer, and overrules a list the gateway left beside it.
+  The gateway counts `"none"` among its tiers, so `Off` is offered only
+  where the list names it. A
   list naming no level, or no list at all (the gateway's built-in Codex
   rows), is the gateway saying the level isn't adjustable, so Ctrl+T
   offers nothing there — not even `Off`, which the gateway would pass

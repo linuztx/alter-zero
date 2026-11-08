@@ -345,7 +345,7 @@ fn flat_capability(record: &serde_json::Value, key: &str) -> Option<bool> {
 }
 
 /// A gateway record's reasoning capability, for a model its flat
-/// `capabilities.thinking` says reasons: the `effort_tiers` beside it **is the
+/// `capabilities.thinking` doesn't say cannot think: `effort_tiers` **is the
 /// Ctrl+T ladder** — the levels the gateway passes on for this model,
 /// canonically ordered here like every other provider's list. The gateway
 /// counts `"none"` as a tier, so the explicit disable `Off` sends is offered
@@ -584,13 +584,24 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
                 .and_then(ReasoningEffort::parse),
         });
     }
-    // A gateway's flat `capabilities` booleans (OmniRoute's). `thinking` is
-    // its word on whether the model reasons, so `false` is an answer — and an
-    // `effort_tiers` left beside it a leftover the gateway never cleared. The
-    // `reasoning` flag is not read: the gateway writes a guess there for
-    // every model.
-    if let Some(thinks) = flat_capability(record, "thinking") {
-        return thinks.then(|| flat_reasoning(record)).flatten();
+    // A gateway's flat `capabilities` (OmniRoute's). Its `effort_tiers` is the
+    // ladder whether or not a `thinking` key stands beside it: the gateway
+    // writes `thinking` only for a model one of its capability sources knows,
+    // and lists the levels discovery or its own runtime learning found for
+    // the rest. `thinking: false` is an answer that overrules a list — one
+    // the gateway left there and never cleared — and `thinking: true` with
+    // no level listed is no ladder either. The `reasoning` flag is not read:
+    // the gateway writes a guess there for every model.
+    let thinks = flat_capability(record, "thinking");
+    let lists_levels = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("effort_tiers"))
+        .is_some_and(serde_json::Value::is_array);
+    if thinks.is_some() || lists_levels {
+        return thinks
+            .unwrap_or(true)
+            .then(|| flat_reasoning(record))
+            .flatten();
     }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
@@ -1545,6 +1556,31 @@ mod tests {
                 "{caps}"
             );
         }
+    }
+
+    #[test]
+    fn a_gateways_levels_are_read_where_it_names_no_thinking_flag() {
+        // The gateway writes `thinking` only for a model one of its capability
+        // sources knows. A model it discovered upstream arrives with the
+        // levels that discovery, or the gateway's own runtime learning, found
+        // — and no `thinking` key at all. The levels still say what it takes.
+        let body = gateway_record(
+            r#""effort_tiers":["high","low","medium"],"tool_calling":true,"reasoning":true"#,
+            r#","input_modalities":["text"]"#,
+        );
+        let reasoning = parse_models(&body, "omniroute").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("the listed levels are a ladder");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(!reasoning.can_disable, "no `none` is listed");
     }
 
     #[test]
