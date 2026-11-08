@@ -330,9 +330,16 @@ the picker that fails every turn:
   with a 400.
 
 An absent endpoint list means chat completions (the legacy GPT records omit it),
-and a record with no `capabilities` object isn't Copilot's, so every other
-provider's list passes through untouched. The picker will legitimately show a
-shorter list than the VS Code model picker does.
+and a record is Copilot's only when its `capabilities` object has Copilot's own
+shape — a `type` string, or a `supports` or `limits` object
+(`models::copilot_capabilities`) — so every other provider's list passes
+through untouched. A gateway's is the case that matters: OmniRoute's records
+carry a `capabilities` object of flat booleans beside a `supported_endpoints`
+naming the **upstream's** API (`["responses"]` for a Codex model it
+discovered), and it serves each of those models over chat completions all the
+same. Read as Copilot's, that list took every such model off the picker. The
+picker will legitimately show a shorter list than the VS Code model picker
+does.
 
 ## When it doesn't work
 

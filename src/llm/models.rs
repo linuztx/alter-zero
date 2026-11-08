@@ -256,19 +256,36 @@ fn lmstudio_loaded_context(record: &serde_json::Value) -> Option<u64> {
 /// One record's `capabilities` object, when it is GitHub Copilot's — the
 /// nested `{family, type, tokenizer, limits, supports}` shape none of the
 /// other providers send. Every Copilot-specific sniff hangs off this, so a
-/// bare OpenAI-style list is untouched by all of them.
+/// bare OpenAI-style list is untouched by all of them — and so is any other
+/// server's `capabilities` object: a gateway's flat booleans (OmniRoute's)
+/// sit beside a `supported_endpoints` naming the **upstream's** API, which
+/// [`is_callable`]'s Copilot rule would have read as a model this client
+/// cannot call.
 fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
-    record.get("capabilities").filter(|c| c.is_object())
+    let caps = record.get("capabilities").filter(|c| c.is_object())?;
+    let has = |key: &str, shape: fn(&serde_json::Value) -> bool| caps.get(key).is_some_and(shape);
+    let copilots = has("type", serde_json::Value::is_string)
+        || has("supports", serde_json::Value::is_object)
+        || has("limits", serde_json::Value::is_object);
+    copilots.then_some(caps)
 }
 
 /// One record's `capabilities` object, when it is **Anthropic's** — the
 /// `{image_input, thinking, effort, …}` tree of `{supported: bool}` leaves
-/// that only the Messages API's `/v1/models` sends. Told apart from Copilot's
-/// same-named object by a key only this one has, so a Copilot record never
-/// reaches the sniffs below (and vice versa). See `docs/claude.md`.
+/// that only the Messages API's `/v1/models` sends. Told apart by the
+/// **leaf**, not the key: Copilot's same-named object has neither key, and a
+/// gateway's flat object of booleans (OmniRoute's `thinking: true`) has the
+/// key without the leaf — read as this tree, its `true` was "unsupported"
+/// and its missing `image_input` a model that cannot see. See
+/// `docs/claude.md`.
 fn anthropic_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
     let caps = record.get("capabilities").filter(|c| c.is_object())?;
-    (caps.get("image_input").is_some() || caps.get("thinking").is_some()).then_some(caps)
+    let is_leaf = |key: &str| {
+        caps.get(key)
+            .and_then(|leaf| leaf.get("supported"))
+            .is_some_and(serde_json::Value::is_boolean)
+    };
+    (is_leaf("image_input") || is_leaf("thinking")).then_some(caps)
 }
 
 /// Is one `{ "supported": bool }` leaf on?
@@ -319,6 +336,46 @@ fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
     })
 }
 
+/// One record's flat `capabilities.{key}` boolean — the shape an
+/// OpenAI-compatible gateway (OmniRoute) sends, every capability a bare
+/// `true`/`false` (`docs/user-providers.md`). `None` when the key is absent or
+/// not a boolean, so Anthropic's `{supported}` leaves never read as one.
+fn flat_capability(record: &serde_json::Value, key: &str) -> Option<bool> {
+    record.get("capabilities")?.get(key)?.as_bool()
+}
+
+/// A gateway record's reasoning capability, for a model its flat
+/// `capabilities.thinking` doesn't say cannot think: `effort_tiers` **is the
+/// Ctrl+T ladder** — the levels the gateway passes on for this model,
+/// canonically ordered here like every other provider's list. The gateway
+/// counts `"none"` as a tier, so the explicit disable `Off` sends is offered
+/// only where the list names it. A list naming no level — or none at all —
+/// is the gateway saying the level isn't adjustable, and offers no Ctrl+T:
+/// not even Off, which it would pass upstream unchecked as the effort `none`
+/// to a model that never listed it.
+fn flat_reasoning(record: &serde_json::Value) -> Option<ReasoningSupport> {
+    let tiers: Vec<&str> = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("effort_tiers"))
+        .and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let mut efforts: Vec<ReasoningEffort> = tiers
+        .iter()
+        .filter_map(|t| ReasoningEffort::parse(t))
+        .collect();
+    efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+    efforts.dedup();
+    if efforts.is_empty() {
+        return None;
+    }
+    Some(ReasoningSupport {
+        can_disable: tiers.iter().any(|t| t.trim().eq_ignore_ascii_case("none")),
+        efforts,
+        default_effort: None,
+    })
+}
+
 /// Can this client actually call the model? Copilot's list carries records
 /// this one can't use, and offering them puts models in the picker that fail
 /// every turn:
@@ -330,8 +387,9 @@ fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
 ///   `/chat/completions` request with a 400.
 ///
 /// An absent endpoint list means chat completions (the legacy GPT records
-/// omit it), and a record with no `capabilities` object at all isn't
-/// Copilot's — every other provider's list passes untouched.
+/// omit it), and a record whose `capabilities` object isn't Copilot's
+/// ([`copilot_capabilities`]) — or that has none at all — passes untouched:
+/// another server's endpoint list says nothing about what this one serves.
 fn is_callable(record: &serde_json::Value) -> bool {
     // LM Studio lists its embedding models beside the ones that chat — and
     // ships one with every install (`docs/local-models.md`).
@@ -526,6 +584,25 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
                 .and_then(ReasoningEffort::parse),
         });
     }
+    // A gateway's flat `capabilities` (OmniRoute's). Its `effort_tiers` is the
+    // ladder whether or not a `thinking` key stands beside it: the gateway
+    // writes `thinking` only for a model one of its capability sources knows,
+    // and lists the levels discovery or its own runtime learning found for
+    // the rest. `thinking: false` is an answer that overrules a list — one
+    // the gateway left there and never cleared — and `thinking: true` with
+    // no level listed is no ladder either. The `reasoning` flag is not read:
+    // the gateway writes a guess there for every model.
+    let thinks = flat_capability(record, "thinking");
+    let lists_levels = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("effort_tiers"))
+        .is_some_and(serde_json::Value::is_array);
+    if thinks.is_some() || lists_levels {
+        return thinks
+            .unwrap_or(true)
+            .then(|| flat_reasoning(record))
+            .flatten();
+    }
     // Venice's model_spec.capabilities booleans.
     let capabilities = record.get("model_spec")?.get("capabilities")?;
     let flag = |name: &str| {
@@ -602,12 +679,18 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
         );
     }
     // The ChatGPT backend's `input_modalities` — a bare top-level array,
-    // where OpenRouter nests the same idea under `architecture`.
+    // where OpenRouter nests the same idea under `architecture`. A gateway
+    // flattening its capabilities (OmniRoute) sends the same array.
     if let Some(inputs) = record
         .get("input_modalities")
         .and_then(serde_json::Value::as_array)
     {
         return Some(inputs.iter().any(|m| m.as_str() == Some("image")));
+    }
+    // That gateway names modalities only for a model whose modalities it
+    // knows; its flat `capabilities.vision` still answers for the rest.
+    if let Some(sees) = flat_capability(record, "vision") {
+        return Some(sees);
     }
     record
         .get("model_spec")?
@@ -1295,6 +1378,24 @@ mod tests {
     }
 
     #[test]
+    fn only_a_supported_leaf_marks_the_anthropic_capability_tree() {
+        // Anthropic's leaves are `{supported: bool}` objects, and that shape —
+        // not the key's name — is what tells its tree apart. A bare value
+        // under the same name is another server's flat shape (a gateway's
+        // `thinking: true` turned every model behind it blind), which says
+        // nothing about image input: unknown, never Anthropic's explicit "no".
+        for caps in [
+            r#""thinking":true"#,
+            r#""image_input":true"#,
+            r#""thinking":"enabled""#,
+            r#""thinking":{"type":"enabled"}"#,
+        ] {
+            let body = format!(r#"{{"data":[{{"id":"m","capabilities":{{{caps}}}}}]}}"#);
+            assert_eq!(parse_models(&body, "p").unwrap()[0].vision, None, "{caps}");
+        }
+    }
+
+    #[test]
     fn the_anthropic_listing_asks_for_a_page_big_enough_to_hold_the_catalog() {
         // Its default page is 20: without an explicit limit the picker
         // silently shows whichever models sort first, with no error anywhere.
@@ -1315,6 +1416,227 @@ mod tests {
         // Every other provider's URL is what it always was.
         let plain = ModelConfig::fallback();
         assert_eq!(models_endpoint(&plain), "https://api.openai.com/v1/models");
+    }
+
+    // --- a gateway's flat capabilities (OmniRoute — docs/user-providers.md) ---
+
+    /// One record of a gateway's `/v1/models` in the shape OmniRoute sends
+    /// for every model it routes: a flat `capabilities` object of booleans
+    /// beside a top-level `input_modalities` list. Its `thinking` shares a
+    /// name with a key of Anthropic's tree, but is a bare boolean rather than
+    /// a `{supported: …}` leaf.
+    fn gateway_record(capabilities: &str, extra: &str) -> String {
+        format!(
+            r#"{{"object":"list","data":[{{"id":"codex/gpt-6-astra","object":"model",
+                "owned_by":"codex","capabilities":{{{capabilities}}}{extra}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_gateways_boolean_thinking_flag_is_not_read_as_an_anthropic_leaf() {
+        // `thinking: true` used to mark the record as Anthropic's, whose
+        // leaves read a bare boolean as unsupported and the absent
+        // `image_input` as a model that cannot see: every image refused on a
+        // model the gateway serves pictures to. The record's own modalities
+        // decide.
+        let body = gateway_record(
+            r#""vision":true,"tool_calling":true,"reasoning":true,"thinking":true"#,
+            r#","input_modalities":["text","image"]"#,
+        );
+        let models = parse_models(&body, "omniroute").unwrap();
+        assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn a_gateways_effort_tiers_are_the_reported_records_ctrl_t_ladder() {
+        // The reported record in full: read as Anthropic's tree, it was blind
+        // and offered Ctrl+T nothing to cycle, though it names its levels.
+        let body = gateway_record(
+            r#""vision":true,"tool_calling":true,"reasoning":true,"thinking":true,
+               "supportsThinking":true,
+               "effort_tiers":["low","medium","high","xhigh","max","ultra"]"#,
+            r#","input_modalities":["text","image"],"output_modalities":["text"]"#,
+        );
+        let model = &parse_models(&body, "omniroute").unwrap()[0];
+        assert_eq!(model.vision, Some(true));
+        let reasoning = model.reasoning.clone().expect("a reasoning model");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+                ReasoningEffort::Ultra,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gateways_effort_tiers_are_ordered_and_offer_no_off_without_none() {
+        // The levels the gateway passes on for this model, canonically
+        // re-ordered like every other provider's list, a label off the ladder
+        // skipped. The gateway counts `none` among its tiers, so a list
+        // without it offers no way to turn the thinking off — and Ctrl+T
+        // offers no explicit disable either.
+        let body = gateway_record(
+            r#""tool_calling":true,"reasoning":true,"thinking":true,
+               "effort_tiers":["max","low","turbo","high","low"]"#,
+            "",
+        );
+        let reasoning = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ]
+        );
+        assert!(!reasoning.can_disable);
+        assert!(
+            !reasoning.modes().contains(&crate::llm::ThinkingMode::Off),
+            "{:?}",
+            reasoning.modes()
+        );
+    }
+
+    #[test]
+    fn a_gateways_none_tier_is_the_off_switch() {
+        // The gateway's fallback list for a model whose own levels it doesn't
+        // know: `none` is reasoning off, not a rung.
+        let body = gateway_record(
+            r#""tool_calling":true,"reasoning":true,"thinking":true,
+               "effort_tiers":["none","low","medium","high","xhigh","max"]"#,
+            "",
+        );
+        let reasoning = parse_models(&body, "p").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("reasoning");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+            ]
+        );
+        assert!(reasoning.can_disable);
+        assert_eq!(
+            reasoning.default_mode(),
+            crate::llm::ThinkingMode::Effort(ReasoningEffort::Medium)
+        );
+    }
+
+    #[test]
+    fn a_gateway_model_that_thinks_without_tiers_offers_no_ctrl_t() {
+        // No level listed — no `effort_tiers` at all (the gateway's built-in
+        // Codex rows), the empty list it sends for a family that takes none,
+        // or a list naming no level this client knows — is the gateway saying
+        // the level isn't adjustable. Not even Off: the gateway turns Off
+        // into the effort `none` and passes it upstream unchecked, to a model
+        // that never listed it.
+        for caps in [
+            r#""tool_calling":true,"reasoning":true,"thinking":true"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":[]"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":["none"]"#,
+            r#""tool_calling":true,"reasoning":true,"thinking":true,"effort_tiers":["turbo"]"#,
+        ] {
+            let body = gateway_record(caps, "");
+            assert_eq!(
+                parse_models(&body, "p").unwrap()[0].reasoning,
+                None,
+                "{caps}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateways_levels_are_read_where_it_names_no_thinking_flag() {
+        // The gateway writes `thinking` only for a model one of its capability
+        // sources knows. A model it discovered upstream arrives with the
+        // levels that discovery, or the gateway's own runtime learning, found
+        // — and no `thinking` key at all. The levels still say what it takes.
+        let body = gateway_record(
+            r#""effort_tiers":["high","low","medium"],"tool_calling":true,"reasoning":true"#,
+            r#","input_modalities":["text"]"#,
+        );
+        let reasoning = parse_models(&body, "omniroute").unwrap()[0]
+            .reasoning
+            .clone()
+            .expect("the listed levels are a ladder");
+        assert_eq!(
+            reasoning.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(!reasoning.can_disable, "no `none` is listed");
+    }
+
+    #[test]
+    fn a_gateway_model_that_does_not_think_offers_no_ctrl_t() {
+        // `thinking: false` is an answer, and `effort_tiers` beside it is a
+        // leftover the gateway never cleared, not a ladder. `reasoning` alone
+        // is a guess the gateway writes for every model, which no Ctrl+T mode
+        // can act on.
+        for caps in [
+            r#""tool_calling":true,"reasoning":true,"thinking":false,
+               "effort_tiers":["low","medium","high"]"#,
+            r#""tool_calling":true,"reasoning":true"#,
+        ] {
+            let body = gateway_record(caps, "");
+            assert_eq!(
+                parse_models(&body, "p").unwrap()[0].reasoning,
+                None,
+                "{caps}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateways_vision_flag_decides_where_it_names_no_modalities() {
+        // The gateway writes `input_modalities` only for a model whose
+        // modalities it knows; its `vision` flag still answers for the rest,
+        // so a blind model degrades an image instead of failing the turn.
+        let seeing = gateway_record(r#""tool_calling":true,"vision":true"#, "");
+        assert_eq!(parse_models(&seeing, "p").unwrap()[0].vision, Some(true));
+        let blind = gateway_record(r#""tool_calling":true,"vision":false"#, "");
+        assert_eq!(parse_models(&blind, "p").unwrap()[0].vision, Some(false));
+        // Where both are sent, the modalities lead, as on every record that
+        // carries the top-level array.
+        let both = gateway_record(
+            r#""tool_calling":true,"vision":true"#,
+            r#","input_modalities":["text"]"#,
+        );
+        assert_eq!(parse_models(&both, "p").unwrap()[0].vision, Some(false));
+    }
+
+    #[test]
+    fn a_gateways_upstream_endpoints_never_take_its_models_off_the_list() {
+        // OmniRoute lists a Codex model it discovered under the upstream's own
+        // endpoints, `["responses"]`, and serves it over chat completions all
+        // the same, translating each request. Only Copilot's record names the
+        // endpoints a model answers on *there*; read as Copilot's, the
+        // gateway's list took every such model out of the picker.
+        let body = gateway_record(
+            r#""vision":true,"effort_tiers":["low","medium","high","xhigh"],
+               "tool_calling":true,"reasoning":true,"thinking":true,"supportsThinking":true"#,
+            r#","api_format":"responses","supported_endpoints":["responses"],
+               "visibility":"list","input_modalities":["text","image"]"#,
+        );
+        let models = parse_models(&body, "omniroute").unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["codex/gpt-6-astra"]);
     }
 
     // --- context window (docs/compact.md: the footer gauge + auto-compact) ---

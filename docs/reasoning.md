@@ -29,9 +29,9 @@ offered).
 
 Support is parsed per record by the pure `llm::models::reasoning_support_of`
 into [`llm::reasoning::ReasoningSupport`] — `efforts` (the accepted ladder,
-canonically ordered), `can_disable`, `default_effort`. Both provider shapes
-are sniffed **per record**, so a custom OpenAI-compatible provider using
-either works unconfigured:
+canonically ordered), `can_disable`, `default_effort`. Each shape below is
+sniffed **per record**, so a custom OpenAI-compatible provider using any of
+them works unconfigured:
 
 - **OpenRouter** — a `reasoning` object on the record:
   `{"mandatory": bool, "supported_efforts": ["low", …] | null,
@@ -45,8 +45,22 @@ either works unconfigured:
   `supportsReasoningEffort`). With effort support the default ladder is
   offered; without it the model is an **on/off-only reasoner** (`efforts`
   empty) — it thinks at its own default, and the cycle is just `off ↔ on`.
+- **A gateway's flat capabilities** (OmniRoute) —
+  `capabilities.effort_tiers` as the ladder, read whether or not a
+  `capabilities.thinking` boolean stands beside it: the gateway writes one
+  only for a model its capability sources know, and lists the levels
+  discovery or its own runtime learning found for the rest. `thinking:
+  false` is an answer, and overrules a list the gateway left beside it.
+  The gateway counts `"none"` among its tiers, so `Off` is offered only
+  where the list names it. A
+  list naming no level, or no list at all (the gateway's built-in Codex
+  rows), is the gateway saying the level isn't adjustable, so Ctrl+T
+  offers nothing there — not even `Off`, which the gateway would pass
+  upstream unchecked as the effort `none` (`docs/user-providers.md`).
 
-A model advertising neither shape has no thinking: no footer mode, and
+Copilot, the ChatGPT backend and Anthropic publish their own ladders, read as
+their pages describe (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`).
+A model advertising none of these shapes has no thinking: no footer mode, and
 Ctrl+T explains.
 
 ## The mode, the cycle, and the wire
@@ -64,11 +78,18 @@ provider-reported default → the ladder's middle → `On`).
 On the wire (`openai::build_payload`, applied **after** the provider
 `extra_body` merge so the user's choice wins over a file-configured static):
 
-| mode | request |
-| --- | --- |
-| `Effort(e)` | `"reasoning": {"effort": "e"}` |
-| `Off` | `"reasoning": {"enabled": false}` |
-| `On` | nothing — the model's own default |
+| mode | request | with `reasoning_param = "reasoning_effort"` |
+| --- | --- | --- |
+| `Effort(e)` | `"reasoning": {"effort": "e"}` | `"reasoning_effort": "e"` |
+| `Off` | `"reasoning": {"enabled": false}` | `"reasoning_effort": "none"` |
+| `On` | nothing — the model's own default | nothing |
+
+The object is OpenRouter's, and what every shipped chat-completions provider
+reads. A server that reads OpenAI's own top-level `reasoning_effort` string
+instead — OmniRoute's route to Claude models, which ignores the object — is
+named so by its provider block's `reasoning_param`
+(`llm::config::ReasoningParam`, `docs/user-providers.md`), and the level then
+rides as that string alone, never beside the object.
 
 **The Venice quirk:** live testing showed Venice (through the Agent Zero
 proxy) *ignores* `reasoning.enabled` — its hybrid reasoners keep thinking.

@@ -181,6 +181,7 @@ fn backend_with_deepwiki(manager: McpManager) -> LlmBackend {
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
         drop_params: Vec::new(),
+        reasoning_param: alter_zero::llm::ReasoningParam::Reasoning,
     };
     LlmBackend::with_system_prompt(cfg, Some("You are a terse assistant.".to_string()))
         .with_mcp(manager)

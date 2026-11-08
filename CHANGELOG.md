@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Added
 
+- **A provider of your own can take the thinking level as
+  `reasoning_effort`.** Ctrl+T's level rides every chat request in
+  OpenRouter's `reasoning` object, which some OpenAI-compatible servers
+  ignore: OmniRoute's route to Claude models reads only OpenAI's own
+  top-level `reasoning_effort`, so a level picked for one of them changed
+  nothing. A block in `~/.alter-zero/providers.toml` that sets
+  `reasoning_param = "reasoning_effort"` now sends the level as that string
+  instead, with `none` for **off** (`docs/user-providers.md`).
+
 - **MCP can be turned off for a whole session from `/settings`.** A new
   **MCP** row stops every MCP server and offers the model none of their
   tools, without disabling the servers one by one in `/mcp`: each keeps its
@@ -175,6 +184,31 @@ release heading when a version is cut.
   browse them.
 
 ### Fixed
+
+- **Models an OpenAI-compatible gateway discovered stay in `/model`.**
+  OmniRoute lists a model it found upstream, such as a Codex model, under
+  the upstream's own endpoints (`"supported_endpoints": ["responses"]`) and
+  serves it over chat completions all the same. That list was read by the
+  rule meant for GitHub Copilot's records, which leaves out a model served
+  only from `/responses`, so every such model was missing from the picker.
+  Only Copilot's own records are filtered by their endpoints now
+  (`docs/copilot.md`).
+
+- **Models behind an OpenAI-compatible gateway can see the pictures you
+  send, and Ctrl+T offers their thinking levels.** A gateway such as
+  OmniRoute lists each model's capabilities as plain flags
+  (`"vision": true`, `"thinking": true`), and the `thinking` flag made its
+  listing read as Anthropic's own, which spells every capability as
+  `{"supported": …}`. Every model behind the gateway then counted as one
+  that cannot see or think: **Ctrl+V** refused a picture with
+  `does not support image input`, the `read` tool refused image files
+  though the gateway passes them through, and **Ctrl+T** had no thinking
+  level to cycle. A model's image input now comes from the modalities its
+  own record names, or from its `vision` flag where it names none, and
+  Ctrl+T cycles the levels the gateway lists for the model
+  (`effort_tiers`), offering Off only where that list includes `none`. A
+  model you picked before this fix keeps what was saved for it until you
+  pick it again in `/model` (`docs/user-providers.md`).
 
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed
