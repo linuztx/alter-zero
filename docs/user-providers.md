@@ -257,9 +257,11 @@ A gateway that flattens every capability to a boolean is read the same way.
 OmniRoute's records carry `"capabilities": {"vision": true, "thinking": true,
 "effort_tiers": ["low", "medium", "high"], …}` beside a top-level
 `input_modalities`. Image input comes from `input_modalities`, or from
-`capabilities.vision` where the gateway names no modalities. Reasoning comes
-from `capabilities.thinking`, with `effort_tiers` as the Ctrl+T levels: the
-gateway counts `none` among them, so Off is offered only where the list names
+`capabilities.vision` where the gateway names no modalities. The Ctrl+T levels
+are `capabilities.effort_tiers`, read whether or not a `thinking` flag stands
+beside them, since the gateway writes one only for a model its capability
+sources know; `thinking: false` overrules a list it left there. The gateway
+counts `none` among the levels, so Off is offered only where the list names
 it. A list naming no level, or none at all, offers no Ctrl+T: the gateway
 would pass Off upstream unchecked as the effort `none`, to a model that never
 listed it. `capabilities.reasoning` is a guess the gateway writes for every
