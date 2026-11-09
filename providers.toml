@@ -352,3 +352,17 @@ api_key_env = "ANTIGRAVITY_REFRESH_TOKEN"
 
 [providers.antigravity.kwargs]
 api_base = "https://daily-cloudcode-pa.googleapis.com"
+
+# llm.buzz — an OpenAI-compatible gateway: one key, many models, addressed by
+# their `vendor/model` ids (`anthropic/claude-sonnet-5`). An ordinary pasted
+# key, reached over the default chat-completions wire, so no code outside this
+# block is needed (docs/user-providers.md). The key variable is the id's
+# default.
+[providers.llm_buzz]
+name = "llm.buzz"
+description = "One key for models from many labs, addressed as vendor/model — billed per token from a single balance."
+api_key_url = "https://app.llm.buzz"
+api_model_base = "https://api.llm.buzz/api/v1"
+
+[providers.llm_buzz.kwargs]
+api_base = "https://api.llm.buzz/api/v1"
