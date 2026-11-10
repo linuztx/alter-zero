@@ -3103,7 +3103,8 @@ discovered skills fuzzy-filtered on their names (`skills::mention_token` +
 `rank_skills` over the boundary-injected `App::set_skills` snapshot — the
 registry's *enabled* skills, synchronous, no walk), rows columned
 `→ name  description` (widest visible name + gap, matched characters bolded,
-the description `…`-cut at the width), at most 8 rows; the grammar is codex's
+the description `…`-cut at the width), at most 5 rows over the palette's dim
+`(n/total)` counter; the grammar is codex's
 — the `$` must open its whitespace-delimited word (`US$5` never triggers),
 `[A-Za-z0-9_-]` continue the name so `$dataviz,` still queries `dataviz`, a
 bare `$` lists everything, and shell-flavored queries (`$1`, `$-`/`$_`, the
@@ -3790,12 +3791,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `FILE_MENU_MAX_ROWS` cap and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
   palette helpers — see `docs/file-search.md`), the `$` skill picker
-  (`SKILL_MENU_*` — only its own `SKILL_MENU_MAX_ROWS` cap and
+  (`SKILL_MENU_*` — only its own `SKILL_MENU_MAX_ROWS` (5) cap and
   `SKILL_MENU_NO_MATCH` placeholder: it reuses the file picker's
   marker/indent/`FILE_MENU_GAP` geometry and the palette colours, bolding the
   matched name characters the same way, the description column `…`-cut at the
-  width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
-  helpers — see `docs/skill-mentions.md`), the `?` shortcuts
+  width, and the palette's dim `(n/total)` counter under the rows;
+  `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
+  helpers, the row count the built line count like `menu_rows` — see
+  `docs/skill-mentions.md`), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list in its column-major reading order, the
   `SHORTCUTS_MIN_ROWS` floor, the `SHORTCUTS_MIN_GUTTER`/`SHORTCUTS_MAX_GUTTER`
   range the spare width widens the gaps over, the `… +N more` marker of a band

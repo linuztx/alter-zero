@@ -6,11 +6,12 @@ smoke_begin
 
 # the `$` SKILL PICKER (docs/skill-mentions.md). Codex's skill
 # mentions as a fourth band: typing `$` in the composer lists the discovered
-# skills (name + description columns), typing narrows on the name, Tab
-# completes the mention IN PLACE — `$alpha-skill ` stays in the draft, sigil
-# kept — and submitting a message that carries a mention plays the skill load
-# (offline: the dummy's skills demo; live: the Skill tool description makes
-# the model call the `skill` tool).
+# skills (name + description columns), five at a time over a `(n/total)`
+# counter, typing narrows on the name, Tab completes the mention IN PLACE —
+# `$alpha-skill ` stays in the draft, sigil kept — and submitting a message
+# that carries a mention plays the skill load (offline: the dummy's skills
+# demo; live: the Skill tool description makes the model call the `skill`
+# tool).
 S79="${S}_skillmention"
 SM_CFG="$(mktemp -d)"
 SM_DIR="$(mktemp -d)"
@@ -29,9 +30,21 @@ description: The second demo skill, for the smoke suite only
 ---
 Beta body.
 SKILL
+# Five more, so the list outgrows the band's five rows. Discovery sorts by
+# folder name, so alpha-skill and beta-skill open the list and golf-skill
+# closes it.
+for filler in charlie delta echo foxtrot golf; do
+	mkdir -p "$SM_DIR/$filler-skill"
+	printf -- '---\nname: %s-skill\ndescription: Fills the band past its window, for the smoke suite only\n---\nFiller body.\n' \
+		"$filler" >"$SM_DIR/$filler-skill/SKILL.md"
+done
+# A skill row: the marker or its inset, a name, then the description column.
+skill_rows() { printf '%s\n' "$1" | grep -cE '^(→ |  )[a-z]+-skill +[A-Z]' || true; }
+# The band's counter as `n/total`, empty when there is none.
+skill_counter() { printf '%s\n' "$1" | sed -nE 's/^  \(([0-9]+)\/([0-9]+)\)$/\1\/\2/p' | tail -1; }
 APP_SM="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SM_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SM_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 launch "$S79" 90 32 "$APP_SM"
-# A bare `$` lists every discovered skill with its description.
+# A bare `$` lists the discovered skills with their descriptions.
 tmux send-keys -t "$S79" -l '$'
 sleep 0.4
 mention_all="$(tmux capture-pane -t "$S79" -p)"
@@ -40,6 +53,24 @@ printf '%s\n' "$mention_all"
 for expect in "alpha-skill" "The first demo skill" "beta-skill" "The second demo skill"; do
 	expect_has "$mention_all" -F "$expect" "the \$ band is missing '$expect'"
 done
+# Seven skills, five rows: the first five over the counter, the last below
+# the window.
+if [ "$(skill_rows "$mention_all")" -ne 5 ]; then
+	fail "the \$ band lists $(skill_rows "$mention_all") skills, not the five it is capped at"
+fi
+expect_lacks "$mention_all" -F "golf-skill" "the \$ band shows its seventh skill in its first window"
+expect_eq "$(skill_counter "$mention_all")" "1/7" "the \$ band's counter on a bare \$"
+# ↑ from the first skill wraps to the last: the window follows the
+# highlight down, the first skills scroll out, and the counter reads the
+# last of them all.
+tmux send-keys -t "$S79" Up
+sleep 0.4
+mention_last="$(tmux capture-pane -t "$S79" -p)"
+echo "==== Phase 79: the band wrapped to its last skill ===="
+printf '%s\n' "$mention_last"
+expect_has "$mention_last" -E '^→ golf-skill ' "↑ from the first skill did not wrap the highlight to the last"
+expect_lacks "$mention_last" -F "alpha-skill" "the \$ band's window did not follow the highlight to the last skill"
+expect_eq "$(skill_counter "$mention_last")" "7/7" "the \$ band's counter after wrapping to the last skill"
 # Typing narrows on the name…
 tmux send-keys -t "$S79" -l "alp"
 sleep 0.4
@@ -48,6 +79,7 @@ echo "==== Phase 79: the band narrowed to \$alp ===="
 printf '%s\n' "$mention_narrow"
 expect_has "$mention_narrow" -F "alpha-skill" "the narrowed band lost the match"
 expect_lacks "$mention_narrow" -F "beta-skill" "'alp' still lists beta-skill"
+expect_eq "$(skill_counter "$mention_narrow")" "1/1" "the narrowed \$ band's counter"
 # …and Tab completes the mention in place, sigil kept, ready to keep typing.
 tmux send-keys -t "$S79" Tab
 sleep 0.4

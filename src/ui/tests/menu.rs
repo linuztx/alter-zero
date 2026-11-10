@@ -1659,19 +1659,134 @@ fn skill_app(text: &str, selected: usize) -> App {
     app
 }
 
+/// An app offering `n` skills, `skill-0` … `skill-{n-1}` in that order, its
+/// composer holding `text` with the picker open at `selected`.
+fn many_skills(text: &str, n: usize, selected: usize) -> App {
+    let mut app = App::new();
+    app.set_skills((0..n).map(|i| smeta(&format!("skill-{i}"), "d")).collect());
+    app.input = TextArea::from_text(text);
+    app.skill_picker = Some(crate::app::SkillPicker {
+        selected,
+        query: String::new(),
+    });
+    app
+}
+
+/// The picker's `(n/total)` counter row as plain text.
+fn skill_counter_text(selected: usize, total: usize) -> String {
+    format!("{MENU_INDENT}({}/{total})", selected + 1)
+}
+
 #[test]
 fn skill_menu_rows_counts_closed_placeholder_and_capped_matches() {
-    assert_eq!(skill_menu_rows(&App::new()), 0, "closed");
+    assert_eq!(skill_menu_rows(&App::new(), 80), 0, "closed");
     assert_eq!(
-        skill_menu_rows(&skill_app("$zzz", 0)),
+        skill_menu_rows(&skill_app("$zzz", 0), 80),
         1,
         "one placeholder row when nothing matches"
     );
-    let mut app = App::new();
-    app.set_skills((0..12).map(|i| smeta(&format!("skill-{i}"), "d")).collect());
-    app.input = TextArea::from_text("$");
-    app.skill_picker = Some(crate::app::SkillPicker::default());
-    assert_eq!(skill_menu_rows(&app), SKILL_MENU_MAX_ROWS, "capped");
+    assert_eq!(
+        skill_menu_rows(&many_skills("$", 12, 0), 80),
+        SKILL_MENU_MAX_ROWS + 1,
+        "capped: five skills and the counter"
+    );
+}
+
+#[test]
+fn the_skill_picker_shows_five_skills_over_a_counter() {
+    // The `/` palette's shape: at most five skills at a time — a longer list
+    // scrolls — over a dim `(n/total)` counter in the names' column, saying
+    // which skill is highlighted and how many match.
+    assert_eq!(SKILL_MENU_MAX_ROWS, 5, "the requested cap");
+    let lines = skill_menu_lines(&many_skills("$", 12, 0), 80);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(texts.len(), 6, "five skills and the counter: {texts:?}");
+    assert!(texts[0].starts_with("→ skill-0 "), "{texts:?}");
+    assert!(texts[4].starts_with("  skill-4 "), "{texts:?}");
+    assert_eq!(texts[5], skill_counter_text(0, 12));
+    // A fact about the list rather than a row to pick: dim, in the names'
+    // column, never wearing the selection's colour.
+    let counter = lines.last().expect("the counter row");
+    assert_eq!(counter.spans[0].content, MENU_INDENT);
+    assert!(
+        counter.spans[1..]
+            .iter()
+            .all(|s| s.style.fg == Some(menu_dim_color())),
+        "{counter:?}"
+    );
+}
+
+#[test]
+fn the_skill_counter_follows_the_highlight_and_counts_the_matches() {
+    // The counter names the highlighted match, which is always in the
+    // window, of how many the query matched — the query's matches, not the
+    // session's skills.
+    for selected in [0, 4, 5, 11] {
+        let lines = skill_menu_lines(&many_skills("$", 12, selected), 80);
+        assert_eq!(
+            plain(lines.last().expect("the counter row")),
+            skill_counter_text(selected, 12),
+            "selection {selected}"
+        );
+        let marked = format!("{MENU_MARKER}skill-{selected} ");
+        assert!(
+            lines.iter().any(|l| plain(l).starts_with(&marked)),
+            "selection {selected} is in the window: {lines:?}"
+        );
+    }
+    // A narrowed query counts what it matches, taken from the ranking
+    // rather than pinned, so a fuzzier ranker cannot break a counter test.
+    let app = many_skills("$skill-1", 12, 1);
+    let total = app.skill_matches().len();
+    assert!(
+        total > 1 && total <= usize::from(SKILL_MENU_MAX_ROWS),
+        "{total} matches"
+    );
+    let lines = skill_menu_lines(&app, 80);
+    assert_eq!(lines.len(), total + 1, "{lines:?}");
+    assert_eq!(
+        plain(lines.last().expect("the counter row")),
+        skill_counter_text(1, total)
+    );
+    // No match, no count: the placeholder stands alone.
+    assert_eq!(skill_menu_lines(&skill_app("$zzz", 0), 80).len(), 1);
+}
+
+#[test]
+fn the_skill_counter_is_left_out_where_the_width_cannot_hold_it() {
+    // A count cut at the terminal's edge would misread — `(1/1` for one of
+    // twelve — so a terminal too narrow for the whole counter shows the
+    // rows without it rather than half of it.
+    let app = many_skills("$", 12, 0);
+    let whole = u16::try_from(cols(&skill_counter_text(0, 12))).expect("narrow");
+    let fits = skill_menu_lines(&app, whole);
+    assert_eq!(plain(fits.last().expect("rows")), skill_counter_text(0, 12));
+    let narrow = skill_menu_lines(&app, whole - 1);
+    assert!(narrow.iter().all(|l| !plain(l).contains('(')), "{narrow:?}");
+    assert_eq!(narrow.len(), usize::from(SKILL_MENU_MAX_ROWS));
+}
+
+#[test]
+fn skill_menu_rows_equals_the_painted_lines_at_every_width() {
+    // The reserved band height IS the built line count — the palette's rule
+    // — so the counter, which comes and goes with the width, can never be
+    // painted into a row that was not reserved.
+    for width in 1..=120u16 {
+        for app in [
+            many_skills("$", 12, 3),
+            skill_app("$", 1),
+            skill_app("$zzz", 0),
+        ] {
+            assert_eq!(
+                usize::from(skill_menu_rows(&app, width)),
+                skill_menu_lines(&app, width).len(),
+                "width {width}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1680,7 +1795,7 @@ fn skill_menu_hides_when_the_cursor_leaves_the_mention() {
     // shows no band even while the picker state lingers.
     let mut app = skill_app("$da", 0);
     app.input.move_home();
-    assert_eq!(skill_menu_rows(&app), 0);
+    assert_eq!(skill_menu_rows(&app, 60), 0);
     assert!(skill_menu_lines(&app, 60).is_empty());
 }
 
@@ -1692,9 +1807,10 @@ fn skill_menu_lines_column_name_and_description() {
     let app = skill_app("$", 1);
     let lines = skill_menu_lines(&app, 80);
     let texts: Vec<String> = lines.iter().map(plain).collect();
-    assert_eq!(texts.len(), 2);
+    assert_eq!(texts.len(), 3, "two skills and the counter: {texts:?}");
     assert!(texts[0].starts_with("  dataviz"), "{texts:?}");
     assert!(texts[1].starts_with("→ skill-creator"), "{texts:?}");
+    assert_eq!(texts[2], skill_counter_text(1, 2));
     // The description column starts right after the widest visible name
     // (`skill-creator`, 13 wide) + the gap, marker included: 2 + 13 + 2.
     let col_of = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
@@ -1761,7 +1877,11 @@ fn skill_menu_bolds_the_matched_characters() {
 #[test]
 fn band_rows_counts_the_skill_menu() {
     let app = skill_app("$", 0);
-    assert_eq!(band_rows(&app, 80), 2, "one row per matched skill");
+    assert_eq!(
+        band_rows(&app, 80),
+        3,
+        "one row per matched skill, and the counter"
+    );
 }
 
 #[test]

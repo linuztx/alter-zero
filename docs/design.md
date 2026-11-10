@@ -560,7 +560,8 @@ which Ctrl+V reads the clipboard from.
   shell-flavored queries like `$1`/`$PATH` and `!` shell mode staying closed),
   the discovered skills show fuzzy-filtered on their names in the same band
   slot: `→ name  description` rows, the description `…`-cut, matched
-  characters bolded, at most 8 rows. Matches derive **synchronously** from the
+  characters bolded, at most 5 rows over the palette's dim `(n/total)`
+  counter. Matches derive **synchronously** from the
   registry's enabled snapshot (`App::set_skills`, injected beside every
   listing render) — skills are already discovered, so unlike `@` there is no
   async walk. ↑/↓ move, **Tab/Enter insert `$name `** (the sigil kept, an

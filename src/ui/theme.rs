@@ -2725,13 +2725,16 @@ pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 // --- The `$` skill picker. A fourth band in the same slot, opened while the
 // cursor sits in a usable `$mention`: one row per matching skill — the name
 // column (widest visible name + `FILE_MENU_GAP`, matched characters bolded)
-// then the skill's own description, `…`-cut at the width. It reuses the
-// palette's marker, inset and colours — the selection lights up cyan, the
-// rest dim. See docs/skill-mentions.md. ---
+// then the skill's own description, `…`-cut at the width — over the
+// palette's dim `(n/total)` counter. It reuses the palette's marker, inset
+// and colours — the selection lights up cyan, the rest dim. See
+// docs/skill-mentions.md. ---
 
-/// The most skill rows shown at once; longer lists scroll to keep the
-/// selection visible (`menu_window`), like the file picker.
-pub(super) const SKILL_MENU_MAX_ROWS: u16 = 8;
+/// The most skill rows shown at once — the `/` palette's five, a row each,
+/// since a description is `…`-cut rather than wrapped; longer lists scroll to
+/// keep the selection visible (`menu_window`), like the file picker, and the
+/// `(n/total)` counter under them is a row of its own.
+pub(super) const SKILL_MENU_MAX_ROWS: u16 = 5;
 
 /// The band's single placeholder row when the query matched no skill.
 pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
