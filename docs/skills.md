@@ -107,10 +107,10 @@ there is nothing here that executes on discovery.
 
 ### Built-in skills
 
-Six skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
-**`web-search`**, **`yt-dlp`**, **`flaredantic`** and
-**`security-engagement`**. All use the same seed and discovery path described
-below.
+Eight skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
+**`web-search`**, **`yt-dlp`**, **`flaredantic`**, **`security-engagement`**,
+**`reverse-engineering`** and **`little-code-sauce`**. All use the same seed and
+discovery path described below.
 
 #### `security-engagement`
 
@@ -124,6 +124,25 @@ workflow instead of a blank page.
 It is a workflow, not a capability: every command still runs through the
 permission gate like any other tool call, and the body asks for the smallest
 proof that establishes impact rather than a full exploit chain.
+
+#### `reverse-engineering`
+
+**`reverse-engineering`** walks an unknown binary or app from triage to a
+verified patch: identify the format and the licence strings, read the function
+that decides, trace it under LLDB or Frida, patch the branch or the bytes, then
+run the original check again to show the transition. It names the tools per
+platform (Hopper, IDA, Ghidra headless, `class-dump`, `apktool`/`jadx`, LLDB,
+Frida) and the placeholder set (`SAMPLE`, `BIN`, `CHECK_FN`, `OFFSET`,
+`PATCH_BYTE`) so a session starts from a procedure instead of a blank page.
+
+#### `little-code-sauce`
+
+**`little-code-sauce`** is the odd one out on purpose: it teaches no technique
+at all. It is an example of a *behaviour contract* — who the agent is, how it
+works, how it reports — the kind of house-style skill a team writes once and
+loads at the start of a session. It is here as a worked example of the shape:
+a tight description that names its triggers, a body that states the working
+loop and the output contract, and no commands of its own.
 
 #### `skill-creator`
 

@@ -22,9 +22,12 @@ use crate::skills::{
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
 /// teaches public webpage and PDF retrieval; `web-search` searches the web
 /// with its own scripts; `yt-dlp` teaches media downloads; `flaredantic`
-/// teaches public localhost sharing through external CLIs; and
+/// teaches public localhost sharing through external CLIs;
 /// `security-engagement` turns an authorized assessment into recon, validation
-/// and a written finding (`docs/skills.md`).
+/// and a written finding; `reverse-engineering` walks a binary from triage to a
+/// verified patch; and `little-code-sauce` is an example of a behaviour
+/// contract, the kind of house-style skill that only changes how work is
+/// delivered (`docs/skills.md`).
 /// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
@@ -32,7 +35,7 @@ use crate::skills::{
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
 /// once it is there.
-const BUILTIN_SKILL_FILES: [(&str, &str); 13] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 15] = [
     (
         "flaredantic/SKILL.md",
         include_str!("../../prompts/skills/flaredantic/SKILL.md"),
@@ -90,6 +93,14 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 13] = [
     (
         "security-engagement/SKILL.md",
         include_str!("../../prompts/skills/security-engagement/SKILL.md"),
+    ),
+    (
+        "reverse-engineering/SKILL.md",
+        include_str!("../../prompts/skills/reverse-engineering/SKILL.md"),
+    ),
+    (
+        "little-code-sauce/SKILL.md",
+        include_str!("../../prompts/skills/little-code-sauce/SKILL.md"),
     ),
 ];
 
@@ -1185,6 +1196,55 @@ mod tests {
         assert!(body.contains("RESULT_DIR"));
         assert!(body.contains("subfinder -d DOMAIN -all -silent"));
         assert!(body.contains("Impact: what an attacker gains"));
+    }
+
+    #[test]
+    fn seeded_reverse_engineering_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("reverse-engineering"), "{listing}");
+        assert!(!listing.contains("frida -f SAMPLE"), "body stays on demand");
+
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"reverse-engineering"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        assert!(body.contains("identify → read → run → patch → prove"));
+        assert!(body.contains("dd of=BIN bs=1 seek=OFFSET conv=notrunc"));
+    }
+
+    #[test]
+    fn seeded_little_code_sauce_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("little-code-sauce"), "{listing}");
+        assert!(
+            !listing.contains("Preamble is debt"),
+            "body stays on demand"
+        );
+
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"little-code-sauce"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        assert!(body.contains("Loaded means adopted"));
+        assert!(body.contains("小码酱"));
     }
 
     #[test]
