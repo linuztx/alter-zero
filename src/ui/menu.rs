@@ -374,24 +374,19 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the `$` skill picker occupies for `app`: 0 when closed —
-/// which includes the cursor having *left* the mention, since the matches
-/// derive from the live token ([`App::skill_band_active`]) — one placeholder
-/// row when the query matches no skill, else the match count capped at
-/// `SKILL_MENU_MAX_ROWS` (longer lists scroll, like the palette).
-/// [`live_height`] adds this via [`band_rows`] and [`render_live`] paints
-/// exactly this many rows — the two must agree. See `docs/skill-mentions.md`.
+/// How many rows the `$` skill picker occupies for `app` at `width`: **the
+/// built line count** of [`skill_menu_lines`] — 0 when closed (which
+/// includes the cursor having *left* the mention, since the matches derive
+/// from the live token, [`App::skill_band_active`]), one placeholder row when
+/// the query matches no skill, else the matches capped at
+/// `SKILL_MENU_MAX_ROWS` (longer lists scroll) and the `(n/total)` counter
+/// under them, which a terminal too narrow to hold it whole goes without.
+/// Height-is-the-line-count is [`menu_rows`]' rule: [`live_height`] adds
+/// this via [`band_rows`] and [`render_live`] paints exactly this many rows,
+/// so the two agree by construction. See `docs/skill-mentions.md`.
 #[must_use]
-pub fn skill_menu_rows(app: &App) -> u16 {
-    if !app.skill_band_active() {
-        return 0;
-    }
-    let matches = app.skill_matches().len();
-    if matches == 0 {
-        1
-    } else {
-        (matches as u16).min(SKILL_MENU_MAX_ROWS)
-    }
+pub fn skill_menu_rows(app: &App, width: u16) -> u16 {
+    u16::try_from(skill_menu_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
 /// One skill-picker row: the marker (or its indent), the skill's name with
@@ -444,8 +439,10 @@ fn skill_menu_row(
 /// The styled lines for the open skill picker: a *No matching skills*
 /// placeholder when the query misses, else the skill rows windowed
 /// (`menu_window`) to keep the selection visible and capped at
-/// `SKILL_MENU_MAX_ROWS`. Empty when the band is closed (or the cursor has
-/// left the mention). See `docs/skill-mentions.md`.
+/// `SKILL_MENU_MAX_ROWS`, over the palette's dim `(n/total)` counter — which
+/// match is highlighted, of how many the query matched. Empty when the band
+/// is closed (or the cursor has left the mention). See
+/// `docs/skill-mentions.md`.
 #[must_use]
 pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if !app.skill_band_active() {
@@ -465,11 +462,17 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // The shared name column: the widest visible name + the gap, so the
     // description column starts at the same place on every shown row.
     let name_col = visible.iter().map(|m| cols(&m.name)).max().unwrap_or(0) + FILE_MENU_GAP;
-    visible
+    let mut lines: Vec<Line<'static>> = visible
         .iter()
         .enumerate()
         .map(|(i, m)| skill_menu_row(m, offset + i == selected, name_col, width))
-        .collect()
+        .collect();
+    lines.extend(menu_counter_line(
+        selected.min(matches.len() - 1),
+        matches.len(),
+        width,
+    ));
+    lines
 }
 
 /// How many rows the `?` shortcuts band asks for, for `app` at `width`: 0
@@ -504,7 +507,10 @@ pub fn shortcuts_rows(app: &App, width: u16) -> u16 {
 /// and the boundary's `live_region_height`, so the three can never drift.
 #[must_use]
 pub fn band_rows(app: &App, width: u16) -> u16 {
-    menu_rows(app, width) + shortcuts_rows(app, width) + file_menu_rows(app) + skill_menu_rows(app)
+    menu_rows(app, width)
+        + shortcuts_rows(app, width)
+        + file_menu_rows(app)
+        + skill_menu_rows(app, width)
 }
 
 /// The text a `SHORTCUTS` entry shows in a context state. Only the `esc`

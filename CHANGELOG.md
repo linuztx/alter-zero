@@ -100,6 +100,12 @@ release heading when a version is cut.
   terminal narrow enough to wrap the descriptions shows fewer, and the
   palette never takes more than the eight rows it did before.
 
+- **The `$` skill picker lists five skills at a time, with a count.** It
+  showed up to eight. It now shows five, the rest a scroll away with ↑/↓,
+  over the same dim counter as the `/` palette, `(1/7)`, saying which skill
+  is highlighted and how many match what you typed
+  (`docs/skill-mentions.md`).
+
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
   (`Select model`, `Settings`, `Select theme`, `Select mascot`,

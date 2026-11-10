@@ -160,10 +160,13 @@ Ctrl+R search, a recall) closes it beside `file_search`.
 
 The band shares the palette's slot: `band_rows += skill_menu_rows`.
 
-- `skill_menu_rows(app)` — 0 closed (cursor-left-the-mention included), one
-  placeholder row (`No matching skills`, inset to the names' column) on a
-  miss, else the match count
-  capped at `SKILL_MENU_MAX_ROWS` (8; longer lists scroll).
+- `skill_menu_rows(app, width)` — the built line count of
+  `skill_menu_lines`, the palette's `menu_rows` rule, so the reserved rows
+  and the painted ones agree at every width: 0 closed
+  (cursor-left-the-mention included), one placeholder row
+  (`No matching skills`, inset to the names' column) on a miss, else the
+  matches capped at `SKILL_MENU_MAX_ROWS` (5; longer lists scroll) and the
+  counter under them.
 - `skill_menu_lines(app, width)` — one row per match, windowed
   (`menu_window`): the palette's `→` marker on the selection (the rest
   indent), the
@@ -171,7 +174,13 @@ The band shares the palette's slot: `band_rows += skill_menu_rows`.
   reused at offset 0), then — past a name column sized to the widest
   visible name + `FILE_MENU_GAP` — the skill's own description, `…`-cut at
   the width. The selected row lights up cyan whole, the rest dim (the
-  palette's convention; `SKILL_MENU_*` in `ui/theme.rs`).
+  palette's convention; `SKILL_MENU_*` in `ui/theme.rs`). Under the rows,
+  the palette's dim `(n/total)` counter (`menu_counter_line`), hanging
+  under the names: which match is highlighted, of how many the query
+  matched — `(1/7)` on a bare `$` over seven skills, `(1/1)` once `$alp`
+  narrows to one. A terminal too narrow to hold the whole counter goes
+  without it rather than cutting a number, and a miss has nothing to
+  count.
 
 ### The offline dummy and the demo
 
@@ -190,14 +199,19 @@ whole round trip with no network.
   inertness; selection move+wrap+reset; Tab/Enter accept (sigil kept,
   space reused, cursor seat) vs fall-through on a miss; mutual exclusion
   with the palette and the file picker; every consuming path closes it.
-- `ui` (unit): row counts (closed/placeholder/capped), the aligned
+- `ui` (unit): row counts (closed/placeholder/capped at five), the row
+  count equal to the painted lines at every width, the aligned
   name/description columns, the `…` cut, matched-char bolding, selection
-  colours, `band_rows` inclusion, the cursor-left-the-mention hide.
+  colours, the `(n/total)` counter (following the highlight, counting the
+  query's matches, left out where the width cannot hold it), `band_rows`
+  inclusion, the cursor-left-the-mention hide.
 - `stream` (unit): the `$dataviz` cue selects the skills demo.
-- `scripts/smoke.sh` Phase 79: against a planted skill dir — type `$`, the
-  band lists both skills with descriptions; filter narrows; Tab completes
-  the mention into the composer; submitting a mention plays the skill demo
-  (the `● Skill(dataviz)` cell, nothing of the body inline).
+- `scripts/smoke.sh` Phase 79: against a planted dir of seven skills —
+  type `$`, the band lists the first five with descriptions over `(1/7)`;
+  ↑ wraps to the last, the window following it, over `(7/7)`; filter
+  narrows to `(1/1)`; Tab completes the mention into the composer;
+  submitting a mention plays the skill demo (the `● Skill(dataviz)` cell,
+  nothing of the body inline).
 - `tests/live_openrouter.rs` (`--ignored`), the two halves of the mention
   contract — both verified across the five models named above:
   `live_dollar_mention_loads_the_mentioned_skill` (an explicit
