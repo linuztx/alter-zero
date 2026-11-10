@@ -3954,6 +3954,13 @@ mod tests {
         let subdir = project.join("src");
         std::fs::create_dir_all(&scripts).expect("scripts dir");
         std::fs::create_dir_all(&subdir).expect("subdir");
+        // Canonical, because the assertion below compares against what the
+        // hook's own `pwd` reports, and `pwd` resolves symlinks. On macOS
+        // `std::env::temp_dir()` is `/var/...` behind `/private/var/...`, so
+        // the two spellings differed there and the test failed on a hook that
+        // ran correctly. Linux's temp dir has no symlink, so nothing changes
+        // there.
+        let subdir = subdir.canonicalize().expect("subdir resolves");
         let guard = scripts.join("guard.sh");
         std::fs::write(
             &guard,
