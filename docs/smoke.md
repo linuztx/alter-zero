@@ -57,6 +57,7 @@ scripts/smoke.sh -v                      # every phase's whole log
 scripts/smoke.sh target/release/alter-zero
 bash scripts/smoke/phases/055-permission.sh   # ONE phase, output live
 bash scripts/smoke/selftest.sh                # the readers + selector, no app, no tmux
+scripts/preflight.sh --smoke                  # tmux, bash 4+, setsid — before reading a red run
 ```
 
 `--list` and every selection go through the phase readers in `lib.sh`
@@ -153,7 +154,42 @@ was not a safe transformation until each carried its own.
 | `note TITLE` / `dump TITLE CONTENT` | a `==== Phase N: TITLE ====` section marker (over a captured pane) in the log |
 | `work_dir [NAME]` | a short working directory under the phase's isolated HOME, so the footer renders the cwd as `~/{NAME}`. A phase asserting the footer's **tail** (the `· N shells` count, the context gauge) must launch in one, with `$APP_ABS`/`$BIN_ABS` |
 | `smoke_on_exit CMD…` | run at teardown — a stub server to kill |
+| `smoke_skip REASON` | this platform cannot exercise what the phase tests, and the phase says so instead of failing a check. Exits 77; the runner counts it as `skip`, apart from a pass, so a green macOS run never quietly means "half the phases did nothing". The one reason to reach for it: a fixture that is the **absence** of a native clipboard |
+| `smoke_abs_path PATH` | made absolute **keeping the name given** (no symlink walked) — for the binary, which `alter-zero update` tells from an install by the `target/…/debug` in its path |
+| `smoke_real_path PATH` | made absolute with every symlink resolved (leaf included) — for a work dir, a `$HOME`, a temp root, which the app resolves and then compares |
+| `smoke_file_size FILE` / `smoke_file_mode FILE` | a file's byte size / permission bits (`stat -c%s`/`stat -c %a` are GNU's, `stat -f%z`/`stat -f %Lp` BSD's) |
+| `smoke_sed_in_place SCRIPT FILE` | rewrite a file in place without `sed -i`, whose backup-suffix argument GNU and BSD disagree on |
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
+
+### Portability
+
+The suite runs on Linux in CI and on a developer's macOS, and the tools that
+differ fail **quietly** where it matters: `stat -c%s` on a Mac prints
+`stat: illegal option -- c` and an empty string, so `$(stat -c%s f) + 1`
+became `1` and a phase counted the whole file as its second half — a false
+pass, not a red run. So a phase asks the `smoke_*` helpers above rather than
+the tools directly, and `scripts/smoke/selftest.sh` asserts each of them
+against a fixture with a known answer on whatever platform it runs on. The
+rules that follow:
+
+- **A hash in a phase is `cksum` or the app's own output**, not `sha256sum`.
+  Where the phase only needs "the same bytes" (120's review wrote nothing
+  back), POSIX `cksum` is enough; where it needs "only the real value could
+  have produced this" (126's placeholder expanded), `cksum` is enough too,
+  because the comparison is against a hash the phase computed itself.
+- **`grep` options stay POSIX.** macOS's BSD `grep` has no `-P`; `-E`, `-F`,
+  `-q` and `-c` are what the assertions use.
+- **A count read back from `wc` gets `tr -d ' '`.** BSD `wc` pads its number
+  (`"       0"`), GNU's does not, so a bare `[ "$(… | wc -l)" = 0 ]` is false
+  on a Mac and true on CI.
+- **A path the app resolves goes through `smoke_real_path`**, and a path it is
+  *handed* (the binary) through `smoke_abs_path`. On macOS `$TMPDIR` is
+  `/var/...` behind `/private/var/...`; with mbx, `target/` is a symlink into
+  the build cache, and resolving it hands `alter-zero update` a path outside
+  any `target/` (Phase 116).
+- **An error string from the platform's libc is matched loosely.** ENXIO is
+  `No such device or address` on Linux and `Device not configured` on macOS
+  (Phase 44); assert the failure, not one spelling of it.
 
 A turn's summary wears the past tense of the status verb it ended on
 (`Worked for 3s`, `Generated for 1m 5s` — `docs/status-indicator.md`), and a

@@ -38,6 +38,68 @@ whose tool calls resolve through the *real* executors, so the cells are numbered
 highlighted and red-on-failure like live ones. Most UI work is developed against
 it, and the smoke suite drives it exclusively ([`docs/dummy-backend.md`](docs/dummy-backend.md)).
 
+If the checkout does not build the way this page says it should, run
+`scripts/preflight.sh --smoke` first: it checks the pinned toolchain,
+rustfmt/clippy, the C compiler, `mbx`, `tmux`, bash 4+ and `setsid`, and names
+the fix for whichever is missing. On macOS the two that bite are `setsid`
+(`brew install util-linux`, then put `/opt/homebrew/opt/util-linux/bin` on
+`PATH`) and bash 3.2 (`brew install bash`) — see *macOS* below.
+
+### Building with `mbx`
+
+Compiled work is shared across checkouts through
+[mbx](https://github.com/mr-boxington/mbx), so a second checkout and a branch
+switch spend seconds where a cold build spends minutes. `mbx setup` installs a
+`cargo` shim; with it first on `PATH`, plain `cargo …` runs through mbx and
+nothing else changes. Clearing the build is `mbx clean` (from the workspace
+root), which removes the managed target and the learned incremental state
+without touching the shared store — there is no need to `rm -rf target/`, which
+is a symlink into that store.
+
+```bash
+mbx setup              # install the cargo shim (once per machine)
+mbx doctor             # shim, cache, toolchain, remote-cache status
+mbx stats              # what the cache has saved
+mbx clean              # the workspace's managed target — not a hand rm -rf
+```
+
+Without mbx everything still works; the builds are just cold.
+
+### macOS
+
+Linux is the reference platform (CI runs the gate and the smoke suite on
+`ubuntu-latest`), but a Mac is a supported development machine once two
+Homebrew packages are on `PATH`:
+
+```bash
+brew install util-linux bash tmux
+export PATH="/opt/homebrew/opt/util-linux/bin:$PATH"
+```
+
+- **`setsid`** (from `util-linux`) is what gives a spawned command a terminal
+  of its own. Without it every tty-spawning test fails with *no way to give the
+  command a terminal of its own here* — 46 of them, which looks like a broken
+  branch and is not. Six tests still fail on macOS with `setsid` present
+  (`ps` has no `sid` keyword there, plus five SIGTERM/paste-timing tests);
+  AGENTS.md, *macOS: the six baseline failures*, lists them with the exact
+  `--skip` flags. Run the green form as:
+
+  ```bash
+  PATH="/opt/homebrew/opt/util-linux/bin:$PATH" cargo test --lib
+  ```
+
+- **bash 4+** is what `scripts/smoke.sh` needs (`declare -A`). macOS's
+  `/bin/bash` is 3.2 and the suite dies with `declare: -A: invalid option`;
+  make sure `bash --version` reports 5.x before reading a smoke failure.
+- **35 tests never compile on macOS** (Linux-only `cfg` bodies: `llm/exec.rs`,
+  `pty/probe.rs`, `clipboard.rs`, `subprocess.rs`, …), so a green `--lib` run
+  there says nothing about the pty probe, the executor or the Linux clipboard.
+  Those need CI's Linux run or a container.
+
+`scripts/preflight.sh --smoke` checks all of this in one screen.
+
+### macOS
+
 <details>
 <summary><strong>Tools you need only for some areas</strong></summary>
 

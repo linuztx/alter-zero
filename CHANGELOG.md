@@ -14,6 +14,14 @@ release heading when a version is cut.
 
 ### Added
 
+- **`scripts/preflight.sh` checks the machine before a red run is read.** It
+  prints one line per tool — the pinned toolchain, rustfmt/clippy, the C
+  compiler, `mbx`, and with `--smoke` `tmux`, bash 4+ and `setsid` — and names
+  the fix for whichever is missing, exiting non-zero. On macOS that is the
+  answer to "which of these failures is mine": without `setsid` 46 unit tests
+  fail with *no way to give the command a terminal of its own here*, and under
+  bash 3.2 the smoke suite dies with `declare: -A: invalid option`, neither of
+  which says what is wrong.
 - **A provider of your own can take the thinking level as
   `reasoning_effort`.** Ctrl+T's level rides every chat request in
   OpenRouter's `reasoning` object, which some OpenAI-compatible servers
@@ -57,6 +65,20 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The smoke suite runs on macOS.** The phases were Linux-shaped in a few
+  places that fail *quietly* on a Mac rather than red: `stat -c%s` prints an
+  error and an empty string, so a phase that split a byte stream at
+  `$(stat -c%s f) + 1` counted the whole file as its second half and passed;
+  `sed -i`, `sha256sum` and `readlink -f` are GNU's; BSD `wc` pads its count
+  with spaces; and macOS's temp tree is the real `/private/var/...` behind a
+  `/var/...` name, so a phase that planted an absolute path and then compared
+  a row against it never matched. Those are now `smoke_abs_path`,
+  `smoke_real_path`, `smoke_file_size`, `smoke_file_mode` and
+  `smoke_sed_in_place`, pinned by `scripts/smoke/selftest.sh`, and the three
+  phases whose fixture is the *absence* of a native clipboard report `skip`
+  (the runner counts it apart from a pass) on a GUI login instead of
+  overwriting the developer's pasteboard. A full macOS run went from 9
+  failures to 0 (`docs/smoke.md`, *Portability*).
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

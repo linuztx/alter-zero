@@ -7,9 +7,15 @@ first edit: it maps a change to the smallest check that can fail, so the loop is
 `cargo test --lib <module>::` (sub-second warm) rather than `cargo test` or the
 whole smoke suite after every edit. It also lists the macOS baseline
 failures — 6 with util-linux's `setsid` on `PATH`, 46 without it — which are
-not regressions.
+not regressions. `scripts/preflight.sh --smoke` checks the machine itself
+(toolchain, `mbx`, `tmux`, bash 4+, `setsid`) before you read a red run.
 
 ## Commands
+
+Every `cargo` command below runs through **mbx** (the shared build cache):
+`mbx setup` installs the shim, then plain `cargo …` is cached, and
+`mbx clean` clears the workspace's managed target — `target/` is a symlink into
+mbx's store, so never `rm -rf` it. Plain cargo still works, just cold.
 
 ```bash
 cargo run                                   # run the TUI
@@ -23,6 +29,8 @@ cargo build && scripts/smoke.sh             # drive the real binary in tmux (eve
 scripts/smoke.sh 55 permission              # only some phases (an id, a range, a name substring)
 scripts/smoke.sh --list                     # the phases, their tags and last durations
 bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
+scripts/preflight.sh --smoke               # is this machine able to run the gate and the phases (macOS: setsid, bash 4+)
+mbx clean                                   # clear the workspace's build via mbx (not rm -rf target/)
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
