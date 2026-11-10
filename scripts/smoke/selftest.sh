@@ -150,5 +150,60 @@ else
 		"$(smoke_selected "$PHASE"; echo $?)"
 fi
 
+# ---------------------------------------------------------------------------
+# The portability helpers. GNU and BSD disagree on `stat`'s size/permission
+# flags and on `sed -i`'s backup argument, and macOS's temp tree is the real
+# `/private/var/...` behind a `/var/...` name, so the suite asks these instead
+# of the tools directly. Each is asserted against a fixture whose answer is
+# known, so a helper that quietly returns nothing fails here rather than
+# turning an assertion in a phase into a false pass (`stat -c%s` printed an
+# error and an empty string on macOS, where `img_split + 1` then counted the
+# whole file as the "after" half).
+# ---------------------------------------------------------------------------
+section "the portability helpers answer on this platform"
+FIX="$T/fixture.bin"
+printf '0123456789' >"$FIX"
+chmod 640 "$FIX"
+# A second file standing in for the binary the phases resolve to an absolute
+# path: an ordinary absolute path must come back unchanged.
+BIN_SELFTEST="$T/alter-zero"
+: >"$BIN_SELFTEST"
+expect_eq "a file's size in bytes" "10" "$(smoke_file_size "$FIX")"
+expect_eq "a file's permission bits in octal" "640" "$(smoke_file_mode "$FIX")"
+# Two path helpers, and the difference is the point:
+# - `smoke_real_path` for the paths the app RESOLVES and then compares (a work
+#   dir, a `$HOME`, a phase's temp root), so `/var/...` and `/private/var/...`
+#   cannot be two names for one directory;
+# - `smoke_abs_path` for the BINARY, which must keep the name it was given —
+#   with mbx, `target/` is a symlink into the build cache, and `alter-zero
+#   update` tells a checkout's build from an install by the `target/…/debug`
+#   in the path it was handed. Resolving it there made Phase 116 read the
+#   checkout's own build as an installed release and install over it.
+LINK="$T/alter-zero-link"
+ln -s "$BIN_SELFTEST" "$LINK"
+case "$(smoke_abs_path "$LINK")" in
+*/alter-zero-link) pass "the binary's path keeps the name it was given" ;;
+*) flunk "the binary's path was resolved — got '$(smoke_abs_path "$LINK")'" ;;
+esac
+expect_eq "the real path resolves the leaf" "$(realpath "$LINK")" "$(smoke_real_path "$LINK")"
+expect_eq "the real path resolves a directory" "$(realpath "$T")" "$(smoke_real_path "$T")"
+# A relative name gets made absolute — this is what the phases' `$BIN` needs
+# before a launch runs in a temp cwd. The path it resolves through is the
+# platform's business (`/var` is a symlink to `/private/var` on macOS), so the
+# case asserts the shape: rooted, and ending at the file that was asked for.
+REL_ABS="$(cd "$T" && smoke_abs_path ./alter-zero)"
+case "$REL_ABS" in
+/*/alter-zero) pass "a relative path becomes absolute ($REL_ABS)" ;;
+*) flunk "a relative path becomes absolute — got '$REL_ABS'" ;;
+esac
+# `sed -i` takes its backup suffix differently on GNU and BSD, so a phase that
+# rewrites a file in place goes through this instead.
+printf 'last_ping_version: "%s"\n' "0.1.2" >"$FIX"
+smoke_sed_in_place 's/last_ping_version: "[^"]*"/last_ping_version: "0.0.0"/' "$FIX"
+expect_eq "an in-place rewrite needs no sed -i" 'last_ping_version: "0.0.0"' "$(cat "$FIX")"
+smoke_sed_in_place 's/nothing-matches/x/' "$FIX"
+expect_eq "an in-place rewrite leaves a file it does not match alone" \
+	'last_ping_version: "0.0.0"' "$(cat "$FIX")"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAILED"
 [ "$FAILED" -eq 0 ]

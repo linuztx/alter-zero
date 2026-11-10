@@ -297,7 +297,7 @@ if [ ! -x "$BIN" ]; then
 	exit 1
 fi
 export SMOKE_BIN
-SMOKE_BIN="$(readlink -f "$BIN" 2>/dev/null || realpath "$BIN")"
+SMOKE_BIN="$(smoke_abs_path "$BIN")"
 [ -n "$KEEP" ] && export SMOKE_KEEP=1
 if ! command -v tmux >/dev/null 2>&1; then
 	echo "FAIL: tmux is required to drive the TUI" >&2
@@ -332,6 +332,7 @@ TOTAL=$(("${#PARALLEL[@]}" + "${#SERIAL[@]}"))
 DONE=0
 PASSED=0
 FAILED=()
+SKIPPED=()
 SUITE_T0="$(date +%s)"
 NEW_TIMES="$(mktemp)"
 : >"$NEW_TIMES"
@@ -369,7 +370,14 @@ smoke_report() { # PID RC — one result line (+ the FAIL lines / the log)
 		rc=3
 	fi
 	printf '%s\t%s\n' "$id" "$secs" >>"$NEW_TIMES"
-	if [ "$rc" -eq 0 ]; then
+	if [ "$rc" -eq 77 ]; then
+		# "Not applicable on this platform" (`smoke_skip`), counted apart from
+		# both a pass and a failure: a macOS run that skipped the clipboard
+		# phases must not read as one where they passed.
+		SKIPPED+=("$id")
+		tag="skip"
+		colour="$C_DIM"
+	elif [ "$rc" -eq 0 ]; then
 		PASSED=$((PASSED + 1))
 		tag="ok  "
 		colour="$C_OK"
@@ -381,6 +389,10 @@ smoke_report() { # PID RC — one result line (+ the FAIL lines / the log)
 	printf '%s%s%s [%3d/%3d] %-5s %-30s %s%4ds%s\n' "$colour" "$tag" "$C_OFF" "$DONE" "$TOTAL" "$id" "$slug" "$C_DIM" "$secs" "$C_OFF"
 	if [ "$VERBOSE" -eq 1 ]; then
 		sed 's/^/    │ /' "${PID_LOG[$pid]}"
+	elif [ "$rc" -eq 77 ]; then
+		# A skip names its reason on the result line itself; the log path is
+		# there for the curious, not as the only place the reason appears.
+		grep -E '^==== Phase [0-9a-z]+: skipping — ' "${PID_LOG[$pid]}" | sed "s/^/    ${C_DIM}│${C_OFF} /"
 	elif [ "$rc" -ne 0 ]; then
 		grep -E '^(FAIL|ABORT):|^[^ ]*: line [0-9]+: ' "${PID_LOG[$pid]}" | sed "s/^/    ${C_FAIL}│${C_OFF} /"
 		printf '    %s→ %s%s\n' "$C_DIM" "${PID_LOG[$pid]}" "$C_OFF"
@@ -455,8 +467,11 @@ fi
 rm -f "$NEW_TIMES"
 
 elapsed=$(($(date +%s) - SUITE_T0))
-printf '\n%s==== smoke: %d passed, %d failed of %d in %dm%02ds (-j %d) ====%s\n' \
-	"$C_BOLD" "$PASSED" "${#FAILED[@]}" "$TOTAL" $((elapsed / 60)) $((elapsed % 60)) "$JOBS" "$C_OFF"
+printf '\n%s==== smoke: %d passed, %d failed, %d skipped of %d in %dm%02ds (-j %d) ====%s\n' \
+	"$C_BOLD" "$PASSED" "${#FAILED[@]}" "${#SKIPPED[@]}" "$TOTAL" $((elapsed / 60)) $((elapsed % 60)) "$JOBS" "$C_OFF"
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+	printf '%sskipped:%s %s\n' "$C_DIM" "$C_OFF" "${SKIPPED[*]}"
+fi
 if [ "$TOTAL" -gt 3 ]; then
 	printf '%sslowest:%s ' "$C_DIM" "$C_OFF"
 	sort -t "$(printf '\t')" -k2,2nr "$SMOKE_TIMES" | head -5 | awk -F '\t' '{ printf "%s (%ss) ", $1, $2 } END { print "" }'
@@ -467,9 +482,13 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
 	printf '%sre-run:%s scripts/smoke.sh --failed\n' "$C_DIM" "$C_OFF"
 	exit 1
 fi
-if [ "$PASSED" -ne "$TOTAL" ]; then
-	echo "FAIL: only $PASSED of $TOTAL phases reported a pass" >&2
+if [ $((PASSED + ${#SKIPPED[@]})) -ne "$TOTAL" ]; then
+	echo "FAIL: only $PASSED of $TOTAL phases reported a pass, and ${#SKIPPED[@]} skipped" >&2
 	exit 1
 fi
-echo "PASS: every phase drove the real binary in tmux and its assertions held"
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+	echo "PASS: every phase that applies here drove the real binary in tmux and its assertions held (${#SKIPPED[@]} skipped: ${SKIPPED[*]})"
+else
+	echo "PASS: every phase drove the real binary in tmux and its assertions held"
+fi
 exit 0

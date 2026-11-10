@@ -182,6 +182,91 @@ smoke_phase_tags() { # file → "serial" (space-separated tags, possibly empty)
 }
 
 # ---------------------------------------------------------------------------
+# Portability. The suite runs on Linux (CI) and on a developer's macOS, where
+# GNU's `stat -c`, `sed -i` and `sha256sum` do not exist — and a missing tool
+# here fails QUIETLY: `stat -c%s` prints an error and an empty string, so
+# `img_split + 1` became 1 and the phase counted the whole file as the
+# "after" half. Ask these instead of the tools, and let
+# `scripts/smoke/selftest.sh` pin them.
+# ---------------------------------------------------------------------------
+smoke_abs_path() { # PATH → absolute, spelled the way the caller spelled the tree
+	# Logical, not physical: a directory name is only made absolute, never
+	# resolved through a symlink. That matters for the BINARY — with mbx,
+	# `target/` is a symlink into the build cache, and `alter-zero update`
+	# tells a checkout's binary from an install by the `target/…/debug` in the
+	# path it was handed; resolving it made Phase 116 read the checkout's own
+	# build as an installed release and install over it. Plain `pwd`, no
+	# `readlink -f` (GNU-only) and no `realpath` (GNU-flavoured on BSD).
+	local p="$1" dir
+	if [ -d "$p" ]; then
+		(cd "$p" && pwd)
+		return 0
+	fi
+	dir="$(cd "$(dirname "$p")" && pwd)" || return 1
+	printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+smoke_real_path() { # PATH → absolute with every symlink resolved
+	# The other half, for the paths the app RESOLVES and then compares: a work
+	# dir, a `$HOME`, a phase's temp root. macOS's `$TMPDIR` is `/var/...`
+	# behind `/private/var/...`, and two names for one directory never compare
+	# equal. `pwd -P` is POSIX for the directory side; the LEAF is followed by
+	# hand with `readlink`, which is POSIX too (one level at a time, so a link
+	# to a link is walked rather than assumed). No `realpath` (GNU-flavoured on
+	# BSD) and no `readlink -f` (GNU-only).
+	local p="$1" dir hop=0
+	while [ -L "$p" ] && [ "$hop" -lt 32 ]; do
+		p="$(readlink "$p")"
+		hop=$((hop + 1))
+	done
+	if [ -d "$p" ]; then
+		(cd "$p" && pwd -P)
+		return 0
+	fi
+	dir="$(cd "$(dirname "$p")" && pwd -P)" || return 1
+	printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+smoke_file_size() { # FILE → size in bytes
+	# GNU `stat -c%s`; BSD `stat -f%z`. Both print just the number.
+	if stat -c%s "$1" >/dev/null 2>&1; then
+		stat -c%s "$1"
+	else
+		stat -f%z "$1"
+	fi
+}
+smoke_file_mode() { # FILE → permission bits in octal, e.g. "640"
+	# GNU `stat -c %a`; BSD `stat -f %Lp` (the low 12 bits, no file type).
+	if stat -c %a "$1" >/dev/null 2>&1; then
+		stat -c %a "$1"
+	else
+		stat -f %Lp "$1"
+	fi
+}
+smoke_sha256() { # stdin → its hex sha256, no filename column
+	# `sha256sum` is GNU's (and on newer macOS in /sbin); `shasum -a 256` is on
+	# every macOS. Both print `<hex>  <name>` for a file and `<hex>  -` for
+	# stdin, so the first field is the hash either way. Needed where the hash
+	# must be the one the APP computes (a `trust.json` fingerprint, Phase 83),
+	# so a POSIX `cksum` would not do.
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum | awk '{ print $1 }'
+	else
+		shasum -a 256 | awk '{ print $1 }'
+	fi
+}
+smoke_sed_in_place() { # SCRIPT FILE — rewrite FILE through a sed script
+	# `sed -i` takes its backup suffix differently on GNU (`-i`) and BSD
+	# (`-i ''`); rewriting through a temp file sidesteps both (the same rule
+	# scripts/release/lib.sh states).
+	local script="$1" file="$2" tmp
+	tmp="$(mktemp)" || return 1
+	if ! sed -E "$script" "$file" >"$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	mv "$tmp" "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Per-phase setup. Call once at the top of a phase file, after sourcing.
 # ---------------------------------------------------------------------------
 smoke_begin() {
@@ -202,14 +287,22 @@ smoke_begin() {
 		exit 2
 	fi
 	# Phases that run the app in a temp cwd (-c) need an ABSOLUTE binary path.
-	BIN_ABS="$(readlink -f "$BIN" 2>/dev/null || realpath "$BIN")"
+	BIN_ABS="$(smoke_abs_path "$BIN")"
 
 	# The phase's own temp tree: config home, skills/agents roots, work dirs,
 	# recordings, the tmux socket — everything, so teardown is one rm -rf. The
 	# name is kept SHORT: paths under it end up in the app's own rows (a
 	# background command's notice headline names the script it ran), and a
 	# row that wraps is a row a single-line assertion no longer finds.
-	SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/smoke-${SMOKE_PHASE}.XXXXXX")"
+	#
+	# Canonical, not as `mktemp` spelled it: on macOS a `$TMPDIR` under `/var`
+	# is really `/private/var`, and every work dir below inherits this prefix
+	# — while the app resolves the cwd it is launched in. A phase that plants
+	# an absolute path (a rollout's `cwd`, a `HOME`) or compares a row against
+	# one would then compare two names for one directory and never match. One
+	# resolution here covers all of them (the tree's own name is still as
+	# `mktemp` picked it, so the paths stay short enough for one row).
+	SMOKE_TMP="$(smoke_real_path "$(mktemp -d "${TMPDIR:-/tmp}/smoke-${SMOKE_PHASE}.XXXXXX")")"
 	export TMPDIR="$SMOKE_TMP"
 	SMOKE_TMUX_SOCKET="$SMOKE_TMP/tmux.sock"
 	# Isolate the config home (~/.alter-zero by default) so the dummy stays the
@@ -277,6 +370,21 @@ smoke_begin() {
 	echo "==== Phase $SMOKE_PHASE: $SMOKE_PHASE_TITLE ===="
 }
 
+# smoke_skip REASON — this platform cannot exercise what the phase tests, and
+# the phase says so instead of driving the app to a false FAIL. Exits 77: the
+# runner counts it apart from a pass, so "green on macOS" never quietly means
+# "half the phases did nothing". Read by `smoke_finish`, which does the
+# teardown first.
+#
+# The one reason to reach for it: a phase whose fixture is the ABSENCE of a
+# native clipboard (the OSC 52 fallback), which a GUI desktop cannot have
+# without overwriting the developer's real pasteboard.
+smoke_skip() {
+	SMOKE_SKIP_REASON="$1"
+	echo "==== Phase $SMOKE_PHASE: skipping — $1 ===="
+	exit 0
+}
+
 # Register a command to run at teardown (a stub server to kill, say):
 #   smoke_on_exit kill "$server_pid"
 smoke_on_exit() {
@@ -310,6 +418,12 @@ smoke_finish() {
 		exit "$rc"
 	fi
 	if [ "$SMOKE_FAILS" -eq 0 ]; then
+		if [ -n "${SMOKE_SKIP_REASON:-}" ]; then
+			echo "SKIP: Phase $SMOKE_PHASE — $SMOKE_PHASE_TITLE: $SMOKE_SKIP_REASON (${elapsed}s)"
+			# A distinct status (77, automake's convention) so the runner can
+			# tell "not applicable here" from "passed" without parsing the log.
+			exit 77
+		fi
 		echo "PASS: Phase $SMOKE_PHASE — $SMOKE_PHASE_TITLE (${elapsed}s)"
 		exit 0
 	fi
