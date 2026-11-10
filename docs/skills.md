@@ -107,9 +107,23 @@ there is nothing here that executes on discovery.
 
 ### Built-in skills
 
-Five skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
-**`web-search`**, **`yt-dlp`** and **`flaredantic`**. All use the same seed and discovery path
-described below.
+Six skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
+**`web-search`**, **`yt-dlp`**, **`flaredantic`** and
+**`security-engagement`**. All use the same seed and discovery path described
+below.
+
+#### `security-engagement`
+
+**`security-engagement`** turns an authorized assessment into one loop: map
+the outside, map the application, confirm one class of bug at a time, prove
+impact without collateral, and write the finding. It carries the placeholder
+conventions (`TARGET`, `DOMAIN`, `OAST`, `ROLE_A`/`ROLE_B`, `RESULT_DIR`) and
+the command set it names, so a session asked to test a site starts from a
+workflow instead of a blank page.
+
+It is a workflow, not a capability: every command still runs through the
+permission gate like any other tool call, and the body asks for the smallest
+proof that establishes impact rather than a full exploit chain.
 
 #### `skill-creator`
 

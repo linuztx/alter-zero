@@ -21,8 +21,10 @@ use crate::skills::{
 ///
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
 /// teaches public webpage and PDF retrieval; `web-search` searches the web
-/// with its own scripts; `yt-dlp` teaches media downloads and `flaredantic`
-/// teaches public localhost sharing through external CLIs (`docs/skills.md`).
+/// with its own scripts; `yt-dlp` teaches media downloads; `flaredantic`
+/// teaches public localhost sharing through external CLIs; and
+/// `security-engagement` turns an authorized assessment into recon, validation
+/// and a written finding (`docs/skills.md`).
 /// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
@@ -30,7 +32,7 @@ use crate::skills::{
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
 /// once it is there.
-const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 13] = [
     (
         "flaredantic/SKILL.md",
         include_str!("../../prompts/skills/flaredantic/SKILL.md"),
@@ -84,6 +86,10 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
     (
         "yt-dlp/SKILL.md",
         include_str!("../../prompts/skills/yt-dlp/SKILL.md"),
+    ),
+    (
+        "security-engagement/SKILL.md",
+        include_str!("../../prompts/skills/security-engagement/SKILL.md"),
     ),
 ];
 
@@ -1152,6 +1158,33 @@ mod tests {
             std::fs::read_to_string(&skill).expect("restored"),
             original_skill
         );
+    }
+
+    #[test]
+    fn seeded_security_engagement_is_listed_and_loads_on_demand() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        let registry = SkillRegistry::new(skills);
+        let listing = registry.listing(crate::skills::listing_budget(None));
+        assert!(listing.contains("security-engagement"), "{listing}");
+        assert!(
+            !listing.contains("subfinder -d DOMAIN"),
+            "body stays on demand"
+        );
+
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"security-engagement"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("loaded body");
+        assert!(body.contains("RESULT_DIR"));
+        assert!(body.contains("subfinder -d DOMAIN -all -silent"));
+        assert!(body.contains("Impact: what an attacker gains"));
     }
 
     #[test]
