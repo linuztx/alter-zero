@@ -4,6 +4,19 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
+# This phase's fixture is the ABSENCE of a native clipboard: the app's
+# OSC 52 fallback is what it reads back, out of tmux's paste buffer. A macOS
+# GUI login HAS a pasteboard — the native path wins, nothing is written as
+# OSC 52, and making the fallback fire would mean overwriting the developer's
+# real clipboard (the suite's rule: never). So skip, loudly, rather than fail
+# a check about a mechanism this machine cannot reach. The clipboard's macOS
+# half is covered by `tests/clipboard_macos.rs`, which CI runs on a macOS
+# runner with `--ignored`.
+if [ "$(uname -s)" = Darwin ] && command -v launchctl >/dev/null 2>&1 &&
+	[ "$(launchctl managername 2>/dev/null)" = Aqua ]; then
+	smoke_skip "a GUI login has a native clipboard, so the OSC 52 fallback this phase reads cannot fire (set-clipboard would not see it)"
+fi
+
 # the `/export` page (docs/export.md). `/copy`'s sibling over the WHOLE
 # conversation: a read-only two-row page — `❯ 1. Copy to clipboard` over
 # `2. Save to file`, the highlighted row's description under the list, a

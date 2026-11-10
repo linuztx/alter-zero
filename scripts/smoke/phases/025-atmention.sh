@@ -19,7 +19,7 @@ mkdir -p "$ATDIR/subdir"
 : >"$ATDIR/subdir/beta_smoke.txt"
 # The session starts in $ATDIR, so the binary needs an ABSOLUTE path ($APP's is
 # relative to the project dir); the app then walks $ATDIR for the @ picker.
-APP_ABS="env $CFG_ENV ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $(realpath "$BIN")"
+APP_ABS="env $CFG_ENV ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 launch -c "$ATDIR" "$S22" 80 24 "$APP_ABS"
 tmux send-keys -t "$S22" -l "see @alpha"
 at_open="$(wait_pane 3 "$S22" -F "alpha_smoke.txt")" # up to ~3s: the worker walks + ranks, the picker shows

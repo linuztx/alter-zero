@@ -31,7 +31,7 @@ for _ in $(seq 1 40); do # the footer proves startup completed (init ran or was 
 	fi
 	sleep 0.1
 done
-ckhome_store="$(ls -A "$CK49" 2>/dev/null | wc -l)"
+ckhome_store="$(ls -A "$CK49" 2>/dev/null | wc -l | tr -d ' ')"
 tmux send-keys -t "$S49" C-c # quit (empty composer)
 sleep 0.3
 tmux kill-session -t "$S49" 2>/dev/null
@@ -40,7 +40,7 @@ tmux kill-session -t "$S49" 2>/dev/null
 tmux new-session -d -s "$S49" -x 80 -y 24 -c "$WORK49/proj" "$CKAPP49"
 ckproj_store=0
 for _ in $(seq 1 40); do # the session-start snapshot inits the store before the loop
-	if [ "$(ls -A "$CK49" 2>/dev/null | wc -l)" -gt 0 ]; then
+	if [ "$(ls -A "$CK49" 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
 		ckproj_store=1
 		break
 	fi

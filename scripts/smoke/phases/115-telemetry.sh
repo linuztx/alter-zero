@@ -119,20 +119,24 @@ case "$tm_line" in
 esac
 tm_body="${tm_line#/v1/ping alter-zero/$TM_VERSION }"
 # The body is the seven fields and nothing else — the shape docs/telemetry.md
-# promises — with the id the file holds and the crate's own version. The suite
-# runs on Linux, so `distro` must be there; `os_version` is checked only if
-# present, because a rolling-release host (Arch, Void) legitimately names none.
+# promises — with the id the file holds and the crate's own version. `distro`
+# is Linux-only and absent from the body entirely elsewhere, so it is required
+# on Linux and forbidden off it; `os_version` is checked only if present,
+# because a rolling-release host (Arch, Void) legitimately names none.
 if ! python3 - "$tm_body" "$tm_id" "$TM_VERSION" <<'PY'; then
 import json, re, sys
 body, install_id, version = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
-required = {"arch", "distro", "id", "os", "v", "version"}
-assert required <= set(body) <= required | {"os_version"}, body
+on_linux = sys.platform.startswith("linux")
+required = {"arch", "id", "os", "version", "v"} | ({"distro"} if on_linux else set())
+allowed = required | {"os_version"}
+assert required <= set(body) <= allowed, body
 assert body["v"] == 2, body
 assert body["id"] == install_id, body
 assert body["version"] == version, body
 assert re.fullmatch(r"[a-z0-9_]{1,16}", body["os"]), body
 assert re.fullmatch(r"[a-z0-9_]{1,16}", body["arch"]), body
-assert re.fullmatch(r"[a-z0-9._-]{1,32}", body["distro"]), body
+if "distro" in body:
+    assert re.fullmatch(r"[a-z0-9._-]{1,32}", body["distro"]), body
 if "os_version" in body:
     assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", body["os_version"]), body
 PY
@@ -311,7 +315,7 @@ wait "$TM_SERVER5" 2>/dev/null
 # notice again, no new install id. Keyed on the day alone this launch stayed
 # silent until midnight UTC, and the dashboard kept the install on the old
 # version for the day it had updated (docs/telemetry.md *When it is sent*).
-sed -i -E 's/"last_ping_version": *"[^"]*"/"last_ping_version": "0.0.0"/' "$TM_CFG/home/telemetry.json"
+smoke_sed_in_place 's/"last_ping_version": *"[^"]*"/"last_ping_version": "0.0.0"/' "$TM_CFG/home/telemetry.json"
 if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" != "0.0.0" ]; then
 	tm_fail "could not stage the pre-update file: last_ping_version did not take"
 fi

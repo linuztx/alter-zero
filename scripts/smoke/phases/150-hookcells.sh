@@ -150,7 +150,10 @@ sleep 0.3
 hc_overlay="$(tmux capture-pane -t "$S150" -p)"
 dump "the Ctrl+O transcript" "$hc_overlay"
 hc_expanded="$(printf '%s\n' "$hc_overlay" | awk '/● Ran 2 Stop hooks *$/ {for (i = 0; i < 8 && (getline line) > 0; i++) print line; exit}')"
-expect_has "$(printf '%s\n' "$hc_expanded" | sed -n 1p)" -E "⎿  \[ -f .*stop150\.blocked \] && exit 0.* \([0-9.]+m?s\)" \
+# The cell elides the hook's command line with an ellipsis once the temp path
+# under it is long (a canonical `/private/var/...`), so the marker's name can
+# be cut: assert the command's shape and its time, not the tail of the path.
+expect_has "$(printf '%s\n' "$hc_expanded" | sed -n 1p)" -E "⎿  \[ -f .* \([0-9.]+m?s\)$" \
 	"the expanded cell lost the blocking hook or its time (saw: $hc_expanded)"
 expect_has "$(printf '%s\n' "$hc_expanded" | sed -n 2p)" -F "Config: " "the expanded cell lost the hook's hooks.json (saw: $hc_expanded)"
 expect_has "$hc_expanded" -E "⎿  echo 'smoke150 notifier offline' >&2; exit 1 \([0-9.]+m?s\)" \

@@ -20,7 +20,11 @@ mkdir -p "$AG_CFG/agents"
 printf 'just a body, no frontmatter at all\n' >"$AG_CFG/agents/broken.md"
 APP_AG="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$AG_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux kill-session -t "$S100" 2>/dev/null
-tmux new-session -d -s "$S100" -x 100 -y 24 "$APP_AG"
+# 160 columns, not 100: the toast quotes the file's whole path (this phase's
+# config home is a `mktemp -d` under `$TMPDIR`, which on macOS is a long
+# `/var/folders/...`), and a narrower pane elides the end of the line — which
+# is exactly where the reason lives.
+tmux new-session -d -s "$S100" -x 160 -y 24 "$APP_AG"
 sleep 1.2
 # A definition that will not parse says so, and says why: silence here is what
 # makes "the model says my agent type is unknown" and "I typo'd the

@@ -33,6 +33,14 @@ expect_has "$imgpaste" -F "Failed to paste image" "Ctrl+V with no clipboard did 
 # The notice wraps at 80 columns, so each assertion is a phrase short enough
 # to sit on one row wherever the wrap falls.
 expect_has "$imgpaste" -F "no desktop clipboard" "a paste with no display must say there is no desktop clipboard, not report a failed X11 probe"
-expect_has "$imgpaste" -F "WAYLAND_DISPLAY" "the refusal must name the variables, since forwarding one is the fix (docs/docker.md)"
+# The variable it names is the platform's own: a Linux session is told to
+# forward DISPLAY/WAYLAND_DISPLAY, a macOS one that it is not a GUI login
+# (`clipboard::NO_DISPLAY_REASON` vs `clipboard::macos`). Both refusals must be
+# actionable, so the assertion follows the platform rather than pinning one.
+case "$(uname -s)" in
+Darwin) want_hint="GUI" ;;
+*) want_hint="WAYLAND_DISPLAY" ;;
+esac
+expect_has "$imgpaste" -F "$want_hint" "the refusal must name what is missing, since fixing that is the fix (docs/docker.md, docs/image-paste.md)"
 expect_has "$imgpaste" -F "read its path" "the refusal must say what works instead: read the image by path"
 expect_has "$imgalive" -F "still alive" "the composer was unresponsive after a failed image paste (Ctrl+V hung or crashed the app)"

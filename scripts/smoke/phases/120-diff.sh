@@ -48,7 +48,10 @@ review_snapshot() {
 	git -C "$DIFF_DIR" status --porcelain=v1
 	git -C "$DIFF_DIR" diff --cached --binary
 	git -C "$DIFF_DIR" diff --binary
-	sha256sum "$DIFF_DIR/alpha-worktree.txt" "$DIFF_DIR/beta-staged.txt" "$DIFF_DIR/gamma-untracked.txt"
+	# The files' own bytes, hashed portably: `sha256sum` is GNU's (docs/smoke.md,
+	# *Portability*), and this snapshot only needs to prove the review wrote
+	# nothing back, so the POSIX `cksum` is enough.
+	cksum "$DIFF_DIR/alpha-worktree.txt" "$DIFF_DIR/beta-staged.txt" "$DIFF_DIR/gamma-untracked.txt"
 }
 review_before="$(review_snapshot)"
 

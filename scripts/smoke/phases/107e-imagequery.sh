@@ -120,7 +120,15 @@ with open(a.log, "wb") as log:
 if proc.poll() is None:
     proc.terminate()
     proc.wait()
-attrs = termios.tcgetattr(slave)
+# The tty's state after the run, read off the MASTER: once the app — its
+# session leader, and the holder of the controlling terminal — exits, macOS
+# tears the pty down and `tcgetattr(slave)` fails with ENOTTY (25), while
+# Linux still answers there. Both fds address one termios, so ask the slave
+# first and fall back to the master rather than failing the whole phase.
+try:
+    attrs = termios.tcgetattr(slave)
+except termios.error:
+    attrs = termios.tcgetattr(master)
 with open(a.report, "w") as report:
     report.write("asked=%s\n" % ",".join(asked))
     report.write("exit=%s\n" % (proc.returncode if exited_after is not None else "running"))
@@ -187,7 +195,9 @@ eq_run mute --kitty ok --version libghostty --no-cursor --seconds 4 &
 wait
 
 eq_field() { sed -n "s/^$2=//p" "$SMOKE_TMP/$1.report" 2>/dev/null; }
-eq_count() { grep -ao -- "$2" "$SMOKE_TMP/$1.raw" 2>/dev/null | wc -l; }
+# BSD `wc -l` pads its count (`"       0"`); GNU's does not. The whitespace is
+# stripped so an assertion compares a number on either platform.
+eq_count() { grep -ao -- "$2" "$SMOKE_TMP/$1.raw" 2>/dev/null | wc -l | tr -d '[:space:]'; }
 eq_tx() { eq_count "$1" "$(printf '\033')_G[^;]*a=T"; }
 # Whole glyphs: under the C locale a bracket expression would match the bytes
 # of every UTF-8 box-drawing character too.

@@ -25,8 +25,8 @@ smoke_begin
 # files' current bytes carries over unasked. Launched in the home directory,
 # the user's own hooks are reviewed as the user's — never as a project's.
 S83="${S}_review"
-RV_CFG="$(mktemp -d)"
-RV_WORK="$(mktemp -d)"
+RV_CFG="$(smoke_real_path "$(mktemp -d)")"
+RV_WORK="$(smoke_real_path "$(mktemp -d)")"
 mkdir -p "$RV_WORK/.alter-zero"
 cat >"$RV_WORK/server.sh" <<'RVSRV'
 #!/bin/sh
@@ -78,7 +78,7 @@ rv_hooks="$(tmux capture-pane -t "$S83" -p)"
 dump "the hooks page" "$rv_hooks"
 for expect in "2 new hooks found  1/2" "Hooks run shell commands on their own" \
 	"User · " "❯ [✔] PreToolUse · Bash" "./guard.sh --strict" \
-	"Project · " "[✔] Stop" "./fmt.sh" \
+	"Project ·" "[✔] Stop" "./fmt.sh" \
 	"Trust selected and continue" "Continue without trusting"; do
 	expect_has "$rv_hooks" -F "$expect" "the hooks page is missing '$expect'"
 done
@@ -192,9 +192,15 @@ launch -c "$RV_WORK" -w "Esc to disable all" "$S83" 100 40 "$RV_APP"
 rv_server_changed="$(tmux capture-pane -t "$S83" -p)"
 dump "the changed server" "$rv_server_changed"
 for expect in "1 MCP server changed in this project" "projfix · stdio  changed" \
-	"sh $RV_WORK/server.sh --verbose" "changed: the command line"; do
+	"sh $RV_WORK/server.sh" "changed: the command line"; do
 	expect_has "$rv_server_changed" -F "$expect" "the changed server's page is missing '$expect'"
 done
+# The command line wraps once the path under it is long enough (a canonical
+# `/private/var/...` temp dir), so its tail is asserted on its own row — with
+# `-e`, because a pattern that opens with `--` is otherwise read as a grep
+# option.
+expect_has "$rv_server_changed" -F -e "--verbose" \
+	"the changed server's page does not show the changed flag"
 expect_lacks "$rv_server_changed" -F "docs · http" "a decided, unchanged server was asked about again"
 keys "$S83" Escape
 wait_for 10 "$S83" -E '^❯' || fail "Esc did not disable the changed server"
@@ -257,9 +263,9 @@ rv_app_in() {
 # --- Two sessions answering at once: each records over trust.json as it is
 # when it answers, never over what it read at startup, so the second keeps
 # the first's answer.
-RV_CFG2="$(mktemp -d)"
-RV_ONE="$(mktemp -d)"
-RV_TWO="$(mktemp -d)"
+RV_CFG2="$(smoke_real_path "$(mktemp -d)")"
+RV_ONE="$(smoke_real_path "$(mktemp -d)")"
+RV_TWO="$(smoke_real_path "$(mktemp -d)")"
 rv_project "$RV_ONE" "./one.sh"
 rv_project "$RV_TWO" "./two.sh"
 launch -c "$RV_ONE" -w "Esc to continue without trusting" "${S83}_a" 100 40 "$(rv_app_in "$RV_CFG2")"
@@ -279,7 +285,7 @@ tmux kill-session -t "$S83" 2>/dev/null
 
 # --- A trust.json with a typo fails closed and is never written over: the
 # decisions in it wait for the fix.
-RV_CFG3="$(mktemp -d)"
+RV_CFG3="$(smoke_real_path "$(mktemp -d)")"
 printf '%s\n' '{"hooks": {"/elsewhere/.alter-zero/hooks.json": [{"event": "Stop", "command": "./other.sh"}]},}' >"$RV_CFG3/trust.json"
 rv_typo="$(cksum <"$RV_CFG3/trust.json")"
 launch -c "$RV_ONE" -w "Esc to continue without trusting" "$S83" 100 40 "$(rv_app_in "$RV_CFG3")"
@@ -295,10 +301,12 @@ tmux kill-session -t "$S83" 2>/dev/null
 # --- What /trust approved at exactly the files' current bytes carries over:
 # no review, the hook recorded trusted, the old record gone — another
 # project's kept for when it is opened.
-RV_CFG4="$(mktemp -d)"
-RV_OLD="$(mktemp -d)"
+RV_CFG4="$(smoke_real_path "$(mktemp -d)")"
+RV_OLD="$(smoke_real_path "$(mktemp -d)")"
 rv_project "$RV_OLD" "./old.sh"
-rv_fp="sha256:$(sha256sum <"$RV_OLD/.alter-zero/hooks.json" | cut -d' ' -f1)"
+# The fingerprint the app records is a sha256, so the fixture must be one too
+# (`smoke_sha256` asks whichever of `sha256sum`/`shasum` this machine has).
+rv_fp="sha256:$(smoke_sha256 <"$RV_OLD/.alter-zero/hooks.json")"
 cat >"$RV_CFG4/trust.json" <<RVLEGACY
 {"projects": {
   "$RV_OLD": {"files": {"$RV_OLD/.alter-zero/hooks.json": "$rv_fp"}},
@@ -315,7 +323,11 @@ rm -rf "$RV_CFG2" "$RV_CFG3" "$RV_CFG4" "$RV_ONE" "$RV_TWO" "$RV_OLD"
 
 # --- The home directory is never a project (docs/project-config.md):
 # launched in ~, the user's own hooks are reviewed as the user's, once.
-RV_HOME="$(mktemp -d)"
+# Canonical: the app resolves its cwd, and this is what the home rule compares
+# against. On macOS `mktemp` answers `/var/…` where the resolved name is
+# `/private/var/…` — a HOME spelled the other way is "not the home directory",
+# and the layer would read the user's own files as a project's (`smoke_real_path`).
+RV_HOME="$(smoke_real_path "$(mktemp -d)")"
 mkdir -p "$RV_HOME/.alter-zero"
 cat >"$RV_HOME/.alter-zero/hooks.json" <<'RVHOME'
 {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./home-fmt.sh"}]}]}}
@@ -326,6 +338,6 @@ rv_home="$(tmux capture-pane -t "$S83" -p)"
 dump "launched in the home directory" "$rv_home"
 expect_has "$rv_home" -F "1 new hook found" "the home hooks file was not reviewed once"
 expect_has "$rv_home" -F "User · ~/.alter-zero/hooks.json" "the home hooks file is not reviewed as the user's"
-expect_lacks "$rv_home" -F "Project · " "the user's own config home was read as a project"
+expect_lacks "$rv_home" -F "Project ·" "the user's own config home was read as a project"
 tmux kill-session -t "$S83" 2>/dev/null
 rm -rf "$RV_CFG" "$RV_WORK" "$RV_HOME"

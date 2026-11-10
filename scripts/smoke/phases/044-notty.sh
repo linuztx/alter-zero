@@ -27,6 +27,11 @@ tmux kill-session -t "$S44" 2>/dev/null
 # Phase 44: shell children have no controlling terminal — the /dev/tty probe
 # (sudo's password-prompt mechanism) fails fast inside the cell instead of
 # printing over the TUI or blocking on the keyboard.
-expect_has "$notty_pane" -F "No such device or address" "the /dev/tty open did not fail (the shell child still has a controlling terminal, so a sudo prompt would hijack the TUI)"
+# ENXIO's strerror is libc's, not ours: Linux says "No such device or
+# address", macOS "Device not configured". Either proves the open failed; a
+# LEAK_MARK on screen would prove it did not (the next assertion).
+if printf '%s\n' "$notty_pane" | grep -qE "No such device or address|Device not configured"; then :; else
+	fail "the /dev/tty open did not fail (the shell child still has a controlling terminal, so a sudo prompt would hijack the TUI)"
+fi
 expect_has "$notty_pane" -F "exit status:" "the '! … > /dev/tty' cell never resolved (the command blocked — the sudo-hang bug)"
 expect_lacks "$notty_pane" -F "LEAK_MARK" "the marker printed over the TUI (the child wrote straight to /dev/tty)"

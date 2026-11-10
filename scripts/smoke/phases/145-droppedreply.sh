@@ -277,11 +277,18 @@ launch -c "$AGENT_WORK" "$S145B" 120 40 "$AGENT_APP"
 submit "$S145B" "smoke145 agent"
 poll 30 test -e "$HELD" || fail "the agent's first request never reached the stub"
 # ↓ opens the roster on `● main`, a second ↓ steps onto the agent, Enter
-# opens its session view (Phase 141's walk).
+# opens its session view (Phase 141's walk). Each step POLLS for the state it
+# is supposed to produce rather than sleeping past it: a ↓ that lands before
+# the roster is painted opens the roster instead of moving in it, and the
+# walk then ends on `main` — which reads as "the view never showed the
+# partial reply" and says nothing about the real cause.
+# The `❯` row marker is the stable signal — the footer hint's last words
+# differ once an agent has settled (`x to stop` → `x to clear`), so polling on
+# the hint fails a walk that worked.
 keys "$S145B" Down
-sleep 0.15
+wait_for 5 "$S145B" -F "❯ ● main" || fail "↓ did not open the roster on main"
 keys "$S145B" Down
-sleep 0.15
+wait_for 5 "$S145B" -E '❯ ◯ general-purpose' || fail "↓ did not step onto the agent's row"
 keys "$S145B" Enter
 viewing="$(wait_pane 10 "$S145B" -F "Agent draft one: line B.")" ||
 	fail "the agent's session view never showed its partial reply"

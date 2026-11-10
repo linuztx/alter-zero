@@ -18,15 +18,17 @@ smoke_begin
 # pattern). The pane is 160 wide so the heading — the temp path plus its
 # caption — sits on one row and can be grepped whole.
 S52="${S}_init"
-WORK52="$(mktemp -d "$SMOKE_TMP/init.XXXXXX")"
+# Canonical, because the app resolves its cwd and the heading below quotes it:
+# on macOS a temp tree under `/var` is really `/private/var`, and a heading
+# compared against the name `mktemp` printed would never match.
+WORK52="$(smoke_real_path "$(mktemp -d "$SMOKE_TMP/init.XXXXXX")")"
 mkdir -p "$WORK52/.git"
 printf '# Contributor guide\n\nSmoke sentinel: Umbral-Kite-77.\n' >"$WORK52/AGENTS.md"
 # The app runs in the temp cwd (-c), so the binary must be an absolute path.
 # The suite exports ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0 (lib.sh); this phase
 # is the one that reads the planted AGENTS.md, so it drops the override.
-BIN_ABS52="$(readlink -f "$BIN")"
 tmux new-session -d -s "$S52" -x 160 -y 30 -c "$WORK52" \
-	"env -u ALTER_ZERO_PROJECT_DOC_MAX_BYTES $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2000 $BIN_ABS52"
+	"env -u ALTER_ZERO_PROJECT_DOC_MAX_BYTES $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=2000 $BIN_ABS"
 sleep 0.5
 tmux send-keys -t "$S52" C-d
 sleep 0.4
@@ -52,7 +54,12 @@ tmux kill-session -t "$S52" 2>/dev/null
 echo "==== Phase 52: /init + the AGENTS.md instructions in the Ctrl+D context ===="
 expect_has "$init_ctx" -F "<system-reminder>" "Ctrl+D lacks the <system-reminder> the context leads with"
 expect_has "$init_ctx" -F "Use the following contexts and instructions:" "the <system-reminder> lacks its preamble line"
-expect_has "$init_ctx" -F "Contents of $WORK52/AGENTS.md (project instructions, checked into the codebase):" "Ctrl+D lacks the planted AGENTS.md's 'Contents of' heading"
+# The heading is longer than the view's wrapped row (the context view indents
+# every line), so it is asserted in its two halves — a single-line match only
+# holds at one pane width.
+expect_has "$init_ctx" -F "Contents of $WORK52/AGENTS.md (project instructions" \
+	"Ctrl+D lacks the planted AGENTS.md's 'Contents of' heading"
+expect_has "$init_ctx" -F "checked into the" "the 'Contents of' heading lost its caption"
 expect_lacks "$init_ctx" -F "<INSTRUCTIONS>" "the retired codex <INSTRUCTIONS> fragment is back"
 expect_has "$init_ctx" -F "Umbral-Kite-77" "the planted AGENTS.md content is missing from the context view"
 expect_has "$init_pane" -F "Generate a file named AGENTS.md" "/init did not submit the bundled AGENTS.md prompt as the user message"

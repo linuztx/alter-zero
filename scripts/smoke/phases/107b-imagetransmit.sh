@@ -63,7 +63,7 @@ for _ in $(seq 1 60); do
 	sleep 0.1
 done
 sleep 0.8
-img_split="$(stat -c%s "$IMG_RAW" 2>/dev/null || echo 0)"
+img_split="$(smoke_file_size "$IMG_RAW" 2>/dev/null || echo 0)"
 tmux send-keys -t "$S107B" C-o
 sleep 1.5
 # A kitty transmit is `ESC _ G <controls incl. a=T> ; <base64> ESC \` — count
@@ -77,11 +77,11 @@ img_tx_after="$(tail -c +$((img_split + 1)) "$IMG_RAW" | img_kitty_tx)"
 # per-screen cache exists to avoid. Coming back costs nothing because the
 # overlay never touched the primary screen's store; reopening costs nothing
 # because a virtually-placed image survives the 1049 switch.
-img_split_back="$(stat -c%s "$IMG_RAW" 2>/dev/null || echo 0)"
+img_split_back="$(smoke_file_size "$IMG_RAW" 2>/dev/null || echo 0)"
 tmux send-keys -t "$S107B" C-o
 sleep 1.5
 img_tx_back="$(tail -c +$((img_split_back + 1)) "$IMG_RAW" | img_kitty_tx)"
-img_split_again="$(stat -c%s "$IMG_RAW" 2>/dev/null || echo 0)"
+img_split_again="$(smoke_file_size "$IMG_RAW" 2>/dev/null || echo 0)"
 tmux send-keys -t "$S107B" C-o
 sleep 1.5
 img_tx_again="$(tail -c +$((img_split_again + 1)) "$IMG_RAW" | img_kitty_tx)"

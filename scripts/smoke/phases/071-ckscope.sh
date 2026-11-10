@@ -34,7 +34,7 @@ ck71_launch() {
 		sleep 0.1
 	done
 	ck71_pane="$(tmux capture-pane -t "$S71" -p)"
-	ck71_store="$(ls -A "$CK71" 2>/dev/null | wc -l)"
+	ck71_store="$(ls -A "$CK71" 2>/dev/null | wc -l | tr -d ' ')"
 	tmux kill-session -t "$S71" 2>/dev/null
 	echo "==== Phase 71 ($1): ready=$ck71_ready store_entries=$ck71_store ===="
 	printf '%s\n' "$ck71_pane" | grep -F "Checkpoints off" || echo "     (no refusal toast)"

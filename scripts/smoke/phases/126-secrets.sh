@@ -22,7 +22,15 @@ smoke_begin
 # never appear on screen once typed, scrollback included.
 S126="${S}_secrets"
 VALUE="s3cr3t-demo-value-42"
-VALUE_SHA="$(printf '%s' "$VALUE" | sha256sum | cut -c1-16)"
+# A value's fingerprint, printed by the app's own `!` command. `cksum` is
+# POSIX — every macOS and every Linux has it — where `sha256sum` is GNU's and
+# a developer's Mac may not (docs/smoke.md, *Portability*). The two proofs
+# hash different inputs (the value alone, then the value behind a prefix), so
+# the second cannot be met by the first's output; and a placeholder left
+# unexpanded hashes to neither.
+value_cksum() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
+VALUE_SHA="$(value_cksum "$VALUE")"
+TYPED_SHA="$(value_cksum "typed:$VALUE")"
 FILE="$SMOKE_CFG/secrets.json"
 never_shows_value() { # $1 label
 	local screen
@@ -76,7 +84,7 @@ never_shows_value "the list"
 if [ ! -f "$FILE" ]; then
 	fail "secrets.json was not written"
 else
-	expect_eq "$(stat -c %a "$FILE")" "600" "secrets.json is not owner-only"
+	expect_eq "$(smoke_file_mode "$FILE")" "600" "secrets.json is not owner-only"
 	expect_file_has "$FILE" -F "\"name\": \"DEMO_TOKEN\"" "secrets.json lacks the name"
 	expect_file_has "$FILE" -F "$VALUE" "secrets.json lacks the value"
 fi
@@ -97,7 +105,7 @@ wait_for 5 "$S126" -E '^❯' || fail "Esc did not bring the composer back"
 
 # A `!` command: the placeholder expands for the shell — only the real value
 # hashes to VALUE_SHA — and the echoed value comes back as the placeholder.
-submit "$S126" "!printf '%s' '<secret:DEMO_TOKEN>' | sha256sum | cut -c1-16"
+submit "$S126" "!printf '%s' '<secret:DEMO_TOKEN>' | cksum | cut -d' ' -f1"
 hashed="$(wait_pane 10 "$S126" -F "$VALUE_SHA")" || fail "the placeholder did not expand for the ! command"
 dump "the ! command hashing the expanded value" "$hashed"
 submit "$S126" "!printf 'token=%s\\n' '<secret:DEMO_TOKEN>'"
@@ -118,18 +126,17 @@ fi
 
 # What the user types (docs/secrets.md *What the user types*): the VALUE
 # itself, where the placeholder would go. A `!` command typed with it still
-# runs with it — only the real value hashes to TYPED_SHA, a slice of the hash
-# no earlier step printed — while its header shows the placeholder, and a
-# toast says why the header is not what was typed.
+# runs with it — only the typed text hashes to TYPED_SHA, and an unexpanded
+# placeholder would hash to something else entirely — while its header shows
+# the placeholder, and a toast says why the header is not what was typed.
 HID="Hid the value of <secret:DEMO_TOKEN> from the agent"
-TYPED_SHA="$(printf '%s' "$VALUE" | sha256sum | cut -c17-28)"
-submit "$S126" "!printf '%s' '$VALUE' | sha256sum | cut -c17-28"
+submit "$S126" "!printf 'typed:%s' '$VALUE' | cksum | cut -d' ' -f1"
 toasted="$(wait_pane 3 "$S126" -F "$HID")" || fail "no toast said the value typed into a ! command was hidden"
 dump "the toast for a value typed into a ! command" "$toasted"
 typed_cmd="$(wait_pane 10 "$S126" -F "$TYPED_SHA")" ||
 	fail "a ! command typed with the value did not run with it"
 dump "a ! command typed with the value" "$typed_cmd"
-expect_has "$typed_cmd" -F "! printf '%s' '<secret:DEMO_TOKEN>' | sha256sum | cut -c17-28" \
+expect_has "$typed_cmd" -F "! printf 'typed:%s' '<secret:DEMO_TOKEN>' | cksum | cut -d' ' -f1" \
 	"the ! command typed with the value is not shown with the placeholder"
 never_shows_value "a ! command typed with the value"
 # A message typed with it reaches the conversation as the placeholder: the

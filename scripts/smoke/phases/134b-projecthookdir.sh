@@ -19,7 +19,10 @@ smoke_begin
 # A stub provider asks for that one `bash` call and records the tool result
 # the model is sent back.
 S134B="${S}_projecthookdir"
-REPO="$(work_dir projrepo)"
+# Canonical: the app resolves the cwd it is launched in, and this path is what
+# the hook's own message quotes back (on macOS `$TMPDIR` is `/var/...` behind
+# `/private/var/...`, so a name spelled the other way never matches the row).
+REPO="$(smoke_real_path "$(work_dir projrepo)")"
 git -C "$REPO" init -q
 mkdir -p "$REPO/.alter-zero/hooks" "$REPO/src/build"
 : >"$REPO/src/build/keep"
@@ -93,8 +96,11 @@ trust_hooks "$S134B"
 submit "$S134B" "clean the build"
 ph_pane="$(wait_settled 30 "$S134B" -S -200 -- -F "Done.")" || fail "the turn never settled"
 dump "the turn, launched in $REPO/src" "$ph_pane"
-expect_has "$ph_pane" -F "Blocked by PreToolUse hook: no destructive deletes (ran in $REPO/src)" \
+# The cell wraps the message, so the path it quotes is asserted on its own:
+# a single-line match only holds while the temp path is short enough.
+expect_has "$ph_pane" -F "Blocked by PreToolUse hook: no destructive deletes (ran in" \
 	"the project's guard never ran from the subdirectory, or did not run in the cwd"
+expect_has "$ph_pane" -F "$REPO/src)" "the hook's cell does not name the cwd it ran in"
 expect_has "$ph_pane" -F 'Hook: ${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh' \
 	"the refusal cell did not name the project's hook"
 expect_has "$ph_pane" -F "Config: ~/projrepo/.alter-zero/hooks.json" \

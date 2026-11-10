@@ -128,10 +128,15 @@ dump "the lead read the failure and went on" "$failed"
 # ---- the user messages the failed agent back to work ----
 # ↓ opens the roster on `● main`, a second ↓ steps onto the agent, Enter
 # opens its session view (Phase 96's walk).
+# Same polling rule as Phase 145's walk: wait for each step's own state, so a
+# key that arrives before the roster paints fails where it happened.
+# The `❯` row marker is the stable signal — the footer hint's last words differ
+# once an agent has settled (`x to stop` → `x to clear`), so polling on the
+# hint fails a walk that worked.
 keys "$S141" Down
-sleep 0.15
+wait_for 5 "$S141" -F "❯ ● main" || fail "↓ did not open the roster on main"
 keys "$S141" Down
-sleep 0.15
+wait_for 5 "$S141" -E '❯ ◯ general-purpose' || fail "↓ did not step onto the agent's row"
 keys "$S141" Enter
 wait_for 10 "$S141" -E '^❯ Write the frontend\.' ||
 	fail "the failed agent's session view did not open"

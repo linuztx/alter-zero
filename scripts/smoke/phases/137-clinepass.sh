@@ -150,8 +150,17 @@ expect_lacks "$subs" -F "Cline Account" "the Cline sign-in was offered twice"
 # Onto the row by NAME (Phase 104's rule: counting Downs would land on
 # whichever subscription was added ahead of it). One flow is listed, so Enter
 # opens the device page at once.
+picker_filtered_to_clinepass() {
+	local p
+	p="$(pane "$S137")"
+	printf '%s\n' "$p" | grep -qF "ClinePass" && ! printf '%s\n' "$p" | grep -qF "GitHub Copilot"
+}
+# Poll for the filter to have taken, rather than sleep and hope: on a loaded
+# pool the keystrokes land while the picker is still repainting, and an Enter
+# sent into the unfiltered list picks whichever row the cursor happens to be
+# on (`docs/smoke.md`: poll for the state, never fixed-sleep).
 type_text "$S137" "clinepass"
-sleep 0.3
+poll 5 picker_filtered_to_clinepass || fail "the filter did not narrow onto ClinePass"
 keys "$S137" Enter
 device="$(wait_pane 8 "$S137" -F "SMOK-C137")"
 dump "the device-code page" "$device"
