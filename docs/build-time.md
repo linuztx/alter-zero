@@ -193,12 +193,14 @@ setting reaches **this crate only**: cargo never compiles registry
 dependencies incrementally (the first build under it recompiled one
 package, the dependency units byte-for-byte what they were), which is also
 why `cargo install --path .` pays only the first-build overhead. A build
-that wants the plain layout regardless — a packaged release, a CI job —
-asks for it on the command line, no manifest edit needed:
+that wants the plain layout regardless — a CI job, a distribution's package
+built once — asks for it on the command line, no manifest edit needed:
 
 ```bash
 cargo build --release --config profile.release.incremental=false
 ```
+
+The release archives themselves are built in a profile of their own, below.
 
 **`lto = "off"` was measured and refused.** Cargo's default for release is
 not "no LTO" but thin LTO across each crate's own codegen units, and
@@ -219,6 +221,23 @@ provided, and the syntect + wrap path is exactly the kind of code that
 notices. For a TUI whose promise is to be light and fast, the cold build
 is the wrong side of that trade; the number is recorded here so nobody
 has to measure it twice.
+
+### `[profile.dist]` — the shipped build is not this page's build
+
+The release archives are no longer built in `release`. `scripts/release.sh
+build` compiles them in a profile of its own — `release` plus `lto = "fat"`
+and `codegen-units = 1`, never incremental — which `docs/binary-size.md`
+measured for what it ships: a binary 27% smaller and a render path 4–13%
+*faster*, the same cross-unit inlining `lto = "off"` above took away, given
+the whole program. It costs exactly what this page is about. A cold build
+took **4 min 26 s** against 2 min 17 s for `release` on the same 4-core
+machine, its largest process at ~1.9 GB, the whole program's LTO running as
+one job on one core once the dependencies are done. And it cannot be
+incremental: fat LTO re-optimises the whole program on every link, so as
+`release`'s setting it would turn the ~10 s rebuild after an edit back into
+minutes. That is the reason for two profiles rather than one: `release` is
+the developer's, rebuilt per edit, and `dist` is the release workflow's,
+built once per target per release.
 
 ## What stays, and why
 
@@ -282,4 +301,5 @@ touch src/app/mod.rs && time cargo build --release                     # warm: t
 RUSTC_BOOTSTRAP=1 cargo rustc --release --lib -- -Ztime-passes 2>&1 \
   | grep '^time:' | sort -t: -k2 -rn | head                            # the library's passes
 cargo run --release --example perf_probe                               # the runtime check
+time scripts/release.sh build                                          # the shipped build (docs/binary-size.md)
 ```

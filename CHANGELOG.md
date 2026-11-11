@@ -87,6 +87,17 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The release binary is over a quarter smaller, and draws faster.**
+  Releases are now built with whole-program link-time optimisation, in a
+  build profile of their own, so the compiler sees every crate at once: the
+  Linux x86_64 binary went from 25.6 MB to 18.6 MB and its download from
+  10.1 MB to 8.6 MB, and redrawing a long code reply got 4–13% faster. Hook
+  matchers also stopped carrying the regex engine's speed-ups for long
+  texts, since a matcher only ever sees a tool name; they match exactly as
+  before. A `RUST_BACKTRACE=1` report still names functions, and
+  `cargo build --release` from a checkout is unchanged
+  (`docs/binary-size.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

@@ -131,6 +131,14 @@ matcher in real Claude Code configs, silently skipping it would be a footgun
 with no offsetting saving, and we compile it instead. A matcher that fails to
 compile is warned about and skipped.
 
+Once `regex` was this crate's alone, its `perf` features were dropped
+(`default-features = false`, `std` + `unicode`): the lazy and one-pass DFAs,
+the backtracker and the `aho-corasick` prefilters speed up searches through
+long texts, and a matcher is only ever tried against a tool name. The crate
+promises the same matches with or without them, `unicode` keeps `\w`, `\d`
+and `(?i)` as they were, and the binary is 0.57 MB smaller
+(`docs/binary-size.md`).
+
 **Tool names answer to both spellings.** The match query for the tool events
 is this app's own tool name — `bash`, `read`, `write`, `edit`, `agent` —
 lowercase, as the model sees it, and each also answers to its Claude Code

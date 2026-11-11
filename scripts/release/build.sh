@@ -7,9 +7,10 @@
 #   scripts/release.sh build x86_64-apple-darwin --dist out/
 #
 # The build is the one Cargo.toml documents for a packaged release —
-# `cargo build --release --locked --target T --config
-# profile.release.incremental=false` (the incremental release profile is a
-# developer's rebuild speed, not a shipped layout; docs/build-time.md) — and
+# `cargo build --profile dist --locked --target T`, the release profile with
+# fat LTO over one codegen unit and no incremental cache: a smaller and faster
+# binary for a longer build (docs/binary-size.md), where the `release` profile
+# keeps a developer's quick incremental rebuild (docs/build-time.md) — and
 # the binary lands in dist/ as {name}-v{version}-{target}.tar.gz beside its
 # .sha256 (lib.sh's package_dist). Cross-compiling a Linux GNU target from
 # another Linux CPU needs that target's gcc (for oniguruma's and ring's C
@@ -87,10 +88,10 @@ if command -v rustup >/dev/null 2>&1; then
 	fi
 fi
 
-info "cargo build --release --locked --target $target (profile.release.incremental=false)"
-(cd "$RELEASE_ROOT" && cargo build --release --locked --target "$target" --config profile.release.incremental=false)
+info "cargo build --profile dist --locked --target $target"
+(cd "$RELEASE_ROOT" && cargo build --profile dist --locked --target "$target")
 
-bin="$cargo_target_dir/$target/release/$name"
+bin="$cargo_target_dir/$target/dist/$name"
 [ -x "$bin" ] || die "build: expected the binary at $bin"
 archive="$(package_dist "$bin" "$version" "$target" "$dist")"
 ok "built $archive ($(du -h "$archive" | awk '{ print $1 }'))"

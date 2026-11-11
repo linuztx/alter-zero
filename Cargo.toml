@@ -8,7 +8,8 @@ license = "Apache-2.0"
 repository = "https://github.com/linuztx/alter-zero"
 
 # The one binary target (`src/main.rs`): `cargo build --release` yields
-# `./target/release/alter-zero`.
+# `./target/release/alter-zero`; the binary a release ships is built in the
+# `dist` profile at the bottom of this file (`./target/dist/alter-zero`).
 [[bin]]
 name = "alter-zero"
 path = "src/main.rs"
@@ -111,7 +112,13 @@ url = "2"
 # match that contract — warn-and-skipping real regexes would silently break
 # any hooks file either reference accepts. It is the crate's one regex engine
 # (syntect's grammars run on oniguruma, below), compiled once per matcher.
-regex = "1"
+# Default features off drops `perf` — the lazy and one-pass DFAs, the bounded
+# backtracker and the literal prefilters (the whole of `aho-corasick`) — which
+# only ever make a search faster: a matcher is tried against a tool name a few
+# bytes long, so the PikeVM every build keeps answers in microseconds, and the
+# regex crate promises the same matches with or without them. `unicode` stays,
+# so `\w`, `\d` and `(?i)` mean exactly what they meant (docs/binary-size.md).
+regex = { version = "1", default-features = false, features = ["std", "unicode"] }
 # The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
 # wrapper that severs a shell child from the TUI's controlling terminal, so a
 # command that prompts on /dev/tty (`sudo`, `ssh`) fails fast instead of
@@ -221,9 +228,10 @@ opt-level = 3
 # build). It applies to this crate only — cargo never compiles registry
 # dependencies incrementally, and the one path dependency, the vendored
 # `syntect`, opts out below — so the dependency units are byte-for-byte what
-# they were. A build that wants the plain layout (a packaged release, CI)
+# they were. A build that wants the plain layout (CI, a package built once)
 # opts out on the command line:
 # `cargo build --release --config profile.release.incremental=false`.
+# The binary a release ships is built in the `dist` profile below instead.
 # `lto = "off"` was measured too and rejected: 21% off a cold build, but
 # 7–19% slower on the render path, since every crate loses its thin-local
 # LTO and the cross-unit inlining that comes with it.
@@ -236,6 +244,29 @@ incremental = true
 # measured ~5% slower highlighting than the registry crate it stands in for.
 [profile.release.package.syntect]
 incremental = false
+
+# The shipped binary: `scripts/release.sh build` compiles every release
+# archive in this profile, so it is what install.sh, npm, `alter-zero-bin`
+# and the Docker image all install — `cargo build --profile dist` yields
+# `./target/dist/alter-zero`. Fat LTO over one codegen unit hands LLVM the
+# whole program as a single module: code no caller reaches goes whatever crate
+# it is in, a generic stops being copied into every unit that uses it, and
+# inlining crosses every crate boundary. On x86_64 Linux the binary went from
+# 25.6 MB to 18.6 MB (with the `regex` trim above; the archive 10.1 → 8.6 MB)
+# and the render path got 4–13% *faster* (`perf_probe`), for a cold build of
+# 4 min 26 s instead of 2 min 17 s on 4 cores and ~1.9 GB of peak memory
+# (`docs/binary-size.md`). It is a profile of its own because a fat-LTO link
+# re-optimises the whole program on every build: in `release` it would turn
+# the ~10 s rebuild after an edit back into minutes. The symbol table stays,
+# as in every release profile: it is what turns a `RUST_BACKTRACE=1` report
+# into function names (`docs/release.md`), and after LTO it is ~1.8 MB of the
+# binary and ~0.4 MB of the archive. `panic = "abort"` and `opt-level = "s"`
+# were measured and refused (`docs/binary-size.md`).
+[profile.dist]
+inherits = "release"
+incremental = false
+lto = "fat"
+codegen-units = 1
 
 # syntect 5.3.0's parser can loop forever on a line where the grammar keeps
 # matching without consuming anything, in a way its own loop check (a

@@ -401,15 +401,20 @@ pub fn notice(current: &str, latest: &str, repo: &str, command: &str) -> String 
 }
 
 /// Whether an executable sits in a `cargo` build directory —
-/// `target/{debug,release}/` or `target/{triple}/{debug,release}/` — which
-/// is a checkout, not an install: `alter-zero update` refuses to overwrite
-/// one with a release binary and points at `git pull && cargo build`.
+/// `target/{profile}/` or `target/{triple}/{profile}/`, for each profile this
+/// crate builds in: `debug`, `release` and `dist`, the one a release ships
+/// (`docs/binary-size.md`) — which is a checkout, not an install:
+/// `alter-zero update` refuses to overwrite one with a release binary and
+/// points at `git pull && cargo build`.
 #[must_use]
 pub fn is_cargo_build_dir(exe: &Path) -> bool {
     let is =
         |dir: Option<&Path>, name: &str| dir.and_then(Path::file_name).is_some_and(|n| n == name);
     let profile = exe.parent();
-    if !is(profile, "debug") && !is(profile, "release") {
+    if !["debug", "release", "dist"]
+        .into_iter()
+        .any(|name| is(profile, name))
+    {
         return false;
     }
     let above = profile.and_then(Path::parent);
@@ -756,6 +761,11 @@ mod tests {
             "/home/u/src/alter-zero/target/release/alter-zero",
             "/home/u/src/alter-zero/target/x86_64-unknown-linux-gnu/release/alter-zero",
             "target/debug/alter-zero",
+            // The shipped build's own profile (docs/binary-size.md):
+            // `cargo build --profile dist`, and the per-target shape
+            // `scripts/release.sh build` leaves.
+            "/home/u/src/alter-zero/target/dist/alter-zero",
+            "/home/u/src/alter-zero/target/aarch64-unknown-linux-gnu/dist/alter-zero",
         ] {
             assert!(is_cargo_build_dir(Path::new(dev)), "{dev}");
         }
@@ -765,6 +775,9 @@ mod tests {
             "/home/u/.cargo/bin/alter-zero",
             "/home/u/target-practice/alter-zero",
             "/home/u/target/alter-zero",
+            // A directory merely named like a profile, outside a `target/`.
+            "/home/u/dist/alter-zero",
+            "/opt/alter-zero/dist/alter-zero",
         ] {
             assert!(!is_cargo_build_dir(Path::new(installed)), "{installed}");
         }

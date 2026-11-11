@@ -25,6 +25,7 @@ scripts/smoke.sh --list                     # the phases, their tags and last du
 bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
+cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/binary-size.md)
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
@@ -239,13 +240,24 @@ Dependency features are cut to what the code reaches — `syntect`/`two-face`
 load only two-face's prebuilt onig dumps (`parsing` + `regex-onig` /
 `syntect-onig`, never the `plist`/`yaml` file loaders `default-onig` carried),
 `ratatui` runs without `all-widgets`/`macros` (the calendar widget was the
-whole `time` family), `toml` is parse-only — and `[profile.release]` turns on
+whole `time` family), `toml` is parse-only, `regex` keeps `std` + `unicode`
+without its `perf` half (speed-ups for long haystacks the hook matchers never
+search — 0.57 MB) — and `[profile.release]` turns on
 **incremental** compilation, which is what makes a release rebuild after an
 edit ~9–10 s instead of 53 s; `docs/build-time.md` holds the measurements,
 what each knob bought, why `lto = "off"` was measured and refused (a faster
 cold build for a 7–19% slower render path), and what a release build still
 pays for and why (`moxcms` under `image`, the sixel quantiser under
-`ratatui-image`, the Wayland and TLS stacks).
+`ratatui-image`, the Wayland and TLS stacks). The binary a release **ships**
+is built in a profile of its own, **`[profile.dist]`** — `release` plus fat
+LTO over one codegen unit, never incremental — which `scripts/release.sh
+build` uses (`cargo build --profile dist`, `target/{T}/dist/`): 25.6 → 18.6
+MB on x86_64 Linux and a render path 4–13% *faster*, for a cold build of
+~4½ min. It is not `release`'s setting because fat LTO re-optimises the
+whole program on every link, which would undo the incremental rebuild. The
+symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catches worker panics on purpose) and
+`opt-level = "s"` (a slower render path) were measured and refused —
+`docs/binary-size.md`.
 
 ## Architecture
 

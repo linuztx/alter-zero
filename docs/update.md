@@ -205,8 +205,10 @@ alter-zero v0.2.0 is out — this is v0.1.0. Installing it over /home/me/.local/
 What it does, in order:
 
 1. **Refuses a build directory.** `update::is_cargo_build_dir` recognises
-   `…/target/debug/alter-zero` and `…/target/release/alter-zero` (and cargo's
-   per-target `target/{triple}/release/` shape) and stops with `update the
+   `…/target/debug/alter-zero`, `…/target/release/alter-zero` and
+   `…/target/dist/alter-zero` — the profile a release is built in,
+   `docs/binary-size.md` — (and cargo's per-target `target/{triple}/{profile}/`
+   shape `scripts/release.sh build` leaves) and stops with `update the
    checkout instead: git pull && cargo build --release`. Overwriting a
    checkout's build output with a release binary would be *undone* by the
    next `cargo build`, silently. **And a package manager's install**, for the
