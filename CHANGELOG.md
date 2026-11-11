@@ -234,6 +234,13 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A file with a backslash in its name is offered under that name by
+  `@`.** On Linux and macOS `\` is an ordinary character in a file name,
+  but the `@` picker turned it into a folder separator, so `a\b.txt` was
+  listed as `b.txt` inside a folder `a` that does not exist, and choosing
+  it put a path that named nothing into your message
+  (`docs/file-search.md`).
+
 - **Models an OpenAI-compatible gateway discovered stay in `/model`.**
   OmniRoute lists a model it found upstream, such as a Codex model, under
   the upstream's own endpoints (`"supported_endpoints": ["responses"]`) and

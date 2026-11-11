@@ -76,8 +76,16 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches, truncat
   `node_modules`), capped at `FILE_INDEX_CAP` to bound memory/time.
   Directories are listed with a trailing `/`. It returns a
   `Walk { paths, truncated }`, `truncated` only when an entry it would have
-  listed was left out (see *A capped walk says so* below). (Known divergence
-  from codex: no `.gitignore` parsing.)
+  listed was left out (see *A capped walk says so* below). Each path is
+  **built once**, its folder's path followed by its name — the folders
+  still to read being positions in the list, not paths of their own — and
+  each folder's entries are gathered, never past what the cap has room for,
+  then **sorted into listing order** (`file_search::sibling_order`) before
+  any is listed, so the walk comes out already in the order a bare `@`
+  shows (see *What a search costs* below). Joining by hand keeps a name's
+  own `\`, an ordinary character on Linux and macOS, which a
+  backslash-to-slash rewrite once turned into a folder that did not exist.
+  (Known divergence from codex: no `.gitignore` parsing.)
 - **Dispatch** (`tui::workers::dispatch_file_search`): after each key, compare
   `app.file_search_query()` to the last dispatched query; on change, send the
   new query (or nothing when the picker closed). Boundary state (`last_file_query`),
@@ -92,26 +100,35 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches, truncat
   - `at_token(text, cursor) -> Option<AtToken>` — the trigger rule above.
     `AtToken { range, query }`: `range` is the byte range of the whole `@token`
     (to replace on accept), `query` the text after `@`.
-  - `FileMatch { path: String, score: i32, indices: Vec<usize> }` — `indices`
-    are byte offsets of matched chars (for popup highlighting). Its accessors
-    feed the columned rows: `is_dir()` (the walk lists directories with a
-    trailing `/`, so the kind rides the path), `name()` / `name_start()` (the
-    final component and the byte where it starts — the offset that remaps
-    `indices` onto the name column), and `parent()` (the leading directories
-    through the last interior `/`, empty for a root-level entry).
+  - `FileMatch { path: String, score: i32 }` — which characters the query
+    matched is not kept: the band works that out with `fuzzy_match` for the
+    few rows it draws (a list holds every match the walk found, and almost
+    none is ever on screen). Its accessors feed the columned rows: `is_dir()`
+    (the walk lists directories with a trailing `/`, so the kind rides the
+    path), `name()` / `name_start()` (the final component and the byte where
+    it starts — the offset that remaps the matched characters onto the name
+    column), and `parent()` (the leading directories through the last
+    interior `/`, empty for a root-level entry).
   - `fuzzy_match(query, candidate) -> Option<(i32, Vec<usize>)>` —
     ASCII-case-insensitive **subsequence** match (the fold is
     `eq_ignore_ascii_case`, so non-ASCII characters must match exactly); scores
     boundary/contiguous/basename hits higher (a directory's basename is the
     component *before* its trailing `/`, or every dir would lose the bonus).
-    Empty query matches everything (score 0).
+    Empty query matches everything (score 0). The score comes from
+    `fuzzy_score`, one core that hands each matched offset to a callback:
+    `fuzzy_match` collects them, the ranking collects nothing.
+  - `sibling_order(a_name, a_is_dir, b_name, b_is_dir)` — two entries of one
+    folder: folders first, then the names case-insensitively, the spelling
+    breaking a tie. The listing order ends on it and the walk sorts each
+    folder with it, so the two cannot drift.
   - `rank_files(query, Vec<String>) -> Vec<FileMatch>` — filter+sort
     (score desc, then shorter path, then lexicographic; an empty query in
     the directory-listing order of *A bare `@` reads like a directory
     listing* below), **every match kept** (see *Every match, five at a time*
     below). It takes the walk's
     list by value and moves each matched path into its `FileMatch`, so
-    ranking the whole walk never copies it.
+    ranking the whole walk never copies it, and scoring a path allocates
+    nothing.
 - `app/file_picker.rs`:
   - `FileSearch { selected, query, matches: Vec<FileMatch>, waiting,
     truncated }` on `App::file_search: Option<…>` (`None` = closed), parallel
@@ -175,8 +192,9 @@ most one is non-zero).
   entries, deeper parents truncated so the row never overflows); the
   **kind** column pins `File`/`Dir` at the right edge
   (`width − FILE_MENU_TYPE_WIDTH`). **Matched characters** stay emphasized
-  (from `FileMatch.indices`, remapped across the name/parent split —
-  `file_menu_highlight`). A width too narrow for the columns degrades to
+  (their offsets worked out by `fuzzy_match` for each row drawn, remapped
+  across the name/parent split — `file_menu_highlight`). A width too
+  narrow for the columns degrades to
   marker + name alone. Under the rows hangs the palette's dim `(n/total)`
   counter (`menu_counter_line`), in the names' column: which match the
   highlight is on, of how many the query matched — `+` closing the total
@@ -265,17 +283,14 @@ entries in no promised order, and a merely partial order would let the same
 files reshuffle between two keystrokes. A typed query is ranked exactly as
 before (score, then shorter path, then the path).
 
-The listing order costs more to sort than shortest-first did, and it runs on
-every bare `@`. Over a 10,000-entry walk of `/usr` the sort takes about
-22 ms against 6 ms. It was 55 ms before two shortcuts that change no
-order: siblings, whose parents are spelled byte for byte the same, skip the
-component walk, and two plain-ASCII names fold a byte at a time instead of
-through `char`'s Unicode tables (`the_bare_listing_folds_case_beyond_ascii_too`
-pins the non-ASCII case). Keypress to list on screen, a bare `@` there takes
-about 47 ms against 29 ms; in a project the size of this repository (890
-entries) the two are within 2 ms. Measured with a throwaway integration test
-timing `rank_files("", walk)` on the same walk, and with tmux polling for the
-counter after typing `@`.
+The listing order is dearer to sort than shortest-first, and it runs on
+every bare `@`: over a 10,000-entry walk of `/usr` it took about 22 ms
+against 6 ms — 55 ms before two shortcuts that change no order, siblings
+(whose parents are spelled byte for byte the same) skipping the component
+walk and two plain-ASCII names folding a byte at a time instead of through
+`char`'s Unicode tables (`the_bare_listing_folds_case_beyond_ascii_too`
+pins the non-ASCII case). What made it cheap is that the walk now hands it
+a list already in this order: see *What a search costs*.
 
 ### A capped walk says so
 
@@ -290,6 +305,63 @@ its total with `+` — `(1/10000+)`, `(1/23+)` — since the total is then a
 floor. It is left out whole where the width cannot hold it, like the counter
 itself.
 
+## What a search costs
+
+Date: 2026-11-11
+
+A search runs on every keystroke (coalesced), so its cost was measured
+before and after four changes, in `/usr` — where the walk stops at its
+10,000-entry cap, the worst case — and in this repository (890 entries).
+Times are medians of 21 runs of a throwaway timing test over the real
+`walk_files` and `rank_files`; keypress to list is tmux polling for the
+counter after typing `@` (median of 9); memory is the process's heap,
+`RssAnon`, because `VmRSS` also counts the binary's own pages, which move
+with the page cache — two identical idle processes differed by 1.5 MB
+there and by 4 KB here.
+
+| `/usr`, 10,000 entries | before | after |
+|---|---|---|
+| reading the folders | 9.2 ms | 7–8 ms |
+| ranking a bare `@` | 22.6 ms | 2.6 ms |
+| ranking `@s` | 5.0 ms | 2.2–2.6 ms |
+| ranking `@lib` | 3.7 ms | 1.9–2.3 ms |
+| keypress to list, bare `@` | 43 ms | 22 ms |
+| heap with a bare `@` open | +1,372 KB | +895 KB |
+| heap with `@s` open | +2,438 KB | +1,752 KB |
+| heap kept after closing | +2,438 KB | +1,316 KB |
+
+In this repository a search was already 2–3 ms and stays so; keypress to
+list there is the frame scheduling's, 16–18 ms either way.
+
+1. **Each folder is read into listing order.** The walk sorts a folder's
+   own entries as it reads them (`sibling_order`, names alone), so
+   breadth-first the whole walk comes out in the bare listing's order and
+   that sort, being adaptive, finds nothing to move: 22.6 ms became
+   2.6 ms, for about 0.2 ms of walk time. The listing still sorts whatever
+   it is handed — the walk being in order makes the sort cheap, never
+   right.
+2. **Each path is built once.** The walk allocated three or four strings
+   per entry and kept one — a full path, a copy relative to the root, a
+   copy with backslashes rewritten, a folder's copy with its `/` — and now
+   joins the folder's path and the name into the one it keeps.
+3. **Ranking stops early and counts once.** Scoring a path no longer
+   allocates (the query's characters gathered once, no offsets kept),
+   which alone bought about 5%: the time was elsewhere. The scoring loop
+   now stops at the query's last matched character, and each match's
+   length is counted once before the sort instead of twice in every
+   comparison between equal scores; together, about half.
+4. **Bold letters are worked out for the rows drawn.** A match keeps its
+   path and score; `file_menu_lines` asks `fuzzy_match` for the offsets of
+   at most five rows a frame. That is most of the heap a typed query
+   saves.
+
+Not done: one buffer for every path instead of a string each (the largest
+remaining heap item, but a rewrite of the walk's and the band's types for
+a saving only huge folders see); walking once per `@` instead of once per
+keystroke (faster, but a file created while the list is open would not
+appear until `@` was typed again); and handing freed memory back to the
+system (`malloc_trim` needs `unsafe`, which the crate forbids).
+
 ## Testing
 
 - `file_search` (unit): `at_token` triggers after whitespace/start, not inside
@@ -301,7 +373,10 @@ itself.
   order the walk found it in.
 - `src/tui/` (bin unit, `cargo test --bin alter-zero tui::workers`): the walk
   lists the tree with directories marked, skips hidden and denylisted
-  entries, and reports `truncated` only when its cap left an entry unlisted.
+  entries, reports `truncated` only when its cap left an entry unlisted,
+  keeps a `\` in a name as part of the name, and reads each folder into
+  listing order — its output equal to an explicit list and to the pure
+  listing of itself; `sibling_order` has its own unit test.
 - `textarea` (unit): `replace_range` splices and seats the cursor after.
 - `app` (unit): `@` opens the picker and `file_search_query` tracks the token;
   ↑/↓ move and wrap at the ends; Enter/Tab accept (the `@token` becomes `path ` with the
@@ -314,8 +389,10 @@ itself.
   width; `file_menu_lines` splits each match into aligned name / parent /
   kind columns (`./` for root-level, `File`/`Dir` pinned at `width − 6`, a
   truncated deep parent keeping the pin), marks only the selected row with
-  `→` and the cyan highlight, bolds matched chars in *both* columns, and
-  degrades to marker + name when too narrow; the dim `(n/total)` counter
+  `→` and the cyan highlight, bolds the chars its query matches in *both*
+  columns — worked out from the query for the rows drawn, a row the query
+  no longer matches drawn plain — and degrades to marker + name when too
+  narrow; the dim `(n/total)` counter
   follows the highlight, counts every match, takes a `+` for a truncated
   walk, and is left out where the width cannot hold it; the window keeps the `→` on the middle row once there is
   room above it; `live_height` grows by the band and `cursor_position` stays
