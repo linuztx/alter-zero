@@ -111,16 +111,27 @@ pub fn at_token(text: &str, cursor: usize) -> Option<AtToken> {
 /// offsets of the matched characters in `candidate`.
 #[must_use]
 pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
-    if query.is_empty() {
-        return Some((0, Vec::new()));
-    }
     let qchars: Vec<char> = query.chars().collect();
+    let mut indices = Vec::with_capacity(qchars.len());
+    let score = fuzzy_score(&qchars, candidate, |byte_off| indices.push(byte_off))?;
+    Some((score, indices))
+}
+
+/// The scoring pass behind [`fuzzy_match`], over the query's characters
+/// (`qchars`), handing `matched` the byte offset of each character of
+/// `candidate` the query matches. The ranking hands it nothing to do and
+/// gathers the query's characters once, so ranking a whole walk allocates
+/// nothing per path; the picker asks [`fuzzy_match`] for the offsets of
+/// the few rows it draws.
+fn fuzzy_score(qchars: &[char], candidate: &str, mut matched: impl FnMut(usize)) -> Option<i32> {
+    if qchars.is_empty() {
+        return Some(0);
+    }
     // A walked directory carries a trailing `/`; its basename is the component
     // *before* that slash, or every dir would lose the basename bonus.
     let trimmed = candidate.strip_suffix('/').unwrap_or(candidate);
     let basename_start = trimmed.rfind('/').map_or(0, |i| i + 1);
     let mut qi = 0;
-    let mut indices = Vec::with_capacity(qchars.len());
     let mut score = 0i32;
     let mut prev_match_char: Option<usize> = None;
     for (char_pos, (byte_off, ch)) in candidate.char_indices().enumerate() {
@@ -138,9 +149,12 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
             if prev_match_char == Some(char_pos.wrapping_sub(1)) {
                 score += 12; // contiguous run
             }
-            indices.push(byte_off);
+            matched(byte_off);
             prev_match_char = Some(char_pos);
             qi += 1;
+            if qi == qchars.len() {
+                break; // nothing past the last match moves the score
+            }
         }
     }
     if qi != qchars.len() {
@@ -148,7 +162,7 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
     }
     // Mildly prefer shorter candidates so a tight match isn't buried in a long path.
     score -= candidate.chars().count() as i32 / 8;
-    Some((score, indices))
+    Some(score)
 }
 
 /// Rank `candidates` against `query`: keep **every** fuzzy match, sorted by
@@ -158,28 +172,37 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
 /// worker runs over the walked file list; the picker scrolls through and
 /// counts all of it, so nothing is capped here — the walk's own bound is what
 /// keeps the list finite. The list is taken by value so each matched path
-/// *moves* into its [`FileMatch`]: ranking a whole walk never copies it. See
-/// `docs/file-search.md`.
+/// *moves* into its [`FileMatch`]: ranking a whole walk never copies it, and
+/// scoring a path allocates nothing (`fuzzy_score`, the query's characters
+/// gathered once for the whole walk). See `docs/file-search.md`.
 #[must_use]
 pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
-    let mut scored: Vec<FileMatch> = candidates
+    let qchars: Vec<char> = query.chars().collect();
+    if qchars.is_empty() {
+        let mut listed: Vec<FileMatch> = candidates
+            .into_iter()
+            .map(|path| FileMatch { path, score: 0 })
+            .collect();
+        listed.sort_by(listing_order);
+        return listed;
+    }
+    // Each match beside its length in characters, counted once here rather
+    // than twice in every comparison the sort makes between two paths that
+    // score the same.
+    let mut scored: Vec<(usize, FileMatch)> = candidates
         .into_iter()
         .filter_map(|path| {
-            let (score, _) = fuzzy_match(query, &path)?;
-            Some(FileMatch { path, score })
+            let score = fuzzy_score(&qchars, &path, |_| {})?;
+            Some((path.chars().count(), FileMatch { path, score }))
         })
         .collect();
-    if query.is_empty() {
-        scored.sort_by(listing_order);
-    } else {
-        scored.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.path.chars().count().cmp(&b.path.chars().count()))
-                .then_with(|| a.path.cmp(&b.path))
-        });
-    }
-    scored
+    scored.sort_by(|(a_len, a), (b_len, b)| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a_len.cmp(b_len))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    scored.into_iter().map(|(_, m)| m).collect()
 }
 
 /// The order a bare `@` lists the workspace in — a directory listing read a
