@@ -185,7 +185,12 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
 /// hold it whole, since a count cut at the edge would misread (`(1/2` for
 /// one of twenty-one).
 fn menu_counter_line(selected: usize, total: usize, width: u16) -> Option<Line<'static>> {
-    let counter = format!("({}/{total})", selected + 1);
+    counter_line(format!("({}/{total})", selected + 1), width)
+}
+
+/// A band's dim counter row: `counter` hanging at [`MENU_INDENT`] under the
+/// names, or `None` where the width cannot hold it whole.
+fn counter_line(counter: String, width: u16) -> Option<Line<'static>> {
     (cols(MENU_INDENT) + cols(&counter) <= usize::from(width)).then(|| {
         Line::from(vec![
             Span::raw(MENU_INDENT),
@@ -349,8 +354,9 @@ fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> 
 /// highlight rides the middle row and the files above *and* below it stay in
 /// view — and capped at `FILE_MENU_MAX_ROWS`, over the palette's dim
 /// `(n/total)` counter: which match is highlighted, of how many the search
-/// found (every match, `docs/file-search.md`). Empty when the picker is
-/// closed.
+/// found (every match, `docs/file-search.md`) — the total closed by
+/// `FILE_MENU_PARTIAL_MARK` when the walk stopped at its cap, the list then
+/// being only part of the workspace. Empty when the picker is closed.
 #[must_use]
 pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(fs) = &app.file_search else {
@@ -375,11 +381,14 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(i, m)| file_menu_row(m, offset + i == fs.selected, name_col, width))
         .collect();
-    lines.extend(menu_counter_line(
-        fs.selected.min(fs.matches.len() - 1),
-        fs.matches.len(),
-        width,
-    ));
+    let selected = fs.selected.min(fs.matches.len() - 1);
+    let partial = if fs.truncated {
+        FILE_MENU_PARTIAL_MARK
+    } else {
+        ""
+    };
+    let counter = format!("({}/{}{partial})", selected + 1, fs.matches.len());
+    lines.extend(counter_line(counter, width));
     lines
 }
 

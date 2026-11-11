@@ -142,7 +142,12 @@ release heading when a version is cut.
   could never reach the ninth. It now keeps every file and folder that
   matches what you typed, shows five at a time with the highlighted one kept
   in the middle as ↑/↓ scroll, and counts them under the list, `(1/12)`, the
-  way the `/` palette and the `$` picker do (`docs/file-search.md`).
+  way the `/` palette and the `$` picker do. A bare `@` lists the whole
+  workspace the way a directory listing reads: the working directory's own
+  entries first, folders before files, then each level down. The search
+  still stops after 10,000 entries so a huge directory stays quick; when it
+  does, the count ends in `+`, as in `(1/10000+)`, to say the list is
+  partial (`docs/file-search.md`).
 
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title

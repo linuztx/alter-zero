@@ -3,10 +3,11 @@
 
 use super::*;
 use crate::ui::theme::{
-    FILE_MENU_MAX_ROWS, FOOTER_INDENT, MENU_DESC_COL, MENU_INDENT, MENU_MARKER, MENU_MAX_COMMANDS,
-    MENU_MAX_ROWS, SHORTCUTS, SHORTCUTS_BACKTRACK, SHORTCUTS_INTERRUPT, SHORTCUTS_MAX_GUTTER,
-    SHORTCUTS_MIN_GUTTER, SHORTCUTS_MIN_ROWS, SKILL_MENU_MAX_ROWS, menu_dim_color,
-    menu_selected_color, shortcuts_key_color, shortcuts_text_color,
+    FILE_MENU_MAX_ROWS, FILE_MENU_PARTIAL_MARK, FOOTER_INDENT, MENU_DESC_COL, MENU_INDENT,
+    MENU_MARKER, MENU_MAX_COMMANDS, MENU_MAX_ROWS, SHORTCUTS, SHORTCUTS_BACKTRACK,
+    SHORTCUTS_INTERRUPT, SHORTCUTS_MAX_GUTTER, SHORTCUTS_MIN_GUTTER, SHORTCUTS_MIN_ROWS,
+    SKILL_MENU_MAX_ROWS, menu_dim_color, menu_selected_color, shortcuts_key_color,
+    shortcuts_text_color,
 };
 use crate::ui::wrap::cols;
 
@@ -1734,6 +1735,22 @@ fn the_file_counter_is_left_out_where_the_width_cannot_hold_it() {
     let narrow = file_menu_lines(&app, whole - 1);
     assert!(narrow.iter().all(|l| !plain(l).contains('(')), "{narrow:?}");
     assert_eq!(narrow.len(), usize::from(FILE_MENU_MAX_ROWS));
+}
+
+#[test]
+fn the_file_counter_owns_up_to_a_walk_that_stopped_at_its_cap() {
+    // A walk cut short by its cap saw only part of the workspace, so the
+    // total is a floor: the counter says so rather than claiming the list
+    // is everything there is — and is left out whole where it cannot fit.
+    let mut app = many_files(30, 0);
+    app.file_search.as_mut().expect("open").truncated = true;
+    let partial = format!("{MENU_INDENT}(1/30{FILE_MENU_PARTIAL_MARK})");
+    let lines = file_menu_lines(&app, 80);
+    assert_eq!(plain(lines.last().expect("the counter row")), partial);
+    let whole = u16::try_from(cols(&partial)).expect("narrow");
+    assert_eq!(file_menu_lines(&app, whole).len(), 6, "it fits exactly");
+    let narrow = file_menu_lines(&app, whole - 1);
+    assert_eq!(narrow.len(), 5, "no half-counter: {narrow:?}");
 }
 
 // ===== the `$` skill picker band (docs/skill-mentions.md) =====

@@ -1152,6 +1152,7 @@ fn every_band_and_terminal_size_keeps_the_composer() {
                                 .collect(),
                             selected: 0,
                             waiting: false,
+                            truncated: false,
                         });
                     }
                     _ => {}

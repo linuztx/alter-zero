@@ -8,6 +8,7 @@
 //! `main.rs` boundary (it calls [`rank_files`] off-thread); everything here is
 //! pure, so it is unit-tested directly. See `docs/file-search.md`.
 
+use std::cmp::Ordering;
 use std::ops::Range;
 
 /// The `@`-mention token under the cursor: the byte `range` of the whole token
@@ -151,12 +152,14 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
 }
 
 /// Rank `candidates` against `query`: keep **every** fuzzy match, sorted by
-/// score (desc), then shorter path, then lexicographically. The pure ranking
-/// the boundary's file-search worker runs over the walked file list; the
-/// picker scrolls through and counts all of it, so nothing is capped here —
-/// the walk's own bound is what keeps the list finite. The list is taken by
-/// value so each matched path *moves* into its [`FileMatch`]: ranking a whole
-/// walk never copies it. See `docs/file-search.md`.
+/// score (desc), then shorter path, then lexicographically — or, for an empty
+/// query, which has nothing to rank by, in `listing_order`, the way a
+/// directory listing reads. The pure ranking the boundary's file-search
+/// worker runs over the walked file list; the picker scrolls through and
+/// counts all of it, so nothing is capped here — the walk's own bound is what
+/// keeps the list finite. The list is taken by value so each matched path
+/// *moves* into its [`FileMatch`]: ranking a whole walk never copies it. See
+/// `docs/file-search.md`.
 #[must_use]
 pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
     let mut scored: Vec<FileMatch> = candidates
@@ -170,13 +173,54 @@ pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
             })
         })
         .collect();
-    scored.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.path.chars().count().cmp(&b.path.chars().count()))
-            .then_with(|| a.path.cmp(&b.path))
-    });
+    if query.is_empty() {
+        scored.sort_by(listing_order);
+    } else {
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.path.chars().count().cmp(&b.path.chars().count()))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+    }
     scored
+}
+
+/// The order a bare `@` lists the workspace in — a directory listing read a
+/// level at a time: the cwd's own entries first, then each deeper level, an
+/// entry's siblings grouped under their parent in the order the parents were
+/// themselves listed (their paths compared component by component), and
+/// within a parent the directories before the files, each name compared
+/// case-insensitively. A tie in case alone falls to the spelling, so the
+/// order is total: the filesystem hands back a directory's entries in no
+/// promised order, and the list must not reshuffle between two keystrokes
+/// over the same files. See `docs/file-search.md`.
+fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
+    let (a_parent, b_parent) = (a.parent(), b.parent());
+    a_parent
+        .matches('/')
+        .count()
+        .cmp(&b_parent.matches('/').count())
+        .then_with(|| {
+            // Equal depths split into equally many components.
+            a_parent
+                .split('/')
+                .zip(b_parent.split('/'))
+                .map(|(x, y)| name_order(x, y))
+                .find(|order| order.is_ne())
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| b.is_dir().cmp(&a.is_dir()))
+        .then_with(|| name_order(a.name(), b.name()))
+}
+
+/// Two names compared case-insensitively, the exact spelling breaking a tie
+/// — `a.txt`, `B.txt`, `b.txt` — so no two different names compare equal.
+fn name_order(a: &str, b: &str) -> Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
+        .then_with(|| a.cmp(b))
 }
 
 #[cfg(test)]
@@ -328,11 +372,74 @@ mod tests {
         assert!(r.iter().all(|m| m.path != "README.md"), "{r:?}");
     }
 
+    /// The paths an empty query lists `walked` in.
+    fn listed(walked: &[&str]) -> Vec<String> {
+        let walked = walked.iter().map(|p| (*p).to_string()).collect();
+        rank_files("", walked).into_iter().map(|m| m.path).collect()
+    }
+
     #[test]
-    fn rank_files_empty_query_lists_all_shortest_first() {
-        let files = vec!["longer_name.rs".to_string(), "a.rs".to_string()];
-        let r = rank_files("", files);
-        assert_eq!(r.len(), 2);
-        assert_eq!(r[0].path, "a.rs", "shorter path first on an empty query");
+    fn a_bare_at_lists_the_workspace_like_a_directory_listing() {
+        // An empty query has nothing to rank by, so it lists the walk the way
+        // a directory listing reads: the cwd's own entries first —
+        // directories, then files, case-insensitively — then each deeper
+        // level, siblings grouped under their parent in the order the
+        // parents were themselves listed. Shortest-path-first, the order this
+        // replaced, put `a/b.rs` ahead of `README.md`.
+        let walked = [
+            "src/ui/menu.rs",
+            "README.md",
+            "src/",
+            "a/",
+            "src/main.rs",
+            "Cargo.toml",
+            "src/ui/",
+            "a/b.rs",
+            "docs/",
+            "docs/x.md",
+            "src/app/",
+            "src/app/mod.rs",
+            "zeta.txt",
+            "Alpha.txt",
+        ];
+        assert_eq!(
+            listed(&walked),
+            [
+                // The cwd's own entries: directories, then files.
+                "a/",
+                "docs/",
+                "src/",
+                "Alpha.txt",
+                "Cargo.toml",
+                "README.md",
+                "zeta.txt",
+                // One level down, under a/, docs/ and src/ in that order.
+                "a/b.rs",
+                "docs/x.md",
+                "src/app/",
+                "src/ui/",
+                "src/main.rs",
+                // Two levels down: src/app/ before src/ui/, as listed above.
+                "src/app/mod.rs",
+                "src/ui/menu.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_bare_listing_is_the_same_whatever_order_the_walk_found_it_in() {
+        // A directory's entries come back from the filesystem in no promised
+        // order, so the listing must be a total order of its own — a case-only
+        // tie broken by the spelling — or the list could reshuffle between
+        // two keystrokes over the same files.
+        let walked = ["b.txt", "B.txt", "a.txt", "dir/", "Dir/", "dir/x", "Dir/x"];
+        let forward = listed(&walked);
+        let mut reversed = walked;
+        reversed.reverse();
+        assert_eq!(listed(&reversed), forward);
+        assert_eq!(
+            forward,
+            ["Dir/", "dir/", "a.txt", "B.txt", "b.txt", "Dir/x", "dir/x"]
+        );
     }
 }

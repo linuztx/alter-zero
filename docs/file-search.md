@@ -52,9 +52,9 @@ loop's existing `select!` + boundary-injection idioms:
 key ─► App edits draft ─► (loop) app.file_search_query() changed?
                                    └─ yes ─► req_tx.send(query)         [loop → worker]
 worker thread: recv(query) ─► coalesce (drain to newest) ─► walk afresh
-              ─► file_search::rank_files(query, files)   (every match, ranked)
-              ─► res_tx.send(FileSearchResult{query, matches})         [worker → loop]
-loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stale-dropped]
+              ─► file_search::rank_files(query, walk.paths)   (every match, ranked)
+              ─► res_tx.send(FileSearchResult{query, matches, truncated})  [worker → loop]
+loop select!: file_rx.recv() ─► app.set_file_matches(query, matches, truncated)  [stale-dropped]
 ```
 
 - **Worker** (`tui::workers::spawn_file_search_worker`): a dedicated thread (not the
@@ -71,16 +71,20 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
   `FILE_INDEX_CAP` bound plus the coalescing keep the repeated walks cheap and
   off the loop.
 - **Walk** (`tui::workers::walk_files`): dependency-free (the agreed choice). An
-  iterative walk of the cwd skipping **hidden** entries (dotfiles, so `.git`
-  too) and a small **denylist** (`target`, `node_modules`), capped at
-  `FILE_INDEX_CAP` to bound memory/time. Directories are listed with a trailing
-  `/`. (Known divergence from codex: no `.gitignore` parsing.)
+  iterative breadth-first walk of the cwd skipping **hidden** entries
+  (dotfiles, so `.git` too) and a small **denylist** (`target`,
+  `node_modules`), capped at `FILE_INDEX_CAP` to bound memory/time.
+  Directories are listed with a trailing `/`. It returns a
+  `Walk { paths, truncated }`, `truncated` only when an entry it would have
+  listed was left out (see *A capped walk says so* below). (Known divergence
+  from codex: no `.gitignore` parsing.)
 - **Dispatch** (`tui::workers::dispatch_file_search`): after each key, compare
   `app.file_search_query()` to the last dispatched query; on change, send the
   new query (or nothing when the picker closed). Boundary state (`last_file_query`),
   like `committed`/`clocks`.
-- **Staleness**: `App::set_file_matches(query, matches)` applies the results
-  only if they're for the *currently active* token query, else drops them.
+- **Staleness**: `App::set_file_matches(query, matches, truncated)` applies
+  the results only if they're for the *currently active* token query, else
+  drops them.
 
 ### Pure core
 
@@ -102,15 +106,18 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
     component *before* its trailing `/`, or every dir would lose the bonus).
     Empty query matches everything (score 0).
   - `rank_files(query, Vec<String>) -> Vec<FileMatch>` — filter+sort
-    (score desc, then shorter path, then lexicographic), **every match
-    kept** (see *Every match, five at a time* below). It takes the walk's
+    (score desc, then shorter path, then lexicographic; an empty query in
+    the directory-listing order of *A bare `@` reads like a directory
+    listing* below), **every match kept** (see *Every match, five at a time*
+    below). It takes the walk's
     list by value and moves each matched path into its `FileMatch`, so
     ranking the whole walk never copies it.
 - `app/file_picker.rs`:
-  - `FileSearch { selected, query, matches: Vec<FileMatch>, waiting }` on
-    `App::file_search: Option<…>` (`None` = closed), parallel to `command_menu`;
-    `matches` holds every match the last search returned, which is what the
-    band scrolls through and counts.
+  - `FileSearch { selected, query, matches: Vec<FileMatch>, waiting,
+    truncated }` on `App::file_search: Option<…>` (`None` = closed), parallel
+    to `command_menu`; `matches` holds every match the last search returned,
+    which is what the band scrolls through and counts, and `truncated` says
+    the walk behind them stopped at its cap.
   - `refresh_file_search(had_token)` — open on the None→Some token transition,
     clamp the selection as the filter narrows, close when the token's gone;
     Esc-dismiss is **sticky** within a token (the palette's `had_query` trick),
@@ -118,7 +125,8 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
   - `file_search_query()` (the active token query, for the loop to dispatch),
     `move_file_selection`, `highlighted_file`, `accept_file_selection`
     (replace the `@token` range via `TextArea::replace_range`, + trailing space,
-    quoting paths with whitespace), `set_file_matches` (staleness).
+    quoting paths with whitespace), `set_file_matches` (staleness, and the
+    walk's `truncated` beside the matches).
 - `textarea.rs`: `replace_range(range, with)` — splice + place the cursor after
   the inserted text (new pure method; the existing `insert_str` only inserts at
   the cursor).
@@ -171,9 +179,10 @@ most one is non-zero).
   `file_menu_highlight`). A width too narrow for the columns degrades to
   marker + name alone. Under the rows hangs the palette's dim `(n/total)`
   counter (`menu_counter_line`), in the names' column: which match the
-  highlight is on, of how many the query matched. A terminal too narrow to
-  hold the whole counter goes without it rather than cutting a number in
-  half, and a placeholder has nothing to count.
+  highlight is on, of how many the query matched — `+` closing the total
+  (`FILE_MENU_PARTIAL_MARK`) when the walk stopped at its cap. A terminal too
+  narrow to hold the whole counter goes without it rather than cutting a
+  number in half, and a placeholder has nothing to count.
 - `render_live`/`cursor_position`/`live_height` (and `tui::view::Session::live_region_height`)
   add `file_menu_rows` to the band so the box, cursor, and footer stay put when
   the picker opens — exactly like the palette/shortcuts.
@@ -229,6 +238,46 @@ uncapped, a launch in `~` would walk the whole home directory on every
 keystroke. Finding dotfiles (`.github/workflows/ci.yml`, `.env.example`)
 properly needs the walk to honour `.gitignore`, which is a change of its own.
 
+## A bare `@` reads like a directory listing
+
+Date: 2026-11-11
+
+Typing just `@` asks for the whole workspace, and an empty query has no score
+to rank by. It sorted shortest path first, which, cut to eight, roughly meant
+"the top level" — but over every match it interleaves the levels (`a/b.rs`
+ahead of `README.md`, a nested file between two top-level ones) and reads as
+noise. It now lists the workspace the way a directory listing reads, a level
+at a time (`file_search::listing_order`):
+
+```text
+→ docs         ./      Dir      the cwd's own entries first: directories,
+  src          ./      Dir      then files, names compared case-insensitively
+  Cargo.toml   ./      File
+  README.md    ./      File
+  guide.md     docs/   File     then a level down, grouped under their parents
+  (1/1342)                      in the order the parents were listed above
+```
+
+Parents are compared component by component, so each level's groups follow
+the order of the level above. A case-only tie (`B.txt`/`b.txt`) falls to the
+spelling, which makes the order **total**: `read_dir` hands back a directory's
+entries in no promised order, and a merely partial order would let the same
+files reshuffle between two keystrokes. A typed query is ranked exactly as
+before (score, then shorter path, then the path).
+
+### A capped walk says so
+
+The walk stops at `FILE_INDEX_CAP` (10,000 entries), breadth-first, so a
+bigger tree loses its deepest entries — and a counter that read `(1/10000)`
+there would claim the whole workspace. A walk now reports `truncated` when an
+entry it would have listed was left out; it reads on past the cap until it
+meets one, so a tree that exactly fills the cap is complete. The flag rides
+the result beside the matches (`FileSearchResult::truncated` →
+`App::set_file_matches` → `FileSearch::truncated`), and the counter closes
+its total with `+` — `(1/10000+)`, `(1/23+)` — since the total is then a
+floor. It is left out whole where the width cannot hold it, like the counter
+itself.
+
 ## Testing
 
 - `file_search` (unit): `at_token` triggers after whitespace/start, not inside
@@ -236,13 +285,18 @@ properly needs the walk to honour `.gitignore`, which is a change of its own.
   `fuzzy_match` is an ASCII-case-insensitive subsequence with correct indices and
   None on no match; `rank_files` ranks basename/contiguous hits first, sorts
   ties by length then name, drops non-matches but keeps every match, and
-  lists everything for an empty query.
+  lists an empty query like a directory listing — the same order whatever
+  order the walk found it in.
+- `src/tui/` (bin unit, `cargo test --bin alter-zero tui::workers`): the walk
+  lists the tree with directories marked, skips hidden and denylisted
+  entries, and reports `truncated` only when its cap left an entry unlisted.
 - `textarea` (unit): `replace_range` splices and seats the cursor after.
 - `app` (unit): `@` opens the picker and `file_search_query` tracks the token;
   ↑/↓ move and wrap at the ends; Enter/Tab accept (the `@token` becomes `path ` with the
   cursor after); Esc dismisses and is sticky; `set_file_matches` drops stale
-  results; the picker stays closed in shell mode and is suppressed in the
-  tool view; submit/clear/recall close it.
+  results and keeps the walk's `truncated` beside the matches; the picker
+  stays closed in shell mode and is suppressed in the tool view;
+  submit/clear/recall close it.
 - `ui` (unit): `file_menu_rows` is 0 closed, 1 for a placeholder, five rows
   and the counter for a long list, and equal to the painted lines at every
   width; `file_menu_lines` splits each match into aligned name / parent /
@@ -250,11 +304,13 @@ properly needs the walk to honour `.gitignore`, which is a change of its own.
   truncated deep parent keeping the pin), marks only the selected row with
   `→` and the cyan highlight, bolds matched chars in *both* columns, and
   degrades to marker + name when too narrow; the dim `(n/total)` counter
-  follows the highlight, counts every match, and is left out where the width
-  cannot hold it; the window keeps the `→` on the middle row once there is
+  follows the highlight, counts every match, takes a `+` for a truncated
+  walk, and is left out where the width cannot hold it; the window keeps the `→` on the middle row once there is
   room above it; `live_height` grows by the band and `cursor_position` stays
   put when it opens.
-- `src/tui/` (smoke, Phase 25): launch in a temp dir with known files, type
+- `src/tui/` (smoke, Phase 25): launch in a temp dir with known files; a bare
+  `@` opens on `subdir/`, then the top-level files, over `(1/16)`, and ↑ wraps
+  to the nested `beta_smoke.txt` over `(16/16)`; type
   `@alpha`, the picker lists the file in the columned `→ name  ./  File`
   layout, Enter inserts its path into the composer — then create a file and
   search again: the per-query walk lists a file that didn't exist at startup.

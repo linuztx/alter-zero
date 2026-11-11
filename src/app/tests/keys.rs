@@ -803,7 +803,7 @@ fn idle_enter_in_shell_mode_runs_the_command() {
 fn enter_accepts_the_highlighted_file_replacing_the_token() {
     let mut app = App::new();
     type_str(&mut app, "see @ma");
-    app.set_file_matches("ma", vec![fm("src/main.rs")]);
+    app.set_file_matches("ma", vec![fm("src/main.rs")], false);
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert_eq!(app.input.text(), "see src/main.rs ");
     assert!(app.file_search.is_none());
@@ -813,7 +813,7 @@ fn enter_accepts_the_highlighted_file_replacing_the_token() {
 fn tab_accepts_the_highlighted_file_too() {
     let mut app = App::new();
     type_str(&mut app, "@m");
-    app.set_file_matches("m", vec![fm("a.rs"), fm("b.rs")]);
+    app.set_file_matches("m", vec![fm("a.rs"), fm("b.rs")], false);
     app.on_key(key(KeyCode::Down)); // pick the second match
     assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
     assert_eq!(app.input.text(), "b.rs ");
@@ -823,7 +823,7 @@ fn tab_accepts_the_highlighted_file_too() {
 fn up_down_move_the_file_selection_wrapping_at_the_ends() {
     let mut app = App::new();
     type_str(&mut app, "@x");
-    app.set_file_matches("x", vec![fm("x1"), fm("x2")]);
+    app.set_file_matches("x", vec![fm("x1"), fm("x2")], false);
     assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.file_search.as_ref().unwrap().selected, 1);

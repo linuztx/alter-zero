@@ -944,6 +944,7 @@ fn size_sweep_apps() -> Vec<(&'static str, App)> {
                 },
             ],
             waiting: false,
+            truncated: false,
         });
         app
     };

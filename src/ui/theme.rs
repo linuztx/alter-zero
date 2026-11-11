@@ -2707,6 +2707,11 @@ pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";
 /// The picker's single placeholder row when the query matched nothing.
 pub(super) const FILE_MENU_NO_MATCH: &str = "No matching files";
 
+/// Closes the `(n/total)` counter's total when the walk stopped at its cap
+/// — `(1/10000+)` — since the list it counts is then only part of the
+/// workspace, and the total a floor.
+pub(super) const FILE_MENU_PARTIAL_MARK: &str = "+";
+
 /// Gap between the name column and the parent-dir column (the name column is
 /// the widest visible name plus this).
 pub(super) const FILE_MENU_GAP: usize = 2;

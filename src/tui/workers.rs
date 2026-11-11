@@ -440,31 +440,40 @@ pub(crate) fn spawn_update_check(
 
 /// Max entries the `@` picker's worker indexes — bounds each walk's
 /// memory/time, and so how many matches the picker can ever hold, since
-/// every match goes back (codex's nucleo walk is similarly capped).
+/// every match goes back (codex's nucleo walk is similarly capped). A walk
+/// that reaches it says so, and the band's count owns up to it.
 const FILE_INDEX_CAP: usize = 10_000;
 /// Directory names the walk skips, on top of every hidden (dotfile) entry.
 const FILE_WALK_DENYLIST: &[&str] = &["target", "node_modules"];
 
 /// A file-search result for the `@` picker: the `query` it answers (for the
-/// staleness guard in `App::set_file_matches`) and **every** match the walk
-/// found for it, ranked — what the picker scrolls through and counts.
+/// staleness guard in `App::set_file_matches`), **every** match the walk
+/// found for it, ranked — what the picker scrolls through and counts — and
+/// whether that walk stopped at its cap.
 pub(crate) struct FileSearchResult {
     query: String,
     matches: Vec<FileMatch>,
+    truncated: bool,
+}
+
+/// What one walk of the workspace found: the relative paths, and whether it
+/// stopped at its cap with entries left unlisted.
+struct Walk {
+    paths: Vec<String>,
+    truncated: bool,
 }
 
 /// Walk `root` breadth-first collecting up to `cap` relative paths, skipping
 /// hidden entries (dotfiles — so `.git` too) and [`FILE_WALK_DENYLIST`]
-/// directories; directories are listed with a trailing `/`. Dependency-free (the
-/// agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
-fn walk_files(root: &Path, cap: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(root.to_path_buf());
+/// directories; directories are listed with a trailing `/`. A walk is
+/// `truncated` only when an entry it would have listed is left out: it reads
+/// on past the cap until it meets one, so a tree that exactly fills the cap is
+/// complete. Breadth-first, so a cut drops the deepest entries. Dependency-free
+/// (the agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
+fn walk_files(root: &Path, cap: usize) -> Walk {
+    let mut paths = Vec::new();
+    let mut queue = VecDeque::from([root.to_path_buf()]);
     while let Some(dir) = queue.pop_front() {
-        if out.len() >= cap {
-            break;
-        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -474,6 +483,12 @@ fn walk_files(root: &Path, cap: usize) -> Vec<String> {
             if name.starts_with('.') || FILE_WALK_DENYLIST.contains(&name.as_ref()) {
                 continue;
             }
+            if paths.len() == cap {
+                return Walk {
+                    paths,
+                    truncated: true,
+                };
+            }
             let path = entry.path();
             let rel = path
                 .strip_prefix(root)
@@ -481,17 +496,17 @@ fn walk_files(root: &Path, cap: usize) -> Vec<String> {
                 .to_string_lossy()
                 .replace('\\', "/");
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                out.push(format!("{rel}/"));
+                paths.push(format!("{rel}/"));
                 queue.push_back(path);
             } else {
-                out.push(rel);
-            }
-            if out.len() >= cap {
-                break;
+                paths.push(rel);
             }
         }
     }
-    out
+    Walk {
+        paths,
+        truncated: false,
+    }
 }
 
 /// Spawn the `@` file-search worker: a background thread that, for each query —
@@ -521,8 +536,14 @@ pub(crate) fn spawn_file_search_worker(
             // dir only ever showed the boot-time contents. The walk's list
             // moves into the ranking, so its paths are never copied, and
             // every match comes back.
-            let matches = rank_files(&query, walk_files(&root, FILE_INDEX_CAP));
-            if res_tx.send(FileSearchResult { query, matches }).is_err() {
+            let walk = walk_files(&root, FILE_INDEX_CAP);
+            let matches = rank_files(&query, walk.paths);
+            let result = FileSearchResult {
+                query,
+                matches,
+                truncated: walk.truncated,
+            };
+            if res_tx.send(result).is_err() {
                 break; // the loop is gone
             }
         }
@@ -619,7 +640,8 @@ impl Session<'_> {
     /// (stale results — the token moved on — are dropped by `set_file_matches`),
     /// then repaint. See `docs/file-search.md`.
     pub(crate) fn on_file_matches(&mut self, result: FileSearchResult) {
-        self.app.set_file_matches(&result.query, result.matches);
+        self.app
+            .set_file_matches(&result.query, result.matches, result.truncated);
         self.frame.schedule_frame();
     }
 
@@ -676,4 +698,48 @@ pub(crate) fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
         .ok()?
         .into_dimensions()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::walk_files;
+
+    /// A temp tree of four listable entries — two files at the top, a
+    /// directory holding a third — beside a hidden file and a denylisted
+    /// directory the walk never lists.
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        for file in ["a.txt", "b.txt", ".hidden"] {
+            std::fs::write(root.join(file), "").expect("a file");
+        }
+        for sub in ["sub", "target"] {
+            std::fs::create_dir(root.join(sub)).expect("a dir");
+            std::fs::write(root.join(sub).join("inner.txt"), "").expect("a file");
+        }
+        dir
+    }
+
+    #[test]
+    fn the_walk_lists_the_workspace_and_says_it_saw_all_of_it() {
+        let dir = tree();
+        let walk = walk_files(dir.path(), 100);
+        let mut paths = walk.paths.clone();
+        paths.sort();
+        assert_eq!(paths, ["a.txt", "b.txt", "sub/", "sub/inner.txt"]);
+        assert!(!walk.truncated, "nothing was left out");
+    }
+
+    #[test]
+    fn the_walk_says_when_its_cap_left_entries_unlisted() {
+        // The picker counts what the walk found, so a walk cut short by its
+        // cap must say so — or the count would claim the whole workspace.
+        let dir = tree();
+        let exact = walk_files(dir.path(), 4);
+        assert_eq!(exact.paths.len(), 4);
+        assert!(!exact.truncated, "a cap the tree exactly fills cut nothing");
+        let short = walk_files(dir.path(), 3);
+        assert_eq!(short.paths.len(), 3);
+        assert!(short.truncated, "a fourth entry went unlisted");
+    }
 }

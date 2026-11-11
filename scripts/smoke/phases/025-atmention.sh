@@ -28,6 +28,27 @@ done
 # relative to the project dir); the app then walks $ATDIR for the @ picker.
 APP_ABS="env $CFG_ENV ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $(realpath "$BIN")"
 launch -c "$ATDIR" "$S22" 80 24 "$APP_ABS"
+# A bare `@` lists the whole workspace the way a directory listing reads: the
+# cwd's own entries first — the directory, then the files — and a level down
+# last, so the sixteen entries open on subdir/ and end on the nested file.
+file_names() {
+	printf '%s\n' "$1" | grep -E '^(→ |  )[^ ]+ +[^ ]+ +(File|Dir)$' |
+		sed -E 's/^(→ |  )([^ ]+) .*/\2/' | tr '\n' ' '
+}
+tmux send-keys -t "$S22" -l "@"
+at_bare="$(wait_pane 3 "$S22" -E '^  \(1/16\)$')"
+echo "==== captured pane (a bare @ lists the workspace) ===="
+printf '%s\n' "$at_bare"
+tmux send-keys -t "$S22" Up
+at_bare_last="$(wait_pane 3 "$S22" -E '^  \(16/16\)$')"
+echo "==== captured pane (a bare @ wrapped to its last entry) ===="
+printf '%s\n' "$at_bare_last"
+# Esc dismisses the picker and Backspace takes the lone `@` back out (apart,
+# so the two never reach the app as one Alt+Backspace).
+tmux send-keys -t "$S22" Escape
+sleep 0.2
+tmux send-keys -t "$S22" BSpace
+sleep 0.3
 tmux send-keys -t "$S22" -l "see @alpha"
 at_open="$(wait_pane 3 "$S22" -F "alpha_smoke.txt")" # up to ~3s: the worker walks + ranks, the picker shows
 echo "==== captured pane (@ file picker open) ===="
@@ -92,3 +113,9 @@ expect_lacks "$at_centered" -F "pick_01.txt" "the @ picker kept its first match 
 # Wrapped: the twelfth match is reachable, flush with the window's bottom.
 expect_has "$(pick_rows "$at_wrapped" | sed -n 5p)" -E '^→ pick_12\.txt ' "↑ from the first match did not wrap to the twelfth"
 expect_lacks "$at_wrapped" -F "pick_07.txt" "the @ picker's window did not follow the highlight to the end of the list"
+# A bare `@` reads like a directory listing: the cwd's own entries first, the
+# directory ahead of the files, and the nested file last (16/16), where
+# shortest-path-first had mixed the levels together.
+expect_eq "$(file_names "$at_bare")" "subdir alpha_smoke.txt pick_01.txt pick_02.txt pick_03.txt " \
+	"a bare @ does not open on the cwd's own entries, the directory first"
+expect_has "$at_bare_last" -E '^→ beta_smoke\.txt +subdir/ +File$' "a bare @ does not end on the nested file"

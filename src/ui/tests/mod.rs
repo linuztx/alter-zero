@@ -341,6 +341,7 @@ pub(super) fn file_picker(query: &str, matches: Vec<FileMatch>, selected: usize)
         query: query.to_string(),
         matches,
         waiting: false,
+        truncated: false,
     });
     app
 }
