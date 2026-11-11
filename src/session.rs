@@ -167,6 +167,9 @@ pub struct RequestUsage {
     /// The subagent whose request it was, by the id its `agent_group` entry
     /// carries — `None` for the conversation's own.
     pub agent: Option<String>,
+    /// A `/compact` (or auto-compact) summarization request: billed like any
+    /// other, but part of no turn's `summary`.
+    pub compact: bool,
 }
 
 /// A [`RequestUsage`] on disk: every count always written (a reader needs no
@@ -185,6 +188,10 @@ struct UsageRecord {
     reasoning: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    /// Written only on a compaction's request, so every other line keeps its
+    /// shape.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    compact: bool,
 }
 
 impl From<&RequestUsage> for UsageRecord {
@@ -196,6 +203,7 @@ impl From<&RequestUsage> for UsageRecord {
             cache_write: record.usage.cache_write,
             reasoning: record.usage.reasoning,
             agent: record.agent.clone(),
+            compact: record.compact,
         }
     }
 }
@@ -213,6 +221,7 @@ impl UsageRecord {
                 reasoning: self.reasoning,
             },
             agent: self.agent,
+            compact: self.compact,
         }
     }
 }
@@ -946,6 +955,23 @@ pub fn history_lines(
         text.push('\n');
     }
     text
+}
+
+/// The usage a rewrite down to `len` history items keeps
+/// (`docs/rollout-records.md`): every request whose place survives, as it
+/// was. Past the cut, the conversation's own requests go with the turns they
+/// made, as those turns' own lines do, while a subagent's stay — its request
+/// was billed whatever became of the conversation around it, and a retry's
+/// withdrawal or an undone submission can cut a place a background agent's
+/// request finished at — moved to the end, `len`.
+pub fn retain_usage(usage: &mut Vec<RequestUsage>, len: usize) {
+    usage.retain_mut(|record| {
+        if record.after <= len {
+            return true;
+        }
+        record.after = len;
+        record.agent.is_some()
+    });
 }
 
 /// Extract the [`Checkpoint`]s recorded in a rollout file, in file order —
@@ -1815,6 +1841,7 @@ mod tests {
                 reasoning: output / 4,
             },
             agent: None,
+            compact: false,
         }
     }
 
@@ -1900,6 +1927,69 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&usage_line(&record, "t")).expect("valid JSON");
         assert_eq!(value["payload"]["agent"], "agent_7");
+    }
+
+    #[test]
+    fn a_compactions_request_says_so() {
+        // A `/compact` summarization request costs what any request does but
+        // belongs to no turn's `summary`: the tag lets a script tell it apart
+        // instead of inferring it from the `compaction` line after it.
+        let mut record = request(4, 80_000, 2_000);
+        record.compact = true;
+        let line = usage_line(&record, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["compact"], true);
+        let plain: serde_json::Value =
+            serde_json::from_str(&usage_line(&request(4, 10, 1), "t")).expect("valid JSON");
+        assert!(
+            plain["payload"].get("compact").is_none(),
+            "an ordinary request carries no tag: {plain}"
+        );
+        // …and it reads back — placed after the no items before it here.
+        let text = format!("{}\n{line}\n", meta_line(&meta(), "t0"));
+        assert_eq!(
+            parse_usage(&text),
+            vec![RequestUsage { after: 0, ..record }]
+        );
+    }
+
+    // ===== a rewrite and the usage it keeps (docs/rollout-records.md) =====
+
+    fn agent_request(after: usize) -> RequestUsage {
+        RequestUsage {
+            agent: Some("agent_7".into()),
+            ..request(after, 900, 40)
+        }
+    }
+
+    #[test]
+    fn a_rewrite_keeps_every_request_whose_place_survives() {
+        let mut usage = vec![request(1, 10, 1), agent_request(2), request(3, 20, 2)];
+        let kept = usage.clone();
+        retain_usage(&mut usage, 3);
+        assert_eq!(usage, kept);
+    }
+
+    #[test]
+    fn the_conversations_own_requests_go_with_the_turns_a_rewrite_cuts() {
+        // A backtrack takes the turns back, and the requests that made them
+        // with them, as those turns' own lines go.
+        let mut usage = vec![request(1, 10, 1), request(5, 20, 2), request(8, 30, 3)];
+        retain_usage(&mut usage, 4);
+        assert_eq!(usage, vec![request(1, 10, 1)]);
+    }
+
+    #[test]
+    fn a_subagents_request_outlives_a_rewrite_that_cuts_its_place() {
+        // A retry's withdrawal, an undone submission or a backtrack can cut
+        // the place a background agent's request finished at; the request
+        // was billed all the same, so its line stays, at the end.
+        let mut usage = vec![request(1, 10, 1), agent_request(6), agent_request(9)];
+        retain_usage(&mut usage, 4);
+        assert_eq!(
+            usage,
+            vec![request(1, 10, 1), agent_request(4), agent_request(4)]
+        );
     }
 
     #[test]

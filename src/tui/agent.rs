@@ -128,6 +128,7 @@ impl Session<'_> {
                 after: self.app.history.len(),
                 usage: *usage,
                 agent: Some(id.to_string()),
+                compact: false,
             });
         }
         // Screen commits pause while a framed view's flow covers the agent

@@ -81,22 +81,24 @@ a line without them reads exactly as before:
   executor, as codex times the spawn and the wait). A `!` command is timed by
   its runner. A call that never ran has none: one refused at the prompt,
   blocked by a hook, over the call limit, or a batch sibling an Esc ended
-  before it started. The running call an Esc or a backend error cuts short
-  records how long it had run, read off the command clock the running cell
-  displays, so to within a frame.
+  before it started, or one naming a secret that is not stored. The running
+  call an Esc or a backend error cuts short records how long it had run: the
+  loop reads the call's own clock (the one its live cell counts) at that
+  moment rather than at the last frame, so a headless run, which draws none,
+  records it too.
 - **`error_kind`** says why a failed call (`ok: false`) failed. It is
   never present on a call that succeeded:
 
 | `error_kind` | The call… | Set by |
 | --- | --- | --- |
-| `tool_error` | ran and failed: a nonzero exit (`exit_code` says which), a missing file, an edit that matched nothing, an MCP error, arguments the tool could not read | the default for any failed outcome (`run_agent`, the `!` runner) |
+| `tool_error` | failed in the tool itself: it ran and failed (a nonzero exit, which `exit_code` names, a missing file, an edit that matched nothing, an MCP error), or it could not run as written (arguments the tool could not read, a secret placeholder naming nothing stored) | the default for any failed outcome (`run_agent`, the `!` runner); the approval seam for the placeholder (`docs/secrets.md`) |
 | `timed_out` | was stopped at its time limit: a command with nowhere to keep running past its `wait`, or a question nobody answered | the executor, `llm::ask` |
 | `interrupted` | was cut short by Esc, running or still waiting its turn | `App::interrupt_turn` |
 | `rejected` | was refused by the user: No at the permission prompt (or Tab's amended no, or Ctrl+E), or a declined question | the approval seam, `llm::ask` |
 | `classifier_denied` | was refused by auto mode's classifier | the approval seam |
 | `hook_blocked` | was refused by a hook: a `PreToolUse` block or a `PermissionRequest` deny | `run_agent`, the approval seam |
-| `unattended` | needed approval in a run nobody could answer (`-p`) | the approval seam |
-| `limit_reached` | was refused by the `/settings` **Max tool calls** ceiling | `run_agent` |
+| `approval_required` | needed an approval nobody could give: a headless (`-p`) run asks no one | the approval seam |
+| `tool_call_limit` | was refused by the `/settings` **Max tool calls** ceiling | `run_agent` |
 | `backend_error` | was in flight when the turn's request failed | `App::fail_stream` |
 
 The wire names are codex's where codex has one (`tool_error`, `timed_out`,
@@ -145,14 +147,18 @@ exactly as `StreamEvent::Usage` carried them:
   the same `id` its `agent_group` entry carries, whose `tokens` totals the
   agent's requests. The conversation's own requests, `/compact`'s
   summarization included, carry no `agent`.
+- **`compact`** is present, as `true`, only on the request that wrote a
+  compaction's summary (`/compact` or auto-compact, `docs/compact.md`). That
+  request is the conversation's own, and its cost is the one an analysis
+  most often wants to set apart: it reads the whole context to replace it.
 
 All five counts are always written, zeros included, so a reader needs no
 defaults. Their meaning is the per-turn `summary`'s: a finished turn's
 `tokens` is the sum of `input + output` over the conversation's own `usage`
 lines it produced, and its `cached`/`cache_write` the sums of theirs. A
 subagent's lines are not in that sum (they are its group entry's), and a
-`/compact` turn has no `summary` (its line is followed by the `compaction`
-record instead).
+compaction has no `summary`: its `compact` line is followed by the
+`compaction` record instead.
 
 ### Where the line sits
 
@@ -194,9 +200,13 @@ through the two ways it is rewritten:
 
 - **A rewrite** (a backtrack, an interrupt's undo, a retry withdrawing an
   attempt, a blocked prompt) re-serializes the whole file from history. Every
-  usage record whose position still exists is re-placed exactly where it was.
-  Those after the cut go with the turns they paid for, as the cut turns' own
-  lines do.
+  usage record whose position still exists is re-placed exactly where it was
+  (`session::retain_usage`). Past the cut, the conversation's own requests go
+  with the turns they made, as those turns' own lines do. A subagent's
+  request stays, moved to the end of what is left: it was billed whatever
+  became of the conversation around it, and a background agent's request can
+  finish inside a turn that is then cut (an undone submission, a withdrawn
+  attempt) while the agent runs on.
 - **A resume** adopts the file. `session::parse_usage` reads the usage lines
   back, each placed after the history items that precede it in the file, so a
   later rewrite keeps them where they were. The payload holds no position: the
@@ -248,11 +258,14 @@ jq -c 'select(.type=="usage") | .payload' rollout.jsonl
 
 - `session`'s own tests pin the format: the three tool fields (written,
   omitted when absent, round-tripped, an unknown `error_kind` read as absent),
-  the `usage` line's shape, the placement merge (`history_lines`) and its read
-  back (`parse_usage`), and `parse_session` skipping the line.
+  the `usage` line's shape (`agent` and `compact` only when they say
+  something), the placement merge (`history_lines`), what a rewrite keeps
+  (`retain_usage`), the read back (`parse_usage`), and `parse_session`
+  skipping the line.
 - `llm::agent`'s tests drive `run_agent` with a fake executor: the outcome's
   exit code and a measured duration on the resolving event, `tool_error` as
-  the default kind, and each refusal's kind with no duration.
+  the default kind, each refusal's kind with no duration, and a call handed
+  to the background timed to the handoff with no exit code.
 - `llm::exec`'s tests run real commands for the exit codes (`exit 3` on the
   pipe and in a terminal, a session wait and a kill that saw the exit, a
   timeout on the pipe runner), `llm::approval`'s and `llm::ask`'s pin each
@@ -262,4 +275,11 @@ jq -c 'select(.type=="usage") | .payload' rollout.jsonl
   reads the rollout it wrote: a `usage` line per request, in order around the
   `tool` line, that line's `exit_code`, `duration_ms` and `error_kind`, the
   turn's `summary` summing the lines — and, after a `--continue`, the first
-  turn's lines where they were with the second turn's after them.
+  turn's lines where they were with the second turn's after them. It also
+  reads a subagent's requests under its id, a compaction's request marked
+  `compact`, and a headless refusal recorded as `approval_required` with no
+  exit code and no time.
+- `smoke.sh` Phase 19 reads the `!` commands' records off a real session: an
+  exit code and a time on each, `tool_error` on `exit 3`, and an Esc'd
+  `sleep 9` recorded `interrupted` with the second-plus it ran and no exit
+  code.

@@ -530,6 +530,10 @@ impl Session<'_> {
                     after: self.app.history.len(),
                     usage,
                     agent: None,
+                    // A summarization request says so: it is part of no
+                    // turn's `summary` (its marker lands at StreamDone, so
+                    // the turn is still compacting here).
+                    compact: self.app.is_compacting(),
                 });
                 false
             }
@@ -548,6 +552,10 @@ impl Session<'_> {
                 // a settle that carries no event of its own, so the session
                 // view's pre-fold work has to run here (`docs/agent-view-streaming.md`).
                 let owed = self.begin_turn_agent_settle(width);
+                // The running command's clock, read now: a headless run draws
+                // no frame to have injected it (docs/rollout-records.md).
+                self.app
+                    .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
                 let failed = self.app.fail_stream(&message);
                 self.finish_turn_agent_settle(owed, width);
                 if let Some(failure) = failed {

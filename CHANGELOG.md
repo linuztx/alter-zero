@@ -19,13 +19,14 @@ release heading when a version is cut.
   (`~/.alter-zero/sessions/…/rollout-*.jsonl`) carries the command's
   `exit_code`, how long the call ran (`duration_ms`) and, when it failed,
   why (`error_kind`: `tool_error`, `timed_out`, `interrupted`, `rejected`,
-  `classifier_denied`, `hook_blocked`, `unattended`, `limit_reached` or
-  `backend_error`). A script no longer has to find `Exit code: N` in the
-  output text. Every model request also leaves a `usage` line with the
-  provider's own counts (`input`, `output`, `cached`, `cache_write` and
-  `reasoning`, plus `agent` for a subagent's), written where the request
-  finished, so the cost of each request and of each tool step can be read
-  from the file. The existing fields are unchanged, older builds skip what
+  `classifier_denied`, `hook_blocked`, `approval_required`,
+  `tool_call_limit` or `backend_error`). A script no longer has to find
+  `Exit code: N` in the output text. Every model request also leaves a
+  `usage` line with the provider's own counts (`input`, `output`, `cached`,
+  `cache_write` and `reasoning`, plus `agent` for a subagent's and `compact`
+  for the request that wrote a compaction's summary), written where the
+  request finished, so the cost of each request and of each tool step can be
+  read from the file. The existing fields are unchanged, older builds skip what
   they don't know, and the per-turn `summary` keeps its totals
   (`docs/rollout-records.md`).
 

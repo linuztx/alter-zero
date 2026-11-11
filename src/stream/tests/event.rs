@@ -83,8 +83,8 @@ fn every_error_kind_reads_back_from_its_rollout_name() {
             "rejected",
             "classifier_denied",
             "hook_blocked",
-            "unattended",
-            "limit_reached",
+            "approval_required",
+            "tool_call_limit",
             "backend_error",
         ]
     );

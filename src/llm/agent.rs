@@ -974,7 +974,7 @@ pub fn run_agent(
                         ok: false,
                         truncated: false,
                         run: crate::stream::ToolRun::refused(
-                            crate::stream::ToolErrorKind::LimitReached,
+                            crate::stream::ToolErrorKind::ToolCallLimit,
                         ),
                     });
                 }
@@ -1284,6 +1284,28 @@ mod tests {
     }
 
     #[test]
+    fn a_call_handed_to_the_background_is_timed_to_the_handoff() {
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"npm run dev","wait":0}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| ToolOutcome::backgrounded("b1", "Running in the background"),
+            |_, _| Approval::Allow,
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolBackgrounded { .. })),
+            "{events:?}"
+        );
+        let [run] = runs(&events)[..] else {
+            panic!("one resolution: {events:?}");
+        };
+        assert_eq!(run.exit_code, None, "still running");
+        assert_eq!(run.error_kind, None);
+        assert!(run.duration_ms.is_some(), "{run:?}");
+    }
+
+    #[test]
     fn a_refused_call_says_who_refused_it_and_never_ran() {
         let executed = RefCell::new(false);
         let events = ran(
@@ -1324,7 +1346,7 @@ mod tests {
         assert_eq!(runs[0].exit_code, Some(0), "the first one ran");
         assert_eq!(
             runs[1],
-            crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::LimitReached)
+            crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::ToolCallLimit)
         );
     }
 

@@ -42,6 +42,20 @@ shell_interrupt="$(wait_pane 4 "$S16" -S -40 -- -F "Interrupted by user")" # up 
 echo "==== captured pane (after Esc interrupts !sleep 9) ===="
 printf '%s\n' "$shell_interrupt"
 tmux kill-session -t "$S16" 2>/dev/null
+# How each command ran rides its record in the rollout
+# (docs/rollout-records.md): its exit status, its time, why it failed.
+# The recorder writes at the loop bottom, so poll for the third call's line.
+shell_rollout=""
+for _ in $(seq 1 30); do
+	shell_rollout="$(cat "$SMOKE_SESSIONS"/*/*/*/rollout-*.jsonl 2>/dev/null | grep -F '"type":"tool"')"
+	[ "$(printf '%s\n' "$shell_rollout" | grep -c '"shell":true')" -ge 3 ] && break
+	sleep 0.1
+done
+echo "==== the rollout's tool lines ===="
+printf '%s\n' "$shell_rollout"
+shell_ok_line="$(printf '%s\n' "$shell_rollout" | grep -F '"name":"echo smoke_shell_ok"')"
+shell_fail_line="$(printf '%s\n' "$shell_rollout" | grep -F '"name":"exit 3"')"
+shell_sleep_line="$(printf '%s\n' "$shell_rollout" | grep -F '"name":"sleep 9"')"
 
 # Phase 19: `!` shell commands.
 expect_has "$shell_mode" -F "Shell mode" "typing a !command did not show the 'Shell mode' footer hint"
@@ -59,3 +73,14 @@ expect_lacks "$shell_running" -F "esc to interrupt" "a running !command showed t
 # commit the redundant `Conversation interrupted` notice (the cell is the record).
 expect_has "$shell_interrupt" -F "Interrupted by user" "Esc did not resolve a long-running !command as '⎿ Interrupted by user'"
 expect_lacks "$shell_interrupt" -F "Conversation interrupted" "a shell interrupt committed the redundant 'Conversation interrupted' notice — req 2: the ⎿ cell is the record"
+# The rollout records how each command ran (docs/rollout-records.md): a
+# success's exit and time, a failure's exit and kind, and an Esc'd command's
+# kind with the second-plus it ran before the Esc — but no exit status.
+expect_has "$shell_ok_line" -F '"exit_code":0' "a !command's record lacks its exit status"
+expect_has "$shell_ok_line" -E '"duration_ms":[0-9]+' "a !command's record lacks its time"
+expect_lacks "$shell_ok_line" -F '"error_kind"' "a successful !command's record names an error kind"
+expect_has "$shell_fail_line" -F '"exit_code":3' "a failing !command's record lacks its exit status"
+expect_has "$shell_fail_line" -F '"error_kind":"tool_error"' "a failing !command's record is not a tool_error"
+expect_has "$shell_sleep_line" -F '"error_kind":"interrupted"' "an Esc'd !command's record is not interrupted"
+expect_has "$shell_sleep_line" -E '"duration_ms":[0-9]{4,}' "an Esc'd !command's record lost the time it ran"
+expect_lacks "$shell_sleep_line" -F '"exit_code"' "an Esc'd !command's record claims an exit status"

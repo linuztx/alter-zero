@@ -160,9 +160,9 @@ pub enum ToolErrorKind {
     /// (`docs/hooks.md`).
     HookBlocked,
     /// It needed approval in a run nobody could answer (`docs/headless.md`).
-    Unattended,
+    ApprovalRequired,
     /// The `/settings` **Max tool calls** ceiling refused it.
-    LimitReached,
+    ToolCallLimit,
     /// It was in flight when the turn's request failed.
     BackendError,
 }
@@ -176,8 +176,8 @@ impl ToolErrorKind {
         Self::Rejected,
         Self::ClassifierDenied,
         Self::HookBlocked,
-        Self::Unattended,
-        Self::LimitReached,
+        Self::ApprovalRequired,
+        Self::ToolCallLimit,
         Self::BackendError,
     ];
 
@@ -191,8 +191,8 @@ impl ToolErrorKind {
             Self::Rejected => "rejected",
             Self::ClassifierDenied => "classifier_denied",
             Self::HookBlocked => "hook_blocked",
-            Self::Unattended => "unattended",
-            Self::LimitReached => "limit_reached",
+            Self::ApprovalRequired => "approval_required",
+            Self::ToolCallLimit => "tool_call_limit",
             Self::BackendError => "backend_error",
         }
     }

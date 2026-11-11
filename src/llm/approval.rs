@@ -362,7 +362,7 @@ pub fn approve_call(
         return Approval::Reject {
             display: display.to_string(),
             result: result.to_string(),
-            kind: crate::stream::ToolErrorKind::Unattended,
+            kind: crate::stream::ToolErrorKind::ApprovalRequired,
         };
     }
     request.id = gate.next_id();
@@ -808,6 +808,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_permission_request_hooks_deny_is_a_hook_block() {
+        // The hook answers in the user's stead (docs/hooks.md): its refusal
+        // is a hook's, and nobody is asked (docs/rollout-records.md).
+        let call = call("bash", r#"{"command":"make deploy"}"#);
+        let deny = PromptHooks {
+            request: Some(HookPermissionVerdict::Deny {
+                display: "Blocked by PermissionRequest hook: no deploys".to_string(),
+                result: "Blocked by PermissionRequest hook: no deploys".to_string(),
+            }),
+            ..PromptHooks::default()
+        };
+        let (approval, prompted) = approve_with_hooks(&PermissionGate::new(), &deny, &call, true);
+        assert!(!prompted);
+        assert!(
+            matches!(
+                approval,
+                Approval::Reject {
+                    kind: crate::stream::ToolErrorKind::HookBlocked,
+                    ..
+                }
+            ),
+            "{approval:?}"
+        );
+    }
+
+    #[test]
+    fn asking_for_an_explanation_instead_is_the_users_no() {
+        // Ctrl+E answers the prompt without running the call: it did not run
+        // because the user did not let it (docs/permissions.md).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
+        let cancel = CancelToken::new();
+        let call = call("bash", r#"{"command":"make deploy"}"#);
+        let waiter = {
+            let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call,
+                    None,
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        gate.resolve(&request.id, PermissionDecision::Explain);
+        let approval = waiter.join().unwrap();
+        assert!(
+            matches!(
+                approval,
+                Approval::Reject {
+                    kind: crate::stream::ToolErrorKind::Rejected,
+                    ..
+                }
+            ),
+            "{approval:?}"
+        );
+    }
+
     /// Put `call` to `gate` with `hooks`, approving the prompt when one is
     /// raised — first marking it shown, as the loop does when it opens one,
     /// when `show` — and hand back the approval and whether a prompt was
@@ -1102,7 +1173,7 @@ mod tests {
             display: UNATTENDED_DISPLAY.to_string(),
             result: UNATTENDED_RESULT.to_string(),
             // Nobody was there to ask (docs/rollout-records.md).
-            kind: crate::stream::ToolErrorKind::Unattended,
+            kind: crate::stream::ToolErrorKind::ApprovalRequired,
         }
     }
 
@@ -1177,7 +1248,7 @@ mod tests {
                 Approval::Reject {
                     display: display.to_string(),
                     result: result.to_string(),
-                    kind: crate::stream::ToolErrorKind::Unattended,
+                    kind: crate::stream::ToolErrorKind::ApprovalRequired,
                 },
                 false,
             )

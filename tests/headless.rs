@@ -530,7 +530,17 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
         ]
     };
-    let frames = if last["role"] == "tool" {
+    // A request offering no tools is a `/compact` summarization: it is
+    // answered in text, never with a call it could not make.
+    let offers_tools = request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
+    let frames = if !offers_tools {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    } else if last["role"] == "tool" {
         vec![
             serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
@@ -538,6 +548,9 @@ fn chat_reply(body: &str) -> String {
     } else if said.contains(DELEGATE) {
         let task = if said.contains(STALL) {
             format!("{STALL} make the marker")
+        } else if said.contains(RECORD) {
+            // A recorded conversation's subagent is recorded too.
+            format!("{RECORD} make the marker")
         } else {
             "make the marker".to_string()
         };
@@ -996,4 +1009,112 @@ fn the_rollout_records_each_request_and_how_each_call_ran() {
         .collect();
     let turn = ["message", "usage", "tool", "usage", "message", "summary"];
     assert_eq!(kinds, [turn, turn].concat());
+}
+
+#[test]
+fn a_subagents_requests_are_recorded_under_its_id() {
+    // A subagent's requests are paid for by the conversation that launched
+    // it: their lines land in its rollout, tagged with the id its
+    // `agent_group` entry carries (docs/rollout-records.md).
+    let world = World::new("agent-usage");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{DELEGATE} {RECORD} go"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines = rollout(&world);
+    let group: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["type"] == "agent_group")
+        .flat_map(|line| line["payload"]["agents"].as_array().expect("agents").iter())
+        .filter_map(|agent| agent["id"].as_str())
+        .collect();
+    let tagged: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["type"] == "usage")
+        .filter_map(|line| line["payload"]["agent"].as_str())
+        .collect();
+    // The subagent's call and its answer: two requests, both its own.
+    assert_eq!(tagged.len(), 2, "{lines:#?}");
+    assert!(
+        tagged.iter().all(|id| group == [*id]),
+        "{tagged:?} vs {group:?}"
+    );
+}
+
+#[test]
+fn a_compactions_request_is_recorded_as_one() {
+    // A conversation continued past its window compacts before the prompt
+    // goes out; that summarization's usage line says so and sits right
+    // ahead of the compaction it made (docs/rollout-records.md).
+    let world = World::new("compact-usage");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} run it"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = run(&[
+        "-p",
+        "-c",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} again"),
+    ]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let lines = rollout(&world);
+    let compaction = lines
+        .iter()
+        .position(|line| line["type"] == "compaction")
+        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"));
+    assert_eq!(lines[compaction - 1]["type"], "usage", "{lines:#?}");
+    assert_eq!(lines[compaction - 1]["payload"]["compact"], true);
+    // Every other request is the conversation's own, untagged.
+    let tagged = lines
+        .iter()
+        .filter(|line| line["type"] == "usage" && line["payload"].get("compact").is_some())
+        .count();
+    assert_eq!(tagged, 1, "{lines:#?}");
+}
+
+#[test]
+fn the_rollout_says_why_a_call_never_ran() {
+    // A headless run refuses what needs an approval nobody can give: the
+    // call's line says so, with no exit status and no time — it never ran
+    // (docs/rollout-records.md).
+    let world = World::new("refusal-kind");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &["-p", "--permission-mode", "manual", "make it"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines = rollout(&world);
+    let call = &lines
+        .iter()
+        .find(|line| line["type"] == "tool")
+        .expect("the refused call is recorded")["payload"];
+    assert_eq!(call["ok"], false);
+    assert_eq!(call["error_kind"], "approval_required", "{call}");
+    assert!(call.get("exit_code").is_none(), "{call}");
+    assert!(call.get("duration_ms").is_none(), "{call}");
 }

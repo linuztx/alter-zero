@@ -367,7 +367,7 @@ The single most useful finding of the audit was that this codebase already had
 somewhere for every hook verdict to land, under another name. **No new
 `StreamEvent` variant was added**, and none was needed:
 
-- **A block** is `Approval::Reject { display, result }` — the permission
+- **A block** is `Approval::Reject { display, result, kind }` — the permission
   gate's own two-text rejection. It already renders as a red cell, already
   keeps the longer model-facing text on `ToolCall::context_output`, already
   round-trips through the rollout, and already shows correctly in Ctrl+D. A

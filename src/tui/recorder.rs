@@ -477,9 +477,9 @@ impl SessionRecorder {
         checkpoint::retain_surviving(&mut self.checkpoints, history.len());
         self.checkpoints_written = self.checkpoints.len();
         // …and the requests of the turns it cut go with them, as those turns'
-        // own lines do; every survivor is re-placed where it sat
-        // (docs/rollout-records.md).
-        self.usage.retain(|record| record.after <= history.len());
+        // own lines do, while a subagent's billed request stays; every
+        // survivor is re-placed where it sat (docs/rollout-records.md).
+        session::retain_usage(&mut self.usage, history.len());
         self.usage_written = self.usage.len();
         let Some((path, meta)) = self.active.clone() else {
             return;
