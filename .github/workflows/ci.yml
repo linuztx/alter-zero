@@ -1,11 +1,11 @@
 # .github/workflows/ci.yml — the project's gate, on every push to main and
 # every pull request (docs/release.md). Each job is one thing a contributor
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
-# --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
-# real binary in tmux, the release tooling's own fixture tests plus the
-# version/changelog agreement and the npm launcher's tests, the telemetry
-# collector's pure-half tests, and the scripts the built-in web-search skill
-# seeds.
+# --check` + `clippy -D warnings` + `test` + `doc`, the last two on macOS
+# too), the smoke suite over the real binary in tmux, the release tooling's
+# own fixture tests plus the version/changelog agreement and the npm
+# launcher's tests, the telemetry collector's pure-half tests, and the
+# scripts the built-in web-search skill seeds.
 # The release workflow re-runs the gate and the tooling tests before it builds
 # anything, and the headless Kali container has its own workflow
 # (container.yml).
@@ -46,6 +46,39 @@ jobs:
           shared-key: debug
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo doc --no-deps --lib
+
+  test-macos:
+    # The gate's tests and doc build on macOS, which the README promises
+    # beside Linux. On Linux alone, a test or a code path that leans on GNU
+    # `ps` or `od`, procps' `pkill -s` or `/proc` passes by accident of the
+    # platform: `bashkill` never sent SIGTERM on a Mac, and nothing here
+    # could see it. The library's tests start their terminal sessions through
+    # util-linux's `setsid`, which macOS lacks — a test binary has libtest's
+    # `main`, so the helper re-exec the app itself uses there is not there to
+    # call; `tests/detached_exec.rs` covers that tier against the real binary.
+    # Only `setsid` goes on PATH, so every other tool the tests run is
+    # macOS's own.
+    name: test · doc (macOS)
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - name: Put util-linux's setsid, and nothing else of it, on PATH
+        run: |
+          brew install util-linux
+          mkdir -p "$RUNNER_TEMP/setsid"
+          ln -s "$(brew --prefix util-linux)/bin/setsid" "$RUNNER_TEMP/setsid/setsid"
+          "$RUNNER_TEMP/setsid/setsid" --version
+          echo "$RUNNER_TEMP/setsid" >> "$GITHUB_PATH"
       - run: cargo test
       - run: cargo doc --no-deps --lib
 

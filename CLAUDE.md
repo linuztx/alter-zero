@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **[`AGENTS.md`](AGENTS.md) governs what you run and when.** Read it before your
 first edit: it maps a change to the smallest check that can fail, so the loop is
 `cargo test --lib <module>::` (sub-second warm) rather than `cargo test` or the
-whole smoke suite after every edit. It also lists the macOS baseline
-failures — 6 with util-linux's `setsid` on `PATH`, 46 without it — which are
-not regressions.
+whole smoke suite after every edit. It also says what a Mac needs for the
+lib suite (util-linux's `setsid` on `PATH` — without it every test that
+starts a terminal session fails, and that is not a regression) and what else
+differs between the two platforms CI tests on.
 
 ## Commands
 
@@ -61,7 +62,8 @@ the fix is to qualify the path if the target is still public
 (`[`x`]` → `` `x` ``) so the prose still names it.
 
 CI runs that gate on every push to `main` and every pull request
-(`.github/workflows/ci.yml`: the gate, the smoke suite under tmux, the release
+(`.github/workflows/ci.yml`: the gate, its `cargo test` and `cargo doc` again
+on macOS, the smoke suite under tmux, the release
 tooling's `selftest` + `check` + the npm launcher's `node --test`, the
 telemetry collector's `node --test`, and the `web-search` skill scripts'
 offline `unittest`s),

@@ -100,27 +100,34 @@ modules breaks the links that pointed at it.
 
 ## Linux vs macOS — what actually differs
 
-CI runs the gate and the smoke suite on `ubuntu-latest`, so **Linux is the
-reference**: `cargo test --lib` there is expected to be green, and any red is
-yours. On macOS a red run usually is not. Know which platform you are on before
-you diagnose anything. (CI's two macOS jobs run only the clipboard tests and the
-smoke readers' selftest.)
+CI runs the gate and the smoke suite on `ubuntu-latest`, and the gate's
+`cargo test` and `cargo doc` on `macos-latest` too (the `test · doc (macOS)`
+job, beside the clipboard tests and the smoke readers' selftest). Both are
+expected to be green, so a red `cargo test --lib` is yours on either — once a
+Mac has `setsid` on `PATH` (below). Know which platform you are on before you
+diagnose anything: the two compile different code
+(`cfg(target_os = "linux")`) and run different tools (GNU and procps, or
+BSD).
 
-| | Linux (CI) | macOS |
+| | Linux (CI) | macOS (CI) |
 | --- | --- | --- |
-| `cargo test --lib` | green | **6 baseline failures** with `setsid` on `PATH`, **46** without it |
+| `cargo test --lib` | green | green with `setsid` on `PATH`; **about 46 failures** without it |
 | `setsid` | ships with util-linux | **absent**; `brew install util-linux`, then put it on `PATH` |
-| `ps … sid` | supported | **no `sid` keyword** — one test can never pass here |
-| `--lib` tests compiled | about 5,460 | about 5,430 — **35** are `cfg(target_os = "linux")` and never compile here, **6** (`clipboard/macos.rs`) compile only here; the 10 in `src/tui/` are bin-only on both |
+| `pkill`, `ps`, `od` | procps and GNU | BSD's: **`pkill` has no `-s` and its `-t` matches nothing (`ps -t` works), `ps` has no `sid`, `od` pads its columns** — code and tests must not lean on the GNU forms |
+| `--lib` tests compiled | about 6,540 | about 6,510 — **38** are `cfg(target_os = "linux")` and never compile here, **6** (`clipboard/macos.rs`) compile only here; the 10 in `src/tui/` are bin-only on both |
 | `scripts/smoke.sh` | bash 5 from the distro | needs **bash 4+**; macOS `/bin/bash` is 3.2 and dies |
 | `--list`, phase titles/tags | works | works — the readers were BSD-`sed`-broken once; `selftest.sh` pins them, and CI runs it on macOS |
 | `timeout`, `nproc`, `grep -P` | present | **absent** (`smoke.sh` already falls back to `sysctl -n hw.ncpu`) |
 | a stale incremental link | rare | **`Undefined symbols: … (.llvm.…)`** after a branch switch |
 
-**35 tests never run on macOS.** They are not skipped-and-reported; the Linux
+**38 tests never run on macOS.** They are not skipped-and-reported; the Linux
 `cfg` compiles them out, so nothing in the output mentions them. By file:
-`llm/exec.rs` 17, `pty/probe.rs` 8, `clipboard.rs` 4, `subprocess.rs` 4,
-`background.rs` 1, `pty/spawn.rs` 1. The modules themselves (`pty/probe`,
+`llm/exec.rs` 18, `pty/probe.rs` 8, `clipboard.rs` 4, `subprocess.rs` 4,
+`background.rs` 2, `pty/spawn.rs` 1, `llm/mcp/transport.rs` 1. Each asserts
+something only Linux has — the `/proc` probe, the foreground program's name,
+`setsid` detaching — and `docs/interactive-shell.md` *Limits* says what macOS
+does instead. A test of something every platform has stays `cfg(unix)`, with
+its Linux-only lines gated inside it. The modules themselves (`pty/probe`,
 `clipboard/linux`) have Linux-only bodies, and `tests/clipboard_linux.rs` is
 `#![cfg(target_os = "linux")]` — it compiles to **0 tests** on a Mac, silently.
 The reverse holds for `clipboard/macos.rs`'s 6 unit tests and
@@ -133,39 +140,29 @@ or the Linux half of the executor. Say in the commit which platform you
 actually ran. Those areas need the Linux CI run (or a container) to mean
 anything.
 
-### macOS: the six baseline failures
+### macOS: the lib suite needs `setsid`
 
-Do not chase them, do not "fix" them, and do not report them as regressions.
-They need a real Linux/tty environment or a `setsid` binary:
-
-- `pty::spawn::tests::the_session_leads_its_own_group_and_session` — macOS `ps`
-  has no `sid` keyword.
-- `llm::exec::tests::kill_asks_the_command_to_stop_before_it_insists`,
-  `…::indented_lines_reach_a_program_that_takes_pastes_as_one_paste`,
-  `…::a_key_name_sent_without_brackets_is_the_key_in_a_full_screen_program` —
-  SIGTERM/paste timing through the pty.
-- `background::tests::a_background_display_that_reads_whole_lines_is_never_told_of`,
-  `…::a_picker_reading_its_terminal_waits_however_its_line_animated`.
-
-Without `setsid` on `PATH`, the count is **46**: every tty-spawning test fails
-with `no way to give the command a terminal of its own here`. macOS ships no
-`setsid`; util-linux does. Put it on `PATH` before running the lib suite:
+A test that starts a terminal session gets it from the detach chain's TTY
+tiers (`subprocess::tty_tiers`): util-linux's `setsid -c`, then the app's own
+helper re-exec. A test binary has libtest's `main`, not the app's, so there is
+no helper to re-exec, and macOS ships no `setsid`. Without one on `PATH`, about
+46 tests fail with `no way to give the command a terminal of its own here` —
+the environment, not your change. Put util-linux's on `PATH`:
 
 ```bash
-PATH="/opt/homebrew/opt/util-linux/bin:$PATH" cargo test --lib
+brew install util-linux
+PATH="$(brew --prefix util-linux)/bin:$PATH" cargo test --lib
 ```
 
-A green lib run with the six skipped:
+CI's macOS job links util-linux's `setsid` alone onto `PATH`, so every other
+tool the tests run is still macOS's own. The helper tier, the one the app uses
+on a Mac, is covered against the real binary by `tests/detached_exec.rs`,
+which `cargo test` runs.
 
-```bash
-PATH="/opt/homebrew/opt/util-linux/bin:$PATH" cargo test --lib -- \
-  --skip background::tests::a_background_display_that_reads_whole_lines \
-  --skip background::tests::a_picker_reading_its_terminal_waits \
-  --skip llm::exec::tests::a_key_name_sent_without_brackets \
-  --skip llm::exec::tests::indented_lines_reach_a_program \
-  --skip llm::exec::tests::kill_asks_the_command_to_stop \
-  --skip pty::spawn::tests::the_session_leads_its_own_group
-```
+A test that fails on a Mac with `setsid` on `PATH` is a real failure: diagnose
+it. Six such failures used to be listed here as a baseline. One was `bashkill`
+never sending `SIGTERM` on macOS (its `pkill` has no `-s`); the rest were
+tests that read GNU output or asserted Linux-only behaviour.
 
 Other platform notes:
 
@@ -198,7 +195,7 @@ Other platform notes:
 
 ### What a platform-blind diagnosis gets wrong
 
-Two failure modes to name, because both look like your bug and are not:
+Three failure modes to name, because each looks like something it is not:
 
 - **"My change broke 46 tests"** on a fresh Mac — it did not; `setsid` is
   missing. Confirm with `command -v setsid` before reading a single stack trace.
@@ -206,6 +203,10 @@ Two failure modes to name, because both look like your bug and are not:
   `subprocess`, `background` or `clipboard` — half of that code is behind
   `cfg(target_os = "linux")` and macOS never compiled it. Those need the Linux
   CI run (or a container) to mean anything.
+- **"It passes on Linux, ship it"** for code or a test that runs a system
+  tool — `pkill`, `ps`, `od`, `sed`. Linux's are procps and GNU, a Mac's are
+  BSD's, and they take different flags and print different spacing. Read the
+  BSD man page, or let CI's macOS job tell you.
 
 ## Working style (standing instructions, not suggestions)
 
