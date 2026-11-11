@@ -104,7 +104,7 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
                 prepare(start, prompt, cwd, print.is_some()).map_err(|halt| match halt {
                     Halt::Usage(message) => {
                         let style = help_style(std::io::stderr().is_terminal());
-                        eprintln!("{}", cli::usage_error(HelpPage::Main, &message, style));
+                        eprintln!("{}", cli::usage_error(HelpPage::Main, message, style));
                         2
                     }
                     Halt::Failed(message) => {
