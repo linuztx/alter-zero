@@ -3980,7 +3980,10 @@ mod tests {
             .pre_tool_use(&call("bash", "{}"), &CancelToken::new())
             .blocked
             .expect("the project's guard ran and blocked");
-        assert_eq!(block.reason, format!("guarded from {}", subdir.display()));
+        // `pwd` prints the directory with its symlinks resolved: the temp dir
+        // is one on macOS (`/var` is `/private/var`).
+        let here = subdir.canonicalize().expect("the subdir resolves");
+        assert_eq!(block.reason, format!("guarded from {}", here.display()));
         let _ = std::fs::remove_dir_all(&project);
     }
 
