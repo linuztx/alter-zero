@@ -34,7 +34,8 @@ pub use self::dummy::{
     TOKEN_MAX_CHARS, TOOL_DELAY, chunks, dummy_response, image_ack, tokens, turn_events,
 };
 pub use self::event::{
-    AgentCallDone, AgentSpec, RoundCall, StreamEvent, TokenUsage, ToolCallFragment, ToolCallSummary,
+    AgentCallDone, AgentSpec, RoundCall, StreamEvent, TokenUsage, ToolCallFragment,
+    ToolCallSummary, ToolErrorKind, ToolRun,
 };
 pub use self::source::{AgentChatDelivery, ReplySource};
 pub use self::stall::StallAi;

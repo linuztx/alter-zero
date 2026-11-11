@@ -798,7 +798,12 @@ pub fn run_agent(
                     } else {
                         approve(call, hook.force_ask)
                     };
-                    if let Approval::Reject { display, result } = approval {
+                    if let Approval::Reject {
+                        display,
+                        result,
+                        kind,
+                    } = approval
+                    {
                         let _ = tx.send(tool_start_event(call, session_command));
                         // ToolRejected, not ToolEnd: it carries BOTH texts, so
                         // the recorded call keeps the model-facing `result`
@@ -809,6 +814,9 @@ pub fn run_agent(
                             result: result.clone(),
                             // A refusal: nothing ran, so no capped output.
                             truncated: false,
+                            // …and no duration: only who refused it
+                            // (docs/rollout-records.md).
+                            run: crate::stream::ToolRun::refused(kind),
                         });
                         results.push((call.id.clone(), result));
                         continue;
@@ -851,7 +859,12 @@ pub fn run_agent(
                         };
                         let _ = tx.send(event);
                     };
+                    // Timed around the executor alone, as codex times the spawn
+                    // and the wait: the permission prompt and the hooks are not
+                    // the call's runtime (docs/rollout-records.md).
+                    let started = std::time::Instant::now();
                     let mut outcome = execute(call, &mut on_output);
+                    let ran = outcome.run(started.elapsed());
                     // `PostToolUse` (docs/hooks.md): the call ran, so there is
                     // nothing left to refuse — only things to say. Whatever a
                     // hook adds goes onto the **model-facing** text via the
@@ -902,6 +915,7 @@ pub fn run_agent(
                                 // included — since the record keeps this and
                                 // the cell shows its fixed row either way.
                                 output: outcome.context_text().to_string(),
+                                run: ran,
                             });
                         }
                         (None, Some(context)) if outcome.ok => {
@@ -912,6 +926,7 @@ pub fn run_agent(
                                 // output hit the byte cap still needs its `…`
                                 // marker (docs/hooks.md).
                                 truncated: outcome.truncated,
+                                run: ran,
                             });
                         }
                         (None, Some(context)) => {
@@ -919,6 +934,7 @@ pub fn run_agent(
                                 display: outcome.output.clone(),
                                 result: context.clone(),
                                 truncated: outcome.truncated,
+                                run: ran,
                             });
                         }
                         (None, None) => {
@@ -926,6 +942,7 @@ pub fn run_agent(
                                 output: outcome.output.clone(),
                                 ok: outcome.ok,
                                 truncated: outcome.truncated,
+                                run: ran,
                             });
                         }
                     }
@@ -956,6 +973,9 @@ pub fn run_agent(
                         output: TOOL_LIMIT_OUTPUT.to_string(),
                         ok: false,
                         truncated: false,
+                        run: crate::stream::ToolRun::refused(
+                            crate::stream::ToolErrorKind::ToolCallLimit,
+                        ),
                     });
                 }
                 // A refused `agent` call never launched, so it has no cell —
@@ -1026,6 +1046,7 @@ fn refuse_by_hook(
         result: result.clone(),
         // A refusal: nothing ran, so no capped output.
         truncated: false,
+        run: crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::HookBlocked),
     });
     result
 }
@@ -1088,6 +1109,26 @@ mod tests {
         out
     }
 
+    /// `events` with the resolving events' measured durations taken out — a
+    /// clock reading no exact comparison can predict. What a call's run says
+    /// otherwise (its exit code, its failure kind) is still compared
+    /// (`docs/rollout-records.md`).
+    fn unclocked(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+        events
+            .into_iter()
+            .map(|mut event| {
+                if let StreamEvent::ToolEnd { run, .. }
+                | StreamEvent::ToolAnswered { run, .. }
+                | StreamEvent::ToolRejected { run, .. }
+                | StreamEvent::ToolBackgrounded { run, .. } = &mut event
+                {
+                    run.duration_ms = None;
+                }
+                event
+            })
+            .collect()
+    }
+
     /// The round a fake model ends its turn with: a real, if short, answer.
     /// An *empty* `Complete` is a round the loop continues rather than an
     /// answer (docs/unfinished-replies.md), so a fixture that means "the
@@ -1111,6 +1152,223 @@ mod tests {
         let (skills, errors) = super::super::skill::discover_skills(&[root.to_path_buf()]);
         assert!(errors.is_empty(), "{errors:?}");
         crate::skills::SkillRegistry::new(skills)
+    }
+
+    // ===== how a call ran (docs/rollout-records.md) =====
+
+    /// One round of `calls` against `execute` and `approve`, under a
+    /// `max_tool_calls` ceiling, then the model's answer: the events it sent.
+    fn ran(
+        calls: Vec<ToolCallRequest>,
+        max_tool_calls: usize,
+        execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
+        approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    ) -> Vec<StreamEvent> {
+        let (tx, mut rx) = unbounded_channel();
+        let mut messages = vec![ChatMessage::user("go")];
+        let mut rounds = vec![calls].into_iter();
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            max_tool_calls,
+            &mut messages,
+            |_| match rounds.next() {
+                Some(calls) => RoundOutcome::ToolCalls {
+                    assistant: assistant_with(&calls),
+                    calls,
+                },
+                None => answered(),
+            },
+            execute,
+            Vec::new,
+            |_| Vec::new(),
+            approve,
+            &NoHooks,
+            &no_sessions,
+        );
+        drain(&mut rx)
+    }
+
+    /// The `run` every resolving event carried, in order.
+    fn runs(events: &[StreamEvent]) -> Vec<crate::stream::ToolRun> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolEnd { run, .. }
+                | StreamEvent::ToolAnswered { run, .. }
+                | StreamEvent::ToolRejected { run, .. }
+                | StreamEvent::ToolBackgrounded { run, .. } => Some(*run),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_call_that_ran_carries_its_exit_code_and_how_long_it_ran() {
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"cargo test"}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                ToolOutcome::error("Exit code: 101\nFAILED").with_exit_code(101)
+            },
+            |_, _| Approval::Allow,
+        );
+        let [run] = runs(&events)[..] else {
+            panic!("one resolution: {events:?}");
+        };
+        assert_eq!(run.exit_code, Some(101));
+        // A failure nothing more specific explains is the tool's own.
+        assert_eq!(
+            run.error_kind,
+            Some(crate::stream::ToolErrorKind::ToolError)
+        );
+        assert!(run.duration_ms.is_some_and(|ms| ms >= 30), "{run:?}");
+    }
+
+    #[test]
+    fn a_call_that_succeeded_names_no_failure() {
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"true"}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| ToolOutcome::ok("Exit code: 0").with_exit_code(0),
+            |_, _| Approval::Allow,
+        );
+        let [run] = runs(&events)[..] else {
+            panic!("one resolution: {events:?}");
+        };
+        assert_eq!(run.exit_code, Some(0));
+        assert_eq!(run.error_kind, None);
+        assert!(run.duration_ms.is_some(), "it ran: {run:?}");
+    }
+
+    #[test]
+    fn an_outcome_that_names_its_failure_keeps_it() {
+        // The executor knows a timeout from any other failure.
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"sleep 9"}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| {
+                ToolOutcome::error("command timed out")
+                    .with_error_kind(crate::stream::ToolErrorKind::TimedOut)
+            },
+            |_, _| Approval::Allow,
+        );
+        assert_eq!(
+            runs(&events)[0].error_kind,
+            Some(crate::stream::ToolErrorKind::TimedOut)
+        );
+    }
+
+    #[test]
+    fn a_call_whose_two_texts_differ_still_says_how_it_ran() {
+        // A `write`'s numbered cell and the model's one-line ack resolve as
+        // `ToolAnswered`; the facts ride it the same way.
+        let events = ran(
+            vec![call("a", "write", r#"{"path":"a.py","content":"x"}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| ToolOutcome::ok("Wrote 1 line to a.py").with_context("File created"),
+            |_, _| Approval::Allow,
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolAnswered { .. })),
+            "{events:?}"
+        );
+        let [run] = runs(&events)[..] else {
+            panic!("one resolution: {events:?}");
+        };
+        assert_eq!((run.exit_code, run.error_kind), (None, None));
+        assert!(run.duration_ms.is_some(), "{run:?}");
+    }
+
+    #[test]
+    fn a_call_handed_to_the_background_is_timed_to_the_handoff() {
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"npm run dev","wait":0}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| ToolOutcome::backgrounded("b1", "Running in the background"),
+            |_, _| Approval::Allow,
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolBackgrounded { .. })),
+            "{events:?}"
+        );
+        let [run] = runs(&events)[..] else {
+            panic!("one resolution: {events:?}");
+        };
+        assert_eq!(run.exit_code, None, "still running");
+        assert_eq!(run.error_kind, None);
+        assert!(run.duration_ms.is_some(), "{run:?}");
+    }
+
+    #[test]
+    fn a_refused_call_says_who_refused_it_and_never_ran() {
+        let executed = RefCell::new(false);
+        let events = ran(
+            vec![call("a", "bash", r#"{"command":"rm -rf build"}"#)],
+            MAX_TOOL_ITERATIONS,
+            |_, _| {
+                *executed.borrow_mut() = true;
+                ToolOutcome::ok("")
+            },
+            |_, _| Approval::Reject {
+                display: "Denied by auto mode classifier".into(),
+                result: "denied".into(),
+                kind: crate::stream::ToolErrorKind::ClassifierDenied,
+            },
+        );
+        assert!(!*executed.borrow(), "a refused call never runs");
+        assert_eq!(
+            runs(&events),
+            vec![crate::stream::ToolRun::refused(
+                crate::stream::ToolErrorKind::ClassifierDenied
+            )]
+        );
+    }
+
+    #[test]
+    fn a_call_over_the_ceiling_is_refused_by_the_limit() {
+        let events = ran(
+            vec![
+                call("a", "bash", r#"{"command":"one"}"#),
+                call("b", "bash", r#"{"command":"two"}"#),
+            ],
+            1,
+            |_, _| ToolOutcome::ok("Exit code: 0").with_exit_code(0),
+            |_, _| Approval::Allow,
+        );
+        let runs = runs(&events);
+        assert_eq!(runs.len(), 2, "{events:?}");
+        assert_eq!(runs[0].exit_code, Some(0), "the first one ran");
+        assert_eq!(
+            runs[1],
+            crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::ToolCallLimit)
+        );
+    }
+
+    #[test]
+    fn a_hook_block_says_a_hook_refused_the_call() {
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some(crate::hooks::HookBlock {
+                    reason: "no destructive deletes".into(),
+                    hook: Some("./guard.sh".into()),
+                }),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, _) = round_with_hooks(&hooks);
+        assert_eq!(
+            runs(&events),
+            vec![crate::stream::ToolRun::refused(
+                crate::stream::ToolErrorKind::HookBlocked
+            )]
+        );
     }
 
     // ===== the run's reply budget: --max-turns (docs/headless.md) =====
@@ -2889,7 +3147,7 @@ mod tests {
             &NoHooks,
             &no_sessions,
         );
-        let events = drain(&mut rx);
+        let events = unclocked(drain(&mut rx));
         assert_eq!(
             events,
             vec![
@@ -2919,6 +3177,7 @@ mod tests {
                     output: "ran bash".to_string(),
                     ok: true,
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
                 StreamEvent::StreamDone,
             ]
@@ -2943,6 +3202,7 @@ mod tests {
                     display: "User answered Alter Zero's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -2951,6 +3211,11 @@ mod tests {
                     display: "User answered Alter Zero's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
                     truncated: false,
+                    // It ran and failed: the tool's own failure.
+                    run: crate::stream::ToolRun {
+                        error_kind: Some(crate::stream::ToolErrorKind::ToolError),
+                        ..crate::stream::ToolRun::default()
+                    },
                 },
             ),
         ] {
@@ -2985,6 +3250,8 @@ mod tests {
                         image: None,
                         tasks: None,
                         context: None,
+                        exit_code: None,
+                        error_kind: None,
                     };
                     outcome.with_context(r#"{"answers":{"Q":"A"}}"#)
                 },
@@ -2994,7 +3261,7 @@ mod tests {
                 &NoHooks,
                 &no_sessions,
             );
-            let events = drain(&mut rx);
+            let events = unclocked(drain(&mut rx));
             assert!(
                 events.contains(&expected),
                 "ok={ok}: expected {expected:?} in {events:?}"
@@ -4182,7 +4449,7 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                StreamEvent::ToolBackgrounded { id, output }
+                StreamEvent::ToolBackgrounded { id, output, .. }
                     if id == "bash_1" && output.contains("bash_1")
             )),
             "the call resolves as backgrounded: {events:?}"
@@ -4231,6 +4498,7 @@ mod tests {
             |_call, _force| Approval::Reject {
                 display: "User rejected write to hello.py".to_string(),
                 result: "The user doesn't want to proceed…".to_string(),
+                kind: crate::stream::ToolErrorKind::Rejected,
             },
             &NoHooks,
             &no_sessions,
@@ -4311,6 +4579,7 @@ mod tests {
             |_call, _force| Approval::Reject {
                 display: "User rejected input".to_string(),
                 result: "The user doesn't want to proceed…".to_string(),
+                kind: crate::stream::ToolErrorKind::Rejected,
             },
             &NoHooks,
             &|id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string()),

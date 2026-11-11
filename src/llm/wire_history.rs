@@ -257,6 +257,7 @@ mod tests {
                 batch: Some(0),
                 call_id: None,
                 position: None,
+                run: crate::stream::ToolRun::default(),
             })
         };
         let history = vec![

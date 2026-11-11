@@ -478,6 +478,7 @@ fn gated_agent_round(
                 display,
                 result,
                 truncated: false,
+                run: crate::stream::ToolRun::default(),
             },
             None => call.end(),
         };
@@ -731,6 +732,7 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
         output: outcome.output,
         ok: outcome.ok,
         truncated: false,
+        run: crate::stream::ToolRun::default(),
     });
     nap(TOOL_DELAY, stage.cancel);
     ended.is_ok() && !stage.cancel.is_cancelled()

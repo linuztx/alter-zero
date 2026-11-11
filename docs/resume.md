@@ -112,6 +112,9 @@ overlay machinery.
     timestamp}` (the display stamp the item already carries),
   - `"tool"` → `{name, args, ok: bool, output, timestamp, shell, truncated}`
     (a running tool is never in `history`, so only finished statuses exist),
+    plus how the call ran — `exit_code`, `duration_ms` and, on a failure,
+    `error_kind` — each omitted when it has no value
+    (`docs/rollout-records.md`),
   - `"summary"` → `{verb, secs, timestamp}` (`verb` maps back to its static
     on load — a `STATUS_VERBS` past tense, or a verb older builds recorded
     (`Finished`, `Wrapped up`, …) — falling back to `"Done"`:
@@ -123,14 +126,18 @@ overlay machinery.
   Streaming deltas, the status line, and token tallies are never recorded —
   codex's persistence policy. (A *settled* thinking phase is an ordinary
   history item and does get its line; the raw deltas do not.)
-  Two **sidecar** records ride the same file without being history items:
-  `"checkpoint"` (`docs/checkpoint.md`) and `"model"` — the session's own
+  Three **sidecar** records ride the same file without being history items:
+  `"checkpoint"` (`docs/checkpoint.md`), `"model"` — the session's own
   model selection (`docs/session-model.md`: `llm::settings::ModelSelection`,
   the `config.json` entry's shape, written right after the meta line and
   again on every `/model` pick, Ctrl+T cycle and probe answer; the newest
   wins, `session::parse_model`), which is what a resume runs the rest of
   the conversation on — the `session_meta` line's `model` names only the
-  model the file was created on and is never read back.
+  model the file was created on and is never read back — and `"usage"`,
+  one per model request with the provider's own counts, written where the
+  request finished (`docs/rollout-records.md`: `session::usage_line`,
+  placed among the items by `session::history_lines`, read back by
+  `session::parse_usage` so a rewrite keeps each where it sat).
 - Serialization is `serde`/`serde_json` on **module-local record types**
   (`SessionMeta`, a tagged line enum) mapped to/from the app types, so the
   on-disk format is decoupled from `app/` and the app types stay

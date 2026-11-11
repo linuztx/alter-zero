@@ -225,6 +225,61 @@ fn esc_with_the_palette_open_only_dismisses_it_even_mid_turn() {
 }
 
 #[test]
+fn a_backend_error_says_each_call_died_with_the_turn() {
+    // docs/rollout-records.md: the running call records how long it had run
+    // (the command clock the running cell shows); a sibling that never
+    // started records only why it failed.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&ping_batch());
+    app.start_tool("Bash", "ping google.com", None);
+    app.set_command_elapsed(Some(Duration::from_millis(2_500)));
+    let failure = app.fail_stream("network down").expect("was streaming");
+    let kind = Some(crate::stream::ToolErrorKind::BackendError);
+    assert_eq!(failure.tools[0].run.error_kind, kind);
+    assert_eq!(failure.tools[0].run.duration_ms, Some(2_500));
+    assert_eq!(failure.tools[0].run.exit_code, None);
+    for sibling in &failure.tools[1..] {
+        assert_eq!(
+            sibling.run,
+            crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::BackendError),
+            "{sibling:?} never ran"
+        );
+    }
+}
+
+#[test]
+fn an_interrupt_says_each_call_was_interrupted() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&ping_batch());
+    app.start_tool("Bash", "ping google.com", None);
+    app.set_command_elapsed(Some(Duration::from_millis(900)));
+    let InterruptedTurn::Kept { tools, .. } = app.interrupt_turn(1).expect("a turn was active")
+    else {
+        panic!("a running call is kept, not undone");
+    };
+    let kind = Some(crate::stream::ToolErrorKind::Interrupted);
+    assert_eq!(tools[0].run.error_kind, kind);
+    assert_eq!(tools[0].run.duration_ms, Some(900));
+    assert!(
+        tools[1..].iter().all(|call| call.run
+            == crate::stream::ToolRun::refused(crate::stream::ToolErrorKind::Interrupted)),
+        "{tools:?}"
+    );
+    // The records the rollout writes carry the same.
+    let recorded: Vec<_> = app
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(call) => Some(call.run.error_kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recorded, vec![kind; 3]);
+}
+
+#[test]
 fn interrupt_turn_keeps_the_partial_and_records_the_notice() {
     let mut app = App::new();
     app.begin_stream();
@@ -1855,6 +1910,7 @@ fn a_retry_never_reaches_back_into_an_earlier_round() {
             output: "src\n".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
     );
     stream_event(&mut app, StreamEvent::Chunk("The tree has".into()));

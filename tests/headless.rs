@@ -500,6 +500,10 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
 const DELEGATE: &str = "HEADLESS_DELEGATE";
 const OUTLIVE: &str = "HEADLESS_OUTLIVE";
 const STALL: &str = "HEADLESS_STALL";
+/// What a prompt says to make the stand-in run a command that fails, and
+/// report usage on every reply of that conversation — what the rollout's
+/// `tool` and `usage` lines record (docs/rollout-records.md).
+const RECORD: &str = "HEADLESS_RECORD";
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
 /// user message it makes one call, chosen by what the message says:
@@ -526,7 +530,17 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
         ]
     };
-    let frames = if last["role"] == "tool" {
+    // A request offering no tools is a `/compact` summarization: it is
+    // answered in text, never with a call it could not make.
+    let offers_tools = request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
+    let frames = if !offers_tools {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    } else if last["role"] == "tool" {
         vec![
             serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
@@ -534,6 +548,9 @@ fn chat_reply(body: &str) -> String {
     } else if said.contains(DELEGATE) {
         let task = if said.contains(STALL) {
             format!("{STALL} make the marker")
+        } else if said.contains(RECORD) {
+            // A recorded conversation's subagent is recorded too.
+            format!("{RECORD} make the marker")
         } else {
             "make the marker".to_string()
         };
@@ -551,6 +568,11 @@ fn chat_reply(body: &str) -> String {
             "bash",
             serde_json::json!({"command": "sleep 300", "wait": 0}),
         )
+    } else if said.contains(RECORD) {
+        call(
+            "bash",
+            serde_json::json!({"command": "sleep 0.2; echo recorded; exit 3"}),
+        )
     } else {
         call(
             "bash",
@@ -564,6 +586,19 @@ fn chat_reply(body: &str) -> String {
         .iter()
         .map(|frame| format!("data: {frame}\n\n"))
         .collect();
+    // A recorded conversation's every reply ends on its usage frame — the
+    // one that read the tool result told apart by its counts.
+    if body.contains(RECORD) {
+        let usage = if last["role"] == "tool" {
+            serde_json::json!({"prompt_tokens": 2400, "completion_tokens": 12,
+                "prompt_tokens_details": {"cached_tokens": 2000}})
+        } else {
+            serde_json::json!({"prompt_tokens": 1800, "completion_tokens": 40,
+                "completion_tokens_details": {"reasoning_tokens": 16}})
+        };
+        let frame = serde_json::json!({"choices": [], "usage": usage});
+        sse.push_str(&format!("data: {frame}\n\n"));
+    }
     sse.push_str("data: [DONE]\n\n");
     sse
 }
@@ -852,4 +887,234 @@ fn a_signal_stops_the_run_and_still_reports() {
     assert_eq!(result["type"], "result");
     assert_eq!(result["subtype"], "error_interrupted");
     assert_eq!(result["error"], "interrupted by SIGTERM");
+}
+
+// ===== what the rollout records (docs/rollout-records.md) =====
+
+/// Every line of the one rollout file a world's runs wrote, parsed.
+fn rollout(world: &World) -> Vec<serde_json::Value> {
+    fn files(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                found.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    files(&world.dir("sessions"), &mut found);
+    let [file] = found.as_slice() else {
+        panic!("one rollout: {found:?}");
+    };
+    std::fs::read_to_string(file)
+        .expect("the rollout reads")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a JSON line"))
+        .collect()
+}
+
+#[test]
+fn the_rollout_records_each_request_and_how_each_call_ran() {
+    let world = World::new("records");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} run it"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stand_in.chat_requests().len(), 2);
+    let lines = rollout(&world);
+    let kinds: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| line["type"].as_str())
+        .filter(|kind| ["message", "tool", "usage", "summary"].contains(kind))
+        .collect();
+    // The request that asked for the call heads it, the one that read its
+    // result follows it: a step's cost reads off file order.
+    assert_eq!(
+        kinds,
+        ["message", "usage", "tool", "usage", "message", "summary"],
+        "{lines:#?}"
+    );
+    let usage: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "usage")
+        .map(|line| &line["payload"])
+        .collect();
+    assert_eq!(
+        (
+            &usage[0]["input"],
+            &usage[0]["output"],
+            &usage[0]["reasoning"]
+        ),
+        (&1800.into(), &40.into(), &16.into())
+    );
+    assert_eq!(
+        (&usage[1]["input"], &usage[1]["output"], &usage[1]["cached"]),
+        (&2400.into(), &12.into(), &2000.into())
+    );
+    assert!(usage.iter().all(|line| line.get("agent").is_none()));
+    // The call ran and failed: its exit code, its runtime and why, as data.
+    let tool = &lines
+        .iter()
+        .find(|line| line["type"] == "tool")
+        .expect("the call")["payload"];
+    assert_eq!(tool["ok"], false);
+    assert_eq!(tool["exit_code"], 3);
+    assert_eq!(tool["error_kind"], "tool_error");
+    assert!(
+        tool["duration_ms"].as_u64().is_some_and(|ms| ms >= 200),
+        "{tool}"
+    );
+    assert!(
+        tool["output"]
+            .as_str()
+            .is_some_and(|out| out.contains("Exit code: 3")),
+        "the text the model read is unchanged: {tool}"
+    );
+    // …and the turn's summary is still the sum of its requests.
+    let summary = &lines
+        .iter()
+        .find(|line| line["type"] == "summary")
+        .expect("the summary")["payload"];
+    assert_eq!(summary["tokens"], 1800 + 40 + 2400 + 12);
+    assert_eq!(summary["cached"], 2000);
+
+    // A continued conversation keeps the file's lines where they were and
+    // appends its own the same way.
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "-c",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} again"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let kinds: Vec<String> = rollout(&world)
+        .iter()
+        .filter_map(|line| line["type"].as_str().map(str::to_string))
+        .filter(|kind| ["message", "tool", "usage", "summary"].contains(&kind.as_str()))
+        .collect();
+    let turn = ["message", "usage", "tool", "usage", "message", "summary"];
+    assert_eq!(kinds, [turn, turn].concat());
+}
+
+#[test]
+fn a_subagents_requests_are_recorded_under_its_id() {
+    // A subagent's requests are paid for by the conversation that launched
+    // it: their lines land in its rollout, tagged with the id its
+    // `agent_group` entry carries (docs/rollout-records.md).
+    let world = World::new("agent-usage");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{DELEGATE} {RECORD} go"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines = rollout(&world);
+    let group: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["type"] == "agent_group")
+        .flat_map(|line| line["payload"]["agents"].as_array().expect("agents").iter())
+        .filter_map(|agent| agent["id"].as_str())
+        .collect();
+    let tagged: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["type"] == "usage")
+        .filter_map(|line| line["payload"]["agent"].as_str())
+        .collect();
+    // The subagent's call and its answer: two requests, both its own.
+    assert_eq!(tagged.len(), 2, "{lines:#?}");
+    assert!(
+        tagged.iter().all(|id| group == [*id]),
+        "{tagged:?} vs {group:?}"
+    );
+}
+
+#[test]
+fn a_compactions_request_is_recorded_as_one() {
+    // A conversation continued past its window compacts before the prompt
+    // goes out; that summarization's usage line says so and sits right
+    // ahead of the compaction it made (docs/rollout-records.md).
+    let world = World::new("compact-usage");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} run it"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = run(&[
+        "-p",
+        "-c",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} again"),
+    ]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let lines = rollout(&world);
+    let compaction = lines
+        .iter()
+        .position(|line| line["type"] == "compaction")
+        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"));
+    assert_eq!(lines[compaction - 1]["type"], "usage", "{lines:#?}");
+    assert_eq!(lines[compaction - 1]["payload"]["compact"], true);
+    // Every other request is the conversation's own, untagged.
+    let tagged = lines
+        .iter()
+        .filter(|line| line["type"] == "usage" && line["payload"].get("compact").is_some())
+        .count();
+    assert_eq!(tagged, 1, "{lines:#?}");
+}
+
+#[test]
+fn the_rollout_says_why_a_call_never_ran() {
+    // A headless run refuses what needs an approval nobody can give: the
+    // call's line says so, with no exit status and no time — it never ran
+    // (docs/rollout-records.md).
+    let world = World::new("refusal-kind");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &["-p", "--permission-mode", "manual", "make it"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines = rollout(&world);
+    let call = &lines
+        .iter()
+        .find(|line| line["type"] == "tool")
+        .expect("the refused call is recorded")["payload"];
+    assert_eq!(call["ok"], false);
+    assert_eq!(call["error_kind"], "approval_required", "{call}");
+    assert!(call.get("exit_code").is_none(), "{call}");
+    assert!(call.get("duration_ms").is_none(), "{call}");
 }

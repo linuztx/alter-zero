@@ -212,8 +212,15 @@ pub enum Approval {
     /// Don't run it. `display` is the short red cell output the user sees;
     /// `result` is the longer text the *model* reads as the tool result. Two
     /// fields so the cell can stay a one-liner while the instruction is
-    /// complete (`docs/permissions.md`).
-    Reject { display: String, result: String },
+    /// complete (`docs/permissions.md`). `kind` says who refused it — the
+    /// user, auto mode's classifier, a hook, nobody there to ask — which the
+    /// rollout's `tool` line records as its `error_kind`
+    /// (`docs/rollout-records.md`).
+    Reject {
+        display: String,
+        result: String,
+        kind: crate::stream::ToolErrorKind,
+    },
 }
 
 /// The prompt's title for a request kind — coloured in the rendered prompt.

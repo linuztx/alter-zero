@@ -385,6 +385,11 @@ impl Session<'_> {
             .clocks
             .turn_start
             .map_or(0, |start| start.elapsed().as_secs());
+        // The running command's own clock, read now rather than at the last
+        // draw: the call the interrupt resolves records how long it ran
+        // (docs/rollout-records.md).
+        self.app
+            .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // A thinking phase caught mid-thought settles first, so its
         // `Thought for …` cell sits ahead of everything the interrupt keeps.
         // Recording it is also what makes this a *Kept* interrupt: real work

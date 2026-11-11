@@ -14,7 +14,7 @@ use crate::ask::{
     AskDecision, AskGate, AskRequest, answered_display, answered_result, chat_display, chat_result,
     declined_display, declined_result, parse_questions, timed_out_display, timed_out_result,
 };
-use crate::stream::{CancelToken, StreamEvent};
+use crate::stream::{CancelToken, StreamEvent, ToolErrorKind};
 
 /// The display recorded when the turn is cancelled out from under a waiting
 /// question — the call never resolved, and the events go to an
@@ -53,22 +53,27 @@ pub fn ask_user(
         Some(AskDecision::Submitted(answers)) => {
             ToolOutcome::ok(answered_display(&answers)).with_context(answered_result(&answers))
         }
-        Some(AskDecision::Declined) => {
-            ToolOutcome::error(declined_display(&request.questions)).with_context(declined_result())
-        }
-        Some(AskDecision::Chat) => {
-            ToolOutcome::error(chat_display(&request.questions)).with_context(chat_result())
-        }
+        // The user turned the question down, either way — which the
+        // rollout records as a rejection (docs/rollout-records.md).
+        Some(AskDecision::Declined) => ToolOutcome::error(declined_display(&request.questions))
+            .with_context(declined_result())
+            .with_error_kind(ToolErrorKind::Rejected),
+        Some(AskDecision::Chat) => ToolOutcome::error(chat_display(&request.questions))
+            .with_context(chat_result())
+            .with_error_kind(ToolErrorKind::Rejected),
         // The user went idle and the clock ran out (docs/ask.md): red, since
         // nothing was submitted, while the model is told to keep working.
         Some(AskDecision::TimedOut { answers, after }) => {
             ToolOutcome::error(timed_out_display(&request.questions, &answers, after))
                 .with_context(timed_out_result(&answers, after))
+                .with_error_kind(ToolErrorKind::TimedOut)
         }
         // The cancel that reaps a waiting thread (Esc, `/clear`, quit): the
         // turn is being torn down, so these texts only ever reach an
         // abandoned channel.
-        None => ToolOutcome::error(CANCELLED_DISPLAY).with_context(declined_result()),
+        None => ToolOutcome::error(CANCELLED_DISPLAY)
+            .with_context(declined_result())
+            .with_error_kind(ToolErrorKind::Interrupted),
     }
 }
 
@@ -174,6 +179,11 @@ mod tests {
             gate.resolve(&request.id, decision);
             let outcome = waiter.join().unwrap();
             assert!(!outcome.ok, "nothing was answered");
+            // The user turned the question down (docs/rollout-records.md).
+            assert_eq!(
+                outcome.error_kind,
+                Some(crate::stream::ToolErrorKind::Rejected)
+            );
             assert!(
                 outcome.output.starts_with(headline),
                 "got {}",
@@ -229,6 +239,10 @@ mod tests {
             );
             let outcome = waiter.join().unwrap();
             assert!(!outcome.ok, "nothing was submitted");
+            assert_eq!(
+                outcome.error_kind,
+                Some(crate::stream::ToolErrorKind::TimedOut)
+            );
             assert!(
                 outcome.output.starts_with(&format!("{headline} 10m")),
                 "got {}",

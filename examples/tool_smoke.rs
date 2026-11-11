@@ -96,7 +96,7 @@ fn main() {
                 let _ = std::io::stdout().flush();
                 reply.push_str(&c);
             }
-            StreamEvent::ToolBackgrounded { id, output } => {
+            StreamEvent::ToolBackgrounded { id, output, .. } => {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
             // The round's wire identity (docs/prompt-caching.md): the TUI
@@ -190,10 +190,19 @@ fn main() {
                 output,
                 ok,
                 truncated,
+                run,
             } => {
                 let color = if ok { "\x1b[32m" } else { "\x1b[31m" };
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
-                println!("{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---");
+                // How the call ran, as the rollout records it
+                // (docs/rollout-records.md).
+                println!(
+                    "{color}  ⎿ ok={ok} truncated={truncated} exit_code={:?} duration_ms={:?} \
+                     error_kind={:?}\x1b[0m\n{head}\n  ---",
+                    run.exit_code,
+                    run.duration_ms,
+                    run.error_kind.map(alter_zero::stream::ToolErrorKind::wire),
+                );
             }
             StreamEvent::ToolRejected {
                 display, result, ..

@@ -49,6 +49,7 @@ fn image_read(path: &str, px: (u32, u32)) -> HistoryItem {
         batch: None,
         call_id: None,
         position: None,
+        run: crate::stream::ToolRun::default(),
     })
 }
 

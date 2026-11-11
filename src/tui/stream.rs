@@ -33,6 +33,7 @@
 use ratatui::text::Line;
 
 use alter_zero::app::{CONNECTION_LOST_NOTICE, Role, ToastKind, View, group_kind};
+use alter_zero::session::RequestUsage;
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -163,6 +164,7 @@ impl Session<'_> {
                 output,
                 ok,
                 truncated,
+                run,
             } => {
                 // A `!` output that overflowed the in-memory cap was cut by the
                 // runner; mark the running tool so its expanded cell appends a `…`
@@ -170,6 +172,10 @@ impl Session<'_> {
                 if truncated {
                     self.app.set_tool_truncated();
                 }
+                // How the call ran rides into its record, and from there the
+                // rollout's `tool` line — on every resolution below too
+                // (docs/rollout-records.md).
+                self.app.set_tool_run(run);
                 // Commit the finished tool *collapsed* (green/red) to scrollback;
                 // its full (retained) output lives in the Ctrl+O view. A
                 // completion that landed while the call ran (often a `kill`
@@ -188,7 +194,9 @@ impl Session<'_> {
                 display,
                 result,
                 truncated,
+                run,
             } => {
+                self.app.set_tool_run(run);
                 // The user refused the call at the permission prompt: commit the
                 // red cell with the short `display` (Tab's instructions on its
                 // second line) while `result` — the longer text the model read —
@@ -208,7 +216,9 @@ impl Session<'_> {
                 display,
                 result,
                 truncated,
+                run,
             } => {
+                self.app.set_tool_run(run);
                 // The user answered the `AskUserQuestion` call: commit the green
                 // cell with the `· Q → A` display while `result` — the answers
                 // JSON the model read — rides the recorded call, the
@@ -222,7 +232,8 @@ impl Session<'_> {
                 self.clocks.command_start = None;
                 false
             }
-            StreamEvent::ToolBackgrounded { id: _, output } => {
+            StreamEvent::ToolBackgrounded { id: _, output, run } => {
+                self.app.set_tool_run(run);
                 // The call resolved by moving to the background: commit its cell
                 // with the fixed `⎿ Running in the background (↓ to manage)` row
                 // (the stored output is the model-facing launch text). The process
@@ -510,9 +521,20 @@ impl Session<'_> {
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache
-                // detail included). Live-only — the turn summary commits the
-                // total at StreamDone (docs/prompt-caching.md).
+                // detail included). Live — the turn summary commits the total
+                // at StreamDone (docs/prompt-caching.md) — and recorded: the
+                // request's own `usage` line, where it finished, among the
+                // items recorded so far (docs/rollout-records.md).
                 self.app.apply_usage(&usage);
+                self.recorder.record_usage(RequestUsage {
+                    after: self.app.history.len(),
+                    usage,
+                    agent: None,
+                    // A summarization request says so: it is part of no
+                    // turn's `summary` (its marker lands at StreamDone, so
+                    // the turn is still compacting here).
+                    compact: self.app.is_compacting(),
+                });
                 false
             }
             StreamEvent::Error(message) => {
@@ -530,6 +552,10 @@ impl Session<'_> {
                 // a settle that carries no event of its own, so the session
                 // view's pre-fold work has to run here (`docs/agent-view-streaming.md`).
                 let owed = self.begin_turn_agent_settle(width);
+                // The running command's clock, read now: a headless run draws
+                // no frame to have injected it (docs/rollout-records.md).
+                self.app
+                    .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
                 let failed = self.app.fail_stream(&message);
                 self.finish_turn_agent_settle(owed, width);
                 if let Some(failure) = failed {

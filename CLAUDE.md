@@ -1281,7 +1281,17 @@ http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
 `tui::mcp_cli`) in
-`docs/resume.md`; the **filesystem checkpoints** (every turn snapshots the whole
+`docs/resume.md`; the **rollout records** an analysis reads (codex's
+`token_usage_record` and command record, sized down: every `tool` line keeps
+the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
+the `stream::ToolRun` each resolving event carries, `run_agent` timing the
+executor and naming refusals, `App::fail_live_queue` stamping an Esc's or a
+backend error's calls — and every model request leaves a `usage` sidecar
+line with the provider's counts, `agent` on a subagent's and `compact` on a
+compaction's, placed where it finished by `session::history_lines`, kept
+through a rewrite by `session::retain_usage` (a subagent's even past the
+cut, since it was billed) and adopted back on a resume by
+`session::parse_usage`) in `docs/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the
 code**, not just the transcript: rewinding restores the working directory to the
@@ -1973,7 +1983,7 @@ turn interrupt, the abandoned id released on the gate so a background agent's
 thread never parks), a rejection still commits the red `⎿ User rejected write
 to hello.py` cell — Tab's typed feedback on a second `Instructions: …` line,
 the transcript's only record of it — while the *model* reads the longer
-stop-and-wait text (`Approval::Reject`'s two fields, streamed together as
+stop-and-wait text (`Approval::Reject`'s two texts, streamed together as
 `StreamEvent::ToolRejected` in place of the `ToolEnd`), and **that
 model-facing text is what the conversation keeps**: it rides the recorded call
 as `ToolCall::context_output` and `context::context_messages` replays it —

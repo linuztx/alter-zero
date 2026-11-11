@@ -136,6 +136,112 @@ impl TokenUsage {
     }
 }
 
+/// Why a tool call that did not succeed failed — the rollout's `error_kind`
+/// (`docs/rollout-records.md`). Never set on a call that succeeded. The
+/// spellings are codex's where codex has one (`tool_error`, `timed_out`,
+/// `interrupted`, `rejected`); the rest name what only this app has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolErrorKind {
+    /// It ran and failed: a nonzero exit, a missing file, an edit that
+    /// matched nothing, an MCP error, arguments the tool could not read. The
+    /// kind of every failure nothing more specific explains.
+    ToolError,
+    /// It was stopped at its time limit — a command with nowhere to keep
+    /// running past its `wait`, or a question nobody answered.
+    TimedOut,
+    /// Esc cut it short, whether it was running or still waiting its turn.
+    Interrupted,
+    /// The user refused it: No at the permission prompt (Tab's amended no,
+    /// Ctrl+E), or a declined question.
+    Rejected,
+    /// Auto mode's classifier refused it (`docs/permissions.md`).
+    ClassifierDenied,
+    /// A hook refused it: a `PreToolUse` block or a `PermissionRequest` deny
+    /// (`docs/hooks.md`).
+    HookBlocked,
+    /// It needed approval in a run nobody could answer (`docs/headless.md`).
+    ApprovalRequired,
+    /// The `/settings` **Max tool calls** ceiling refused it.
+    ToolCallLimit,
+    /// It was in flight when the turn's request failed.
+    BackendError,
+}
+
+impl ToolErrorKind {
+    /// Every kind, in the documented order.
+    pub const ALL: [Self; 9] = [
+        Self::ToolError,
+        Self::TimedOut,
+        Self::Interrupted,
+        Self::Rejected,
+        Self::ClassifierDenied,
+        Self::HookBlocked,
+        Self::ApprovalRequired,
+        Self::ToolCallLimit,
+        Self::BackendError,
+    ];
+
+    /// The rollout's spelling.
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::ToolError => "tool_error",
+            Self::TimedOut => "timed_out",
+            Self::Interrupted => "interrupted",
+            Self::Rejected => "rejected",
+            Self::ClassifierDenied => "classifier_denied",
+            Self::HookBlocked => "hook_blocked",
+            Self::ApprovalRequired => "approval_required",
+            Self::ToolCallLimit => "tool_call_limit",
+            Self::BackendError => "backend_error",
+        }
+    }
+
+    /// The kind a recorded spelling names — `None` for one this build does
+    /// not know, which a reader treats as absent rather than as a wrong kind.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.wire() == name)
+    }
+}
+
+/// How a tool call ran — the facts its rollout line keeps beside the output
+/// (`docs/rollout-records.md`): codex's command record, sized to every tool.
+/// Carried by each event that resolves a call, so a resolution path has to
+/// state them, and kept on the recorded [`crate::app::ToolCall::run`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolRun {
+    /// The command's exit status, when it exited during the call — `None`
+    /// for a call that is no command, one still running when the call
+    /// returned, one killed by a signal or stopped at its time limit.
+    pub exit_code: Option<i32>,
+    /// How long the call ran, in whole milliseconds, from the moment it
+    /// started running (after any permission prompt) to its result — `None`
+    /// for a call that never ran.
+    pub duration_ms: Option<u64>,
+    /// Why it failed — `None` for a call that succeeded.
+    pub error_kind: Option<ToolErrorKind>,
+}
+
+impl ToolRun {
+    /// A call refused before it ran: only the reason, no exit code and no
+    /// duration.
+    #[must_use]
+    pub const fn refused(kind: ToolErrorKind) -> Self {
+        Self {
+            exit_code: None,
+            duration_ms: None,
+            error_kind: Some(kind),
+        }
+    }
+
+    /// `elapsed` as the record's whole milliseconds, saturating.
+    #[must_use]
+    pub fn millis(elapsed: std::time::Duration) -> u64 {
+        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
 /// What a backend sends to the event loop. Only the *reply* travels this channel
 /// — keyboard input arrives separately via the terminal event stream (see
 /// `main.rs`). It is a tokio unbounded channel so the async loop can `select!` on
@@ -199,6 +305,11 @@ pub enum StreamEvent {
         output: String,
         ok: bool,
         truncated: bool,
+        /// How the call ran — its exit code, how long it ran, why it failed
+        /// (`docs/rollout-records.md`). On every resolving event, so a new
+        /// way to resolve a call has to say; [`ToolRun::default`] where
+        /// nothing measured it (the offline demo).
+        run: ToolRun,
     },
     /// The in-flight `AskUserQuestion` call resolved with the user's
     /// **submitted answers** (`docs/ask.md`) — sent **in place of**
@@ -219,6 +330,8 @@ pub enum StreamEvent {
         display: String,
         result: String,
         truncated: bool,
+        /// How the call ran ([`StreamEvent::ToolEnd`]'s `run`).
+        run: ToolRun,
     },
     /// The in-flight tool call was **refused at the permission prompt** (option
     /// 3, a Tab-amended rejection, or Ctrl+E's explain-instead) — sent **in
@@ -245,6 +358,9 @@ pub enum StreamEvent {
         display: String,
         result: String,
         truncated: bool,
+        /// How the call ran ([`StreamEvent::ToolEnd`]'s `run`) — for a
+        /// refusal, only why: [`ToolRun::refused`].
+        run: ToolRun,
     },
     /// A provenance note for the **in-flight** tool call — the auto mode
     /// classifier's `Allowed by auto mode classifier`
@@ -265,7 +381,13 @@ pub enum StreamEvent {
     /// renders the fixed `⎿ Running in the background (↓ to manage)` row
     /// ([`crate::app::ToolStatus::Backgrounded`]). The process itself reports
     /// through the separate background channel. See `docs/background.md`.
-    ToolBackgrounded { id: String, output: String },
+    ToolBackgrounded {
+        id: String,
+        output: String,
+        /// How the call ran until it was handed to the background
+        /// ([`StreamEvent::ToolEnd`]'s `run`).
+        run: ToolRun,
+    },
     /// A chunk of the **currently-running** tool's output, streamed live as it
     /// is produced (one or more complete lines, stdout+stderr merged in arrival
     /// order), between the call's [`StreamEvent::ToolStart`] and its

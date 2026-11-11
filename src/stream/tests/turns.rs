@@ -279,6 +279,7 @@ fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> 
         batch: None,
         call_id: None,
         position: None,
+        run: crate::stream::ToolRun::default(),
     };
     crate::ui::tool_lines(&call, 80, &PathDisplay::VERBATIM)
 }
@@ -323,6 +324,7 @@ fn the_hooks_demo_s_refusal_names_the_event_the_hook_and_its_file() {
         batch: None,
         call_id: None,
         position: None,
+        run: crate::stream::ToolRun::default(),
     };
     let rows: Vec<String> = crate::ui::tool_lines(&call, 80, &PathDisplay::VERBATIM)
         .iter()

@@ -190,6 +190,8 @@ use alter_zero::stream::{
     RoundCall,
     ToolCallFragment,
     ToolCallSummary,
+    ToolErrorKind,
+    ToolRun,
     AGENT_DELAY,
     CHUNK_DELAY,
     MARKDOWN_TOUR,

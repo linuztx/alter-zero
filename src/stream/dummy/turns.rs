@@ -275,11 +275,13 @@ impl ScriptedCall {
                 display: self.result(),
                 result: ack.clone(),
                 truncated: false,
+                run: crate::stream::ToolRun::default(),
             },
             None => StreamEvent::ToolEnd {
                 output: self.result(),
                 ok: self.ok(),
                 truncated: false,
+                run: crate::stream::ToolRun::default(),
             },
         }
     }
@@ -562,6 +564,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         result,
         // The hook refused it, so nothing ran and nothing was capped.
         truncated: false,
+        run: crate::stream::ToolRun::default(),
     });
 
     // The allowed call, with the hook's provenance row on its resolved cell.
@@ -573,6 +576,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
         output: ran.result(),
         ok: true,
         truncated: false,
+        run: crate::stream::ToolRun::default(),
     });
 
     events.extend(say(&second));
@@ -1246,6 +1250,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         display: crate::skills::SKILL_LOADED_DISPLAY.to_string(),
         result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY),
         truncated: false,
+        run: crate::stream::ToolRun::default(),
     });
     events.extend(say(&second));
     events.push(StreamEvent::StreamDone);

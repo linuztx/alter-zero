@@ -174,6 +174,7 @@ impl App {
                 batch: Some(batch),
                 call_id: identity.call_id,
                 position: identity.position,
+                run: crate::stream::ToolRun::default(),
             })
             .collect();
     }
@@ -242,6 +243,7 @@ impl App {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
     }
 
@@ -254,6 +256,21 @@ impl App {
     pub fn set_tool_truncated(&mut self) {
         if let Some(tool) = self.tool_queue.front_mut() {
             tool.truncated = true;
+        }
+    }
+
+    /// Record how the **running** call ran — its exit code, its duration,
+    /// why it failed — as the event resolving it stated
+    /// ([`crate::stream::StreamEvent::ToolEnd`]'s `run` and its siblings'),
+    /// set by the boundary just before the resolution so the recorded call
+    /// and its rollout line keep them (`docs/rollout-records.md`). A no-op
+    /// unless the front call is [`ToolStatus::Running`]: a batch sibling
+    /// still waiting has not run.
+    pub fn set_tool_run(&mut self, run: crate::stream::ToolRun) {
+        if let Some(tool) = self.tool_queue.front_mut()
+            && tool.status == ToolStatus::Running
+        {
+            tool.run = run;
         }
     }
 
@@ -380,9 +397,26 @@ impl App {
     /// and a call that never started is still a call the model made — its
     /// cell stays on screen and its record keeps it in the next request's
     /// context (`docs/interrupt.md`). Empty when nothing was in flight.
-    pub(super) fn fail_live_queue(&mut self, output: &str) -> Vec<ToolCall> {
+    ///
+    /// Each record says why it failed (`kind`), and the running call how
+    /// long it had run: the command clock the running cell displays, so to
+    /// within a frame. A sibling still waiting never ran, so it has no
+    /// duration (`docs/rollout-records.md`).
+    pub(super) fn fail_live_queue(
+        &mut self,
+        output: &str,
+        kind: crate::stream::ToolErrorKind,
+    ) -> Vec<ToolCall> {
+        let ran_for = self.command_elapsed.map(crate::stream::ToolRun::millis);
         let mut resolved = Vec::with_capacity(self.tool_queue.len());
-        while let Some(tool) = self.end_tool(output, false) {
+        while let Some(front) = self.tool_queue.front_mut() {
+            front.run = crate::stream::ToolRun {
+                duration_ms: ran_for.filter(|_| front.status == ToolStatus::Running),
+                ..crate::stream::ToolRun::refused(kind)
+            };
+            let Some(tool) = self.end_tool(output, false) else {
+                break;
+            };
             resolved.push(tool);
         }
         resolved
@@ -696,6 +730,13 @@ pub struct ToolCall {
     /// `[bash, agent, read]` records as `[agent, bash, read]`
     /// (`docs/prompt-caching.md`). `None` wherever `call_id` is.
     pub position: Option<usize>,
+    /// How the call ran — its exit code, how long it ran, and why it failed
+    /// (`docs/rollout-records.md`). Stated by the event that resolved it
+    /// ([`App::set_tool_run`]), or stamped here when the app resolves the
+    /// call itself (an Esc, a backend error); recorded on the rollout's
+    /// `tool` line. All `None` for a call nothing measured: the offline
+    /// demo's, and a record from before the field.
+    pub run: crate::stream::ToolRun,
 }
 
 impl ToolCall {

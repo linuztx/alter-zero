@@ -553,6 +553,7 @@ fn live_a_written_file_is_still_in_context_a_turn_later() {
             batch: None,
             call_id: None,
             position: None,
+            run: alter_zero::stream::ToolRun::default(),
         }),
     ];
     let mut context = context_messages(&history);
@@ -628,6 +629,7 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
         batch: None,
         call_id: None,
         position: None,
+        run: alter_zero::stream::ToolRun::default(),
     })];
     let mut context = vec![ContextMessage::new(
         ContextRole::User,
@@ -1523,6 +1525,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
             batch: None,
             call_id: None,
             position: None,
+            run: alter_zero::stream::ToolRun::default(),
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -1645,7 +1648,7 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
                 pressed = true;
                 registry.request_background();
             }
-            StreamEvent::ToolBackgrounded { id, output } => backgrounded = Some((id, output)),
+            StreamEvent::ToolBackgrounded { id, output, .. } => backgrounded = Some((id, output)),
             StreamEvent::Chunk(c) => reply.push_str(&c),
             StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
             StreamEvent::Error(e) => panic!("backend error: {e}"),
@@ -1886,7 +1889,7 @@ fn live_background_launch_resolves_and_completes() {
     let mut reply = String::new();
     while let Some(event) = rx.blocking_recv() {
         match event {
-            StreamEvent::ToolBackgrounded { id, output } => backgrounded = Some((id, output)),
+            StreamEvent::ToolBackgrounded { id, output, .. } => backgrounded = Some((id, output)),
             StreamEvent::Chunk(c) => reply.push_str(&c),
             StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
             StreamEvent::Error(e) => panic!("backend error: {e}"),
