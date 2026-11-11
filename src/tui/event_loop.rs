@@ -64,7 +64,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
         tokio::select! {
             // 1. Terminal input. The events branch always matches (it binds the
             //    Option), so `select!` can never run out of armed branches.
-            maybe_read = session.events.next() => {
+            maybe_read = next_event(&mut session.events) => {
                 // Stdin closing (or `read?` bailing below) can leave the loop
                 // with an overlay still up — no exit_overlay runs on these
                 // paths, so main's term.restore() leaves the alternate screen
@@ -134,4 +134,16 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
         session.after_iteration();
     }
     Ok(session.shutdown())
+}
+
+/// The next terminal event — or never, for a session with no terminal (a
+/// headless one never comes through this loop; the arm stays armed either
+/// way, so `select!` can never run out of branches).
+async fn next_event(
+    events: &mut Option<ratatui::crossterm::event::EventStream>,
+) -> Option<io::Result<ratatui::crossterm::event::Event>> {
+    match events {
+        Some(events) => events.next().await,
+        None => std::future::pending().await,
+    }
 }

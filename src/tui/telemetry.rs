@@ -63,7 +63,9 @@ impl Session<'_> {
     /// session rather than one per turn, with the file's `last_ping_day`
     /// (written only on a `2xx`) still retrying at the next launch.
     pub(crate) fn telemetry_day_check(&mut self) {
-        if !self.app.settings().telemetry_active() {
+        // A headless run sends nothing: its notice could never be shown
+        // before the send (docs/headless.md).
+        if self.headless || !self.app.settings().telemetry_active() {
             return;
         }
         if self.telemetry_attempted.as_deref() == Some(host::utc_day().as_str()) {

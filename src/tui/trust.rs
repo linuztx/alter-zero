@@ -489,7 +489,7 @@ impl Session<'_> {
     /// The review's pages for what is new or changed: the hooks page while
     /// the session runs hooks, the servers page for the servers the manager
     /// holds for it while MCP is on (the `/settings` **MCP** row).
-    fn review_pages(&self, hooks: bool, servers: bool) -> Vec<ReviewPage> {
+    pub(crate) fn review_pages(&self, hooks: bool, servers: bool) -> Vec<ReviewPage> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut pages = Vec::new();
         if hooks

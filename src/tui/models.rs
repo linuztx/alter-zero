@@ -171,7 +171,12 @@ pub(crate) struct ModelSession {
     /// backend is draining.
     steer: alter_zero::steer::SteerQueue,
     permissions: Option<PermissionGate>,
-    ask: alter_zero::ask::AskGate,
+    /// The `AskUserQuestion` gate — `None` in a headless run, where nobody
+    /// could answer, so the tool is never offered (`docs/headless.md`).
+    ask: Option<alter_zero::ask::AskGate>,
+    /// A headless run's reply budget (`--max-turns`, `docs/headless.md`),
+    /// re-attached on every rebuild like the registries; `None` in the TUI.
+    round_budget: Option<alter_zero::llm::agent::RoundBudget>,
     /// The shared task list (docs/task-tools.md) — enables the four task
     /// tools on every rebuild.
     tasks: alter_zero::tasks::TaskRegistry,
@@ -241,13 +246,14 @@ impl ModelSession {
         agents: &AgentRegistry,
         steer: &alter_zero::steer::SteerQueue,
         permissions: Option<&PermissionGate>,
-        ask: &alter_zero::ask::AskGate,
+        ask: Option<&alter_zero::ask::AskGate>,
         tasks: &alter_zero::tasks::TaskRegistry,
         skills: &alter_zero::skills::SkillRegistry,
         subagents: &alter_zero::subagents::SubagentRegistry,
         mcp: Option<&alter_zero::llm::mcp::McpManager>,
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
+        round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
     ) -> Self {
         let (providers, provider_issues) = config::startup_providers(home);
         // The persistent API-key store: `.env` in the config home (or
@@ -321,7 +327,15 @@ impl ModelSession {
         let skills_enabled = settings.skills;
         let skills = skills.clone();
         let subagents = subagents.clone();
-        let system_prompt = config::system_prompt(cwd, scratchpad);
+        let system_prompt = config::system_prompt(cwd, scratchpad).map(|prompt| {
+            // A headless run — the one session that carries a reply budget —
+            // tells the model nobody is watching (docs/headless.md).
+            if round_budget.is_some() {
+                llm::backend::augment_with_headless(&prompt)
+            } else {
+                prompt
+            }
+        });
         // The runtime half alone, for an agent definition whose body replaces
         // the persona (docs/subagents.md).
         let prompt_context = config::prompt_context(cwd, scratchpad);
@@ -453,6 +467,7 @@ impl ModelSession {
                 &subagents,
                 mcp,
                 hooks.as_ref(),
+                round_budget,
             )),
             (None, None) => {
                 // The subagent registry rides the dummy too: the "subagent"
@@ -467,7 +482,6 @@ impl ModelSession {
                     // …and the session's scratchpad, where its scratchpad demo
                     // writes (docs/tool-groups.md *Scratchpad edits*).
                     .with_scratchpad(scratchpad.map(Path::to_path_buf))
-                    .with_ask(ask.clone())
                     .with_agents(agents.clone())
                     // …and the mid-turn queue, so the offline demo takes a
                     // queued message once its tool round resolves, exactly as
@@ -477,6 +491,11 @@ impl ModelSession {
                     // (docs/background.md).
                     .with_steer(steer.clone())
                     .with_background(registry.clone());
+                // The asking demo only where somebody can answer it.
+                let dummy = match ask {
+                    Some(gate) => dummy.with_ask(gate.clone()),
+                    None => dummy,
+                };
                 Box::new(match permissions {
                     Some(gate) => dummy.with_permissions(gate.clone()),
                     None => dummy,
@@ -545,7 +564,8 @@ impl ModelSession {
             agents: agents.clone(),
             steer: steer.clone(),
             permissions: permissions.cloned(),
-            ask: ask.clone(),
+            ask: ask.cloned(),
+            round_budget: round_budget.cloned(),
             tasks: tasks.clone(),
             subagents,
             // What the backend built just above was handed: the same three
@@ -572,6 +592,13 @@ impl ModelSession {
     /// The backend a turn spawns on.
     pub(crate) fn backend(&self) -> &dyn ReplySource {
         self.backend.as_ref()
+    }
+
+    /// Whether a real model answers — not the offline demo — which a
+    /// headless run requires unless the demo was asked for
+    /// (`docs/headless.md`).
+    pub(crate) const fn is_real(&self) -> bool {
+        self.real_backend
     }
 
     /// The model id the footer shows (`docs/footer.md`).
@@ -870,12 +897,13 @@ impl ModelSession {
             &self.agents,
             &self.steer,
             self.permissions.as_ref(),
-            &self.ask,
+            self.ask.as_ref(),
             &self.tasks,
             self.skills_enabled.then_some(&self.skills),
             &self.subagents,
             self.mcp.as_ref(),
             self.hooks.as_ref(),
+            self.round_budget.as_ref(),
         ));
     }
 
@@ -1739,12 +1767,13 @@ fn session_backend(
     agents: &AgentRegistry,
     steer: &alter_zero::steer::SteerQueue,
     permissions: Option<&PermissionGate>,
-    ask: &alter_zero::ask::AskGate,
+    ask: Option<&alter_zero::ask::AskGate>,
     tasks: &alter_zero::tasks::TaskRegistry,
     skills: Option<&alter_zero::skills::SkillRegistry>,
     subagents: &alter_zero::subagents::SubagentRegistry,
     mcp: Option<&alter_zero::llm::mcp::McpManager>,
     hooks: Option<&HookSetup>,
+    round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
     // names the model that is about to answer (docs/hooks.md).
@@ -1769,13 +1798,21 @@ fn session_backend(
         // same one, so a message queued against the turn a `/model` switch
         // replaced still reaches its successor.
         .with_steer(steer.clone())
-        // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
-        // always attached; asking is not a permission.
-        .with_ask(ask.clone())
         // The shared task list (docs/task-tools.md): enables the four task
-        // tools — always attached, like the ask gate; the checklist is the
-        // session's, so every rebuild re-binds the same registry.
+        // tools — always attached; the checklist is the session's, so every
+        // rebuild re-binds the same registry.
         .with_tasks(tasks.clone());
+    // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
+    // attached wherever somebody can answer (asking is not a permission),
+    // which is everywhere but a headless run (docs/headless.md).
+    if let Some(ask) = ask {
+        backend = backend.with_ask(ask.clone());
+    }
+    // A headless run's reply budget (`--max-turns`, docs/headless.md): every
+    // request the lead sends counts against it, over every rebuild.
+    if let Some(budget) = round_budget {
+        backend = backend.with_round_budget(budget.clone());
+    }
     // The discovered skills (docs/skills.md): enables the `skill` tool, and
     // rides every rebuild so a `/model` switch keeps them. `None` is the
     // `/settings` **Skills** row off; an empty registry attaches nothing.

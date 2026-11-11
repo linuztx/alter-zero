@@ -17,9 +17,9 @@ use super::tools::{
 };
 use crate::permission::{
     Approval, CLASSIFIER_ALLOWED_NOTE, ClassifierVerdict, PermissionDecision, PermissionGate,
-    PermissionKind, PermissionMode, PermissionRequest, SCRATCHPAD_ALLOWED_NOTE,
-    classifier_denial_result, classifier_denied_display, denial_result, denied_display,
-    explain_display, explain_result,
+    PermissionKind, PermissionMode, PermissionRequest, SCRATCHPAD_ALLOWED_NOTE, UNATTENDED_DISPLAY,
+    UNATTENDED_RESULT, classifier_denial_result, classifier_denied_display, denial_result,
+    denied_display, explain_display, explain_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -327,6 +327,17 @@ pub fn approve_call(
             // still works offline.
             Err(_) => {}
         }
+    }
+    // Nobody to ask — a headless run (docs/headless.md): everything that
+    // could decide without a human has had its say above, so the call is
+    // refused here, before a prompt exists — no request, no wait, and no
+    // `Notification`, since nobody is shown anything. The gate keeps the
+    // refusal for the run's report.
+    if gate.refuses_unattended(&request) {
+        return Approval::Reject {
+            display: UNATTENDED_DISPLAY.to_string(),
+            result: UNATTENDED_RESULT.to_string(),
+        };
     }
     request.id = gate.next_id();
     // `Notification(permission_prompt)` waits for the screen (`docs/hooks.md`):
@@ -1007,6 +1018,118 @@ mod tests {
             "typed commands meet the classifier like run ones: {approval:?}"
         );
         assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    // ===== an unattended gate: the headless run (docs/headless.md) =====
+
+    /// `approve_call` for one call on `gate`. An unattended gate must answer
+    /// without waiting on anybody, so a regression that raises the prompt
+    /// would block on it: a watchdog cancels the turn after a few seconds,
+    /// turning that hang into a failed assertion (`Interrupted by user`).
+    fn decide(
+        gate: &PermissionGate,
+        classify: Option<&ClassifyCommand<'_>>,
+        force_ask: bool,
+        call: &ToolCallRequest,
+    ) -> (Approval, bool) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancelToken::new();
+        let watchdog = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            watchdog.cancel();
+        });
+        let approval = approve_call(
+            Some(gate),
+            classify,
+            None,
+            &NoHooks,
+            force_ask,
+            &tx,
+            &cancel,
+            None,
+            call,
+            None,
+        );
+        let raised = matches!(rx.try_recv(), Ok(StreamEvent::Permission(_)));
+        (approval, raised)
+    }
+
+    fn unattended(mode: crate::permission::PermissionMode) -> PermissionGate {
+        let gate = gate_in(mode);
+        gate.set_unattended();
+        gate
+    }
+
+    fn refused() -> Approval {
+        Approval::Reject {
+            display: UNATTENDED_DISPLAY.to_string(),
+            result: UNATTENDED_RESULT.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_unattended_gate_refuses_what_it_would_ask_and_raises_no_prompt() {
+        let gate = unattended(crate::permission::PermissionMode::Manual);
+        let rm = call("bash", r#"{"command":"rm -rf build"}"#);
+        assert_eq!(decide(&gate, None, false, &rm), (refused(), false));
+        let refusals = gate.take_unattended_refusals();
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert_eq!(refusals[0].kind, PermissionKind::Bash);
+        assert_eq!(refusals[0].target, "rm -rf build");
+    }
+
+    #[test]
+    fn an_unattended_gate_still_runs_what_needs_nobody() {
+        use crate::permission::PermissionMode;
+        // A rule saved interactively.
+        let gate = unattended(PermissionMode::Manual);
+        gate.seed_commands(["cargo test".to_string()], std::iter::empty());
+        let test = call("bash", r#"{"command":"cargo test"}"#);
+        assert_eq!(decide(&gate, None, false, &test), (Approval::Allow, false));
+        // Auto mode's read-only fast path, and its classifier's allow.
+        let gate = unattended(PermissionMode::Auto);
+        let ls = call("bash", r#"{"command":"ls"}"#);
+        assert_eq!(decide(&gate, None, false, &ls), (Approval::Allow, false));
+        let allow = |_: &PermissionRequest| {
+            Ok(ClassifierVerdict {
+                allow: true,
+                reason: String::new(),
+            })
+        };
+        let make = call("bash", r#"{"command":"make"}"#);
+        assert_eq!(
+            decide(&gate, Some(&allow), false, &make),
+            (
+                Approval::AllowNoted {
+                    note: CLASSIFIER_ALLOWED_NOTE.to_string()
+                },
+                false
+            )
+        );
+        // Master runs everything.
+        let gate = unattended(PermissionMode::Master);
+        let rm = call("bash", r#"{"command":"rm -rf build"}"#);
+        assert_eq!(decide(&gate, None, false, &rm), (Approval::Allow, false));
+        assert!(gate.take_unattended_refusals().is_empty());
+    }
+
+    #[test]
+    fn an_unattended_gate_refuses_a_forced_ask_and_a_failed_classifier() {
+        use crate::permission::PermissionMode;
+        // A hook's `ask` means a human decides — and there is none.
+        let gate = unattended(PermissionMode::Manual);
+        gate.seed_commands(["cargo test".to_string()], std::iter::empty());
+        let test = call("bash", r#"{"command":"cargo test"}"#);
+        assert_eq!(decide(&gate, None, true, &test), (refused(), false));
+        // The classifier failing falls back to asking — refused here.
+        let gate = unattended(PermissionMode::Auto);
+        let broken = |_: &PermissionRequest| Err("offline".to_string());
+        let make = call("bash", r#"{"command":"make"}"#);
+        assert_eq!(
+            decide(&gate, Some(&broken), false, &make),
+            (refused(), false)
+        );
     }
 
     // ===== the auto mode classifier (docs/permissions.md) =====

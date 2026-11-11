@@ -82,7 +82,7 @@ pub mod query;
 /// A content-anchored inline viewport whose height can change between draws (its
 /// top stays put; it grows downward in place).
 pub struct InlineViewport {
-    backend: CrosstermBackend<Stdout>,
+    backend: CrosstermBackend<Output>,
     /// The full terminal area, `(0, 0, width, height)`.
     screen: Rect,
     /// The live region: full width, `height` rows, anchored by its top row.
@@ -200,7 +200,42 @@ pub struct InlineViewport {
     /// [`init`]: InlineViewport::init
     /// [`take_typeahead`]: InlineViewport::take_typeahead
     typeahead: Vec<u8>,
+    /// A viewport with no terminal behind it — a headless run's
+    /// ([`headless`](InlineViewport::headless), `docs/headless.md`): every
+    /// method that would paint returns at once and every commit is dropped
+    /// as it is queued, so the session runs whole and shows nothing.
+    headless: bool,
 }
+
+/// Where a viewport's escapes go: the terminal — or, for a headless run,
+/// which keeps the session but shows nothing, nowhere (`docs/headless.md`).
+/// The sink is defence in depth under [`InlineViewport::headless`]'s early
+/// returns: stdout is a headless run's answer, and an escape that reached
+/// it would corrupt the JSON a script parses.
+enum Output {
+    Terminal(Stdout),
+    Nowhere,
+}
+
+impl Write for Output {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Terminal(out) => out.write(buf),
+            Self::Nowhere => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Terminal(out) => out.flush(),
+            Self::Nowhere => Ok(()),
+        }
+    }
+}
+
+/// The size a headless viewport pretends to have — what the session's
+/// renderers wrap to for rows nobody sees.
+const HEADLESS_SIZE: (u16, u16) = (100, 50);
 
 impl InlineViewport {
     /// Enter raw mode and reserve `min_height` rows at the bottom for the live
@@ -241,7 +276,7 @@ impl InlineViewport {
     ///
     /// [`init`]: InlineViewport::init
     fn init_in_raw_mode(min_height: u16, keyboard_enhanced: bool) -> io::Result<Self> {
-        let mut backend = CrosstermBackend::new(io::stdout());
+        let mut backend = CrosstermBackend::new(Output::Terminal(io::stdout()));
         let size = backend.size()?;
         let screen = Rect::new(0, 0, size.width, size.height);
 
@@ -312,7 +347,43 @@ impl InlineViewport {
             ),
             images,
             typeahead: replies.typed,
+            headless: false,
         })
+    }
+
+    /// A viewport with no terminal at all, for a headless run
+    /// (`docs/headless.md`): no raw mode, no cursor query, no reader — the
+    /// session it serves runs whole, and nothing it would paint is painted.
+    /// Every commit is dropped as it is queued ([`insert_before`]), and
+    /// every method that writes returns at once.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    #[must_use]
+    pub fn headless() -> Self {
+        let (width, height) = HEADLESS_SIZE;
+        let screen = Rect::new(0, 0, width, height);
+        Self {
+            backend: CrosstermBackend::new(Output::Nowhere),
+            screen,
+            view: Rect::new(0, 0, width, 1),
+            prev: None,
+            overlay_prev: None,
+            pending: Vec::new(),
+            modal_scrolled: false,
+            painted_bottom: 1,
+            keyboard_enhanced: false,
+            hyperlinks: false,
+            images: ImageStore::disabled(),
+            typeahead: Vec::new(),
+            headless: true,
+        }
+    }
+
+    /// Whether this viewport has no terminal behind it
+    /// ([`headless`](Self::headless)).
+    #[must_use]
+    pub const fn is_headless(&self) -> bool {
+        self.headless
     }
 
     /// The keys typed while [`init`]'s startup read waited on the terminal,
@@ -433,6 +504,9 @@ impl InlineViewport {
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         let height = height.clamp(1, self.screen.height.max(1));
         // Emit the whole frame inside a synchronized update (BSU/ESU, DEC mode 2026):
         // the terminal buffers everything between the markers and swaps it in one
@@ -602,6 +676,9 @@ impl InlineViewport {
     /// [`reflow`]: InlineViewport::reflow
     /// [`restore`]: InlineViewport::restore
     pub fn insert_before(&mut self, lines: Vec<Line<'static>>) {
+        if self.headless {
+            return;
+        }
         self.pending.extend(lines);
     }
 
@@ -811,6 +888,9 @@ impl InlineViewport {
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         let height = height.clamp(1, self.screen.height.max(1));
         // Take, don't clear: `clear` keeps the Vec's high-water capacity for
         // the rest of the session (a turn that streamed under an overlay can
@@ -885,6 +965,9 @@ impl InlineViewport {
     /// [`exit_overlay`]: InlineViewport::exit_overlay
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pub fn enter_overlay(&mut self) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         // Record the switch BEFORE emitting it: if the write fails part-way,
         // the exit paths still emit a LeaveAlternateScreen (harmless when the
         // terminal never actually switched) rather than risk stranding it.
@@ -934,6 +1017,9 @@ impl InlineViewport {
     ///
     /// [`reflow`]: InlineViewport::reflow
     pub fn exit_overlay(&mut self) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         execute!(self.backend, LeaveAlternateScreen)?;
         // Cleared only once the leave was actually written — on failure the
         // flag stays set and restore()/the panic hook retry the leave.
@@ -968,6 +1054,9 @@ impl InlineViewport {
     ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
     pub fn draw_overlay(&mut self, render: impl FnOnce(Rect, &mut Buffer)) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         if self.screen.width == 0 || self.screen.height == 0 {
             return Ok(());
         }
@@ -1039,6 +1128,9 @@ impl InlineViewport {
     ///
     /// [`exit_overlay`]: InlineViewport::exit_overlay
     pub fn restore(&mut self) -> io::Result<()> {
+        if self.headless {
+            return Ok(());
+        }
         // Safety net for exits that break out of the event loop with the
         // Ctrl+O overlay still up (stdin closing, an EventStream error — paths
         // that never reach main's exit_overlay calls): leave the alternate
@@ -1539,7 +1631,34 @@ mod tests {
     use ratatui::layout::{Position, Rect};
     use ratatui::style::Style;
 
-    use super::{OverlayPaint, keyboard_enhancement_disabled, overlay_paint, visible_cells};
+    use super::{
+        HEADLESS_SIZE, InlineViewport, OverlayPaint, keyboard_enhancement_disabled, overlay_paint,
+        visible_cells,
+    };
+
+    #[test]
+    fn a_headless_viewport_paints_nothing_and_keeps_nothing() {
+        // docs/headless.md: the session runs whole over it — every paint is
+        // a no-op that succeeds, and a commit is dropped as it is queued, so
+        // a long run never accumulates rows nobody will see.
+        let mut term = InlineViewport::headless();
+        assert!(term.is_headless());
+        let (width, height) = HEADLESS_SIZE;
+        assert_eq!(term.screen(), Rect::new(0, 0, width, height));
+        term.insert_before(vec!["a committed row".into()]);
+        assert!(
+            term.pending.is_empty(),
+            "nothing queued for a paint that never comes"
+        );
+        let app = crate::app::App::new();
+        assert!(term.draw(5, |_, _| {}, &app).is_ok());
+        assert!(term.reflow(vec!["row".into()], 5, |_, _| {}, &app).is_ok());
+        assert!(term.enter_overlay().is_ok());
+        assert!(term.draw_overlay(|_, _| {}).is_ok());
+        assert!(term.exit_overlay().is_ok());
+        assert!(term.restore().is_ok());
+        assert!(term.take_typeahead().is_empty());
+    }
 
     /// Render `line` into a `width`-wide one-row buffer the way every full-cell
     /// paint does, then list what [`visible_cells`] would actually send to the

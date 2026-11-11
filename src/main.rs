@@ -2,7 +2,8 @@
 //!
 //! This binary does four things and delegates the rest: run the detached-exec
 //! hook, resolve the CLI arguments, open the inline viewport, and run the event
-//! loop. Everything it drives lives in [`tui`] — one module per area, the way
+//! loop — or, with `-p`, run the same session headless, with no viewport at all
+//! (`docs/headless.md`). Everything it drives lives in [`tui`] — one module per area, the way
 //! `app/` and `ui/` are split (see `docs/module-layout.md`) — and the real logic
 //! lives in the library, in pure functions the unit tests can reach.
 //!
@@ -48,7 +49,18 @@ fn main() -> io::Result<()> {
         Ok(startup) => startup,
         Err(code) => std::process::exit(code),
     };
+    // `-p`: the same session with no screen (docs/headless.md) — no viewport,
+    // no raw mode, no cursor query, no key reader; its exit status is the
+    // run's. Every line it wrote was flushed as it went.
+    if startup.print.is_some() {
+        std::process::exit(headless_main(startup));
+    }
     tui_main(startup)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn headless_main(startup: Startup) -> i32 {
+    tui::headless::run(startup).await
 }
 
 #[tokio::main(flavor = "current_thread")]

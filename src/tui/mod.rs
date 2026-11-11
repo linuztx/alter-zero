@@ -42,6 +42,7 @@
 //! | [`config`] | Reading the environment: providers, keys, settings, permission rules. |
 //! | [`bootstrap`] | Assembling a [`Session`] before the first frame. |
 //! | [`startup`] | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
+//! | [`headless`] | `alter-zero -p`: the same session with no screen — its loop, its streams, its exit status (`docs/headless.md`). |
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
@@ -92,6 +93,7 @@ pub(crate) mod donate;
 pub(crate) mod event_loop;
 pub(crate) mod export;
 pub(crate) mod git_diff_loader;
+pub(crate) mod headless;
 pub(crate) mod herdr;
 pub(crate) mod history_store;
 pub(crate) mod host;
@@ -197,7 +199,18 @@ pub(crate) struct Session<'t> {
     // back owned values, so no borrow outlives the call itself.
     /// Terminal input — the **sole** stdin reader (invariant 1). Created after
     /// the viewport's synchronous cursor query, in [`Session::bootstrap`].
-    events: EventStream,
+    /// `None` in a headless run, which has no terminal to read — and must not
+    /// open one: crossterm opens the controlling terminal as the stream is
+    /// built (`docs/headless.md`).
+    events: Option<EventStream>,
+    /// Whether this session runs **headless** — `alter-zero -p`, the same
+    /// session over a viewport that paints nowhere (`docs/headless.md`):
+    /// nothing asked, nothing shown, toasts on stderr.
+    headless: bool,
+    /// A headless run's reply budget (`--max-turns`), shared with every
+    /// backend build — what the run reports as its `num_turns`. `None` in
+    /// the TUI.
+    round_budget: Option<alter_zero::llm::agent::RoundBudget>,
     /// Asks the frame scheduler for a redraw, and its coalesced, rate-limited
     /// draw ticks coming back.
     frame: FrameRequester,

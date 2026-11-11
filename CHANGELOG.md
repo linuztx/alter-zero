@@ -14,6 +14,24 @@ release heading when a version is cut.
 
 ### Added
 
+- **Headless mode: `alter-zero -p "prompt"` runs with no terminal at all.**
+  The app used to need a terminal that answered its cursor query before it
+  read a prompt, so a cron job, a CI step or an n8n node could not run it
+  (`Device not configured`). With `-p` the same session runs with no screen:
+  the answer goes to stdout and a log of the run to stderr, and the exit
+  status says how it went (0 done, 1 failed, 2 a usage error, 130/143
+  interrupted). `--output-format json` prints one result object with the
+  session id, usage and any refused tool calls; `stream-json` prints one
+  event per line as the run happens. The prompt can come from stdin as well,
+  as in `git diff | alter-zero -p "Review this diff"`. Nothing waits for a
+  reply: a call that would ask for approval is refused and the model is
+  told, `--permission-mode` decides how much runs unasked, and the question
+  tool is not offered. `--max-turns` caps the model replies, `-C` sets the
+  working directory, and `-c`/`--resume` continue a conversation, so a
+  nightly job can keep one session going. The config, providers, skills,
+  agents, hooks and MCP servers are the same ones the interactive app uses
+  (`docs/headless.md`).
+
 - **A provider of your own can take the thinking level as
   `reasoning_effort`.** Ctrl+T's level rides every chat request in
   OpenRouter's `reasoning` object, which some OpenAI-compatible servers

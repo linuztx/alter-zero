@@ -151,6 +151,10 @@ pub struct LlmBackend {
     /// calls** knob says otherwise, and **`0` means no limit** (the app's own
     /// default). See `docs/settings.md`.
     max_tool_calls: usize,
+    /// The run's budget of model replies — `--max-turns`, a headless run's
+    /// (`docs/headless.md`). `None` on every other backend: the TUI never
+    /// counts, and neither does a subagent or a compaction.
+    round_budget: Option<agent::RoundBudget>,
     /// The session's **mid-turn message queue** (`docs/queue.md`): what the
     /// user typed while this turn was already running. Drained at every round
     /// boundary, so a message reaches the model within the turn it was
@@ -245,6 +249,7 @@ impl LlmBackend {
             turn_context: Arc::new(Mutex::new(ClassifierContext::new())),
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
+            round_budget: None,
             steer: SteerQueue::new(),
             hooks: Arc::new(NoHooks),
             secrets: None,
@@ -448,6 +453,22 @@ impl LlmBackend {
         self
     }
 
+    /// Count every request this backend's turns send against `budget` —
+    /// `--max-turns` (`docs/headless.md`). A request the budget refuses is
+    /// never sent: its turn ends on the budget's message. Shared by clone, so
+    /// a rebuild that re-attaches it keeps counting.
+    #[must_use]
+    pub fn with_round_budget(mut self, budget: agent::RoundBudget) -> Self {
+        self.round_budget = Some(budget);
+        self
+    }
+
+    /// The budget [`with_round_budget`](Self::with_round_budget) attached.
+    #[must_use]
+    pub const fn round_budget(&self) -> Option<&agent::RoundBudget> {
+        self.round_budget.as_ref()
+    }
+
     /// Whether the `bash`/`read`/`write`/`edit` tools are offered to the model.
     #[must_use]
     pub fn tools_enabled(&self) -> bool {
@@ -548,6 +569,25 @@ pub fn augment_with_scratchpad(base: &str, dir: &str) -> String {
         return base.to_string();
     }
     format!("{}\n\n{}", base.trim_end(), render_scratchpad(dir))
+}
+
+/// The headless block appended to the system prompt of a run with no screen
+/// — authored in [`prompts/headless.md`](../../prompts/headless.md) in the
+/// persona's own terse style (`docs/headless.md`).
+const HEADLESS_TEMPLATE: &str = include_str!("../../prompts/headless.md");
+
+/// Append the headless block to a base system prompt, so the model knows no
+/// one can answer it, that a call needing approval is refused, and that the
+/// run ends with its turn (`docs/headless.md`). Composes *after*
+/// [`augment_with_scratchpad`], the prompt's last block; a blank base is
+/// returned unchanged, keeping the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
+/// system message" contract (`docs/context.md`).
+#[must_use]
+pub fn augment_with_headless(base: &str) -> String {
+    if base.trim().is_empty() {
+        return base.to_string();
+    }
+    format!("{}\n\n{}", base.trim_end(), HEADLESS_TEMPLATE.trim())
 }
 
 /// Extract a human distro name from `/etc/os-release` contents — the
@@ -757,6 +797,8 @@ impl ReplySource for LlmBackend {
         let turn_context = Arc::clone(&self.turn_context);
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
+        // The run's reply budget, when it has one (docs/headless.md).
+        let round_budget = self.round_budget.clone();
         let hooks = Arc::clone(&self.hooks);
         let secrets = self.secrets.clone();
         // The mid-turn queue this turn answers to (docs/queue.md): the loop
@@ -866,6 +908,13 @@ impl ReplySource for LlmBackend {
                 max_tool_calls,
                 &mut messages,
                 |msgs| {
+                    // `--max-turns` (docs/headless.md): a reply the run's
+                    // budget cannot pay for is never asked for.
+                    if let Some(budget) = &round_budget
+                        && !budget.take()
+                    {
+                        return agent::RoundOutcome::Limit(budget.limit_message());
+                    }
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
@@ -2973,6 +3022,31 @@ mod tests {
         let persona = prompt.find("Alter Zero").expect("persona present");
         let env = prompt.find("/repo").expect("environment present");
         assert!(persona < env, "order persona<env: {prompt}");
+    }
+
+    #[test]
+    fn augment_with_headless_appends_the_block_last() {
+        // docs/headless.md: the fourth block, after the scratchpad's — the
+        // model learns it runs with nobody watching the way it learns its
+        // cwd and its scratchpad.
+        let base = augment_with_scratchpad(
+            &augment_with_environment("You are Alter Zero", "d", "linux", "root", "/repo"),
+            "/tmp/alter-zero-0/s1/scratchpad",
+        );
+        let out = augment_with_headless(&base);
+        assert!(out.starts_with(&base), "{out}");
+        let block = &out[base.len()..];
+        assert!(block.starts_with("\n\n## Headless\n"), "{block}");
+        for needle in [
+            "non-interactive",
+            "refused",
+            "background commands",
+            "final message",
+        ] {
+            assert!(block.contains(needle), "{needle}: {block}");
+        }
+        // A blank base stays blank: no system message at all.
+        assert_eq!(augment_with_headless("  "), "  ");
     }
 
     #[test]

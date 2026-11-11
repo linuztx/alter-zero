@@ -1906,6 +1906,33 @@ fn a_round_boundary_closes_the_mark_even_when_it_records_nothing() {
 }
 
 #[test]
+fn the_settled_history_stops_where_a_retry_could_take_back() {
+    // What a headless run may print (docs/headless.md): records an attempt
+    // made are tentative until the attempt ends, since a retry withdraws
+    // them; everything before is settled.
+    let mut app = streaming_turn();
+    assert_eq!(app.settled_history_len(), 1, "the prompt is settled");
+    stream_event(&mut app, StreamEvent::Chunk("First, ".into()));
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("weighing it".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    assert_eq!(
+        app.history.len(),
+        3,
+        "the attempt recorded text and a thought"
+    );
+    assert_eq!(
+        app.settled_history_len(),
+        1,
+        "…which a retry could still withdraw"
+    );
+    // The attempt ends — its round's calls are announced — and what it
+    // recorded can no longer be taken back.
+    app.track_attempt(&StreamEvent::RoundCalls(Vec::new()));
+    assert_eq!(app.settled_history_len(), 3);
+}
+
+#[test]
 fn a_retry_before_any_content_withdraws_nothing() {
     // The bounded retry of a request that got nothing through: the same
     // event, nothing to take back.

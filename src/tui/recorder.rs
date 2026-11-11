@@ -229,6 +229,13 @@ impl SessionRecorder {
         self.active.as_ref().map(|(_, meta)| meta.id.as_str())
     }
 
+    /// The id this conversation is — or, before its first record, will be —
+    /// recorded under: what a headless run announces before its prompt has
+    /// created the file (`docs/headless.md`).
+    pub(crate) fn conversation_id(&self) -> &str {
+        self.session_id().unwrap_or(&self.next_id)
+    }
+
     /// Mirror the file to `history`: append newly finished items (creating
     /// the file + meta line first on the very first one) plus any pending
     /// checkpoint lines (`docs/checkpoint.md`), rewrite the whole file when

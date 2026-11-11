@@ -42,7 +42,8 @@ impl Session<'_> {
     /// the common path (a date read and a string compare), and the bound on
     /// a failing request within one session.
     pub(crate) fn update_day_check(&mut self) {
-        if !self.app.settings().update_check_active() {
+        // A headless run has no card to show a newer release on.
+        if self.headless || !self.app.settings().update_check_active() {
             return;
         }
         if self.update_attempted.as_deref() == Some(host::utc_day().as_str()) {

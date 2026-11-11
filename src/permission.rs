@@ -361,6 +361,21 @@ pub fn denial_result(feedback: Option<&str>) -> String {
     }
 }
 
+/// The short output a call refused by an **unattended** gate records — a
+/// headless run's, where nobody can answer a prompt (`docs/headless.md`).
+pub const UNATTENDED_DISPLAY: &str = "Not run: needs approval (headless run)";
+
+/// The model-facing tool result for a call an unattended gate refused: it
+/// did not run, nobody can approve it, and what to do instead — the
+/// classifier denial's posture (carry on, never bypass the intent), minus
+/// its "stop and ask", since nobody is there to ask.
+pub const UNATTENDED_RESULT: &str = "This tool call needs the user's approval, and this run \
+     is non-interactive (headless): nobody can approve it, so it was not executed (a file \
+     change was not written). Do not retry it, and do not work around it with another tool \
+     that does the same thing. Continue with what does not need it; if it is essential, end \
+     your answer by saying what you needed to run and why — the user can allow it with \
+     --permission-mode or an allowlist rule.";
+
 /// The model-facing tool result for Ctrl+E — explain the command instead of
 /// running it.
 #[must_use]
@@ -1096,6 +1111,12 @@ impl PermissionsFile {
 #[derive(Debug, Default)]
 struct GateInner {
     rules: PermissionRules,
+    /// Whether nobody can answer a prompt — a headless run
+    /// ([`PermissionGate::set_unattended`], `docs/headless.md`).
+    unattended: bool,
+    /// What the unattended gate refused, in order, until taken for the run's
+    /// report ([`PermissionGate::take_unattended_refusals`]).
+    refused: Vec<PermissionRequest>,
     /// This session's scratchpad directory, when it has one
     /// ([`PermissionGate::set_scratchpad`]) — the root
     /// [`PermissionGate::scratchpad_covers`] measures a file change against.
@@ -1280,6 +1301,35 @@ impl PermissionGate {
         drop(job);
     }
 
+    /// Make the gate **unattended** — a headless run's (`docs/headless.md`):
+    /// where a call would put a prompt to the user, nobody is there to
+    /// answer, so it is refused instead ([`refuses_unattended`]). One-way: a
+    /// run with no screen never grows one.
+    ///
+    /// [`refuses_unattended`]: Self::refuses_unattended
+    pub fn set_unattended(&self) {
+        self.lock().unattended = true;
+    }
+
+    /// The approve seam's last step on an unattended gate: refuse `request`
+    /// — recording it for the run's report — instead of raising a prompt.
+    /// `false` on an attended gate, whose prompt asks as ever.
+    #[must_use]
+    pub fn refuses_unattended(&self, request: &PermissionRequest) -> bool {
+        let mut inner = self.lock();
+        if inner.unattended {
+            inner.refused.push(request.clone());
+        }
+        inner.unattended
+    }
+
+    /// Every request this unattended gate refused since the last take, in
+    /// order — the run's `permission_denials`.
+    #[must_use]
+    pub fn take_unattended_refusals(&self) -> Vec<PermissionRequest> {
+        std::mem::take(&mut self.lock().refused)
+    }
+
     /// Drop every posted-but-unclaimed decision (`/clear`, an interrupt): the
     /// waiting threads are cancelled separately and must not pick up a stale
     /// answer if one raced in.
@@ -1316,6 +1366,44 @@ mod tests {
             detail: None,
             agent: None,
             agent_id: None,
+        }
+    }
+
+    // --- an unattended gate: the headless run (docs/headless.md) ---
+
+    #[test]
+    fn an_attended_gate_refuses_nothing_on_its_own() {
+        let gate = PermissionGate::new();
+        assert!(!gate.refuses_unattended(&request(PermissionKind::Bash, "rm -rf build")));
+        assert!(gate.take_unattended_refusals().is_empty());
+    }
+
+    #[test]
+    fn an_unattended_gate_refuses_and_keeps_every_refusal_in_order() {
+        let gate = PermissionGate::new();
+        gate.set_unattended();
+        let first = request(PermissionKind::Bash, "rm -rf build");
+        let second = request(PermissionKind::Write, "/home/u/proj/a.rs");
+        assert!(gate.refuses_unattended(&first));
+        // Every clone shares the gate — a subagent's thread refuses too.
+        assert!(gate.clone().refuses_unattended(&second));
+        assert_eq!(gate.take_unattended_refusals(), vec![first, second]);
+        assert!(gate.take_unattended_refusals().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn an_unattended_refusal_tells_the_model_nobody_can_approve_it() {
+        assert_eq!(UNATTENDED_DISPLAY, "Not run: needs approval (headless run)");
+        for needle in [
+            "non-interactive",
+            "not executed",
+            "Do not retry",
+            "--permission-mode",
+        ] {
+            assert!(
+                UNATTENDED_RESULT.contains(needle),
+                "{needle}: {UNATTENDED_RESULT}"
+            );
         }
     }
 

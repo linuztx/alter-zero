@@ -40,6 +40,79 @@ use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
 /// [`LlmBackend::with_max_tool_calls`]: super::LlmBackend::with_max_tool_calls
 pub const MAX_TOOL_ITERATIONS: usize = 20;
 
+/// The run-wide budget of **model replies** `--max-turns` sets
+/// (`docs/headless.md`): every request the lead agent sends takes one, over
+/// the prompt's turn and every follow-up turn the run starts alike — the
+/// clones share it. Subagents' requests and a compaction's are not counted:
+/// their backends never carry it. Checked in the backend's round closure,
+/// before a request goes out, so a reply past the limit is never sent.
+#[derive(Debug, Clone, Default)]
+pub struct RoundBudget {
+    inner: std::sync::Arc<RoundBudgetInner>,
+}
+
+#[derive(Debug, Default)]
+struct RoundBudgetInner {
+    limit: Option<usize>,
+    used: std::sync::atomic::AtomicUsize,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl RoundBudget {
+    /// A budget of `limit` replies — `None`, uncounted only in the limit's
+    /// sense: [`used`](Self::used) still counts, for the run's report.
+    #[must_use]
+    pub fn new(limit: Option<std::num::NonZeroUsize>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(RoundBudgetInner {
+                limit: limit.map(std::num::NonZeroUsize::get),
+                ..RoundBudgetInner::default()
+            }),
+        }
+    }
+
+    /// Take one reply from the budget — `false`, taking nothing, once it is
+    /// spent.
+    #[must_use]
+    pub fn take(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let limit = self.inner.limit.unwrap_or(usize::MAX);
+        let taken = self
+            .inner
+            .used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                (used < limit).then_some(used + 1)
+            })
+            .is_ok();
+        if !taken {
+            self.inner.refused.store(true, Ordering::SeqCst);
+        }
+        taken
+    }
+
+    /// The replies taken so far.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.inner.used.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether the budget refused a reply — the run stopped on its limit.
+    #[must_use]
+    pub fn spent(&self) -> bool {
+        self.inner.refused.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The error a refused reply ends its turn on.
+    #[must_use]
+    pub fn limit_message(&self) -> String {
+        let limit = self.inner.limit.unwrap_or_default();
+        format!(
+            "Stopped after {limit} model repl{} — the run's --max-turns limit",
+            if limit == 1 { "y" } else { "ies" }
+        )
+    }
+}
+
 /// What a call refused by the **Max tool calls** ceiling resolves with — the
 /// cell's line and the tool result alike. One sentence, stating the fact.
 ///
@@ -241,6 +314,10 @@ pub enum RoundOutcome {
     Cancelled,
     /// The request failed.
     Failed(LlmError),
+    /// The request was never sent: a limit the run set was reached — the
+    /// `--max-turns` budget ([`RoundBudget`]). The turn ends on this
+    /// message, the way the tool-call ceiling ends one.
+    Limit(String),
 }
 
 /// One thing waiting to be folded into the next round's context, taken at
@@ -459,6 +536,14 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::Cancelled => return,
+            // A request the run's budget refused: the turn ends on the
+            // limit's own message, the tool-call ceiling's shape — and its
+            // `StopFailure` kind, the reference's catch-all for a local limit.
+            RoundOutcome::Limit(message) => {
+                send_hook_report(tx, hooks.stop_failure("unknown", &message, cancel));
+                let _ = tx.send(StreamEvent::Error(message));
+                return;
+            }
             RoundOutcome::Failed(err) => {
                 // `StopFailure` (docs/hooks.md): the turn ends on an error.
                 // Fired BEFORE the Error goes out, as Stop is before
@@ -1026,6 +1111,67 @@ mod tests {
         let (skills, errors) = super::super::skill::discover_skills(&[root.to_path_buf()]);
         assert!(errors.is_empty(), "{errors:?}");
         crate::skills::SkillRegistry::new(skills)
+    }
+
+    // ===== the run's reply budget: --max-turns (docs/headless.md) =====
+
+    #[test]
+    fn a_budget_without_a_limit_never_refuses() {
+        let budget = RoundBudget::new(None);
+        for _ in 0..1_000 {
+            assert!(budget.take());
+        }
+        assert_eq!(budget.used(), 1_000);
+        assert!(!budget.spent());
+    }
+
+    #[test]
+    fn a_budget_refuses_the_reply_past_its_limit_and_says_so_once_spent() {
+        let budget = RoundBudget::new(std::num::NonZeroUsize::new(2));
+        assert!(budget.take());
+        // Clones share it: the prompt's turn and every follow-up count
+        // against one budget.
+        assert!(budget.clone().take());
+        assert!(
+            !budget.spent(),
+            "the limit was reached, nothing refused yet"
+        );
+        assert!(!budget.take());
+        assert!(budget.spent());
+        assert_eq!(budget.used(), 2, "a refused reply is never counted");
+        assert_eq!(
+            budget.limit_message(),
+            "Stopped after 2 model replies — the run's --max-turns limit"
+        );
+    }
+
+    #[test]
+    fn a_round_the_budget_refuses_ends_the_turn_on_its_message() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut messages = vec![ChatMessage::user("go")];
+        let mut asked = 0;
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_| {
+                asked += 1;
+                RoundOutcome::Limit("Stopped after 1 model reply".to_string())
+            },
+            |_, _| ToolOutcome::ok(String::new()),
+            Vec::new,
+            |_| Vec::new(),
+            |_, _| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        assert_eq!(asked, 1);
+        let events = drain(&mut rx);
+        assert!(
+            matches!(events.as_slice(), [StreamEvent::Error(message)] if message == "Stopped after 1 model reply"),
+            "{events:?}"
+        );
     }
 
     fn skill_rounds(

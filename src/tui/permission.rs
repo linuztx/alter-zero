@@ -66,9 +66,10 @@ impl PermissionStore {
     /// Open the store for `cwd`: build the gate (unless
     /// `ALTER_ZERO_PERMISSIONS` is falsy) and seed it with this project's saved
     /// command rules, so "don't ask again" survives a restart in the same
-    /// directory, and with the mode the session starts in — the run's seed,
-    /// else the saved mode, else auto.
-    pub(crate) fn open(cwd: &Path) -> Self {
+    /// directory, and with the mode the session starts in — the run's seed
+    /// (`--permission-mode`, else `ALTER_ZERO_PERMISSION_MODE`), else the
+    /// saved mode, else auto. The seed is never saved.
+    pub(crate) fn open(cwd: &Path, seed: Option<PermissionMode>) -> Self {
         let store = Self {
             gate: config::permissions_enabled().then(PermissionGate::new),
             path: config::permissions_file_path(),
@@ -81,7 +82,8 @@ impl PermissionStore {
                 let (prefixes, exact) = entry.command_sets();
                 gate.seed_commands(prefixes, exact);
             }
-            gate.set_mode(saved.starting_mode(&store.project, config::permission_mode_seed()));
+            let seed = seed.or_else(config::permission_mode_seed);
+            gate.set_mode(saved.starting_mode(&store.project, seed));
         }
         store
     }

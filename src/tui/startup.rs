@@ -29,6 +29,11 @@ use super::resume::{find_session_by_id, list_sessions, sessions_root};
 pub(crate) struct Startup {
     pub(crate) session: Option<StartupSession>,
     pub(crate) prompt: Option<String>,
+    /// `--permission-mode`: the run's permission seed, in either kind of run.
+    pub(crate) permission_mode: Option<alter_zero::permission::PermissionMode>,
+    /// `-p`: run headless, reporting this way (`docs/headless.md`) — the
+    /// prompt above then already holds what stdin added. `None` is the TUI.
+    pub(crate) print: Option<alter_zero::cli::PrintOptions>,
 }
 
 /// The `--continue`/`--resume` directive — the session to install before the
@@ -85,9 +90,35 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             Err(0)
         }
-        Cli::Session(SessionArgs { start, prompt }) => {
+        Cli::Session(SessionArgs {
+            start,
+            prompt,
+            cwd,
+            permission_mode,
+            print,
+        }) => {
+            // `-C` first: everything after reads the working directory —
+            // `--continue` looks for the newest conversation *there*.
+            if let Some(dir) = cwd
+                && let Err(err) = std::env::set_current_dir(&dir)
+            {
+                eprintln!("Cannot run in {}: {err}", dir.display());
+                return Err(1);
+            }
             let session = resolve_session(start)?;
-            Ok(Startup { session, prompt })
+            // A headless run reads its prompt now, in cooked mode, before
+            // anything else starts: an argument, stdin, or both
+            // (docs/headless.md).
+            let prompt = match print {
+                Some(_) => Some(super::headless::read_prompt(prompt.as_deref())?),
+                None => prompt,
+            };
+            Ok(Startup {
+                session,
+                prompt,
+                permission_mode,
+                print,
+            })
         }
     }
 }

@@ -287,8 +287,9 @@ never existed:
   summarization; its notes stay out of the conversation record (they are
   ephemeral, like the compact chunks themselves).
 - **`SessionEnd`** fires as a conversation closes — `/clear` (`clear`),
-  a `/resume` switching away (`resume`), and a quit (`prompt_input_exit`),
-  Claude Code's reasons — **before** the recorder moves on, so it names the
+  a `/resume` switching away (`resume`), a quit (`prompt_input_exit`) and a
+  headless run's end (`other`, `docs/headless.md`), Claude Code's reasons —
+  **before** the recorder moves on, so it names the
   conversation that ended, and under a **2 s whole-event budget**: Claude
   Code caps this event at 1.5 s and codex clamps it to 3 s, because
   quitting must never hang on a hook. A quit fires it **after** the turn

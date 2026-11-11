@@ -15,6 +15,13 @@ Claude Code (a bottom-pinned input field framed by a top/bottom rule, messages
 and tool calls flowing above it in normal scrollback). Everything that can be
 unit-tested must be unit-tested.
 
+The same session also runs with **no screen at all**: `alter-zero -p
+"prompt"` answers one prompt for a script, a cron job or a CI step — the
+answer on stdout (or JSON), the log on stderr, an exit status to branch on,
+nothing asked ([`headless.md`](headless.md)). It is the TUI's own `Session`
+over a viewport that paints nowhere, so the conversation it records is the
+one the TUI would have.
+
 The same binary also ships as a **headless Kali Linux container**
 ([`docker.md`](docker.md)): the published release on Kali Rolling with a small
 set of command-line tools, for Docker and Podman. It changes nothing about the
