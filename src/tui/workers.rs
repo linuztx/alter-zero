@@ -33,7 +33,7 @@ use std::thread::JoinHandle;
 
 use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
-use alter_zero::file_search::{FileMatch, rank_files};
+use alter_zero::file_search::{FileMatch, rank_files, sibling_order};
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
 
@@ -514,6 +514,19 @@ fn walk_files(root: &Path, cap: usize) -> Walk {
             }
             found.push((path, is_dir));
         }
+        // In listing order, so the walk as a whole reads like a bare `@`'s
+        // list (`file_search::sibling_order`) and that list's sort finds
+        // nothing to move. Only a folder's own entries are compared here, by
+        // their names alone.
+        let start = folder.len();
+        found.sort_by(|(a, a_dir), (b, b_dir)| {
+            sibling_order(
+                own_name(a, start, *a_dir),
+                *a_dir,
+                own_name(b, start, *b_dir),
+                *b_dir,
+            )
+        });
         for (path, is_dir) in found.drain(..) {
             if is_dir {
                 queue.push_back(Some(paths.len()));
@@ -530,6 +543,19 @@ fn walk_files(root: &Path, cap: usize) -> Walk {
     Walk {
         paths,
         truncated: false,
+    }
+}
+
+/// An entry's own name inside a walked `path` whose folder's part is the
+/// first `start` bytes — a folder's closing `/` left off, as
+/// `FileMatch::name` leaves it off, so the walk's sort and the listing's
+/// compare the same text.
+fn own_name(path: &str, start: usize, is_dir: bool) -> &str {
+    let own = &path[start..];
+    if is_dir {
+        own.strip_suffix('/').unwrap_or(own)
+    } else {
+        own
     }
 }
 
@@ -781,5 +807,34 @@ mod tests {
         let mut paths = walk_files(dir.path(), 100).paths;
         paths.sort();
         assert_eq!(paths, ["a\\b.txt", "x\\y/", "x\\y/z.txt"]);
+    }
+
+    #[test]
+    fn the_walk_reads_each_folder_into_listing_order() {
+        // Each folder's entries are sorted as they are read — folders first,
+        // names without regard to case — so the breadth-first walk comes out
+        // in exactly the order a bare `@` lists, whatever order the
+        // filesystem returned them in, and the listing's own sort finds
+        // nothing to move.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        for folder in ["c", "B", "Z", "c/X"] {
+            std::fs::create_dir(root.join(folder)).expect("a dir");
+        }
+        for file in ["b.txt", "A.txt", "a.md", "c/y.txt", "B/q", "c/X/w"] {
+            std::fs::write(root.join(file), "").expect("a file");
+        }
+        let walk = walk_files(root, 100);
+        assert_eq!(
+            walk.paths,
+            [
+                "B/", "c/", "Z/", "a.md", "A.txt", "b.txt", "B/q", "c/X/", "c/y.txt", "c/X/w",
+            ]
+        );
+        let listed: Vec<String> = alter_zero::file_search::rank_files("", walk.paths.clone())
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        assert_eq!(listed, walk.paths, "the listing found nothing to move");
     }
 }

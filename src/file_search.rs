@@ -219,8 +219,21 @@ fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
                 .find(|order| order.is_ne())
                 .unwrap_or(Ordering::Equal)
         })
-        .then_with(|| b.is_dir().cmp(&a.is_dir()))
-        .then_with(|| name_order(a.name(), b.name()))
+        .then_with(|| sibling_order(a.name(), a.is_dir(), b.name(), b.is_dir()))
+}
+
+/// Two entries of one folder in the order a bare `@` lists them: folders
+/// before files, then the names compared case-insensitively, a tie in case
+/// alone falling to the spelling — `apple/`, `Zed/`, `a.md`, `B.txt`,
+/// `b.txt`. A name is the entry's own, without a folder's closing `/`. The
+/// last word of the listing order, and the order the boundary's walk sorts
+/// each folder into as it reads it, which is what hands the listing's sort a
+/// list already in order (`docs/file-search.md`).
+#[must_use]
+pub fn sibling_order(a_name: &str, a_is_dir: bool, b_name: &str, b_is_dir: bool) -> Ordering {
+    b_is_dir
+        .cmp(&a_is_dir)
+        .then_with(|| name_order(a_name, b_name))
 }
 
 /// Two names compared case-insensitively, the exact spelling breaking a tie
@@ -470,6 +483,31 @@ mod tests {
         assert_eq!(
             listed(&walked),
             ["eclair.txt", "Zed.txt", "Éclair.txt", "éclair.txt"]
+        );
+    }
+
+    #[test]
+    fn a_folders_entries_list_folders_first_then_names_without_regard_to_case() {
+        // The order within one folder — what the walk sorts each folder into
+        // as it reads it, and the last word of the bare listing's own order,
+        // so the walk hands that sort a list already in order.
+        let mut entries = [
+            ("b.txt", false),
+            ("Zed", true),
+            ("B.txt", false),
+            ("a.md", false),
+            ("apple", true),
+        ];
+        entries.sort_by(|a, b| sibling_order(a.0, a.1, b.0, b.1));
+        assert_eq!(
+            entries,
+            [
+                ("apple", true),
+                ("Zed", true),
+                ("a.md", false),
+                ("B.txt", false),
+                ("b.txt", false),
+            ]
         );
     }
 }
